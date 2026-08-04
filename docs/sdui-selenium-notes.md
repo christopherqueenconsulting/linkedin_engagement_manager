@@ -61,6 +61,13 @@ only ever a correction; `?detailScreenTabIndex=2` is **Pending**, whose rows rea
 "Requested"/"Sent" and are recommendation *requests*, never thank-worthy. Re-ground with
 `scripts/linkedin_live_validation.py --appreciation-sources`.
 
+The probe is piped into a worker running the DEPLOYED image, so a read rebuilt on a branch is not
+there to import — and a reader that can only be grounded AFTER it merges is exactly how this ladder
+shipped dead. As with the feed-sort chain, the probe drives `_recommendation_reading` when the
+running image has it and an identical carried copy when it does not, and the reading names which
+(`read_source: image | script`; a `script` reading has grounded THIS BRANCH, not what is deployed).
+`TestRecommendationReadCopy` fails the build if the copy drifts from the shipped read.
+
 ## The Connect invite is a URL, and unscoped "Invite …" buttons are a WRONG-PERSON hazard
 
 Live-grounded 2026-08-03 (3rd-degree profile, user 1, Sales-Nav overlay): the profile top card

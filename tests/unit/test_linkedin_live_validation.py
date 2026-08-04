@@ -444,6 +444,66 @@ class TestFeedSortChainCopy:
 
 
 @pytest.mark.unit
+class TestRecommendationReadCopy:
+    """#1007's read is NEW, so the image the probe is piped into does not have it — and grounding a
+    rebuilt reader only after it merges is exactly how the ladder it replaces shipped dead. Same
+    posture as the feed-sort chain: image first, carried copy otherwise, and the reading says which.
+    A copy that drifts grounds a read nothing ships, which is worse than not probing at all."""
+
+    def test_carried_read_is_identical_to_the_one_run_automation_uses(self):
+        from cqc_lem.app import run_automation as ra
+
+        assert llv.FALLBACK_RECOMMENDATION_ROWS_JS == ra._RECOMMENDATION_ROWS_JS
+        assert llv.FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS == ra._RECOMMENDATION_RENDER_ATTEMPTS
+
+    def test_the_running_image_wins_when_it_has_the_read(self):
+        from cqc_lem.app import run_automation as ra
+
+        read, attempts, source = llv.recommendation_read()
+        assert source == "image"
+        assert read is ra._recommendation_reading
+        assert attempts == ra._RECOMMENDATION_RENDER_ATTEMPTS
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_1007(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_read(name, *a, **k):
+            if name == "cqc_lem.app.run_automation":
+                raise ImportError("cannot import name '_recommendation_reading'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_read)
+        read, attempts, source = llv.recommendation_read()
+        assert source == "script"
+        assert read is llv._carried_recommendation_reading
+        assert attempts == llv.FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS
+
+    def test_the_carried_copy_normalizes_what_the_page_hands_back(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = {"rows": [{"href": "u"}, "junk"], "anchors": "24",
+                                              "page_dated": 1}
+        assert llv._carried_recommendation_reading(driver) == {
+            "rows": [{"href": "u"}], "anchors": 24, "page_dated": True}
+
+    def test_a_read_that_blows_up_is_an_empty_read_not_a_dead_probe(self):
+        empty = {"rows": [], "anchors": 0, "page_dated": False}
+        driver = MagicMock()
+        driver.execute_script.side_effect = Exception("session died mid-read")
+        assert llv._carried_recommendation_reading(driver) == empty
+        driver.execute_script.side_effect = None
+        driver.execute_script.return_value = "not a dict"
+        assert llv._carried_recommendation_reading(driver) == empty
+
+    def test_a_reading_taken_from_the_carried_copy_says_so(self):
+        verdict = llv.appreciation_verdict({"cards": 2, "dated": 2, "lookback_days": 30,
+                                            "people": [], "read_source": "script"})
+        assert "2 card(s), 2 dated" in verdict and "predates #1007" in verdict
+        assert "predates" not in llv.appreciation_verdict(
+            {"cards": 2, "dated": 2, "lookback_days": 30, "people": [], "read_source": "image"})
+
+
+@pytest.mark.unit
 class TestMain:
     def test_requires_something_to_probe(self):
         with pytest.raises(SystemExit):
@@ -545,6 +605,57 @@ class TestAppreciationSourcesProbe:
         rec = report["recommendations_received"]
         assert (rec["cards"], rec["dated"], len(rec["people"])) == (2, 2, 0)
         assert [r["name"] for r in rec["rows"]] == ["Uday Shankar", "Jeremiah A. Myers"]
+        assert rec["read_source"] == "image"
+
+    def test_an_image_that_predates_the_rebuild_still_grounds_both_surfaces(self, monkeypatch):
+        """The pre-merge run the owner asked for: the deployed image has no `_recommendation_reading`
+        to import, so a hard import would kill the whole probe — mentions half included — instead of
+        grounding the branch's read against the live DOM."""
+        import builtins
+        from unittest.mock import patch
+
+        real_import = builtins.__import__
+
+        def _no_read(name, *a, **k):
+            if name == "cqc_lem.app.run_automation" and "_recommendation_reading" in (a[2] or ()):
+                raise ImportError("cannot import name '_recommendation_reading'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_read)
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        driver.execute_script.return_value = {
+            "rows": [{"href": "https://www.linkedin.com/in/jane", "name": "Jane Doe",
+                      "text": "Jane Doe\n· 1st\nJuly 24, 2026, Jane was my client"}],
+            "anchors": 24, "page_dated": True}
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        rec = report["recommendations_received"]
+        assert rec["read_source"] == "script"
+        assert (rec["cards"], rec["dated"]) == (1, 1)
+        assert "predates #1007" in rec["verdict"]
+        assert report["mentions"]["cards"] == 0
+
+    def test_an_early_paint_is_re_read_before_it_counts_as_an_empty_section(self):
+        """Production polls the render; the probe has to poll it too or it grounds a page that had
+        not finished painting and calls the section empty."""
+        from unittest.mock import patch
+
+        rows = {"rows": [{"href": "https://www.linkedin.com/in/jane", "name": "Jane Doe",
+                          "text": "July 24, 2026, Jane was my client"}],
+                "anchors": 24, "page_dated": True}
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        driver.execute_script.side_effect = [{"rows": [], "anchors": 0, "page_dated": False}, rows]
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        assert report["recommendations_received"]["cards"] == 1
 
     def test_mention_row_reports_the_name_production_would_use(self, monkeypatch):
         """A textless actor link is what the live run actually hit — the probe has to apply the same

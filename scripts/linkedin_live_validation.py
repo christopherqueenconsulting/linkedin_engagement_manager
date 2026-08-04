@@ -993,6 +993,78 @@ def probe_roster_follow(driver, profile_url: str,
     return reading
 
 
+# The recommendations read is NEW in #1007, so the DEPLOYED image this probe is piped into has no
+# `_recommendation_reading` to drive — and a rebuilt reader that can only be grounded AFTER it merges
+# is exactly how the dead ladder #1007 replaces survived a merge in the first place. Same posture as
+# `feed_sort_chains` above: drive the SHIPPED read when the running image has one, carry an identical
+# copy when it does not, and name which in the reading so a pre-merge pass is never mistaken for a
+# reading against deployed code. `TestRecommendationReadCopy` fails the build if the copy drifts.
+FALLBACK_RECOMMENDATION_ROWS_JS = r"""
+const DATE = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}\b/;
+const RAIL = /Who your viewers also viewed|People also viewed|Private to you/i;
+const MAX_CLIMB = 15;
+const root = document.querySelector('main') || document.body;
+const slug = (a) => {
+  const m = ((a.getAttribute('href') || '') || (a.href || '')).match(/\/in\/[^/?#]+/);
+  return m ? decodeURIComponent(m[0]).toLowerCase() : '';
+};
+const anchors = [...root.querySelectorAll('a[href*="/in/"]')];
+const rows = [];
+const seen = new Set();
+for (const anchor of anchors) {
+  if (!slug(anchor)) continue;
+  let block = anchor, hops = 0;
+  while (block.parentElement && hops < MAX_CLIMB) {
+    const parent = block.parentElement;
+    if (parent === root || parent.tagName === 'BODY') break;
+    const people = new Set([...parent.querySelectorAll('a[href*="/in/"]')].map(slug).filter(Boolean));
+    if (people.size > 1) break;
+    block = parent; hops++;
+  }
+  if (seen.has(block)) continue;
+  seen.add(block);
+  const text = block.innerText || '';
+  if (!DATE.test(text) || RAIL.test(text)) continue;
+  let name = '';
+  for (const link of [anchor, ...block.querySelectorAll('a[href*="/in/"]')]) {
+    const first = (link.innerText || '').split('\n').map(t => t.trim()).filter(Boolean)[0];
+    if (first) { name = first; break; }
+  }
+  rows.push({href: anchor.href, name: name, text: text});
+}
+return {rows: rows,
+        anchors: new Set(anchors.map(slug).filter(Boolean)).size,
+        page_dated: DATE.test(root.innerText || '')};
+"""
+
+FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS = 5
+
+
+def _carried_recommendation_reading(driver) -> dict:
+    """`_recommendation_reading`'s answer on an image that predates #1007 — same JS, same shape, and
+    the same posture that a read which blows up is an EMPTY read, never a crashed probe."""
+    empty = {"rows": [], "anchors": 0, "page_dated": False}
+    try:
+        reading = driver.execute_script(FALLBACK_RECOMMENDATION_ROWS_JS)
+    except Exception:
+        return empty
+    if not isinstance(reading, dict):
+        return empty
+    return {"rows": [row for row in (reading.get("rows") or []) if isinstance(row, dict)],
+            "anchors": int(reading.get("anchors") or 0),
+            "page_dated": bool(reading.get("page_dated"))}
+
+
+def recommendation_read() -> tuple:
+    """(the read to drive, how many times to re-read an empty page, where both came from)."""
+    try:
+        from cqc_lem.app.run_automation import (_RECOMMENDATION_RENDER_ATTEMPTS,
+                                                _recommendation_reading)
+    except ImportError:
+        return (_carried_recommendation_reading, FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS, "script")
+    return (_recommendation_reading, _RECOMMENDATION_RENDER_ATTEMPTS, "image")
+
+
 def appreciation_verdict(reading: dict) -> str:
     """What one reading proves about an appreciation source (#968, rebuilt for #1007).
 
@@ -1005,19 +1077,24 @@ def appreciation_verdict(reading: dict) -> str:
     resolves around it is drift, not an account nobody has recommended."""
     reading = dict(reading or {})
     cards = int(reading.get("cards") or 0)
+    # Which code answered is part of the finding: a green pass driven by the carried copy grounds
+    # THIS BRANCH's read against the live DOM (which is the point of running it before the merge),
+    # not the reader currently deployed.
+    note = (" [read carried by this script — the running image predates #1007]"
+            if reading.get("read_source") == "script" else "")
     if not cards and reading.get("page_dated"):
         return (f"ZERO cards resolved on a page that renders dated recommendations "
                 f"({reading.get('profile_anchors') or 0} profile link(s) on it) — the card read has "
-                f"rotated again and production is silently dead")
+                f"rotated again and production is silently dead{note}")
     if not cards:
         return ("no cards resolved — either the surface is genuinely empty or the card locator "
-                "chain has rotated; production sends nothing either way")
+                f"chain has rotated; production sends nothing either way{note}")
     if not reading.get("dated"):
         return (f"{cards} card(s) resolved but none carried a readable date — production skips "
-                f"every one of them, so this trigger is silently dead")
+                f"every one of them, so this trigger is silently dead{note}")
     people = reading.get("people") or []
     return (f"{cards} card(s), {reading.get('dated')} dated, {len(people)} inside the "
-            f"{reading.get('lookback_days')}-day window — production would thank those")
+            f"{reading.get('lookback_days')}-day window — production would thank those{note}")
 
 
 def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
@@ -1034,8 +1111,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                                             _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE, _card_person,
                                             _card_text, _mention_actor_name, _normalize_profile_url,
                                             _own_profile_url, _parse_recommendation_date,
-                                            _parse_relative_age_days, _recommendation_reading,
-                                            appreciation_lookback_days)
+                                            _parse_relative_age_days, appreciation_lookback_days)
     from cqc_lem.utilities.db import has_appreciation_touch
     from cqc_lem.utilities.linkedin.helper import clean_person_name
     from cqc_lem.utilities.selenium_util import find_all_first
@@ -1078,11 +1154,21 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     def _read_recommendations(own: str) -> dict:
         """The recommendations half reads its OWN way since #1007: the page has no list items, no
         `<time>` and no `data-view-name`, so production resolves a card by climbing from each `/in/`
-        anchor to the block that carries its date line. Drive that same read here."""
+        anchor to the block that carries its date line. Drive that same read here — from the running
+        image when it has one, from the carried copy when it predates the rebuild."""
         url = f"{own}/details/recommendations/"
         driver.get(url)
         sleep(5)
-        reading = _recommendation_reading(driver)
+        read, attempts, read_source = recommendation_read()
+        # Mirror production's render poll: an SDUI page still painting reads exactly like an account
+        # nobody has recommended, which is the confusion this whole probe exists to end.
+        reading = {"rows": [], "anchors": 0, "page_dated": False}
+        for attempt in range(max(1, attempts)):
+            reading = read(driver)
+            if reading["rows"] or reading["page_dated"]:
+                break
+            if attempt + 1 < attempts:
+                sleep(2)
         rows = []
         for row in reading["rows"]:
             text = row.get("text") or ""
@@ -1100,6 +1186,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                "dated": sum(1 for r in rows if r["age_days"] is not None),
                # The two numbers that tell an empty section apart from a rotated read.
                "profile_anchors": reading["anchors"], "page_dated": reading["page_dated"],
+               "read_source": read_source,
                "people": [r for r in rows if r["in_window"] and r["profile_url"]
                           and not r["already_thanked"]],
                "rows": rows[:10]}
