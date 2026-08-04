@@ -157,13 +157,25 @@ class TestConsolidateDuplicateComments:
         assert t.call_args.kwargs["kwargs"] == {"user_id": 3, "dry_run": False, "hours": 48}
 
 
-class TestAuthSchemeInOpenAPI:
-    """Both security schemes must be advertised so /docs shows both credentials."""
-    def test_both_schemes_present(self, client):
-        schema = client.get("/openapi.json").json()
-        schemes = schema.get("components", {}).get("securitySchemes", {})
-        names = set(schemes.keys())
-        # HTTPBearer + APIKeyHeader(name="X-Admin-Secret")
-        assert any(s.get("type") == "http" and s.get("scheme") == "bearer" for s in schemes.values())
-        assert any(s.get("type") == "apiKey" and s.get("name") == "X-Admin-Secret" for s in schemes.values())
-        assert names  # non-empty
+class TestAdminCredentialsAreNotAdvertised:
+    """The admin credentials must NOT reach the public schema (issue #1020).
+
+    They used to: the security schemes were declared so Swagger's Authorize dialog showed both,
+    and Swagger was served unauthenticated. Since every `/api/admin/*` operation is now hidden,
+    nothing visible references those schemes and FastAPI stops emitting them — which is the
+    outcome we want, so pin it rather than leave it to a code path nobody is checking. The
+    schemes still exist in code and `_require_api_and_admin` still enforces both at runtime; the
+    tests above prove that by getting 403 without the header and 200 with it.
+    """
+
+    def test_admin_schemes_absent_from_the_public_schema(self, client):
+        schemes = client.get("/api/openapi.json").json().get(
+            "components", {}).get("securitySchemes", {})
+        assert not any(s.get("name") == "X-Admin-Secret" for s in schemes.values()), \
+            "the admin header is named in a document served without a credential"
+
+    def test_admin_secret_is_still_enforced_at_runtime(self, client):
+        """Hiding is not gating: the same route that vanished from the schema must still 403."""
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+            assert client.post("/api/admin/automation-pause",
+                               params={"user_id": 1}).status_code == 403

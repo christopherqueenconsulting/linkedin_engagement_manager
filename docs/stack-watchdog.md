@@ -84,8 +84,7 @@ broker's control channel (`_inspect().active_queues()`), so a lane whose contain
 simply is not in the reply.
 
 ```json
-{"status": "healthy", "workers": 5, "consuming": 5, "maintenance": false,
- "lanes": {"celery@selenium": ["se_engage"]}}
+{"status": "healthy", "workers": 5, "consuming": 5, "maintenance": false}
 ```
 
 | Field | Meaning |
@@ -94,6 +93,18 @@ simply is not in the reply.
 | `workers` | workers that answered the control channel — **presence, not usefulness** |
 | `consuming` | workers subscribed to ≥1 queue. **This is the one that decides `status`.** |
 | `maintenance` | `true`/`false`, or `null` when Redis couldn't be read. A declared window holds `status` at `healthy`. |
+
+### Counts only — the endpoint names nothing (issue #1020)
+
+The body used to carry a `lanes` map of every worker to its queues. This endpoint is
+**unauthenticated by design** — an external dead-man's switch cannot hold a credential — so that
+map published container IDs and the internal queue topology to anyone who asked. It was the sole
+field with disclosure value and it is gone; the counts derived from it stay, because a bare integer
+names nothing and `consuming` is what *decides* `status` (drop it and a `degraded` reading becomes
+unexplainable). `lanes` is still computed internally, so `workers` and `consuming` are unchanged.
+
+Go on the box for the detail the map used to give: `stack_watchdog.sh` reads the same state through
+`docker ps`, and `celery inspect active_queues` gives it verbatim.
 
 | `status` | Meaning |
 |---|---|
@@ -106,7 +117,7 @@ simply is not in the reply.
 A worker being *present* is not the same as a worker *working*. `maint begin` cancels every queue
 consumer, so a stuck maintenance mode leaves the whole tier registered, answering, and doing
 nothing. That state was observed live during the v0.120.0 deploy and the endpoint called it
-`healthy` — workers: 5, every lane list empty.
+`healthy` — `workers: 5`, `consuming: 0`.
 
 Registration was never the question a monitor is asking. No consumer means no task will run, which
 is the same outage as no worker at all — so it reports `degraded`, and `maintenance` says whether
@@ -154,6 +165,15 @@ covering `degraded`, `unknown` and any non-200.
 > every configured monitor, and a monitor that can no longer match looks exactly like a monitor
 > that is passing. `test_healthy_keyword_is_stable_for_body_assertions` pins it; if you ever need
 > to change it, re-configure the monitors in the same change.
+
+**Assert on that keyword and nothing else.** The literal is the only part of the body under
+contract — the *field set* is not, and #1020 changed it by dropping `lanes`. A monitor configured
+against the whole response, a byte length, or any field other than `status` therefore breaks on a
+change that is by design safe, and it breaks in the direction that looks like a passing check. If
+you inherit a monitor whose configuration you can't recall, open it and confirm it is keyword
+`"status":"healthy"` / Keyword Type **"does not exist"** before the next release that touches this
+endpoint deploys — verification is cheap, and a silently disarmed dead-man's switch is the one
+failure this layer cannot report about itself.
 
 Alert when the response is non-200 **or** the body's `status` is not `healthy`. Most monitors
 support a keyword/JSON assertion — use it, because a `degraded` body still returns **200** by

@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
 from typing import Dict, List, Union
-from typing import Optional, Any, NoReturn, Annotated, Awaitable, Callable
+from typing import Optional, Any, NoReturn, Annotated, Awaitable, Callable, Iterator
 from urllib.parse import urlparse
 
 from cqc_lem import assets_dir
@@ -163,7 +163,21 @@ from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
 from pydantic import BaseModel, field_validator, model_validator, Field
 
-app = FastAPI()
+# The docs surface lives UNDER /api (issue #1020). At the FastAPI defaults it sits at /docs,
+# /redoc and /openapi.json — outside /api, so the credential gate below (which only inspects paths
+# starting with "/api/") never saw it and all three were served to anyone. Moving them under /api
+# puts them on the same side of that boundary as everything else they describe; they are then
+# re-opened deliberately via _PUBLIC_API_PREFIXES rather than by accident of routing.
+#
+# swagger_ui_oauth2_redirect_url must be set explicitly: FastAPI defaults it to the fixed literal
+# "/docs/oauth2-redirect" and does NOT derive it from docs_url, so moving docs_url alone strands
+# the helper outside /api and breaks Swagger's Authorize flow silently.
+app = FastAPI(
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+    swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
+)
 
 # All API routes live under /api so the React client's baseURL: '/api' works
 router = APIRouter(prefix="/api")
@@ -194,7 +208,7 @@ async def observability_middleware(request: Request, call_next):
 
 # Credential gate for /api routes. Active only when API_ACCESS_TOKENS is set, so local/dev (and
 # existing tests) run open. Login and the Stripe webhook stay public; everything else under /api
-# must present ONE of two credentials. Routes served outside /api (SPA, /health, /docs,
+# must present ONE of two credentials. Routes served outside /api (SPA, /health,
 # /auth/linkedin/*) are never gated here.
 #
 # Since issue #950 the bearer token is a NON-BROWSER credential and nothing else. It used to be
@@ -233,10 +247,17 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # GET-only; it returns the registry's own toggle values, and the optional session_token is
 # self-authenticating (an invalid one resolves the "system" identity rather than erroring) — same
 # model as /api/user/linkedin-cookie.
+# /api/docs, /api/redoc and /api/openapi.json are the docs surface moved in from the FastAPI
+# defaults (issue #1020). They are LEAF entries, not "/api/docs/" subtrees: the non-slash branch
+# below already matches path-segment children, so "/api/docs/oauth2-redirect" is covered while a
+# future "/api/docs-admin" is not. They stay public because they were public before the move and
+# gating them would leave the SPA's own API undocumented for every non-bearer caller — what the
+# move buys is that the admin surface is no longer IN the schema (see _hide_admin_routes_from_schema).
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
                         "/api/app-info", "/api/faq", "/api/flags",
-                        "/api/extension/", "/api/user/linkedin-cookie")
+                        "/api/extension/", "/api/user/linkedin-cookie",
+                        "/api/docs", "/api/redoc", "/api/openapi.json")
 
 
 def _is_public_api_path(path: str) -> bool:
@@ -1895,8 +1916,17 @@ def health_check_deep():
     if status == "degraded" and maintenance is True:
         status = "healthy"
 
+    # `lanes` is computed but NOT returned (issue #1020): this endpoint is unauthenticated by
+    # design — an external dead-man's switch cannot carry a credential — and the per-worker map was
+    # the one field with disclosure value, naming container IDs and the internal queue topology.
+    # `workers` and `consuming` are bare counts derived from it and say nothing about the topology,
+    # and `consuming` is what DECIDES `status`, so a degraded reading stays explicable without it.
+    #
+    # Key order matters as much as the key set: `status` is first and FastAPI preserves dict
+    # insertion order, so dropping the last key leaves the literal `"status":"healthy"` that
+    # docs/stack-watchdog.md pins as a monitor contract byte-identical.
     return {"status": status, "workers": len(lanes), "consuming": consuming,
-            "maintenance": maintenance, "lanes": lanes}
+            "maintenance": maintenance}
 
 
 @router.get("/app-info")
@@ -6018,7 +6048,7 @@ async def billing_webhook(request: Request) -> dict:
             package = meta.get("package", "unknown")
 
             if not stripe_customer_id or credits <= 0:
-                myprint(f"Avatar credits webhook: missing customer or zero credits — skipping")
+                myprint("Avatar credits webhook: missing customer or zero credits — skipping")
                 return {"received": True}
 
             # Idempotency: Stripe may retry — skip if credits already granted for this session.
@@ -6090,7 +6120,7 @@ async def billing_webhook(request: Request) -> dict:
         session_meta = session.get("metadata", {})
         credit_type = session_meta.get("type")
         if credit_type not in ("avatar_credits", "video_credits"):
-            myprint(f"charge.refunded: not a credits charge — ignoring")
+            myprint("charge.refunded: not a credits charge — ignoring")
             return {"received": True}
 
         # Route to the right ledger based on what was purchased.
@@ -6538,17 +6568,22 @@ def _require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> None
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-# Declared security schemes so Swagger (/docs) shows BOTH required credentials in
-# the Authorize dialog: the bearer API token AND the admin secret. Both are needed.
+# Declared security schemes so an admin tool sees BOTH required credentials: the bearer API token
+# AND the admin secret. Both are needed.
+#
+# The descriptions name the CREDENTIAL, never where it is stored (issue #1020). Naming the env var
+# hands an attacker the exact string to hunt for in a leaked build, a stack trace or a misconfigured
+# container — free reconnaissance in a document these routes no longer even appear in.
 _bearer_scheme = HTTPBearer(
     auto_error=False,
-    description="Non-browser API access token — one of API_ACCESS_TOKENS. Sent as "
-                "'Authorization: Bearer <token>'. Never shipped in the SPA bundle (issue #950); "
-                "browsers authenticate on the session cookie instead.",
+    description="Non-browser API access token, sent as 'Authorization: Bearer <token>'. Issued "
+                "server-side and never shipped in the SPA bundle (issue #950); browsers "
+                "authenticate on the session cookie instead.",
 )
 _admin_secret_scheme = APIKeyHeader(
     name="X-Admin-Secret", auto_error=False,
-    description="Admin secret — the ADMIN_SECRET env var.",
+    description="Administrator secret, sent as the 'X-Admin-Secret' header. Server-side "
+                "configuration only — it is never issued to a browser.",
 )
 
 
@@ -7137,6 +7172,65 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
 
 # Register the /api router
 app.include_router(router)
+
+
+def _walk_routes(routes) -> Iterator[object]:
+    """Flatten the route table. FastAPI ≥0.139 keeps an included router as a single
+    `_IncludedRouter` node holding the real routes rather than copying them onto `app.routes`, so a
+    flat loop over `app.routes` sees the /api tree as ONE opaque entry and silently matches nothing.
+    Descend through both shapes so this keeps working either way."""
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        children = getattr(included, "routes", None) if included is not None \
+            else getattr(route, "routes", None)
+        if children:
+            yield from _walk_routes(children)
+        if getattr(route, "endpoint", None) is not None:
+            yield route
+
+
+def _hide_admin_routes_from_schema() -> int:
+    """Keep every `/api/admin/*` operation OUT of the generated OpenAPI schema (issue #1020).
+
+    The published schema listed all eighteen admin operations by method and path — a targeting map
+    for anyone probing the admin secret, on a document served without a credential. Their runtime
+    auth is untouched: this changes what is DESCRIBED, not what is enforced.
+
+    Derived from the route table rather than written as `include_in_schema=False` on eighteen
+    decorators, because the failure mode is silent: a nineteenth admin route added later would
+    publish itself and nothing would say so. `test_no_admin_route_appears_in_the_public_schema`
+    checks the outcome, and this loop makes the outcome the default.
+    """
+    hidden = 0
+    for route in _walk_routes(app.routes):
+        if getattr(route, "path", "").startswith("/api/admin") and getattr(
+                route, "include_in_schema", False):
+            route.include_in_schema = False
+            hidden += 1
+    return hidden
+
+
+_ADMIN_ROUTES_HIDDEN = _hide_admin_routes_from_schema()
+# Logged, not just returned: the number is how you tell "no admin routes to hide" from "the walk
+# matched nothing", which is the failure this whole helper exists to make visible.
+log_debug("Admin routes hidden from the OpenAPI schema", hidden=_ADMIN_ROUTES_HIDDEN)
+
+# Backward-compat redirects for the docs surface moved under /api (issue #1020). Registered here so
+# they precede the SPA catch-all below, which would otherwise answer them with index.html. 301
+# (permanent) matches the /assets redirect below and keeps every bookmark, README link and Postman
+# import working.
+_DOCS_REDIRECTS = {"/docs": "/api/docs", "/redoc": "/api/redoc",
+                   "/openapi.json": "/api/openapi.json"}
+
+
+def _make_docs_redirect(target: str) -> Callable[[], Awaitable[RedirectResponse]]:
+    async def _redirect() -> RedirectResponse:
+        return RedirectResponse(url=target, status_code=301)
+    return _redirect
+
+
+for _legacy_path, _new_path in _DOCS_REDIRECTS.items():
+    app.get(_legacy_path, include_in_schema=False)(_make_docs_redirect(_new_path))
 
 # Backward-compat redirect: /assets?file_name=... → /api/assets?file_name=...
 # Must be registered before the SPA StaticFiles mount so it takes priority.
