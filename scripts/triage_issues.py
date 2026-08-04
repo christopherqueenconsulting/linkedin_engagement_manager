@@ -457,14 +457,14 @@ class GitHubClient:
     def list_open_issues(self, limit: int = 200) -> list[Issue]:
         """Fetch open issues (not PRs) with labels and milestone. Use `gh api` directly so we get
         every open issue, not the first page of the default view."""
+        # This is the REST endpoint, so the REST spellings are the ones that actually arrive —
+        # `user` / `author_association` / `pull_request`. The camelCase names are kept because
+        # `parse_issue` also accepts GraphQL-shaped fixtures.
+        fields = ("number,title,body,state,labels,milestone,createdAt,updatedAt,author,"
+                  "isPullRequest,user,author_association,pull_request")
         result = self._run(
             ["api", f"repos/{self.repo}/issues", "--method", "GET", "--field", "state=open",
-             "--field", "per_page=100", "--paginate",
-             # This is the REST endpoint, so the REST spellings are the ones that actually arrive —
-             # `user`/`author_association`/`pull_request`. The camelCase names are kept for the
-             # GraphQL-shaped fixtures `parse_issue` also accepts.
-             "--jq", ".[] | {number,title,body,state,labels,milestone,createdAt,updatedAt,author,"
-                     "isPullRequest,user,author_association,pull_request}"],
+             "--field", "per_page=100", "--paginate", "--jq", f".[] | {{{fields}}}"],
             check=False,
         )
         if result.returncode != 0:
