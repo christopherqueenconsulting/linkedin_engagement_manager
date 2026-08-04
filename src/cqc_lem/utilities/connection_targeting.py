@@ -21,6 +21,10 @@ from cqc_lem.utilities.lead_scoring import ICP_UNKNOWN, icp_fit, person_key, pro
 # US than engaging with someone else's post about the same topic.
 SOURCE_OWN_POST = "own_post"
 SOURCE_ADJACENT_POST = "adjacent_post"
+# The roster ladder (issue #979): a curated account whose posts we read and comment on, where
+# following did not unlock commenting. Never SOURCED here — the roster is the user's own list, so
+# this source only ever names the note's shared ground; it carries no warmth weight.
+SOURCE_ROSTER = "roster"
 SOURCE_WEIGHTS: dict = {SOURCE_OWN_POST: 1.0, SOURCE_ADJACENT_POST: 0.65}
 
 # Points one engagement is worth before recency/source weighting. Warmth saturates at 100, so a
@@ -245,7 +249,13 @@ def default_connect_note(candidate: ScoredCandidate, topic: str = None) -> str:
     Kept under LinkedIn's 300-char note limit even before refinement."""
     name = first_name(candidate.person_name)
     about = f" about {topic}" if topic else ""
-    if candidate.source == SOURCE_ADJACENT_POST and candidate.context_author:
+    if candidate.source == SOURCE_ROSTER:
+        # The honest shared ground for a roster target (issue #979): we read and comment on their
+        # posts. No pitch, no ask beyond the connection — this note goes to a peer or creator the
+        # user chose to follow, not to a prospect.
+        note = (f"Hi {name}, I read your posts{about} and comment where I can — I'd love to connect "
+                f"so I can keep up with them properly.")
+    elif candidate.source == SOURCE_ADJACENT_POST and candidate.context_author:
         note = (f"Hi {name}, I saw your take on {candidate.context_author}'s post{about} — we're "
                 f"clearly following the same conversation. Would love to connect and keep "
                 f"trading notes.")

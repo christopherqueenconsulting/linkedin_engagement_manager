@@ -39,6 +39,7 @@ code is missing from this table.
 | Company-page invite modal | `automate_invitations` | `--company-invite` | yes | **none — see Gaps** |
 | Invitation manager → Sent | `read_pending_invites` | `--sent-invites` | yes | zero rows vs the page's own empty-state copy (#969) |
 | Roster activity Follow control | `_resolve_follow_control` | `--roster-follow` | no (needs a target) | `unknown` clicks nothing; blocked visits recorded (#962) |
+| Roster activity connection state | `_resolve_connect_state` | `--roster-connect` | no (needs a target) | `unknown` never escalates; read-only advancement only moves forward (#979) |
 | Recommendations + mentions | `_RECOMMENDATION_CARD_LOCATORS` / `_MENTION_CARD_LOCATORS` | `--appreciation-sources` | yes | undated card is SKIPPED, never thanked (#968) |
 | Newsletter/article editor | `find_article_editor_elements` | `--article-editor-url` | yes | `editor_ready` gates the publish walk (#771/#804) |
 | Own post detail + analytics counts | `_post_social_counts` | `--post-url` | no (needs a post) | **none — see Gaps** |

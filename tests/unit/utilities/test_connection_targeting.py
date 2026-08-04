@@ -188,6 +188,17 @@ class TestConnectNote:
         note = default_connect_note(candidate, topic="ops")
         assert "same conversations" in note and "ops" in note
 
+    def test_roster_note_names_the_real_shared_ground_and_never_pitches(self):
+        # The roster ladder's note (issue #979) goes to a curated peer or creator whose posts we
+        # already read — the honest reason to connect, and the only one.
+        from cqc_lem.utilities.connection_targeting import SOURCE_ROSTER, ScoredCandidate
+        note = default_connect_note(
+            ScoredCandidate(person_key="in:jane", person_name="Jane Doe", source=SOURCE_ROSTER),
+            topic="RevOps")
+        assert "Jane" in note and "posts" in note and "RevOps" in note
+        assert not any(word in note.lower() for word in ("call", "demo", "book", "buy", "offer"))
+        assert len(note) <= CONNECT_NOTE_LIMIT
+
     def test_note_respects_linkedin_note_limit(self):
         candidate = score_candidate([_sig(name="Jane Doe")], NOW)
         note = default_connect_note(candidate, topic="x" * 400)

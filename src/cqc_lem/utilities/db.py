@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, Optional, Union
+from typing import Any, NamedTuple, Optional, Union
 
 import mysql.connector
 from cqc_lem.utilities.env_constants import (
@@ -4931,6 +4931,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # following is a classic bot signature, so this only ever runs because the user asked for it.
     "roster_auto_follow": False,
     "max_follows_per_day": ROSTER_FOLLOWS_PER_DAY_DEFAULT,
+    # Opt-in auto-connect for roster targets following did not unlock (issue #979). OFF by default
+    # and independent of the follow toggle: an invite is heavier and less reversible than a follow,
+    # and it spends the account's ONE combined invite budget.
+    "roster_auto_connect": False,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -4938,7 +4942,7 @@ _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords
                            "posting_days")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment",
-                           "text_post_images", "roster_auto_follow")
+                           "text_post_images", "roster_auto_follow", "roster_auto_connect")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -4954,7 +4958,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
                     "catchup_message_source", "posts_per_week", "posting_days",
-                    "text_post_images", "roster_auto_follow", "max_follows_per_day")
+                    "text_post_images", "roster_auto_follow", "max_follows_per_day",
+                    "roster_auto_connect")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -5221,6 +5226,27 @@ class FollowStatus(StrEnum):
     FOLLOW_FAILED = 'follow_failed'    # the control never flipped, twice
 
 
+class ConnectStatus(StrEnum):
+    """Connect state of a roster target (issue #979) — the ONE vocabulary, shared by the MySQL ENUM,
+    the DOM reading `_resolve_connect_state` returns, and every write site, exactly as
+    `FollowStatus` is for the follow rung.
+
+    The rung above follow: it is only ever reached by a target that IS followed and is STILL
+    un-commentable, so 'needs_connection' is a claim backed by evidence rather than a guess about
+    someone's privacy settings."""
+    UNKNOWN = 'unknown'                  # nothing known / nothing to do — the resting state
+    NEEDS_CONNECTION = 'needs_connection'
+    REQUESTED = 'requested'
+    CONNECTED = 'connected'
+    FAILED = 'failed'                    # the invite could not be sent — never auto-retried
+
+
+ENGAGEMENT_TARGET_CONNECT_STATUSES = frozenset(ConnectStatus)
+# TERMINAL for AUTOMATION: one shot per target. 'requested' and 'failed' both mean LinkedIn has our
+# one invite (or refused it), and re-inviting someone who declined is the pattern that gets accounts
+# restricted — the user decides manually from there. 'connected' is the ladder finishing.
+ENGAGEMENT_TARGET_CONNECT_TERMINAL = frozenset({ConnectStatus.REQUESTED, ConnectStatus.CONNECTED,
+                                                ConnectStatus.FAILED})
 ENGAGEMENT_TARGET_FOLLOW_STATUSES = frozenset(FollowStatus)
 # TERMINAL for CLICKING: the roster pass never spends another follow click on a target that reached
 # either. 'follow_failed' is still re-READ on later visits (a read-only correction costs nothing and
@@ -5237,7 +5263,7 @@ ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK = 2
 _ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comments_per_week",
                            "active", "last_engaged_at", "comments_this_week", "week_start",
                            "source", "comment_blocked_streak", "last_blocked_at", "follow_status",
-                           "followed_at", "follow_attempts")
+                           "followed_at", "follow_attempts", "connect_status", "connect_requested_at")
 
 
 def resolve_weekly_cap(value: Any) -> int:
@@ -5270,6 +5296,8 @@ def _clean_target_row(row: dict) -> dict:
     row["follow_attempts"] = int(row.get("follow_attempts") or 0)
     if row.get("follow_status") not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
         row["follow_status"] = FollowStatus.UNKNOWN.value
+    if row.get("connect_status") not in ENGAGEMENT_TARGET_CONNECT_STATUSES:
+        row["connect_status"] = ConnectStatus.UNKNOWN.value
     return row
 
 
@@ -5360,7 +5388,12 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
 
     A landed comment also clears `comment_blocked_streak` (issue #962): the streak means "we could
     not comment here", and this IS the proof that we could. Folded into this one statement rather
-    than a second call site so the two can never disagree."""
+    than a second call site so the two can never disagree.
+
+    For the same reason a pending 'needs_connection' escalation (issue #979) is stood back down to
+    'unknown': it means "following did not unlock commenting", and commenting just worked. Only that
+    one state is cleared — an invite already sent ('requested'/'failed'/'connected') is a fact about
+    LinkedIn that a comment landing does not undo."""
     week = engagement_week_start()
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -5368,7 +5401,9 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
         cursor.execute(
             "UPDATE engagement_targets SET "
             "comments_this_week = IF(week_start = %s, comments_this_week + 1, 1), "
-            "week_start = %s, last_engaged_at = NOW(), comment_blocked_streak = 0 "
+            "week_start = %s, last_engaged_at = NOW(), comment_blocked_streak = 0, "
+            f"connect_status = IF(connect_status = '{ConnectStatus.NEEDS_CONNECTION.value}', "
+            f"'{ConnectStatus.UNKNOWN.value}', connect_status) "
             "WHERE user_id=%s AND profile_url=%s", (week, week, user_id, str(profile_url or "").strip()))
         connection.commit()
         return cursor.rowcount > 0
@@ -5380,33 +5415,59 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
         connection.close()
 
 
-def record_target_comment_blocked(user_id: int, profile_url: str) -> int:
+class BlockedVisit(NamedTuple):
+    """What one recorded blocked visit left behind: the new streak, and the target's connect state
+    AFTER the escalation check ran. Both come out of the same statement, so a caller can never
+    report a streak the escalation disagrees with."""
+    streak: int
+    connect_status: str
+
+
+def record_target_comment_blocked(user_id: int, profile_url: str) -> BlockedVisit:
     """Count ONE visit where a roster target's posts rendered but none carried a comment affordance
-    — the restricted-comments signature (issue #962). Returns the new streak, or 0 if nothing was
-    written, so the caller can log the surface crossing exactly once.
+    — the restricted-comments signature (issue #962) — and escalate the target to
+    'needs_connection' when following has demonstrably not unlocked it (issue #979).
+
+    Returns the new streak (0 if nothing was written) so the caller can log the surface crossing
+    exactly once, plus the resulting connect state.
 
     Distinct from "no posts / only reshares", which the caller never reports here: that is a plain
-    skip and says nothing about whether the author accepts comments."""
+    skip and says nothing about whether the author accepts comments.
+
+    The escalation is guarded on evidence, not on hope: the target must be `following`, must have a
+    `followed_at`, and its PREVIOUS blocked visit must already have been after that follow. So this
+    visit is the SECOND post-follow block — one is a render race, two is the account telling us
+    following was not the missing permission. A target that was never followed is never escalated."""
     connection = get_db_connection()
     cursor = connection.cursor()
     url = str(profile_url or "").strip()
     try:
         cursor.execute(
             "UPDATE engagement_targets SET "
+            # connect_status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right
+            # and a later one already sees the new value, so updating last_blocked_at first would
+            # destroy the very evidence this test reads (the PREVIOUS blocked visit's timestamp).
+            "connect_status = IF(connect_status = %s AND follow_status = %s "
+            "                    AND followed_at IS NOT NULL AND last_blocked_at IS NOT NULL "
+            "                    AND last_blocked_at > followed_at, %s, connect_status), "
             # LEAST() keeps the TINYINT UNSIGNED column from wrapping on a target that stays blocked
             # for months — the badge only cares that the streak is at or past its threshold.
             "comment_blocked_streak = LEAST(255, comment_blocked_streak + 1), last_blocked_at = NOW() "
-            "WHERE user_id=%s AND profile_url=%s", (user_id, url))
+            "WHERE user_id=%s AND profile_url=%s",
+            (ConnectStatus.UNKNOWN.value, FollowStatus.FOLLOWING.value,
+             ConnectStatus.NEEDS_CONNECTION.value, user_id, url))
         connection.commit()
         if cursor.rowcount <= 0:
-            return 0
-        cursor.execute("SELECT comment_blocked_streak FROM engagement_targets "
+            return BlockedVisit(0, ConnectStatus.UNKNOWN.value)
+        cursor.execute("SELECT comment_blocked_streak, connect_status FROM engagement_targets "
                        "WHERE user_id=%s AND profile_url=%s", (user_id, url))
         row = cursor.fetchone()
-        return int(row[0]) if row else 0
+        if not row:
+            return BlockedVisit(0, ConnectStatus.UNKNOWN.value)
+        return BlockedVisit(int(row[0]), str(row[1] or ConnectStatus.UNKNOWN.value))
     except mysql.connector.Error as err:
         log_error("Could not record blocked roster target", exc=err, user_id=user_id)
-        return 0
+        return BlockedVisit(0, ConnectStatus.UNKNOWN.value)
     finally:
         cursor.close()
         connection.close()
@@ -5472,6 +5533,45 @@ def record_target_follow_failure(user_id: int, profile_url: str) -> int:
     except mysql.connector.Error as err:
         log_error("Could not record roster follow failure", exc=err, user_id=user_id)
         return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_target_connect_status(user_id: int, profile_url: str, status: ConnectStatus) -> bool:
+    """Write a roster target's connect state (issue #979).
+
+    'requested' stamps `connect_requested_at` ONCE (`COALESCE`) — the column means "when our one
+    invite went out", and a later read-only visit that merely re-observes a Pending control must not
+    keep moving that date forward. Standing a target back down to 'needs_connection' (a dispatch
+    that was throttled before anything reached LinkedIn) clears the stamp, because no invite exists
+    to date."""
+    if status not in ENGAGEMENT_TARGET_CONNECT_STATUSES:
+        log_error(f"Refusing to write unknown connect status {status!r}", user_id=user_id)
+        return False
+    status = ConnectStatus(status)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    url = str(profile_url or "").strip()
+    try:
+        if status is ConnectStatus.REQUESTED:
+            cursor.execute(
+                "UPDATE engagement_targets SET connect_status=%s, "
+                "connect_requested_at=COALESCE(connect_requested_at, NOW()) "
+                "WHERE user_id=%s AND profile_url=%s", (status.value, user_id, url))
+        elif status is ConnectStatus.NEEDS_CONNECTION:
+            cursor.execute(
+                "UPDATE engagement_targets SET connect_status=%s, connect_requested_at=NULL "
+                "WHERE user_id=%s AND profile_url=%s", (status.value, user_id, url))
+        else:
+            cursor.execute(
+                "UPDATE engagement_targets SET connect_status=%s WHERE user_id=%s AND profile_url=%s",
+                (status.value, user_id, url))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not set roster target connect status", exc=err, user_id=user_id)
+        return False
     finally:
         cursor.close()
         connection.close()

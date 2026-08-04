@@ -49,6 +49,9 @@ export type EngPrefs = {
   // bot signature, so it only ever runs because the user asked for it.
   roster_auto_follow?: boolean
   max_follows_per_day?: number
+  // Opt-in auto-connect for roster targets following didn't unlock (issue #979). Default OFF and
+  // independent of the follow toggle; it spends the shared max_invites_per_day, never its own cap.
+  roster_auto_connect?: boolean
   max_catchup_touches_per_day: number
   catchup_touch_mode: string
   catchup_event_types: string[]
@@ -127,6 +130,11 @@ export type EngagementTarget = {
   follow_status?: 'unknown' | 'not_following' | 'following' | 'follow_failed'
   followed_at?: string | null
   follow_attempts?: number
+  // The rung above follow (issue #979): set once a FOLLOWED target is still un-commentable on a
+  // later visit. 'requested' / 'connected' / 'failed' are all terminal for automation — one invite
+  // per target, ever.
+  connect_status?: 'unknown' | 'needs_connection' | 'requested' | 'connected' | 'failed'
+  connect_requested_at?: string | null
 }
 
 // A target is badged once it has been un-commentable on this many consecutive visits — one visit

@@ -202,7 +202,7 @@ describe('EngagementRosterCard — opt-in auto-follow toggle (issue #962)', () =
     )
   })
 
-  it('does not touch the preferences row when the toggle was not moved', async () => {
+  it('does not touch the preferences row when neither toggle was moved', async () => {
     routeGet(TARGETS)
     put.mockResolvedValue({ data: { detail: 'ok' } })
     harness(<EngagementRosterCard />)
@@ -211,5 +211,89 @@ describe('EngagementRosterCard — opt-in auto-follow toggle (issue #962)', () =
     fireEvent.click(screen.getByRole('button', { name: /Save Roster/i }))
     await waitFor(() => expect(put).toHaveBeenCalledWith('/user/engagement-targets', expect.anything()))
     expect(put.mock.calls.every(([url]) => url === '/user/engagement-targets')).toBe(true)
+  })
+})
+
+describe("EngagementRosterCard — connect escalation when following didn't unlock (issue #979)", () => {
+  const withStatus = (
+    connect_status: EngagementTarget['connect_status'],
+    extra: Partial<EngagementTarget> = {},
+  ): EngagementTarget[] => [{ ...TARGETS[0], connect_status, ...extra }]
+
+  it('badges a followed target that is STILL un-commentable with its own distinct copy', async () => {
+    routeGet(withStatus('needs_connection', { follow_status: 'following', comment_blocked_streak: 3 }))
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-needs-connection-badge')).toBeTruthy())
+    const badge = screen.getByTestId('roster-needs-connection-badge')
+    expect(badge.textContent).toBe("Following didn't unlock commenting — connect with this account")
+    expect(badge.getAttribute('title')).toMatch(/only accepts comments from connections/i)
+  })
+
+  it('drops the generic follow-or-connect badge once following is known not to be enough', async () => {
+    // Two badges naming different moves for one account is how a user stops reading either.
+    routeGet(withStatus('needs_connection', { comment_blocked_streak: 3 }))
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-needs-connection-badge')).toBeTruthy())
+    expect(screen.queryByTestId('roster-blocked-badge')).toBeNull()
+  })
+
+  it('says an invite is out and will not be repeated', async () => {
+    routeGet(withStatus('requested', { comment_blocked_streak: 3 }))
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-connect-requested-badge')).toBeTruthy())
+    expect(screen.getByTestId('roster-connect-requested-badge').getAttribute('title'))
+      .toMatch(/will not send another/i)
+    expect(screen.queryByTestId('roster-needs-connection-badge')).toBeNull()
+  })
+
+  it('sends the user to do it by hand when the invite could not be sent', async () => {
+    routeGet(withStatus('failed'))
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-connect-failed-badge')).toBeTruthy())
+    expect(screen.getByTestId('roster-connect-failed-badge').getAttribute('title'))
+      .toMatch(/will not retry/i)
+  })
+
+  it('badges nothing for a connected target', async () => {
+    routeGet(withStatus('connected'))
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('engagement-roster')).toBeTruthy())
+    expect(screen.queryByTestId('roster-needs-connection-badge')).toBeNull()
+    expect(screen.queryByTestId('roster-connect-requested-badge')).toBeNull()
+    expect(screen.queryByTestId('roster-connect-failed-badge')).toBeNull()
+  })
+
+  it('renders the auto-connect toggle off by default and spells out the ladder', async () => {
+    routeGet(TARGETS)
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-auto-connect')).toBeTruthy())
+    const toggle = screen.getByTestId('roster-auto-connect') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    const card = screen.getByTestId('engagement-roster').textContent ?? ''
+    expect(card).toMatch(/only to an account it already follows/i)
+    expect(card).toMatch(/at most a third/i)
+  })
+
+  it('is independent of the auto-follow toggle', async () => {
+    routeGet(TARGETS, { roster_auto_follow: true, roster_auto_connect: false })
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-auto-connect')).toBeTruthy())
+    expect((screen.getByTestId('roster-auto-follow') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByTestId('roster-auto-connect') as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('saves the auto-connect toggle with the roster', async () => {
+    routeGet(TARGETS)
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<EngagementRosterCard />)
+    await waitFor(() => expect(screen.getByTestId('roster-auto-connect')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('roster-auto-connect'))
+    fireEvent.click(screen.getByRole('button', { name: /Save Roster/i }))
+    await waitFor(() =>
+      expect(put.mock.calls.some(
+        ([url, body]) => url === '/user/engagement-preferences'
+          && (body as { roster_auto_connect?: boolean }).roster_auto_connect === true,
+      )).toBe(true)
+    )
   })
 })

@@ -144,13 +144,16 @@ def _box(text):
 
 def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5,
                 card=True, follow_budget=0, follow_outcome="", follow_on=None, follow_hold="",
-                blocked_streak=1, deadline_ts=None):
+                blocked_streak=1, blocked_connect="unknown", connect_outcome=None,
+                deadline_ts=None):
     """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked.
 
     `card=False` makes every item render WITHOUT a comment affordance — the restricted-comments
     signature #962 detects. `follow_budget`/`follow_outcome` drive the opt-in auto-follow lane;
-    `follow_on` overrides the toggle so the budget gate and the toggle can be tested apart."""
+    `follow_on` overrides the toggle so the budget gate and the toggle can be tested apart.
+    `blocked_connect` is the connect state the blocked-visit write reports back (#979)."""
     from cqc_lem.app import run_automation as ra
+    from cqc_lem.utilities.db import BlockedVisit, ConnectStatus
 
     driver = MagicMock()
     driver.find_elements.return_value = boxes
@@ -158,9 +161,11 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
 
     engage_mock = MagicMock(return_value=engage)
     record = MagicMock(return_value=True)
-    blocked = MagicMock(return_value=blocked_streak)
+    blocked = MagicMock(return_value=BlockedVisit(blocked_streak, blocked_connect))
     follow = MagicMock(return_value=follow_outcome)
     reconcile = MagicMock(return_value="unknown")
+    connect = MagicMock(return_value=connect_outcome
+                        or ra.RosterConnectOutcome(ConnectStatus.UNKNOWN, False))
     prefs = dict(prefs or {})
     prefs.setdefault("roster_auto_follow",
                      bool(follow_budget) if follow_on is None else bool(follow_on))
@@ -181,13 +186,14 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
         p("record_target_engagement", new=record)
         p("record_target_comment_blocked", new=blocked)
         p("roster_follow_budget", return_value=follow_budget)
-        p("_follow_hold_reason", return_value=follow_hold)
+        p("_outbound_hold_reason", return_value=follow_hold)
         p("auto_follow_roster_target", new=follow)
         p("reconcile_roster_follow_state", new=reconcile)
+        p("advance_roster_connect", new=connect)
         stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, max_posts,
                                            prefs, "synthesis", [], seen, deadline_ts=deadline_ts)
     return {"stats": stats, "engage": engage_mock, "record": record, "driver": driver, "seen": seen,
-            "blocked": blocked, "follow": follow, "reconcile": reconcile}
+            "blocked": blocked, "follow": follow, "reconcile": reconcile, "connect": connect}
 
 
 class TestCommentOnRosterPosts:
@@ -515,7 +521,7 @@ class TestRosterAutoFollow:
         from cqc_lem.app import run_automation as ra
         targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
         with patch(f"{_RA}.roster_follow_budget", side_effect=[2, 1, 0]) as budget, \
-             patch(f"{_RA}._follow_hold_reason", return_value=""), \
+             patch(f"{_RA}._outbound_hold_reason", return_value=""), \
              patch(f"{_RA}.auto_follow_roster_target", return_value="followed") as follow, \
              patch(f"{_RA}.get_engagement_targets", return_value=targets), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -616,7 +622,7 @@ def _follow_env(state_before, state_after=None, hold="", flip_on_attempt=None):
         return (state_after, None)
 
     p("_resolve_follow_control", side_effect=_resolve)
-    p("_follow_hold_reason", return_value=hold)
+    p("_outbound_hold_reason", return_value=hold)
     return es, {
         "set": p("set_target_follow_status", return_value=True),
         "fail": p("record_target_follow_failure", return_value=1),
@@ -691,24 +697,24 @@ class TestAutoFollowRosterTarget:
         m["set"].assert_not_called()
 
 
-class TestFollowHoldReason:
+class TestOutboundHoldReason:
     def test_a_paused_account_holds_follows(self):
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.is_automation_paused", return_value=True), \
              patch(f"{_RA}.automation_pause_reason", return_value="suppression"):
-            assert ra._follow_hold_reason(1) == "suppression"
+            assert ra._outbound_hold_reason(1) == "suppression"
 
     def test_an_open_breaker_holds_follows(self):
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.is_automation_paused", return_value=False), \
              patch(f"{_RA}.rate_limit_cooldown_remaining", return_value=900):
-            assert ra._follow_hold_reason(1) == "LinkedIn 429 breaker open"
+            assert ra._outbound_hold_reason(1) == "LinkedIn 429 breaker open"
 
     def test_clear_gates_return_no_reason(self):
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.is_automation_paused", return_value=False), \
              patch(f"{_RA}.rate_limit_cooldown_remaining", return_value=0):
-            assert ra._follow_hold_reason(1) == ""
+            assert ra._outbound_hold_reason(1) == ""
 
 
 class TestResolveFollowControl:
@@ -789,3 +795,464 @@ class TestActivityPageOwnerName:
         driver = MagicMock()
         type(driver).title = property(lambda self: (_ for _ in ()).throw(RuntimeError("stale")))
         assert ra._activity_page_owner_name(driver) == ""
+
+
+# --- connect escalation when following didn't unblock commenting (issue #979) --------------------
+
+class TestConnectEscalationAnnouncement:
+    def _target(self, connect_status="unknown"):
+        t = _target("https://www.linkedin.com/in/jane")
+        t["connect_status"] = connect_status
+        return t
+
+    def test_the_crossing_is_announced_when_the_escalation_fires(self):
+        with patch(f"{_RA}.log_info") as info:
+            _run_roster([_box("A post from an author who restricts commenting.")],
+                        [self._target()], card=False, blocked_connect="needs_connection")
+        assert len([c for c in info.call_args_list
+                    if "flagged for a connection request" in str(c.args[0])]) == 1
+
+    def test_a_target_already_waiting_says_so_only_once(self):
+        # The escalation only ever fires on the transition out of 'unknown'; a target that has been
+        # waiting for weeks must not re-announce it on every rotation.
+        with patch(f"{_RA}.log_info") as info:
+            _run_roster([_box("A post from an author who restricts commenting.")],
+                        [self._target("needs_connection")], card=False,
+                        blocked_connect="needs_connection")
+        assert not [c for c in info.call_args_list
+                    if "flagged for a connection request" in str(c.args[0])]
+
+    def test_an_un_escalated_blocked_visit_announces_nothing(self):
+        with patch(f"{_RA}.log_info") as info:
+            _run_roster([_box("A post from an author who restricts commenting.")],
+                        [self._target()], card=False, blocked_connect="unknown")
+        assert not [c for c in info.call_args_list
+                    if "flagged for a connection request" in str(c.args[0])]
+
+    def test_the_rung_runs_for_every_visited_target_regardless_of_the_follow_toggle(self):
+        # Read-only advancement is free and must not be gated on auto-follow: a user who connected
+        # by hand has to see the badge clear.
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")], follow_on=False)
+        r["connect"].assert_called_once()
+
+    def test_a_queued_invite_is_counted_on_the_funnel(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")],
+                        connect_outcome=ra.RosterConnectOutcome(ConnectStatus.REQUESTED, True))
+        assert r["stats"]["connect_requested"] == 1
+
+    def test_an_invite_someone_else_sent_is_never_claimed_by_the_run(self):
+        # 'requested' read off the card (the user invited them by hand) is not a send this run made.
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")],
+                        connect_outcome=ra.RosterConnectOutcome(ConnectStatus.REQUESTED, False))
+        assert r["stats"]["connect_requested"] == 0
+
+
+class TestAdvanceRosterConnect:
+    def _target(self, status):
+        return {"profile_url": "https://www.linkedin.com/in/jane", "name": "Jane",
+                "connect_status": status}
+
+    def _run(self, status, read="unknown", prefs=None, queued=True):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.reconcile_roster_connect_state", return_value=read) as reconcile, \
+             patch(f"{_RA}.queue_roster_connect_invite", return_value=queued) as queue:
+            outcome = ra.advance_roster_connect(MagicMock(), 1, self._target(status),
+                                                prefs or {"roster_auto_connect": True})
+        return outcome, reconcile, queue
+
+    def test_an_un_escalated_target_is_never_even_read(self):
+        # 'unknown' means the escalation has not fired — reading the card would spend a JS
+        # round-trip per target per run for a state with nothing to advance.
+        from cqc_lem.utilities.db import ConnectStatus
+        outcome, reconcile, queue = self._run("unknown")
+        assert outcome == (ConnectStatus.UNKNOWN, False)
+        reconcile.assert_not_called()
+        queue.assert_not_called()
+
+    def test_a_connected_target_is_never_read_or_re_invited(self):
+        outcome, reconcile, queue = self._run("connected")
+        assert outcome.invited is False
+        reconcile.assert_not_called()
+        queue.assert_not_called()
+
+    def test_a_failed_target_is_still_re_read_but_never_re_invited(self):
+        # Terminal means no more SENDS, not no more reading — the same rule
+        # `reconcile_roster_follow_state` follows for 'follow_failed' (#962). A user who connected
+        # by hand must not keep a badge saying the request failed.
+        outcome, reconcile, queue = self._run("failed", read="connected")
+        reconcile.assert_called_once()
+        queue.assert_not_called()
+        assert outcome == ("connected", False)
+
+    def test_a_needs_connection_target_invites_once(self):
+        from cqc_lem.utilities.db import ConnectStatus
+        outcome, reconcile, queue = self._run("needs_connection", read="needs_connection")
+        assert outcome == (ConnectStatus.REQUESTED, True)
+        queue.assert_called_once()
+
+    def test_a_card_that_already_reads_connected_never_draws_an_invite(self):
+        from cqc_lem.utilities.db import ConnectStatus
+        outcome, _, queue = self._run("needs_connection", read=ConnectStatus.CONNECTED)
+        assert outcome == (ConnectStatus.CONNECTED, False)
+        queue.assert_not_called()
+
+    def test_a_requested_target_is_advanced_but_never_re_invited(self):
+        # One shot per target: the request is already out, and LinkedIn's withdraw/expire cycle
+        # governs it from here.
+        outcome, reconcile, queue = self._run("requested", read="requested")
+        reconcile.assert_called_once()
+        queue.assert_not_called()
+        assert outcome.invited is False
+
+    def test_a_refused_queue_is_not_reported_as_an_invite(self):
+        from cqc_lem.utilities.db import ConnectStatus
+        outcome, _, _ = self._run("needs_connection", read="needs_connection", queued=False)
+        assert outcome == (ConnectStatus.NEEDS_CONNECTION, False)
+
+
+class TestReconcileRosterConnectState:
+    _TARGET = {"profile_url": "https://www.linkedin.com/in/jane", "name": "Jane",
+               "connect_status": "needs_connection"}
+
+    def test_a_pending_control_advances_the_state_for_free(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        driver = MagicMock()
+        with patch(f"{_RA}._resolve_connect_state", return_value=ConnectStatus.REQUESTED), \
+             patch(f"{_RA}.set_target_connect_status", return_value=True) as st:
+            assert ra.reconcile_roster_connect_state(driver, 1, self._TARGET) == "requested"
+        st.assert_called_once_with(1, "https://www.linkedin.com/in/jane", ConnectStatus.REQUESTED)
+
+    def test_a_first_degree_card_finishes_the_ladder(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        with patch(f"{_RA}._resolve_connect_state", return_value=ConnectStatus.CONNECTED), \
+             patch(f"{_RA}.set_target_connect_status", return_value=True) as st:
+            assert ra.reconcile_roster_connect_state(MagicMock(), 1, self._TARGET) == "connected"
+        st.assert_called_once_with(1, "https://www.linkedin.com/in/jane", ConnectStatus.CONNECTED)
+
+    def test_an_unreadable_card_leaves_the_record_alone(self):
+        # 'unknown' means we could not tell, never that the invite vanished.
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        with patch(f"{_RA}._resolve_connect_state", return_value=ConnectStatus.UNKNOWN), \
+             patch(f"{_RA}.set_target_connect_status") as st:
+            assert ra.reconcile_roster_connect_state(MagicMock(), 1, self._TARGET) == \
+                "needs_connection"
+        st.assert_not_called()
+
+    def test_the_ladder_never_walks_backwards(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        target = dict(self._TARGET, connect_status="connected")
+        with patch(f"{_RA}._resolve_connect_state", return_value=ConnectStatus.REQUESTED), \
+             patch(f"{_RA}.set_target_connect_status") as st:
+            assert ra.reconcile_roster_connect_state(MagicMock(), 1, target) == "connected"
+        st.assert_not_called()
+
+
+class TestRosterConnectBudget:
+    def test_zero_when_the_toggle_is_off(self):
+        from cqc_lem.app.run_automation import roster_connect_budget
+        assert roster_connect_budget(1, {"max_invites_per_day": 10}) == 0
+
+    def test_zero_when_the_account_has_no_invite_cap(self):
+        from cqc_lem.app.run_automation import roster_connect_budget
+        assert roster_connect_budget(1, {"roster_auto_connect": True,
+                                         "max_invites_per_day": 0}) == 0
+
+    def test_takes_at_most_a_minority_share_of_what_is_left(self):
+        # #398's profile-viewer and proactive lanes must never be starved by a roster of restricted
+        # authors, so the ladder gets a third of the remaining budget, rounded up.
+        from cqc_lem.app import run_automation as ra
+        for remaining, share in ((9, 3), (7, 3), (3, 1), (2, 1), (1, 1), (0, 0)):
+            with patch(f"{_RA}.remaining_actions", return_value=remaining), \
+                 patch(f"{_RA}.count_invites_sent_today", return_value=0), \
+                 patch(f"{_RA}.count_open_connection_requests", return_value=0):
+                assert ra.roster_connect_budget(1, {"roster_auto_connect": True,
+                                                    "max_invites_per_day": 10}) == share
+
+    def test_it_spends_the_shared_invite_budget_not_a_lane_of_its_own(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.human_pacing import ACTION_INVITE
+        with patch(f"{_RA}.remaining_actions", return_value=6) as remaining, \
+             patch(f"{_RA}.count_invites_sent_today", return_value=2), \
+             patch(f"{_RA}.count_open_connection_requests", return_value=1):
+            ra.roster_connect_budget(1, {"roster_auto_connect": True, "max_invites_per_day": 10})
+        assert remaining.call_args[0][1] == ACTION_INVITE
+        assert remaining.call_args[0][2] == 10
+        # Queued-but-unsent requests count as spent: they take tomorrow's cap the moment it opens.
+        assert remaining.call_args[0][3] == 3
+        assert remaining.call_args[1]["caps"] is not None
+
+
+def _queue_env(*, budget=2, hold="", terminal=False, auto_connect=True):
+    es = ExitStack()
+    p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+    target = {"profile_url": "https://www.linkedin.com/in/jane", "name": "Jane",
+              "connect_status": "requested" if terminal else "needs_connection"}
+    mocks = {
+        "set": p("set_target_connect_status", return_value=True),
+        "task": p("send_roster_connect_invite"),
+        "note": p("_roster_connect_note", return_value="Hi Jane, I read your posts."),
+    }
+    p("roster_connect_budget", return_value=budget)
+    p("_outbound_hold_reason", return_value=hold)
+    return es, target, mocks, {"roster_auto_connect": auto_connect}
+
+
+class TestQueueRosterConnectInvite:
+    def test_the_one_shot_is_recorded_before_the_send_is_dispatched(self):
+        # A dispatch that is lost, or a worker that dies mid-send, must not leave the target
+        # eligible for a second invite on the next rotation.
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        order = []
+        es, target, m, prefs = _queue_env()
+        with es:
+            m["set"].side_effect = lambda *a, **k: order.append("set") or True
+            m["task"].apply_async.side_effect = lambda *a, **k: order.append("dispatch")
+            assert ra.queue_roster_connect_invite(1, target, prefs) is True
+        assert order == ["set", "dispatch"]
+        m["set"].assert_called_once_with(1, "https://www.linkedin.com/in/jane",
+                                         ConnectStatus.REQUESTED)
+
+    def test_it_goes_out_through_the_existing_invite_rail(self):
+        from cqc_lem.app import run_automation as ra
+        es, target, m, prefs = _queue_env()
+        with es:
+            ra.queue_roster_connect_invite(1, target, prefs)
+        kwargs = m["task"].apply_async.call_args[1]["kwargs"]
+        assert kwargs["profile_url"] == "https://www.linkedin.com/in/jane"
+        assert kwargs["message"] == "Hi Jane, I read your posts."
+
+    def test_the_toggle_is_what_makes_this_an_outbound_lane(self):
+        from cqc_lem.app import run_automation as ra
+        es, target, m, prefs = _queue_env(auto_connect=False)
+        with es:
+            assert ra.queue_roster_connect_invite(1, target, prefs) is False
+        m["task"].apply_async.assert_not_called()
+        m["set"].assert_not_called()
+
+    def test_a_target_already_invited_is_never_invited_again(self):
+        from cqc_lem.app import run_automation as ra
+        es, target, m, prefs = _queue_env(terminal=True)
+        with es:
+            assert ra.queue_roster_connect_invite(1, target, prefs) is False
+        m["task"].apply_async.assert_not_called()
+
+    def test_a_hard_gate_stands_the_lane_down(self):
+        from cqc_lem.app import run_automation as ra
+        es, target, m, prefs = _queue_env(hold="LinkedIn 429 breaker open")
+        with es:
+            assert ra.queue_roster_connect_invite(1, target, prefs) is False
+        m["task"].apply_async.assert_not_called()
+        m["set"].assert_not_called()
+
+    def test_no_budget_share_means_no_invite(self):
+        from cqc_lem.app import run_automation as ra
+        es, target, m, prefs = _queue_env(budget=0)
+        with es:
+            assert ra.queue_roster_connect_invite(1, target, prefs) is False
+        m["task"].apply_async.assert_not_called()
+
+    def test_invites_already_dispatched_this_run_count_against_the_share(self):
+        # The send is asynchronous, so nothing durable records the invite until the task reaches
+        # LinkedIn — re-reading alone would hand every target in the walk the same "2 left".
+        from cqc_lem.app import run_automation as ra
+        es, target, m, prefs = _queue_env(budget=2)
+        with es:
+            assert ra.queue_roster_connect_invite(1, target, prefs, queued_this_run=1) is True
+            assert ra.queue_roster_connect_invite(1, target, prefs, queued_this_run=2) is False
+        assert m["task"].apply_async.call_count == 1
+
+
+class TestConnectRungBudgetAcrossOneWalk:
+    def test_one_walk_can_never_invite_more_than_the_day_s_share(self):
+        # The regression this exists for: with the budget re-read per target and nothing durable
+        # recording an in-flight dispatch, a roster of restricted authors would all be invited in a
+        # single pass.
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import BlockedVisit
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(5)]
+        for t in targets:
+            t["connect_status"] = "needs_connection"
+        with ExitStack() as es:
+            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p("get_engagement_targets", return_value=targets)
+            p("wait_for_ajax")
+            p("_card_for_textbox", return_value=None)
+            p("record_target_comment_blocked", return_value=BlockedVisit(1, "needs_connection"))
+            p("reconcile_roster_connect_state", return_value="needs_connection")
+            p("roster_connect_budget", return_value=2)   # a third of six left, re-read every time
+            p("_outbound_hold_reason", return_value="")
+            p("set_target_connect_status", return_value=True)
+            p("_roster_connect_note", return_value="note")
+            task = p("send_roster_connect_invite")
+            driver = MagicMock()
+            driver.find_elements.return_value = [_box("A post with no comment affordance at all.")]
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5,
+                                               {"roster_auto_connect": True}, "s", [], set())
+        assert task.apply_async.call_count == 2
+        assert stats["connect_requested"] == 2
+
+
+class TestSendRosterConnectInvite:
+    _URL = "https://www.linkedin.com/in/jane"
+
+    def _send(self, result=None, raises=None):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.invite_to_connect_now",
+                   side_effect=raises, return_value=result) as rail, \
+             patch(f"{_RA}.set_target_connect_status") as st, \
+             patch(f"{_RA}.log_warning"):
+            out = ra.send_roster_connect_invite(1, self._URL, "note")
+        return out, st, rail
+
+    def test_a_sent_invite_leaves_the_one_shot_state_alone(self):
+        from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
+        out, st, _ = self._send(result=(True, CONNECTION_REQUEST_SENT_MESSAGE))
+        assert out == CONNECTION_REQUEST_SENT_MESSAGE
+        st.assert_not_called()   # already 'requested' before the dispatch
+
+    def test_a_real_failure_is_terminal_and_never_auto_retried(self):
+        from cqc_lem.utilities.db import ConnectStatus
+        _, st, _ = self._send(result=(False, "no Connect button"))
+        st.assert_called_once_with(1, self._URL, ConnectStatus.FAILED)
+
+    def test_an_already_connected_profile_records_the_truth(self):
+        from cqc_lem.utilities.db import ALREADY_CONNECTED_MESSAGE, ConnectStatus
+        _, st, _ = self._send(result=(False, ALREADY_CONNECTED_MESSAGE))
+        st.assert_called_once_with(1, self._URL, ConnectStatus.CONNECTED)
+
+    def test_a_throttled_send_hands_the_target_back_to_the_ladder(self):
+        # Nothing reached LinkedIn, so the one shot was not spent.
+        from cqc_lem.utilities.db import ConnectStatus
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        _, st, _ = self._send(raises=LinkedInRateLimited("cooldown"))
+        st.assert_called_once_with(1, self._URL, ConnectStatus.NEEDS_CONNECTION)
+
+
+class TestResolveConnectState:
+    _URL = "https://www.linkedin.com/in/arvidkahl/"
+
+    def _driver(self, title="(8) Activity | Arvid Kahl | LinkedIn", result=None, raises=False):
+        driver = MagicMock()
+        driver.title = title
+        if raises:
+            driver.execute_script.side_effect = RuntimeError("boom")
+        else:
+            driver.execute_script.return_value = result
+        return driver
+
+    def test_the_two_readable_states_come_back_as_members(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        for raw, expected in (("requested", ConnectStatus.REQUESTED),
+                              ("connected", ConnectStatus.CONNECTED)):
+            assert ra._resolve_connect_state(self._driver(result=raw), self._URL) == expected
+
+    def test_anything_else_is_unknown(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        for raw in ("unknown", "needs_connection", "", None, ["connected"]):
+            assert ra._resolve_connect_state(self._driver(result=raw), self._URL) == \
+                ConnectStatus.UNKNOWN
+
+    def test_no_owner_name_never_even_scans(self):
+        # Same rule as the follow control: no name = nothing to anchor the label match on.
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        driver = self._driver(title="LinkedIn")
+        assert ra._resolve_connect_state(driver, self._URL) == ConnectStatus.UNKNOWN
+        driver.execute_script.assert_not_called()
+
+    def test_a_js_error_is_unknown(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        assert ra._resolve_connect_state(self._driver(raises=True), self._URL) == \
+            ConnectStatus.UNKNOWN
+
+    def test_it_anchors_on_the_slug_and_the_page_owner(self):
+        from cqc_lem.app import run_automation as ra
+        driver = self._driver(result="connected")
+        ra._resolve_connect_state(driver, self._URL, name="Freehand Name")
+        assert driver.execute_script.call_args[0][1] == "arvidkahl"
+        assert driver.execute_script.call_args[0][2] == "Arvid Kahl"
+
+
+class TestConnectStateShortenedLabels:
+    """The reading itself only runs in a real browser, so what a unit test can hold is the two
+    invariants that make the shortened-label path safe. Both exist because the live run grounded
+    "Message Harshal" — a first name, not the display name the strict matcher wanted."""
+
+    def test_a_shortened_label_is_read_only_inside_the_owner_card(self):
+        from cqc_lem.app.run_automation import _CONNECT_STATE_JS
+        assert "'message ' + FIRST" in _CONNECT_STATE_JS
+        used = [line for line in _CONNECT_STATE_JS.splitlines()
+                if "shortened(" in line and "const shortened" not in line]
+        assert used, "the shortened-label path is gone"
+        for line in used:
+            assert "ownerCard(" in line, f"shortened label read page-wide: {line.strip()}"
+
+    def test_pending_is_never_read_off_a_shortened_label(self):
+        # A wrong `requested` freezes the ladder; a wrong `unknown` only stalls it.
+        from cqc_lem.app.run_automation import _CONNECT_STATE_JS
+        line = next(l for l in _CONNECT_STATE_JS.splitlines() if "pending = true" in l)
+        assert "named &&" in line
+
+
+class TestALandedCommentStandsTheRungDown:
+    """The seam between the comment walk and the connect rung. `record_target_engagement` stands a
+    pending escalation down in the DB, but the rung reads the row the run loaded BEFORE the comment
+    landed — so without the in-memory stand-down the same pass would invite an account it had just
+    successfully commented on, and burn that target's one shot forever."""
+
+    def _walk(self, engaged: bool):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        target = _target("https://www.linkedin.com/in/jane")
+        target["connect_status"] = "needs_connection"
+        with ExitStack() as es:
+            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p("get_engagement_targets", return_value=[target])
+            p("wait_for_ajax")
+            p("_card_for_textbox", return_value=MagicMock())
+            p("_post_author_from_card", return_value="Jane Author")
+            p("_post_permalink_from_card", return_value=None)
+            p("has_commented_post", return_value=False)
+            p("has_user_commented_on_post_url", return_value=False)
+            p("_passes_hard_excludes", return_value=True)
+            p("post_is_relevant", return_value=True)
+            p("_engage_card", return_value=engaged)
+            p("record_target_engagement", return_value=True)
+            p("roster_follow_budget", return_value=0)
+            p("_outbound_hold_reason", return_value="")
+            p("reconcile_roster_connect_state",
+              return_value=ConnectStatus.NEEDS_CONNECTION)
+            queue = p("queue_roster_connect_invite", return_value=True)
+            driver = MagicMock()
+            driver.find_elements.return_value = [_box("A roster author's post, long enough to scan.")]
+            driver.execute_script.return_value = None
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5,
+                                               {"roster_auto_connect": True}, "s", [], set())
+        return stats, queue, target
+
+    def test_a_target_we_just_commented_on_is_never_invited(self):
+        stats, queue, target = self._walk(engaged=True)
+        queue.assert_not_called()
+        assert stats["connect_requested"] == 0
+        assert target["connect_status"] == "unknown"
+
+    def test_a_target_we_could_not_comment_on_still_climbs_the_ladder(self):
+        # The stand-down must not disarm the rung itself — nothing landed here.
+        stats, queue, _ = self._walk(engaged=False)
+        queue.assert_called_once()
+        assert stats["connect_requested"] == 1

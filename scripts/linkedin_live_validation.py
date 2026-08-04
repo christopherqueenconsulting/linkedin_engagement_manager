@@ -155,6 +155,9 @@ SURFACES = (
     {"key": "roster_follow", "surface": "Roster target's activity page Follow control",
      "code": "run_automation._resolve_follow_control", "flag": "--roster-follow",
      "arg": "<profile-url>", "sweep": False},
+    {"key": "roster_connect", "surface": "Roster target's activity page connection state",
+     "code": "run_automation._resolve_connect_state", "flag": "--roster-connect",
+     "arg": "<profile-url>", "sweep": False},
     {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
      "code": "run_automation._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
      "flag": "--appreciation-sources", "sweep": True},
@@ -2083,6 +2086,56 @@ def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time
     return graded(reading, company_invite_state(reading), company_invite_verdict(reading))
 
 
+def roster_connect_verdict(reading: dict) -> str:
+    """What one activity-page reading proves about the #979 connect rung.
+
+    'unknown' is the finding that matters here too, but it fails SAFE in the opposite direction from
+    the follow lane: production treats it as "change nothing", so a rotated Pending/Message label
+    does not send a duplicate invite — it just leaves the badge saying "connect with this account"
+    after the user already has."""
+    reading = dict(reading or {})
+    state = reading.get("state")
+    if state == "requested":
+        return ("a Pending control resolved — production would advance this target to 'requested' "
+                "for free, and never invite them again")
+    if state == "connected":
+        return ("a 1st-degree marker (or a Message control naming the owner — full name anywhere on "
+                "the page, first name only inside their own card — with no Connect offered) "
+                "resolved — production would finish the ladder at 'connected'")
+    if not reading.get("owner_name"):
+        return ("page owner's name unreadable from the <title>, so there is nothing to anchor the "
+                "label match on — production returns unknown and changes nothing")
+    return ("no owner-named Pending/Message control and no 1st-degree marker resolved — production "
+            "returns unknown and leaves the stored state exactly as it was")
+
+
+def probe_roster_connect(driver, profile_url: str,
+                         sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#979: open a roster target's recent-activity page and report what the top card says about our
+    CONNECTION to them — Pending, 1st-degree/Message, or nothing readable.
+
+    STRICTLY read-only, and unlike the follow rung there is no clicker here at all: the invite goes
+    out through the existing `invite_to_connect_now` rail on the profile page. This grounds the
+    READING that decides whether a target is still waiting for one."""
+    from cqc_lem.app.run_automation import (_activity_page_owner_name, _resolve_connect_state,
+                                            _roster_activity_url)
+
+    url = _roster_activity_url(profile_url)
+    driver.get(url)
+    sleep(5)
+    state = _resolve_connect_state(driver, profile_url)
+    reading = {"profile_url": profile_url,
+               "activity_url": url,
+               "url": getattr(driver, "current_url", url),
+               "state": str(state),
+               "owner_name": _activity_page_owner_name(driver),
+               # The live labels the next locator pass would be written from — a bare "not found"
+               # is not re-groundable.
+               "visible_controls": visible_button_labels(driver)}
+    reading["verdict"] = roster_connect_verdict(reading)
+    return reading
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -2270,6 +2323,10 @@ def build_parser() -> "argparse.ArgumentParser":
                         help="a roster target's profile URL — reports whether the top-card "
                              "Follow/Following control resolves on their activity page (#962). "
                              "Read-only: nothing is clicked, nobody is followed.")
+    parser.add_argument("--roster-connect", metavar="PROFILE_URL",
+                        help="a roster target's profile URL — reports what their activity page's "
+                             "top card says about our connection to them: Pending, 1st-degree / "
+                             "Message, or nothing readable (#979). Read-only: no invite is sent.")
     parser.add_argument("--appreciation-sources", action="store_true",
                         help="read the Recommendations Received section and the mentions "
                              "notification feed and report what the appreciation-DM triggers would "
@@ -2350,15 +2407,16 @@ def main(argv: Optional[list] = None) -> int:
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
             or args.article_editor_url or args.feed_sort or args.reaction_probe
-            or args.roster_follow or args.appreciation_sources or args.sent_invites
-            or args.profile_views or args.connect_dialog or args.profile_scrape
-            or args.catchup_cards or args.group_composer or args.company_invite
-            or args.permalink_comment or args.sweep):
+            or args.roster_follow or args.roster_connect or args.appreciation_sources
+            or args.sent_invites or args.profile_views or args.connect_dialog
+            or args.profile_scrape or args.catchup_cards or args.group_composer
+            or args.company_invite or args.permalink_comment or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --connect-dialog, --catchup-cards, "
                      "--group-composer, --company-invite, --reaction-probe, --roster-follow, "
-                     "--appreciation-sources, --sent-invites, --permalink-comment and/or "
+                     "--roster-connect, --appreciation-sources, --sent-invites, "
+                     "--permalink-comment and/or "
                      "--probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
@@ -2395,6 +2453,8 @@ def main(argv: Optional[list] = None) -> int:
             report["profile_views"] = probe_profile_viewers(driver)
         if args.roster_follow:
             report["roster_follow"] = probe_roster_follow(driver, args.roster_follow)
+        if args.roster_connect:
+            report["roster_connect"] = probe_roster_connect(driver, args.roster_connect)
         if args.appreciation_sources:
             report["appreciation_sources"] = probe_appreciation_sources(
                 driver, args.user_id, str(getattr(profile, "profile_url", "") or ""))

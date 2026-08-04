@@ -31,11 +31,37 @@ const FOLLOW_FAILED_HINT =
   'hand — LEM will not keep retrying.'
 const FOLLOWING_LABEL = 'Following'
 
+// The rung above follow (issue #979). Deliberately distinct copy from BLOCKED_LABEL: this target
+// HAS been followed and is still un-commentable, so "follow or connect" would send the user to do
+// something LEM already did. There is exactly one move left.
+const NEEDS_CONNECTION_LABEL = "Following didn't unlock commenting — connect with this account"
+const NEEDS_CONNECTION_HINT =
+  'LEM followed this account and its posts still render with no comment box, so the author only ' +
+  'accepts comments from connections. Send a connection request — or switch on auto-connect below ' +
+  'and LEM will send one (a single request per account, never a second).'
+const CONNECT_REQUESTED_LABEL = 'Connection request sent'
+const CONNECT_REQUESTED_HINT =
+  'LEM sent one connection request to this account and will not send another. LinkedIn expires or ' +
+  'withdraws it on its own schedule; commenting should unlock once they accept.'
+const CONNECT_FAILED_LABEL = 'Connection request failed'
+const CONNECT_FAILED_HINT =
+  'LEM could not send the connection request (LinkedIn showed no Connect button, or the send did ' +
+  'not go through). Connect by hand — LEM will not retry.'
+
 function TargetBadges({ target }: { target: EngagementTarget }) {
+  const needsConnection = target.connect_status === 'needs_connection'
+  const requested = target.connect_status === 'requested'
+  const connectFailed = target.connect_status === 'failed'
+  // The generic "follow or connect" badge is superseded once the ladder knows following was not
+  // enough — two badges naming different moves for the same account is how a user stops reading
+  // either of them.
   const blocked = (target.comment_blocked_streak ?? 0) >= ROSTER_BLOCKED_BADGE_STREAK
+    && !needsConnection && !requested && !connectFailed
   const failed = target.follow_status === 'follow_failed'
   const following = target.follow_status === 'following'
-  if (!blocked && !failed && !following) return null
+  if (!blocked && !failed && !following && !needsConnection && !requested && !connectFailed) {
+    return null
+  }
   return (
     <div className="sm:col-span-12 flex flex-wrap gap-2 text-xs -mt-1"
          data-testid={`roster-badges-${target.id ?? target.profile_url}`}>
@@ -43,6 +69,24 @@ function TargetBadges({ target }: { target: EngagementTarget }) {
         <span title={BLOCKED_HINT} data-testid="roster-blocked-badge"
               className="bg-amber-100 text-amber-900 rounded-full px-2 py-0.5 font-medium">
           {BLOCKED_LABEL}
+        </span>
+      )}
+      {needsConnection && (
+        <span title={NEEDS_CONNECTION_HINT} data-testid="roster-needs-connection-badge"
+              className="bg-amber-100 text-amber-900 rounded-full px-2 py-0.5 font-medium">
+          {NEEDS_CONNECTION_LABEL}
+        </span>
+      )}
+      {requested && (
+        <span title={CONNECT_REQUESTED_HINT} data-testid="roster-connect-requested-badge"
+              className="bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">
+          {CONNECT_REQUESTED_LABEL}
+        </span>
+      )}
+      {connectFailed && (
+        <span title={CONNECT_FAILED_HINT} data-testid="roster-connect-failed-badge"
+              className="bg-red-100 text-red-800 rounded-full px-2 py-0.5 font-medium">
+          {CONNECT_FAILED_LABEL}
         </span>
       )}
       {failed && (
@@ -161,8 +205,9 @@ export default function EngagementRosterCard() {
   // write both — a switch that silently needed a second save button elsewhere is how a user ends up
   // believing auto-follow is on when it never was. Tracked from the control itself rather than by
   // diffing loaded state, so the prefs row is only rewritten when the user actually moved it.
-  const [autoFollowTouched, setAutoFollowTouched] = useState(false)
+  const [prefsTouched, setPrefsTouched] = useState(false)
   const autoFollow = !!eng?.roster_auto_follow
+  const autoConnect = !!eng?.roster_auto_connect
 
   const saveRoster = async (): Promise<boolean> => {
     const analytics = sectionSaveCallbacks('engagement-roster')
@@ -173,9 +218,9 @@ export default function EngagementRosterCard() {
       return false
     }
     analytics.onSuccess()
-    if (autoFollowTouched) {
+    if (prefsTouched) {
       if (!(await savePrefs())) return false
-      setAutoFollowTouched(false)
+      setPrefsTouched(false)
     }
     return true
   }
@@ -265,13 +310,13 @@ export default function EngagementRosterCard() {
         className="text-xs text-blue-600 font-medium hover:text-blue-700">+ Add account</button>
 
       {eng && (
-        <div className="border-t border-gray-100 pt-3">
+        <div className="border-t border-gray-100 pt-3 space-y-3">
           <label className="flex items-start gap-2 text-sm text-gray-700">
             <input type="checkbox" checked={autoFollow} data-testid="roster-auto-follow"
               aria-label="Follow roster accounts automatically"
               onChange={(e) => {
                 setEng({ roster_auto_follow: e.target.checked })
-                setAutoFollowTouched(true)
+                setPrefsTouched(true)
               }}
               className="mt-0.5" />
             <span>
@@ -282,6 +327,30 @@ export default function EngagementRosterCard() {
                 a day while it is already on their activity page — never in a separate browsing
                 session. Following can unlock a followers-only account; a connections-only one still
                 needs a connection request. Change the daily number under Volume → Daily caps.
+              </span>
+            </span>
+          </label>
+          {/* The rung above (issue #979). Its own switch, because an invite is heavier and less
+              reversible than a follow — and the copy has to make the LADDER obvious, or a user
+              switching this on will expect LEM to invite their whole roster. */}
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" checked={autoConnect} data-testid="roster-auto-connect"
+              aria-label="Send a connection request when following doesn't unlock commenting"
+              onChange={(e) => {
+                setEng({ roster_auto_connect: e.target.checked })
+                setPrefsTouched(true)
+              }}
+              className="mt-0.5" />
+            <span>
+              Connect when following doesn't unlock commenting
+              <span className="block text-xs text-gray-500">
+                Off by default, and separate from the switch above. LEM sends{' '}
+                <span className="font-semibold">one</span> connection request — ever — and only to an
+                account it already follows that is still refusing comments. Those invites come out of
+                your{' '}
+                <span className="font-semibold">{eng.max_invites_per_day ?? 10}</span> invites a day
+                and take at most a third of what's left, so your other outreach is never starved.
+                Most days that means none.
               </span>
             </span>
           </label>
