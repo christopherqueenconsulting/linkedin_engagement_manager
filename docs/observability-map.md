@@ -1,0 +1,95 @@
+# Observability map — the per-surface invariants
+
+[CLAUDE.md](../CLAUDE.md) § **Observability** is the index: one row per surface, naming the ONE
+module and the invariant that bites. This file holds the paragraph behind each row; the doc named in
+each heading holds the rationale, contracts, sample code and edge cases.
+
+Track events via `utilities/observability.py` (`track_llm_call` / `track_task` / `track_api_call`).
+Plan with the CLAUDE.md table, drill in here, then read the linked doc. Doc paths in the headings
+below are repo-root relative (`docs/llm-analytics.md` is this file's sibling).
+
+## LLM analytics (issue #647, traces #746) — `docs/llm-analytics.md`
+Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
+`$ai_generation`/`$ai_embedding` (proxy-native, post-fallback, provider-priced — latency/error/
+volume). `utilities/ai/client.py` is the ONE client and both its hooks (`_attach_attribution`,
+`_attach_trace`) must stay. **Pipeline traces** group a post/edition/comment's 5–6 calls into ONE
+`$ai_trace` with per-step `$ai_span`s: `@llm_pipeline` on the three roots (`create_text_post`,
+`generate_newsletter_edition`, `generate_ai_response` — supersedes `attribute_llm_cost`), `@llm_step`
+on the SHARED-core step functions, never at a call site. Nested trace = span; span with no trace =
+no-op; `LLM_TRACING_ENABLED=false` mints nothing.
+
+## Error tracking (issue #648) — `docs/error-tracking.md`
+Logs (`logger.py` → PostHog Logs) carry message+context; `$exception` is the grouped/fingerprinted
+ISSUE alerting + the error→GitHub-issue cron — NOT redundant. Use
+`observability.capture_exception(...)` for caught-and-not-reraised. Never capture `HTTPException` —
+4xx is a response, not an issue.
+
+## Browser-side analytics (issue #646) — `docs/posthog-advanced-surface.md`
+ONE SPA surface: `ui/src/utils/analytics.ts` — never call `posthog` directly. `distinct_id =
+String(user_id)` matches `observability.py` so browser+Celery+proxy share ONE PostHog person.
+Env-gated at BUILD time (`VITE_POSTHOG_KEY`); no key → lazy chunk never fetched → no-op.
+`maskProps()` (adds `ph-no-capture` + `data-ph-mask`) goes on every content editor.
+
+## Session replay (issue #649) — `docs/session-replay.md`
+Rules live in the SDK: `VITE_POSTHOG_REPLAY_SAMPLE` slice + EVERY `$exception`/feedback session, both
+via one `ensureSessionRecorded()`. Local `sampleRate` takes precedence — never set project sampling
+(multiplies). Canvas off; inputs masked; network capture timings only.
+
+## KPI funnels, dashboards, alerts + weekly report (issue #650) — `docs/kpi-dashboards.md`
+`scripts/posthog_provision.py` owns Health + Growth dashboards, four threshold alerts, the weekly
+Growth email. Alert tiles must be native single-series `TrendsQuery` filtering on STRING props
+(boolean filters match nothing → silent alerts). Money tiles read `$ai_generation`, never `llm_call`.
+`mark_rate_limited()` emits `rate_limit_trip` (a WARNING log never reaches PostHog).
+
+## Experiments (issue #652) — `docs/experiments.md`
+`utilities/experiments.py` is the adapter onto PostHog Experiments, NOT a third implementation.
+**Unresolvable experiment = CONTROL arm** (no key, `EXPERIMENTS_ENABLED=false`, inconclusive, SDK
+raises — no env fallback per experiment). Flags must use rollout-% / distinct-ID only. Three
+registered: `cost-routing-arm`, `comment-contract-prompt`, `post-media-variant`.
+
+## Marketing attribution — UTMs (issue #658) — `docs/marketing-attribution.md`
+`utilities/marketing/attribution.py` is the ONE place. Two rules: only OWNED destinations tagged
+(`is_owned_link`); existing UTMs never overwritten (`build_utm_url` fills missing only,
+`mark_placement` replaces `utm_content` only). `signup_completed_web` (browser) ≠ `signup_completed`
+(API) — never summed.
+
+## Model-tier evaluation harness (issue #721) — `docs/model-benchmarks/README.md`
+`scripts/benchmark_models.py` measures candidates vs each tier's contract suite (NO user data),
+beside the current champion. Deterministic checks are source of truth (the in-repo linters, not a
+copy); the LLM judge is PostHog Evaluations filtered on `benchmark_run_id` (production never carries
+it → the customer is never billed). **The suite scores a FIRST draft, production ships an n-th**
+(#910): every check is `contract` (the call site consumes it — the ABSOLUTE floor) or `repairable`
+(a regeneration gate retries it — advisory). A run where every case of every model errored is a
+harness outage, not a scorecard of zeros, and is REFUSED (#923). Only `recommend` becomes a swap,
+and recommendations are RENDERED, never written.
+
+## Content-quality telemetry (issue #630) — `docs/content-quality-telemetry.md`
+`auto_nightly_content_quality` is the TREND LINE (other gates are one-time verdicts). Scores
+posts/comments/editions into `content_quality_scores`: weighted slop (HARD ×3), self-similarity,
+**stored** authenticity (no fresh judge call), hook length, impression-weighted ER. **Unscored is
+never zero** — each dimension has its own sample size. Never pauses (safety is #629).
+
+## Feature flags (issue #651) — `docs/feature-flags.md`
+`utilities/flags.py` is the ONE place; **fail open to env var** (no key, disabled, undefined,
+inconclusive, SDK raises → all return the flag's env var). `only_evaluate_locally=True` → ZERO
+network per check, flip lands without restart. Read at CALL SITE, never at import. **Safety controls
+are NOT flags** (429 breaker, holds, pauses, per-day caps stay in Redis/env). SPA bootstraps from
+`GET /api/flags` — not through posthog-js.
+
+## Surveys — NPS/CSAT (issue #653) — `docs/surveys.md`
+TWO owners. PostHog Surveys: NPS (30d past ACTIVATION, not signup) + post-quality CSAT (on
+`post_approved` once `posts_approved >= 5`). `utilities/surveys.py` keeps the bespoke ones —
+trial-T-3d review (#499) + fix CSAT (#502). Type **`api`**, rendered headless in
+`PostHogSurveyModal.tsx`. ONE answer = TWO paths (native `$survey_response` + POST
+`/api/survey/posthog` → `feedback` row), counted ONCE — `track_survey_response` deliberately NOT
+emitted. Detractor (NPS ≤6 / CSAT ≤2) or any free text stays `new`; happy+blank → `resolved`.
+`markSurveySeen()` advances the 30d wait — drop it and the throttle stops silently.
+
+## Endpoints panel + release annotations (issue #654) — `docs/kpi-dashboards.md`
+**Endpoints** (PostHog beta): HogQL as a versioned cached HTTP route — the Dashboard's "Live stats"
+with no MySQL reporting layer. Every query scoped with `distinct_id = {variables.distinct_id}` (ONE
+shared project → un-scoped leaks across customers); resolves against ONE `InsightVariable`, and the
+endpoint is `blocked_endpoint` until it exists. `GET /user/posthog-stats` is server-side only — the
+personal API key never reaches the browser; any failure → `available: false` for that panel.
+**Release annotations**: `scripts/posthog_annotate.py` posts `"vX.Y.Z deployed"` per deploy (needs
+the `POSTHOG_PERSONAL_API_KEY` GH secret); absent/outage → no-op, never a failed release.

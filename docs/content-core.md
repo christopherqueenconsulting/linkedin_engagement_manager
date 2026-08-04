@@ -159,3 +159,30 @@ prompts (`ARTIFACT_CTA_POLICY`, injected by `cta_policy_directive`), repaired de
 by `replace_meeting_ask_cta`, and any that survives HOLDS the post at PENDING via the
 `meeting_cta` quality gate. Compliance is reported on `/user/engagement-analytics`
 (`content_mix`) and rendered on the Dashboard.
+
+## Newsletter blog alignment (issue #967, `utilities/blog_source.py`)
+
+`align_with_blog` is a user-facing toggle that **defaults ON** and promises the edition repurposes
+the author's own writing. `resolve_blog_source(user_id, settings)` is the ONE place that toggle
+becomes source text — the three call sites (`run_automation.auto_generate_newsletter_edition`, and
+both edition paths in `run_scheduler`) pass its return value straight into the generator as
+`blog_content`.
+
+| Rule | Why |
+|---|---|
+| Blog URL first, sitemap second | The sitemap is the fallback for users who set one but never a blog |
+| Same fetchers as `blog_summary` / `website_content` (`get_main_blog_url_content`, `fetch_sitemap_urls` → `filter_relevant_urls` → `extract_page_content`) | One scraper for the app, not two |
+| Returns `None`, never raises | Best-effort: an unset, unreachable, or empty source must never block an edition from existing — it writes from topic + profile instead |
+| Resolved PER edition, article/page drawn at RANDOM | Two editions queued in the same run must not repurpose the same article |
+| `BLOG_SOURCE_MAX_CHARS = 8000`, `_SITEMAP_ATTEMPTS = 3` | Bounds the page text one resolve holds; the generator applies its own smaller prompt budget on top |
+| HTML/bytes/paragraph lists normalised through `_plain_text` | WordPress returns rendered HTML — without this the source budget is spent on markup |
+
+**Logging follows the escalation contract**, which matters here because the toggle defaults ON:
+
+- **Toggle on, no blog and no sitemap configured** — the common case. Expected no-op → `log_debug`.
+  Warning here would fire for most users on every edition and escalate to ERROR on repeat.
+- **A configured source that fetched fine and read back empty** — the one failure nothing else has
+  reported → `log_warning`.
+- **A fetch that threw** — already warned where it was detected; `_from_blog` / `_from_sitemap`
+  return a `reported` flag so `_resolve` never restates it. ONE unreadable source = ONE warning.
+- **One dead page out of a sitemap** — routine, `log_debug`, try the next of the three.
