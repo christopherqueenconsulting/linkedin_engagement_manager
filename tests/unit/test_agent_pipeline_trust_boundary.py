@@ -276,3 +276,89 @@ class TestRunbookFramesUntrustedText:
     def test_mode_start_points_at_the_framing_where_it_reads_the_issue(self):
         start = re.search(r"## MODE=start.*?^2\. ", self.RUNBOOK, re.S | re.M).group(0)
         assert "DATA" in start
+
+
+def _token_guard() -> str:
+    block = re.search(r"\nagent_token_scopes\(\) \{.*?\nassert_agent_token_scoped\(\) \{.*?\n\}\n",
+                      SOURCE, re.S)
+    assert block, "token-scope helpers not found in tick.sh"
+    return block.group(0)
+
+
+class TestAgentTokenScope:
+    """A `workflow`-scoped token lets the agent edit the workflows that gate its own merges.
+
+    CODEOWNERS makes that reviewable; only the credential makes it impossible — and impossible is
+    what matters while agent and owner share one GitHub identity.
+    """
+
+    @staticmethod
+    def _run(tmp_path, body, header, env=None):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        gh = bin_dir / "gh"
+        gh.write_text("#!/usr/bin/env bash\n" + header, encoding="utf-8")
+        gh.chmod(0o755)
+        script = ('set -uo pipefail\nlog() { echo "LOG: $*" >&2; }\n'
+                  f'{_token_guard()}\n{textwrap.dedent(body)}')
+        run_env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
+        run_env.update(env or {})
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=run_env)
+
+    _CLASSIC = 'echo "X-Oauth-Scopes: gist, read:org, repo, workflow"\necho ""\n'
+    _CLASSIC_SAFE = 'echo "X-Oauth-Scopes: gist, read:org, repo"\necho ""\n'
+    _FINE_GRAINED = 'echo "HTTP/2 200"\necho ""\n'   # fine-grained PATs send no scopes header
+
+    def test_a_workflow_scoped_token_warns_by_default(self, tmp_path):
+        r = self._run(tmp_path, 'assert_agent_token_scoped && echo PROCEED || echo REFUSED',
+                      self._CLASSIC)
+        assert "PROCEED" in r.stdout          # warn-not-block, so the pipeline still runs
+        assert "workflow" in r.stderr
+
+    def test_it_fails_closed_once_the_owner_opts_in(self, tmp_path):
+        r = self._run(tmp_path, 'assert_agent_token_scoped && echo PROCEED || echo REFUSED',
+                      self._CLASSIC, {"AGENT_REQUIRE_SCOPED_TOKEN": "1"})
+        assert "REFUSED" in r.stdout
+        assert "FATAL" in r.stderr
+
+    def test_a_fine_grained_pat_sends_no_scopes_header_and_passes_silently(self, tmp_path):
+        r = self._run(tmp_path, 'assert_agent_token_scoped && echo PROCEED || echo REFUSED',
+                      self._FINE_GRAINED, {"AGENT_REQUIRE_SCOPED_TOKEN": "1"})
+        assert "PROCEED" in r.stdout
+        assert "workflow" not in r.stderr
+
+    def test_a_classic_token_without_the_workflow_scope_passes(self, tmp_path):
+        r = self._run(tmp_path, 'assert_agent_token_scoped && echo PROCEED || echo REFUSED',
+                      self._CLASSIC_SAFE, {"AGENT_REQUIRE_SCOPED_TOKEN": "1"})
+        assert "PROCEED" in r.stdout
+
+    def test_a_scope_merely_CONTAINING_workflow_is_not_a_match(self, tmp_path):
+        # `workflow_dispatch` / `read:workflow` must not trip the exact-token match.
+        r = self._run(tmp_path, 'assert_agent_token_scoped && echo PROCEED || echo REFUSED',
+                      'echo "X-Oauth-Scopes: repo, workflowish, read:workflow"\necho ""\n',
+                      {"AGENT_REQUIRE_SCOPED_TOKEN": "1"})
+        assert "PROCEED" in r.stdout
+
+    def test_an_unreachable_api_does_not_block_the_tick(self, tmp_path):
+        # No scopes readable is indistinguishable from a fine-grained PAT; blocking here would turn
+        # a GitHub blip into a stalled pipeline, and the trust gates are the real control anyway.
+        r = self._run(tmp_path, 'assert_agent_token_scoped && echo PROCEED || echo REFUSED',
+                      'exit 1\n', {"AGENT_REQUIRE_SCOPED_TOKEN": "1"})
+        assert "PROCEED" in r.stdout
+
+
+class TestScopedTokenIsWired:
+    def test_a_configured_token_becomes_GH_TOKEN(self):
+        # gh prefers GH_TOKEN over stored auth, and git's credential helper is `gh auth
+        # git-credential` — so this one export covers both API calls and pushes.
+        assert '[ -n "${AGENT_GH_TOKEN:-}" ] && export GH_TOKEN="$AGENT_GH_TOKEN"' in SOURCE
+
+    def test_the_token_export_happens_after_config_env_is_sourced(self):
+        source_at = SOURCE.index('. "$BASE/config.env"')
+        export_at = SOURCE.index('export GH_TOKEN="$AGENT_GH_TOKEN"')
+        assert source_at < export_at, "AGENT_GH_TOKEN would always be empty"
+
+    def test_the_guard_runs_before_any_lane_can_act(self):
+        guard_at = SOURCE.index("if ! assert_agent_token_scoped; then")
+        first_lane_at = SOURCE.index("# ---- PRIORITY LANE:")
+        assert guard_at < first_lane_at

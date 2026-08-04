@@ -49,6 +49,22 @@ export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
 export HOME="/home/lem"
 export GH_PROMPT_DISABLED=1
 
+# The pipeline's OWN credential, when one is configured (AGENT_GH_TOKEN in config.env).
+#
+# The stored `gh auth login` token is the owner's, and it carries the `workflow` scope — so the
+# agent can rewrite the very workflows that gate merges and deploys. CODEOWNERS makes that
+# reviewable; only the token makes it impossible, and impossible is the property worth having when
+# the thing holding the credential is reading issue text written by strangers.
+#
+# Setting GH_TOKEN covers BOTH halves: `gh` prefers it over the stored auth, and git is configured
+# with `gh auth git-credential` as its credential helper, so pushes use it too.
+#
+# Wanted shape — a fine-grained PAT, THIS repo only:
+#   Contents: R/W · Pull requests: R/W · Issues: R/W · Metadata: R
+#   Workflows: NO ACCESS  ← the point
+#   no Administration, no Packages, no Secrets, no Environments
+[ -n "${AGENT_GH_TOKEN:-}" ] && export GH_TOKEN="$AGENT_GH_TOKEN"
+
 mkdir -p "$WORKROOT" "$LOGDIR" "$BASE/locks" "$BASE/state"
 LOG="$LOGDIR/tick-$(date +%Y%m%d).log"
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG" ; }
@@ -209,6 +225,34 @@ TRUSTED_ASSOCIATIONS="${TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
 # Who may mint `agent:ready`. Deliberately NOT every bot: only automations whose input is not
 # attacker-controlled. The feedback loop is absent on purpose (it files `needs-human` now).
 AGENT_LABEL_TRUSTED_ACTORS="${AGENT_LABEL_TRUSTED_ACTORS:-$ASSIGNEE}"
+
+agent_token_scopes() {
+  # Classic OAuth tokens advertise their scopes in a response header. Fine-grained PATs carry
+  # per-resource permissions instead and send NO such header — so an empty result is the GOOD case.
+  gh api -i user 2>/dev/null \
+    | awk 'BEGIN{IGNORECASE=1} /^x-oauth-scopes:/{sub(/^[^:]*:[[:space:]]*/,""); print; exit}' \
+    | tr -d '\r'
+}
+
+assert_agent_token_scoped() {
+  # A `workflow`-scoped token lets the agent edit .github/workflows/ — i.e. edit its own gates.
+  # Warns by default so configuring the PAT is not a prerequisite for the pipeline running at all;
+  # set AGENT_REQUIRE_SCOPED_TOKEN=1 in config.env once the PAT is in place to make it fail closed.
+  local scopes; scopes="$(agent_token_scopes)"
+  case ",${scopes// /}," in
+    *,workflow,*)
+      if [ "${AGENT_REQUIRE_SCOPED_TOKEN:-0}" = "1" ]; then
+        log "FATAL: the pipeline token carries the 'workflow' scope — it can rewrite the workflows"
+        log "       that gate merges and deploys. Configure AGENT_GH_TOKEN (a fine-grained PAT with"
+        log "       Workflows: no access) in config.env. See docs/contribution-security.md."
+        return 1
+      fi
+      log "WARNING: the pipeline token carries the 'workflow' scope — the agent can rewrite"
+      log "         .github/workflows/. Set AGENT_GH_TOKEN in config.env (docs/contribution-security.md)."
+      ;;
+  esac
+  return 0
+}
 
 author_trusted() {
   # author_trusted issue|pr <number> -> 0 when the AUTHOR has standing in this repo.
@@ -717,6 +761,12 @@ reap_stale_claims() {
   done
 }
 [ "$DRY_RUN" = "1" ] || reap_stale_claims
+
+# Credential check runs here, not in the guards block at the top: the helpers it needs are defined
+# below that block, and this is the last point before any lane can act.
+if ! assert_agent_token_scoped; then
+  TICK_OUTCOME="skipped"; TICK_REASON="token_scope_refused"; exit 0
+fi
 
 # ---- PRIORITY LANE: Dependabot CI failures (labeled agent:depfix by the router workflow) ----
 # Handled before roadmap work so dependency PRs get unblocked fast. One Claude call per tick.

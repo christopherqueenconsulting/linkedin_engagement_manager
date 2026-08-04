@@ -103,12 +103,55 @@ remains a human act, and `label_actor_trusted` enforces that it was one.
 
 ## Operating it
 
+All knobs live in `/home/lem/agent-pipeline/config.env` (not in the repo — it holds a token):
+
 ```bash
-# Who may mint agent:ready — owner plus explicitly trusted bots
-#   /home/lem/agent-pipeline/config.env
+# Who may mint agent:ready — owner plus explicitly trusted bots. Space-separated.
 AGENT_LABEL_TRUSTED_ACTORS="gitchrisqueen"
 
-# Watch refusals
+# The pipeline's OWN credential. Until this is set, the pipeline uses the owner's stored
+# `gh auth login` token, which carries the `workflow` scope — i.e. the agent can rewrite the
+# workflows that gate its own merges. Each tick warns while that is true.
+AGENT_GH_TOKEN="github_pat_..."
+
+# Flip to 1 once AGENT_GH_TOKEN is in place: the warning becomes a refusal, so the pipeline
+# can never silently fall back to the over-scoped token.
+AGENT_REQUIRE_SCOPED_TOKEN=1
+```
+
+### Creating the scoped token
+
+Fine-grained PATs cannot be created through the API — this is a browser step:
+
+1. **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new**
+2. **Resource owner:** `christopherqueenconsulting` · **Repository access:** *Only select
+   repositories* → `linkedin_engagement_manager`
+3. **Repository permissions** — exactly these:
+   - Contents: **Read and write** (push branches)
+   - Pull requests: **Read and write** (open, label, merge)
+   - Issues: **Read and write** (label, comment)
+   - Metadata: **Read** (mandatory)
+   - **Workflows: No access** ← the whole point
+   - Everything else: **No access**. Explicitly *not* Administration, Packages, Secrets,
+     Environments, or Actions.
+4. Put it in `config.env` as `AGENT_GH_TOKEN`, set `AGENT_REQUIRE_SCOPED_TOKEN=1`, then prove it:
+
+```bash
+# Should be 403 — the token may not touch the gates.
+GH_TOKEN="$AGENT_GH_TOKEN" gh api -X PUT \
+  repos/christopherqueenconsulting/linkedin_engagement_manager/contents/.github/workflows/probe.yml \
+  -f message=probe -f content="$(printf 'name: probe' | base64 -w0)" 2>&1 | head -3
+
+# Should succeed — normal work is unaffected.
+GH_TOKEN="$AGENT_GH_TOKEN" gh issue list --repo christopherqueenconsulting/linkedin_engagement_manager --limit 1
+```
+
+The first command **must** fail. If it succeeds, the token is over-scoped and the control does not
+exist — no amount of CODEOWNERS makes up for it while agent and owner share an identity.
+
+### Watching it
+
+```bash
 grep TRUST: /home/lem/agent-pipeline/logs/tick-$(date +%Y%m%d).log
 ```
 
