@@ -6673,8 +6673,8 @@ def _type_dm_into_composer(driver: WebDriver, wait, message: str) -> None:
     later — `StaleElementReferenceException` on the very next `send_keys` is what killed every send
     once the composer itself started resolving. Each attempt therefore re-finds the box, and because
     each one CLEARS before typing, a retry after a half-typed message can never send a doubled one."""
-    last_error = None
-    for attempt in range(max(1, DM_COMPOSER_ATTEMPTS)):
+    attempts = max(1, DM_COMPOSER_ATTEMPTS)
+    for attempt in range(attempts):
         try:
             box = get_element_wait_retry(driver, wait, _DM_COMPOSER_XPATH, 'Finding Message Box',
                                          max_try=1)
@@ -6685,12 +6685,13 @@ def _type_dm_into_composer(driver: WebDriver, wait, message: str) -> None:
             box.send_keys(Keys.DELETE)
             simulate_typing(driver, box, message)
             return
-        except StaleElementReferenceException as e:
-            last_error = e
+        except StaleElementReferenceException:
+            # Out of attempts: raise rather than clicking Send over a partial composer.
+            if attempt == attempts - 1:
+                raise
             log_debug(f"Message composer went stale while typing (attempt {attempt + 1})",
                       action_type="dm")
             time.sleep(_DM_COMPOSER_SETTLE_SECONDS)
-    raise last_error
 
 
 def _dm_send_landed(driver: WebDriver, message: str, user_id: int = None,
