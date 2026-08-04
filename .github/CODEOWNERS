@@ -1,0 +1,63 @@
+# Code owners — the paths that decide what the automation may do to itself.
+#
+# This repository is PUBLIC, accepts outside contributions, and runs an autonomous agent pipeline
+# that opens and merges its own PRs. Everything below is a control surface: change one and you
+# change what every later change is allowed to do. They require an explicit human approval; the
+# rest of the tree does not, so routine agent work keeps merging unattended.
+#
+# Order matters — the LAST matching pattern wins, so the catch-all comes first.
+#
+# HONEST LIMIT, worth knowing before you rely on this: the agent pipeline authenticates as
+# @gitchrisqueen, so GitHub cannot tell an agent PR from an owner PR. Against the agent, CODEOWNERS
+# is therefore a speed bump and a paper trail, not a wall — the real control is the pipeline's
+# credential having no `workflows` permission (docs/contribution-security.md). This file is the
+# wall against OUTSIDE contributors, and it becomes a wall against the agent the moment the
+# pipeline moves to its own bot identity.
+
+*                                       @gitchrisqueen
+
+# --- CI/CD and the rules themselves ---------------------------------------------------------
+# A merged PR can currently rewrite any workflow, including the ones that gate merges and deploys.
+/.github/                               @gitchrisqueen
+/.github/workflows/                     @gitchrisqueen
+/.github/CODEOWNERS                     @gitchrisqueen
+/.github/actions/                       @gitchrisqueen
+/.github/dependabot.yml                 @gitchrisqueen
+
+# --- The autonomous pipeline ----------------------------------------------------------------
+# tick.sh holds the trust boundary (who may hand work to an agent); RUNBOOK.md is the instruction
+# set that agent reads. Both are self-modification surfaces.
+/scripts/agent-pipeline/                @gitchrisqueen
+
+# --- Anything that reaches production -------------------------------------------------------
+/scripts/deploy.sh                      @gitchrisqueen
+/scripts/rollback.sh                    @gitchrisqueen
+/scripts/check_env.sh                   @gitchrisqueen
+/scripts/vps_bootstrap.sh               @gitchrisqueen
+/scripts/stack_watchdog.sh              @gitchrisqueen
+/scripts/install_watchdog.sh            @gitchrisqueen
+/scripts/backup.sh                      @gitchrisqueen
+/scripts/systemd/                       @gitchrisqueen
+/docker-compose.yml                     @gitchrisqueen
+/docker-compose.prod.yml                @gitchrisqueen
+/compose/local/Dockerfile               @gitchrisqueen
+/.litellm/                              @gitchrisqueen
+
+# --- Identity, sessions, secrets ------------------------------------------------------------
+# `api/main.py` is the ONE place a caller is resolved (get_session_user_id / require_session_user_id
+# / the scope surfaces), so an auth regression here is not local to one route.
+/src/cqc_lem/api/main.py                @gitchrisqueen
+/src/cqc_lem/utilities/auth_factors.py  @gitchrisqueen
+/src/cqc_lem/utilities/auth_rate_limit.py @gitchrisqueen
+/src/cqc_lem/utilities/webauthn_util.py @gitchrisqueen
+/src/cqc_lem/utilities/crypto.py        @gitchrisqueen
+
+# --- Schema ---------------------------------------------------------------------------------
+# Migrations are forward-only against live production data.
+/compose/local/database/migrations/     @gitchrisqueen
+
+# --- Labels that grant privilege ------------------------------------------------------------
+# The triage cron and the feedback loop can both write `agent:ready`; they are gated in code, and
+# that gating must not be edited without a human seeing it.
+/scripts/triage_issues.py               @gitchrisqueen
+/src/cqc_lem/utilities/feedback/issue_service.py @gitchrisqueen
