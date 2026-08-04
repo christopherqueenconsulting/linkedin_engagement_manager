@@ -43,14 +43,21 @@ class TestCodeownersResolves:
         assert not ownerless, f"CODEOWNERS rules with no/invalid owner: {ownerless}"
 
     def test_there_is_no_catch_all(self):
-        # `require_code_owner_reviews` is ON. A `*` rule would make every file owned, so every PR
-        # would block pending an approval — and because the agent pipeline authenticates as the
-        # owner, and GitHub forbids approving your own PR, that halts the pipeline outright.
-        # It also buys nothing defensively: outside contributors have no write access anyway.
+        # A `*` rule makes every file owned, so the moment required approvals goes to 1 every PR
+        # blocks pending an approval — and because the agent pipeline authenticates as the owner,
+        # whom GitHub forbids from approving their own PR, that halts the pipeline outright.
+        # It also buys nothing defensively: outside contributors cannot merge regardless.
         patterns = [pat for pat, _ in _rules()]
         assert "*" not in patterns, (
-            "a `*` catch-all blocks every PR once require_code_owner_reviews is on — list the "
-            "control surfaces explicitly instead")
+            "a `*` catch-all blocks every PR once required approvals >= 1 — list the control "
+            "surfaces explicitly instead")
+
+    def test_the_measured_enforcement_limit_is_recorded(self):
+        # `require_code_owner_reviews: true` with `required_approving_review_count: 0` enforces
+        # nothing (measured 2026-08-04). A reader who assumes otherwise will believe a control
+        # exists that does not, so the finding has to survive in the file itself.
+        text = CODEOWNERS.read_text(encoding="utf-8")
+        assert "enforces NOTHING" in text and "required_approving_review_count: 0" in text
 
 
 class TestControlSurfacesAreCovered:

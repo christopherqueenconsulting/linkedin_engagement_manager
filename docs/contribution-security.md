@@ -77,10 +77,23 @@ backstop for a misconfiguration in layers 1–2, not a substitute for them.
 
 ### 4. Permission separation
 
-- **CODEOWNERS** (`.github/CODEOWNERS`) requires explicit human approval on every control surface:
-  workflows, the agent pipeline, deploy scripts, auth/crypto, migrations, and the two label writers.
+- **CODEOWNERS** (`.github/CODEOWNERS`) names every control surface: workflows, the agent pipeline,
+  deploy scripts, auth/crypto, migrations, and the two label writers.
 - **The pipeline's credential has no `workflows` permission**, so editing `.github/workflows/**` is
   impossible at the API level — not merely reviewable.
+
+> **Measured, because the GitHub docs do not say it.** `require_code_owner_reviews: true` combined
+> with `required_approving_review_count: 0` **enforces nothing**. Verified 2026-08-04: a PR touching
+> `.github/CODEOWNERS`, with a `*` catch-all live on the base branch and code-owner review enabled,
+> reported `mergeStateStatus: CLEAN` and requested no reviewer. The code-owner setting is a
+> *qualifier* on the approval count, not an independent gate — with zero required approvals there is
+> nothing for it to qualify.
+>
+> So **CODEOWNERS is currently documentation and an auto-review-request, not enforcement.** Raising
+> the count to 1 makes it real but requires an approval on *every* PR, which ends the pipeline's
+> autonomy while agent and owner share an identity. The planned resolution is both halves of that
+> problem at once: a **bot identity** for the pipeline, and a **gated pre-release branch** where the
+> agent self-merges freely while `main` requires a reviewed promotion.
 
 **Read this limit honestly:** the pipeline authenticates as `@gitchrisqueen`, so GitHub cannot
 distinguish an agent PR from an owner PR. Against the *agent*, CODEOWNERS is a speed bump and a

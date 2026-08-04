@@ -7,17 +7,24 @@
 #
 # Order matters — the LAST matching pattern wins.
 #
-# THERE IS DELIBERATELY NO `*` CATCH-ALL. `require_code_owner_reviews` is on, so a catch-all would
-# make EVERY file owned and therefore every PR blocked pending an approval — and since the agent
-# pipeline authenticates as @gitchrisqueen, and GitHub does not let you approve your own PR, that
-# would halt the pipeline outright. A catch-all also buys nothing against outside contributors:
-# they have no write access, so they cannot merge regardless. Listing only the control surfaces is
-# what lets routine agent work keep merging while the surfaces that govern it need a human.
+# THERE IS DELIBERATELY NO `*` CATCH-ALL. It would make every file owned, so the moment required
+# approvals goes to 1 every PR blocks pending an approval — and because the agent pipeline
+# authenticates as @gitchrisqueen, whom GitHub forbids from approving their own PR, that halts the
+# pipeline outright. A catch-all also buys nothing against outside contributors: they have no write
+# access and cannot merge regardless. Listing only the control surfaces is what lets routine agent
+# work keep merging while the surfaces that govern it need a human.
 #
-# HONEST LIMIT, worth knowing before you rely on this: agent and owner share one identity, so
-# GitHub cannot tell their PRs apart. Against the agent this is a speed bump and a paper trail —
-# the real control is the pipeline's credential having no `workflows` permission
-# (docs/contribution-security.md). It becomes a wall the moment the pipeline gets a bot identity.
+# MEASURED, because the GitHub docs do not say: `require_code_owner_reviews: true` with
+# `required_approving_review_count: 0` enforces NOTHING. Verified 2026-08-04 — a PR touching this
+# very file, with a `*` catch-all live on the base branch, reported mergeStateStatus CLEAN and no
+# requested reviewer. The code-owner setting is a QUALIFIER on the required approval count, not an
+# independent gate; with zero required approvals there is nothing for it to qualify.
+#
+# So today this file is documentation and auto-review-request, not enforcement. Two things make it
+# real, and both are planned: required approvals >= 1 on the branch that matters, and a separate
+# bot identity for the pipeline (agent and owner currently share one, so GitHub cannot tell their
+# PRs apart). Until then the only hard control over the agent is its credential having no
+# `workflows` permission — see docs/contribution-security.md.
 
 # --- CI/CD and the rules themselves ---------------------------------------------------------
 # A merged PR can currently rewrite any workflow, including the ones that gate merges and deploys.
