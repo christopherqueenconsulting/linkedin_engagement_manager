@@ -5,16 +5,19 @@
 # change what every later change is allowed to do. They require an explicit human approval; the
 # rest of the tree does not, so routine agent work keeps merging unattended.
 #
-# Order matters — the LAST matching pattern wins, so the catch-all comes first.
+# Order matters — the LAST matching pattern wins.
 #
-# HONEST LIMIT, worth knowing before you rely on this: the agent pipeline authenticates as
-# @gitchrisqueen, so GitHub cannot tell an agent PR from an owner PR. Against the agent, CODEOWNERS
-# is therefore a speed bump and a paper trail, not a wall — the real control is the pipeline's
-# credential having no `workflows` permission (docs/contribution-security.md). This file is the
-# wall against OUTSIDE contributors, and it becomes a wall against the agent the moment the
-# pipeline moves to its own bot identity.
-
-*                                       @gitchrisqueen
+# THERE IS DELIBERATELY NO `*` CATCH-ALL. `require_code_owner_reviews` is on, so a catch-all would
+# make EVERY file owned and therefore every PR blocked pending an approval — and since the agent
+# pipeline authenticates as @gitchrisqueen, and GitHub does not let you approve your own PR, that
+# would halt the pipeline outright. A catch-all also buys nothing against outside contributors:
+# they have no write access, so they cannot merge regardless. Listing only the control surfaces is
+# what lets routine agent work keep merging while the surfaces that govern it need a human.
+#
+# HONEST LIMIT, worth knowing before you rely on this: agent and owner share one identity, so
+# GitHub cannot tell their PRs apart. Against the agent this is a speed bump and a paper trail —
+# the real control is the pipeline's credential having no `workflows` permission
+# (docs/contribution-security.md). It becomes a wall the moment the pipeline gets a bot identity.
 
 # --- CI/CD and the rules themselves ---------------------------------------------------------
 # A merged PR can currently rewrite any workflow, including the ones that gate merges and deploys.

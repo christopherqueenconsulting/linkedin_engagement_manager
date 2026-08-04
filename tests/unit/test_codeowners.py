@@ -42,11 +42,15 @@ class TestCodeownersResolves:
                      if not owners or not all(o.startswith("@") for o in owners)]
         assert not ownerless, f"CODEOWNERS rules with no/invalid owner: {ownerless}"
 
-    def test_the_catch_all_comes_first_so_specific_rules_win(self):
-        # Last match wins in CODEOWNERS. A `*` at the bottom would override every specific rule.
+    def test_there_is_no_catch_all(self):
+        # `require_code_owner_reviews` is ON. A `*` rule would make every file owned, so every PR
+        # would block pending an approval — and because the agent pipeline authenticates as the
+        # owner, and GitHub forbids approving your own PR, that halts the pipeline outright.
+        # It also buys nothing defensively: outside contributors have no write access anyway.
         patterns = [pat for pat, _ in _rules()]
-        assert patterns[0] == "*", "the `*` catch-all must be the FIRST rule, not the last"
-        assert "*" not in patterns[1:], "a second `*` would override every specific rule below it"
+        assert "*" not in patterns, (
+            "a `*` catch-all blocks every PR once require_code_owner_reviews is on — list the "
+            "control surfaces explicitly instead")
 
 
 class TestControlSurfacesAreCovered:
