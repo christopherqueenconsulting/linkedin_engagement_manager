@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.132.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.4...v0.132.5) (2026-08-04)
+
+
+### Bug Fixes
+
+* **security:** drop the CODEOWNERS catch-all so the pipeline is not halted ([#1055](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1055)) ([4768c96](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4768c96217557311220e42ce3df86130695ce79c))
+* **security:** make the agent pipeline's trust boundary an access control ([#1053](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1053)) ([b9d277c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9d277c6af2e09cb0693b5b9466b0a27e68e473e))
+* **security:** verify who applied release:now, not just that it is there ([#1056](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1056)) ([a1dda22](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1dda22955e6a28efaf7691d1897112f220ea62b))
+
 ## [0.132.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.3...v0.132.4) (2026-08-04)
 
 
