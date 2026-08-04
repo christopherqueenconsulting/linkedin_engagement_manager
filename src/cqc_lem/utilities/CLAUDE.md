@@ -76,6 +76,15 @@ Two things follow for anyone writing a call site here:
    with no Send button, WARNING for no route to the dialog, INFO for an existing connection — so one
    lost invite filed TWO grouped issues (#1038 and #1042, same event, 23s apart). The wrappers log it
    at DEBUG; the badge/row they write is the record that matters (issue #1038).
+   The same invite showed the fallback test from the other side: `_add_connect_note` warned with
+   `exc=` on a missing 'Add a note' button, but its own docstring calls that miss EXPECTED — a spent
+   personalized-invite quota hides the control and the invite goes out bare — so it filed a
+   fingerprinted defect per lost note. An absent affordance is DEBUG, and the dialog's bare-send
+   control is the cross-check that says WHICH no-op it was; only a step failing AFTER the affordance
+   answered still warns (issue #1039). What that costs is drift detection at the call site — the two
+   readings are identical in the DOM — so it moved to the `--connect-dialog` probe, which reports the
+   affordance without grading it (`docs/sdui-probe-coverage.md`). **A miss you cannot attribute
+   belongs in a probe, not in a warning.**
    The rule reads sideways for a **state-setter**: doing what you were asked is not a degraded path,
    however serious the state is. `pause_automation` warned every time it stored the global Selenium
    kill-switch, and maintenance mode sets one on EVERY release, so a routine deploy filed

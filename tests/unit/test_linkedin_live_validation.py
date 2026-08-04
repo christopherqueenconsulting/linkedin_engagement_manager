@@ -796,6 +796,20 @@ class TestConnectDialogProbe:
         assert llv.connect_dialog_state(reading) == llv.STATE_OK
         assert "never click one" in llv.connect_dialog_verdict(reading)
 
+    def test_a_dialog_without_the_note_affordance_is_reported_but_never_drift(self):
+        """#1039: production logs that absence at DEBUG because a spent personalized-invite quota
+        hides the control. This probe is the only place the quota reading and selector rot can be
+        told apart, so it says so — without claiming drift it cannot ground."""
+        reading = {"dialog_present": True, "page_text": "x", "bare_send_present": True,
+                   "note_affordance_present": False}
+        assert llv.connect_dialog_state(reading) == llv.STATE_OK
+        assert "no Add-a-note control" in llv.connect_dialog_verdict(reading)
+
+    def test_a_dialog_with_the_note_affordance_says_nothing_extra(self):
+        reading = {"dialog_present": True, "page_text": "x", "note_affordance_present": True,
+                   "bare_send_present": True}
+        assert "Add-a-note" not in llv.connect_dialog_verdict(reading)
+
 
 @pytest.mark.unit
 class TestProfileScrapeProbe:
