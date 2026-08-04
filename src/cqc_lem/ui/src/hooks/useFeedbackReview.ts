@@ -8,13 +8,16 @@ interface ReviewPayload {
 }
 
 // Approve returns what the filer actually did — it can dedupe, rate-limit or error out, so
-// "approved" alone does not mean an issue exists.
+// "approved" alone does not mean an issue exists. `filed` is the server's own verdict on that
+// (#1036): a 200 says the review was recorded, never that anything reached GitHub.
 export interface ReviewResult {
   reviewed: boolean
   action: string
+  filed?: boolean
   filing_result?: {
     action?: string
     issue_number?: number
+    reason?: string
   }
 }
 

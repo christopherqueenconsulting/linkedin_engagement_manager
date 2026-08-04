@@ -7002,7 +7002,7 @@ def admin_feedback_review(
 ) -> ResponseModel:
     """Approve a feedback row for auto-triage or dismiss it."""
     reviewer_user_id = _require_user_admin(request.session_token)
-    from cqc_lem.utilities.feedback.issue_service import file_feedback_issue
+    from cqc_lem.utilities.feedback.issue_service import IssueAction, file_feedback_issue
     row = get_feedback_by_id(feedback_id)
     if not row:
         raise HTTPException(status_code=404, detail="Feedback not found")
@@ -7022,8 +7022,9 @@ def admin_feedback_review(
                  user_id=reviewer_user_id)
         return ResponseModel(status_code=200, detail={"reviewed": True, "action": "dismissed"})
 
-    # approve: run the normal classifier/filer path now.
-    result = file_feedback_issue(row)
+    # approve: run the classifier/filer path now, told that a human is watching (#1036) — the
+    # unattended-run holds re-applied to an explicit approve are what left the row in `new`.
+    result = file_feedback_issue(row, admin_approved=True)
     # Stamp the reviewer even when the filer itself dropped/FAQ'd/human-routed the row.
     record_feedback_review(feedback_id, reviewer_user_id)
     log_info("Feedback approved by admin", feedback_id=feedback_id,
@@ -7031,6 +7032,10 @@ def admin_feedback_review(
     return ResponseModel(status_code=200, detail={
         "reviewed": True,
         "action": "approved",
+        # The panel cannot infer this from the 200: an approve that GitHub refused records the
+        # review and changes NOTHING else, which is indistinguishable from a filed one unless the
+        # answer says so (#1036).
+        "filed": result.get("action") in (IssueAction.FILED, IssueAction.DEDUPED),
         "filing_result": result,
     })
 

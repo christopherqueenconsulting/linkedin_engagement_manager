@@ -113,8 +113,37 @@ class TestReviewFeedback:
             })
         assert r.status_code == 200
         assert r.json()["detail"]["filing_result"]["issue_number"] == 101
-        filer.assert_called_once_with({"id": 5})
+        assert r.json()["detail"]["filed"] is True
+        # Issue #1036: the filer must be told a human is watching, or it re-applies the
+        # unattended-run holds and leaves the row exactly where the admin found it.
+        filer.assert_called_once_with({"id": 5}, admin_approved=True)
         recorder.assert_called_once_with(5, 7)
+
+    def test_deduped_approve_still_counts_as_filed(self, client):
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 6}), \
+             patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
+                   return_value={"action": "deduped", "issue_number": 77}), \
+             patch("cqc_lem.api.main.record_feedback_review", return_value=True):
+            r = client.post("/api/admin/feedback/6/review", json={
+                "session_token": "tok", "action": "approve",
+            })
+        assert r.json()["detail"]["filed"] is True
+
+    def test_approve_that_reached_no_issue_says_so(self, client):
+        """The 200 only means the review was recorded. A GitHub failure changes NOTHING else, so
+        without `filed` the panel cannot tell it apart from a successful approve (issue #1036)."""
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 12}), \
+             patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
+                   return_value={"action": "error", "reason": "issue creation failed"}), \
+             patch("cqc_lem.api.main.record_feedback_review", return_value=True):
+            r = client.post("/api/admin/feedback/12/review", json={
+                "session_token": "tok", "action": "approve",
+            })
+        assert r.status_code == 200
+        assert r.json()["detail"]["filed"] is False
+        assert r.json()["detail"]["filing_result"]["action"] == "error"
 
     def test_already_filed_row_cannot_be_re_approved(self, client):
         """A filed row IS its own open cluster, so re-running the filer would match it to itself

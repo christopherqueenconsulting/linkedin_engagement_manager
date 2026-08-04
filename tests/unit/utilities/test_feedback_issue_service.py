@@ -893,9 +893,18 @@ class TestFileFeedbackIssue:
         mocks["triage"].assert_called_once_with(3, status=FeedbackStatus.TRIAGED)
 
     def test_empty_body_is_dropped_without_classifying(self):
+        from cqc_lem.utilities.db import FeedbackStatus
         result, mocks = self._run({"id": 4, "user_id": 3, "body": "   "})
         assert result["action"] == "dropped"
         mocks["classify"].assert_not_called()
+        # Terminal — an empty body can never become an issue, so it must not sit in `new` being
+        # re-offered to every pass (and making Approve a visible no-op, issue #1036).
+        mocks["triage"].assert_called_once_with(4, status=FeedbackStatus.DISMISSED)
+
+    def test_empty_body_without_an_id_does_not_attempt_a_write(self):
+        result, mocks = self._run({"user_id": 3, "body": ""})
+        assert result["action"] == "dropped"
+        mocks["triage"].assert_not_called()
 
     def test_over_the_per_user_cap_is_held_before_any_llm_call(self):
         svc = _mod()
@@ -960,6 +969,101 @@ class TestFileFeedbackIssue:
                                              "context_json": "{not json"}, clusters=[])
         assert result["action"] == "filed"
         assert classify.call_args.kwargs["context"] is None
+
+    def test_admin_approval_is_not_re_gated_by_the_unattended_holds(self):
+        """Issue #1036 — the triage panel's Approve button did nothing.
+
+        Both holds below exist because the batch pass runs unattended. Re-applying them to a row an
+        admin explicitly approved returned 200 and left the row in `new`, so the panel re-rendered
+        it unchanged — indistinguishable from a dead button."""
+        svc = _mod()
+        with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=99) as counter, \
+                patch(f"{_SVC}.classify_feedback", return_value=_classification()), \
+                patch(f"{_SVC}.create_github_issue", return_value=321), \
+                patch(f"{_SVC}.comment_on_issue", return_value=True), \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.update_feedback_triage") as triage:
+            result = svc.file_feedback_issue({"id": 20, "user_id": 9, "body": "comments break"},
+                                             clusters=[], admin_approved=True)
+        assert result["action"] == "filed"
+        counter.assert_not_called()
+        assert triage.call_args.kwargs["github_issue_number"] == 321
+
+    def test_admin_approval_files_a_low_confidence_row_instead_of_re_queueing_it(self):
+        """NEEDS_HUMAN means "a person should look at this first" — and one just did. Parking it
+        back in the queue the admin is standing in is a loop with no exit (issue #1036)."""
+        svc = _mod()
+        with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                patch(f"{_SVC}.classify_feedback", return_value=_classification(confidence=0.2)), \
+                patch(f"{_SVC}.create_github_issue", return_value=654) as create, \
+                patch(f"{_SVC}.comment_on_issue", return_value=True), \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.update_feedback_triage"):
+            result = svc.file_feedback_issue({"id": 21, "user_id": 9, "body": "idk it's weird"},
+                                             clusters=[], admin_approved=True)
+        assert result["action"] == "filed"
+        assert result["issue_number"] == 654
+        # …but a shaky classification still never ships unattended: held, assigned, no agent:ready.
+        assert result["agent_ready"] is False
+        assert 'needs-human' in result["labels"]
+        assert create.call_args.kwargs["assignees"] == ["gitchrisqueen"]
+
+    def test_admin_approval_will_not_file_a_classification_that_never_happened(self):
+        """A low-confidence verdict and NO verdict are different things. The fail-safe result
+        carries the RAW report as its `summary` — filing it would publish the feedback text this
+        module promises never reaches GitHub, and `issue_created` is terminal, so one LiteLLM blip
+        would spend the report on an issue nobody can re-approve (issue #1036)."""
+        svc = _mod()
+        unclassified = _classification(confidence=0.0, title="comments break sometimes",
+                                       summary="comments break sometimes and I have no idea why",
+                                       errors=["llm call failed: connection refused"])
+        with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                patch(f"{_SVC}.classify_feedback", return_value=unclassified), \
+                patch(f"{_SVC}.create_github_issue") as create, \
+                patch(f"{_SVC}.comment_on_issue") as commenter, \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.update_feedback_triage") as triage:
+            result = svc.file_feedback_issue({"id": 24, "user_id": 9, "body": "comments break"},
+                                             clusters=[], admin_approved=True)
+        assert result["action"] == "error"
+        assert result["reason"] == svc.CLASSIFIER_UNAVAILABLE_REASON
+        create.assert_not_called()
+        commenter.assert_not_called()
+        # Left in `new` on purpose — the admin retries once the classifier is back.
+        triage.assert_not_called()
+
+    def test_admin_approval_still_respects_the_noise_and_faq_verdicts(self):
+        """Those two DO settle the row, so the panel already shows the admin what happened — and
+        forcing an issue for something classified as noise is not what Approve is for."""
+        from cqc_lem.utilities.db import FeedbackStatus
+        from cqc_lem.utilities.feedback.classifier import FeedbackCategory
+        svc = _mod()
+        for category, action, status in (
+                (FeedbackCategory.NOISE, "dropped", FeedbackStatus.DISMISSED),
+                (FeedbackCategory.QUESTION, "faq", FeedbackStatus.TRIAGED)):
+            with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                    patch(f"{_SVC}.classify_feedback",
+                          return_value=_classification(category=category, confidence=0.99)), \
+                    patch(f"{_SVC}.create_github_issue") as create, \
+                    patch(f"{_SVC}.embed_text", return_value=None), \
+                    patch(f"{_SVC}.update_feedback_triage") as triage:
+                result = svc.file_feedback_issue({"id": 22, "user_id": 9, "body": "you guys rock"},
+                                                 clusters=[], admin_approved=True)
+            assert result["action"] == action
+            create.assert_not_called()
+            triage.assert_called_once_with(22, status=status)
+
+    def test_the_batch_pass_still_gets_every_unattended_hold(self):
+        svc = _mod()
+        with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=99), \
+                patch(f"{_SVC}.classify_feedback") as classify, \
+                patch(f"{_SVC}.create_github_issue") as create, \
+                patch(f"{_SVC}.update_feedback_triage"):
+            result = svc.file_feedback_issue({"id": 23, "user_id": 9, "body": "another one"},
+                                             clusters=[])
+        assert result["action"] == "rate_limited"
+        classify.assert_not_called()
+        create.assert_not_called()
 
     def test_clusters_are_loaded_from_the_db_when_not_injected(self):
         svc = _mod()

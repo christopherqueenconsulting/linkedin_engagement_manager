@@ -3,6 +3,7 @@ import TableScroll from '../components/TableScroll'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdminFeedback } from '../hooks/useAdminFeedback'
 import { useFeedbackReview } from '../hooks/useFeedbackReview'
+import type { ReviewResult } from '../hooks/useFeedbackReview'
 
 const PAGE_SIZE = 25
 
@@ -24,6 +25,40 @@ const SOURCE_LABELS: Record<string, string> = {
   csat: 'CSAT',
 }
 
+// What the filer did, in words an admin can act on (issue #1036). Approve used to report itself
+// with the filer's raw verb in a grey line above the table — so an outcome that filed nothing and
+// left the row exactly where it was read as "the button does nothing".
+const FILING_OUTCOMES: Record<string, string> = {
+  filed: 'Issue filed',
+  deduped: 'Added as another report on the existing issue',
+  dropped: 'Classified as noise — dismissed, no issue filed',
+  faq: 'Routed to the FAQ queue — no issue filed',
+  needs_human: 'Held for human triage — no issue filed',
+  rate_limited: 'This reporter is over the daily issue cap — nothing filed',
+  error: 'GitHub refused the filing — nothing changed. Try Approve again.',
+}
+
+// A `reason` that changes what the admin should DO next outranks the verb it arrived with: an
+// `error` because the classifier never answered is not GitHub refusing, and a `dropped` because the
+// report is empty is not a noise verdict. Both would otherwise be reported as something else.
+const FILING_REASONS: Record<string, string> = {
+  'classification unavailable':
+    'The triage classifier could not be reached — nothing filed. Try Approve again.',
+  'empty body': 'This report has no text — dismissed, no issue filed',
+}
+
+function outcomeText(result: ReviewResult | undefined): string | null {
+  if (!result) return null
+  if (result.action === 'dismissed') return 'Dismissed'
+  const filing = result.filing_result?.action
+  const reason = result.filing_result?.reason
+  const label = (reason && FILING_REASONS[reason])
+    || (filing && FILING_OUTCOMES[filing])
+    || `Approved — filer: ${filing ?? 'done'}`
+  const number = result.filing_result?.issue_number
+  return number ? `${label} (#${number})` : label
+}
+
 function classNames(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(' ')
 }
@@ -43,11 +78,16 @@ export default function AdminFeedbackPage() {
   })
 
   const review = useFeedbackReview()
+  // Which row the last click belonged to, so the outcome can be shown AT the button (#1036). The
+  // banner alone sits above the table — on a scrolled list the admin never sees it, and every
+  // outcome that files nothing leaves the row untouched, so there is nothing else to notice.
+  const [actedId, setActedId] = useState<number | null>(null)
 
   // `mutate`, not `mutateAsync`: an awaited rejection here had nobody to catch it, so a failed
   // approve (GitHub down, row already triaged by the beat) showed the admin nothing at all — the
   // row just stayed put. The hook invalidates the list on success, so no manual refetch either.
   function handleAction(id: number, action: 'approve' | 'dismiss') {
+    setActedId(id)
     review.mutate({ feedbackId: id, action, sessionToken: sessionToken || '' })
   }
 
@@ -56,6 +96,11 @@ export default function AdminFeedbackPage() {
     ? ((review.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
        || (review.error instanceof Error ? review.error.message : 'unknown error'))
     : null
+  const outcome = reviewError ? null : outcomeText(review.data)
+  // An approve that filed nothing left the row in `new`, so the table is about to re-render
+  // identically — the message IS the whole feedback and it must not read as a success.
+  const outcomeFailed = review.isSuccess && review.data?.action === 'approved'
+    && review.data?.filed === false
 
   return (
     <div className="max-w-5xl space-y-6">
@@ -116,15 +161,11 @@ export default function AdminFeedbackPage() {
         <p className="text-sm text-red-600">Could not record the review: {reviewError}</p>
       )}
 
-      {/* Approving does not guarantee an issue: the filer can rate-limit, drop, or fail on GitHub
-          and leave the row where it was. Show what actually happened. */}
-      {review.isSuccess && !reviewError && (
-        <p className="text-sm text-gray-600">
-          Last review: {String(review.data?.action ?? 'done')}
-          {review.data?.filing_result?.action ? ` — filer: ${review.data.filing_result.action}` : ''}
-          {review.data?.filing_result?.issue_number
-            ? ` (issue #${review.data.filing_result.issue_number})`
-            : ''}
+      {/* Approving does not guarantee an issue: the filer can drop, FAQ, or fail on GitHub and
+          leave the row where it was. Show what actually happened, in those words. */}
+      {outcome && (
+        <p className={classNames('text-sm', outcomeFailed ? 'text-amber-700' : 'text-gray-600')}>
+          Last review: {outcome}
         </p>
       )}
 
@@ -189,21 +230,31 @@ export default function AdminFeedbackPage() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     {item.status === 'new' && (
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => handleAction(item.id, 'approve')}
-                          disabled={review.isPending}
-                          className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => handleAction(item.id, 'dismiss')}
-                          disabled={review.isPending}
-                          className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded hover:bg-gray-200 disabled:opacity-50"
-                        >
-                          Dismiss
-                        </button>
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => handleAction(item.id, 'approve')}
+                            disabled={review.isPending}
+                            className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            {review.isPending && actedId === item.id ? 'Working…' : 'Approve'}
+                          </button>
+                          <button
+                            onClick={() => handleAction(item.id, 'dismiss')}
+                            disabled={review.isPending}
+                            className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded hover:bg-gray-200 disabled:opacity-50"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                        {actedId === item.id && !review.isPending && (reviewError || outcome) && (
+                          <p className={classNames(
+                            'text-xs max-w-xs text-right',
+                            reviewError || outcomeFailed ? 'text-amber-700' : 'text-gray-500'
+                          )}>
+                            {reviewError || outcome}
+                          </p>
+                        )}
                       </div>
                     )}
                   </td>

@@ -152,6 +152,11 @@ class IssueAction:
     ERROR = 'error'                  # GitHub call failed; row left for the next pass to retry
 
 
+# An `ERROR` result the admin panel must word differently: nothing was refused by GitHub, the
+# classifier never answered. Retrying is the right next action, so the row is left in `new`.
+CLASSIFIER_UNAVAILABLE_REASON = 'classification unavailable'
+
+
 # Conventional-commit type per category, so a filed title reads like the commit that will close it.
 _COMMIT_TYPES: dict[FeedbackCategory, str] = {
     FeedbackCategory.BUG: 'fix',
@@ -668,23 +673,38 @@ def _result(action: str, feedback_id: Optional[int], **extra) -> dict:
 
 
 def file_feedback_issue(feedback: dict, classification: FeedbackClassification = None,
-                        clusters: list = None) -> dict:
+                        clusters: list = None, admin_approved: bool = False) -> dict:
     """Take ONE captured feedback row all the way to its outcome (see `IssueAction`). Never raises.
 
     `classification` / `clusters` are injectable so a batch pass classifies once and loads the open
     clusters once. When a new issue IS filed, the caller should append the returned `cluster` to its
-    in-memory cluster list so two identical reports in the same batch don't both file."""
+    in-memory cluster list so two identical reports in the same batch don't both file.
+
+    `admin_approved` (issue #1036) marks the ONE path that is not unattended: an admin clicked
+    Approve on this specific row in the triage panel. Two of the guards below exist purely because
+    the batch pass runs with nobody watching, and re-applying them to an explicit human decision is
+    what made the button look dead — the row was left in `new`, so the panel re-rendered it
+    unchanged."""
     row = feedback or {}
     feedback_id = row.get("id")
     body = row.get("body") or ""
     if not body.strip():
+        # Terminal, so it must SETTLE. An empty body can never become an issue, and leaving it `new`
+        # both re-offers it to every later pass and, on the panel, makes Approve a no-op (#1036).
+        if feedback_id is not None:
+            update_feedback_triage(feedback_id, status=FeedbackStatus.DISMISSED)
         return _result(IssueAction.DROPPED, feedback_id, reason="empty body")
     user_id = row.get("user_id")
 
     # Abuse guard FIRST: one user cannot turn the backlog into their personal firehose. Checked
     # before the LLM so a held row costs nothing, and the row's status is left alone so a later pass
     # (fresh 24h window) picks it up — held, never dropped.
-    if user_id is not None:
+    #
+    # An admin approving ONE row by hand is the opposite of a firehose — they have already read it
+    # and decided — so the cap does not apply. It also cannot be recovered from on that path: a
+    # rate-limited approve leaves a NON-admin row in `new`, and `process_new_feedback` only ever
+    # drains `admin_only=True`, so "held for a later pass" would mean held forever (#1036).
+    if user_id is not None and not admin_approved:
         recent = count_feedback_filed_by_user(user_id, RATE_LIMIT_WINDOW_HOURS)
         if recent >= max_issues_per_user_per_day():
             log_info(f"Feedback {feedback_id} held — {recent} of this user's report(s) already "
@@ -713,10 +733,27 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
     if classification.route == FeedbackRoute.FAQ:
         update_feedback_triage(feedback_id, status=FeedbackStatus.TRIAGED)
         return _result(IssueAction.FAQ, feedback_id)
-    if classification.route == FeedbackRoute.NEEDS_HUMAN:
+    if classification.route == FeedbackRoute.NEEDS_HUMAN and not admin_approved:
         update_feedback_triage(feedback_id, status=FeedbackStatus.TRIAGED)
         return _result(IssueAction.NEEDS_HUMAN, feedback_id,
                        confidence=classification.confidence)
+    # NEEDS_HUMAN is "a person should look at this before it reaches the backlog" — and on the
+    # approve path a person just did. Parking it back in the queue the admin is standing in is a
+    # loop with no exit (#1036), so it files instead. The confidence still shapes the LABELS below:
+    # a low-confidence item lands `needs-human` + assigned + with a Decision Comment, never
+    # `agent:ready`, so nothing gets built unattended off a shaky classification.
+    #
+    # …but a LOW-confidence verdict and NO verdict are not the same thing. `errors` marks the
+    # fail-safe result: the classifier never answered (proxy down, off-contract reply), so its
+    # `summary` is the RAW report and its category/severity are placeholders. Filing that would
+    # publish the raw feedback text this module promises never reaches GitHub, under a title made
+    # of the reporter's first line — and `ISSUE_CREATED` is terminal, so a 30-second LiteLLM blip
+    # would permanently spend the report on a content-free issue nobody can re-approve. Leave the
+    # row in `new` and say so: retrying an approve costs the admin one click.
+    if admin_approved and classification.errors:
+        log_info(f"Feedback {feedback_id} approve could not file — the classifier never answered "
+                 f"({'; '.join(classification.errors)[:200]})", user_id=user_id)
+        return _result(IssueAction.ERROR, feedback_id, reason=CLASSIFIER_UNAVAILABLE_REASON)
 
     vector = as_vector(row.get("embedding")) or embed_text(body)
 
