@@ -55,6 +55,9 @@ FLOW_LABELS = ("agent:ready", "agent:working", "needs-human", "agent:blocked")
 MUTABLE_LABELS = (*PRIORITY_LABELS, "agent:ready", "needs-human")
 # Labels only the owner should change.
 OWNER_LABELS = ("agent:model:sonnet", "agent:model:haiku", "agent:model:opus", "risk:*")
+# Author standing that may receive `agent:ready` from this cron. `tick.sh` re-checks both the
+# author AND who applied the label, so this is the first of two independent gates, not the only one.
+TRUSTED_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
 
 EMAIL_FALLBACK = "christopher.queen@gmail.com"
 
@@ -144,6 +147,9 @@ class Issue:
     created_at: str = ""
     updated_at: str = ""
     author: str = ""
+    # OWNER / MEMBER / COLLABORATOR / CONTRIBUTOR / NONE — how GitHub rates the author's standing
+    # in this repo. Empty means "unreadable", which is treated as untrusted.
+    author_association: str = ""
     is_pull_request: bool = False
 
     def to_dict(self) -> dict:
@@ -193,6 +199,8 @@ def parse_issue(raw: dict) -> Issue:
         created_at=str(raw.get("createdAt") or raw.get("created_at") or ""),
         updated_at=str(raw.get("updatedAt") or raw.get("updated_at") or ""),
         author=str((raw.get("author") or {}).get("login") or raw.get("user", {}).get("login") or ""),
+        author_association=str(raw.get("authorAssociation")
+                               or raw.get("author_association") or "").upper(),
         is_pull_request=bool(raw.get("isPullRequest") or raw.get("pull_request")),
     )
 
@@ -262,12 +270,25 @@ def select_priority_label(decision: TriageDecision, current_labels: list[str]) -
     return decision.priority
 
 
-def select_flow_label(decision: TriageDecision, current_labels: list[str]) -> Optional[str]:
-    """Only add a flow label if none exists."""
+def select_flow_label(decision: TriageDecision, current_labels: list[str],
+                      author_association: str = "") -> Optional[str]:
+    """Only add a flow label if none exists — and never grant `agent:ready` to an outsider's issue.
+
+    This function is a privilege boundary, not a categoriser. `agent:ready` is what makes an issue
+    body the prompt for an autonomous run holding the owner's credentials, and this repo is public,
+    so anyone can author the text an LLM is reading here. An untrusted author's issue can still be
+    triaged, prioritised and milestoned — it just lands `needs-human`, and a person promotes it.
+
+    Unreadable association is untrusted: the whole point is to fail toward the label that waits.
+    """
     existing = [l for l in current_labels if l in FLOW_LABELS]
     if existing:
         return None
-    return decision.flow if decision.flow in ("agent:ready", "needs-human") else None
+    if decision.flow not in ("agent:ready", "needs-human"):
+        return None
+    if decision.flow == "agent:ready" and author_association.upper() not in TRUSTED_ASSOCIATIONS:
+        return "needs-human"
+    return decision.flow
 
 
 def select_topical_labels(decision: TriageDecision, current_labels: list[str],
@@ -436,10 +457,14 @@ class GitHubClient:
     def list_open_issues(self, limit: int = 200) -> list[Issue]:
         """Fetch open issues (not PRs) with labels and milestone. Use `gh api` directly so we get
         every open issue, not the first page of the default view."""
+        # This is the REST endpoint, so the REST spellings are the ones that actually arrive —
+        # `user` / `author_association` / `pull_request`. The camelCase names are kept because
+        # `parse_issue` also accepts GraphQL-shaped fixtures.
+        fields = ("number,title,body,state,labels,milestone,createdAt,updatedAt,author,"
+                  "isPullRequest,user,author_association,pull_request")
         result = self._run(
             ["api", f"repos/{self.repo}/issues", "--method", "GET", "--field", "state=open",
-             "--field", "per_page=100", "--paginate",
-             "--jq", ".[] | {number,title,body,state,labels,milestone,createdAt,updatedAt,author,isPullRequest}"],
+             "--field", "per_page=100", "--paginate", "--jq", f".[] | {{{fields}}}"],
             check=False,
         )
         if result.returncode != 0:
@@ -567,7 +592,7 @@ def plan_changes(issues: list[Issue], decisions: list[TriageDecision],
         change: dict = {"number": d.number, "title": issue.title, "add_labels": [],
                          "milestone_number": None, "milestone_title": None, "reason": d.reason}
         priority_label = select_priority_label(d, issue.labels)
-        flow_label = select_flow_label(d, issue.labels)
+        flow_label = select_flow_label(d, issue.labels, issue.author_association)
         topical = select_topical_labels(d, issue.labels, allowed_labels)
         labels_to_add = [l for l in [priority_label, flow_label] if l] + topical
         change["add_labels"] = labels_to_add

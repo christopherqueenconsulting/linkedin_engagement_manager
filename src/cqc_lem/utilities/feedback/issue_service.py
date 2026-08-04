@@ -72,6 +72,22 @@ AGENT_READY_LABEL = "agent:ready"
 # deliberately ABOVE the classifier's own min_confidence floor (0.6) — 0.6-0.7 is filed but held.
 AGENT_READY_MIN_CONFIDENCE = 0.7
 
+# An auto-filed feedback issue NEVER carries `agent:ready`.
+#
+# `POST /api/feedback` is UNAUTHENTICATED — the widget is deliberately offered to logged-out
+# visitors, and the per-user daily cap keys on `user_id`, which is NULL for every one of them. And
+# `agent:ready` is not a priority hint: it is the signal that hands an autonomous agent the owner's
+# credentials and a merge to `main`. Wiring anonymous internet input to that made the classifier's
+# confidence score the only thing between a stranger's prose and production.
+#
+# Nothing else about the loop changes — it still files, clusters, classifies, assigns and posts the
+# Decision Comment. A human promotes `needs-human` -> `agent:ready`, and `tick.sh` independently
+# verifies WHO did (`label_actor_trusted`), so flipping this back on alone would not re-open the
+# path. Left as a named constant rather than deleted code so the intent survives the next reader.
+FEEDBACK_MAY_GRANT_AGENT_READY = False
+# Distinguishes "the classifier wasn't sure" from "the classifier was sure, the SOURCE isn't trusted".
+FEEDBACK_HOLD_REASON = "unvetted-source"
+
 # Cosine/overlap at-or-above this means "same underlying problem". 0.82 is tight enough that two
 # distinct bugs in the same component stay separate, loose enough to catch rewordings.
 DUPLICATE_SIMILARITY_DEFAULT = 0.82
@@ -393,12 +409,24 @@ def feature_demand_met(category: FeedbackCategory, reporter_count: int) -> bool:
     return int(reporter_count or 0) >= feature_demand_min()
 
 
-def is_agent_ready(classification: FeedbackClassification, reporter_count: int = 1) -> bool:
-    """Whether the pipeline may build this with no human in the loop."""
+def classifier_would_auto_work(classification: FeedbackClassification,
+                               reporter_count: int = 1) -> bool:
+    """The CLASSIFIER's opinion: risk-free, well-evidenced, confidently categorised work.
+
+    Kept separate from `is_agent_ready` so the Decision Comment and telemetry can still say "this
+    looked buildable" even though the source is no longer trusted to grant that.
+    """
     return (classification.risk == FeedbackRisk.NONE
             and classification.route == FeedbackRoute.AUTO_WORK
             and classification.confidence >= AGENT_READY_MIN_CONFIDENCE
             and feature_demand_met(classification.category, reporter_count))
+
+
+def is_agent_ready(classification: FeedbackClassification, reporter_count: int = 1) -> bool:
+    """Whether the pipeline may build this with no human in the loop. Always False — see
+    `FEEDBACK_MAY_GRANT_AGENT_READY`."""
+    return (FEEDBACK_MAY_GRANT_AGENT_READY
+            and classifier_would_auto_work(classification, reporter_count))
 
 
 def labels_for_issue(classification: FeedbackClassification, reporter_count: int = 1) -> list:
@@ -488,6 +516,10 @@ def hold_reason(classification: FeedbackClassification, reporter_count: int = 1)
     None when it is `agent:ready`. This is the `risk:` line of the Decision Comment."""
     if is_agent_ready(classification, reporter_count):
         return None
+    # Say WHICH gate held it. Falling through to "low-confidence" for an item the classifier was
+    # confident about would send a human hunting a scoring bug that isn't there.
+    if classifier_would_auto_work(classification, reporter_count):
+        return FEEDBACK_HOLD_REASON
     if classification.risk != FeedbackRisk.NONE:
         return f"risk:{classification.risk}"
     if not feature_demand_met(classification.category, reporter_count):

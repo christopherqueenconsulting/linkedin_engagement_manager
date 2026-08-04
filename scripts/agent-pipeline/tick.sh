@@ -49,6 +49,22 @@ export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
 export HOME="/home/lem"
 export GH_PROMPT_DISABLED=1
 
+# The pipeline's OWN credential, when one is configured (AGENT_GH_TOKEN in config.env).
+#
+# The stored `gh auth login` token is the owner's, and it carries the `workflow` scope — so the
+# agent can rewrite the very workflows that gate merges and deploys. CODEOWNERS makes that
+# reviewable; only the token makes it impossible, and impossible is the property worth having when
+# the thing holding the credential is reading issue text written by strangers.
+#
+# Setting GH_TOKEN covers BOTH halves: `gh` prefers it over the stored auth, and git is configured
+# with `gh auth git-credential` as its credential helper, so pushes use it too.
+#
+# Wanted shape — a fine-grained PAT, THIS repo only:
+#   Contents: R/W · Pull requests: R/W · Issues: R/W · Metadata: R
+#   Workflows: NO ACCESS  ← the point
+#   no Administration, no Packages, no Secrets, no Environments
+[ -n "${AGENT_GH_TOKEN:-}" ] && export GH_TOKEN="$AGENT_GH_TOKEN"
+
 mkdir -p "$WORKROOT" "$LOGDIR" "$BASE/locks" "$BASE/state"
 LOG="$LOGDIR/tick-$(date +%Y%m%d).log"
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG" ; }
@@ -194,6 +210,95 @@ trap '__TICK_DUR_MS=$(( (SECONDS - TICK_T0) * 1000 )); emit_tick_outcome' EXIT
 # --- helpers ---
 epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
 
+# --- trust boundary ---------------------------------------------------------------------------
+# A LABEL IS NOT AN ACCESS CONTROL. `agent:ready` hands an autonomous agent the owner's credentials
+# and a merge to main, but labels have no ACL and this repo is PUBLIC — and three writers could
+# create that signal, two of them automated: an LLM triage cron with no author filter, and the
+# unauthenticated `POST /api/feedback` widget. So an outsider's issue body could become the prompt
+# for a `--dangerously-skip-permissions` run under the owner's token.
+#
+# Two INDEPENDENT halves must hold, because neither implies the other: an outsider's issue can be
+# labelled by a trusted bot (that was the feedback path), and a trusted author's issue can be
+# labelled by anyone with triage. An unreadable answer is a REFUSAL, never a pass — a missed issue
+# waits for the next tick, a wrongly-admitted one runs arbitrary work as the owner.
+TRUSTED_ASSOCIATIONS="${TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
+# Who may mint `agent:ready`. Deliberately NOT every bot: only automations whose input is not
+# attacker-controlled. The feedback loop is absent on purpose (it files `needs-human` now).
+AGENT_LABEL_TRUSTED_ACTORS="${AGENT_LABEL_TRUSTED_ACTORS:-$ASSIGNEE}"
+
+agent_token_scopes() {
+  # Classic OAuth tokens advertise their scopes in a response header. Fine-grained PATs carry
+  # per-resource permissions instead and send NO such header — so an empty result is the GOOD case.
+  gh api -i user 2>/dev/null \
+    | awk 'BEGIN{IGNORECASE=1} /^x-oauth-scopes:/{sub(/^[^:]*:[[:space:]]*/,""); print; exit}' \
+    | tr -d '\r'
+}
+
+assert_agent_token_scoped() {
+  # A `workflow`-scoped token lets the agent edit .github/workflows/ — i.e. edit its own gates.
+  # Warns by default so configuring the PAT is not a prerequisite for the pipeline running at all;
+  # set AGENT_REQUIRE_SCOPED_TOKEN=1 in config.env once the PAT is in place to make it fail closed.
+  local scopes; scopes="$(agent_token_scopes)"
+  case ",${scopes// /}," in
+    *,workflow,*)
+      if [ "${AGENT_REQUIRE_SCOPED_TOKEN:-0}" = "1" ]; then
+        log "FATAL: the pipeline token carries the 'workflow' scope — it can rewrite the workflows"
+        log "       that gate merges and deploys. Configure AGENT_GH_TOKEN (a fine-grained PAT with"
+        log "       Workflows: no access) in config.env. See docs/contribution-security.md."
+        return 1
+      fi
+      log "WARNING: the pipeline token carries the 'workflow' scope — the agent can rewrite"
+      log "         .github/workflows/. Set AGENT_GH_TOKEN in config.env (docs/contribution-security.md)."
+      ;;
+  esac
+  return 0
+}
+
+author_trusted() {
+  # author_trusted issue|pr <number> -> 0 when the AUTHOR has standing in this repo.
+  local kind="$1" n="$2" assoc
+  assoc="$(gh "$kind" view "$n" --repo "$SLUG" --json authorAssociation \
+             --jq '.authorAssociation // ""' 2>/dev/null)"
+  [ -n "$assoc" ] || { log "TRUST: $kind #$n — authorAssociation unreadable; refusing."; return 1; }
+  case " $TRUSTED_ASSOCIATIONS " in *" $assoc "*) return 0 ;; esac
+  log "TRUST: $kind #$n authored by $assoc — not eligible for autonomous work."
+  return 1
+}
+
+label_actor_trusted() {
+  # label_actor_trusted <number> <label> -> 0 when the LAST actor to apply <label> is allowlisted.
+  # The timeline endpoint covers PRs too (a PR is an issue). We read the LAST `labeled` event for
+  # that name: a label removed and re-added by someone else is theirs, not the original applier's.
+  local n="$1" label="$2" actor
+  actor="$(gh api "repos/$SLUG/issues/$n/timeline" --paginate \
+             -H "Accept: application/vnd.github+json" \
+             --jq "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")
+                   | .actor.login] | last // empty" 2>/dev/null)"
+  [ -n "$actor" ] || { log "TRUST: #$n — no readable '$label' labeler; refusing."; return 1; }
+  case " $AGENT_LABEL_TRUSTED_ACTORS " in *" $actor "*) return 0 ;; esac
+  log "TRUST: #$n — '$label' applied by '$actor', not in AGENT_LABEL_TRUSTED_ACTORS."
+  return 1
+}
+
+pr_is_upstream() {
+  # pr_is_upstream <number> -> 0 when the PR's head branch lives in THIS repo, not a fork.
+  # The PR lanes push to `origin/$branch` and merge; add_worktree resolves refs/remotes/origin/...,
+  # so a fork PR would silently branch from main instead of carrying the contributor's code. That
+  # is a correctness bug as much as a security one — refuse rather than do something surprising.
+  local n="$1" head
+  head="$(gh pr view "$n" --repo "$SLUG" --json headRepositoryOwner \
+            --jq '.headRepositoryOwner.login // ""' 2>/dev/null)"
+  [ -n "$head" ] || { log "TRUST: PR #$n — head repository unreadable; refusing."; return 1; }
+  [ "$head" = "$OWNER" ] && return 0
+  log "TRUST: PR #$n head is in fork '$head' — this pipeline only works upstream branches."
+  return 1
+}
+
+pr_admissible() {
+  # pr_admissible <number> <lane-label> -> both halves for a PR lane.
+  pr_is_upstream "$1" && label_actor_trusted "$1" "$2"
+}
+
 newest_owner_answer() {
   # newest_owner_answer pr|issue <number> -> the owner's newest reply to the LATEST Decision Comment
   # on that thread (empty if none). Shared by the PR and ISSUE answer lanes so they can't drift.
@@ -291,10 +396,14 @@ pr_for_issue() {
     | jq -r --arg n "$N" '[ .[] | select(.headRefName == "feature/claude-issue-" + $n) | .number ] | (first // empty)'
 }
 
-select_next_issue() {
-  # Next ready issue: has agent:ready, not needs-human/agent:working/agent:blocked,
+select_ready_issues() {
+  # ALL ready issues in priority order: has agent:ready, not needs-human/agent:working/agent:blocked,
   # ordered: critical/high priority JUMP the line (regardless of milestone), then everyone
   # else by milestone number (7->12), then priority, then issue number.
+  #
+  # Returns the whole ordered list, not just the head, because the caller now has to walk it: an
+  # issue can be label-eligible but fail the trust boundary, and stopping at the first one would
+  # let a single inadmissible issue park the entire queue behind it.
   gh issue list --repo "$SLUG" --state open --limit 100 --label "agent:ready" \
     --json number,labels,milestone | jq -r '
     def prio: (.labels|map(.name)|map(select(startswith("priority:")))|.[0] // "priority:zzz")
@@ -303,7 +412,18 @@ select_next_issue() {
     map(select((.labels|map(.name)) as $l
         | ($l|index("needs-human")|not) and ($l|index("agent:blocked")|not) and ($l|index("agent:working")|not)))
     | sort_by((if prio <= 1 then 0 else 1 end), msnum, prio, .number)
-    | .[0].number // empty'
+    | .[].number'
+}
+
+select_next_issue() {
+  # The first ready issue that also clears the trust boundary (author standing + label provenance).
+  local n
+  for n in $(select_ready_issues); do
+    if author_trusted issue "$n" && label_actor_trusted "$n" "agent:ready"; then
+      echo "$n"; return 0
+    fi
+  done
+  return 0
 }
 
 open_agent_pr() {
@@ -642,11 +762,20 @@ reap_stale_claims() {
 }
 [ "$DRY_RUN" = "1" ] || reap_stale_claims
 
+# Credential check runs here, not in the guards block at the top: the helpers it needs are defined
+# below that block, and this is the last point before any lane can act.
+if ! assert_agent_token_scoped; then
+  TICK_OUTCOME="skipped"; TICK_REASON="token_scope_refused"; exit 0
+fi
+
 # ---- PRIORITY LANE: Dependabot CI failures (labeled agent:depfix by the router workflow) ----
 # Handled before roadmap work so dependency PRs get unblocked fast. One Claude call per tick.
 DEPFIX="$(gh pr list --repo "$SLUG" --state open --label "agent:depfix" \
   --json number,headRefName,labels \
   | jq -r 'map(select((.labels|map(.name))|index("needs-human")|not))|.[0]//empty|@json')"
+if [ -n "$DEPFIX" ] && ! pr_admissible "$(echo "$DEPFIX" | jq -r .number)" "agent:depfix"; then
+  DEPFIX=""   # refused by the trust boundary — fall through to the other lanes this tick
+fi
 if [ -n "$DEPFIX" ]; then
   DPR="$(echo "$DEPFIX" | jq -r .number)"
   DBR="$(echo "$DEPFIX" | jq -r .headRefName)"
@@ -753,8 +882,15 @@ done
 # from ever reaching the merge step for hours. Uses the EXACT same gate as step 5 below — no
 # weakening: required checks green, zero unresolved Copilot threads, Copilot reviewed the current
 # head OR the head is past the grace window. First fully-ready PR is merged, then the tick exits.
+# The human-hold filter is NOT optional here: this lane merges. Without it a maintainer who parks a
+# green PR with `needs-human` — but leaves `agent:working` on, which is the natural thing to do —
+# has it merged on the next tick. The phasefix lane already filters both labels; these two did not.
 for MPR in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
-               --json number --jq 'sort_by(.number)|.[].number' 2>/dev/null); do
+               --json number,labels \
+               --jq 'map(select((.labels|map(.name))
+                      | (index("needs-human")|not) and (index("agent:blocked")|not)))
+                     | sort_by(.number)|.[].number' 2>/dev/null); do
+  pr_admissible "$MPR" "agent:working" || continue
   MBR="$(gh pr view "$MPR" --repo "$SLUG" --json headRefName --jq .headRefName 2>/dev/null)"
   [ -z "$MBR" ] && continue
   [ "$(gh pr view "$MPR" --repo "$SLUG" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null)" = "DIRTY" ] && continue
@@ -793,6 +929,7 @@ for FJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:phasefix" \
         | sort_by(.number)|.[]|@base64' 2>/dev/null); do
   FPR="$(echo "$FJSON" | base64 -d | jq -r .number)"
   FBR="$(echo "$FJSON" | base64 -d | jq -r .headRefName)"
+  pr_admissible "$FPR" "agent:phasefix" || continue
   # Claim FIRST: an in-flight phasefix run holds this branch, and it is about to relabel the PR.
   # Judging (or parking) it from another slot mid-run would race that hand-back.
   if ! claim_branch "$FBR"; then
@@ -840,6 +977,7 @@ for RJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:revise" \
   --json number,headRefName --jq 'sort_by(.number)|.[]|@base64' 2>/dev/null); do
   RPR="$(echo "$RJSON" | base64 -d | jq -r .number)"
   RBR="$(echo "$RJSON" | base64 -d | jq -r .headRefName)"
+  pr_admissible "$RPR" "agent:revise" || continue
   if ! claim_branch "$RBR"; then
     log "PR #$RPR (revise) claimed by another slot — trying next."
     continue
@@ -859,10 +997,13 @@ done
 # concurrent slots never collide.
 WORKING_PRS=0
 for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
-    --json number,headRefName,mergeStateStatus \
-    --jq 'sort_by((if .mergeStateStatus=="DIRTY" then 0 else 1 end), .number)|.[]|@base64' 2>/dev/null); do
-  WORKING_PRS=$((WORKING_PRS + 1))
+    --json number,headRefName,mergeStateStatus,labels \
+    --jq 'map(select((.labels|map(.name))
+           | (index("needs-human")|not) and (index("agent:blocked")|not)))
+          | sort_by((if .mergeStateStatus=="DIRTY" then 0 else 1 end), .number)|.[]|@base64' 2>/dev/null); do
   PR="$(echo "$PR_JSON" | base64 -d | jq -r .number)"
+  pr_admissible "$PR" "agent:working" || continue
+  WORKING_PRS=$((WORKING_PRS + 1))
   BRANCH="$(echo "$PR_JSON" | base64 -d | jq -r .headRefName)"
   MSTATE="$(echo "$PR_JSON" | base64 -d | jq -r .mergeStateStatus)"
   ISSUE="$(issue_for_pr "$PR")"

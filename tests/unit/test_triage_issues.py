@@ -24,7 +24,8 @@ def mod():
     return module
 
 
-def _issue(mod, number=1, title="title", labels=None, milestone=None, updated_at="", body=""):
+def _issue(mod, number=1, title="title", labels=None, milestone=None, updated_at="", body="",
+           author_association="OWNER"):
     return mod.Issue(
         number=number,
         title=title,
@@ -35,6 +36,7 @@ def _issue(mod, number=1, title="title", labels=None, milestone=None, updated_at
         created_at="",
         updated_at=updated_at,
         author="gitchrisqueen",
+        author_association=author_association,
         is_pull_request=False,
     )
 
@@ -321,3 +323,61 @@ class TestMainDryRun:
         out = capsys.readouterr().out
         assert "1 issues need structure" in out
         assert (report_dir / f"{mod.date.today()}.md").exists()
+
+
+class TestFlowLabelIsAPrivilegeBoundary:
+    """`agent:ready` makes an issue body the prompt for an autonomous run holding the owner's
+    credentials. On a public repo anyone can author that text, so this cron may not grant it to
+    an outsider however confident the model was."""
+
+    @pytest.mark.parametrize("assoc", ["OWNER", "MEMBER", "COLLABORATOR"])
+    def test_a_trusted_author_may_receive_agent_ready(self, mod, assoc):
+        d = mod.TriageDecision(number=1, flow="agent:ready")
+        assert mod.select_flow_label(d, [], assoc) == "agent:ready"
+
+    @pytest.mark.parametrize("assoc", ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN",
+                                       "", "owner_lowercase_typo"])
+    def test_an_untrusted_author_is_downgraded_to_needs_human(self, mod, assoc):
+        d = mod.TriageDecision(number=1, flow="agent:ready")
+        assert mod.select_flow_label(d, [], assoc) == "needs-human"
+
+    def test_an_unreadable_association_fails_toward_the_label_that_waits(self, mod):
+        d = mod.TriageDecision(number=1, flow="agent:ready")
+        assert mod.select_flow_label(d, [], "") == "needs-human"
+
+    def test_case_is_normalised_so_a_lowercase_api_shape_still_passes(self, mod):
+        d = mod.TriageDecision(number=1, flow="agent:ready")
+        assert mod.select_flow_label(d, [], "owner") == "agent:ready"
+
+    def test_needs_human_is_unaffected_by_author_standing(self, mod):
+        d = mod.TriageDecision(number=1, flow="needs-human")
+        assert mod.select_flow_label(d, [], "NONE") == "needs-human"
+
+    def test_an_existing_flow_label_is_still_never_overwritten(self, mod):
+        d = mod.TriageDecision(number=1, flow="agent:ready")
+        assert mod.select_flow_label(d, ["needs-human"], "OWNER") is None
+
+    def test_an_outsider_issue_is_still_triaged_just_not_granted(self, mod):
+        # The point is a held label, not a refusal to help: priority and topical labels still land.
+        issue = _issue(mod, number=9, labels=[], author_association="NONE")
+        d = mod.TriageDecision(number=9, priority="priority:high", flow="agent:ready",
+                               topical_labels=["bug"])
+        changes = mod.plan_changes([issue], [d], [], {"bug"})
+        assert changes[0]["add_labels"] == ["priority:high", "needs-human", "bug"]
+
+
+class TestAuthorAssociationParsing:
+    def test_rest_and_graphql_shapes_both_parse(self, mod):
+        assert mod.parse_issue({"number": 1, "author_association": "MEMBER"}).author_association \
+            == "MEMBER"
+        assert mod.parse_issue({"number": 1, "authorAssociation": "OWNER"}).author_association \
+            == "OWNER"
+
+    def test_a_missing_association_is_empty_not_none(self, mod):
+        assert mod.parse_issue({"number": 1}).author_association == ""
+
+    def test_the_fetch_asks_for_the_rest_field_name(self, mod):
+        # The endpoint is REST, so `author_association` is the spelling that actually arrives;
+        # asking only for the camelCase name yields null and every issue reads as untrusted.
+        import inspect
+        assert "author_association" in inspect.getsource(mod.GitHubClient.list_open_issues)

@@ -26,6 +26,17 @@ def _mod():
     return issue_service
 
 
+@pytest.fixture
+def grant_enabled(monkeypatch):
+    """Exercise the `agent:ready` branch explicitly.
+
+    Auto-filed feedback issues never take it in production — `POST /api/feedback` is
+    unauthenticated, so `FEEDBACK_MAY_GRANT_AGENT_READY` is False — but the branch still has to
+    work, and a test that can only observe the held path would not notice it rotting.
+    """
+    monkeypatch.setattr(_mod(), "FEEDBACK_MAY_GRANT_AGENT_READY", True)
+
+
 @pytest.fixture(autouse=True)
 def _clear_transport_cool_off():
     """Issue #767: the unreachable cool-off is process-global by design, so one test's simulated
@@ -218,11 +229,32 @@ class TestEmbedText:
 
 
 class TestLabelLogic:
-    def test_confident_riskless_bug_is_agent_ready(self):
+    def test_a_confident_riskless_bug_is_still_HELD_because_the_source_is_unvetted(self):
+        # `POST /api/feedback` is unauthenticated, so no classifier score may mint `agent:ready` —
+        # that label hands an autonomous agent the owner's credentials and a merge to main.
         svc = _mod()
         labels = svc.labels_for_issue(_classification())
-        assert labels == ['bug', 'priority:high', 'feedback-loop', 'agent:ready']
-        assert svc.hold_reason(_classification()) is None
+        assert labels == ['bug', 'priority:high', 'feedback-loop', 'needs-human']
+        assert svc.hold_reason(_classification()) == 'unvetted-source'
+
+    def test_the_classifiers_opinion_is_still_recorded_separately(self):
+        # The hold is about provenance, not quality — telemetry and the Decision Comment must still
+        # be able to say "this looked buildable".
+        svc = _mod()
+        assert svc.classifier_would_auto_work(_classification()) is True
+        assert svc.is_agent_ready(_classification()) is False
+
+    def test_no_feedback_issue_can_carry_agent_ready(self):
+        from cqc_lem.utilities.feedback.classifier import FeedbackCategory, FeedbackRisk
+        svc = _mod()
+        for risk in FeedbackRisk:
+            for conf in (0.6, 0.7, 0.95, 1.0):
+                for count in (1, 2, 10):
+                    for cat in (FeedbackCategory.BUG, FeedbackCategory.FEATURE):
+                        labels = svc.labels_for_issue(
+                            _classification(risk=risk, confidence=conf, category=cat),
+                            reporter_count=count)
+                        assert 'agent:ready' not in labels
 
     def test_risky_item_gets_the_risk_label_needs_human_and_no_agent_ready(self):
         from cqc_lem.utilities.feedback.classifier import FeedbackRisk
@@ -239,13 +271,15 @@ class TestLabelLogic:
                                              'needs-human']
         assert svc.hold_reason(held) == 'low-confidence'
 
-    def test_feature_needs_demand_before_it_may_auto_work(self):
+    def test_feature_needs_demand_before_the_classifier_would_auto_work(self):
         from cqc_lem.utilities.feedback.classifier import FeedbackCategory
         svc = _mod()
         feature = _classification(category=FeedbackCategory.FEATURE, confidence=0.95)
-        assert 'agent:ready' not in svc.labels_for_issue(feature, reporter_count=1)
+        assert svc.classifier_would_auto_work(feature, reporter_count=1) is False
         assert svc.hold_reason(feature, reporter_count=1) == 'unproven-demand'
-        assert 'agent:ready' in svc.labels_for_issue(feature, reporter_count=2)
+        assert svc.classifier_would_auto_work(feature, reporter_count=2) is True
+        # ...and even a demand-proven feature is held, on provenance.
+        assert svc.hold_reason(feature, reporter_count=2) == 'unvetted-source'
 
     def test_bug_auto_files_on_a_single_report(self):
         svc = _mod()
@@ -256,8 +290,8 @@ class TestLabelLogic:
         svc = _mod()
         monkeypatch.setenv("FEEDBACK_FEATURE_DEMAND_MIN", "5")
         feature = _classification(category=FeedbackCategory.FEATURE, confidence=0.95)
-        assert 'agent:ready' not in svc.labels_for_issue(feature, reporter_count=4)
-        assert 'agent:ready' in svc.labels_for_issue(feature, reporter_count=5)
+        assert svc.classifier_would_auto_work(feature, reporter_count=4) is False
+        assert svc.classifier_would_auto_work(feature, reporter_count=5) is True
 
     @pytest.mark.parametrize("risk", ['none', 'product-decision', 'live-linkedin', 'migration',
                                       'security'])
@@ -268,8 +302,10 @@ class TestLabelLogic:
         labels = svc.labels_for_issue(_classification(risk=FeedbackRisk(risk),
                                                      confidence=confidence))
         assert set(labels) <= REAL_REPO_LABELS
-        # Exactly one of the two mutually exclusive pipeline verdicts.
+        # Exactly one of the two mutually exclusive pipeline verdicts — and for an auto-filed
+        # issue it is always `needs-human`, whatever the classifier thought.
         assert ('agent:ready' in labels) != ('needs-human' in labels)
+        assert 'needs-human' in labels
 
     def test_labels_are_deduplicated(self):
         svc = _mod()
@@ -339,7 +375,12 @@ class TestIssueBody:
         assert "V<YYYYMMDDHHMMSS>__short_name.sql" in body
         assert "Decision Comment" in body
 
-    def test_agent_ready_body_has_no_decision_gate_in_acceptance(self):
+    def test_a_held_body_carries_the_decision_gate(self):
+        svc = _mod()
+        body = svc.build_issue_body(_classification(), feedback_id=1)
+        assert "Decision Comment" in body
+
+    def test_agent_ready_body_has_no_decision_gate_in_acceptance(self, grant_enabled):
         svc = _mod()
         body = svc.build_issue_body(_classification(), feedback_id=1)
         assert "Decision Comment" not in body
@@ -764,14 +805,16 @@ class TestFileFeedbackIssue:
         result, mocks = self._run({"id": 12, "user_id": 3, "body": "comments never post"})
         assert result["action"] == "filed"
         assert result["issue_number"] == 555
-        assert result["agent_ready"] is True
-        assert 'agent:ready' in result["labels"]
+        # Unauthenticated source: filed and classified, but HELD — never `agent:ready`.
+        assert result["agent_ready"] is False
+        assert 'agent:ready' not in result["labels"]
+        assert 'needs-human' in result["labels"]
         mocks["triage"].assert_called_once_with(
             12, status=FeedbackStatus.ISSUE_CREATED, cluster_id=12,
             github_issue_number=555, embedding=[1.0, 0.0])
-        # agent:ready issues are NOT assigned to a human and get no Decision Comment.
-        assert mocks["create"].call_args.kwargs["assignees"] is None
-        mocks["comment"].assert_not_called()
+        # A held issue IS assigned to a human and DOES get the Decision Comment.
+        assert mocks["create"].call_args.kwargs["assignees"] is not None
+        mocks["comment"].assert_called_once()
 
     def test_filed_result_returns_a_cluster_for_in_batch_dedup(self):
         result, _ = self._run({"id": 12, "user_id": 3, "body": "comments never post"})
@@ -844,10 +887,13 @@ class TestFileFeedbackIssue:
                                  classification=feature)
         assert anonymous["agent_ready"] is False
         assert 'needs-human' in anonymous["labels"]
-        # …while one identified reporter does clear a min of 1.
+        # …while one identified reporter does clear a min of 1, as far as the CLASSIFIER is
+        # concerned. Both are still held on provenance — the demand gate is a separate question.
+        assert _mod().classifier_would_auto_work(feature, reporter_count=0) is False
+        assert _mod().classifier_would_auto_work(feature, reporter_count=1) is True
         identified, _ = self._run({"id": 13, "user_id": 3, "body": "add a dark mode"},
                                   classification=feature)
-        assert identified["agent_ready"] is True
+        assert identified["agent_ready"] is False
 
     def test_failed_duplicate_comment_leaves_the_row_for_a_retry(self):
         clusters = [_cluster(7, "comments never post", 101, embedding=[1.0, 0.0])]
@@ -1284,10 +1330,12 @@ class TestParseFiledIssue:
         assert reporters == 1
         labels = svc.labels_for_issue(parsed, reporters)
         assert 'needs-human' in labels and 'agent:ready' not in labels
-        # ...and the same feature with proven demand comes back agent:ready.
+        # ...and the same feature with proven demand round-trips to a classifier verdict of
+        # "buildable", while the label set stays held on provenance.
         parsed, reporters = self._round_trip(classification, reporter_count=3)
         assert reporters == 3
-        assert 'agent:ready' in svc.labels_for_issue(parsed, reporters)
+        assert svc.classifier_would_auto_work(parsed, reporters) is True
+        assert 'agent:ready' not in svc.labels_for_issue(parsed, reporters)
 
     def test_anonymous_report_stays_at_zero_reporters(self):
         parsed, reporters = self._round_trip(_classification(), reporter_count=0)
@@ -1351,11 +1399,13 @@ class TestRepairFiledIssue:
 
     def test_label_less_issue_gets_its_full_label_set_back(self):
         svc = _mod()
-        with patch(f"{_SVC}.github_request", return_value={}) as request:
+        with patch(f"{_SVC}.github_request", return_value={}) as request, \
+                patch(f"{_SVC}.issue_comment_bodies", return_value=[]), \
+                patch(f"{_SVC}.comment_on_issue"):
             assert svc.repair_filed_issue(self._issue()) == svc.RepairAction.REPAIRED
-        request.assert_called_once_with(
-            "POST", "issues/713/labels",
-            {"labels": ['bug', 'priority:high', 'feedback-loop', 'agent:ready']})
+        assert request.call_args_list[0][0][:2] == ("POST", "issues/713/labels")
+        assert request.call_args_list[0][0][2] == {
+            "labels": ['bug', 'priority:high', 'feedback-loop', 'needs-human']}
 
     def test_an_issue_that_already_carries_our_label_is_left_alone(self):
         svc = _mod()
@@ -1365,10 +1415,16 @@ class TestRepairFiledIssue:
         request.assert_not_called()
 
     def test_labels_a_human_added_are_kept_and_only_the_rest_attached(self):
+        # A human-applied `agent:ready` is never REMOVED — repair only adds what is missing. The
+        # issue then carries both labels, and `needs-human` wins, because tick.sh excludes it from
+        # selection. Contradictory labels resolving to "held" is the fail-safe direction.
         svc = _mod()
-        with patch(f"{_SVC}.github_request", return_value={}) as request:
+        with patch(f"{_SVC}.github_request", return_value={}) as request, \
+                patch(f"{_SVC}.issue_comment_bodies", return_value=[]), \
+                patch(f"{_SVC}.comment_on_issue"):
             svc.repair_filed_issue(self._issue(labels=['bug', 'agent:ready']))
-        assert request.call_args[0][2] == {"labels": ['priority:high', 'feedback-loop']}
+        assert request.call_args_list[0][0][2] == {
+            "labels": ['priority:high', 'feedback-loop', 'needs-human']}
 
     @pytest.mark.parametrize("issue", [
         None, {}, {"number": 5, "state": "open", "body": "someone else's issue"},
@@ -1421,13 +1477,21 @@ class TestRepairFiledIssue:
             assert svc.repair_filed_issue(issue) == svc.RepairAction.REPAIRED
         comment.assert_not_called()
 
-    def test_an_agent_ready_issue_is_never_assigned_or_commented_on(self):
+    def test_an_agent_ready_issue_is_never_assigned_or_commented_on(self, grant_enabled):
         svc = _mod()
         with patch(f"{_SVC}.github_request", return_value={}) as request, \
                 patch(f"{_SVC}.comment_on_issue") as comment:
             assert svc.repair_filed_issue(self._issue()) == svc.RepairAction.REPAIRED
         assert request.call_count == 1
         comment.assert_not_called()
+
+    def test_a_held_issue_is_assigned_and_gets_the_decision_comment(self):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request", return_value={}), \
+                patch(f"{_SVC}.issue_comment_bodies", return_value=[]), \
+                patch(f"{_SVC}.comment_on_issue") as comment:
+            assert svc.repair_filed_issue(self._issue()) == svc.RepairAction.REPAIRED
+        comment.assert_called_once()
 
     def test_a_refused_repair_is_an_error_and_stops_there(self):
         svc = _mod()
@@ -1479,11 +1543,15 @@ class TestRepairAutoFiledIssues:
         monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
         clusters = [_cluster(1, issue=101), _cluster(2, issue=102)]
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.issue_comment_bodies", return_value=[]), \
+                patch(f"{_SVC}.comment_on_issue"), \
                 patch(f"{_SVC}.github_request",
                       side_effect=[self._open_issue(101, labels=['bug', 'feedback-loop']),
-                                   self._open_issue(102), {}]) as request:
+                                   self._open_issue(102), {}, {}]) as request:
             assert svc.repair_auto_filed_issues() == {"scanned": 2, "repaired": 1, "failed": 0}
-        assert request.call_args_list[-1][0][:2] == ("POST", "issues/102/labels")
+        # A held issue is labelled first, then assigned — so the label POST is no longer last.
+        assert [c[0][:2] for c in request.call_args_list
+                if c[0][:2] == ("POST", "issues/102/labels")] == [("POST", "issues/102/labels")]
 
     def test_the_same_issue_is_only_checked_once_per_pass(self, monkeypatch):
         svc = _mod()
