@@ -1113,11 +1113,24 @@ class TestProfileExperiencesProbe:
 
         assert reading["entity_count"] == 1
         assert reading["entities_with_dates"] == 1
-        assert reading["entity_selector"] == "div[data-view-name='profile-component-entity']"
+        assert reading["entity_selector"] == "main div[data-view-name='profile-component-entity']"
         assert reading["experiences"][0]["company_name"] == "Acme Corp"
         assert reading["entities"][0]["lines"][0] == "Senior Engineer"
         assert reading["entities"][0]["parsed"] is True
         assert "1 experiences" in reading["verdict"]
+
+    def test_reports_the_hit_count_of_every_ladder_rung(self):
+        """The 2026-08-03 run needed a hand-written second pass to explain which rung won and why."""
+        driver = self._page(["Senior Engineer", "Acme", "Jan 2020 - Present"])
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        counts = reading["selector_counts"]
+        assert counts["main div[data-view-name='profile-component-entity']"] == 1
+        assert counts["[data-view-name]"] == 1
+        assert counts["div[role='listitem']"] == 0
+        assert counts["main"] == 1
 
     def test_navigates_to_the_details_page_and_clicks_nothing(self):
         driver = self._page(["Senior Engineer", "Acme", "Jan 2020 - Present"])

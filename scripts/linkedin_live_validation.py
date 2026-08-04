@@ -2177,7 +2177,8 @@ def profile_experiences_verdict(reading: dict) -> str:
                 "or every selector in the ladder is gone; production returns []")
     if not dated:
         return (f"{reading['entity_count']} entity nodes, none carrying a date range — either this "
-                "profile lists no experience, or the entities that hold it were not reached")
+                "profile lists no experience, or the entities that hold it were not reached; "
+                "`selector_counts` says which rungs matched at all")
     if not parsed:
         return (f"{dated} dated entities and ZERO parsed — selector rot: production would return [] "
                 "and warn. The `entities` sample below is what the next parser pass rewrites from")
@@ -2198,7 +2199,8 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
     assuming it."""
     from bs4 import BeautifulSoup
 
-    from cqc_lem.utilities.linkedin.scrapper import (_DATE_RANGE_RE, experience_entity_nodes,
+    from cqc_lem.utilities.linkedin.scrapper import (_DATE_RANGE_RE, _EXPERIENCE_ENTITY_SELECTORS,
+                                                     experience_entity_nodes,
                                                      get_start_identifier, parse_experience_entity,
                                                      parse_profile_experiences, source_as_row,
                                                      visible_lines)
@@ -2208,6 +2210,13 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
     sleep(5)
     source = BeautifulSoup(driver.page_source, "html.parser")
     nodes, selector = experience_entity_nodes(source)
+    # The 2026-08-03 run had to be followed by a hand-written hit-count pass to explain WHY the
+    # wrong rung won (`data-view-name` absent, footer listitems matching). One probe run should
+    # answer that, so the counts ship with the reading.
+    counts = {css: len(source.select(css)) for css in _EXPERIENCE_ENTITY_SELECTORS}
+    counts.update({css: len(source.select(css)) for css in
+                   ("main", "[data-view-name]", "div[data-sdui-screen]", "div[role='list']",
+                    "main div[role='list']")})
 
     entities = []
     dated = 0
@@ -2227,6 +2236,7 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                "entity_selector": selector,
                "entity_count": len(nodes),
                "entities_with_dates": dated,
+               "selector_counts": counts,
                "entities": entities,
                "experiences": parse_profile_experiences(source)}
     reading["verdict"] = profile_experiences_verdict(reading)

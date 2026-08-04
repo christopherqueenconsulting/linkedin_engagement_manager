@@ -108,6 +108,32 @@ STRUCTURALLY (does the entity nest child role entities?), because
 order. Ground it with `--profile-experiences <profile-url>`; `entities_with_dates` is the number
 that separates "page never rendered" from "line grammar moved".
 
+### What the live run (2026-08-03) changed
+
+The first grounding pass on a real `/details/experience/` page found three things the captured-DOM
+tests could not have:
+
+- **`data-view-name` is absent from that page entirely**, and the most specific rung that DID match
+  — `div[data-sdui-screen] div[role='listitem']` — matched the **footer's help links**
+  ("Questions? / Visit our Help Center."). The real entries were the 8 `main li` under
+  `main div[role='list']`. Specificity alone picks chrome over content, so a rung now only wins if
+  at least one of its nodes **carries a date range**: a page's chrome can out-specify its content,
+  it can never out-date it. (An undated rung is still returned when no rung is dated, so the probe
+  reports what did render.)
+- **No doubled markup at all** on that render. Reading it through a stray decorative
+  `aria-hidden` icon would have returned one icon's worth of text as the whole entity, so the
+  `aria-hidden` half is used only when it actually **covers** the node's text.
+- **Lines are laid out, not text-noded.** `get_text("\n")` splits `Mar 2019 - Present · 7 yrs 6 mos`
+  into three lines across its inline spans and takes the date anchor with it; `_rendered_lines`
+  joins inline runs and breaks on block elements instead. Skills arrive comma-separated with a
+  `+9 skills` overflow chip.
+
+The company is not always on the role: when the roles are the `li`s, the grouping names the company
+once above them. `_company_from_ancestors` reads it from the container's leading lines, and a
+leading run that already contains a date range stops the walk — that run belongs to the previous
+role, not to a company header. A header without a total-duration line (a bare "Experience" heading)
+is never a company.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

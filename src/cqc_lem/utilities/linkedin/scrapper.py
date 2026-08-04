@@ -300,15 +300,27 @@ def get_profile_recent_activity(driver, employee_link):
 # twin — the thing the old `[:len//2]` halving hack was approximating), and TEXT shapes for the
 # date range / skills lines. NO class names, and nothing positional.
 
-# Ladder, most specific first. `div[role='listitem']` is here because the catch-up grounding pass
+# Ladder, most specific first. `role='listitem'` rungs are here because the catch-up grounding pass
 # (2026-08-03) found LinkedIn's fully-SDUI screens render NO `data-view-name` and no `<li>` at all —
 # so a ladder that stops at `li` would match nothing the day this page converts.
+#
+# Specificity ALONE picks the wrong rung. The live /details/experience/ grounding run (2026-08-03,
+# PR #984) found `data-view-name` absent from the page entirely, `div[data-sdui-screen]
+# div[role='listitem']` matching the FOOTER's three help links ("Questions? / Visit our Help
+# Center."), and the real entries sitting in the 8 `main li` under `main div[role='list']`. So the
+# rungs below are scoped to `main` first, and `experience_entity_nodes` additionally skips any rung
+# whose nodes carry no date range — a page's chrome can out-specify its content, but it can never
+# out-DATE it.
 _EXPERIENCE_ENTITY_SELECTORS = (
+    "main div[data-view-name='profile-component-entity']",
     "div[data-view-name='profile-component-entity']",
     "section[data-view-name] li",
+    "main div[role='list'] li",
+    "main div[role='list'] div[role='listitem']",
+    "main li",
+    "main div[role='listitem']",
     "div[data-sdui-screen] div[role='listitem']",
     "div[role='listitem']",
-    "main li",
     "li",
 )
 # Probed INSIDE a chosen entity to tell a grouped company from a single role.
@@ -323,6 +335,10 @@ _DATE_RANGE_RE = re.compile(
     r"(?:\s*·\s*.+)?$", re.IGNORECASE)
 _DURATION_RE = re.compile(r"^\d+\s+yrs?(?:\s+\d+\s+mos?)?$|^\d+\s+mos?$", re.IGNORECASE)
 _SKILLS_RE = re.compile(r"^skills?\s*:\s*(.+)$", re.IGNORECASE)
+# "Skills:" alone on its line, with the names in the next block.
+_SKILLS_LABEL_RE = re.compile(r"^skills?\s*:?$", re.IGNORECASE)
+# The "+9 skills" overflow chip that trails the list — a count, not a skill.
+_SKILL_OVERFLOW_RE = re.compile(r"^\+\s*\d+\s+skills?$", re.IGNORECASE)
 
 _EMPLOYMENT_TYPES = frozenset({"full-time", "part-time", "self-employed", "freelance", "contract",
                                "internship", "apprenticeship", "seasonal", "permanent",
@@ -335,6 +351,20 @@ _NOISE_LINES = frozenset({"follow", "connect", "message", "see more", "…see mo
 # Company logo alt text renders as its own line ("Acme Corp logo"); a description
 # sentence is never this short, so the length bound keeps real prose.
 _LOGO_LINE_RE = re.compile(r"^(?:\S+ ){0,5}\S*\blogo$", re.IGNORECASE)
+# Section headings render inside the same list as the entries — never a company name.
+_SECTION_TITLE_LINES = frozenset({"experience", "experiences", "education", "positions",
+                                  "licenses & certifications", "volunteering"})
+# Tags that lay out on the SAME line as their neighbours; everything else breaks one.
+_INLINE_TAGS = frozenset({"a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "del", "em",
+                          "font", "i", "ins", "kbd", "label", "mark", "q", "s", "samp", "small",
+                          "span", "strong", "sub", "sup", "time", "u", "var"})
+_UNRENDERED_TAGS = frozenset({"head", "noscript", "script", "style", "svg", "template"})
+# The visible half of the doubled a11y markup is ~50% of the node's text. Decorative
+# `aria-hidden` icons are a rounding error — below this share the attribute is not the
+# doubling and the whole text is the better read.
+_ARIA_HIDDEN_COVERAGE = 0.3
+# How far up from a role node to look for the company that groups it.
+_MAX_COMPANY_ANCESTORS = 6
 
 
 def _clean_lines(raw: List[str]) -> List[str]:
@@ -348,18 +378,68 @@ def _clean_lines(raw: List[str]) -> List[str]:
         line = " ".join((line or "").split())
         if line.lower() in _NOISE_LINES or _LOGO_LINE_RE.search(line):
             continue
+        # A bullet/pipe/dash glyph rendered on its own is an icon, never content.
+        if not any(char.isalnum() for char in line):
+            continue
         if out and out[-1] == line:
             continue
         out.append(line)
     return out
 
 
+def _rendered_lines(node: PageElement) -> List[str]:
+    """One line per LAID-OUT line — inline runs joined, block elements broken.
+
+    `get_text("\\n")` splits on every text node, which is not what a reader sees: LinkedIn renders
+    "Mar 2019 - Present · 7 yrs 6 mos" as three inline spans, and splitting them shatters the date
+    range that anchors the whole parse. Adjacent identical segments collapse here too — the a11y twin
+    is a sibling span, so on the fallback path it would otherwise join as "Engineer Engineer"."""
+    lines: List[str] = []
+    current: List[str] = []
+
+    def flush() -> None:
+        text = " ".join(" ".join(current).split())
+        current.clear()
+        if text:
+            lines.append(text)
+
+    def add(text: str) -> None:
+        text = " ".join((text or "").split())
+        if text and (not current or current[-1] != text):
+            current.append(text)
+
+    def walk(element: PageElement) -> None:
+        for child in getattr(element, "children", []):
+            name = getattr(child, "name", None)
+            if name is None:
+                add(str(child))
+                continue
+            name = name.lower()
+            if name in _UNRENDERED_TAGS:
+                continue
+            if name == "br":
+                flush()
+                continue
+            if name in _INLINE_TAGS:
+                walk(child)
+                continue
+            flush()
+            walk(child)
+            flush()
+
+    walk(node)
+    flush()
+    return lines
+
+
 def visible_lines(node: PageElement) -> List[str]:
-    """The visible text of one entity, one line per rendered node.
+    """The visible text of one entity, one line per rendered line.
 
     Prefers the `aria-hidden="true"` half of LinkedIn's doubled markup (outermost only, so a nested
-    span is not counted twice); falls back to the node's whole text when the render carries no such
-    markup, in which case `_clean_lines` still removes the duplication."""
+    span is not counted twice) — but only when that half actually covers the node's text. The live
+    /details/experience/ render carries no doubling at all, and reading a page like that through a
+    stray decorative `aria-hidden` icon would return an entity's text as one icon's worth of it. Full
+    text is the fallback, where `_clean_lines` still removes any duplication."""
     chosen: List[PageElement] = []
     chosen_ids = set()
     for el in node.find_all(attrs={"aria-hidden": "true"}):
@@ -370,17 +450,29 @@ def visible_lines(node: PageElement) -> List[str]:
 
     raw: List[str] = []
     for el in chosen:
-        raw.extend(el.get_text("\n").splitlines())
-    if not [line for line in raw if line.strip()]:
-        raw = node.get_text("\n").splitlines()
+        raw.extend(_rendered_lines(el))
+    whole = len(" ".join(node.get_text(" ").split()))
+    if sum(len(line) for line in raw) < whole * _ARIA_HIDDEN_COVERAGE:
+        raw = _rendered_lines(node)
     return _clean_lines(raw)
+
+
+def _has_date_range(lines: List[str]) -> bool:
+    return any(_DATE_RANGE_RE.match(line) for line in lines)
 
 
 def experience_entity_nodes(source) -> tuple:
     """(top-level entity nodes, the selector that found them).
 
     Entities nest — a multi-role company holds one entity per role — so descendants of an already
-    chosen node are dropped, which is what makes the grouped-company shape parseable as one unit."""
+    chosen node are dropped, which is what makes the grouped-company shape parseable as one unit.
+
+    A rung only WINS if at least one of its nodes carries a date range. Without that test the ladder
+    is decided by selector specificity alone, and the live run behind this rebuild is exactly why
+    that fails: `div[data-sdui-screen] div[role='listitem']` matched three footer help-links and beat
+    the rung holding the actual roles. An undated rung is still returned when NO rung is dated, so
+    the probe (and the warning path) can report what the page did render."""
+    fallback: tuple = ([], "")
     for selector in _EXPERIENCE_ENTITY_SELECTORS:
         nodes = source.select(selector) if source else []
         if not nodes:
@@ -392,8 +484,11 @@ def experience_entity_nodes(source) -> tuple:
                 continue
             top_ids.add(id(node))
             top.append(node)
-        return top, selector
-    return [], ""
+        if any(_has_date_range(visible_lines(node)) for node in top):
+            return top, selector
+        if not fallback[0]:
+            fallback = (top, selector)
+    return fallback
 
 
 def _is_location_line(line: str) -> bool:
@@ -425,15 +520,34 @@ def _company_from_subtitle(line: str) -> str:
     return head
 
 
+def _split_skills(blob: str) -> List[str]:
+    """"Python · Kubernetes" and "Compliance, AI for Business, +9 skills" are both skill lists.
+
+    The live 2026-08-03 render separates them with commas and ends on a "+9 skills" overflow chip;
+    splitting on "·" alone turned the whole line into one nonsense skill."""
+    parts = blob.split("·") if "·" in blob else blob.split(",")
+    return [skill for skill in (part.strip() for part in parts)
+            if skill and not _SKILL_OVERFLOW_RE.match(skill)]
+
+
 def _details_and_skills(chunk: List[str]) -> tuple:
     """Description lines and the "Skills: A · B" line, from everything under a role's date line."""
     details: List[str] = []
     skills: List[str] = []
     started = False
+    expecting_skills = False
     for line in chunk:
+        if expecting_skills:
+            expecting_skills = False
+            skills.extend(_split_skills(line))
+            continue
         matched = _SKILLS_RE.match(line)
         if matched:
-            skills.extend([s.strip() for s in matched.group(1).split("·") if s.strip()])
+            skills.extend(_split_skills(matched.group(1)))
+            continue
+        if _SKILLS_LABEL_RE.match(line):
+            # The label and its names can land in separate blocks.
+            expecting_skills = True
             continue
         # Location / employment-type qualifiers trail the date line; once real prose starts,
         # everything after it is description and is kept verbatim.
@@ -525,15 +639,67 @@ def _holds_child_roles(node: PageElement) -> bool:
     return False
 
 
+def _company_header(lines: List[str]) -> str:
+    """The company name from a grouped-company HEADER entity — a name and a total duration, no date
+    range of its own ("Christopher Queen Consulting" / "9 yrs 6 mos").
+
+    The duration is required: without it a bare heading like "Experience" would be read as a company
+    and then attached to every role beneath it."""
+    if not lines or _has_date_range(lines):
+        return ""
+    if not any(_DURATION_RE.match(line) for line in lines):
+        return ""
+    if _is_qualifier_line(lines[0]) or lines[0].lower() in _SECTION_TITLE_LINES:
+        return ""
+    return _company_from_subtitle(lines[0])
+
+
+def _company_from_ancestors(node: PageElement, lines: List[str]) -> str:
+    """The company a role belongs to when the role's OWN lines never name it.
+
+    The grouped shape puts the company once, above its roles. When the ladder selects the ROLE nodes
+    (on the live page they are the `li`s), that name is only in an ancestor's leading lines — the
+    text above this role's first line. A leading run that already contains a date range belongs to a
+    previous role, not to a company header, so the walk stops rather than guessing."""
+    if not lines:
+        return ""
+    first = lines[0]
+    for depth, ancestor in enumerate(node.parents):
+        if depth >= _MAX_COMPANY_ANCESTORS or (getattr(ancestor, "name", "") or "").lower() in (
+                "body", "html", "[document]"):
+            break
+        ancestor_lines = visible_lines(ancestor)
+        if first not in ancestor_lines:
+            continue
+        leading = ancestor_lines[:ancestor_lines.index(first)]
+        if _has_date_range(leading):
+            break
+        for candidate in reversed(leading):
+            if _is_qualifier_line(candidate) or candidate.lower() in _SECTION_TITLE_LINES:
+                continue
+            company = _company_from_subtitle(candidate)
+            if company:
+                return company
+    return ""
+
+
 def parse_profile_experiences(source) -> List[dict]:
     """Pure parse of a rendered `/details/experience/` page — no Selenium, so it is unit-testable
     against captured DOM instead of only against a live session."""
     experiences = []
     nodes, _selector = experience_entity_nodes(source)
+    pending_company = ""
     for node in nodes:
-        parsed = parse_experience_entity(visible_lines(node), grouped=_holds_child_roles(node))
-        if parsed:
-            experiences.append(parsed)
+        lines = visible_lines(node)
+        parsed = parse_experience_entity(lines, grouped=_holds_child_roles(node))
+        if not parsed:
+            # A company header is not an experience by itself, but it names the roles that follow it
+            # when LinkedIn renders them as siblings rather than as children.
+            pending_company = _company_header(lines) or pending_company
+            continue
+        if not parsed["company_name"]:
+            parsed["company_name"] = _company_from_ancestors(node, lines) or pending_company
+        experiences.append(parsed)
     return experiences
 
 
@@ -547,11 +713,11 @@ def get_profile_experiences(driver, employee_link) -> List[dict]:
     profile_experiences = parse_profile_experiences(source)
 
     if not profile_experiences:
-        page_text = source.get_text("\n") if source else ""
         # A profile with no experience section is normal — that is a DEBUG no-op. A page that
         # plainly renders dated entries and still parses to nothing is selector rot, and the point
-        # of this issue is that it used to be invisible.
-        if any(_DATE_RANGE_RE.match(" ".join(line.split())) for line in page_text.splitlines()):
+        # of this issue is that it used to be invisible. Read the page the same way the parser does,
+        # or a date range split across inline spans would make the rot look like an empty profile.
+        if source is not None and _has_date_range(_rendered_lines(source)):
             log_warning("Profile experience page rendered dated entries but none parsed",
                         action_type="scrape_profile")
         else:

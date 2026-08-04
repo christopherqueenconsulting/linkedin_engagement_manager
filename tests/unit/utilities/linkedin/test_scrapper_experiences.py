@@ -243,6 +243,194 @@ class TestParseProfileExperiences:
         assert parse_profile_experiences(page) == []
 
 
+def _live_role(title: str, dates: str, duration: str, detail: str, skills: str) -> str:
+    """The 2026-08-03 live render: no doubled markup, date range across inline spans, comma skills."""
+    start, end = dates.split(" - ")
+    return ("<li>"
+            f"<div>{title}</div>"
+            f'<div><span>{start}</span><span> - </span><span>{end}</span>'
+            f'<span> · </span><span>{duration}</span></div>'
+            f"<div>{detail}</div>"
+            f"<div>Skills: {skills}</div>"
+            "</li>")
+
+
+# Rebuilt verbatim from the live /in/christopherqueen/details/experience/ grounding run on PR #984:
+# the footer's three help-link `role='listitem'` nodes that the old ladder picked, beside the real
+# entries in `main div[role='list'] li` — a company header followed by its roles as SIBLINGS.
+LIVE_PAGE = (
+    "<html><body><div data-sdui-screen='com.linkedin.sdui.profile.Experience'>"
+    "<main>"
+    "<h2>Experience</h2>"
+    "<div role='list'>"
+    "<li><div>Christopher Queen Consulting</div><div>9 yrs 6 mos</div></li>"
+    + _live_role("AI Ethics Guardian", "Mar 2019 - Present", "7 yrs 6 mos",
+                 "🛡️ Safeguards against biases in deployed models.",
+                 "Compliance and Regulations, Artificial Intelligence for Business, +9 skills")
+    + _live_role("AI Solutions Sorcerer", "Mar 2019 - Present", "7 yrs 6 mos",
+                 "Builds the automation clients ask for.", "Python, LangChain, +4 skills")
+    + _live_role("Magento Expert | E-commerce Dominator", "Mar 2017 - Mar 2023", "6 yrs 1 mo",
+                 "For the past 6 years, Christopher Queen Consulting has shipped storefronts.",
+                 "Magento, PHP")
+    + "</div></main>"
+    "<div role='listitem'><div>Questions?</div><div>Visit our Help Center.</div></div>"
+    "<div role='listitem'><div>Manage your account and privacy</div><div>Go to your Settings.</div></div>"
+    "<div role='listitem'><div>Recommendation transparency</div><div>Learn more.</div></div>"
+    "</div></body></html>")
+
+
+class TestLiveGroundedPage:
+    """PR #984's live run: the ladder picked the FOOTER and parsed nothing. These pin why."""
+
+    def test_the_dated_rung_wins_over_more_specific_footer_listitems(self):
+        from cqc_lem.utilities.linkedin.scrapper import experience_entity_nodes
+
+        nodes, selector = experience_entity_nodes(_soup(LIVE_PAGE))
+
+        assert selector == "main div[role='list'] li"
+        assert len(nodes) == 4  # company header + three roles
+
+    def test_help_center_footer_is_never_an_experience(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(LIVE_PAGE))
+
+        assert all("Help Center" not in str(experience) for experience in parsed)
+
+    def test_every_dated_role_parses_with_its_company_title_and_dates(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(LIVE_PAGE))
+
+        assert [e["company_name"] for e in parsed] == ["Christopher Queen Consulting"] * 3
+        titles = [e["positions"][0]["title"] for e in parsed]
+        assert titles == ["AI Ethics Guardian", "AI Solutions Sorcerer",
+                          "Magento Expert | E-commerce Dominator"]
+        assert parsed[2]["positions"][0]["start_date"] == "Mar 2017"
+        assert parsed[2]["positions"][0]["end_date"] == "Mar 2023"
+
+    def test_description_and_comma_separated_skills_survive_the_parse(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        first = parse_profile_experiences(_soup(LIVE_PAGE))[0]["positions"][0]
+
+        assert first["details"] == ["🛡️ Safeguards against biases in deployed models."]
+        assert first["skills"] == ["Compliance and Regulations",
+                                   "Artificial Intelligence for Business"]
+
+    def test_the_section_heading_is_never_read_as_the_company(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(LIVE_PAGE))
+
+        assert all(e["company_name"] != "Experience" for e in parsed)
+
+
+class TestEntityLadder:
+    def test_an_undated_rung_is_still_reported_when_no_rung_has_dates(self):
+        """The probe needs to see what DID render — an empty tuple explains nothing."""
+        from cqc_lem.utilities.linkedin.scrapper import experience_entity_nodes
+
+        page = _soup("<html><body><main><ul><li>Sign in</li></ul></main></body></html>")
+
+        nodes, selector = experience_entity_nodes(page)
+
+        assert selector == "main li"
+        assert len(nodes) == 1
+
+    def test_no_entities_at_all_returns_an_empty_selector(self):
+        from cqc_lem.utilities.linkedin.scrapper import experience_entity_nodes
+
+        assert experience_entity_nodes(_soup("<html><body><p>nothing</p></body></html>")) == ([], "")
+
+
+class TestRenderedLines:
+    def test_a_date_range_split_across_inline_spans_is_one_line(self):
+        """`get_text("\\n")` shatters it into three, and the date anchor with it."""
+        from cqc_lem.utilities.linkedin.scrapper import visible_lines
+
+        node = _soup("<li><div><span>Mar 2019</span><span> - </span>"
+                     "<span>Present</span><span> · </span><span>7 yrs</span></div></li>").find("li")
+
+        assert visible_lines(node) == ["Mar 2019 - Present · 7 yrs"]
+
+    def test_a_decorative_aria_hidden_icon_does_not_become_the_whole_entity(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity, visible_lines
+
+        node = _soup('<li><span aria-hidden="true">•</span><div>Staff Engineer</div>'
+                     "<div>Initech · Full-time</div><div>Jan 2021 - Present</div></li>").find("li")
+
+        assert visible_lines(node) == ["Staff Engineer", "Initech · Full-time", "Jan 2021 - Present"]
+        assert parse_experience_entity(visible_lines(node))["company_name"] == "Initech"
+
+    def test_a_line_break_inside_a_description_splits_the_line(self):
+        from cqc_lem.utilities.linkedin.scrapper import visible_lines
+
+        node = _soup("<li><div>Ran the migration.<br/>Then wrote it up.</div></li>").find("li")
+
+        assert visible_lines(node) == ["Ran the migration.", "Then wrote it up."]
+
+
+class TestCompanyContext:
+    def test_a_role_inherits_the_company_from_its_container(self):
+        """Roles selected as `li` carry no company of their own — the grouping does."""
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        page = _soup("<html><body><main><div role='list'>"
+                     "<div><div>Globex Corporation</div><div>6 yrs 1 mo</div>"
+                     "<li><div>Director of Engineering</div>"
+                     "<div>Mar 2022 - Present · 3 yrs 5 mos</div></li>"
+                     "</div></div></main></body></html>")
+
+        parsed = parse_profile_experiences(page)
+
+        assert parsed[0]["company_name"] == "Globex Corporation"
+        assert parsed[0]["positions"][0]["title"] == "Director of Engineering"
+
+    def test_a_previous_role_is_never_read_as_the_next_role_s_company(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        page = _soup("<html><body><main><div role='list'>"
+                     "<li><div>Consultant</div><div>Initech · Contract</div>"
+                     "<div>Jan 2015 - Dec 2016</div></li>"
+                     "<li><div>Advisor</div><div>Umbrella Inc</div>"
+                     "<div>Jan 2017 - Dec 2018</div></li>"
+                     "</div></main></body></html>")
+
+        parsed = parse_profile_experiences(page)
+
+        assert [e["company_name"] for e in parsed] == ["Initech", "Umbrella Inc"]
+
+    def test_a_header_without_a_duration_is_not_treated_as_a_company(self):
+        """"Experience" is a heading; inheriting it would label every role with it."""
+        from cqc_lem.utilities.linkedin.scrapper import _company_header
+
+        assert _company_header(["Experience"]) == ""
+        assert _company_header(["Christopher Queen Consulting", "9 yrs 6 mos"]) == (
+            "Christopher Queen Consulting")
+
+
+class TestSkillsLine:
+    def test_comma_separated_skills_drop_the_overflow_chip(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity
+
+        parsed = parse_experience_entity(
+            ["Engineer", "Acme", "Jan 2020 - Present",
+             "Skills: Compliance and Regulations, Artificial Intelligence, +9 skills"])
+
+        assert parsed["positions"][0]["skills"] == ["Compliance and Regulations",
+                                                    "Artificial Intelligence"]
+
+    def test_a_skills_label_on_its_own_line_still_reads_the_names(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity
+
+        parsed = parse_experience_entity(
+            ["Engineer", "Acme", "Jan 2020 - Present", "Skills:", "Python · Go"])
+
+        assert parsed["positions"][0]["skills"] == ["Python", "Go"]
+        assert parsed["positions"][0]["details"] == []
+
+
 class TestGetProfileExperiences:
     def _driver(self, html: str):
         from unittest.mock import MagicMock

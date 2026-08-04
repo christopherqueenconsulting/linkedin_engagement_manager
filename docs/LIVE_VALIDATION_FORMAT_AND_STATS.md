@@ -224,7 +224,11 @@ It emits one JSON report:
    `legacy_start_identifier` the pre-#970 positional parser branched on). Read
    `entities_with_dates`: `0` means the page did not render the experience section at all, while
    dated entities with an empty `experiences` means the line grammar moved and the sampled `lines`
-   are what the next parser pass is rewritten from.
+   are what the next parser pass is rewritten from. `selector_counts` gives the live hit count of
+   every ladder rung (plus `main`, `[data-view-name]`, `div[role='list']`) — that is what says
+   *which* rung won and what it beat, so a drifted run is diagnosable without a second hand-written
+   DOM pass (the 2026-08-03 run needed one: `data-view-name` was absent and the winning rung was
+   matching the page footer).
 
 ```bash
 sudo docker exec -i celery_worker_selenium python - --user-id 1 --article-editor-url \
