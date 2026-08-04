@@ -205,6 +205,15 @@ classifier/filer path and stamps `feedback.reviewed_by/reviewed_at`. Two consequ
   re-running the filer on it would match it to itself at similarity 1.0 and post a false "+1 another report"
   on the very issue it created. The panel's buttons alone are not the guard: its list is cached, and the
   filing beat or a second admin can settle a row between render and click.
+- **Approve is a human decision, so the unattended holds do not re-apply to it (issue #1036).**
+  `file_feedback_issue(..., admin_approved=True)` skips the per-user daily issue cap and files a `NEEDS_HUMAN`
+  (low-confidence) row instead of parking it back in `triaged`. Both holds exist because the batch pass runs
+  with nobody watching; re-applying them to an explicit approve returned 200 and left the row in `new`, so the
+  panel re-rendered it unchanged — which is what "the approve button does nothing" was. Confidence still
+  shapes the LABELS, so a shaky classification lands `needs-human` + assigned + Decision Comment and never
+  `agent:ready`. The NOISE and FAQ verdicts are unchanged: those settle the row, so the panel already shows
+  the admin what happened. What can still file nothing is GitHub refusing — the response carries `filed:
+  false` and the panel says so **at the button**, because that outcome changes nothing else on screen.
 `count_pending_admin_review()` reports the backlog on every filing pass so it can't grow silently.
 
 ### B.3 Deduplication / clustering (one recurring problem = one issue)
