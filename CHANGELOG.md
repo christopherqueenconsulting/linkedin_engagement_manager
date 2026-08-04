@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.132.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.131.0...v0.132.0) (2026-08-04)
+
+
+### Features
+
+* **engagement:** connect escalation when following doesn't unblock commenting (closes [#979](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/979)) ([#990](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/990)) ([4f9c16d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4f9c16db74095ca76c98b792c9a49bde538487d9))
+
+
+### Bug Fixes
+
+* **api:** gate the docs surface under /api, hide admin routes from the schema, trim /health/deep (closes [#1020](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1020)) ([#1024](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1024)) ([816837a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/816837a21d979be7877d85b7c3e5bd29080146d2))
+* **automation:** rebuild the permalink comment path on the SDUI engine (closes [#966](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/966)) ([#980](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/980)) ([dcd282d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dcd282dcdd3ce855c47eb999b06319ccd860dc69))
+
 ## [0.131.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.130.0...v0.131.0) (2026-08-04)
 
 
