@@ -20,6 +20,22 @@ gh pr edit <PR> --repo christopherqueenconsulting/linkedin_engagement_manager --
 Apply it **before** the PR merges. The label is read at merge time; adding it afterwards does
 nothing (use `gh workflow run release-auto-merge.yml` instead, which releases whatever is pending).
 
+## Who may apply it — the gate
+
+**The label being present is not evidence that it was authorised.** Labels have no ACL: anyone with
+triage can apply one. So `release-auto-merge.yml` reads the PR timeline for the **last** actor to
+apply `release:now` and refuses unless that actor is in `TRUSTED_LABELLERS` (the step's `env:`).
+
+It **fails closed**. An unreadable timeline, an unknown actor, or no readable `labeled` event all
+refuse the fast lane — and refusing costs only a few hours, because the PR still ships at the next
+scheduled window. A false positive costs an unreviewed production deploy.
+
+A refusal is a `::warning::` annotation and a red run, which is the point: it means someone applied
+a production-deploy label who is not authorised to.
+
+This is the same control `tick.sh` applies to `agent:ready` — see `docs/contribution-security.md`,
+which covers why a label doing the job of an access control was the underlying defect in both.
+
 ## When agents may apply it — the policy
 
 **Agents may add `release:now` on their own judgement, without asking, when the change is either:**
@@ -51,8 +67,8 @@ user-visible commenting failure, priority:high"* — so the choice is auditable 
 
 1. PR merges with the label.
 2. `release-auto-merge.yml` fires on `pull_request_target: closed`, sees `merged == true` and the
-   label, and waits (up to 10 min) for **release-please's own run for this merge commit** to
-   conclude successfully.
+   label, then **verifies who applied it** and waits (up to 10 min) for **release-please's own run
+   for this merge commit** to conclude successfully.
 3. It enables auto-merge on the release PR. The release PR still runs its own CI and still goes
    through the merge queue, so **a fast-laned release can never ship a red build**.
 4. Tag → `Build & Deploy Release` → blue/green cutover.

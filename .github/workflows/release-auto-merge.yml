@@ -51,6 +51,43 @@ jobs:
       (github.event.pull_request.merged == true &&
        contains(github.event.pull_request.labels.*.name, 'release:now'))
     steps:
+      # `release:now` ships a PR to production the moment it merges, bypassing the 4x-daily window.
+      # The `if:` above only checks the label is PRESENT — and labels have no ACL, so anyone with
+      # triage can apply one, and agents are authorised to self-apply it (docs/release-fast-lane.md).
+      # Presence is therefore not evidence. Verify WHO applied it, the same way tick.sh verifies
+      # `agent:ready` (docs/contribution-security.md).
+      #
+      # Fails CLOSED: an unreadable timeline means no fast lane, and the PR simply ships at the next
+      # scheduled window — the cost of a false negative is a few hours, the cost of a false positive
+      # is an unreviewed deploy.
+      - name: Verify who applied release:now
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Space-separated allowlist. Keep this tight: every name here can ship to production
+          # without waiting for a release window.
+          TRUSTED_LABELLERS: "gitchrisqueen"
+        run: |
+          set -euo pipefail
+          actor="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/timeline" --paginate \
+                     -H "Accept: application/vnd.github+json" \
+                     --jq '[.[] | select(.event=="labeled" and .label.name=="release:now")
+                           | .actor.login] | last // empty' 2>/dev/null || true)"
+          if [ -z "$actor" ]; then
+            echo "::warning title=Fast lane refused::could not read who applied release:now on #${PR_NUMBER}; it will ship at the next window."
+            exit 1
+          fi
+          for trusted in $TRUSTED_LABELLERS; do
+            if [ "$actor" = "$trusted" ]; then
+              echo "release:now applied by '${actor}' — fast lane authorised."
+              exit 0
+            fi
+          done
+          echo "::warning title=Fast lane refused::release:now on #${PR_NUMBER} was applied by '${actor}', who is not in TRUSTED_LABELLERS; it will ship at the next window."
+          exit 1
+
       # Wait for release-please's OWN run for this merge commit to finish — not merely for "a
       # release PR to exist". Those are different conditions and the difference broke a release:
       #
