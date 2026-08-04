@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.132.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.2...v0.132.3) (2026-08-04)
+
+
+### Bug Fixes
+
+* **dm:** send through a composer that names its recipient ([#1048](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1048)) ([5075570](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/50755705d38b176389392a5f602dff83a5c31aa3))
+
 ## [0.132.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.1...v0.132.2) (2026-08-04)
 
 
