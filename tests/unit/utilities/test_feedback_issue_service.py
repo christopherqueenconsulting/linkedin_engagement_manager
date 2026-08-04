@@ -1008,6 +1008,30 @@ class TestFileFeedbackIssue:
         assert 'needs-human' in result["labels"]
         assert create.call_args.kwargs["assignees"] == ["gitchrisqueen"]
 
+    def test_admin_approval_will_not_file_a_classification_that_never_happened(self):
+        """A low-confidence verdict and NO verdict are different things. The fail-safe result
+        carries the RAW report as its `summary` — filing it would publish the feedback text this
+        module promises never reaches GitHub, and `issue_created` is terminal, so one LiteLLM blip
+        would spend the report on an issue nobody can re-approve (issue #1036)."""
+        svc = _mod()
+        unclassified = _classification(confidence=0.0, title="comments break sometimes",
+                                       summary="comments break sometimes and I have no idea why",
+                                       errors=["llm call failed: connection refused"])
+        with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                patch(f"{_SVC}.classify_feedback", return_value=unclassified), \
+                patch(f"{_SVC}.create_github_issue") as create, \
+                patch(f"{_SVC}.comment_on_issue") as commenter, \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.update_feedback_triage") as triage:
+            result = svc.file_feedback_issue({"id": 24, "user_id": 9, "body": "comments break"},
+                                             clusters=[], admin_approved=True)
+        assert result["action"] == "error"
+        assert result["reason"] == svc.CLASSIFIER_UNAVAILABLE_REASON
+        create.assert_not_called()
+        commenter.assert_not_called()
+        # Left in `new` on purpose — the admin retries once the classifier is back.
+        triage.assert_not_called()
+
     def test_admin_approval_still_respects_the_noise_and_faq_verdicts(self):
         """Those two DO settle the row, so the panel already shows the admin what happened — and
         forcing an issue for something classified as noise is not what Approve is for."""

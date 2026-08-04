@@ -152,6 +152,11 @@ class IssueAction:
     ERROR = 'error'                  # GitHub call failed; row left for the next pass to retry
 
 
+# An `ERROR` result the admin panel must word differently: nothing was refused by GitHub, the
+# classifier never answered. Retrying is the right next action, so the row is left in `new`.
+CLASSIFIER_UNAVAILABLE_REASON = 'classification unavailable'
+
+
 # Conventional-commit type per category, so a filed title reads like the commit that will close it.
 _COMMIT_TYPES: dict[FeedbackCategory, str] = {
     FeedbackCategory.BUG: 'fix',
@@ -737,6 +742,18 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
     # loop with no exit (#1036), so it files instead. The confidence still shapes the LABELS below:
     # a low-confidence item lands `needs-human` + assigned + with a Decision Comment, never
     # `agent:ready`, so nothing gets built unattended off a shaky classification.
+    #
+    # …but a LOW-confidence verdict and NO verdict are not the same thing. `errors` marks the
+    # fail-safe result: the classifier never answered (proxy down, off-contract reply), so its
+    # `summary` is the RAW report and its category/severity are placeholders. Filing that would
+    # publish the raw feedback text this module promises never reaches GitHub, under a title made
+    # of the reporter's first line — and `ISSUE_CREATED` is terminal, so a 30-second LiteLLM blip
+    # would permanently spend the report on a content-free issue nobody can re-approve. Leave the
+    # row in `new` and say so: retrying an approve costs the admin one click.
+    if admin_approved and classification.errors:
+        log_info(f"Feedback {feedback_id} approve could not file — the classifier never answered "
+                 f"({'; '.join(classification.errors)[:200]})", user_id=user_id)
+        return _result(IssueAction.ERROR, feedback_id, reason=CLASSIFIER_UNAVAILABLE_REASON)
 
     vector = as_vector(row.get("embedding")) or embed_text(body)
 

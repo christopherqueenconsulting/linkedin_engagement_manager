@@ -214,6 +214,11 @@ classifier/filer path and stamps `feedback.reviewed_by/reviewed_at`. Two consequ
   `agent:ready`. The NOISE and FAQ verdicts are unchanged: those settle the row, so the panel already shows
   the admin what happened. What can still file nothing is GitHub refusing — the response carries `filed:
   false` and the panel says so **at the button**, because that outcome changes nothing else on screen.
+  A low-confidence verdict and NO verdict are NOT the same thing: the fail-safe classification (`errors`
+  set — the LLM never answered) carries the RAW report as its `summary`, so approving it would publish the
+  feedback text §B.2 promises never reaches GitHub, under `issue_created` — which is terminal. That case
+  files nothing, leaves the row in `new`, and returns `reason: classification unavailable` so the panel
+  tells the admin to retry rather than blaming GitHub.
 `count_pending_admin_review()` reports the backlog on every filing pass so it can't grow silently.
 
 ### B.3 Deduplication / clustering (one recurring problem = one issue)

@@ -148,6 +148,36 @@ describe('AdminFeedbackPage (issue #793)', () => {
     expect(inRow).toContain('Try Approve again')
   })
 
+  // Same `error` verb, different instruction: GitHub never saw this one. Reporting it as a refusal
+  // would point the admin at the wrong system.
+  it('says the classifier was unreachable rather than blaming GitHub', async () => {
+    get.mockResolvedValue(listPayload([
+      {
+        id: 1,
+        email: 'user@x.com',
+        is_admin_reporter: false,
+        source: 'widget',
+        type_hint: 'bug',
+        body: 'Something is broken',
+        status: 'new',
+        github_issue_number: null,
+        created_at: '2026-07-29T12:00:00Z',
+      },
+    ]))
+    post.mockResolvedValue({ data: { detail: {
+      reviewed: true, action: 'approved', filed: false,
+      filing_result: { action: 'error', reason: 'classification unavailable' },
+    } } })
+
+    harness(<AdminFeedbackPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /approve/i })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    await waitFor(() => expect(screen.getAllByText(/triage classifier could not be reached/).length)
+      .toBeGreaterThan(0))
+    expect(screen.queryByText(/GitHub refused/)).toBeNull()
+  })
+
   it('names the issue a successful approve produced', async () => {
     get.mockResolvedValue(listPayload([
       {

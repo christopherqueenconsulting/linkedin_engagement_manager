@@ -38,11 +38,23 @@ const FILING_OUTCOMES: Record<string, string> = {
   error: 'GitHub refused the filing — nothing changed. Try Approve again.',
 }
 
+// A `reason` that changes what the admin should DO next outranks the verb it arrived with: an
+// `error` because the classifier never answered is not GitHub refusing, and a `dropped` because the
+// report is empty is not a noise verdict. Both would otherwise be reported as something else.
+const FILING_REASONS: Record<string, string> = {
+  'classification unavailable':
+    'The triage classifier could not be reached — nothing filed. Try Approve again.',
+  'empty body': 'This report has no text — dismissed, no issue filed',
+}
+
 function outcomeText(result: ReviewResult | undefined): string | null {
   if (!result) return null
   if (result.action === 'dismissed') return 'Dismissed'
   const filing = result.filing_result?.action
-  const label = (filing && FILING_OUTCOMES[filing]) || `Approved — filer: ${filing ?? 'done'}`
+  const reason = result.filing_result?.reason
+  const label = (reason && FILING_REASONS[reason])
+    || (filing && FILING_OUTCOMES[filing])
+    || `Approved — filer: ${filing ?? 'done'}`
   const number = result.filing_result?.issue_number
   return number ? `${label} (#${number})` : label
 }
