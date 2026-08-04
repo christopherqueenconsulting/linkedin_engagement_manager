@@ -6659,6 +6659,39 @@ def clean_stale_invites(self, user_id: int):
 
 DM_SEND_CONFIRM_SECONDS = float(os.getenv("DM_SEND_CONFIRM_SECONDS", "6"))
 
+_DM_COMPOSER_XPATH = '//div[contains(@class,"contenteditable")]//p'
+# How many times the type step re-finds a composer that went stale under it.
+DM_COMPOSER_ATTEMPTS = int(os.getenv("DM_COMPOSER_ATTEMPTS", "3"))
+_DM_COMPOSER_SETTLE_SECONDS = 1.5
+
+
+def _type_dm_into_composer(driver: WebDriver, wait, message: str) -> None:
+    """Clear the composer and type the message, re-finding the box on every attempt.
+
+    An element handle is NOT safe to hold across interactions here: the compose overlay re-mounts
+    while LinkedIn hydrates it, so the box found the moment it first appears goes stale a keystroke
+    later — `StaleElementReferenceException` on the very next `send_keys` is what killed every send
+    once the composer itself started resolving. Each attempt therefore re-finds the box, and because
+    each one CLEARS before typing, a retry after a half-typed message can never send a doubled one."""
+    last_error = None
+    for attempt in range(max(1, DM_COMPOSER_ATTEMPTS)):
+        try:
+            box = get_element_wait_retry(driver, wait, _DM_COMPOSER_XPATH, 'Finding Message Box',
+                                         max_try=1)
+            if box is None:
+                raise NoSuchElementException("no message composer to type into")
+            # Select All then Delete — `clear()` does not work on a contenteditable.
+            box.send_keys(Keys.CONTROL + "a")
+            box.send_keys(Keys.DELETE)
+            simulate_typing(driver, box, message)
+            return
+        except StaleElementReferenceException as e:
+            last_error = e
+            log_debug(f"Message composer went stale while typing (attempt {attempt + 1})",
+                      action_type="dm")
+            time.sleep(_DM_COMPOSER_SETTLE_SECONDS)
+    raise last_error
+
 
 def _dm_send_landed(driver: WebDriver, message: str, user_id: int = None,
                     profile_url: str = "") -> bool:
@@ -6727,23 +6760,7 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
             log_debug(f"No composer addressed to {profile_url} ({composer.reason}); not sending",
                       user_id=user_id, action_type="dm")
         else:
-            # Find the message box
-            message_box = get_element_wait_retry(driver, wait,
-                                                 '//div[contains(@class,"contenteditable")]//p',
-                                                 'Finding Message Box', max_try=1, )
-
-            # Select All (Must be done this way. Clear command does not work)
-            message_box.send_keys(Keys.CONTROL + "a")
-            # Delete what is selected
-            message_box.send_keys(Keys.DELETE)
-
-            # Find the message box (again)
-            message_box = get_element_wait_retry(driver, wait,
-                                                 '//div[contains(@class,"contenteditable")]//p',
-                                                 'Finding Message Box', max_try=1, )
-
-            # Type the message into the box
-            simulate_typing(driver, message_box, message)
+            _type_dm_into_composer(driver, wait, message)
 
             # Sleep so send button can become active
             time.sleep(2)
