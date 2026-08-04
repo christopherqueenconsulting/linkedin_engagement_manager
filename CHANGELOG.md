@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.132.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.0...v0.132.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **feedback:** make triage Approve actually file, and say what it did (closes [#1036](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1036)) ([#1037](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1037)) ([283f99e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/283f99e5435039afb2818891dac4faf35103940d))
+
+
+### Documentation
+
+* **claude:** trim CLAUDE.md to the map and relocate detail to docs/ (closes [#1033](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1033)) ([1238d56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1238d562a597e016cfbe5b3f8af7c12107aa01da))
+* **claude:** trim CLAUDE.md to the map, relocate detail to docs/ (closes [#1033](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1033)) ([#1034](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1034)) ([1238d56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1238d562a597e016cfbe5b3f8af7c12107aa01da))
+
 ## [0.132.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.131.0...v0.132.0) (2026-08-04)
 
 
