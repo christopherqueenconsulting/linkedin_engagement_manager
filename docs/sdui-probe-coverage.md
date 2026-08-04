@@ -132,5 +132,7 @@ be rediscovered:
 - **Own post stats** — `_post_social_counts` scoring every signal 0 is indistinguishable from a post
   with no engagement.
 
-The probes above grade all three today, so the weekly sweep catches them; the tripwires would catch
-them in production, per run, which is stronger.
+The weekly sweep grades the last three, so it catches them there; the tripwires would catch them in
+production, per run, which is stronger. The connect-dialog note affordance is the odd one out and
+deliberately so: `--connect-dialog` needs a target profile, so it is NOT in the weekly sweep, and it
+reports the affordance without grading it. That reading only exists when somebody runs the probe.

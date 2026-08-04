@@ -1656,10 +1656,11 @@ def connect_dialog_verdict(reading: Optional[dict]) -> str:
         # An absent note affordance is NOT drift on its own — a spent personalized-invite quota
         # hides it, and production treats that as the expected bare-invite fallback (#1039). It is
         # reported here because this probe is the only place the two readings can be told apart.
-        note = ("" if reading.get("note_affordance_present") else
-                " NOTE: no Add-a-note control on this dialog — production sends the invite bare and "
+        # `is False` deliberately: a reading that never looked (None) must claim nothing.
+        note = (" NOTE: no Add-a-note control on this dialog — production sends the invite bare and "
                 "logs that at DEBUG (#1039); read it as selector rot only if this account still has "
-                "personalized invites left.")
+                "personalized invites left."
+                if reading.get("note_affordance_present") is False else "")
         return f"the custom-invite URL rendered the Connect dialog's own controls.{note}{tail}"
     if reading.get("invite_pending"):
         return (f"an invite is already pending for this profile, so no dialog renders — this "
@@ -1697,16 +1698,23 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
     dialog = find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
                         required=False, warn_on_miss=False, max_try=1, visible_only=True)
     # Which of the dialog's two controls rendered is what tells a spent personalized-invite quota
-    # apart from a rotated note selector — the distinction production cannot make (#1039).
-    note_button = find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
-                             required=False, warn_on_miss=False, max_try=1, visible_only=True)
-    bare_send = find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS, "Send without a note",
-                           required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    # apart from a rotated note selector — the distinction production cannot make (#1039). Only
+    # asked when a dialog actually rendered: on a page with no dialog at all both would come back
+    # absent, and "no Add-a-note control" is then a note-affordance reading nobody took. None, not
+    # False — and two waits this probe does not have to sit through.
+    note_present = bare_send_present = None
+    if dialog is not None:
+        note_present = find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
+                                  required=False, warn_on_miss=False, max_try=1,
+                                  visible_only=True) is not None
+        bare_send_present = find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS,
+                                       "Send without a note", required=False, warn_on_miss=False,
+                                       max_try=1, visible_only=True) is not None
     reading.update({"url": getattr(driver, "current_url", ""),
                     "dialog_present": dialog is not None,
                     "dialog_control": element_evidence(dialog) if dialog is not None else None,
-                    "note_affordance_present": note_button is not None,
-                    "bare_send_present": bare_send is not None,
+                    "note_affordance_present": note_present,
+                    "bare_send_present": bare_send_present,
                     "page_text": page_text_sample(driver),
                     "visible_controls": visible_button_labels(driver)})
 
