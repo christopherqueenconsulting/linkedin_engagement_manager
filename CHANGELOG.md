@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.131.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.130.0...v0.131.0) (2026-08-04)
+
+
+### Features
+
+* **auth:** add agent-scoped session tokens for headless automation ([#1027](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1027)) ([d344b8f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d344b8ff1bd6943c77ebd9e922262bf79515ffb2))
+
 ## [0.130.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.129.2...v0.130.0) (2026-08-03)
 
 
