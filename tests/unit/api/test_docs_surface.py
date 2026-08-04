@@ -62,6 +62,46 @@ class TestDocsSurfaceMovedUnderApi:
         assert _is_public_api_path("/api/docs/oauth2-redirect")
         assert not _is_public_api_path("/api/docs-admin")
 
+    def test_the_surface_answers_with_no_credential_once_the_gate_is_LIVE(self, client):
+        """The tests above run in the CI config, where `API_ACCESS_TOKENS` is unset and
+        `_api_token_required` short-circuits to False for EVERY path — so they would pass just as
+        happily if the three entries had never been added to `_PUBLIC_API_PREFIXES`.
+
+        That prod/CI difference is the shape of #1020 itself, so pin the prod config directly: with
+        tokens configured the docs surface still answers uncredentialed, and neither a look-alike
+        sibling nor an admin route rides in on it."""
+        with patch("cqc_lem.api.main._API_ACCESS_TOKEN_SET", {"a-configured-token"}):
+            for path in ("/api/docs", "/api/redoc", "/api/openapi.json",
+                         "/api/docs/oauth2-redirect"):
+                assert client.get(path).status_code == 200, path
+            assert client.get("/api/docs-admin").status_code == 401
+            assert client.get("/api/admin/automation-status",
+                              params={"user_id": 1}).status_code == 401
+
+    def test_the_legacy_redirect_beats_the_SPA_catch_all(self, client):
+        """`src/cqc_lem/ui/dist` does not exist in a checkout, so the SPA catch-all is never
+        registered in CI and the redirect tests above have nothing competing with them. In prod it
+        IS registered, and `/{full_path:path}` matches `/docs` — the redirects only win because
+        Starlette matches in registration order and they are declared first. Register a stand-in
+        catch-all so that ordering is actually exercised: without it, moving those three
+        registrations below the SPA block would turn every legacy docs link into a 200 HTML page
+        and no test would notice."""
+        from fastapi.responses import HTMLResponse
+        from cqc_lem.api.main import app
+
+        app.get("/{full_path:path}", include_in_schema=False)(
+            lambda full_path: HTMLResponse("<html>spa</html>"))
+        try:
+            for old, new in (("/docs", "/api/docs"), ("/redoc", "/api/redoc"),
+                             ("/openapi.json", "/api/openapi.json")):
+                r = client.get(old, follow_redirects=False)
+                assert r.status_code == 301, f"{old} was answered by the SPA, not the redirect"
+                assert r.headers["location"] == new
+            # ...and the stand-in really was reachable, so the assertions above are not vacuous.
+            assert client.get("/some-spa-route").text == "<html>spa</html>"
+        finally:
+            app.router.routes.pop()
+
 
 class TestAdminRoutesAreNotInTheSchema:
     def test_no_admin_route_appears_in_the_public_schema(self, client):

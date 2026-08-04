@@ -13,7 +13,7 @@ work for my account now?"
 | App (SPA + API) | <https://lem.christopherqueenconsulting.com> |
 | API base prefix | <https://lem.christopherqueenconsulting.com/api> |
 | **Interactive API docs (Swagger)** | <https://lem.christopherqueenconsulting.com/api/docs> |
-| OpenAPI schema (import into Postman) | <https://lem.christopherqueenconsulting.com/api/openapi.json> |
+| OpenAPI schema | <https://lem.christopherqueenconsulting.com/api/openapi.json> |
 | **Live browser (VNC)** | <https://lemvnc.christopherqueenconsulting.com/?autoconnect=1&password=secret> |
 
 > The VNC link auto-connects and passes the noVNC password (`secret`) in the
@@ -48,6 +48,10 @@ correct, so the recipe below works for all of them.
 > are now excluded from the generated schema, which means Swagger's **Try it out** cannot drive
 > them. **Nothing about their auth or behaviour changed**; use curl (§3) or Postman (§4) instead,
 > both of which are documented below and send the two headers for you.
+>
+> The same exclusion applies to `/api/openapi.json`, so **importing the schema into Postman will
+> not give you the admin requests** — that is what the checked-in collection in §4 is for. It
+> lists them explicitly and does not depend on the schema.
 
 > Print the values:
 > ```bash
