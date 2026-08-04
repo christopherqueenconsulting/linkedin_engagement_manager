@@ -85,6 +85,25 @@ _TEXT_NODE_LOCATORS = [
                "/ancestor-or-self::*[self::a or self::button or @role='button'][1]"),
 ]
 
+# The compose link LinkedIn's own top card renders carries TWO params, and both matter:
+# `profileUrn` selects the thread, `recipient` is what actually ADDS the person to it. Built with
+# `profileUrn` alone the page opens on an empty "Enter message recipients" field — a composer that is
+# open but addressed to NOBODY (2026-08-04 grounding run). That reads as success to `thread_reading`,
+# which is harmless for the read path but is the difference between sending and not sending.
+_COMPOSE_SCREEN_CONTEXT = "NON_SELF_PROFILE_VIEW"
+
+# Chrome that shares the recipient container with the pills. 'Enter message recipients' is the EMPTY
+# state's placeholder — reading it as a name is exactly how an unaddressed composer would pass for an
+# addressed one.
+_RECIPIENT_CHROME_RE = re.compile(
+    r"^(?:enter message recipients?|show suggested recipients.*|add a recipient.*|type a name.*)$",
+    re.IGNORECASE)
+
+_RECIPIENT_PILL_JS = (
+    "const box=document.querySelector("
+    "\"[class*='msg-connections-typeahead__added-recipients'], [class*='msg-compose__recipients']\");"
+    "return box ? box.innerText : null;")
+
 _MORE_LOCATORS = [
     (By.CSS_SELECTOR, "main button[aria-label^='More actions']"),
     (By.CSS_SELECTOR, "button[aria-label^='More actions']"),
@@ -264,6 +283,114 @@ def profile_urn_from_page(driver: WebDriver, profile_url: str = "") -> Optional[
         return None
 
 
+def compose_url_for(urn: str) -> str:
+    """LinkedIn's OWN compose URL for a person, rebuilt from their profile URN.
+
+    The `recipient` half is the URN's trailing id and is not optional — see `_COMPOSE_SCREEN_CONTEXT`.
+    """
+    ident = (urn or "").split(":")[-1]
+    return (f"{COMPOSE_URL}?profileUrn={quote(urn, safe='')}"
+            f"&recipient={quote(ident, safe='')}"
+            f"&screenContext={_COMPOSE_SCREEN_CONTEXT}")
+
+
+def composer_recipient(driver: WebDriver) -> str:
+    """The name the OPEN composer is addressed to — '' when it is addressed to nobody.
+
+    This is the send path's proof of delivery target. An empty string is never "probably fine": it is
+    the unaddressed compose screen, and typing into it sends to whoever a typeahead happens to
+    resolve, or to nobody at all.
+    """
+    try:
+        raw = driver.execute_script(_RECIPIENT_PILL_JS)
+    except Exception as e:
+        log_warning("Could not read the message composer's recipient", exc=e, action_type="dm")
+        return ""
+    for line in str(raw or "").splitlines():
+        line = " ".join(line.split())
+        if line and not _RECIPIENT_CHROME_RE.match(line):
+            return line
+    return ""
+
+
+@dataclass
+class ComposerOpen:
+    """The outcome of opening a composer for SENDING: open is not enough, it must be addressed."""
+    opened: bool = False
+    recipient: str = ""
+    urn: Optional[str] = None
+    surface: Optional[str] = None
+    reason: Optional[str] = None
+
+    @property
+    def addressed(self) -> bool:
+        return self.opened and bool(self.recipient)
+
+    def __bool__(self) -> bool:
+        return self.addressed
+
+
+def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url: str,
+                            person_name: str = None, user_id: int = None,
+                            timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> ComposerOpen:
+    """Open a composer that is PROVABLY addressed to this person — the one way LEM reaches a DM it is
+    about to send (issue #1030).
+
+    Deliberately NOT `open_message_thread`. That ladder answers "can I read this thread", and its
+    routes click whichever matching control the DOM offers first; for a READ a wrong thread yields a
+    wrong verdict, but for a SEND it puts our message in a stranger's inbox — the #1012 hazard class.
+    So this navigates instead of clicking: the person's URN is resolved from their OWN profile page
+    (slug-scoped, `profile_urn_from_page`), the compose URL is rebuilt from it, and the composer's
+    recipient pill is then read back as the outcome. Both halves have to hold. No URN, or a composer
+    that names nobody, returns not-addressed and the caller must NOT send — refusing to congratulate
+    someone is recoverable, messaging the wrong person is not.
+    """
+    result = ComposerOpen()
+    try:
+        driver.get(profile_url)
+    except WebDriverException as e:
+        log_warning("Could not open the profile to reach its message composer", exc=e,
+                    user_id=user_id, action_type="dm")
+        result.reason = "profile_unreachable"
+        return result
+    time.sleep(random.uniform(2, 4))
+
+    urn = profile_urn_from_page(driver, profile_url)
+    if not urn:
+        log_warning(f"No profile URN on {profile_url} — cannot address a message to them",
+                    user_id=user_id, action_type="dm")
+        result.reason = "no_urn"
+        return result
+    result.urn = urn
+
+    try:
+        driver.get(compose_url_for(urn))
+    except WebDriverException as e:
+        log_warning("Could not open the message composer", exc=e, user_id=user_id, action_type="dm")
+        result.reason = "compose_unreachable"
+        return result
+
+    reading = _wait_thread_open(driver, timeout)
+    result.opened = bool(reading["events"] or reading["composer"])
+    result.surface = reading.get("surface")
+    if not result.opened:
+        log_warning(f"The message composer never rendered for {profile_url}", user_id=user_id,
+                    action_type="dm")
+        result.reason = "composer_missing"
+        return result
+
+    result.recipient = composer_recipient(driver)
+    if not result.recipient:
+        log_warning(f"The message composer for {profile_url} names no recipient", user_id=user_id,
+                    action_type="dm")
+        result.reason = "unaddressed"
+        return result
+
+    log_info(f"Message composer addressed to '{result.recipient}' ({result.surface})",
+             user_id=user_id, action_type="dm")
+    return result
+
+
 def thread_reading(driver: WebDriver) -> dict:
     """Raw verification read: message-event count, compose-form presence, and which surface rendered."""
     try:
@@ -392,7 +519,7 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: str = None,
     urn = urn or profile_urn_from_page(driver, profile_url)
     if not urn:
         return None
-    driver.get(f"{COMPOSE_URL}?profileUrn={quote(urn, safe='')}")
+    driver.get(compose_url_for(urn))
     reading = _wait_thread_open(driver, timeout)
     return reading if (reading["events"] or reading["composer"]) else None
 

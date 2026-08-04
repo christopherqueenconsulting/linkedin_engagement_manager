@@ -88,7 +88,8 @@ from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
 from cqc_lem.utilities.linkedin.message_thread import ThreadState, name_matches, \
-    open_message_thread, read_last_message, read_last_sender, resolve_self_name
+    name_from_profile_url, open_addressed_composer, open_message_thread, read_last_message, \
+    read_last_sender, resolve_self_name
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -6656,57 +6657,108 @@ def clean_stale_invites(self, user_id: int):
     return report
 
 
-def send_dm_now(user_id: int, profile_url: str, message: str) -> bool:
-    """Core DM send: open the profile, type + send a DM (must be a 1st-degree connection), log the
-    result. Returns True on success. Shared by send_private_dm (trigger-driven) and send_scheduled_dm
-    (issue #306 scheduler) so both use the same send + logging path."""
+DM_SEND_CONFIRM_SECONDS = float(os.getenv("DM_SEND_CONFIRM_SECONDS", "6"))
+
+
+def _dm_send_landed(driver: WebDriver, message: str, user_id: int = None,
+                    profile_url: str = "") -> bool:
+    """Did the message actually POST, or did we just click something? (issue #1030)
+
+    A click that lands is not a message that sent — the whole reason this lane went unnoticed is that
+    `dm_sent = True` was written the moment the Send button accepted a click. Confirmation is the
+    OUTCOME: our text is the newest message in the thread. A composer that still holds the full text
+    is a positive DISPROOF and fails. Anything unreadable falls back to trusting the click (the #875
+    pattern) and warns, because reporting a delivered message as failed invites a duplicate send."""
+    head = " ".join((message or "").split())[:60]
+    deadline = time.monotonic() + max(0.0, DM_SEND_CONFIRM_SECONDS)
+    while True:
+        last = " ".join((read_last_message(driver) or "").split())
+        if head and head in last:
+            return True
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+
+    try:
+        still_typed = any(head and head in " ".join((el.text or "").split())
+                          for el in driver.find_elements(
+                              By.CSS_SELECTOR, "div.msg-form__contenteditable")
+                          if el.is_displayed())
+    except WebDriverException:
+        still_typed = False
+    if still_typed:
+        log_warning(f"DM never left the composer for {profile_url}", user_id=user_id,
+                    action_type="dm")
+        return False
+
+    log_warning(f"Could not confirm the DM landed for {profile_url}; trusting the send click",
+                user_id=user_id, action_type="dm")
+    return True
+
+
+def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str = None) -> bool:
+    """Core DM send: open a composer addressed to this person, type + send a DM (must be a 1st-degree
+    connection), log the result. Returns True on success. Shared by send_private_dm (trigger-driven),
+    send_scheduled_dm (issue #306 scheduler), the appreciation lane and catch-up congratulations, so
+    all four use the same send + logging path — and all four broke together when this one did.
+
+    The entry point is `open_addressed_composer`, NOT a Message control on the profile: LinkedIn now
+    renders that affordance as an `<a href='/messaging/compose/…'>` and the old
+    `button[aria-label*='Message']` matched nothing, so every DM this function was asked to send
+    failed at the first step (issue #1030). Navigating to the person's own compose URL also gives the
+    send path something a click never had — a recipient it can read back and verify before typing."""
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id)
 
     login_to_linkedin(driver, wait, user_email, user_password)
 
-    # Open the profile URL
-    driver.get(profile_url)
-
     dm_sent = False
 
     myprint("Sending DM: " + message)
 
     try:
+        composer = open_addressed_composer(driver, wait, profile_url, person_name=person_name,
+                                           user_id=user_id)
+        if not composer.addressed:
+            # DEBUG, not a warning: `open_addressed_composer` already warned where it DETECTED the
+            # fault, and restating it here would file a second grouped defect for one lost DM (the
+            # #1038 wrapper rule). The FAILURE log row below is this lane's record.
+            log_debug(f"No composer addressed to {profile_url} ({composer.reason}); not sending",
+                      user_id=user_id, action_type="dm")
+        else:
+            # Find the message box
+            message_box = get_element_wait_retry(driver, wait,
+                                                 '//div[contains(@class,"contenteditable")]//p',
+                                                 'Finding Message Box', max_try=1, )
 
-        # Click on message button
-        click_element_wait_retry(driver, wait, '//main//button[contains(@aria-label,"Message")]',
-                                 "Finding Message Button", max_retry=1, use_action_chain=True)
+            # Select All (Must be done this way. Clear command does not work)
+            message_box.send_keys(Keys.CONTROL + "a")
+            # Delete what is selected
+            message_box.send_keys(Keys.DELETE)
 
-        # Find the message box
-        message_box = get_element_wait_retry(driver, wait, '//div[contains(@class,"contenteditable")]//p',
-                                             'Finding Message Box', max_try=1, )
+            # Find the message box (again)
+            message_box = get_element_wait_retry(driver, wait,
+                                                 '//div[contains(@class,"contenteditable")]//p',
+                                                 'Finding Message Box', max_try=1, )
 
-        # Select All (Must be done this way. Clear command does not work)
-        message_box.send_keys(Keys.CONTROL + "a")
-        # Delete what is selected
-        message_box.send_keys(Keys.DELETE)
+            # Type the message into the box
+            simulate_typing(driver, message_box, message)
 
-        # Find the message box (again)
-        # message_box = driver.switch_to.active_element
-        message_box = get_element_wait_retry(driver, wait, '//div[contains(@class,"contenteditable")]//p',
-                                             'Finding Message Box', max_try=1, )
+            # Sleep so send button can become active
+            time.sleep(2)
 
-        # Type the message into the box
-        simulate_typing(driver, message_box, message)
+            # Click the send button
+            click_element_wait_retry(driver, wait,
+                                     "//button[contains(@class,'msg-form__send-button')]",
+                                     "Finding Send Button", max_retry=1, use_action_chain=True)
 
-        # Sleep so send button can become active
-        time.sleep(2)
-
-        # Click the send button
-        click_element_wait_retry(driver, wait, "//button[contains(@class,'msg-form__send-button')]",
-                                 "Finding Send Button", max_retry=1, use_action_chain=True)
-
-        dm_sent = True
+            dm_sent = _dm_send_landed(driver, message, user_id=user_id, profile_url=profile_url)
 
     except Exception as e:
-        myprint(f"DM send failed. Error: {str(e)}")
+        # ERROR, not myprint: this lane failed silently for weeks because every send logged its
+        # failure at INFO, which never reaches PostHog and so never escalated (issue #1030).
+        log_error("DM send failed", exc=e, user_id=user_id, action_type="dm")
 
     finally:
         # Update DB logs with DM Sent
@@ -8075,15 +8127,40 @@ def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: i
     return moments
 
 
+# A catch-up card leads with the person's name and runs straight into the milestone on the SAME line
+# ("Jay Bailey Completed 5 years at Emory University Congrats on your…"), so splitting on newlines
+# keeps the whole card. These are the phrases the milestone half starts with — everything before the
+# earliest one is the name.
+_CATCHUP_NAME_STOP_RE = re.compile(
+    r"\s+(?=(?:completed|celebrat\w*|congrats|congratulate|happy|started\s+a\s+new|is\s+now|"
+    r"was\s+(?:promoted|featured|mentioned|quoted)|has\s+been|joined|graduat\w*|earned|"
+    r"\d+\s*(?:year|yr)s?\b)\b)", re.IGNORECASE)
+# A display name can carry a long credential tail ('DeWarren K. Langley, JD, MPA, MHFA, YMHFA, SWL'),
+# so this only has to be tight enough to catch an uncut card, not to model a name.
+_CATCHUP_NAME_MAX_WORDS = 12
+
+
 def _catchup_name_from_card(text: str, link) -> str:
-    """The card's person name: the profile link's own text when LinkedIn renders it, else the first
-    line of the card (which leads with the name)."""
+    """The card's person name, with the milestone half cut off.
+
+    The profile link wraps the WHOLE card on the current surface, so its text is not a name — taking
+    it verbatim put 'Jay Bailey Completed 5 years at Emory Un…' in the UI and in every downstream
+    greeting (issue #1030). The name is what precedes the milestone phrase; when nothing looks like
+    one, the profile slug is the fallback, because a wrong name is worse than a plain one."""
     try:
-        name = (getText(link) or "").strip().split("\n")[0]
+        raw = (getText(link) or "").strip().split("\n")[0]
     except (StaleElementReferenceException, NoSuchElementException):
-        name = ""
-    if not name:
-        name = (text or "").strip().split(" ·")[0]
+        raw = ""
+    if not raw:
+        raw = (text or "").strip().split("\n")[0].split(" ·")[0]
+
+    name = " ".join(_CATCHUP_NAME_STOP_RE.split(" ".join(raw.split()), maxsplit=1)[0].split())
+    if not name or len(name.split()) > _CATCHUP_NAME_MAX_WORDS:
+        try:
+            derived = name_from_profile_url(link.get_attribute("href") or "")
+        except (StaleElementReferenceException, NoSuchElementException, AttributeError):
+            derived = ""
+        name = derived.title() or name
     return name[:255]
 
 
@@ -8289,7 +8366,8 @@ def send_catchup_touch(self, touch_id: int):
         return f"Catch-up touch {touch_id} deferred (daily DM cap reached)"
 
     try:
-        sent = send_dm_now(user_id, touch["profile_url"], touch["message"])
+        sent = send_dm_now(user_id, touch["profile_url"], touch["message"],
+                           person_name=touch.get("person_name"))
     except LinkedInRateLimited as e:
         myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)

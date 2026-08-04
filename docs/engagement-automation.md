@@ -117,6 +117,29 @@ The ONE way LEM opens (and reads) a 1:1 thread.
 - Winning route logged (`action_type='followup'`); `--dm-thread-url` reports the `reply_state`
   live.
 
+### Reading a thread and SENDING into one are different questions (issue #1030)
+
+The ladder answers "can I read this thread". A send needs more, so `send_dm_now` does **not** use it.
+
+- `open_addressed_composer` is the ONE entry point for a message about to be sent. It **navigates,
+  never clicks**: the URN comes off the person's own profile page, the compose URL is rebuilt from
+  it, and the composer's recipient is read back. A wrong thread costs the read path a wrong verdict;
+  it costs the send path a message in a stranger's inbox (the #1012 hazard class).
+- The compose URL needs **`recipient=` as well as `profileUrn=`** — `profileUrn` alone selects the
+  thread but adds nobody, so the page opens on an empty "Enter message recipients" field. That
+  composer is *open* (so `thread_reading` reports success) and addressed to no one; `compose_url_for`
+  is the one place that URL is built, for both paths.
+- `composer_recipient` is the proof, and `''` is never "probably fine" — no recipient means **do not
+  send**. Refusing to congratulate someone is recoverable.
+- **Sent means the message LANDED**, not that Send accepted a click (`_dm_send_landed`): our text as
+  the newest message confirms; text still sitting in the composer disproves; unreadable trusts the
+  click and warns, because reporting a delivered message as failed invites a duplicate send.
+- What broke: LinkedIn renders the affordance as `<a href='/messaging/compose/…'>`, and
+  `send_dm_now` was still clicking `button[aria-label*='Message']`. It matched nothing, so **every**
+  DM failed at step one — private DMs, scheduled DMs, appreciation and catch-up congratulations all
+  ride this one function. It stayed invisible because the failure logged at INFO, which never
+  reaches PostHog and so never escalated; it logs ERROR now.
+
 ## Owned-asset CTA loop (`resolve_artifact_delivery` in `content_alignment.py` + `_queue_artifact_delivery`, issue #624)
 
 The ONE map from a CTA to its asset, and it names the CHANNEL — **lead magnet** is the
