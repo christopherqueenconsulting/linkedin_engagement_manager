@@ -13,48 +13,66 @@ import textwrap
 from pathlib import Path
 
 import pytest
-import yaml
 
 pytestmark = pytest.mark.unit
 
 WORKFLOW = (Path(__file__).resolve().parents[2] / ".github" / "workflows"
             / "release-auto-merge.yml")
 SOURCE = WORKFLOW.read_text(encoding="utf-8")
-PARSED = yaml.safe_load(SOURCE)
-STEPS = PARSED["jobs"]["merge-pending-release"]["steps"]
-VERIFY = next(s for s in STEPS if "Verify who applied" in (s.get("name") or ""))
+
+# Extracted by regex rather than parsed: PyYAML is not in the unit lane's dependencies, and the
+# repo already reads shell out of YAML this way (test_agent_pipeline_phasefix.py).
+STEP_NAMES = re.findall(r"^      - name: (.+)$", SOURCE, re.M)
+
+
+def _step(name_fragment: str) -> str:
+    """The full YAML block of the step whose name contains `name_fragment`."""
+    m = re.search(rf"^      - name: [^\n]*{re.escape(name_fragment)}[^\n]*\n"
+                  rf"(?:.*?)(?=^      - name: |\Z)", SOURCE, re.M | re.S)
+    assert m, f"step matching {name_fragment!r} not found"
+    return m.group(0)
+
+
+VERIFY = _step("Verify who applied")
+
+
+def _run_block(step: str) -> str:
+    """The step's `run:` script, dedented so bash sees it as the workflow does."""
+    m = re.search(r"^        run: \|\n(.*?)(?=^        \S|\Z)", step, re.M | re.S)
+    assert m, "no run: block in the verification step"
+    return textwrap.dedent(m.group(1))
 
 
 class TestTheGateIsWired:
     def test_the_verification_step_exists(self):
-        assert VERIFY is not None
+        assert VERIFY.strip()
 
     def test_it_runs_before_anything_enqueues_a_release(self):
         # A check that runs after the enqueue is decoration.
-        names = [s.get("name") or "" for s in STEPS]
-        assert names.index(VERIFY["name"]) == 0
+        assert "Verify who applied" in STEP_NAMES[0]
 
     def test_it_only_applies_to_the_fast_lane_not_the_scheduled_window(self):
         # The 4x-daily cron carries no PR and no label; gating it would stop every release.
-        assert VERIFY["if"] == "github.event_name == 'pull_request_target'"
+        assert "if: github.event_name == 'pull_request_target'" in VERIFY
 
     def test_the_allowlist_is_explicit_and_not_empty(self):
-        assert VERIFY["env"]["TRUSTED_LABELLERS"].strip()
+        m = re.search(r'TRUSTED_LABELLERS:\s*"([^"]*)"', VERIFY)
+        assert m and m.group(1).strip()
 
     def test_the_label_presence_check_is_still_there_too(self):
         # Provenance is an ADDITIONAL gate, not a replacement — a PR without the label must still
         # not fast-lane.
-        cond = PARSED["jobs"]["merge-pending-release"]["if"]
-        assert "release:now" in cond and "merged == true" in cond
+        job_if = re.search(r"^    if: >-\n(.*?)(?=^    steps:)", SOURCE, re.M | re.S).group(1)
+        assert "release:now" in job_if and "merged == true" in job_if
 
     def test_the_step_reads_the_LAST_labeled_event(self):
         # A label removed and re-added by someone else belongs to whoever added it last.
-        assert "| last" in VERIFY["run"]
+        assert "| last" in _run_block(VERIFY)
 
     def test_untrusted_input_is_passed_through_env_not_interpolated_into_the_script(self):
         # The ${{ }} -> shell interpolation hazard that codeql-pr-gate.yml has. The PR number is
         # numeric, but the habit is the point.
-        assert "${{" not in VERIFY["run"]
+        assert "${{" not in _run_block(VERIFY)
 
 
 class TestTheGateLogic:
@@ -67,7 +85,7 @@ class TestTheGateLogic:
         gh = bin_dir / "gh"
         gh.write_text("#!/usr/bin/env bash\n" + actor_output, encoding="utf-8")
         gh.chmod(0o755)
-        script = textwrap.dedent(VERIFY["run"])
+        script = _run_block(VERIFY)
         return subprocess.run(
             ["bash", "-c", script], capture_output=True, text=True,
             env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path),
