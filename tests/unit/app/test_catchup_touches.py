@@ -567,7 +567,9 @@ class TestSendCatchupTouch:
         p = self._patches(self._touch())
         with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"] as enq:
             out = send_catchup_touch.run(touch_id=3)
-        send.assert_called_once_with(1, "https://www.linkedin.com/in/jane", "Congrats Jane!")
+        # The stored name rides along so the send path can seed the messaging-search fallback.
+        send.assert_called_once_with(1, "https://www.linkedin.com/in/jane", "Congrats Jane!",
+                                     person_name=self._touch()["person_name"])
         upd.assert_called_once_with(3, CatchupTouchStatus.SENT)
         enq.assert_called_once()
         assert "sent" in out
@@ -1235,3 +1237,53 @@ class TestZeroWalkTripwire:
              patch(f"{_RA}.log_warning") as warn:
             assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
         warn.assert_not_called()
+
+
+class TestCatchupNameFromCard:
+    """The profile link wraps the WHOLE card on today's surface, so its text is a milestone sentence,
+    not a name. Every one of these is a real card from the 2026-08-04 production rows (issue #1030)."""
+
+    @staticmethod
+    def _link(text, href="https://www.linkedin.com/in/jay-bailey-1a2b3c"):
+        link = MagicMock()
+        link.get_attribute.return_value = href
+        return link
+
+    @pytest.mark.parametrize("card,expected", [
+        ("Jay Bailey Completed 5 years at Emory University Congrats on your 5 year anniversary...",
+         "Jay Bailey"),
+        ("Cheyenne Paterson Completed 1 year at George Mason University Congrats on your 1 year",
+         "Cheyenne Paterson"),
+        ("Chutima Boonthum-Denecke Completed 20 years at Hampton University",
+         "Chutima Boonthum-Denecke"),
+        ("Michael Dedecek Celebrate Michael's birthday", "Michael Dedecek"),
+        ("Danielle Williams, MHSA Celebrate Danielle's birthday", "Danielle Williams, MHSA"),
+        ("Richard Valdez III Completed 5 years at Somewhere", "Richard Valdez III"),
+        ("Deva Prasanna S Completed 1 year at L&T", "Deva Prasanna S"),
+        ("Jane Doe started a new position as CTO at Acme", "Jane Doe"),
+    ])
+    def test_the_milestone_half_is_cut_off(self, card, expected):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.getText", return_value=card):
+            assert ra._catchup_name_from_card(card, self._link(card)) == expected
+
+    def test_a_credential_tail_is_kept_because_it_is_part_of_the_name(self):
+        from cqc_lem.app import run_automation as ra
+        card = ("DeWarren K. Langley, JD, MPA, MHFA, YMHFA, SWL Completed 10 years at "
+                "Charles Hamilton Houston Foundation, Inc.")
+        with patch(f"{_RA}.getText", return_value=card):
+            assert ra._catchup_name_from_card(card, self._link(card)) == \
+                "DeWarren K. Langley, JD, MPA, MHFA, YMHFA, SWL"
+
+    def test_a_card_with_no_milestone_phrase_falls_back_to_the_slug(self):
+        # Better a plain name off the URL than a paragraph in the greeting.
+        from cqc_lem.app import run_automation as ra
+        card = " ".join(f"word{i}" for i in range(20))
+        link = self._link(card, href="https://www.linkedin.com/in/jane-doe-8a4b21")
+        with patch(f"{_RA}.getText", return_value=card):
+            assert ra._catchup_name_from_card(card, link) == "Jane Doe"
+
+    def test_a_bare_name_is_left_alone(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.getText", return_value="Jay Bailey"):
+            assert ra._catchup_name_from_card("Jay Bailey", self._link("Jay Bailey")) == "Jay Bailey"

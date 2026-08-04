@@ -249,13 +249,17 @@ class TestGovernorAccounting:
     def test_a_sent_dm_is_reported_and_a_failed_one_is_not(self):
         from cqc_lem.app import run_automation as ra
         from cqc_lem.utilities.human_pacing import ACTION_DM
+        from cqc_lem.utilities.linkedin.message_thread import ComposerOpen
+        addressed = ComposerOpen(opened=True, recipient="Jane Doe", urn="urn:li:fsd_profile:X")
         for sent in (True, False):
             with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e", "p")), \
                  patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
                  patch(f"{_RA}.login_to_linkedin"), \
+                 patch(f"{_RA}.open_addressed_composer", return_value=addressed), \
                  patch(f"{_RA}.click_element_wait_retry"), \
                  patch(f"{_RA}.get_element_wait_retry",
                        return_value=MagicMock() if sent else None), \
+                 patch(f"{_RA}._dm_send_landed", return_value=True), \
                  patch(f"{_RA}.simulate_typing"), \
                  patch(f"{_RA}.time.sleep"), \
                  patch(f"{_RA}.insert_new_log"), \

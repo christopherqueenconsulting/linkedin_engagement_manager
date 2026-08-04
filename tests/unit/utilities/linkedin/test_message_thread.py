@@ -65,6 +65,8 @@ class FakeDriver:
         self.urls = []
         self.sender = None
         self.body = None
+        # What the composer's recipient container renders; None means there is no container at all.
+        self.recipient = None
 
     def get(self, url):
         self.urls.append(url)
@@ -79,6 +81,8 @@ class FakeDriver:
             return self.sender
         if script is mt._LAST_MESSAGE_JS:
             return self.body
+        if script is mt._RECIPIENT_PILL_JS:
+            return self.recipient
         if "arguments[0].click()" in script:
             args[0].click()
             return None
@@ -233,7 +237,10 @@ class TestRoutes:
         d.get = _get
         result = self._ladder(d)
         assert result.route == mt.ROUTE_DIRECT_URL
-        assert d.urls[-1] == f"{mt.COMPOSE_URL}?profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF"
+        # `recipient` is what ADDS the person; profileUrn alone opens an unaddressed composer.
+        assert d.urls[-1] == (f"{mt.COMPOSE_URL}?profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF"
+                              f"&recipient=ACoAAABCDEF"
+                              f"&screenContext={mt._COMPOSE_SCREEN_CONTEXT}")
 
     def test_the_urn_is_captured_before_any_route_navigates_away(self):
         # An earlier route can leave us on a page that no longer carries the person's URN — the
@@ -252,7 +259,7 @@ class TestRoutes:
         d.get = _get
         result = self._ladder(d)
         assert result.route == mt.ROUTE_DIRECT_URL
-        assert d.urls[-1].endswith("ACoAAABCDEF")
+        assert "profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF" in d.urls[-1]
 
     def test_direct_url_route_prefers_the_compose_anchors_own_urn(self):
         d = FakeDriver(page_source="<code>urn:li:fsd_profile:WRONGONE</code>")
@@ -419,3 +426,100 @@ class TestResolveSelfName:
         with patch("cqc_lem.utilities.db.get_user_linkedin_display_name") as lookup:
             assert mt.resolve_self_name(None, profile) == "Jordan Alvarez"
         lookup.assert_not_called()
+
+
+class TestComposeUrl:
+    """LinkedIn's own top-card link carries profileUrn AND recipient — the 2026-08-04 grounding run
+    found that dropping the second one opens a composer addressed to nobody."""
+
+    def test_the_url_addresses_the_person_not_just_the_thread(self):
+        url = mt.compose_url_for(URN)
+        assert "profileUrn=urn%3Ali%3Afsd_profile%3AACoAAABCDEF" in url
+        assert "recipient=ACoAAABCDEF" in url
+
+    def test_the_recipient_is_the_urns_trailing_id(self):
+        assert "recipient=ACoAAABCDEF" in mt.compose_url_for(URN)
+
+
+class TestComposerRecipient:
+    def test_the_pill_name_is_the_recipient(self):
+        d = FakeDriver()
+        d.recipient = "Jay Bailey\nShow suggested recipients for your message"
+        assert mt.composer_recipient(d) == "Jay Bailey"
+
+    def test_the_empty_state_placeholder_is_not_a_recipient(self):
+        # This is the whole hazard: 'Enter message recipients' is long enough to read as a name.
+        d = FakeDriver()
+        d.recipient = "Enter message recipients"
+        assert mt.composer_recipient(d) == ""
+
+    def test_no_recipient_container_at_all_is_empty(self):
+        assert mt.composer_recipient(FakeDriver()) == ""
+
+    def test_a_js_failure_reads_as_unaddressed_rather_than_raising(self):
+        d = FakeDriver()
+        d.execute_script = MagicMock(side_effect=WebDriverException("boom"))
+        assert mt.composer_recipient(d) == ""
+
+
+class TestOpenAddressedComposer:
+    """The send path's contract: open is not enough, it has to be addressed to the right person."""
+
+    @staticmethod
+    def _driver(recipient="Jane Doe", thread=None):
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.recipient = recipient
+
+        def _get(url):
+            d.urls.append(url)
+            if "compose" in url:
+                d.thread = thread or {"events": 0, "composer": True, "overlay": False}
+
+        d.get = _get
+        return d
+
+    def test_an_addressed_composer_is_the_success_case(self):
+        d = self._driver()
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert result.addressed and bool(result) is True
+        assert result.recipient == "Jane Doe"
+        assert result.urn == URN
+        assert "recipient=ACoAAABCDEF" in d.urls[-1]
+
+    def test_a_composer_naming_nobody_is_refused(self):
+        d = self._driver(recipient="Enter message recipients")
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert not result.addressed
+        assert result.reason == "unaddressed"
+
+    def test_no_urn_never_guesses_a_recipient(self):
+        d = self._driver()
+        d.page_source = ""  # nothing on the page identifies this person
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert not result.addressed
+        assert result.reason == "no_urn"
+        assert not any("compose" in u for u in d.urls)  # and never opened a composer to find out
+
+    def test_a_composer_that_never_renders_is_not_addressed(self):
+        d = self._driver()
+        d.get = lambda url: d.urls.append(url)  # nothing ever opens
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert not result.addressed
+        assert result.reason == "composer_missing"
+
+    def test_an_unreachable_profile_stops_before_composing(self):
+        d = self._driver()
+        d.get = MagicMock(side_effect=WebDriverException("no route"))
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert not result.addressed
+        assert result.reason == "profile_unreachable"
+
+    def test_it_never_clicks_a_message_control(self):
+        # Clicking whichever control the DOM offers first is how a send reaches a stranger; this
+        # path navigates to the person's OWN compose URL instead.
+        d = self._driver()
+        stranger = FakeElement({"href": "/messaging/compose/?profileUrn=urn%3Ali%3Afsd_profile%3ASTRANGER"})
+        d.dom[(By.CSS_SELECTOR, "main a[href*='/messaging/compose/']")] = [stranger]
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert result.addressed
+        assert stranger.clicked == 0
