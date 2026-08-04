@@ -2060,9 +2060,15 @@ def advance_roster_connect(driver: WebDriver, user_id: int, target: dict, prefs:
     connected or pending never draws an invite. Only `needs_connection` survives that reading, and
     only then does the opt-in invite fire."""
     stored = _connect_status_of(target)
-    if stored not in (ConnectStatus.NEEDS_CONNECTION, ConnectStatus.REQUESTED):
-        # 'unknown' has nothing to advance (the escalation has not fired), and 'connected'/'failed'
-        # are done. Reading the card anyway would spend a JS round-trip per target per run.
+    if stored not in (ConnectStatus.NEEDS_CONNECTION, ConnectStatus.REQUESTED,
+                      ConnectStatus.FAILED):
+        # 'unknown' has nothing to advance (the escalation has not fired) and 'connected' is the end
+        # of the ladder. Reading either anyway would spend a JS round-trip per target per run.
+        # 'failed' IS re-read, for the reason `reconcile_roster_follow_state` re-reads
+        # 'follow_failed' (#962): terminal means no more SENDS, not no more reading — a send we
+        # could not verify may well have landed, and a user who connected by hand must not keep a
+        # badge saying the request failed. The reading can never invite: only 'needs_connection'
+        # survives it, and `queue_roster_connect_invite` re-checks the terminal set anyway.
         return RosterConnectOutcome(stored, False)
     state = reconcile_roster_connect_state(driver, user_id, target)
     if state != ConnectStatus.NEEDS_CONNECTION:
@@ -2399,6 +2405,13 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
                 stats["commented_key_sources"][key_source] = \
                     stats["commented_key_sources"].get(key_source, 0) + 1
                 record_target_engagement(user_id, profile_url)
+                # That call just stood any pending escalation down (issue #979) — commenting WORKED,
+                # so "following didn't unlock commenting" is no longer true. The connect rung below
+                # reads THIS row, which the run loaded before the comment landed, so the in-memory
+                # copy has to be stood down too or the rung would spend the account's one invite on
+                # a target we can demonstrably comment on.
+                if _connect_status_of(target) == ConnectStatus.NEEDS_CONNECTION:
+                    target["connect_status"] = ConnectStatus.UNKNOWN.value
                 log_info(f"Commented on roster target {author or profile_url} "
                          f"({target.get('category')})", user_id=user_id, action_type="comment",
                          task_name="comment_on_roster_posts")

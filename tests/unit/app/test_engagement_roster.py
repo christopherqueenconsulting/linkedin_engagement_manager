@@ -876,12 +876,20 @@ class TestAdvanceRosterConnect:
         reconcile.assert_not_called()
         queue.assert_not_called()
 
-    def test_a_terminal_target_is_never_read_or_re_invited(self):
-        for status in ("connected", "failed"):
-            outcome, reconcile, queue = self._run(status)
-            assert outcome.invited is False
-            reconcile.assert_not_called()
-            queue.assert_not_called()
+    def test_a_connected_target_is_never_read_or_re_invited(self):
+        outcome, reconcile, queue = self._run("connected")
+        assert outcome.invited is False
+        reconcile.assert_not_called()
+        queue.assert_not_called()
+
+    def test_a_failed_target_is_still_re_read_but_never_re_invited(self):
+        # Terminal means no more SENDS, not no more reading — the same rule
+        # `reconcile_roster_follow_state` follows for 'follow_failed' (#962). A user who connected
+        # by hand must not keep a badge saying the request failed.
+        outcome, reconcile, queue = self._run("failed", read="connected")
+        reconcile.assert_called_once()
+        queue.assert_not_called()
+        assert outcome == ("connected", False)
 
     def test_a_needs_connection_target_invites_once(self):
         from cqc_lem.utilities.db import ConnectStatus
@@ -1199,3 +1207,52 @@ class TestConnectStateShortenedLabels:
         from cqc_lem.app.run_automation import _CONNECT_STATE_JS
         line = next(l for l in _CONNECT_STATE_JS.splitlines() if "pending = true" in l)
         assert "named &&" in line
+
+
+class TestALandedCommentStandsTheRungDown:
+    """The seam between the comment walk and the connect rung. `record_target_engagement` stands a
+    pending escalation down in the DB, but the rung reads the row the run loaded BEFORE the comment
+    landed — so without the in-memory stand-down the same pass would invite an account it had just
+    successfully commented on, and burn that target's one shot forever."""
+
+    def _walk(self, engaged: bool):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ConnectStatus
+        target = _target("https://www.linkedin.com/in/jane")
+        target["connect_status"] = "needs_connection"
+        with ExitStack() as es:
+            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p("get_engagement_targets", return_value=[target])
+            p("wait_for_ajax")
+            p("_card_for_textbox", return_value=MagicMock())
+            p("_post_author_from_card", return_value="Jane Author")
+            p("_post_permalink_from_card", return_value=None)
+            p("has_commented_post", return_value=False)
+            p("has_user_commented_on_post_url", return_value=False)
+            p("_passes_hard_excludes", return_value=True)
+            p("post_is_relevant", return_value=True)
+            p("_engage_card", return_value=engaged)
+            p("record_target_engagement", return_value=True)
+            p("roster_follow_budget", return_value=0)
+            p("_outbound_hold_reason", return_value="")
+            p("reconcile_roster_connect_state",
+              return_value=ConnectStatus.NEEDS_CONNECTION)
+            queue = p("queue_roster_connect_invite", return_value=True)
+            driver = MagicMock()
+            driver.find_elements.return_value = [_box("A roster author's post, long enough to scan.")]
+            driver.execute_script.return_value = None
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5,
+                                               {"roster_auto_connect": True}, "s", [], set())
+        return stats, queue, target
+
+    def test_a_target_we_just_commented_on_is_never_invited(self):
+        stats, queue, target = self._walk(engaged=True)
+        queue.assert_not_called()
+        assert stats["connect_requested"] == 0
+        assert target["connect_status"] == "unknown"
+
+    def test_a_target_we_could_not_comment_on_still_climbs_the_ladder(self):
+        # The stand-down must not disarm the rung itself — nothing landed here.
+        stats, queue, _ = self._walk(engaged=False)
+        queue.assert_called_once()
+        assert stats["connect_requested"] == 1

@@ -445,6 +445,7 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
 - **Observability:** every run emits `stale_invite_run`, including the ones that do nothing. A series
   carrying only withdrawals would reproduce exactly the invisible-stub problem this replaced;
   `rows_seen` is the tell.
+
 ## Connect escalation when following doesn't unblock commenting (issue #979)
 
 The rung above follow. The ladder per roster target is **blocked → follow (#962) → still blocked →
@@ -465,7 +466,11 @@ and has failed to change anything.
 - **A landed comment stands the escalation back down.** `record_target_engagement` resets
   `needs_connection` → `unknown` alongside the streak: commenting just worked, so "following didn't
   unlock commenting" is no longer true. Only that state is cleared — an invite already sent is a
-  fact about LinkedIn that a comment does not undo.
+  fact about LinkedIn that a comment does not undo. It stands down **in the run's own loaded row
+  too**, not just in the database: the connect rung reads the roster row as the walk loaded it, so a
+  target commented on THIS pass would otherwise still be carrying `needs_connection` when the rung
+  runs a few lines later, and would spend its one invite on an account we had just proved we can
+  comment on.
 - **The badge names the ONE move left.** Distinct copy from the #962 badge
   ("Following didn't unlock commenting — connect with this account"), and it SUPERSEDES it: two
   badges naming different moves for one account is how a user stops reading either.
@@ -473,7 +478,10 @@ and has failed to change anything.
   shows a Pending control or a 1st-degree marker on the page the roster pass has open, so
   `requested` and `connected` are read for nothing — no click, no budget, and NOT gated on either
   toggle, because a user who connected by hand must see their badge clear. It only ever moves
-  FORWARD: `unknown` means "we could not tell", never "the invite vanished".
+  FORWARD: `unknown` means "we could not tell", never "the invite vanished". `failed` is re-read
+  for the same reason #962 re-reads `follow_failed` — terminal means no more SENDS, not no more
+  reading, and a badge that can never clear is a permanently wrong answer. Only `connected` (the
+  end of the ladder) and `unknown` (nothing has escalated) skip the read.
 - **The connect reading names the page owner too** (`_CONNECT_STATE_JS`), for the reason
   `_FOLLOW_CONTROL_JS` does: "Connect" and "Message" render all over an activity page. A 1st-degree
   marker counts only inside the target's OWN `/in/<slug>` card, and a Message control counts only
