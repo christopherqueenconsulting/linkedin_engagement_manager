@@ -511,3 +511,38 @@ per-device revocable session on the Security card, so a long TTL is not a one-wa
 
 `sessions.scope` is `VARCHAR(32)` and `auth_audit_log.event` is `VARCHAR(50)`, so `agent` and
 `agent_token_minted` needed **no migration** — an ENUM would have.
+
+## The docs surface lives inside `/api` (issue #1020)
+
+At the FastAPI defaults the docs surface sits at `/docs`, `/redoc` and `/openapi.json` — **outside**
+`/api`, so the credential gate (which only inspects paths starting with `/api/`) never saw it and
+all three were served to anyone. The app now declares `docs_url="/api/docs"`,
+`redoc_url="/api/redoc"`, `openapi_url="/api/openapi.json"`, which puts them on the same side of
+that boundary as everything they describe; they are then re-opened **deliberately** as leaf entries
+in `_PUBLIC_API_PREFIXES` rather than by accident of routing.
+
+Three details are load-bearing:
+
+- **`swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect"` must be set explicitly.** FastAPI
+  defaults it to the literal `/docs/oauth2-redirect` and does NOT derive it from `docs_url`, so
+  moving `docs_url` alone strands the helper outside `/api` and breaks Swagger's Authorize flow
+  silently.
+- **The old paths 301 to the new ones** (`_DOCS_REDIRECTS`), registered before the SPA catch-all —
+  which would otherwise answer them with `index.html`. Permanent, matching the `/assets` redirect,
+  so bookmarks, README links and Postman imports keep working.
+- **`_hide_admin_routes_from_schema()` keeps every `/api/admin/*` operation out of the published
+  schema.** It walks the route table and flips `include_in_schema`, rather than decorating eighteen
+  routes with `include_in_schema=False`, because that failure mode is silent: a nineteenth admin
+  route added later would publish itself and nothing would say so. The count is logged
+  (`_ADMIN_ROUTES_HIDDEN`) so "nothing to hide" reads differently from "the walk matched nothing",
+  and `test_no_admin_route_appears_in_the_public_schema` checks the outcome.
+
+**Hidden is not gated.** The admin routes' auth is exactly what it was — `X-Admin-Secret` and, for
+the engagement test routes, the bearer alongside it. What changed is that the public schema no
+longer hands a prober the list of paths to aim at, and that Swagger's *Try it out* can no longer
+drive them. Use curl or the checked-in Postman collection instead:
+[`TESTING_ENGAGEMENT_API.md`](TESTING_ENGAGEMENT_API.md).
+
+The other unauthenticated surface, `GET /health/deep`, was trimmed in the same issue: it returns
+**counts only** — no worker or queue names — and `"status":"healthy"` stays the first key of the
+response, which is a monitor contract. See [`stack-watchdog.md`](stack-watchdog.md).
