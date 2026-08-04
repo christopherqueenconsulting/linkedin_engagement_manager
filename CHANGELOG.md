@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.132.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.3...v0.132.4) (2026-08-04)
+
+
+### Bug Fixes
+
+* **dm:** re-find the composer when it re-mounts mid-type ([#1050](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1050)) ([96c81c9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/96c81c9d427bc70194756ed979294a454011c48b))
+
 ## [0.132.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.2...v0.132.3) (2026-08-04)
 
 
