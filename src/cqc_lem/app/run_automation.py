@@ -7066,7 +7066,12 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
         return "Invitation deferred (LinkedIn throttled)"
     if sent:
         return CONNECTION_REQUEST_SENT_MESSAGE
-    log_warning(f"Connection request failed: {reason}", user_id=user_id, action_type="invite_connect")
+    # DEBUG, not a warning: every reason invite_to_connect_now returns has ALREADY been logged by
+    # the step that owns it — at ERROR with exc= for a dialog with no Send button, WARNING for no
+    # route to the dialog, INFO for an existing connection. Restating it here forked a SECOND
+    # grouped $exception (and a second auto-filed issue) for one lost invite (#1038 / #1042).
+    log_debug(f"Connection request failed: {reason}", user_id=user_id, action_type="invite_connect",
+              task_name="invite_to_connect")
     return f"Connection Request Failed: {reason}"
 
 
@@ -7101,8 +7106,10 @@ def send_roster_connect_invite(self, user_id: int, profile_url: str, message: st
         set_target_connect_status(user_id, profile_url, ConnectStatus.CONNECTED)
         return ALREADY_CONNECTED_MESSAGE
     set_target_connect_status(user_id, profile_url, ConnectStatus.FAILED)
-    log_warning(f"Roster connection request failed: {reason}", user_id=user_id,
-                action_type="invite_connect", task_name="send_roster_connect_invite")
+    # The 'failed' badge is the record that matters here; the reason itself was already logged by
+    # the step that owns it, so re-warning would double-count it into a second issue (#1038).
+    log_debug(f"Roster connection request failed: {reason}", user_id=user_id,
+              action_type="invite_connect", task_name="send_roster_connect_invite")
     return f"Roster connection request failed: {reason}"
 
 
@@ -7133,8 +7140,10 @@ def send_connection_request(self, request_id: int):
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
         return f"Connection request {request_id} deferred (LinkedIn throttled)"
     if not sent:
-        log_warning(f"Connection request {request_id} failed: {reason}", user_id=user_id,
-                    action_type="invite_connect")
+        # The reason is stored on the request row below and was already logged at its owning step;
+        # a warning here would only fork a second grouped issue for the same invite (#1038).
+        log_debug(f"Connection request {request_id} failed: {reason}", user_id=user_id,
+                  action_type="invite_connect", task_name="send_connection_request")
     update_connection_request_status(
         request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED,
         failure_reason=(None if sent else reason))

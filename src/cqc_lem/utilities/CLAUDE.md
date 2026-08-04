@@ -70,6 +70,12 @@ Two things follow for anyone writing a call site here:
    where you detect, not where you notice.** ONE unreadable card still warns twice, because the
    pre-click 'Reaction state' read warns too (issue #874, open); collapse that into the opener's
    signal as well, and never add a fourth.
+   A **task wrapper** counts as a caller: `invite_to_connect` / `send_connection_request` /
+   `send_roster_connect_invite` each re-logged the reason `invite_to_connect_now` handed back, but
+   every one of those reasons was already logged where it happened — ERROR with `exc=` for a dialog
+   with no Send button, WARNING for no route to the dialog, INFO for an existing connection — so one
+   lost invite filed TWO grouped issues (#1038 and #1042, same event, 23s apart). The wrappers log it
+   at DEBUG; the badge/row they write is the record that matters (issue #1038).
    The rule reads sideways for a **state-setter**: doing what you were asked is not a degraded path,
    however serious the state is. `pause_automation` warned every time it stored the global Selenium
    kill-switch, and maintenance mode sets one on EVERY release, so a routine deploy filed
