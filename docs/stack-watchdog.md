@@ -166,6 +166,15 @@ covering `degraded`, `unknown` and any non-200.
 > that is passing. `test_healthy_keyword_is_stable_for_body_assertions` pins it; if you ever need
 > to change it, re-configure the monitors in the same change.
 
+**Assert on that keyword and nothing else.** The literal is the only part of the body under
+contract — the *field set* is not, and #1020 changed it by dropping `lanes`. A monitor configured
+against the whole response, a byte length, or any field other than `status` therefore breaks on a
+change that is by design safe, and it breaks in the direction that looks like a passing check. If
+you inherit a monitor whose configuration you can't recall, open it and confirm it is keyword
+`"status":"healthy"` / Keyword Type **"does not exist"** before the next release that touches this
+endpoint deploys — verification is cheap, and a silently disarmed dead-man's switch is the one
+failure this layer cannot report about itself.
+
 Alert when the response is non-200 **or** the body's `status` is not `healthy`. Most monitors
 support a keyword/JSON assertion — use it, because a `degraded` body still returns **200** by
 design. A monitor checking only the HTTP status would have missed this outage exactly as `/health`
