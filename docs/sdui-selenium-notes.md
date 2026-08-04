@@ -122,6 +122,48 @@ per-card `log_warning` it replaced escalated to ERROR and filed a defect for a p
 design. It polls `_COMPOSER_MOUNT_POLLS` times rather than burning
 `WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1)` (~35s) on a card that never opened one.
 
+## A post PERMALINK runs the same engine as the feed — and is not a one-post page
+
+`comment_on_post` is the live comment task behind profile-viewer engagement and the outreach
+funnel's COMMENT stage. It used to key on `comments-comment-texteditor` and
+`comments-comment-box__submit-button--cr`, both removed by the SDUI rewrite, so the composer lookup
+could only time out and the run fell through to a bare `Keys.ENTER` whose own log line read "might
+not have worked" — a live comment path failing silently for both callers (issue #966).
+
+It now resolves its card with `_permalink_post_card()` and hands it to the SAME
+`react_to_post_inline` / `post_comment_inline` the feed walk uses, so there is no permalink-only
+composer lookup that can drift on its own. Three things the permalink surface adds:
+
+- **The page stacks recommendations under the post.** Each "More posts for you" is a full card with
+  its own comment action, so the card is chosen by the URN in the permalink. The top card is used
+  only when no card claims a URN at all, and a top card that provably belongs to a DIFFERENT post
+  returns None — refusing to comment beats commenting on a recommendation.
+- **React BEFORE commenting**, for the reason the feed walk does: submitting re-renders the card and
+  stales every element resolved from it. The same `INLINE_REACTIONS_ENABLED` tourniquet applies, so
+  one env flip stands both comment paths down on the next rotation.
+- **A comment that does not land is a FAILURE row and a RELEASED claim.** `post_comment_inline`
+  returns True only once the comment is verifiably posted, so a typed-but-unsubmitted comment is
+  never recorded as one (only SUCCESS rows count as "we commented here", so the failure row can't
+  self-block a retry).
+- **A landed comment spends the account envelope** (`record_action(user_id, ACTION_COMMENT)`, #626),
+  at the same point the feed walk spends its own. While this path posted nothing the missing call
+  cost nothing; a working path the governor can't see would let the feed walk and the roster lane
+  spend a full day's envelope on top of it.
+
+`check_commented`'s LinkedIn-side half went the same way: its
+`comments-comment-list__container` + `aria-label='• You'` XPath had matched nothing since the
+rewrite. It now reads `_comment_items` and matches our own profile slug EXACTLY
+(`_href_is_profile`), and it only runs when the caller passes `my_profile` — the slug is what
+identifies our comment. It deliberately does not call `_load_comment_thread` (a 1400x3400 resize to
+lazy-render a whole thread) for a check the logs ledger already covers — but it DOES poll
+(`_COMMENT_THREAD_MOUNT_POLLS`, stopping as soon as the thread stops growing): the comment list
+hydrates after `driver.get()` returns, so reading it on the first paint sees zero comments on a post
+that plainly has them, and the rebuilt guard would silently never fire either.
+
+Grounding: `scripts/linkedin_live_validation.py --permalink-comment <post-url>` reports card →
+Comment action → composer for a real permalink. It opens the composer and Escapes it; nothing is
+typed and no comment is left.
+
 ## A reply composer is resolved ONE way, for both reply paths
 
 `_reply_composer_for_comment()` is the only thing that decides which `div[role='textbox']` a reply

@@ -288,10 +288,32 @@ def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow
     myprint("Finished Typing!")
 
 
+# Why a permalink comment stopped, as the task's own return value. Named rather than inlined so the
+# Celery result reads the same for both callers (profile-viewer engagement and the outreach funnel)
+# and so a test can assert the outcome without matching prose.
+NO_COMMENTABLE_CARD_MESSAGE = "No commentable post card on this permalink page"
+COMMENT_NOT_POSTED_MESSAGE = "Comment did not post"
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'post_link']},
                   reject_on_worker_lost=True, rate_limit='4/m', queue='se_engage')
 def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
-    """Post a comment to the given post link"""
+    """Post a comment on the post a permalink points at (profile-viewer engagement + the outreach
+    funnel's COMMENT stage both fire through here).
+
+    Runs on the SAME SDUI engine as the feed walk — `_permalink_post_card` resolves the post's card,
+    `react_to_post_inline` / `post_comment_inline` do the work — rather than the class-keyed
+    `comments-comment-texteditor` / `comments-comment-box__submit-button--cr` XPaths it used to
+    carry. Those anchors were removed with LinkedIn's SDUI rewrite, so the composer lookup could
+    only time out and the run fell through to a bare Keys.ENTER that logged its own result as
+    "might not have worked" — a live comment path failing silently for both callers (issue #966).
+
+    The reaction now happens BEFORE the comment, for the reason the feed walk does it in that order:
+    submitting re-renders the card and stales every element resolved from it.
+
+    A comment that does not land is a FAILURE log row and a RELEASED claim, never a SUCCESS row —
+    `post_comment_inline` returns True only once the comment is verifiably posted, so the task no
+    longer reports a typed-but-unsubmitted comment as a comment."""
 
     # Check the database logs / claim ledger to make sure user hasn't already commented here.
     if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
@@ -312,115 +334,64 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
 
         login_to_linkedin(driver, wait, user_email, user_password)
 
-        # Create an instance of ActionChains
-        actions = ActionChains(driver)
-
         if post_link != driver.current_url:
             # Switch to post url
             driver.get(post_link)
+        time.sleep(random.uniform(2, 4))  # let the permalink page settle before reading cards
 
-        # Find the comment input area
-        comment_box = click_element_wait_retry(driver, wait,
-                                               '//div[contains(@class, "comments-comment-texteditor")]//div[@role="textbox"]',
-                                               "Finding the Comment Input Area", use_action_chain=True)
-
-        # Move viewport to the comment_box
-        actions.scroll_to_element(comment_box).perform()
-
-        # clear the contents of the comment_box
-        comment_box.clear()
-
-        # Simulate typing the comment
-        simulate_typing(driver, comment_box, comment_text)
-
-        # Sleep so post button shows up
-        time.sleep(2)
-
-        method_result = ''
-
-        try:
-            # Find and click the post button
-            click_element_wait_retry(driver, wait,
-                                     '//button[contains(@class, "comments-comment-box__submit-button--cr")]',
-                                     "Clicking Post Button", max_retry=1, use_action_chain=True)
-
-            myprint("Added Comment via Post Button")
-            method_result = "Added Comment via Post Button"
-
-            # Promote the claim to 'commented' and record the log.
-            mark_post_commented(user_id, post_link)
-            insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.SUCCESS,
-                           post_url=post_link, message=comment_text)
-
-        except NoSuchElementException:
-            # If the post button is not found, send a return key to post the comment
-            # comment_box.send_keys('\n')
-            comment_box.send_keys(Keys.ENTER)
-            # Update database with record of comment to this post
+        card = _permalink_post_card(driver, post_link, user_id=user_id)
+        if card is None:
+            release_post_claim(user_id, post_link)
             insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.FAILURE,
                            post_url=post_link, message=comment_text)
-            myprint("Added Comment via return key. This might not have worked")
-            method_result = "Added Comment via return key. This might not have worked"
+            return NO_COMMENTABLE_CARD_MESSAGE
 
-        try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+        post_content = _post_text_from_card(card)
+        method_result = ''
 
-            # Get the main like button
-            main_like_button = get_element_wait_retry(driver, wait,
-                                                      '//button[contains(@aria-label, "Like") and contains(@class,"artdeco-button")]',
-                                                      "Finding Main Like Button")
+        # React FIRST — the comment submit re-renders the card and stales the elements resolved from
+        # it, which is why the old post-comment reaction attempt could only fail. Same env tourniquet
+        # the feed walk honours (#816), so one flip stands both paths down on the next SDUI rotation.
+        if not INLINE_REACTIONS_ENABLED:
+            log_debug("Inline reactions disabled (INLINE_REACTIONS_ENABLED=False, issue #816)",
+                      user_id=user_id, action_type="comment")
+        else:
+            outcome = react_to_post_inline(driver, wait, card, post_content=post_content,
+                                           comment_text=comment_text, user_id=user_id)
+            if outcome is None:
+                # Already reacted — a no-op, not a failure (see the feed walk's identical handling).
+                log_debug("Post already carried our reaction — skipping", user_id=user_id,
+                          action_type="comment")
+            elif outcome:
+                method_result = "Added Post Reaction"
+            else:
+                # react_to_post_inline already warned wherever the failure actually was; warning
+                # again out here files a second defect for one condition (#878).
+                log_debug("No reaction landed on post — continuing to the comment", user_id=user_id,
+                          action_type="comment")
 
-            button_label_options = ['Like', 'Celebrate', 'Insightful', 'Support',
-                                    # 'Love', 'Funny' # TODO: Not sure if these are universal for all post
-                                    ]
+        if not post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
+            # Nothing landed — release the claim so a later run can retry, and record the attempt as
+            # a FAILURE. Only SUCCESS rows count as "we commented here", so this can't self-block.
+            release_post_claim(user_id, post_link)
+            insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.FAILURE,
+                           post_url=post_link, message=comment_text)
+            log_info("Comment did not land on this post", user_id=user_id, post_id=post_link,
+                     action_type="comment")
+            return " | ".join(filter(None, [method_result, COMMENT_NOT_POSTED_MESSAGE]))
 
-            # TODO: Use AI to get a preferences
-            button_to_click_key = random.choice(button_label_options)
-
-            max_retries = 3
-            for attempt in range(max_retries):
-
-                # Wait for new elements to appear (adjust time as needed)
-                time.sleep(5)  # This is needed for it to become visible
-                try:
-
-                    choice_dict = {}
-
-                    # For each key in the button_path_dict, get the element and add it to the choices list
-                    for button_label in button_label_options:
-                        button = get_element_wait_retry(driver, wait,
-                                                        f"//span[contains(@class,'menu')]//button[contains(@aria-label, '{button_label}')]",
-                                                        f"Finding {button_label} Button",
-                                                        element_always_expected=False, max_try=1)
-                        if button:
-                            choice_dict[button_label] = button
-
-                    # Get the choice dict keys as list
-                    choices = list(choice_dict.keys())
-
-                    # Randomly chose one of the available button options
-                    button_to_click_key = random.choice(choices)
-                    myprint(f"Clicking {button_to_click_key} Post Reaction")
-                    button_to_click = choice_dict[button_to_click_key]
-                    # Move to that button and click it
-                    # Hover over the main like button
-                    actions.scroll_to_element(main_like_button).move_to_element(main_like_button).move_to_element(
-                        button_to_click).click().perform()
-                    wait_for_ajax(driver)
-                    time.sleep(2)
-                    myprint("Added Post Reaction")
-                    method_result += " | Added Post Reaction"
-                    break  # Exit loop if click is successful
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        myprint(f"Removing {button_to_click_key} from choice options since it failed")
-                        button_label_options.remove(button_to_click_key)
-                        time.sleep(1)  # Wait a bit before retrying
-                    else:
-                        log_warning(f"Failed to click {button_to_click_key} post reaction", exc=e, user_id=user_id, post_id=post_link)
-                        method_result += f" | Added Post Reaction | Error: {e}"
-        except Exception as e:
-            log_warning("Error while clicking post reaction", exc=e, user_id=user_id, post_id=post_link)
-            method_result += f"Could not add post reaction | Error: {e}"
+        # Promote the claim to 'commented' and record the log.
+        mark_post_commented(user_id, post_link)
+        insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.SUCCESS,
+                       post_url=post_link, message=comment_text)
+        # Spend it against the SHARED account envelope, exactly where the feed walk spends its own
+        # (#626). This path posted nothing before #966, so the missing call cost nothing; now that it
+        # lands comments for real, a comment invisible to the governor lets the feed walk and the
+        # roster lane spend a full day's envelope on top of it.
+        record_action(user_id, ACTION_COMMENT)
+        myprint("Added Comment via Post Button")
+        method_result = " | ".join(filter(None, ["Added Comment via Post Button", method_result]))
     except Exception as e:
         # Nothing posted (login/compose failure) — release the claim so a later run can retry.
         release_post_claim(user_id, post_link)
@@ -432,8 +403,52 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     return method_result
 
 
-def check_commented(driver, wait, user_id: int = None, post_url: str = None):
-    """See if the current open url we've already posted on"""
+# The comment list mounts AFTER driver.get() returns — LinkedIn hydrates it client-side — so reading
+# it on the first paint finds zero comments on a post that plainly has them. Polling is what makes
+# this guard fire at all: without it the rebuild would be a second silently-never-firing check, which
+# is the #966 defect itself. Bounded and cheap, and it stops as soon as the thread stops growing, so
+# only a post with genuinely no comments pays the whole budget.
+_COMMENT_THREAD_MOUNT_POLLS = 3
+_COMMENT_THREAD_MOUNT_POLL_SECONDS = 1.0
+
+
+def _thread_carries_our_comment(driver, my_profile: LinkedInProfile) -> bool:
+    """True when a comment authored by US is already rendered in the open post's thread.
+
+    Second line of defence behind the logs ledger — for a comment left before the ledger existed, or
+    by hand. It reads the SDUI comment list `_comment_items` already maps and matches on the EXACT
+    profile slug (`_href_is_profile`, never a substring), so a stranger's comment can't read as ours
+    and silence a post we should engage. The `comments-comment-list__container` + `aria-label='• You'`
+    XPath this replaces is a pre-SDUI anchor that has matched nothing since the rewrite, so the
+    guard had silently stopped firing (issue #966).
+
+    Deliberately does NOT call `_load_comment_thread`: that resizes the window to 1400x3400 to
+    lazy-render an entire thread, which is a heavy price — and a viewport change the composer path
+    then inherits — for a check the ledger already covers. Only the comments LinkedIn renders by
+    default are read, and a miss falls through to commenting exactly as it did before."""
+    slug = _profile_slug(str(getattr(my_profile, "profile_url", "") or ""))
+    if not slug:
+        return False
+    rendered = -1
+    for attempt in range(_COMMENT_THREAD_MOUNT_POLLS):
+        try:
+            items = _comment_items(driver)
+        except WebDriverException:
+            return False
+        if any(_href_is_profile(author, slug) for _tb, _cont, author in items):
+            return True
+        if items and len(items) == rendered:
+            return False  # the thread rendered and stopped growing — none of it is ours
+        rendered = len(items)
+        if attempt < _COMMENT_THREAD_MOUNT_POLLS - 1:
+            time.sleep(_COMMENT_THREAD_MOUNT_POLL_SECONDS)
+    return False
+
+
+def check_commented(driver, wait, user_id: int = None, post_url: str = None,
+                    my_profile: LinkedInProfile = None) -> bool:
+    """See if the current open url we've already posted on. The LinkedIn-side half only runs when
+    the caller supplies `my_profile` — our own profile slug is what identifies our comment."""
     already_commented = False
 
     if post_url and post_url != driver.current_url:
@@ -445,16 +460,9 @@ def check_commented(driver, wait, user_id: int = None, post_url: str = None):
     if user_id and post_url:
         already_commented = has_user_commented_on_post_url(user_id, post_url)
 
-    # 2. Check against LinkedIn Recent Activity Comments
-    if not already_commented:
-
-        # See if the current user is in the comments section
-        alink = get_element_wait_retry(driver, wait,
-                                       '//div[contains(@class,"comments-comment-list__container")]//a[contains(@aria-label,"• You")]',
-                                       "Finding Comments Container with 'You' In it", max_try=1,
-                                       element_always_expected=False)
-        if alink:
-            already_commented = True
+    # 2. Check the rendered comment thread for a comment of ours
+    if not already_commented and my_profile is not None:
+        already_commented = _thread_carries_our_comment(driver, my_profile)
 
     return already_commented
 
@@ -1167,6 +1175,58 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
     except Exception as e:
         log_warning(f"Inline comment post failed at {step}", exc=e, action_type="comment", user_id=user_id)
         return False
+
+
+def _post_text_from_card(card) -> str:
+    """The post's own body text read off its card — what the reaction chooser is given. `card.text`
+    would fold the whole comment thread in, so a permalink page (which renders every comment) would
+    hand the classifier someone else's words instead of the post's."""
+    try:
+        parts = [(el.text or "").strip() for el in card.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)]
+    except Exception:
+        return ""
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _permalink_post_card(driver, post_link: str, user_id: int = None) -> "WebElement | None":
+    """The card for the post a `/feed/update/…` permalink points at, or None.
+
+    A permalink page is NOT a one-post page — LinkedIn stacks "More posts for you" recommendations
+    under the post it was asked for, and each of those is a full card with its own comment action.
+    So the card is chosen by the URN in the permalink, and the topmost card is used only when no
+    card claims a URN at all. A top card that provably belongs to a DIFFERENT post returns None:
+    commenting there would land our comment on a recommendation, which is worse than not commenting.
+
+    Cards are enumerated exactly the way the feed walk enumerates them (`_FEED_POST_TEXT_SEL` →
+    `_card_for_textbox`) so the composer resolution downstream is the SAME card-scoped one
+    (`_post_composer_for_card`) — there is no permalink-only composer lookup to drift separately."""
+    m = _URN_RE.search(post_link or "")
+    wanted = m.group(0).lower() if m else None
+    cards = []
+    for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
+        try:
+            card = _card_for_textbox(driver, box)
+        except (StaleElementReferenceException, WebDriverException):
+            continue
+        if card is not None:
+            cards.append(card)
+    if not cards:
+        # No card carries a comment action: comments are off/restricted on this post, the page never
+        # rendered, or the walk drifted. Nothing to do either way, so it is a DEBUG no-op — the
+        # caller turns it into a FAILURE log row, which is where a real drift becomes visible.
+        log_debug("No commentable post card on permalink page", action_type="comment",
+                  user_id=user_id, url=post_link)
+        return None
+    if wanted:
+        for card in cards:
+            if _feed_post_urn_from_card(card, driver=driver) == wanted:
+                return card
+        top_urn = _feed_post_urn_from_card(cards[0], driver=driver)
+        if top_urn and top_urn != wanted:
+            log_debug("Top card on permalink page belongs to a different post; not commenting",
+                      action_type="comment", user_id=user_id, url=post_link)
+            return None
+    return cards[0]
 
 
 # ── Comment + reaction locator chains (issue #816 live grounding, 2026-08-02) ──────────────────
@@ -5798,7 +5858,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
     user_id = get_user_id(my_profile.email)
 
     # Check to make sure user hasn't already commented on this post
-    if check_commented(driver, wait, user_id, post_link):
+    if check_commented(driver, wait, user_id, post_link, my_profile=my_profile):
         myprint("Already commented on this post. Skipping...")
         return False  # Skip posts we've already commented on
     else:
@@ -5859,21 +5919,16 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
         return False
 
     myprint(f"AI Generated Comment: {comment_text}")
-    # Simulate typing the AI-generated comment
-    # for char in comment_text:
-    #    if char == '\n':
-    #        myprint()
-    #    else:
-    #        myprint(char, end='')
-    #    time.sleep(random.uniform(0.05, 0.15))  # Simulate human typing speed
 
-    # Comment out the actual posting of the comment for now
+    # This DOES post: the comment is handed to comment_on_post, which opens its own session and
+    # submits it. (The line here used to read "Comment out the actual posting of the comment for
+    # now" — a leftover from when the apply_async below was commented out, issue #966.)
     kwargs = {'user_id': get_user_id(my_profile.email),
               'post_link': post_link,
               'comment_text': comment_text}
     comment_on_post.apply_async(kwargs=kwargs)
 
-    myprint(f"Comment Posted on: {post_link}")
+    myprint(f"Comment queued for posting on: {post_link}")
 
     return True
 

@@ -960,3 +960,76 @@ class TestReportFences:
     def test_the_fences_are_distinct_and_non_empty(self):
         assert llv.REPORT_JSON_BEGIN and llv.REPORT_JSON_END
         assert llv.REPORT_JSON_BEGIN != llv.REPORT_JSON_END
+
+
+@pytest.mark.unit
+class TestPermalinkCommentProbe:
+    """#966: the permalink comment path failed SILENTLY, so the probe's job is to say plainly
+    whether production would have a composer to type into."""
+
+    _URL = "https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/"
+    _URN = "urn:li:activity:7000000000000000001"
+
+    def test_verdict_names_a_resolved_composer(self):
+        verdict = llv.permalink_comment_verdict(
+            {"cards_found": 2, "permalink_urn": self._URN, "card_matched_urn": True,
+             "comment_action": {"text": "Comment"}, "composer": {"role": "textbox"}})
+        assert "composer resolved" in verdict
+
+    def test_no_card_is_the_drift_verdict(self):
+        assert "posts nothing" in llv.permalink_comment_verdict({"cards_found": 0})
+
+    def test_a_composer_that_never_mounts_names_the_regression(self):
+        verdict = llv.permalink_comment_verdict(
+            {"cards_found": 1, "permalink_urn": self._URN, "card_matched_urn": True,
+             "comment_action": {"text": "Comment"}, "composer": None})
+        assert "#966" in verdict
+
+    def test_a_top_card_from_another_post_is_called_out(self):
+        verdict = llv.permalink_comment_verdict(
+            {"cards_found": 3, "permalink_urn": self._URN, "card_matched_urn": False,
+             "top_card_urn": "urn:li:activity:7000000000000000002"})
+        assert "DIFFERENT post" in verdict
+
+    def test_probe_reports_the_card_the_action_and_the_composer(self, monkeypatch):
+        driver = MagicMock()
+        driver.find_elements.return_value = [MagicMock()]
+        driver.current_url = self._URL
+        card, composer = MagicMock(), MagicMock()
+        composer.get_attribute.return_value = "textbox"
+        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: card)
+        monkeypatch.setattr("cqc_lem.app.run_automation._feed_post_urn_from_card",
+                            lambda c, driver=None: self._URN)
+        monkeypatch.setattr("cqc_lem.app.run_automation._permalink_post_card",
+                            lambda d, url, user_id=None: card)
+        monkeypatch.setattr("cqc_lem.app.run_automation._post_composer_for_card",
+                            lambda d, c, user_id=None: composer)
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", lambda *a, **k: MagicMock())
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: ["Comment"])
+
+        reading = llv.probe_permalink_comment(driver, self._URL, sleep=lambda s: None)
+        assert reading["card_resolved"] is True and reading["card_matched_urn"] is True
+        assert reading["composer"] is not None
+        assert "composer resolved" in reading["verdict"]
+
+    def test_probe_says_so_when_no_card_carries_a_comment_action(self, monkeypatch):
+        driver = MagicMock()
+        driver.find_elements.return_value = [MagicMock()]
+        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: None)
+        monkeypatch.setattr("cqc_lem.app.run_automation._permalink_post_card",
+                            lambda d, url, user_id=None: None)
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+
+        reading = llv.probe_permalink_comment(driver, self._URL, sleep=lambda s: None)
+        assert reading["cards_found"] == 0 and reading["card_resolved"] is False
+        assert reading["composer"] is None
+        assert "posts nothing" in reading["verdict"]
+
+    def test_permalink_comment_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_permalink_comment",
+                            lambda d, url: {"verdict": "composer resolved"})
+        assert llv.main(["--permalink-comment", self._URL]) == 0
