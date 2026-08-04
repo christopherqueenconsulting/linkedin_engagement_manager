@@ -145,13 +145,20 @@ composer lookup that can drift on its own. Three things the permalink surface ad
   returns True only once the comment is verifiably posted, so a typed-but-unsubmitted comment is
   never recorded as one (only SUCCESS rows count as "we commented here", so the failure row can't
   self-block a retry).
+- **A landed comment spends the account envelope** (`record_action(user_id, ACTION_COMMENT)`, #626),
+  at the same point the feed walk spends its own. While this path posted nothing the missing call
+  cost nothing; a working path the governor can't see would let the feed walk and the roster lane
+  spend a full day's envelope on top of it.
 
 `check_commented`'s LinkedIn-side half went the same way: its
 `comments-comment-list__container` + `aria-label='• You'` XPath had matched nothing since the
 rewrite. It now reads `_comment_items` and matches our own profile slug EXACTLY
 (`_href_is_profile`), and it only runs when the caller passes `my_profile` — the slug is what
 identifies our comment. It deliberately does not call `_load_comment_thread` (a 1400x3400 resize to
-lazy-render a whole thread) for a check the logs ledger already covers.
+lazy-render a whole thread) for a check the logs ledger already covers — but it DOES poll
+(`_COMMENT_THREAD_MOUNT_POLLS`, stopping as soon as the thread stops growing): the comment list
+hydrates after `driver.get()` returns, so reading it on the first paint sees zero comments on a post
+that plainly has them, and the rebuilt guard would silently never fire either.
 
 Grounding: `scripts/linkedin_live_validation.py --permalink-comment <post-url>` reports card →
 Comment action → composer for a real permalink. It opens the composer and Escapes it; nothing is

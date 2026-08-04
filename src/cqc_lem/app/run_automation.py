@@ -385,6 +385,11 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
         mark_post_commented(user_id, post_link)
         insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.SUCCESS,
                        post_url=post_link, message=comment_text)
+        # Spend it against the SHARED account envelope, exactly where the feed walk spends its own
+        # (#626). This path posted nothing before #966, so the missing call cost nothing; now that it
+        # lands comments for real, a comment invisible to the governor lets the feed walk and the
+        # roster lane spend a full day's envelope on top of it.
+        record_action(user_id, ACTION_COMMENT)
         myprint("Added Comment via Post Button")
         method_result = " | ".join(filter(None, ["Added Comment via Post Button", method_result]))
     except Exception as e:
@@ -396,6 +401,15 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
         quit_gracefully(driver)  # Close the driver
 
     return method_result
+
+
+# The comment list mounts AFTER driver.get() returns — LinkedIn hydrates it client-side — so reading
+# it on the first paint finds zero comments on a post that plainly has them. Polling is what makes
+# this guard fire at all: without it the rebuild would be a second silently-never-firing check, which
+# is the #966 defect itself. Bounded and cheap, and it stops as soon as the thread stops growing, so
+# only a post with genuinely no comments pays the whole budget.
+_COMMENT_THREAD_MOUNT_POLLS = 3
+_COMMENT_THREAD_MOUNT_POLL_SECONDS = 1.0
 
 
 def _thread_carries_our_comment(driver, my_profile: LinkedInProfile) -> bool:
@@ -415,10 +429,20 @@ def _thread_carries_our_comment(driver, my_profile: LinkedInProfile) -> bool:
     slug = _profile_slug(str(getattr(my_profile, "profile_url", "") or ""))
     if not slug:
         return False
-    try:
-        return any(_href_is_profile(author, slug) for _tb, _cont, author in _comment_items(driver))
-    except WebDriverException:
-        return False
+    rendered = -1
+    for attempt in range(_COMMENT_THREAD_MOUNT_POLLS):
+        try:
+            items = _comment_items(driver)
+        except WebDriverException:
+            return False
+        if any(_href_is_profile(author, slug) for _tb, _cont, author in items):
+            return True
+        if items and len(items) == rendered:
+            return False  # the thread rendered and stopped growing — none of it is ours
+        rendered = len(items)
+        if attempt < _COMMENT_THREAD_MOUNT_POLLS - 1:
+            time.sleep(_COMMENT_THREAD_MOUNT_POLL_SECONDS)
+    return False
 
 
 def check_commented(driver, wait, user_id: int = None, post_url: str = None,

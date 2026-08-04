@@ -143,6 +143,7 @@ def _run_comment_on_post(*, card=MagicMock, post_returns=True, react_returns=Tru
         mocks["mark"] = p("mark_post_commented")
         mocks["release"] = p("release_post_claim")
         mocks["log"] = p("insert_new_log")
+        mocks["record"] = p("record_action")
         result = ra.comment_on_post.run(user_id=1, post_link=_PERMALINK, comment_text="Nice one.")
     mocks["calls"] = calls
     return result, mocks
@@ -209,6 +210,22 @@ class TestCommentOnPost:
         assert "already claimed" in result
         m["post_inline"].assert_not_called()
 
+    def test_a_landed_comment_spends_the_account_envelope(self):
+        # This path posted nothing while #966 was live, so its missing record_action cost nothing.
+        # Now that it lands comments, one the governor can't see lets the feed walk and the roster
+        # lane spend a whole day's envelope on top of it (#626).
+        from cqc_lem.utilities.human_pacing import ACTION_COMMENT
+        _result, m = _run_comment_on_post()
+        m["record"].assert_called_once_with(1, ACTION_COMMENT)
+
+    def test_a_comment_that_never_landed_spends_nothing(self):
+        _result, m = _run_comment_on_post(post_returns=False)
+        m["record"].assert_not_called()
+
+    def test_no_commentable_card_spends_nothing(self):
+        _result, m = _run_comment_on_post(card=None)
+        m["record"].assert_not_called()
+
 
 class TestNoPreSduiAnchorsRemain:
     def test_removed_linkedin_classes_are_never_keyed_on_again(self):
@@ -258,6 +275,32 @@ class TestThreadCarriesOurComment:
         from selenium.common import WebDriverException
         with patch(f"{_RA}._comment_items", side_effect=WebDriverException("gone")):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
+
+    def test_waits_for_the_thread_to_mount_before_deciding(self):
+        # The comment list hydrates AFTER driver.get() returns. Reading it on the first paint sees
+        # zero comments on a post that plainly has them, which would make this rebuilt guard a
+        # second silently-never-firing check — the #966 defect itself.
+        from cqc_lem.app import run_automation as ra
+        ours = (MagicMock(), MagicMock(), "https://www.linkedin.com/in/chris-queen-9b1/")
+        renders = [[], [], [ours]]
+        with patch(f"{_RA}._comment_items", side_effect=lambda _d: renders.pop(0)):
+            assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is True
+
+    def test_a_rendered_thread_without_us_stops_polling(self):
+        from cqc_lem.app import run_automation as ra
+        stranger = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/someone-else/")]
+        reader = MagicMock(return_value=stranger)
+        with patch(f"{_RA}._comment_items", reader):
+            assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
+        # One poll to render, one to see it stopped growing — never the whole budget.
+        assert reader.call_count == 2
+
+    def test_a_thread_that_never_renders_is_false_not_a_hang(self):
+        from cqc_lem.app import run_automation as ra
+        reader = MagicMock(return_value=[])
+        with patch(f"{_RA}._comment_items", reader):
+            assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
+        assert reader.call_count == ra._COMMENT_THREAD_MOUNT_POLLS
 
 
 class TestCheckCommented:
