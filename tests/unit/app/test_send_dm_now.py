@@ -10,7 +10,8 @@ being accepted.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from selenium.common import WebDriverException
+from selenium.common import (NoSuchElementException, StaleElementReferenceException,
+                             WebDriverException)
 
 from cqc_lem.utilities.db import LogResultType
 from cqc_lem.utilities.linkedin.message_thread import ComposerOpen
@@ -132,3 +133,60 @@ class TestSendLanded:
         message = "Congrats on the new role, Jane! " + "x" * 400
         with patch(f"{_RA}.read_last_message", return_value=message):
             assert ra._dm_send_landed(self._driver(), message) is True
+
+
+class TestTypingSurvivesTheComposerRemount:
+    """The compose overlay re-mounts while LinkedIn hydrates it, so a handle taken when the box first
+    appears goes stale a keystroke later. That is what killed the re-queued sends on 2026-08-04 once
+    the composer had started resolving."""
+
+    @staticmethod
+    def _box(stale_on_send=0):
+        """A composer whose send_keys raises StaleElementReference the first `stale_on_send` times."""
+        box = MagicMock()
+        calls = {"n": 0}
+
+        def _send(*_a):
+            calls["n"] += 1
+            if calls["n"] <= stale_on_send:
+                raise StaleElementReferenceException("re-mounted")
+
+        box.send_keys.side_effect = _send
+        return box
+
+    def test_a_stale_box_is_re_found_and_the_message_still_goes_in(self):
+        from cqc_lem.app import run_automation as ra
+        boxes = [self._box(stale_on_send=1), self._box()]
+        with patch(f"{_RA}.get_element_wait_retry", side_effect=boxes), \
+             patch(f"{_RA}.simulate_typing") as typed, \
+             patch(f"{_RA}.time.sleep"):
+            ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
+        typed.assert_called_once()
+        assert typed.call_args[0][1] is boxes[1]  # the RE-FOUND box, never the stale handle
+
+    def test_every_attempt_clears_first_so_a_retry_cannot_double_type(self):
+        from cqc_lem.app import run_automation as ra
+        box = self._box()
+        with patch(f"{_RA}.get_element_wait_retry", return_value=box), \
+             patch(f"{_RA}.simulate_typing"), \
+             patch(f"{_RA}.time.sleep"):
+            ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
+        assert box.send_keys.call_count == 2  # select-all then delete, before any typing
+
+    def test_a_composer_stale_on_every_attempt_raises_rather_than_sending_blind(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.get_element_wait_retry",
+                   side_effect=lambda *a, **k: self._box(stale_on_send=99)), \
+             patch(f"{_RA}.simulate_typing") as typed, \
+             patch(f"{_RA}.time.sleep"):
+            with pytest.raises(StaleElementReferenceException):
+                ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
+        typed.assert_not_called()
+
+    def test_no_composer_at_all_is_an_error_not_a_silent_skip(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.get_element_wait_retry", return_value=None), \
+             patch(f"{_RA}.simulate_typing"), \
+             patch(f"{_RA}.time.sleep"):
+            with pytest.raises(NoSuchElementException):
+                ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
