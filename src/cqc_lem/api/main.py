@@ -104,7 +104,8 @@ from cqc_lem.utilities.db import (
     get_user_geo, update_user_location, get_user_content_language,
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
     update_db_post_rejection_reason,
-    get_post_url_from_log_for_user,
+    get_post_url_from_log_for_user, get_post_content,
+    get_post_image_url, update_db_post_image_url,
     insert_feedback, FeedbackSource, FeedbackStatus,
     get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
     is_user_admin, get_feedback_list, record_feedback_review, get_feedback_by_id,
@@ -141,6 +142,9 @@ from cqc_lem.utilities.webauthn_util import (
 import requests
 from cqc_lem.utilities.logger import myprint, log_debug, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
+from cqc_lem.utilities.post_image import (PostImageRejected, claim_manual_generation,
+                                          generate_image_for_post, owns_post_image_url,
+                                          remove_post_image_file, save_post_image_bytes)
 from cqc_lem.utilities.quality_gates import (parse_gate_findings, clamp_threshold,
                                              AUTHENTICITY_SCORE_MIN_BOUNDS,
                                              SIMILARITY_MAX_PCT_BOUNDS)
@@ -969,6 +973,9 @@ class PostRequest(BaseModel):
     use_avatar: Optional[bool] = None
     video_quality: Optional[str] = "standard"  # standard | premium | premium_top
     rejection_reason: Optional[str] = Field(default=None, max_length=1000)
+    # A compose-time image the author uploaded or generated BEFORE the row existed (issue #1030).
+    # Only a preview URL we issued to this caller is accepted — see `owns_post_image_url`.
+    image_url: Optional[str] = Field(default=None, max_length=1000)
 
 
 class AvatarCreditCheckoutRequest(BaseModel):
@@ -1203,6 +1210,12 @@ _LEN_TARGET_NAME = 255         # engagement_targets.name VARCHAR(255)
 _LEN_STORY_TITLE = 255         # story_bank.title VARCHAR(255)
 _LEN_STORY_BODY = 5000         # story_bank.body (TEXT; app cap)
 _LEN_GROUP_POST = 3000    # LinkedIn caps a post at 3000 chars (group_post_drafts.content is TEXT)
+# Source text for an image prompt, NOT a post-length cap. LinkedIn's 3000 is enforced on the
+# compose form only — nothing truncates a generated draft, and the Review & Edit textarea has no
+# maxLength — so bounding this at 3000 would answer 422 for a long draft, and FastAPI's validation
+# `detail` is a LIST, which the SPA cannot show: the author would get "Image generation failed"
+# with no way to act on it. Bounded generously instead; it is still what reaches the brief LLM.
+_LEN_IMAGE_PROMPT_SOURCE = 10000
 _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
@@ -1286,6 +1299,19 @@ class PostRegenerateRequest(BaseModel):
 
 class PostRescoreRequest(BaseModel):
     session_token: str
+    post_id: int
+
+
+class PostImageGenerateRequest(BaseModel):
+    """Render an image for a post (issue #1030). `post_id` is absent while the author is still
+    composing — there is no row yet — in which case `content` is the only text there is."""
+    session_token: SessionTokenField = None
+    post_id: Optional[int] = None
+    content: Optional[str] = Field(default=None, max_length=_LEN_IMAGE_PROMPT_SOURCE)
+
+
+class PostImageRemoveRequest(BaseModel):
+    session_token: SessionTokenField = None
     post_id: int
 
 
@@ -2542,13 +2568,21 @@ def schedule_post(post: PostRequest) -> ResponseModel:
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/schedule_post/", user_id=user_id)
 
+    # A compose-time image is a URL the CALLER hands us for a field the publish step later fetches,
+    # so it is accepted only when it is a preview WE issued to this account (issue #1030) — never
+    # an arbitrary URL, and never another user's preview. Anything else is dropped, not stored.
+    image_url = post.image_url if owns_post_image_url(user_id, post.image_url) else None
+    if post.image_url and not image_url:
+        log_warning("Refused a post image URL that is not this account's preview",
+                    user_id=user_id, action_type="post_image")
+
     # SPA-created posts carry an explicit status: "Approve & Schedule" → approved,
     # "Save Draft" → pending. Auto-generated content sets its own status elsewhere.
     if insert_post(email, post.content, post.scheduled_datetime, post.post_type,
                    video_url=post.video_url, carousel_slides=post.carousel_slides,
                    video_quality=post.video_quality or "standard",
                    status=post.status or PostStatus.PENDING,
-                   use_avatar=post.use_avatar):
+                   use_avatar=post.use_avatar, image_url=image_url):
         return ResponseModel(status_code=200, detail="Post scheduled successfully")
     else:
         raise HTTPException(status_code=404, detail="Could not schedule post")
@@ -4487,6 +4521,134 @@ def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel:
         log_error("Could not re-score post", exc=e, user_id=user_id, post_id=request.post_id)
         raise HTTPException(status_code=500, detail="Could not re-score this post")
     return ResponseModel(status_code=200, detail=result)
+
+
+# --- Post images (issue #1030) --------------------------------------------------------------
+# An image was only ever attached to a post by a background task. These three endpoints are the
+# author's half: upload their own artwork, ask for a render, or take one off again — from the
+# compose form (no row yet, so the image is a preview URL handed back at schedule time) and from
+# the Review & Edit tab (the row exists, so the write lands on it immediately).
+
+
+def _post_open_to_image_edits(session_token: Optional[str], post_id: int) -> int:
+    """The caller's user_id for a post they own and can still change the image on.
+
+    A published post's image is already on LinkedIn — changing the row would only make the queue
+    disagree with what shipped, so that is a 409 rather than a silently useless write.
+    """
+    user_id = require_session_user_id(session_token)
+    if get_post_user_id(post_id) != user_id:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if get_post_status(post_id) == PostStatus.POSTED.value:
+        raise HTTPException(status_code=409,
+                            detail="This post is already published — its image can't be changed")
+    return user_id
+
+
+def _attach_post_image(user_id: int, post_id: int, image_url: str) -> None:
+    """Point the row at a newly stored image and drop the file it replaced."""
+    previous = get_post_image_url(post_id)
+    if not update_db_post_image_url(post_id, image_url):
+        remove_post_image_file(image_url)  # don't leave an orphan behind a failed write
+        log_error("Could not store the post image URL", user_id=user_id, post_id=post_id)
+        raise HTTPException(status_code=500, detail="Could not save the image")
+    if previous and previous != image_url:
+        remove_post_image_file(previous)
+
+
+@router.post("/user/post/image", responses={
+    200: {"description": "Image attached"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]},
+    409: {"description": "Post is already published"},
+    500: {"description": "Server error"},
+})
+async def upload_post_image_endpoint(
+    session_token: str = Form(...),
+    post_id: Optional[int] = Form(default=None),
+    file: UploadFile = File(...),
+) -> ResponseModel:
+    """Attach the author's OWN image to a post — or, with no `post_id`, to a draft still being
+    composed, which hands back a preview URL to pass to `/schedule_post/`.
+
+    The bytes pass the deterministic gate first, so an unreadable or tiny file is a 400 here rather
+    than a share LinkedIn refuses at publish time.
+    """
+    if post_id:
+        user_id = _post_open_to_image_edits(session_token, post_id)
+    else:
+        user_id = require_session_user_id(session_token)
+
+    data = await file.read()
+    try:
+        image_url = save_post_image_bytes(user_id, data, post_id=post_id)
+    except PostImageRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        log_error("Could not store an uploaded post image", exc=e, user_id=user_id,
+                  post_id=post_id)
+        raise HTTPException(status_code=500, detail="Could not store the image")
+
+    if post_id:
+        _attach_post_image(user_id, post_id, image_url)
+    return ResponseModel(status_code=200, detail={"post_id": post_id, "image_url": image_url})
+
+
+@router.post("/user/post/image/generate", responses={
+    200: {"description": "Image generated"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]},
+    409: {"description": "Post is already published"},
+    429: {"description": "Hourly generation limit reached"},
+    502: {"description": "Generation failed upstream"},
+})
+def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseModel:
+    """Render an image for a post from its text, through the SAME brief + gated renderer the
+    scheduled path uses. Runs inline (one render) so the studio can show the result immediately.
+
+    `content` wins over the stored row: the author is usually looking at an edit they have not
+    saved yet, and drawing the image from stale text is the one way this feature is confusing.
+    """
+    if request.post_id:
+        user_id = _post_open_to_image_edits(request.session_token, request.post_id)
+        text = (request.content or "").strip() or (get_post_content(request.post_id) or "")
+    else:
+        user_id = require_session_user_id(request.session_token)
+        text = (request.content or "").strip()
+
+    if not text.strip():
+        raise HTTPException(status_code=400,
+                            detail="Write the post content first — the image is drawn from it")
+    if not claim_manual_generation(user_id):
+        raise HTTPException(
+            status_code=429,
+            detail="You've generated a lot of images in the last hour — try again shortly.")
+
+    image_url, reason = generate_image_for_post(user_id, text, post_id=request.post_id)
+    if not image_url:
+        # 502, not 500: the render is an upstream call, and telling the user "the image service
+        # didn't answer" is both true and actionable (try again) where "server error" is neither.
+        raise HTTPException(status_code=502, detail=reason or "Could not generate an image")
+
+    if request.post_id:
+        _attach_post_image(user_id, request.post_id, image_url)
+    return ResponseModel(status_code=200,
+                         detail={"post_id": request.post_id, "image_url": image_url})
+
+
+@router.post("/user/post/image/remove", responses={
+    200: {"description": "Image removed"},
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 404]},
+    409: {"description": "Post is already published"},
+    500: {"description": "Server error"},
+})
+def remove_post_image_endpoint(request: PostImageRemoveRequest) -> ResponseModel:
+    """Take the image off a post so it publishes as plain text. The file goes with it."""
+    user_id = _post_open_to_image_edits(request.session_token, request.post_id)
+    previous = get_post_image_url(request.post_id)
+    if not update_db_post_image_url(request.post_id, None):
+        log_error("Could not clear the post image", user_id=user_id, post_id=request.post_id)
+        raise HTTPException(status_code=500, detail="Could not remove the image")
+    remove_post_image_file(previous)
+    return ResponseModel(status_code=200, detail={"post_id": request.post_id, "image_url": None})
 
 
 # --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler endpoints ---

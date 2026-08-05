@@ -330,5 +330,9 @@ class TestInsertPostUseAvatar:
             from cqc_lem.utilities.db import insert_post
             assert insert_post("a@b.c", "body", datetime(2026, 7, 30, 9, 0), PostType.TEXT,
                                status=PostStatus.PENDING, use_avatar=value) is True
-        _, params = cur.execute.call_args[0]
-        assert params[-1] is stored
+        sql, params = cur.execute.call_args[0]
+        # Read the column by NAME, not by position: the INSERT has grown a column since (#1030)
+        # and a positional assertion silently starts checking a different field.
+        columns = [c.strip() for c in
+                   sql.split("(", 1)[1].split(")", 1)[0].split(",")]
+        assert params[columns.index("use_avatar")] is stored

@@ -62,6 +62,10 @@ IMAGE_QUALITY = get_constant_from_env('IMAGE_QUALITY', default_value='medium')
 # Vision quality gate: total render attempts per image (1 = no regenerate). Mirrors the
 # COMMENT_GATE pattern — bounded, and the gate itself fails OPEN on vision outages.
 IMAGE_GATE_MAX_ATTEMPTS = int(get_constant_from_env('IMAGE_GATE_MAX_ATTEMPTS', default_value='2'))
+# Manual "Generate image" clicks per user per hour (issue #1030). Every click is real inference
+# spend on a button that can be held down, so it is bounded like AVATAR_SAMPLE_REGEN_MAX.
+POST_IMAGE_GENERATE_MAX_PER_HOUR = int(
+    get_constant_from_env('POST_IMAGE_GENERATE_MAX_PER_HOUR', default_value='20'))
 # Surfaces where a gate rejection actually triggers a regenerate (elsewhere it only logs).
 IMAGE_QUALITY_GATE_SURFACES = tuple(
     s.strip() for s in

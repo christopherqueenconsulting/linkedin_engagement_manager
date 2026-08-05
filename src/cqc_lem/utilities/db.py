@@ -850,7 +850,7 @@ def get_user_id(email: str):
 def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
                 video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
                 video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
-                use_avatar: Optional[bool] = None) -> bool:
+                use_avatar: Optional[bool] = None, image_url: Optional[str] = None) -> bool:
     user_id = get_user_id(email)
 
     success = False
@@ -870,11 +870,11 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
         # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
         # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
         cursor.execute("""
-            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
               video_quality or "standard", status.value,
-              None if use_avatar is None else int(bool(use_avatar))))
+              None if use_avatar is None else int(bool(use_avatar)), image_url))
 
         connection.commit()
         success = cursor.rowcount == 1

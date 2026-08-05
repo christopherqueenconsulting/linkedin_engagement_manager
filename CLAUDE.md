@@ -104,6 +104,10 @@ per-content-type prompt helper, add a preset. `utilities/ai/image_gen.py` render
 (`IMAGE_BACKEND`, cost-tracked); `render_image_gated` adds the bounded `lem-vision` check, failing
 OPEN. Avatar likeness NEVER renders in `image_gen` — `generate_post_image` (ai_helper) owns the LoRA
 path behind `avatar/guardrails.resolve_avatar_for`. NO text/logos in a render prompt.
+`utilities/post_image.py` (#1030) is the ONE place a POST's image is validated, stored and removed —
+upload OR the studio's "Generate with AI", the SAME engine the scheduled path uses. A compose-time
+`image_url` is CALLER input: `/schedule_post/` takes it only when `owns_post_image_url` says it's a
+preview we issued to that caller, and a stored URL never resolves outside `assets_dir`.
 
 ## Selenium Pattern
 
