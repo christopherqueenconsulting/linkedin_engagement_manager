@@ -58,35 +58,42 @@ def _run(tmp_path: Path, body: str, gh_impl: str, env: dict = None) -> subproces
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=run_env)
 
 
-# `gh <issue|pr> view N --json authorAssociation` -> whatever ASSOC says.
+# `gh api repos/../issues/N --jq .author_association` -> whatever ASSOC says.
 _GH_ASSOC = '''
-    if [ "$3" = "--repo" ]; then shift 2; fi
     echo "${ASSOC:-}"
 '''
 
-# `gh api repos/../issues/N/timeline` -> the actor named by ACTOR ("" = no labeled event).
+# `gh api repos/../issues/N/timeline --paginate --slurp` -> an array OF PAGES of timeline events.
+# ACTOR names the labeller ("" = no labeled event at all). PAGES=2 splits it across two pages, which
+# is what `--paginate --jq` used to mangle.
 _GH_TIMELINE = '''
-    echo "${ACTOR:-}"
+    if [ -z "${ACTOR:-}" ]; then echo '[[]]'; exit 0; fi
+    ev() { printf '{"event":"labeled","label":{"name":"%s"},"actor":{"login":"%s"}}' "${LABEL:-agent:ready}" "$1"; }
+    if [ "${PAGES:-1}" = "2" ]; then
+      printf '[[%s],[%s]]\\n' "$(ev "${ACTOR_FIRST:-someone-else}")" "$(ev "$ACTOR")"
+    else
+      printf '[[%s]]\\n' "$(ev "$ACTOR")"
+    fi
 '''
 
 
 class TestAuthorTrusted:
     @pytest.mark.parametrize("assoc", ["OWNER", "MEMBER", "COLLABORATOR"])
     def test_standing_in_this_repo_is_trusted(self, tmp_path, assoc):
-        r = _run(tmp_path, 'author_trusted issue 7 && echo YES || echo NO', _GH_ASSOC,
+        r = _run(tmp_path, 'author_trusted 7 && echo YES || echo NO', _GH_ASSOC,
                  {"ASSOC": assoc})
         assert "YES" in r.stdout
 
     @pytest.mark.parametrize("assoc", ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN"])
     def test_an_outsider_is_not(self, tmp_path, assoc):
-        r = _run(tmp_path, 'author_trusted issue 7 && echo YES || echo NO', _GH_ASSOC,
+        r = _run(tmp_path, 'author_trusted 7 && echo YES || echo NO', _GH_ASSOC,
                  {"ASSOC": assoc})
         assert "NO" in r.stdout
 
     def test_an_unreadable_association_REFUSES_rather_than_passing(self, tmp_path):
         # The whole design fails toward "wait for a human": a missed issue costs one tick, a
         # wrongly-admitted one runs arbitrary work under the owner's token.
-        r = _run(tmp_path, 'author_trusted issue 7 && echo YES || echo NO', _GH_ASSOC,
+        r = _run(tmp_path, 'author_trusted 7 && echo YES || echo NO', _GH_ASSOC,
                  {"ASSOC": ""})
         assert "NO" in r.stdout
         assert "unreadable" in r.stderr
@@ -94,7 +101,7 @@ class TestAuthorTrusted:
     def test_a_substring_of_a_trusted_word_does_not_match(self, tmp_path):
         # Guards the ` $x ` padding in the case statement — "OWNERS" or "NON" must not slip through.
         for assoc in ("OWNERS", "NON", "MEMBERSHIP"):
-            r = _run(tmp_path, 'author_trusted issue 7 && echo YES || echo NO', _GH_ASSOC,
+            r = _run(tmp_path, 'author_trusted 7 && echo YES || echo NO', _GH_ASSOC,
                      {"ASSOC": assoc})
             assert "NO" in r.stdout, assoc
 
@@ -121,7 +128,7 @@ class TestLabelActorTrusted:
         r = _run(tmp_path,
                  'AGENT_LABEL_TRUSTED_ACTORS="owner-person github-actions[bot]"\n'
                  'label_actor_trusted 7 "agent:depfix" && echo YES || echo NO',
-                 _GH_TIMELINE, {"ACTOR": "github-actions[bot]"})
+                 _GH_TIMELINE, {"ACTOR": "github-actions[bot]", "LABEL": "agent:depfix"})
         assert "YES" in r.stdout
 
     def test_a_prefix_of_an_allowlisted_name_does_not_match(self, tmp_path):
@@ -155,7 +162,7 @@ class TestPrAdmissible:
         gh = '''
             case "$1" in
               pr)  echo "${HEAD_OWNER:-}" ;;
-              api) echo "${ACTOR:-}" ;;
+              api) printf '[[{"event":"labeled","label":{"name":"agent:working"},"actor":{"login":"%s"}}]]\\n' "${ACTOR:-}" ;;
             esac
         '''
         ok = _run(tmp_path, 'pr_admissible 12 "agent:working" && echo YES || echo NO', gh,
@@ -178,14 +185,19 @@ class TestSelectNextIssue:
             READY='{json.dumps(ready)}'
             ASSOC='{json.dumps(assoc)}'
             ACTORS='{json.dumps(actors)}'
+            # Both gates now go through `gh api repos/../issues/N[...]`; the /timeline suffix is
+            # what tells the label-actor lookup apart from the author-association lookup.
             case "$1" in
               issue)
+                echo "$READY" | python3 -c 'import json,sys; [print(n) for n in json.load(sys.stdin)]' ;;
+              api)
+                n="$(echo "$2" | sed 's:.*/issues/::; s:/timeline::')"
                 case "$2" in
-                  list) echo "$READY" | python3 -c 'import json,sys; [print(n) for n in json.load(sys.stdin)]' ;;
-                  view) echo "$ASSOC" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$3',''))" ;;
+                  */timeline)
+                    a="$(echo "$ACTORS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))")"
+                    printf '[[{{"event":"labeled","label":{{"name":"agent:ready"}},"actor":{{"login":"%s"}}}}]]\\n' "$a" ;;
+                  *) echo "$ASSOC" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))" ;;
                 esac ;;
-              api) n="$(echo "$2" | sed 's:.*/issues/::; s:/timeline::')"
-                   echo "$ACTORS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))" ;;
             esac
         '''
 
@@ -238,7 +250,7 @@ class TestEveryLaneIsGated:
 
     def test_issue_selection_goes_through_both_halves(self):
         sel = _select()
-        assert "author_trusted issue" in sel
+        assert 'author_trusted "$n"' in sel
         assert 'label_actor_trusted "$n" "agent:ready"' in sel
 
     @pytest.mark.parametrize("lane_re,label", [
@@ -362,3 +374,98 @@ class TestScopedTokenIsWired:
         guard_at = SOURCE.index("if ! assert_agent_token_scoped; then")
         first_lane_at = SOURCE.index("# ---- PRIORITY LANE:")
         assert guard_at < first_lane_at
+
+
+class TestTheGatesUseGhCommandsThatExist:
+    """The gap that shipped a pipeline-wide outage.
+
+    Every test above stubs `gh`, so they verify the LOGIC around the call and are blind to whether
+    the call itself is one `gh` supports. `author_trusted` originally used
+    `gh issue view --json authorAssociation`; that field does not exist ("Unknown JSON field"), the
+    error went to /dev/null, the association read empty, and the gate then refused EVERY issue —
+    correct behaviour for an unreadable answer, applied to an answer that was never readable.
+
+    These assertions pin the call SHAPE. They are cheap and structural; the real cross-check is the
+    live probe in docs/contribution-security.md.
+    """
+
+    def test_author_standing_comes_from_the_REST_issues_endpoint(self):
+        gates = _gates()
+        assert 'gh api "repos/$SLUG/issues/$n"' in gates
+        assert "author_association" in gates
+
+    def test_it_does_not_use_the_nonexistent_gh_json_field(self):
+        # `gh issue view --json authorAssociation` and `gh pr view --json authorAssociation` are
+        # both invalid. If either reappears, the pipeline silently idles.
+        # Comment lines are stripped: the fix's own comment names the broken field to explain it.
+        code = "\n".join(ln for ln in SOURCE.splitlines() if not ln.lstrip().startswith("#"))
+        assert "authorAssociation" not in code
+
+    def test_the_fields_that_ARE_valid_gh_json_are_still_used_where_correct(self):
+        # headRepositoryOwner IS a real `gh pr view --json` field — verified live. Keeping this
+        # here records which of the three calls was wrong, so a future reader does not "fix" the
+        # working ones too.
+        assert "--json headRepositoryOwner" in SOURCE
+
+    def test_label_provenance_uses_the_timeline_REST_endpoint(self):
+        assert 'gh api "repos/$SLUG/issues/$n/timeline"' in _gates()
+
+
+class TestPaginationDoesNotBreakLabelProvenance:
+    """`gh api --paginate --jq` applies the filter to each PAGE, so `| last` emits one value PER
+    PAGE. Past 100 timeline events the actor string becomes multi-line, the allowlist comparison
+    fails, and the gate refuses — silently, and precisely on the long-lived, heavily-discussed
+    threads that matter most. Verified against the live API: `--paginate --jq '... | last'` over a
+    multi-page endpoint returned five lines.
+    """
+
+    def test_the_timeline_read_slurps_instead_of_filtering_per_page(self):
+        gates = _gates()
+        assert "--paginate --slurp" in gates
+        # --slurp is rejected alongside --jq, so the filter must be an EXTERNAL jq.
+        assert "| jq -r" in gates
+
+    def test_it_flattens_the_array_of_pages(self):
+        # --slurp yields an array OF PAGES; `.[]` alone would iterate pages, not events.
+        assert ".[][]" in _gates()
+
+    def test_no_paginate_jq_combination_survives_anywhere_in_the_script(self):
+        code = "\n".join(ln for ln in SOURCE.splitlines() if not ln.lstrip().startswith("#"))
+        assert not re.search(r"--paginate\s+(-H [^\n]*)?\\?\s*\n?\s*--jq", code), (
+            "--paginate with --jq filters per page; use --slurp and an external jq")
+
+    def test_a_two_page_timeline_resolves_to_ONE_actor(self, tmp_path):
+        # The actual regression. Before --slurp this returned two lines and the comparison failed.
+        r = _run(tmp_path, 'label_actor_trusted 7 "agent:ready" && echo YES || echo NO',
+                 _GH_TIMELINE, {"ACTOR": "owner-person", "PAGES": "2",
+                                "ACTOR_FIRST": "someone-else"})
+        assert "YES" in r.stdout
+
+    def test_across_pages_the_LAST_labeller_wins_not_the_first(self, tmp_path):
+        # A label removed and re-added belongs to whoever added it last — and "last" must mean
+        # last across the WHOLE timeline, not last on each page.
+        r = _run(tmp_path, 'label_actor_trusted 7 "agent:ready" && echo YES || echo NO',
+                 _GH_TIMELINE, {"ACTOR": "stranger", "PAGES": "2",
+                                "ACTOR_FIRST": "owner-person"})
+        assert "NO" in r.stdout
+
+
+class TestEmptyQueueExplainsItself:
+    """"Pipeline idle" and "every candidate was excluded" were the same log line. That is the
+    failure the reaper's own header warns about — silence looking identical to done."""
+
+    def test_the_diagnostic_exists_and_is_called_on_the_idle_path(self):
+        assert "explain_empty_queue() {" in SOURCE
+        idle = re.search(r'log "No agent:ready issues remaining[^\n]*\n[^\n]*', SOURCE).group(0)
+        assert "explain_empty_queue" in idle
+
+    def test_it_names_the_blocking_labels(self):
+        block = re.search(r"\nexplain_empty_queue\(\) \{.*?\n\}\n", SOURCE, re.S).group(0)
+        for label in ("needs-human", "agent:blocked", "agent:working"):
+            assert label in block
+
+    def test_it_is_read_only(self):
+        # A diagnostic that mutates state on the idle path would be a new class of bug.
+        block = re.search(r"\nexplain_empty_queue\(\) \{.*?\n\}\n", SOURCE, re.S).group(0)
+        for mutation in ("--add-label", "--remove-label", "gh pr merge", "gh issue edit", "git push"):
+            assert mutation not in block
