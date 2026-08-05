@@ -71,10 +71,13 @@ jobs:
           TRUSTED_LABELLERS: "gitchrisqueen"
         run: |
           set -euo pipefail
-          actor="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/timeline" --paginate \
-                     -H "Accept: application/vnd.github+json" \
-                     --jq '[.[] | select(.event=="labeled" and .label.name=="release:now")
-                           | .actor.login] | last // empty' 2>/dev/null || true)"
+          # `--slurp` + an external jq, not `--paginate --jq`: gh applies --jq per PAGE, so `| last`
+          # would emit one login per page and a >100-event PR would compare a multi-line string
+          # against the allowlist and always refuse. --slurp yields an array OF PAGES -> `.[][]`.
+          actor="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/timeline" --paginate --slurp \
+                     -H "Accept: application/vnd.github+json" 2>/dev/null \
+                   | jq -r '[.[][] | select(.event=="labeled" and .label.name=="release:now")
+                            | .actor.login] | last // empty' 2>/dev/null || true)"
           if [ -z "$actor" ]; then
             echo "::warning title=Fast lane refused::could not read who applied release:now on #${PR_NUMBER}; it will ship at the next window."
             exit 1

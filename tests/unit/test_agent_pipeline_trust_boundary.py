@@ -63,9 +63,17 @@ _GH_ASSOC = '''
     echo "${ASSOC:-}"
 '''
 
-# `gh api repos/../issues/N/timeline` -> the actor named by ACTOR ("" = no labeled event).
+# `gh api repos/../issues/N/timeline --paginate --slurp` -> an array OF PAGES of timeline events.
+# ACTOR names the labeller ("" = no labeled event at all). PAGES=2 splits it across two pages, which
+# is what `--paginate --jq` used to mangle.
 _GH_TIMELINE = '''
-    echo "${ACTOR:-}"
+    if [ -z "${ACTOR:-}" ]; then echo '[[]]'; exit 0; fi
+    ev() { printf '{"event":"labeled","label":{"name":"%s"},"actor":{"login":"%s"}}' "${LABEL:-agent:ready}" "$1"; }
+    if [ "${PAGES:-1}" = "2" ]; then
+      printf '[[%s],[%s]]\\n' "$(ev "${ACTOR_FIRST:-someone-else}")" "$(ev "$ACTOR")"
+    else
+      printf '[[%s]]\\n' "$(ev "$ACTOR")"
+    fi
 '''
 
 
@@ -120,7 +128,7 @@ class TestLabelActorTrusted:
         r = _run(tmp_path,
                  'AGENT_LABEL_TRUSTED_ACTORS="owner-person github-actions[bot]"\n'
                  'label_actor_trusted 7 "agent:depfix" && echo YES || echo NO',
-                 _GH_TIMELINE, {"ACTOR": "github-actions[bot]"})
+                 _GH_TIMELINE, {"ACTOR": "github-actions[bot]", "LABEL": "agent:depfix"})
         assert "YES" in r.stdout
 
     def test_a_prefix_of_an_allowlisted_name_does_not_match(self, tmp_path):
@@ -154,7 +162,7 @@ class TestPrAdmissible:
         gh = '''
             case "$1" in
               pr)  echo "${HEAD_OWNER:-}" ;;
-              api) echo "${ACTOR:-}" ;;
+              api) printf '[[{"event":"labeled","label":{"name":"agent:working"},"actor":{"login":"%s"}}]]\\n' "${ACTOR:-}" ;;
             esac
         '''
         ok = _run(tmp_path, 'pr_admissible 12 "agent:working" && echo YES || echo NO', gh,
@@ -185,8 +193,10 @@ class TestSelectNextIssue:
               api)
                 n="$(echo "$2" | sed 's:.*/issues/::; s:/timeline::')"
                 case "$2" in
-                  */timeline) echo "$ACTORS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))" ;;
-                  *)          echo "$ASSOC"  | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))" ;;
+                  */timeline)
+                    a="$(echo "$ACTORS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))")"
+                    printf '[[{{"event":"labeled","label":{{"name":"agent:ready"}},"actor":{{"login":"%s"}}}}]]\\n' "$a" ;;
+                  *) echo "$ASSOC" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))" ;;
                 esac ;;
             esac
         '''
@@ -399,3 +409,63 @@ class TestTheGatesUseGhCommandsThatExist:
 
     def test_label_provenance_uses_the_timeline_REST_endpoint(self):
         assert 'gh api "repos/$SLUG/issues/$n/timeline"' in _gates()
+
+
+class TestPaginationDoesNotBreakLabelProvenance:
+    """`gh api --paginate --jq` applies the filter to each PAGE, so `| last` emits one value PER
+    PAGE. Past 100 timeline events the actor string becomes multi-line, the allowlist comparison
+    fails, and the gate refuses — silently, and precisely on the long-lived, heavily-discussed
+    threads that matter most. Verified against the live API: `--paginate --jq '... | last'` over a
+    multi-page endpoint returned five lines.
+    """
+
+    def test_the_timeline_read_slurps_instead_of_filtering_per_page(self):
+        gates = _gates()
+        assert "--paginate --slurp" in gates
+        # --slurp is rejected alongside --jq, so the filter must be an EXTERNAL jq.
+        assert "| jq -r" in gates
+
+    def test_it_flattens_the_array_of_pages(self):
+        # --slurp yields an array OF PAGES; `.[]` alone would iterate pages, not events.
+        assert ".[][]" in _gates()
+
+    def test_no_paginate_jq_combination_survives_anywhere_in_the_script(self):
+        code = "\n".join(ln for ln in SOURCE.splitlines() if not ln.lstrip().startswith("#"))
+        assert not re.search(r"--paginate\s+(-H [^\n]*)?\\?\s*\n?\s*--jq", code), (
+            "--paginate with --jq filters per page; use --slurp and an external jq")
+
+    def test_a_two_page_timeline_resolves_to_ONE_actor(self, tmp_path):
+        # The actual regression. Before --slurp this returned two lines and the comparison failed.
+        r = _run(tmp_path, 'label_actor_trusted 7 "agent:ready" && echo YES || echo NO',
+                 _GH_TIMELINE, {"ACTOR": "owner-person", "PAGES": "2",
+                                "ACTOR_FIRST": "someone-else"})
+        assert "YES" in r.stdout
+
+    def test_across_pages_the_LAST_labeller_wins_not_the_first(self, tmp_path):
+        # A label removed and re-added belongs to whoever added it last — and "last" must mean
+        # last across the WHOLE timeline, not last on each page.
+        r = _run(tmp_path, 'label_actor_trusted 7 "agent:ready" && echo YES || echo NO',
+                 _GH_TIMELINE, {"ACTOR": "stranger", "PAGES": "2",
+                                "ACTOR_FIRST": "owner-person"})
+        assert "NO" in r.stdout
+
+
+class TestEmptyQueueExplainsItself:
+    """"Pipeline idle" and "every candidate was excluded" were the same log line. That is the
+    failure the reaper's own header warns about — silence looking identical to done."""
+
+    def test_the_diagnostic_exists_and_is_called_on_the_idle_path(self):
+        assert "explain_empty_queue() {" in SOURCE
+        idle = re.search(r'log "No agent:ready issues remaining[^\n]*\n[^\n]*', SOURCE).group(0)
+        assert "explain_empty_queue" in idle
+
+    def test_it_names_the_blocking_labels(self):
+        block = re.search(r"\nexplain_empty_queue\(\) \{.*?\n\}\n", SOURCE, re.S).group(0)
+        for label in ("needs-human", "agent:blocked", "agent:working"):
+            assert label in block
+
+    def test_it_is_read_only(self):
+        # A diagnostic that mutates state on the idle path would be a new class of bug.
+        block = re.search(r"\nexplain_empty_queue\(\) \{.*?\n\}\n", SOURCE, re.S).group(0)
+        for mutation in ("--add-label", "--remove-label", "gh pr merge", "gh issue edit", "git push"):
+            assert mutation not in block

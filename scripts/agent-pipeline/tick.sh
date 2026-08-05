@@ -274,11 +274,16 @@ label_actor_trusted() {
   # label_actor_trusted <number> <label> -> 0 when the LAST actor to apply <label> is allowlisted.
   # The timeline endpoint covers PRs too (a PR is an issue). We read the LAST `labeled` event for
   # that name: a label removed and re-added by someone else is theirs, not the original applier's.
+  # `--slurp` + an EXTERNAL jq, not `--paginate --jq`: gh applies --jq to each PAGE separately, so
+  # `| last` emits one login PER PAGE. Past 100 timeline events $actor becomes multi-line, the
+  # case-match below fails, and the gate refuses — silently, and precisely on the long-lived,
+  # heavily-discussed threads. (--slurp is rejected alongside --jq, hence the pipe.) --slurp yields
+  # an array OF PAGES, so `.[][]` flattens it.
   local n="$1" label="$2" actor
-  actor="$(gh api "repos/$SLUG/issues/$n/timeline" --paginate \
-             -H "Accept: application/vnd.github+json" \
-             --jq "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")
-                   | .actor.login] | last // empty" 2>/dev/null)"
+  actor="$(gh api "repos/$SLUG/issues/$n/timeline" --paginate --slurp \
+             -H "Accept: application/vnd.github+json" 2>/dev/null \
+           | jq -r "[.[][] | select(.event==\"labeled\" and .label.name==\"${label}\")
+                    | .actor.login] | last // empty" 2>/dev/null)"
   [ -n "$actor" ] || { log "TRUST: #$n — no readable '$label' labeler; refusing."; return 1; }
   case " $AGENT_LABEL_TRUSTED_ACTORS " in *" $actor "*) return 0 ;; esac
   log "TRUST: #$n — '$label' applied by '$actor', not in AGENT_LABEL_TRUSTED_ACTORS."
@@ -418,6 +423,22 @@ select_ready_issues() {
         | ($l|index("needs-human")|not) and ($l|index("agent:blocked")|not) and ($l|index("agent:working")|not)))
     | sort_by((if prio <= 1 then 0 else 1 end), msnum, prio, .number)
     | .[].number'
+}
+
+explain_empty_queue() {
+  # Why the queue came back empty. "Pipeline idle" and "every candidate was excluded" are the SAME
+  # log line otherwise, and the reaper's own header warns that silence looking identical to done is
+  # how sixteen issues once accumulated invisibly. Purely diagnostic — reads only, changes nothing.
+  local held
+  held="$(gh issue list --repo "$SLUG" --state open --limit 100 --label "agent:ready" \
+            --json number,labels 2>/dev/null \
+          | jq -r '[.[] | . as $i | (.labels|map(.name)) as $l
+                   | (["needs-human","agent:blocked","agent:working"] | map(select(. as $x | $l|index($x))))
+                     as $blockers
+                   | select($blockers|length > 0)
+                   | "#\($i.number) (\($blockers|join(", ")))"] | join("; ")' 2>/dev/null)"
+  [ -n "$held" ] && log "  ...$(echo "$held" | tr ';' '\n' | wc -l) agent:ready issue(s) excluded: $held"
+  return 0
 }
 
 select_next_issue() {
@@ -1172,6 +1193,7 @@ fi
 ISSUE="$(select_next_issue)"
 if [ -z "$ISSUE" ]; then
   log "No agent:ready issues remaining. Pipeline idle."
+  explain_empty_queue
   TICK_OUTCOME="nothing_to_do"; TICK_REASON="no_ready"; exit 0
 fi
 RISK="$(gh issue view "$ISSUE" --repo "$SLUG" --json labels \

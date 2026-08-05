@@ -92,15 +92,32 @@ class TestTheGateLogic:
                  "GH_TOKEN": "x", "REPO": "acme/widget", "PR_NUMBER": "42",
                  "TRUSTED_LABELLERS": trusted})
 
+    # The step pipes gh's --slurp output into jq, so the stub emits an array OF PAGES of timeline
+    # events rather than a bare login.
+    @staticmethod
+    def _timeline(*logins: str) -> str:
+        pages = ",".join(
+            '[{"event":"labeled","label":{"name":"release:now"},'
+            f'"actor":{{"login":"{login}"}}}}]' for login in logins)
+        return f"cat <<'JSON'\n[{pages}]\nJSON\n"
+
     def test_a_trusted_labeller_authorises_the_fast_lane(self, tmp_path):
-        r = self._run(tmp_path, 'echo "gitchrisqueen"')
+        r = self._run(tmp_path, self._timeline("gitchrisqueen"))
         assert r.returncode == 0
         assert "fast lane authorised" in r.stdout
 
     def test_anybody_else_is_refused(self, tmp_path):
-        r = self._run(tmp_path, 'echo "drive-by-contributor"')
+        r = self._run(tmp_path, self._timeline("drive-by-contributor"))
         assert r.returncode == 1
         assert "not in TRUSTED_LABELLERS" in r.stdout
+
+    def test_a_two_page_timeline_resolves_to_the_LAST_labeller(self, tmp_path):
+        # `--paginate --jq` emitted one login per page; the comparison then always failed. With
+        # --slurp the whole timeline flattens and `| last` means last overall.
+        ok = self._run(tmp_path, self._timeline("someone-else", "gitchrisqueen"))
+        assert ok.returncode == 0
+        refused = self._run(tmp_path, self._timeline("gitchrisqueen", "someone-else"))
+        assert refused.returncode == 1
 
     def test_an_unreadable_timeline_FAILS_CLOSED(self, tmp_path):
         # Cost of a false negative: the PR ships at the next window, hours later.
@@ -110,15 +127,15 @@ class TestTheGateLogic:
         assert "could not read" in r.stdout
 
     def test_an_empty_actor_fails_closed(self, tmp_path):
-        r = self._run(tmp_path, 'echo ""')
+        r = self._run(tmp_path, "echo '[[]]'")   # a timeline with no labeled event
         assert r.returncode == 1
 
     def test_a_prefix_of_a_trusted_name_is_not_a_match(self, tmp_path):
-        r = self._run(tmp_path, 'echo "gitchrisqueen-evil"')
+        r = self._run(tmp_path, self._timeline("gitchrisqueen-evil"))
         assert r.returncode == 1
 
     def test_multiple_trusted_labellers_are_supported(self, tmp_path):
-        r = self._run(tmp_path, 'echo "release-bot"', trusted="gitchrisqueen release-bot")
+        r = self._run(tmp_path, self._timeline("release-bot"), trusted="gitchrisqueen release-bot")
         assert r.returncode == 0
 
 
