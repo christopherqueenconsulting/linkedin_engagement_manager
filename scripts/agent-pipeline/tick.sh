@@ -255,13 +255,18 @@ assert_agent_token_scoped() {
 }
 
 author_trusted() {
-  # author_trusted issue|pr <number> -> 0 when the AUTHOR has standing in this repo.
-  local kind="$1" n="$2" assoc
-  assoc="$(gh "$kind" view "$n" --repo "$SLUG" --json authorAssociation \
-             --jq '.authorAssociation // ""' 2>/dev/null)"
-  [ -n "$assoc" ] || { log "TRUST: $kind #$n — authorAssociation unreadable; refusing."; return 1; }
+  # author_trusted <number> -> 0 when the AUTHOR has standing in this repo.
+  #
+  # REST, deliberately — NOT `gh issue view --json authorAssociation`. That field does not exist in
+  # gh's issue or PR JSON ("Unknown JSON field"), so the command fails, the association reads empty,
+  # and this function then refuses — correctly for an unreadable answer, but it made EVERY issue
+  # unreadable and idled the whole pipeline. The REST issues endpoint does expose
+  # `author_association`, and it covers PRs too, because a PR is an issue.
+  local n="$1" assoc
+  assoc="$(gh api "repos/$SLUG/issues/$n" --jq '.author_association // ""' 2>/dev/null)"
+  [ -n "$assoc" ] || { log "TRUST: #$n — author_association unreadable; refusing."; return 1; }
   case " $TRUSTED_ASSOCIATIONS " in *" $assoc "*) return 0 ;; esac
-  log "TRUST: $kind #$n authored by $assoc — not eligible for autonomous work."
+  log "TRUST: #$n authored by $assoc — not eligible for autonomous work."
   return 1
 }
 
@@ -419,7 +424,7 @@ select_next_issue() {
   # The first ready issue that also clears the trust boundary (author standing + label provenance).
   local n
   for n in $(select_ready_issues); do
-    if author_trusted issue "$n" && label_actor_trusted "$n" "agent:ready"; then
+    if author_trusted "$n" && label_actor_trusted "$n" "agent:ready"; then
       echo "$n"; return 0
     fi
   done
