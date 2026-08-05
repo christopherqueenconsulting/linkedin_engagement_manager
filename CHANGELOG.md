@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.133.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.6...v0.133.0) (2026-08-05)
+
+
+### Features
+
+* **content-generation:** let authors add an image to a text post (closes [#1030](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1030)) ([#1061](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1061)) ([74ae9ce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/74ae9ce1ec4d95de3345bbe66f884c2a93ef8025))
+
 ## [0.132.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.5...v0.132.6) (2026-08-05)
 
 
