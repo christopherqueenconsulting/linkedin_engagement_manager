@@ -22,6 +22,13 @@ def _box(text):
     return b
 
 
+def _messages(mock, needle):
+    """Log messages recorded on a patched logger call that mention `needle`. Matched on the bare
+    word 'hash' rather than either message's own phrasing, so the #1064 guard still fires if the
+    warning comes back worded the way it was before ('unstable content-hash key')."""
+    return [c.args[0] for c in mock.call_args_list if c.args and needle in c.args[0]]
+
+
 def _card_for(box):
     """A card mock that remembers which post text it was resolved from, so a test can answer the
     URN scan per post rather than once for the whole run."""
@@ -170,8 +177,8 @@ class TestFeedDedup:
                                    "urn:li:activity:7486221543367397377"})
         assert r["posted"] == 2
         assert r["funnel"]["commented_key_sources"] == {"card": 1, "hash": 1}
-        assert not [c for c in r["warn"].call_args_list if "content hash" in c.args[0]]
-        assert [c for c in r["debug"].call_args_list if "content-hash" in c.args[0]]
+        assert not _messages(r["warn"], "hash")
+        assert _messages(r["debug"], "content-hash")
 
     def test_no_urn_anywhere_in_the_scan_still_warns(self):
         # The #580 signature: the resolver read nothing on any post examined, so every comment
@@ -180,15 +187,16 @@ class TestFeedDedup:
                       real_key=True, urn_by_text={})
         assert r["posted"] == 1
         assert r["funnel"]["key_sources"] == {"hash": 1}
-        assert [c for c in r["warn"].call_args_list if "URN resolver drift" in c.args[0]]
+        assert _messages(r["warn"], "URN resolver drift")
+        assert not _messages(r["debug"], "content-hash")   # the two branches are exclusive
 
     def test_all_urn_keyed_scan_says_nothing_about_hashes(self):
         r = _run_feed([_box("A feed post whose card carries its activity urn.")], real_key=True,
                       urn_by_text={"A feed post whose card carries its activity urn.":
                                    "urn:li:activity:7486221543367397377"})
         assert r["funnel"]["commented_key_sources"] == {"card": 1}
-        assert not [c for c in r["warn"].call_args_list if "content hash" in c.args[0]]
-        assert not [c for c in r["debug"].call_args_list if "content-hash" in c.args[0]]
+        assert not _messages(r["warn"], "hash")
+        assert not _messages(r["debug"], "content-hash")
 
     def test_lost_claim_race_is_noop(self):
         # claim returns False (another run/worker already holds it) => no LLM, no comment.
