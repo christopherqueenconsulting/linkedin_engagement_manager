@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.132.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.5...v0.132.6) (2026-08-05)
+
+
+### Bug Fixes
+
+* **security:** read author standing from REST, not a gh field that does not exist ([#1059](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1059)) ([f4a8c04](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f4a8c048ab5fa2186576b9c4181b84ee1f458e5e))
+
+
+### Documentation
+
+* **security:** record that code-owner review does not enforce at 0 approvals ([#1057](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1057)) ([5f0ceb4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5f0ceb47ddfa7b386223bd82982913cd983a3758))
+
 ## [0.132.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.4...v0.132.5) (2026-08-04)
 
 
