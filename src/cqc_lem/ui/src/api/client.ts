@@ -27,6 +27,19 @@ const CLIENT_HEADER = 'X-LEM-Client'
 
 api.interceptors.request.use((config) => {
   config.headers[CLIENT_HEADER] = 'spa'
+  // A multipart upload must NOT inherit the JSON default above (issue #1030). axios reads the
+  // Content-Type in `transformRequest`, and when it says JSON it serialises a FormData body with
+  // `JSON.stringify(formDataToJSON(data))` — the File collapses to `{}`, so the bytes never leave
+  // the browser and the endpoint answers 422. Clearing it here lets the adapter hand the body to
+  // the browser, which is the only thing that can write the multipart boundary. It belongs in this
+  // one client for the same reason the header above does: a call site that has to remember it is a
+  // call site that will forget it — `/user/newsletter-draft/cover` already had.
+  // `multipart/form-data` here carries no boundary, and it is not meant to: the adapter replaces it
+  // with the browser's own value (boundary included) for a FormData body. Saying it anyway is what
+  // `Avatars.tsx` already does per call site, and it keeps the intent readable.
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    config.headers['Content-Type'] = 'multipart/form-data'
+  }
   // Since #745 (2b) the session normally rides in an httpOnly cookie the browser attaches itself,
   // and localStorage holds only the 'cookie' sentinel — there is nothing to put in this header.
   // It is still sent when a real token is held (cookie-less fallback, tutorial capture harness).

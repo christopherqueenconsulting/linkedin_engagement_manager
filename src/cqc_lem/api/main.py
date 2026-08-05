@@ -1210,7 +1210,12 @@ _LEN_TARGET_NAME = 255         # engagement_targets.name VARCHAR(255)
 _LEN_STORY_TITLE = 255         # story_bank.title VARCHAR(255)
 _LEN_STORY_BODY = 5000         # story_bank.body (TEXT; app cap)
 _LEN_GROUP_POST = 3000    # LinkedIn caps a post at 3000 chars (group_post_drafts.content is TEXT)
-_LEN_POST_CONTENT = 3000  # same cap for a feed post — the compose form already enforces it
+# Source text for an image prompt, NOT a post-length cap. LinkedIn's 3000 is enforced on the
+# compose form only — nothing truncates a generated draft, and the Review & Edit textarea has no
+# maxLength — so bounding this at 3000 would answer 422 for a long draft, and FastAPI's validation
+# `detail` is a LIST, which the SPA cannot show: the author would get "Image generation failed"
+# with no way to act on it. Bounded generously instead; it is still what reaches the brief LLM.
+_LEN_IMAGE_PROMPT_SOURCE = 10000
 _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
@@ -1302,7 +1307,7 @@ class PostImageGenerateRequest(BaseModel):
     composing — there is no row yet — in which case `content` is the only text there is."""
     session_token: SessionTokenField = None
     post_id: Optional[int] = None
-    content: Optional[str] = Field(default=None, max_length=_LEN_POST_CONTENT)
+    content: Optional[str] = Field(default=None, max_length=_LEN_IMAGE_PROMPT_SOURCE)
 
 
 class PostImageRemoveRequest(BaseModel):

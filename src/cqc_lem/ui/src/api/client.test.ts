@@ -64,6 +64,50 @@ describe('api client', () => {
     }
   })
 
+  // Issue #1030. The client defaults every request to `application/json`, and axios reads that in
+  // `transformRequest`: a FormData body sent under a JSON Content-Type is turned into
+  // `JSON.stringify(formDataToJSON(data))`, where a File collapses to `{}`. The upload then leaves
+  // the browser as JSON with no file in it and the endpoint answers 422 — which is exactly what
+  // every FormData call site here does (post images, newsletter covers), because a mocked
+  // `api.post` in a component test never runs the transform.
+  it('leaves a multipart body alone — the file must survive the JSON default', async () => {
+    let captured: InternalAxiosRequestConfig | null = null
+    const form = new FormData()
+    form.append('session_token', 'cookie')
+    form.append('file', new File(['bytes'], 'shot.png', { type: 'image/png' }))
+    try {
+      api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        captured = config
+        return { data: {}, status: 200, statusText: 'OK', headers: {}, config } as AxiosResponse
+      }
+      await api.post('/user/post/image', form)
+    } finally {
+      api.defaults.adapter = original
+    }
+    const sent = captured as unknown as InternalAxiosRequestConfig
+    expect(sent.data).toBeInstanceOf(FormData)
+    expect((sent.data as FormData).get('file')).toBeInstanceOf(File)
+    // Never JSON: that is the value that would have eaten the file.
+    expect(String(sent.headers['Content-Type'] ?? '')).toBe('multipart/form-data')
+    expect(sent.headers['X-LEM-Client']).toBe('spa')
+  })
+
+  it('still sends a plain object as JSON', async () => {
+    let captured: InternalAxiosRequestConfig | null = null
+    try {
+      api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        captured = config
+        return { data: {}, status: 200, statusText: 'OK', headers: {}, config } as AxiosResponse
+      }
+      await api.post('/schedule_post/', { content: 'hello' })
+    } finally {
+      api.defaults.adapter = original
+    }
+    const sent = captured as unknown as InternalAxiosRequestConfig
+    expect(sent.data).toBe('{"content":"hello"}')
+    expect(String(sent.headers['Content-Type'])).toContain('application/json')
+  })
+
   it('sends it with no session token held — the cookie is the credential it protects', async () => {
     const headers = await sentHeaders('post', '/create_weekly_content/')
     expect(headers['X-LEM-Client']).toBe('spa')

@@ -212,6 +212,17 @@ class TestGenerate:
         assert resp.json()["detail"] == {"post_id": None, "image_url": preview}
         assert store.row["image_url"] is None
 
+    def test_a_draft_longer_than_a_linkedin_post_still_generates(self, client, store):
+        """Nothing truncates a generated draft and the Review & Edit textarea has no maxLength, so
+        a 3000-char field cap here would answer 422 — whose `detail` is a list the SPA cannot
+        render, leaving the author with an unexplainable failure on their own post."""
+        with patch("cqc_lem.api.main.generate_image_for_post",
+                   return_value=("https://api.test/api/assets?file_name=images/posts/42/g.png",
+                                 None)) as gen:
+            resp = _generate(client, post_id=_POST, content="x" * 4000)
+        assert resp.status_code == 200
+        assert len(gen.call_args[0][1]) == 4000
+
     def test_nothing_written_is_a_400_before_any_spend(self, client, store):
         with patch("cqc_lem.api.main.generate_image_for_post") as gen:
             assert _generate(client, content="   ").status_code == 400
