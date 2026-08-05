@@ -44,7 +44,7 @@ code is missing from this table.
 | Newsletter/article editor | `find_article_editor_elements` | `--article-editor-url` | yes | `editor_ready` gates the publish walk (#771/#804) |
 | Own post detail + analytics counts | `_post_social_counts` | `--post-url` | no (needs a post) | **none — see Gaps** |
 | Post media render (document vs image) | media anchors | `--post-url` | no (needs a post) | n/a — a diagnostic, not a lane |
-| Comment thread + sort | `_comment_items` / `_switch_comment_sort` | `--comment-outcome-url` | no (needs a post) | `visible_most_relevant` is three-valued; NULL excluded (#628) |
+| Comment thread + sort | `_comment_items` / `_switch_comment_sort` | `--comment-outcome-url` | no (needs a post) | `visible_most_relevant` is three-valued; NULL excluded (#628); a sort-control miss warns only when the thread rendered comments (#1063) |
 | Message-thread ladder | `open_message_thread` | `--dm-thread-url` | no (needs a target) | `ThreadState.UNKNOWN` skips (#731) |
 | Post permalink card → Comment → composer | `_permalink_post_card` / `_post_composer_for_card` | `--permalink-comment` | no (needs a post) | a comment that does not land is a FAILURE row, never SUCCESS (#966) |
 

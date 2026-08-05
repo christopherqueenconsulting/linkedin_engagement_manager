@@ -182,6 +182,11 @@ thread replies, likes, whether we replied, `visible_most_relevant`.
   'Most recent' (the May-2026 demotion signal), NULL when sort control couldn't be read. NULL
   rows excluded from the demotion denominator.
 - Unfindable comment = SKIPPED.
+- **The rendered thread is the cross-check on the sort control** (issue #1063): a deleted/private
+  post renders no comments AND no sort control, so the miss is that page — logged DEBUG, recorded
+  as the `post-unavailable` skip. A thread that DID render and still yields no control is selector
+  rot and keeps its `Selector miss: Comment sort control` warning. Same grading the probe applies
+  (`comment_outcome_state`: no comments → `unknown`, comments but no control → `drift`).
 - Weekly report (`auto_weekly_comment_quality`) ships rates to PostHog + `/user/engagement-analytics`.
 - Demotion rate > `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings
   **holds that user's feed commenting** (`hold_commenting` in `rate_limit.py` — narrower than

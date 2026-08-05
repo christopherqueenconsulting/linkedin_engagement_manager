@@ -118,6 +118,21 @@ class TestFindCommentSortControl:
         with patch(f"{RA}.find_first", return_value=None) as ff:
             assert _fn("_find_comment_sort_control")(driver, MagicMock()) is None
         assert ff.call_count == 1
+        assert ff.call_args.kwargs["warn_on_miss"] is True
+
+    def test_the_caller_can_stand_the_miss_warning_down(self):
+        # A page that rendered no comment thread renders no sort control either — the miss is that
+        # page, not selector rot (#1063).
+        driver = self._driver([])
+        with patch(f"{RA}.find_first", return_value=None) as ff:
+            assert _fn("_find_comment_sort_control")(driver, MagicMock(),
+                                                     warn_on_miss=False) is None
+        assert ff.call_args.kwargs["warn_on_miss"] is False
+
+    def test_the_label_reader_passes_the_cross_check_through(self):
+        with patch(f"{RA}._find_comment_sort_control", return_value=None) as fc:
+            assert _fn("_comment_sort_label")(MagicMock(), MagicMock(), warn_on_miss=False) == ""
+        assert fc.call_args.kwargs["warn_on_miss"] is False
 
     def test_a_locator_that_raises_does_not_abort_the_chain(self):
         right = self._el(text="Most recent")
@@ -385,8 +400,23 @@ class TestReadCommentOutcome:
             driver = _outcome_env(es, [], sort_label="", switched=False)
             _p(es, "log_info")
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
+            label = _fn("_comment_sort_label")
         assert out["status"] == "skipped" and out["skip_reason"] == "post-unavailable"
         assert out["visible_most_relevant"] is None
+        # A gone post is not selector rot: the miss must not file a RecurringWarning defect (#1063).
+        assert label.call_args.kwargs["warn_on_miss"] is False
+
+    def test_a_rendered_thread_with_no_sort_control_still_warns(self):
+        # The thread rendered, so the control SHOULD be there — that miss is drift and keeps its
+        # warning (#1063).
+        theirs = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/glenda/")]
+        theirs[0][0].text = "someone else"
+        with ExitStack() as es:
+            driver = _outcome_env(es, theirs, sort_label="", switched=False)
+            _p(es, "log_info")
+            _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
+            label = _fn("_comment_sort_label")
+        assert label.call_args.kwargs["warn_on_miss"] is True
 
     def test_unknown_sort_leaves_visibility_null_even_when_found(self):
         our_tb = MagicMock(); our_tb.text = "Latency is the tell here"

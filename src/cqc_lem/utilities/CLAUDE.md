@@ -91,6 +91,14 @@ Two things follow for anyone writing a call site here:
    one that does stops rendering it once the last page is in. It logged `Selector miss: Load more
    comments` at WARNING and filed a defect for the loop terminating (issue #1041). **Never warn on
    the condition you loop until.**
+   When a miss IS attributable, attribute it with a **page-native cross-check** rather than picking
+   one level for the call site. `_read_comment_outcome` warned `Selector miss: Comment sort control`
+   on every deleted or private post it swept — those render no comment thread AND no sort control,
+   which is the `post-unavailable` skip it already records (issue #1063). The rendered thread now
+   decides: no comments → DEBUG, comments but no control → still WARNING, because there the control
+   should have been. That is the same reading `--comment-outcome-url` grades (`unknown` vs `drift`),
+   which is the point — **the production tripwire and the probe must answer the same question the
+   same way**, or one of them is lying about the surface.
    The rule reads sideways for a **state-setter**: doing what you were asked is not a degraded path,
    however serious the state is. `pause_automation` warned every time it stored the global Selenium
    kill-switch, and maintenance mode sets one on EVERY release, so a routine deploy filed

@@ -4972,7 +4972,7 @@ def _sort_from_element(el) -> str:
     return ""
 
 
-def _find_comment_sort_control(driver, wait):
+def _find_comment_sort_control(driver, wait, *, warn_on_miss: bool = True):
     """The comment sort control, preferring a candidate whose own label actually reads as a sort.
 
     find_first hands back the first match of the first locator that yields ANY element — it never
@@ -4981,7 +4981,10 @@ def _find_comment_sort_control(driver, wait):
     miss), which is exactly the starved denominator #818 is about. Walking the chain here lets such
     a node fall through to a locator that names the real sort. Some renders label the control only
     inside its popup, so an unvalidated candidate is still returned when nothing in the chain parses
-    — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it."""
+    — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it.
+
+    `warn_on_miss` is the caller's page-native cross-check (#1063): a total miss is only selector
+    rot on a page that rendered a comment thread at all."""
     fallback = None
     for locator in _COMMENT_SORT_LOCATORS:
         try:
@@ -4996,15 +4999,16 @@ def _find_comment_sort_control(driver, wait):
     if fallback is not None:
         return fallback
     # Nothing at all yet: fall back to find_first for its wait/retry and its Selector-miss warning.
-    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
+    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False,
+                      warn_on_miss=warn_on_miss)
 
 
-def _comment_sort_label(driver, wait) -> str:
+def _comment_sort_label(driver, wait, *, warn_on_miss: bool = True) -> str:
     """The comment sort currently applied, lowercased ('most relevant' / 'most recent'), or '' when
     the control isn't present. '' is load-bearing: without knowing the sort we cannot say whether an
     absent comment was demoted, so the visibility reading stays NULL rather than guessing."""
     try:
-        btn = _find_comment_sort_control(driver, wait)
+        btn = _find_comment_sort_control(driver, wait, warn_on_miss=warn_on_miss)
     except Exception:
         return ""
     return _sort_from_element(btn) if btn is not None else ""
@@ -5128,7 +5132,12 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     _load_comment_thread(driver)
 
     items = _comment_items(driver)
-    sort_label = _comment_sort_label(driver, wait)
+    # The rendered comment thread is the page-native cross-check on the sort control (#1063): a post
+    # that is deleted, private or has had its comments removed renders no thread AND no sort control,
+    # which is the `post-unavailable` skip recorded below — working behaviour. Warning there filed a
+    # grouped defect for a page that was simply gone; a thread that DID render and still yields no
+    # control is selector rot and still warns. Same grading `--comment-outcome-url` applies.
+    sort_label = _comment_sort_label(driver, wait, warn_on_miss=bool(items))
     ours = _find_our_comment(items, our_slug, comment_text)
     visible = None
     if ours is not None:
