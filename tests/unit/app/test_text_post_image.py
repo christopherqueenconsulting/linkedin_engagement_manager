@@ -32,8 +32,8 @@ class TestGenerateTextPostImage:
         with patch("cqc_lem.utilities.db.get_engagement_preferences",
                    return_value=prefs if prefs is not None else {"text_post_images": True}), \
              patch("cqc_lem.utilities.db.update_db_post_image_url", return_value=True) as store, \
-             patch(f"{_RCP}.load_profile_for_user", return_value=None), \
-             patch(f"{_RCP}.assets_dir", str(assets)), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.utilities.post_image.assets_dir", str(assets)), \
              patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
                    return_value=avatar), \
              patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
@@ -51,7 +51,8 @@ class TestGenerateTextPostImage:
         assert result and "file_name=images/posts/42/" in result
         store.assert_called_once_with(42, result)
         # The copy that publish + purge operate on lives under the shared assets volume.
-        assert os.path.isfile(os.path.join(str(assets), "images", "posts", "42", "render.png"))
+        post_dir = os.path.join(str(assets), "images", "posts", "42")
+        assert [f for f in os.listdir(post_dir) if f.endswith(".png")]
         # No avatar -> the vision-gated base renderer on the post_image surface.
         assert render.call_args[1]["surface"] == "post_image"
         assert render.call_args[1]["focal_concept"] == "the focal idea"

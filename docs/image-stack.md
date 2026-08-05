@@ -73,11 +73,48 @@ this module only for the non-avatar case; `render_avatar_image_gated` is the gat
 owner. Newsletter covers add a fail-closed relevance classifier on the Auto path
 (`utilities/newsletter_cover.py`, see `docs/newsletter-covers.md`).
 
+## Post images — the author's own half (issue #1030)
+
+`utilities/post_image.py` is the ONE place a POST's image is validated, stored and removed. It adds
+no prompt engine: `generate_image_for_post` is `build_image_brief` + the gated render above, and
+`run_content_plan._generate_text_post_image` (the scheduled path) now goes through it too — so the
+button in the Content Studio and the nightly generator render the same way.
+
+Two origins, and they are NOT symmetric in kind but ARE in review:
+
+| Origin | Where it comes from | Gate |
+|---|---|---|
+| Upload | the author's own file | `inspect_post_image_bytes` — decodable, PNG/JPEG, under 8 MB, ≥ 400×400 |
+| Generate | `lem-image` via the brief | the vision gate, plus the hourly claim below |
+
+Unlike a newsletter cover there is no second `pending_review` state: a post already sits in the
+review queue until a human approves it, so the queue IS the gate.
+
+Storage: `images/posts/<post_id>/` once the row exists (so `purge_post_assets` cleans it), and
+`images/post_previews/<user_id>/` while the author is still composing — the same shape
+`/generate-carousel` already uses for slides handed back before a post exists. An abandoned preview
+is left on disk for the same reason an abandoned carousel preview is: pruning it would have to
+outlive a post scheduled 30 days out.
+
+`posts.image_url` holds the PUBLIC `/api/assets?file_name=` URL, because that is what the publish
+step hands LinkedIn. Two consequences the helpers exist for:
+
+- **A compose-time `image_url` is caller-supplied input on a field the publish step later fetches.**
+  `/schedule_post/` accepts one ONLY when `owns_post_image_url` says it is a preview we issued to
+  that caller; anything else is dropped (and warned), never stored.
+- **A stored URL never resolves outside `assets_dir`.** `post_image_abs_path` re-checks containment
+  through `realpath`, so a hand-edited row cannot hand a delete — or a share — an arbitrary file.
+
+`claim_manual_generation` bounds the "Generate with AI" button at
+`POST_IMAGE_GENERATE_MAX_PER_HOUR` per user, claimed BEFORE the render (the button can be held
+down and every press is real spend) and failing OPEN when Redis is gone.
+
 ## Environment
 
 | Var | Meaning |
 |---|---|
 | `IMAGE_BACKEND` | `auto` (default) / `gpt-image` / `flux` |
+| `POST_IMAGE_GENERATE_MAX_PER_HOUR` | Manual post-image generations per user per hour (20) |
 | `DEFAULT_IMAGE_MODEL` | Model handed to the `lem-image` group |
 | `IMAGE_QUALITY` | gpt-image quality tier |
 | `IMAGE_QUALITY_GATE_SURFACES` | Surfaces where the vision gate is enforced, not advisory |

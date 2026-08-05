@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
@@ -56,6 +56,14 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
   // Sending a plain `false` here would be an explicit per-post opt-out, which outranks those.
   const [useAvatar, setUseAvatar] = useState<boolean | null>(null)
   const [videoQuality, setVideoQuality] = useState<'standard' | 'premium' | 'premium_top'>('standard')
+
+  // Image on a TEXT post (issue #1030). There is no post row yet, so upload/generate hand back a
+  // PREVIEW url that rides along in the schedule payload — the server only accepts one it issued
+  // to this account.
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [imageBusy, setImageBusy] = useState<'upload' | 'generate' | null>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
+  const imageFileRef = useRef<HTMLInputElement>(null)
 
   // Carousel AI generation state
   const [carouselMode, setCarouselMode] = useState<'manual' | 'ai'>('ai')
@@ -181,6 +189,47 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     }
   }
 
+  function imageErrorText(err: unknown, fallback: string): string {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    return typeof detail === 'string' ? detail : fallback
+  }
+
+  async function handleUploadImage(file: File) {
+    if (!sessionToken) { setImageError('Not logged in.'); return }
+    setImageBusy('upload')
+    setImageError(null)
+    try {
+      const form = new FormData()
+      form.append('session_token', sessionToken)
+      form.append('file', file)
+      const r = await api.post('/user/post/image', form)
+      setImageUrl(r.data.detail.image_url as string)
+    } catch (err) {
+      setImageError(imageErrorText(err, 'Could not use that image — try another file.'))
+    } finally {
+      setImageBusy(null)
+      if (imageFileRef.current) imageFileRef.current.value = ''
+    }
+  }
+
+  async function handleGenerateImage() {
+    if (!sessionToken) { setImageError('Not logged in.'); return }
+    if (!content.trim()) { setImageError('Write your post first — the image is drawn from it.'); return }
+    setImageBusy('generate')
+    setImageError(null)
+    try {
+      const r = await api.post('/user/post/image/generate', {
+        session_token: sessionToken,
+        content,
+      })
+      setImageUrl(r.data.detail.image_url as string)
+    } catch (err) {
+      setImageError(imageErrorText(err, 'Image generation failed — try again.'))
+    } finally {
+      setImageBusy(null)
+    }
+  }
+
   // "Approve & Schedule" creates the post approved (ready to publish); "Save Draft" holds it as
   // pending for later review. Auto-generated content sets its own status server-side.
   async function handleSubmit(e: React.FormEvent, status: 'pending' | 'approved' = 'approved') {
@@ -225,6 +274,9 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
       if (postType !== 'TEXT' && useAvatar !== null) {
         payload.use_avatar = useAvatar && hasActiveAvatar
       }
+      if (postType === 'TEXT' && imageUrl) {
+        payload.image_url = imageUrl
+      }
       if (postType === 'VIDEO') {
         payload.video_url = videoUrl || null
         payload.video_quality = videoQuality
@@ -241,6 +293,8 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
       setSlides([''])
       setScheduledAt('')
       setGeneratedSlideUrls([])
+      setImageUrl(null)
+      setImageError(null)
     } catch {
       setResult({ ok: false, msg: 'Failed to schedule post. Please try again.' })
     } finally {
@@ -372,6 +426,60 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
                 You have <span className="font-semibold">{videoCredits}</span> premium video credit
                 {videoCredits === 1 ? '' : 's'}.{' '}
                 <a href="/account" className="text-blue-600 hover:underline">Buy more</a>
+              </p>
+            </div>
+          )}
+
+          {/* TEXT: optional image — upload your own or generate one from the post (issue #1030).
+              A single-image post is LinkedIn's highest-volume format, and this is the only way to
+              put one on a post you wrote yourself. */}
+          {postType === 'TEXT' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Image <span className="font-normal text-gray-400">(optional)</span>
+              </label>
+              {imageUrl && (
+                <div className="mb-2 flex items-start gap-3">
+                  <img
+                    src={imageUrl}
+                    alt="Post image"
+                    className="w-28 h-28 object-cover rounded-lg border border-gray-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { setImageUrl(null); setImageError(null) }}
+                    className="text-xs text-red-500 hover:text-red-700 font-semibold underline"
+                  >
+                    Remove image
+                  </button>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <input
+                  ref={imageFileRef}
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  aria-label="Upload post image"
+                  disabled={imageBusy !== null}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) handleUploadImage(file)
+                  }}
+                  className="text-xs text-gray-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-xs file:font-semibold file:bg-white hover:file:border-blue-400"
+                />
+                <button
+                  type="button"
+                  onClick={handleGenerateImage}
+                  disabled={imageBusy !== null}
+                  className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  {imageBusy === 'generate' ? 'Generating image…' : 'Generate with AI'}
+                </button>
+              </div>
+              {imageBusy === 'upload' && <p className="mt-1 text-xs text-gray-500">Uploading…</p>}
+              {imageError && <p className="mt-1 text-xs text-red-600 font-medium">{imageError}</p>}
+              <p className="mt-1 text-xs text-gray-400">
+                PNG or JPG, at least 400×400. AI generation draws the image from what you wrote.
               </p>
             </div>
           )}
@@ -638,6 +746,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
           author={email.split('@')[0] || 'You'}
           headline="LinkedIn Member"
           postType={postType.toLowerCase()}
+          mediaUrl={postType === 'TEXT' ? imageUrl ?? undefined : undefined}
           videoUrl={postType === 'VIDEO' ? videoUrl || null : null}
           slides={
             postType === 'CAROUSEL'

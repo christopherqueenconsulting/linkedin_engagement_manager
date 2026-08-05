@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
@@ -245,9 +245,15 @@ export default function ContentStudio() {
   // Verdict of the last "Save & re-score" run on the open post (issue #421).
   const [rescoreResult, setRescoreResult] = useState<string | null>(null)
 
+  // Image edits on the open post (issue #1030) — upload/generate/remove write straight to the row,
+  // so they are deliberately NOT part of "Save Changes".
+  const [imageBusy, setImageBusy] = useState<'upload' | 'generate' | 'remove' | null>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
+  const imageFileRef = useRef<HTMLInputElement>(null)
+
   // The re-score verdict belongs to one post — drop it when a different one is opened.
   const editingPostId = editingPost?.post_id ?? null
-  useEffect(() => { setRescoreResult(null) }, [editingPostId])
+  useEffect(() => { setRescoreResult(null); setImageError(null) }, [editingPostId])
 
   const { start: filterStartDate, end: filterEndDate } = resolveDateRange(
     dateRange, userTimezone, customStartDate, customEndDate
@@ -347,6 +353,58 @@ export default function ContentStudio() {
       qc.invalidateQueries({ queryKey: ['posts', email] })
     },
     onError: () => setRescoreResult('Could not re-score this post — please try again.'),
+  })
+
+  // Image on an existing post (issue #1030). All three actions land on the row immediately —
+  // an image is a file, not a form field, so there is nothing sensible to hold until "Save".
+  const applyImageUrl = (postId: number, url: string | null) => {
+    setEditingPost((p) => (p && p.post_id === postId ? { ...p, image_url: url } : p))
+    qc.invalidateQueries({ queryKey: ['posts', email] })
+  }
+  const imageErrorText = (err: unknown, fallback: string) => {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    setImageError(typeof detail === 'string' ? detail : fallback)
+  }
+
+  const uploadImageMutation = useMutation({
+    mutationFn: (vars: { post_id: number; file: File }) => {
+      const form = new FormData()
+      form.append('session_token', sessionToken!)
+      form.append('post_id', String(vars.post_id))
+      form.append('file', vars.file)
+      return api.post('/user/post/image', form)
+    },
+    onMutate: () => { setImageBusy('upload'); setImageError(null) },
+    onSuccess: (res, vars) => applyImageUrl(vars.post_id, res.data.detail.image_url),
+    onError: (err) => imageErrorText(err, 'Could not use that image — try another file.'),
+    onSettled: () => {
+      setImageBusy(null)
+      if (imageFileRef.current) imageFileRef.current.value = ''
+    },
+  })
+
+  const generateImageMutation = useMutation({
+    // Send the content that is ON SCREEN: the author is usually looking at an unsaved edit, and an
+    // image drawn from the stale stored text is the one way this reads as broken.
+    mutationFn: (post: Post) =>
+      api.post('/user/post/image/generate', {
+        session_token: sessionToken,
+        post_id: post.post_id,
+        content: post.content,
+      }),
+    onMutate: () => { setImageBusy('generate'); setImageError(null) },
+    onSuccess: (res, post) => applyImageUrl(post.post_id, res.data.detail.image_url),
+    onError: (err) => imageErrorText(err, 'Image generation failed — try again.'),
+    onSettled: () => setImageBusy(null),
+  })
+
+  const removeImageMutation = useMutation({
+    mutationFn: (post_id: number) =>
+      api.post('/user/post/image/remove', { session_token: sessionToken, post_id }),
+    onMutate: () => { setImageBusy('remove'); setImageError(null) },
+    onSuccess: (_res, post_id) => applyImageUrl(post_id, null),
+    onError: (err) => imageErrorText(err, 'Could not remove the image — try again.'),
+    onSettled: () => setImageBusy(null),
   })
 
   const bulkUpdateMutation = useMutation({
@@ -1096,6 +1154,60 @@ export default function ContentStudio() {
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       placeholder="https://example.com/video.mp4"
                     />
+                  </div>
+                )}
+
+                {/* Image on a text post (issue #1030) — upload your own or generate one from the
+                    draft. Saved on the spot, so it survives Cancel and needs no "Save Changes". */}
+                {editingPost.post_type === 'text' && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Image <span className="font-normal text-gray-400">(optional)</span>
+                    </label>
+                    {editingPost.image_url && (
+                      <div className="mb-2 flex items-start gap-3">
+                        <img
+                          src={editingPost.image_url}
+                          alt={`Image on post ${editingPost.post_id}`}
+                          className="w-24 h-24 object-cover rounded-lg border border-gray-200"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeImageMutation.mutate(editingPost.post_id)}
+                          disabled={imageBusy !== null}
+                          className="text-xs text-red-500 hover:text-red-700 font-semibold underline disabled:opacity-50"
+                        >
+                          {imageBusy === 'remove' ? 'Removing…' : 'Remove image'}
+                        </button>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        ref={imageFileRef}
+                        type="file"
+                        accept="image/png,image/jpeg"
+                        aria-label="Upload post image"
+                        disabled={imageBusy !== null}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) uploadImageMutation.mutate({ post_id: editingPost.post_id, file })
+                        }}
+                        className="text-xs text-gray-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-xs file:font-semibold file:bg-white hover:file:border-blue-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => generateImageMutation.mutate(editingPost)}
+                        disabled={imageBusy !== null}
+                        className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                      >
+                        {imageBusy === 'generate' ? 'Generating image…' : 'Generate with AI'}
+                      </button>
+                    </div>
+                    {imageBusy === 'upload' && <p className="mt-1 text-xs text-gray-500">Uploading…</p>}
+                    {imageError && <p className="mt-1 text-xs text-red-600 font-medium">{imageError}</p>}
+                    <p className="mt-1 text-xs text-gray-400">
+                      PNG or JPG, at least 400×400. AI generation draws the image from the text above.
+                    </p>
                   </div>
                 )}
 
