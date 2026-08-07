@@ -1,5 +1,4 @@
 from aws_cdk import (
-    CfnOutput,
     NestedStack,
     Stack,
     aws_ec2 as ec2,

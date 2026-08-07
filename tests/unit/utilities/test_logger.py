@@ -2,7 +2,7 @@
 
 import logging
 import os
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Helpers

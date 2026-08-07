@@ -4,7 +4,7 @@ Tests that hit the live API are skipped when PERPLEXITY_API_KEY is absent.
 Tests that verify fallback/error behavior run without a key.
 """
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

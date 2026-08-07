@@ -804,7 +804,7 @@ def wait_for_ajax(driver):
     try:
         wait.until(lambda d: d.execute_script('return jQuery.active') == 0)
         wait.until(lambda d: d.execute_script('return document.readyState') == 'complete')
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -860,7 +860,7 @@ def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
 
     try:
         driver.close()
-    except WebDriverException as e:
+    except WebDriverException:
         myprint("Failed to close browser/tab. Retrying.....")
         try:
             # Wait to close the new window or tab

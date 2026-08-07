@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities.db import PostStatus, PostType
 
 
 @pytest.mark.integration

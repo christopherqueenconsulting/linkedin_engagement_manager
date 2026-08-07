@@ -1,6 +1,5 @@
 """Unit tests for carousel creator utilities."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,7 +30,6 @@ class TestCarouselCreator:
 
     def test_create_basic_carousel(self):
         """Test creating a basic carousel."""
-        from cqc_lem.utilities.carousel_creator import create_ppt
 
         with patch("cqc_lem.utilities.carousel_creator.create_ppt") as mock_create:
             mock_create.return_value = "/path/to/carousel.pptx"

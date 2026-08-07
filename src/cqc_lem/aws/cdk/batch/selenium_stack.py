@@ -4,7 +4,6 @@ from aws_cdk import (
     Duration,
     Stack,
     aws_applicationautoscaling as applicationautoscaling,
-    aws_cloudwatch as cloudwatch,
     aws_ec2 as ec2,
     aws_ecs as ecs,
     aws_elasticloadbalancingv2 as elbv2,

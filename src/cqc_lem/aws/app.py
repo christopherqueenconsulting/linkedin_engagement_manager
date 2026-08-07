@@ -2,7 +2,6 @@
 
 import aws_cdk as cdk
 
-from cqc_lem.aws.cdk.device_farm_stack import DeviceFarmStack
 from cqc_lem.aws.cdk.ecs.fargate_service.api_stack import APIStack
 from cqc_lem.aws.cdk.ecs.fargate_service.celery_beat_stack import CeleryBeatStack
 from cqc_lem.aws.cdk.ecs.fargate_service.celery_flower_stack import CeleryFlowerStack
@@ -12,7 +11,6 @@ from cqc_lem.aws.cdk.main_stack import MainStack
 from cqc_lem.aws.cdk.shared_stack_props import SharedStackProps
 from cqc_lem.aws.util import get_cdk_env
 from cqc_lem.utilities.env_constants import (
-                       CLEAR_SELENIUM_SESSIONS,
                        HF_TOKEN,
                        LI_API_VERSION,
                        LI_CLIENT_ID,
@@ -20,7 +18,6 @@ from cqc_lem.utilities.env_constants import (
                        LI_STATE_SALT,
                        OPENAI_API_KEY,
                        PEXELS_API_KEY,
-                       PURGE_TASKS,
                        REPLICATE_API_TOKEN,
                        RUNWAYML_API_SECRET,
                        STREAMLIT_EMAIL,

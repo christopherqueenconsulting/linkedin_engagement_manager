@@ -4,7 +4,7 @@ Tests that make live API calls are skipped when PEXELS_API_KEY is absent.
 Structural/fallback tests run without a key.
 """
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

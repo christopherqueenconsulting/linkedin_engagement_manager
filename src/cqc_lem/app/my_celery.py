@@ -31,7 +31,7 @@ from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import AWS_REGION
-from cqc_lem.utilities.logger import logger, myprint
+from cqc_lem.utilities.logger import logger
 from cqc_lem.utilities.observability import capture_exception, track_task
 from cqc_lem.utilities.utils import get_cloudwatch_client
 

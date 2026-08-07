@@ -4,7 +4,6 @@ from aws_cdk import (
     NestedStack,
     RemovalPolicy,
     aws_ec2 as ec2,
-    aws_ecs as ecs,
     aws_rds as rds,
 )
 from constructs import Construct

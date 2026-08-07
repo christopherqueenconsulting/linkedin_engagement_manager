@@ -29,7 +29,7 @@ from cqc_lem.utilities.env_constants import LI_PASSWORD, LI_USER
 from cqc_lem.utilities.linkedin.helper import get_linkedin_profile_from_url, get_my_profile, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint
-from cqc_lem.utilities.selenium_util import clear_sessions, create_driver, get_driver_wait, get_driver_wait_pair
+from cqc_lem.utilities.selenium_util import clear_sessions, get_driver_wait_pair
 
 
 def test_ai_responses():

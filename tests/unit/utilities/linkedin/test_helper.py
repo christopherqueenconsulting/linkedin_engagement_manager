@@ -1,6 +1,6 @@
 """Unit tests for cqc_lem.utilities.linkedin.helper — login_to_linkedin."""
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
