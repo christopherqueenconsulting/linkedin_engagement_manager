@@ -1,13 +1,12 @@
-import copy
 import random
 import re
-from typing import List
+from typing import List, Optional
 
-from bs4 import BeautifulSoup, PageElement
+from bs4 import BeautifulSoup, CData, Comment, Declaration, Doctype, PageElement, \
+    ProcessingInstruction
 from cqc_lem.utilities.date import convert_datetime_to_start_of_day
 from cqc_lem.utilities.date import convert_viewed_on_to_date
-from cqc_lem.utilities.date import get_linkedin_datetime_from_text
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import log_debug, log_warning, myprint
 from cqc_lem.utilities.selenium_util import window_scroll, click_element_wait_retry, get_driver_wait, \
     get_elements_as_list_wait_stale, \
     getText, wait_for_ajax
@@ -18,12 +17,6 @@ start_identifier_map = {
     "education": 19,
     "skills": 15,
     "endorsements": 19,
-    "experience_company": 20,
-    "experience_company_2": 26,
-    "experience_company|start_end_date": 29,
-    "experience_title": 16,
-    "experience_title|start_end_date": 22,
-    "experience_description": 7,
     "cert_name": 20,
     "cert_by": 26,
     "cert_on": 29,
@@ -54,17 +47,6 @@ def print_header(text):
     dashes = "-" * 10
     break_lines = "\n" * 5
     print(break_lines + dashes + text + dashes + "\n" * 2)
-
-
-def deep_compare(dict1, dict2):
-    if isinstance(dict1, dict) and isinstance(dict2, dict):
-        if dict1.keys() != dict2.keys():
-            return False
-        return all(deep_compare(dict1[key], dict2[key]) for key in dict1)
-    elif isinstance(dict1, list) and isinstance(dict2, list):
-        return all(deep_compare(item1, item2) for item1, item2 in zip(dict1, dict2))
-    else:
-        return dict1 == dict2
 
 
 class ProfileUnavailableError(Exception):
@@ -307,158 +289,454 @@ def get_profile_recent_activity(driver, employee_link):
     return profile_activity
 
 
-def get_profile_experiences(driver, employee_link):
-    # TODO: Fix this method
+# --- Experience parsing (issue #970) -------------------------------------------------------------
+# The old parser branched on `start_identifier_map` — the count of leading blank strings in an <li>'s
+# split text. That is a positional fingerprint of a pre-SDUI DOM: any wrapper LinkedIn adds or drops
+# shifts every index, and the parser then emits confidently-wrong companies/titles rather than
+# nothing. Profile data is dumped whole into the voice-synthesis prompt (`synthesize_profile`), so
+# garbage here is not inert — it grounds every comment and DM written for that user.
+#
+# The rebuild keys on what SDUI still exposes: entity containers by `data-view-name`, the visible
+# text half of LinkedIn's doubled a11y markup (`aria-hidden="true"` beside a `visually-hidden`
+# twin — the thing the old `[:len//2]` halving hack was approximating), and TEXT shapes for the
+# date range / skills lines. NO class names, and nothing positional.
 
+# Ladder, most specific first. `role='listitem'` rungs are here because the catch-up grounding pass
+# (2026-08-03) found LinkedIn's fully-SDUI screens render NO `data-view-name` and no `<li>` at all —
+# so a ladder that stops at `li` would match nothing the day this page converts.
+#
+# Specificity ALONE picks the wrong rung. The live /details/experience/ grounding run (2026-08-03,
+# PR #984) found `data-view-name` absent from the page entirely, `div[data-sdui-screen]
+# div[role='listitem']` matching the FOOTER's three help links ("Questions? / Visit our Help
+# Center."), and the real entries sitting in the 8 `main li` under `main div[role='list']`. So the
+# rungs below are scoped to `main` first, and `experience_entity_nodes` additionally skips any rung
+# whose nodes carry no date range — a page's chrome can out-specify its content, but it can never
+# out-DATE it.
+_EXPERIENCE_ENTITY_SELECTORS = (
+    "main div[data-view-name='profile-component-entity']",
+    "div[data-view-name='profile-component-entity']",
+    "section[data-view-name] li",
+    "main div[role='list'] li",
+    "main div[role='list'] div[role='listitem']",
+    "main li",
+    "main div[role='listitem']",
+    "div[data-sdui-screen] div[role='listitem']",
+    "div[role='listitem']",
+    "li",
+)
+# Probed INSIDE a chosen entity to tell a grouped company from a single role.
+_NESTED_ENTITY_SELECTOR = ("div[data-view-name='profile-component-entity'], "
+                           "div[role='listitem'], li")
+
+_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Sept|Aug|Oct|Nov|Dec)[a-z]*\.?"
+_DATE_TOKEN = rf"(?:{_MONTH}\s+\d{{4}}|\d{{4}})"
+# "Jan 2020 - Present · 5 yrs 2 mos" / "2019 - 2021" — the one line that reliably marks a role.
+_DATE_RANGE_RE = re.compile(
+    rf"^(?P<start>{_DATE_TOKEN})\s*(?:-|–|—|to)\s*(?P<end>Present|{_DATE_TOKEN})"
+    r"(?:\s*·\s*.+)?$", re.IGNORECASE)
+_DURATION_RE = re.compile(r"^\d+\s+yrs?(?:\s+\d+\s+mos?)?$|^\d+\s+mos?$", re.IGNORECASE)
+_SKILLS_RE = re.compile(r"^skills?\s*:\s*(.+)$", re.IGNORECASE)
+# "Skills:" alone on its line, with the names in the next block.
+_SKILLS_LABEL_RE = re.compile(r"^skills?\s*:?$", re.IGNORECASE)
+# The "+9 skills" overflow chip that trails the list — a count, not a skill.
+_SKILL_OVERFLOW_RE = re.compile(r"^\+\s*\d+\s+skills?$", re.IGNORECASE)
+
+_EMPLOYMENT_TYPES = frozenset({"full-time", "part-time", "self-employed", "freelance", "contract",
+                               "internship", "apprenticeship", "seasonal", "permanent",
+                               "temporary"})
+_WORKPLACE_TYPES = frozenset({"on-site", "onsite", "hybrid", "remote"})
+# Chrome/affordance text that renders inside the same entity and is never profile content.
+_NOISE_LINES = frozenset({"follow", "connect", "message", "see more", "…see more", "...see more",
+                          "see less", "…see less", "...see less", "show all", "·", "",
+                          "helped me get this job", "current"})
+# Company logo alt text renders as its own line ("Acme Corp logo"); a description
+# sentence is never this short, so the length bound keeps real prose.
+_LOGO_LINE_RE = re.compile(r"^(?:\S+ ){0,5}\S*\blogo$", re.IGNORECASE)
+# Section headings render inside the same list as the entries — never a company name.
+_SECTION_TITLE_LINES = frozenset({"experience", "experiences", "education", "positions",
+                                  "licenses & certifications", "volunteering"})
+# Tags that lay out on the SAME line as their neighbours; everything else breaks one.
+_INLINE_TAGS = frozenset({"a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "del", "em",
+                          "font", "i", "ins", "kbd", "label", "mark", "q", "s", "samp", "small",
+                          "span", "strong", "sub", "sup", "time", "u", "var"})
+_UNRENDERED_TAGS = frozenset({"head", "noscript", "script", "style", "svg", "template"})
+# Markup with no tag name that a reader never sees. bs4 hands these back as NavigableString
+# subclasses, so `str(child)` returns a comment's TEXT — and LinkedIn's SDUI pages are full of
+# them. Reading one is the same fault as reading the visually-hidden a11y twin.
+_UNRENDERED_STRINGS = (CData, Comment, Declaration, Doctype, ProcessingInstruction)
+# The visible half of the doubled a11y markup is ~50% of the node's text. Decorative
+# `aria-hidden` icons are a rounding error — below this share the attribute is not the
+# doubling and the whole text is the better read.
+_ARIA_HIDDEN_COVERAGE = 0.3
+# How far up from a role node to look for the company that groups it.
+_MAX_COMPANY_ANCESTORS = 6
+
+
+def _clean_lines(raw: List[str]) -> List[str]:
+    """Strip, drop chrome/blank lines, and collapse the a11y duplicate of each line.
+
+    LinkedIn renders most text twice — a visible `aria-hidden="true"` node and a `visually-hidden`
+    twin — so the same string arrives back-to-back. Collapsing ADJACENT duplicates only, never all
+    duplicates: two roles legitimately share a title, and a repeated date range is real data."""
+    out: List[str] = []
+    for line in raw:
+        line = " ".join((line or "").split())
+        if line.lower() in _NOISE_LINES or _LOGO_LINE_RE.search(line):
+            continue
+        # A bullet/pipe/dash glyph rendered on its own is an icon, never content.
+        if not any(char.isalnum() for char in line):
+            continue
+        if out and out[-1] == line:
+            continue
+        out.append(line)
+    return out
+
+
+def _rendered_lines(node: PageElement) -> List[str]:
+    """One line per LAID-OUT line — inline runs joined, block elements broken.
+
+    `get_text("\\n")` splits on every text node, which is not what a reader sees: LinkedIn renders
+    "Mar 2019 - Present · 7 yrs 6 mos" as three inline spans, and splitting them shatters the date
+    range that anchors the whole parse. Adjacent identical segments collapse here too — the a11y twin
+    is a sibling span, so on the fallback path it would otherwise join as "Engineer Engineer"."""
+    lines: List[str] = []
+    current: List[str] = []
+
+    def flush() -> None:
+        text = " ".join(" ".join(current).split())
+        current.clear()
+        if text:
+            lines.append(text)
+
+    def add(text: str) -> None:
+        text = " ".join((text or "").split())
+        if text and (not current or current[-1] != text):
+            current.append(text)
+
+    def walk(element: PageElement) -> None:
+        for child in getattr(element, "children", []):
+            name = getattr(child, "name", None)
+            if name is None:
+                if not isinstance(child, _UNRENDERED_STRINGS):
+                    add(str(child))
+                continue
+            name = name.lower()
+            if name in _UNRENDERED_TAGS:
+                continue
+            if name == "br":
+                flush()
+                continue
+            if name in _INLINE_TAGS:
+                walk(child)
+                continue
+            flush()
+            walk(child)
+            flush()
+
+    walk(node)
+    flush()
+    return lines
+
+
+def visible_lines(node: PageElement) -> List[str]:
+    """The visible text of one entity, one line per rendered line.
+
+    Prefers the `aria-hidden="true"` half of LinkedIn's doubled markup (outermost only, so a nested
+    span is not counted twice) — but only when that half actually covers the node's text. The live
+    /details/experience/ render carries no doubling at all, and reading a page like that through a
+    stray decorative `aria-hidden` icon would return an entity's text as one icon's worth of it. Full
+    text is the fallback, where `_clean_lines` still removes any duplication."""
+    chosen: List[PageElement] = []
+    chosen_ids = set()
+    for el in node.find_all(attrs={"aria-hidden": "true"}):
+        if any(id(parent) in chosen_ids for parent in el.parents):
+            continue
+        chosen_ids.add(id(el))
+        chosen.append(el)
+
+    raw: List[str] = []
+    for el in chosen:
+        raw.extend(_rendered_lines(el))
+    whole = len(" ".join(node.get_text(" ").split()))
+    if sum(len(line) for line in raw) < whole * _ARIA_HIDDEN_COVERAGE:
+        raw = _rendered_lines(node)
+    return _clean_lines(raw)
+
+
+def _is_date_line(line: str) -> bool:
+    return bool(_DATE_RANGE_RE.match(line))
+
+
+def _has_date_range(lines: List[str]) -> bool:
+    return any(_is_date_line(line) for line in lines)
+
+
+def experience_entity_nodes(source) -> tuple:
+    """(top-level entity nodes, the selector that found them).
+
+    Entities nest — a multi-role company holds one entity per role — so descendants of an already
+    chosen node are dropped, which is what makes the grouped-company shape parseable as one unit.
+
+    A rung only WINS if at least one of its nodes carries a date range. Without that test the ladder
+    is decided by selector specificity alone, and the live run behind this rebuild is exactly why
+    that fails: `div[data-sdui-screen] div[role='listitem']` matched three footer help-links and beat
+    the rung holding the actual roles. An undated rung is still returned when NO rung is dated, so
+    the probe (and the warning path) can report what the page did render."""
+    fallback: tuple = ([], "")
+    for selector in _EXPERIENCE_ENTITY_SELECTORS:
+        nodes = source.select(selector) if source else []
+        if not nodes:
+            continue
+        top: List[PageElement] = []
+        top_ids = set()
+        for node in nodes:
+            if any(id(parent) in top_ids for parent in node.parents):
+                continue
+            top_ids.add(id(node))
+            top.append(node)
+        if any(_has_date_range(visible_lines(node)) for node in top):
+            return top, selector
+        if not fallback[0]:
+            fallback = (top, selector)
+    return fallback
+
+
+def _is_location_line(line: str) -> bool:
+    """Only ever tested on lines BELOW the date range, where LinkedIn puts the location.
+
+    Never above it: "Founder, CEO" is a title, and a comma-and-short heuristic applied to a title
+    line would silently delete it."""
+    tail = line.rsplit("·", 1)[-1].strip().lower()
+    if tail in _WORKPLACE_TYPES:
+        return True
+    if len(line) > 80 or line.endswith((".", "!", "?", ":")):
+        return False
+    return "," in line and len(line.split()) <= 8
+
+
+def _is_qualifier_line(line: str) -> bool:
+    """Employment type / workplace type / bare duration — sits between a title and its dates, and
+    is never the title itself."""
+    low = line.lower()
+    return (low in _EMPLOYMENT_TYPES or low in _WORKPLACE_TYPES
+            or bool(_DURATION_RE.match(line)))
+
+
+def _company_from_subtitle(line: str) -> str:
+    """"Acme Corp · Full-time" -> "Acme Corp"; a bare employment type carries no company."""
+    head = line.split("·")[0].strip()
+    if not head or head.lower() in _EMPLOYMENT_TYPES:
+        return ""
+    return head
+
+
+def _split_skills(blob: str) -> List[str]:
+    """"Python · Kubernetes" and "Compliance, AI for Business, +9 skills" are both skill lists.
+
+    The live 2026-08-03 render separates them with commas and ends on a "+9 skills" overflow chip;
+    splitting on "·" alone turned the whole line into one nonsense skill."""
+    parts = blob.split("·") if "·" in blob else blob.split(",")
+    return [skill for skill in (part.strip() for part in parts)
+            if skill and not _SKILL_OVERFLOW_RE.match(skill)]
+
+
+def _details_and_skills(chunk: List[str]) -> tuple:
+    """Description lines and the "Skills: A · B" line, from everything under a role's date line."""
+    details: List[str] = []
+    skills: List[str] = []
+    started = False
+    expecting_skills = False
+    for line in chunk:
+        if expecting_skills:
+            expecting_skills = False
+            skills.extend(_split_skills(line))
+            continue
+        matched = _SKILLS_RE.match(line)
+        if matched:
+            skills.extend(_split_skills(matched.group(1)))
+            continue
+        if _SKILLS_LABEL_RE.match(line):
+            # The label and its names can land in separate blocks.
+            expecting_skills = True
+            continue
+        # Location / employment-type qualifiers trail the date line; once real prose starts,
+        # everything after it is description and is kept verbatim.
+        if not started and (_is_qualifier_line(line) or _is_location_line(line)):
+            continue
+        started = True
+        details.append(line)
+    return details, skills
+
+
+def _position(title: str, date_line: str, chunk: List[str]) -> dict:
+    # Read the dates off the same match that identified the line, rather than re-splitting it —
+    # the old `get_start_end_dates` only ever saw the positional parser's half-strings and turned a
+    # plain "2016 - 2019" into today's date.
+    matched = _DATE_RANGE_RE.match(date_line)
+    start_date = matched.group("start").strip() if matched else None
+    end_date = matched.group("end").strip() if matched else None
+    details, skills = _details_and_skills(chunk)
+    position = {"details": details, "skills": skills}
+    if title:
+        position["title"] = title
+    if start_date:
+        position["start_date"] = start_date
+    if end_date:
+        position["end_date"] = end_date
+    return position
+
+
+def _title_index(lines: List[str], date_index: int, floor: int) -> int:
+    """Walk back from a date line over its qualifiers to the line that is actually the title."""
+    i = date_index - 1
+    while i > floor and _is_qualifier_line(lines[i]):
+        i -= 1
+    return i
+
+
+def parse_experience_entity(lines: List[str], grouped: bool = False) -> Optional[dict]:
+    """One entity's visible lines -> {'company_name', 'positions': [...]}, or None if it is not an
+    experience entity at all.
+
+    The date range is the anchor: no date line means this node is navigation, an empty section or a
+    shape we do not recognise — and returning None there is the whole point, because the failure the
+    old parser had was emitting a plausible-looking company/title from a row it had misread.
+
+    `grouped` says the entity holds roles as child entities, which is the ONE thing the lines alone
+    cannot tell you: a single-role entity reads title-then-company, a one-role group reads
+    company-then-title, and the two are the same three lines in a different order."""
+    date_indexes = [i for i, line in enumerate(lines) if _DATE_RANGE_RE.match(line)]
+    if not lines or not date_indexes:
+        return None
+
+    if len(date_indexes) == 1 and not grouped:
+        # Title first, company on a subtitle line beneath it ("Acme Corp · Full-time").
+        date_index = date_indexes[0]
+        title = lines[0] if date_index and not _is_qualifier_line(lines[0]) else ""
+        company = ""
+        for line in lines[1:date_index]:
+            company = _company_from_subtitle(line)
+            if company:
+                break
+        positions = [_position(title, lines[date_index], lines[date_index + 1:])]
+    else:
+        # Grouped company: company first, then one title/date block per role held there.
+        # A date range is never a name — if it leads the entity there is no company header here.
+        company = "" if _is_date_line(lines[0]) else _company_from_subtitle(lines[0])
+        title_indexes = []
+        for k, date_index in enumerate(date_indexes):
+            floor = 0 if k == 0 else date_indexes[k - 1]
+            title_indexes.append(_title_index(lines, date_index, floor))
+        positions = []
+        for k, date_index in enumerate(date_indexes):
+            end = title_indexes[k + 1] if k + 1 < len(title_indexes) else len(lines)
+            title_index = title_indexes[k]
+            # The walk back stops at the previous role's date line when a role carries nothing but
+            # qualifiers above its own dates. Emitting that line would put "Jan 2020 - Jan 2022"
+            # in the title — a confidently-wrong row, which is the failure #970 exists to kill.
+            title = ("" if title_index <= 0 or _is_date_line(lines[title_index])
+                     else lines[title_index])
+            positions.append(_position(title, lines[date_index], lines[date_index + 1:end]))
+
+    positions = [p for p in positions if p.get("title") or p["details"] or p["skills"]]
+    if not positions or (not company and not any(p.get("title") for p in positions)):
+        return None
+    return {"company_name": company, "positions": positions}
+
+
+def _holds_child_roles(node: PageElement) -> bool:
+    """True when this entity nests one child entity per role (the grouped-company render)."""
+    for child in node.select(_NESTED_ENTITY_SELECTOR):
+        if child is node:
+            continue
+        if any(_DATE_RANGE_RE.match(line) for line in visible_lines(child)):
+            return True
+    return False
+
+
+def _company_header(lines: List[str]) -> str:
+    """The company name from a grouped-company HEADER entity — a name and a total duration, no date
+    range of its own ("Christopher Queen Consulting" / "9 yrs 6 mos").
+
+    The duration is required: without it a bare heading like "Experience" would be read as a company
+    and then attached to every role beneath it."""
+    if not lines or _has_date_range(lines):
+        return ""
+    if not any(_DURATION_RE.match(line) for line in lines):
+        return ""
+    if _is_qualifier_line(lines[0]) or lines[0].lower() in _SECTION_TITLE_LINES:
+        return ""
+    return _company_from_subtitle(lines[0])
+
+
+def _company_from_ancestors(node: PageElement, lines: List[str]) -> str:
+    """The company a role belongs to when the role's OWN lines never name it.
+
+    The grouped shape puts the company once, above its roles. When the ladder selects the ROLE nodes
+    (on the live page they are the `li`s), that name is only in an ancestor's leading lines — the
+    text above this role's first line. A leading run that already contains a date range belongs to a
+    previous role, not to a company header, so the walk stops rather than guessing."""
+    if not lines:
+        return ""
+    first = lines[0]
+    for depth, ancestor in enumerate(node.parents):
+        if depth >= _MAX_COMPANY_ANCESTORS or (getattr(ancestor, "name", "") or "").lower() in (
+                "body", "html", "[document]"):
+            break
+        ancestor_lines = visible_lines(ancestor)
+        if first not in ancestor_lines:
+            continue
+        leading = ancestor_lines[:ancestor_lines.index(first)]
+        if _has_date_range(leading):
+            break
+        for candidate in reversed(leading):
+            if _is_qualifier_line(candidate) or candidate.lower() in _SECTION_TITLE_LINES:
+                continue
+            company = _company_from_subtitle(candidate)
+            if company:
+                return company
+    return ""
+
+
+def parse_profile_experiences(source) -> List[dict]:
+    """Pure parse of a rendered `/details/experience/` page — no Selenium, so it is unit-testable
+    against captured DOM instead of only against a live session."""
+    experiences = []
+    nodes, _selector = experience_entity_nodes(source)
+    pending_company = ""
+    for node in nodes:
+        lines = visible_lines(node)
+        parsed = parse_experience_entity(lines, grouped=_holds_child_roles(node))
+        if not parsed:
+            # A company header is not an experience by itself, but it names the roles that follow it
+            # when LinkedIn renders them as siblings rather than as children.
+            pending_company = _company_header(lines) or pending_company
+            continue
+        if not parsed["company_name"]:
+            parsed["company_name"] = _company_from_ancestors(node, lines) or pending_company
+        experiences.append(parsed)
+    return experiences
+
+
+def get_profile_experiences(driver, employee_link) -> List[dict]:
     go_to_base_employee_link(driver, employee_link)  # Link may need to redirect so we do this first
     url = driver.current_url.rstrip('/') + '/details/experience/'
     driver.get(url)
     wait_for_ajax(driver)
 
-    source = BeautifulSoup(driver.page_source, "html.parser")
-    exp = source.find_all('li')
-    profile_experiences = []
-    empty_position = {"title": "No title", 'details': [], 'skills': []}
-    empty_experience = {"company_name": "No Company Name", "positions": [empty_position]}
-    empty_experience2 = {"company_name": "No Company Name", "positions": []}
-    experience = copy.deepcopy(empty_experience)
+    source = get_page_source(driver, url, 2)
+    profile_experiences = parse_profile_experiences(source)
 
-    # print_header("Experiences")
-    for e in exp:
-        row = source_as_row(e)
-        si = get_start_identifier(row)
-        # Print the start identifier and the first 20 characters of the row from the start identifier
-        # print("Start Index: " + str(si), " | ", row[si][:40])
-        # print("Start Index: " + str(si), " | ", str(row))
-
-        if si == start_identifier_map['experience_company']:
-
-            # We've hit a new experience. if experience variable is not empty add it to the profile experiences
-            profile_experiences.append(experience)
-            experience = copy.deepcopy(empty_experience)
-
-            # print_header("Company Info Uncut")
-            # print("Start Index: " + str(si), " | ", row)
-
-            if 'yrs' in row[start_identifier_map["experience_company_2"]].split(' '):
-                # This is company
-                experience['company_name'] = row[si][:len(row[si]) // 2]
-
-                # Start and End Date is here
-                sesi = start_identifier_map["experience_company_2"]
-                (start_date, end_date) = get_start_end_dates(row[sesi][:len(row[sesi]) // 2])
-
-                if len(experience['positions']) == 0:
-                    experience['positions'].append(copy.deepcopy(empty_position))
-
-                last_position = experience['positions'][-1]
-                last_position['start_date'] = start_date
-                last_position['end_date'] = end_date
-
-
-            else:
-                # This is a job title
-                title = row[si][:len(row[si]) // 2]
-                # print_header("Job title Uncut")
-                # print("Start Index: " + str(si), " | ", row[si])
-                new_position = copy.deepcopy(empty_position)
-                new_position['title'] = title
-                # Start and End Date is here
-                sesi = start_identifier_map["experience_company|start_end_date"]
-                try:
-                    (start_date, end_date) = get_start_end_dates(row[sesi][:len(row[sesi]) // 2])
-                except IndexError:
-                    start_date, end_date = None, None
-
-                new_position['start_date'] = start_date
-                new_position['end_date'] = end_date
-                experience['positions'].append(new_position)
-
-                # The company is found on the same row different index
-                csi = start_identifier_map["experience_company_2"]
-                experience['company_name'] = row[csi][:len(row[csi]) // 2]
-                # print_header("Company Type 2 Info Uncut")
-                # print("Start Index: " + str(si), "| Company Index: "+str(csi)+" | ", row[csi])
-
-
-
-        elif si == start_identifier_map['experience_title']:
-            title = row[si][:len(row[si]) // 2]
-            new_position = copy.deepcopy(empty_position)
-            new_position['title'] = title
-            # Start and End Date is also on this line
-            sesi = start_identifier_map['experience_title|start_end_date']
-
-            try:
-                start_end_line = row[sesi][:len(row[sesi]) // 2]
-                # print_header("StartEnd Uncut "+start_end_line)
-                start_date, end_date = get_start_end_dates(start_end_line)
-                new_position['start_date'] = start_date
-                new_position['end_date'] = end_date
-            except IndexError:
-                pass  # The index may not exist on this row
-
-            # Add the new position to the current experience
-            experience['positions'].append(new_position)
-
-        elif si == start_identifier_map['experience_description']:
-            # print_header("Details Uncut")
-            # print(row[si])
-            if len(experience['positions']) == 0:
-                experience['positions'].append(copy.deepcopy(empty_position))
-
-            last_position = experience['positions'][-1]
-
-            # If details starts with "Skills:", then it is a skills not a detail
-            if row[si].startswith("Skills:"):
-                skills = row[si][:len(row[si]) // 2]
-                last_position['skills'] = skills.split(":")[1].split(" · ")
-            else:
-                prefix = row[si][:10]
-                if not prefix:
-                    continue
-                parts = row[si].split(prefix)
-                if len(parts) < 2:
-                    details = row[si]
-                else:
-                    details = prefix + parts[1]
-
-                # Strip white spaces
-                details = details.strip()
-
-                # Remove entry if it contains these words by themselves or is empty
-                remove_words = ['Follow', 'Connect']
-                if any(word in details for word in remove_words) or details == '':
-                    continue
-
-                # details = row[si][:len(row[si]) // 2]
-                last_position['details'].append(details)
-        elif si == start_identifier_map['experience_title|start_end_date']:
-            start_end_line = row[si][:len(row[si]) // 2]
-
-            if len(experience['positions']) == 0:
-                experience['positions'].append(copy.deepcopy(empty_position))
-
-            last_position = experience['positions'][-1]
-            start_date, end_date = get_start_end_dates(start_end_line)
-
-            last_position['start_date'] = start_date
-            last_position['end_date'] = end_date
-            continue
-
-    # Add the last experience captured
-    if not deep_compare(experience, empty_experience):
-        profile_experiences.append(experience)
-
-    # Clean up empty positions from experiences that do not match the empty_positions
-    profile_experiences = [
-        {**exp,
-         'positions': [pos for pos in exp['positions'] if len(pos) != 0 and not deep_compare(pos, empty_position)]}
-        for exp in profile_experiences
-    ]
-
-    # Clean up experiences that match empty_experience2
-    profile_experiences = [exp for exp in profile_experiences if not deep_compare(exp, empty_experience2)]
+    if not profile_experiences:
+        # A profile with no experience section is normal — that is a DEBUG no-op. A page that
+        # plainly renders dated entries and still parses to nothing is selector rot, and the point
+        # of this issue is that it used to be invisible. Read the page the same way the parser does,
+        # or a date range split across inline spans would make the rot look like an empty profile.
+        if source is not None and _has_date_range(_rendered_lines(source)):
+            log_warning("Profile experience page rendered dated entries but none parsed",
+                        action_type="scrape_profile")
+        else:
+            log_debug("No experience entries on profile", action_type="scrape_profile")
 
     return profile_experiences
 
@@ -642,26 +920,3 @@ def record_search_word_frequency(row, si, search_words, search_word_frequency=No
             search_word_frequency[key] += 1
     return search_word_frequency
 
-
-def get_start_end_dates(line):
-    # print("StartEnd Years Date: ", line)
-    yrs_splitter = ' · '
-    dates_splitter = ' - '
-    if yrs_splitter in line:
-        start_end = line.split(yrs_splitter)[0]
-        # print("StartEnd Date: ", start_end)
-        startendlist = start_end.split(dates_splitter)
-        # print("StartEnd List: ", startendlist)
-        start_date = startendlist[0]
-        # print("Start Date: ", start_date)
-        if len(startendlist) > 1:
-            end_date = startendlist[1]
-        else:
-            end_date = "Present"
-        # print("End Date: ", end_date)
-    else:
-        # The currently work here
-        end_date = "Present"
-        start_date = get_linkedin_datetime_from_text(line)
-
-    return start_date, end_date

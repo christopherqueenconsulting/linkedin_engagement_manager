@@ -18,6 +18,9 @@ Answers, against a REAL logged-in session, the two questions
   5. On the home feed: does the "Sort by -> Recent" control resolve, and does the flip stick? —
      grounds #817. #622 made feed scoring recency-dominant, so a missing control means the whole
      matrix ranks LinkedIn's algorithmic feed instead of a fresh one.
+  6. On a profile's /details/experience/ page: what does the rebuilt experience parser actually
+     read, and from which entity selector? — grounds #970. The whole profile is dumped into the
+     voice-synthesis prompt, so a misparse here is not inert: it grounds every comment and DM.
 
 **Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
@@ -139,6 +142,9 @@ SURFACES = (
     {"key": "profile_scrape", "surface": "Profile header scrape (name / headline / degree badge)",
      "code": "scrapper.parse_profile_header + run_automation._profile_is_first_degree",
      "flag": "--profile-scrape", "arg": "<profile-url>", "sweep": True},
+    {"key": "profile_experiences", "surface": "Profile experience rows (/details/experience/)",
+     "code": "scrapper.parse_profile_experiences", "flag": "--profile-experiences",
+     "arg": "<profile-url>", "sweep": True},
     {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
      "code": "run_automation._open_connect_invite_dialog", "flag": "--connect-dialog",
      "arg": "<profile-url>", "sweep": False},
@@ -2160,6 +2166,120 @@ def probe_roster_connect(driver, profile_url: str,
     return reading
 
 
+def profile_experiences_verdict(reading: dict) -> str:
+    """What one /details/experience/ reading proves about the #970 rebuild.
+
+    The number that matters is `entities_with_dates`: an experience row is identified by its date
+    range, so entities rendered but none dated means the page did not load (or the entity selector
+    is gone), while dated entities that parse to nothing means the line grammar has moved."""
+    reading = dict(reading or {})
+    parsed = reading.get("experiences") or []
+    dated = reading.get("entities_with_dates") or 0
+    page_dated = reading.get("page_dated_lines") or 0
+    if not reading.get("entity_count"):
+        return (f"no entity nodes resolved at all while the page itself renders {page_dated} dated "
+                "lines — every selector in the ladder is gone; production returns []" if page_dated
+                else "no entity nodes resolved at all and the page renders no dated line either — "
+                     "it did not load (auth-wall / rate limit) or lists no experience")
+    if not dated:
+        return (f"{reading['entity_count']} entity nodes, none carrying a date range, while the "
+                f"page itself renders {page_dated} dated lines — the rung that won is not the one "
+                "holding the experience; `selector_counts` says which rungs matched at all"
+                if page_dated else
+                f"{reading['entity_count']} entity nodes, none carrying a date range, and no dated "
+                "line anywhere on the page — this profile lists no experience, or it never rendered")
+    if not parsed:
+        return (f"{dated} dated entities and ZERO parsed — selector rot: production would return [] "
+                "and warn. The `entities` sample below is what the next parser pass rewrites from")
+    positions = sum(len(e.get("positions") or []) for e in parsed)
+    return (f"{len(parsed)} experiences / {positions} positions parsed from {dated} dated entities "
+            "— compare company/title/dates against the profile as rendered before trusting it")
+
+
+def profile_experiences_state(reading: dict) -> str:
+    """Grade one /details/experience/ reading (#1013's three states).
+
+    The page's OWN dated lines are the discriminator, not the entity ladder: a page that plainly
+    renders `Mar 2019 - Present · 7 yrs` lines while the parser reads no experience is drift —
+    that is exactly the 2026-08-03 footer-rung failure, and it graded itself as "no experience
+    here" for as long as nobody looked. A page with no dated line anywhere never rendered the
+    section (auth wall) or the profile genuinely lists no experience: `unknown`, never filed."""
+    reading = dict(reading or {})
+    if reading.get("experiences"):
+        return STATE_OK
+    return STATE_DRIFT if (reading.get("page_dated_lines") or 0) else STATE_UNKNOWN
+
+
+def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
+                              sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#970: open a profile's /details/experience/ page and report what the REBUILT parser reads,
+    beside the raw evidence it read it from.
+
+    Strictly read-only — it navigates and parses. `legacy_start_identifier` is the number the OLD
+    positional parser branched on (`start_identifier_map`: 20/16/7/22 meant company/title/description
+    /dates); anything else meant that entity was silently dropped or misread, which is what this
+    issue is about. Reporting it is how a live run PROVES the old parser was dead rather than
+    assuming it."""
+    from bs4 import BeautifulSoup
+
+    from cqc_lem.utilities.linkedin.scrapper import (_DATE_RANGE_RE, _EXPERIENCE_ENTITY_SELECTORS,
+                                                     experience_entity_nodes,
+                                                     get_start_identifier, parse_experience_entity,
+                                                     parse_profile_experiences, source_as_row,
+                                                     visible_lines)
+
+    if not (profile_url or "").strip():
+        # The sweep resolves its own target; when it cannot, probing a relative URL would grade the
+        # surface off a page nobody asked for.
+        return graded({"profile_url": "", "entity_count": 0, "entities": [], "experiences": []},
+                      STATE_UNKNOWN,
+                      "no profile URL to probe — the user's own profile URL did not resolve, so "
+                      "nothing was navigated and nothing is graded")
+
+    url = profile_url.rstrip("/") + "/details/experience/"
+    driver.get(url)
+    sleep(5)
+    source = BeautifulSoup(driver.page_source, "html.parser")
+    nodes, selector = experience_entity_nodes(source)
+    # The 2026-08-03 run had to be followed by a hand-written hit-count pass to explain WHY the
+    # wrong rung won (`data-view-name` absent, footer listitems matching). One probe run should
+    # answer that, so the counts ship with the reading.
+    counts = {css: len(source.select(css)) for css in _EXPERIENCE_ENTITY_SELECTORS}
+    counts.update({css: len(source.select(css)) for css in
+                   ("main", "[data-view-name]", "div[data-sdui-screen]", "div[role='list']",
+                    "main div[role='list']")})
+
+    entities = []
+    dated = 0
+    for node in nodes:
+        lines = visible_lines(node)
+        has_dates = any(_DATE_RANGE_RE.match(line) for line in lines)
+        dated += 1 if has_dates else 0
+        if len(entities) < max_entities:
+            entities.append({"lines": lines,
+                             "has_date_range": has_dates,
+                             "legacy_start_identifier": get_start_identifier(source_as_row(node)),
+                             "parsed": parse_experience_entity(lines) is not None})
+
+    # What the PAGE itself shows, independent of the entity ladder — the only way to tell "this
+    # profile lists no experience" from "the rung that won cannot see the experience it lists".
+    page_dated = sum(1 for line in visible_lines(source.find("main") or source)
+                     if _DATE_RANGE_RE.match(line))
+
+    reading = {"profile_url": profile_url,
+               "experience_url": url,
+               "url": getattr(driver, "current_url", url),
+               "entity_selector": selector,
+               "entity_count": len(nodes),
+               "entities_with_dates": dated,
+               "page_dated_lines": page_dated,
+               "selector_counts": counts,
+               "entities": entities,
+               "experiences": parse_profile_experiences(source)}
+    return graded(reading, profile_experiences_state(reading),
+                  profile_experiences_verdict(reading))
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -2277,6 +2397,8 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "profile_views": lambda: probe_profile_viewers(driver),
         "profile_scrape": lambda: probe_profile_scrape(
             driver, profile_url or _sweep_own_profile(driver, user_id)),
+        "profile_experiences": lambda: probe_profile_experiences(
+            driver, profile_url or _sweep_own_profile(driver, user_id)),
         "catchup_cards": lambda: probe_catchup_cards(driver),
         "company_invite": lambda: probe_company_invite(driver, user_id),
         "sent_invites": lambda: probe_sent_invites(driver),
@@ -2367,6 +2489,10 @@ def build_parser() -> "argparse.ArgumentParser":
                         help="a post permalink — reports whether the comment path's card -> Comment "
                              "action -> composer chain resolves there (#966). Opens the composer and "
                              "Escapes it; nothing is typed and no comment is left.")
+    parser.add_argument("--profile-experiences", metavar="PROFILE_URL",
+                        help="any profile URL — reports what the rebuilt experience parser reads "
+                             "off /details/experience/, beside the raw lines it read (#970). "
+                             "Read-only: it navigates and parses, nothing else.")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
@@ -2433,11 +2559,13 @@ def main(argv: Optional[list] = None) -> int:
             or args.article_editor_url or args.feed_sort or args.reaction_probe
             or args.roster_follow or args.roster_connect or args.appreciation_sources
             or args.sent_invites or args.profile_views or args.connect_dialog
-            or args.profile_scrape or args.catchup_cards or args.group_composer
-            or args.company_invite or args.permalink_comment or args.sweep):
+            or args.profile_scrape or args.profile_experiences or args.catchup_cards
+            or args.group_composer or args.company_invite or args.permalink_comment
+            or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
-                     "--profile-views, --profile-scrape, --connect-dialog, --catchup-cards, "
+                     "--profile-views, --profile-scrape, --profile-experiences, "
+                     "--connect-dialog, --catchup-cards, "
                      "--group-composer, --company-invite, --reaction-probe, --roster-follow, "
                      "--roster-connect, --appreciation-sources, --sent-invites, "
                      "--permalink-comment and/or "
@@ -2488,6 +2616,9 @@ def main(argv: Optional[list] = None) -> int:
             report["connect_dialog"] = probe_connect_dialog(driver, args.connect_dialog)
         if args.profile_scrape:
             report["profile_scrape"] = probe_profile_scrape(driver, args.profile_scrape)
+        if args.profile_experiences:
+            report["profile_experiences"] = probe_profile_experiences(driver,
+                                                                      args.profile_experiences)
         if args.catchup_cards:
             report["catchup_cards"] = probe_catchup_cards(driver)
         if args.group_composer:

@@ -735,6 +735,12 @@ class TestSurfaceCoverageMatrix:
         llv.run_sweep(MagicMock(), 1, runners=runners, session_state="signed_in")
         assert sorted(ran) == sorted(llv.SWEEP_ORDER)
 
+    def test_every_sweepable_surface_has_a_default_runner(self):
+        """`run_sweep` filters its keys by the runner map, so a sweepable surface with no runner is
+        dropped in silence — the sweep would report full coverage while never probing it."""
+        report = llv.run_sweep(MagicMock(), 1, session_state="signed_out")
+        assert sorted(report["probes"]) == sorted(llv.SWEEP_ORDER)
+
     def test_the_doc_names_every_surface(self):
         doc = (Path(__file__).resolve().parents[2] / "docs" / "sdui-probe-coverage.md").read_text()
         missing = [s["flag"] for s in llv.SURFACES if s["flag"] not in doc]
@@ -1086,3 +1092,142 @@ class TestPermalinkCommentProbe:
         monkeypatch.setattr(llv, "probe_permalink_comment",
                             lambda d, url: {"verdict": "composer resolved"})
         assert llv.main(["--permalink-comment", self._URL]) == 0
+
+
+@pytest.mark.unit
+class TestProfileExperiencesProbe:
+    """#970 — the probe has to separate 'page never rendered' from 'grammar moved', because those
+    two need opposite fixes and both look like an empty experience list from the desk."""
+
+    def _page(self, *lines_per_entity):
+        entities = ""
+        for lines in lines_per_entity:
+            inner = "".join(f'<div><span aria-hidden="true">{ln}</span>'
+                            f'<span class="visually-hidden">{ln}</span></div>' for ln in lines)
+            entities += f'<div data-view-name="profile-component-entity">{inner}</div>'
+        driver = MagicMock()
+        driver.page_source = f"<html><body><main>{entities}</main></body></html>"
+        driver.current_url = "https://www.linkedin.com/in/someone/details/experience/"
+        return driver
+
+    def test_reads_the_rebuilt_parse_and_the_raw_lines_behind_it(self):
+        driver = self._page(["Senior Engineer", "Acme Corp · Full-time",
+                             "Jan 2020 - Present · 5 yrs 2 mos"])
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        assert reading["entity_count"] == 1
+        assert reading["entities_with_dates"] == 1
+        assert reading["entity_selector"] == "main div[data-view-name='profile-component-entity']"
+        assert reading["experiences"][0]["company_name"] == "Acme Corp"
+        assert reading["entities"][0]["lines"][0] == "Senior Engineer"
+        assert reading["entities"][0]["parsed"] is True
+        assert "1 experiences" in reading["verdict"]
+
+    def test_reports_the_hit_count_of_every_ladder_rung(self):
+        """The 2026-08-03 run needed a hand-written second pass to explain which rung won and why."""
+        driver = self._page(["Senior Engineer", "Acme", "Jan 2020 - Present"])
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        counts = reading["selector_counts"]
+        assert counts["main div[data-view-name='profile-component-entity']"] == 1
+        assert counts["[data-view-name]"] == 1
+        assert counts["div[role='listitem']"] == 0
+        assert counts["main"] == 1
+
+    def test_navigates_to_the_details_page_and_clicks_nothing(self):
+        driver = self._page(["Senior Engineer", "Acme", "Jan 2020 - Present"])
+
+        llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone/",
+                                      sleep=lambda s: None)
+
+        driver.get.assert_called_once_with(
+            "https://www.linkedin.com/in/someone/details/experience/")
+        driver.find_element.assert_not_called()
+
+    def test_entity_sample_is_capped_but_the_counts_are_not(self):
+        driver = self._page(*[["Engineer", "Acme", "Jan 2020 - Present"] for _ in range(5)])
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/x",
+                                                max_entities=2, sleep=lambda s: None)
+
+        assert len(reading["entities"]) == 2
+        assert reading["entity_count"] == 5 and reading["entities_with_dates"] == 5
+
+    def test_nothing_rendered_reads_as_page_not_loaded(self):
+        assert "did not load" in llv.profile_experiences_verdict({"entity_count": 0})
+
+    def test_nothing_matched_on_a_page_full_of_dates_names_the_ladder(self):
+        verdict = llv.profile_experiences_verdict({"entity_count": 0, "page_dated_lines": 8})
+        assert "every selector in the ladder is gone" in verdict
+
+    def test_entities_without_dates_are_not_reported_as_selector_rot(self):
+        verdict = llv.profile_experiences_verdict({"entity_count": 12, "entities_with_dates": 0})
+        assert "none carrying a date range" in verdict
+        assert "lists no experience" in verdict
+
+    def test_an_undated_rung_beside_a_dated_page_names_the_wrong_rung(self):
+        verdict = llv.profile_experiences_verdict({"entity_count": 3, "entities_with_dates": 0,
+                                                   "page_dated_lines": 8})
+        assert "the rung that won is not the one holding the experience" in verdict
+
+    def test_dated_entities_that_parse_to_nothing_are_selector_rot(self):
+        verdict = llv.profile_experiences_verdict({"entity_count": 4, "entities_with_dates": 4,
+                                                   "experiences": []})
+        assert "selector rot" in verdict
+
+    def test_a_parsed_page_grades_ok(self):
+        driver = self._page(["Senior Engineer", "Acme Corp", "Jan 2020 - Present · 5 yrs 2 mos"])
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_OK
+
+    def test_dated_lines_the_parser_cannot_read_are_drift(self):
+        """The 2026-08-03 failure: the page plainly rendered dated roles and the winning rung saw
+        the footer. Graded off the PAGE's own dated lines, not off the ladder that missed them."""
+        driver = MagicMock()
+        driver.page_source = (
+            "<html><body><main><div role='list'><div>Mar 2019 - Present · 7 yrs 6 mos</div>"
+            "</div></main><div data-sdui-screen='x'><div role='listitem'>Questions?</div>"
+            "</div></body></html>")
+        driver.current_url = "https://www.linkedin.com/in/someone/details/experience/"
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        assert reading["page_dated_lines"] >= 1
+        assert reading["experiences"] == []
+        assert reading["state"] == llv.STATE_DRIFT
+
+    def test_a_profile_with_no_dated_line_anywhere_grounds_nothing(self):
+        driver = MagicMock()
+        driver.page_source = "<html><body><main><p>Nothing here</p></main></body></html>"
+        driver.current_url = "https://www.linkedin.com/in/someone/details/experience/"
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_no_target_navigates_nothing_and_grades_unknown(self):
+        """The sweep resolves its own target; when it cannot, probing a relative URL would grade
+        this surface off whatever page that lands on."""
+        driver = MagicMock()
+
+        reading = llv.probe_profile_experiences(driver, "", sleep=lambda s: None)
+
+        driver.get.assert_not_called()
+        assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_profile_experiences_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_profile_experiences",
+                            lambda d, url: {"verdict": "ok"})
+        assert llv.main(["--profile-experiences", "https://www.linkedin.com/in/someone/"]) == 0

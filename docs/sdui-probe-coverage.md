@@ -33,6 +33,7 @@ code is missing from this table.
 | Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876) |
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
 | Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | **none — see Gaps** |
+| Profile experience rows (`/details/experience/`) | `parse_profile_experiences` | `--profile-experiences` | yes | dated rows the parser cannot read is drift; an entity with no date range yields nothing rather than a guessed company (#970) |
 | Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | no (needs a target) | dialog controls must be present before Send (#1012); a missing note affordance is graded against the bare-send control, never warned (#1039) |
 | Catch-up moment cards | `_CATCHUP_CARD_LOCATORS` | `--catchup-cards` | yes | zero cards vs `main div[role='listitem']` (#1013) |
 | Group share box / editor | `auto_post_to_group` | `--group-composer` | no (needs a group) | `_unpostable` rotates past the group (#858) |

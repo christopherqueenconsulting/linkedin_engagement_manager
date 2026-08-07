@@ -89,6 +89,52 @@ menu. The dialog's own controls are UNCHANGED: `Add a note` / `Send without a no
 a new `Write with AI` button). Success is the dialog's controls being present — never a click
 having landed.
 
+## Profile experience rows: the a11y twin, not a line index (#970)
+
+`/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a
+`visually-hidden` twin carrying the same string. The pre-SDUI parser never knew that; it split an
+`<li>`'s whole text and branched on the count of leading blank strings
+(`start_identifier_map`: 20 = company, 16 = title, 7 = description), then halved each line
+(`row[si][:len(row[si]) // 2]`) to undo the duplication. Both halves of that are positional: one
+extra wrapper shifts every index, and the parser then emits a confidently-wrong company or title
+rather than nothing. Profile JSON is dumped whole into `synthesize_profile`, so that garbage grounds
+every comment and DM written for the user.
+
+The rebuild (`parse_profile_experiences`) reads the **visible** half only, keeps entity nodes by
+`data-view-name` / `role='listitem'` / `<li>` (outermost wins, so a grouped company stays one unit),
+and anchors a role on its **date-range line** — no date line, no experience, and an entity it does
+not understand yields nothing instead of junk. A grouped company is told from a single role
+STRUCTURALLY (does the entity nest child role entities?), because
+`company / title / dates` and `title / company / dates` are the same three lines in a different
+order. Ground it with `--profile-experiences <profile-url>`; `entities_with_dates` is the number
+that separates "page never rendered" from "line grammar moved".
+
+### What the live run (2026-08-03) changed
+
+The first grounding pass on a real `/details/experience/` page found three things the captured-DOM
+tests could not have:
+
+- **`data-view-name` is absent from that page entirely**, and the most specific rung that DID match
+  — `div[data-sdui-screen] div[role='listitem']` — matched the **footer's help links**
+  ("Questions? / Visit our Help Center."). The real entries were the 8 `main li` under
+  `main div[role='list']`. Specificity alone picks chrome over content, so a rung now only wins if
+  at least one of its nodes **carries a date range**: a page's chrome can out-specify its content,
+  it can never out-date it. (An undated rung is still returned when no rung is dated, so the probe
+  reports what did render.)
+- **No doubled markup at all** on that render. Reading it through a stray decorative
+  `aria-hidden` icon would have returned one icon's worth of text as the whole entity, so the
+  `aria-hidden` half is used only when it actually **covers** the node's text.
+- **Lines are laid out, not text-noded.** `get_text("\n")` splits `Mar 2019 - Present · 7 yrs 6 mos`
+  into three lines across its inline spans and takes the date anchor with it; `_rendered_lines`
+  joins inline runs and breaks on block elements instead. Skills arrive comma-separated with a
+  `+9 skills` overflow chip.
+
+The company is not always on the role: when the roles are the `li`s, the grouping names the company
+once above them. `_company_from_ancestors` reads it from the container's leading lines, and a
+leading run that already contains a date range stops the walk — that run belongs to the previous
+role, not to a company header. A header without a total-duration line (a bare "Experience" heading)
+is never a company.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).
