@@ -74,8 +74,14 @@ counter) are on PR #1100, not yet on `main`. **Re-copy after #1100 merges** or b
 It had never been scheduled, which is why #964, #1009, #1012, #970, #1007 and #1006 were each found
 dead by hand instead of by the sweep.
 
-**⚠️ Still owed by you:** set `SDUI_PROBE_PROFILE_URL` in `/opt/lem/.env` to a **2nd/3rd-degree**
-profile, or the degree badge stays ungrounded (`docs/sdui-probe-coverage.md:99-101`). One line.
+`SDUI_PROBE_PROFILE_URL` is set too — **inline on the cron line, NOT in `/opt/lem/.env`**. The script
+reads the process environment and never sources that file, so a value placed there would silently
+never reach it and the sweep would keep reporting the degree half ungrounded. Currently pointed at a
+2nd-degree profile, which is what the invite/connect lanes actually target; the degree badge only
+renders on a non-connection.
+
+A 3rd-degree profile for manual runs, when you want to exercise the other badge:
+`https://www.linkedin.com/in/kimberly-maurer-bas-lpn-b35b87215/`
 
 ### 2.3 The perf/margin snapshot cron — ✅ REPOINTED 2026-08-07
 
@@ -247,7 +253,32 @@ the env-var defaults, since `utilities/flags.py` fails open to the env var.
   `EARLY_ADOPTER_TRIAL_ENABLED` is `False` and `EARLY_ADOPTER_COUPON_ID` is empty, so nothing can
   transact by accident today.
 
-## 10. Still could not verify
+## 10. Maintenance windows — when it is safe to bounce production
+
+Measured, not guessed: fixed-hour Celery beats counted out of `my_celery.py` (all UTC —
+`enable_utc = True` and the host is `Etc/UTC`), cross-referenced with the host crontab, the systemd
+timers, and the 4×-daily release windows.
+
+**Fully clear of fixed-hour beats:** 16, 17, 18, 21, 22 UTC. **17:00 is a release window**, so it is
+out. Everything else in the day carries 1–5 scheduled beats, peaking at 09:00 (5).
+
+**Immovable slots to avoid:** releases at **05/11/17/23 UTC**; unattended-upgrades auto-reboot at
+**08:00**; DB backup at **03:00**; error→issues at **08:30**; perf snapshot at **23:30**; the new
+SDUI drift sweep at **Mon 06:40**.
+
+| Window (UTC) | Local (EDT) | Why |
+|---|---|---|
+| **Sat/Sun 06:00–07:00** ⭐ | 02:00–03:00 | **Best.** Weekend — `posting_days` defaults Mon–Fri, so content and engagement are materially lighter. Deep US night, so a dropped Selenium session costs nothing real. The 05:00 release has finished (~20 min) and the 08:00 auto-reboot is two hours out. Only one fixed beat. **Avoid Monday** — the drift sweep runs 06:40. |
+| **Sun 18:00–19:00** | 14:00–15:00 | Second choice if you want to be awake. Zero fixed beats, weekend, an hour clear of the 17:00 release and well before Wed-only 19:30. |
+| **Any day 21:00–22:00** | 17:00–18:00 | Clear of beats, but 17:00–18:00 ET is a real LinkedIn engagement peak, and 23:00 brings both a release and the nightly beats. Usable, not ideal. |
+| ~~16:00~~ | 12:00 noon | Clear of beats but this is **peak** US LinkedIn engagement. Avoid. |
+
+**Sequencing within the window:** Docker last. `docker-ce`/`containerd.io` restart the daemon and
+bounce every container, so do `gh`-style no-service packages first, then Cloudflare/Monarx, then the
+Docker stack. **Run the Tailscale upgrade from the Hostinger console, not over SSH** — it restarts
+`tailscaled` and can drop the session you are working in.
+
+## 11. Still could not verify
 
 1. **`POSTHOG_PERSONAL_API_KEY` scopes** — the key works for dashboards, flags, alerts and
    annotations, so those scopes are present. Survey/experiment write scopes are untested because
