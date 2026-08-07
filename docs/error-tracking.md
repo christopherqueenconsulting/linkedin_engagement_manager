@@ -96,8 +96,9 @@ extra guards matter in production:
   `LOG_ESCALATE_REDIS_FAILURES` consecutive failures the process stops calling Redis until
   `LOG_ESCALATE_REDIS_COOLDOWN_SECONDS` passes.
 - **Re-entrancy.** `capture_exception`'s own failure handler calls `log_warning`. A thread-local flag
-  makes recursion structurally impossible, and `LOG_ESCALATE_EXCLUDE` defaults to that message as a
-  second layer.
+  makes recursion structurally impossible, and `BUILTIN_EXCLUDED_PREFIXES` carries that message as a
+  second layer. `LOG_ESCALATE_EXCLUDE` **adds** to those built-ins rather than replacing them — an
+  env override that silently dropped the loop guard would be the worst kind of configuration bug.
 
 **What this means when you write a call site.** A warning you emit on a benign, expected path will
 now file a defect. Log those at DEBUG instead. The pattern is `react_to_post_inline`, which used to
@@ -116,6 +117,19 @@ escalated to ERROR and filed `RecurringWarning: Automation PAUSED for 1800s (rea
 (issue #917). It logs INFO now; the callers for which a pause IS the defect already say so where they
 detect it (the suppression tripwire escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`),
 and only failing to store the pause — a kill-switch that didn't take — still warns.
+
+**An ALERTER is the state-setter rule read one step further: reporting a bad measurement is not
+failing.** `cost_alerts.send_cost_alerts` logs one line per threshold breach, and a breach is exactly
+what the daily beat exists to surface — it already ships as a `cost_alert` PostHog event and an owner
+email. But a cost profile stays over its ceiling for as many days as it takes someone to change it,
+so `Cost alert [user_cost_ceiling]: User #1 variable cost is …% of tier MRR` recurred on schedule,
+crossed the threshold and filed a code defect against tooling that was working (issue #1071). Nothing
+in that issue is fixable in code. The digest line's prefix (`cost_alerts.ALERT_LOG_PREFIX`) is
+therefore pinned in `BUILTIN_EXCLUDED_PREFIXES`; the level stays WARNING, so prod's
+`POSTHOG_LOG_LEVEL=WARNING` still keeps it in Logs. Note the split: **failing to DELIVER an alert**
+(`Cost alert email failed`, `Cost alert PostHog capture failed`) is a real fault and still escalates.
+The test for this shape is whether recurrence carries new information — for a selector miss it does,
+for a measurement it does not.
 
 **A release that interrupts an in-flight task is the same shape one level up: an uncaught exception.**
 The deploy drains the workers for `DEFAULT_DRAIN_TIMEOUT_SECONDS` (8 min) and then recreates the
@@ -136,7 +150,7 @@ hub that refuses connections — an unreachable Grid is a different fault and mu
 | `LOG_ESCALATE_WINDOW_SECONDS` | `86400` | tumbling window; matches the cron lookback |
 | `LOG_ESCALATE_REPEAT_EVERY` | `10` | re-escalate every Nth past the threshold (0 = once) |
 | `LOG_ESCALATE_MAX_PER_WINDOW` | `50` | ceiling across all fingerprints |
-| `LOG_ESCALATE_EXCLUDE` | capture-failure message | comma-separated never-escalate prefixes |
+| `LOG_ESCALATE_EXCLUDE` | *(empty)* | comma-separated never-escalate prefixes, ADDED to `BUILTIN_EXCLUDED_PREFIXES` |
 | `LOG_ESCALATE_LOCAL_CAP` | `200` | per-process per-fingerprint cap on Redis calls |
 | `LOG_ESCALATE_REDIS_FAILURES` / `_COOLDOWN_SECONDS` | `3` / `300` | the outage circuit |
 

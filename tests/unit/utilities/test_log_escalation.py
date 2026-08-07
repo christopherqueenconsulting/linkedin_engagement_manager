@@ -125,8 +125,38 @@ def test_global_budget_caps_escalations(monkeypatch):
     assert _note("boom", [3], budget=2) is not None
 
 
+# The counts below are the THRESHOLD (3), never an arbitrary large one: `_should_escalate` only
+# fires at the threshold and every `LOG_ESCALATE_REPEAT_EVERY`th past it, so e.g. 99 returns None on
+# its own arithmetic and an exclusion test written against it would pass with the exclusion deleted.
 def test_excluded_prefix_never_escalates():
-    assert _note("Could not capture exception in PostHog: boom", [99]) is None
+    assert _note("Could not capture exception in PostHog: boom", [3]) is None
+
+
+def test_cost_alert_breaches_never_escalate():
+    """A budget breach is a measurement the alerter was asked to report, and it repeats for as many
+    days as the spend does — escalating it filed a code defect for working tooling (#1071)."""
+    from cqc_lem.utilities.cost_alerts import ALERT_LOG_PREFIX
+
+    assert ALERT_LOG_PREFIX in esc.BUILTIN_EXCLUDED_PREFIXES
+    breach = (f"{ALERT_LOG_PREFIX}user_cost_ceiling]: User #1 variable cost is 120.0% of tier MRR")
+    assert _note(breach, [3]) is None
+    # …and the exclusion is what did it: the identical line escalates once the prefix is gone.
+    esc.reset_state()
+    with patch.object(esc, "BUILTIN_EXCLUDED_PREFIXES", ()):
+        assert _note(breach, [3]) is not None
+
+
+def test_cost_alert_delivery_failures_still_escalate():
+    """The exclusion is scoped to the breach digest — an alerter that cannot deliver IS a defect."""
+    assert _note("Cost alert email failed", [3]) is not None
+
+
+def test_env_exclusions_add_to_the_builtins(monkeypatch):
+    """An override must not be able to drop the capture_exception re-entrancy guard."""
+    monkeypatch.setenv("LOG_ESCALATE_EXCLUDE", "Custom noise")
+    assert _note("Custom noise: boom", [3]) is None
+    esc.reset_state()
+    assert _note("Could not capture exception in PostHog: boom", [3]) is None
 
 
 def test_disabled_switch_skips_redis(monkeypatch):

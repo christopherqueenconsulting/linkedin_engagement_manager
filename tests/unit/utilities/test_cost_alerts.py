@@ -421,6 +421,21 @@ class TestDelivery:
         log_error.assert_not_called()
         assert "gross_margin_floor" in log_warning.call_args[0][0]
 
+    def test_breach_warnings_are_excluded_from_recurrence_escalation(self):
+        """The warning path is the one that escalates, and a breach recurs every day the spend
+        stays over the ceiling — so its message must carry the never-escalate prefix (#1071)."""
+        from cqc_lem.utilities.log_escalation import BUILTIN_EXCLUDED_PREFIXES
+
+        report = ca.build_cost_alert_report(DAY, _margin_report(gross_margin_pct=0.1,
+                                                                gross_margin_usd=10.0))
+        with patch("cqc_lem.utilities.email._dispatch_email", return_value=True), \
+             patch("cqc_lem.utilities.observability.track_cost_alert"), \
+             patch(f"{_MOD}.log_warning") as log_warning:
+            ca.send_cost_alerts(report, to_email="owner@example.com")
+        message = log_warning.call_args[0][0]
+        assert message.startswith(ca.ALERT_LOG_PREFIX)
+        assert any(message.startswith(p) for p in BUILTIN_EXCLUDED_PREFIXES)
+
     def test_falls_back_to_the_margin_report_recipient(self):
         with patch(f"{_MOD}.COST_ALERT_EMAIL", ""), \
              patch(f"{_MOD}.MARGIN_REPORT_EMAIL", "margin@example.com"), \

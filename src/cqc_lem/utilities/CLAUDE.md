@@ -98,6 +98,16 @@ Two things follow for anyone writing a call site here:
    the callers for which a pause IS the defect already say so where they detect it (suppression
    escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`) — and only a kill-switch that
    FAILED to store still warns.
+   One step further for an **alerter**: reporting a bad measurement is not failing.
+   `cost_alerts.send_cost_alerts` warns once per threshold breach, but a breach is what the daily
+   beat EXISTS to surface — it already ships as a `cost_alert` event and an owner email — and a cost
+   profile stays over its ceiling for days, so `Cost alert [user_cost_ceiling]: User #<n> variable
+   cost is <n>% of tier MRR` recurred on schedule and filed a code defect against working tooling
+   (issue #1071). Its prefix (`cost_alerts.ALERT_LOG_PREFIX`) is pinned in
+   `log_escalation.BUILTIN_EXCLUDED_PREFIXES`; the level stays WARNING, so prod's
+   `POSTHOG_LOG_LEVEL=WARNING` still keeps it in Logs. Failing to DELIVER an alert
+   (`Cost alert email failed`) is a different question and still escalates. **Ask whether recurrence
+   carries new information** — for a selector miss it does, for a measurement it does not.
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems
@@ -105,7 +115,9 @@ Two things follow for anyone writing a call site here:
    unbounded that the masks don't catch means the key never repeats and the fault never escalates.
 
 Escape hatch for a warning that is genuinely expected and high-volume: add its prefix to
-`LOG_ESCALATE_EXCLUDE` (and say why in the PR).
+`log_escalation.BUILTIN_EXCLUDED_PREFIXES` (ships in code, with the reason next to it) or, per
+environment, `LOG_ESCALATE_EXCLUDE` — which ADDS to the built-ins, never replaces them. Say why in
+the PR either way.
 
 ## Other invariants in this tree
 
