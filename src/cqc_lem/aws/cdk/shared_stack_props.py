@@ -3,20 +3,10 @@ import re
 from aws_cdk import (
     Environment,
     StackProps,
-)
-from aws_cdk import (
     aws_ec2 as ec2,
-)
-from aws_cdk import (
     aws_ecs as ecs,
-)
-from aws_cdk import (
     aws_efs as efs,
-)
-from aws_cdk import (
     aws_elasticloadbalancingv2 as elbv2,
-)
-from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk.aws_ecr_assets import DockerImageAsset

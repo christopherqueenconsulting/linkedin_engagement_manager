@@ -2,20 +2,10 @@ from aws_cdk import (
     Duration,
     RemovalPolicy,
     Stack,
-)
-from aws_cdk import (
     aws_applicationautoscaling as applicationautoscaling,
-)
-from aws_cdk import (
     aws_cloudwatch as cloudwatch,
-)
-from aws_cdk import (
     aws_ec2 as ec2,
-)
-from aws_cdk import (
     aws_ecs as ecs,
-)
-from aws_cdk import (
     aws_logs as logs,
 )
 from constructs import Construct

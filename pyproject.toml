@@ -199,13 +199,24 @@ select = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.isort]
+# Without this, isort gives every `X as _X` re-export its own `from ... import (...)` statement.
+# `ai_helper` deliberately aliases 13 `content_alignment` constants under ONE commented block to
+# keep its long-standing internal API stable; splitting them turned that into 13 near-duplicate
+# statements with the explanation heading only the first, and added +69 import statements repo-wide.
+combine-as-imports = true
+
 [tool.ruff.lint.per-file-ignores]
 # Tests: a test's NAME is its documentation, and this suite already writes a docstring wherever the
 # reason for a test is not obvious. Requiring one on all ~10,700 of them would generate exactly the
 # boilerplate the house rule warns against, so only the FORMAT rules apply here.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
-# Migrations and generated trees carry no API surface.
-"**/migrations/**" = ["D"]
+# Two trees the owner has already decided against, so documenting them is work with no reader:
+# the CDK path is declared UNSUPPORTED (#973 — prod is VPS Docker Compose) and the legacy Streamlit
+# UI is slated for deletion (#972 — replaced by the React SPA). Format rules still apply; nothing
+# here is required to GROW a docstring it will never need.
+"src/cqc_lem/aws/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
+"src/cqc_lem/streamlit/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
 
 
 [build-system]

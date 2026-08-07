@@ -17,8 +17,7 @@ import mysql.connector
 import pyotp
 import pytest
 
-from cqc_lem.utilities import auth_factors as af
-from cqc_lem.utilities import db
+from cqc_lem.utilities import auth_factors as af, db
 from cqc_lem.utilities.crypto import SECRET_ENVELOPE_PREFIX, hash_session_token
 
 pytestmark = pytest.mark.integration

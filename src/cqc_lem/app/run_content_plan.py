@@ -69,8 +69,7 @@ from cqc_lem.utilities.ai.content_framework import (
     shape_for_dwell,
     weekly_post_slots,
 )
-from cqc_lem.utilities.ai.slop_lint import lint_report as slop_lint_report
-from cqc_lem.utilities.ai.slop_lint import slop_retry_directive, violation_reasons
+from cqc_lem.utilities.ai.slop_lint import lint_report as slop_lint_report, slop_retry_directive, violation_reasons
 from cqc_lem.utilities.content_generation_status import (
     ContentGenerationEmptyReason,
     mark_empty,

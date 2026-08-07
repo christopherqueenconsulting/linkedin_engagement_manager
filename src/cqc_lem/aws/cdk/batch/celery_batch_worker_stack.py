@@ -3,26 +3,12 @@ from aws_cdk import (
     Duration,
     Size,
     Stack,
-)
-from aws_cdk import (
     aws_batch as batch,
-)
-from aws_cdk import (
     aws_cloudwatch as cloudwatch,
-)
-from aws_cdk import (
     aws_ec2 as ec2,
-)
-from aws_cdk import (
     aws_ecs as ecs,
-)
-from aws_cdk import (
     aws_events as events,
-)
-from aws_cdk import (
     aws_events_targets as targets,
-)
-from aws_cdk import (
     aws_logs as logs,
 )
 from constructs import Construct

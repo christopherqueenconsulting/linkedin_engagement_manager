@@ -1,7 +1,8 @@
 # Docstrings & lint — the house standard
 
-**Gate:** `Docstring & Lint Gate` (`.github/workflows/docstring-lint.yml`) · **Rules:** `pyproject.toml`
-`[tool.ruff.lint]` · **Auto-fix lane:** `agent:docfix` → RUNBOOK `MODE=docfix`
+**Gate:** `Docstring & Lint Gate` (`.github/workflows/docstring-lint.yml`) — a **ratchet against
+`.ruff-baseline`, not yet a required check** · **Rules:** `pyproject.toml` `[tool.ruff.lint]` ·
+**Auto-fix lane:** `agent:docfix` → RUNBOOK `MODE=docfix`
 
 ## Why this exists
 
@@ -10,9 +11,8 @@ Two problems, one fix.
 **The lint gate could not fail.** `.github/workflows/test.yml` ran `ruff check` under
 `continue-on-error: true`, so "Run Linting" reported green no matter what. It had to: `pyproject.toml`
 carried no `[tool.ruff] line-length`, so ruff measured against its **88-column default** while this
-code has always been written to **120** — ~26,900 phantom `line-too-long` errors, with every real
-violation buried inside them. Setting `line-length = 120` drops the same tree to ~1,800 real findings,
-which is a number a gate can hold to zero.
+code has always been written to **120** — **24,584** phantom `line-too-long` errors, with every real
+violation buried inside them. Setting `line-length = 120` drops those to 293.
 
 **Docstrings were unowned.** `CLAUDE.md` said "no docstring blocks", which was read as "docstrings are
 optional" — but the modules that carry this system's hardest invariants (`stale_invites.py`,
@@ -69,12 +69,32 @@ Three rules that reviewers will hold you to:
 3. **Preserve prose when reformatting.** `D205` is fixed by splitting the first sentence onto its own
    line and adding a blank line — never by rewriting the paragraph underneath it.
 
+## The ratchet
+
+The tree does not meet this standard yet — `.ruff-baseline` holds what remains. The gate fails a PR
+that **raises** that number, never one that merely inherits it.
+
+That is not a softening; it is what makes the gate safe to arm at all. A zero-tolerance gate turned
+on today would fail every PR on debt it did not create, and because the router labels a failing PR
+`agent:docfix` — which `tick.sh` services in a priority lane **ahead of all roadmap work** — it would
+point every open PR at the same ~3,400-item backlog, burn three Claude attempts each, and stall the
+pipeline behind a standard nobody had finished adopting. The ratchet lets the gate protect the tree
+from day one while the sweep walks the baseline down.
+
+**Lowering the baseline is part of the work.** A PR that removes violations updates `.ruff-baseline`
+to the new count; the gate's job summary tells you the number. When it reaches 0 this becomes an
+ordinary zero-tolerance gate, the ratchet step can be deleted, and it goes into branch protection as
+a required check.
+
 ## When the gate fails
 
 Nothing is stranded on a human. `docstring-lint-router.yml` labels the PR **`agent:docfix`**, the
 pipeline picks it up in a priority lane (right behind Dependabot's `agent:depfix`), fixes it on the
 branch and clears the label. Three failed attempts on one branch escalates to the owner instead of
 looping.
+
+Because the gate is a ratchet, that label means "**this PR added violations**" — a small, diff-shaped
+job — not "go fix the whole repo".
 
 Locally:
 
@@ -83,6 +103,14 @@ poetry run ruff check src/ tests/ --statistics   # what and how much
 poetry run ruff check src/ tests/ --fix          # the mechanical majority
 ```
 
-**Never `--unsafe-fixes`.** It deletes imports this repo re-exports on purpose — `ai_helper` aliases
-`content_alignment` constants so other modules and tests can read them, and one even carries an
-`lgtm` suppression. Removing them leaves the lint green and four tests red.
+**Two fix hazards, both measured rather than assumed.**
+
+`--fix` will remove `ai_helper`'s deliberate `content_alignment` re-export aliases as unused imports
+(`F401`), which turns **4 tests red** — the module aliases them to keep its long-standing internal
+API stable, and `test_content_alignment.py` asserts the identity. If you are fixing broadly, run
+`--fix --select D,I,E,T201,F541` and handle `F401` by hand.
+
+**Never `--unsafe-fixes`.** Measured on this tree it produces **18 failures**: it deletes the two
+aliases carrying the `lgtm` suppression, and — the larger share — strips `print()` calls under `T201`
+from the `selenium_load_test`, `margin`, `cost_alerts` and `maintenance` CLIs, where the printed
+output IS the product.

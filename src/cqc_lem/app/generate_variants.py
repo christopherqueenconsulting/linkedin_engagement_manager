@@ -23,8 +23,11 @@ from cqc_lem.utilities.ai.ai_helper import (
     get_runway_ml_video_prompt_from_ai,
 )
 from cqc_lem.utilities.ai.video_models import RATIO_ALIASES, estimate_video_cost, supports_audio
-from cqc_lem.utilities.db import get_post_content, get_user_content_language
-from cqc_lem.utilities.db import record_shipped_variant as _db_record_shipped_variant
+from cqc_lem.utilities.db import (
+    get_post_content,
+    get_user_content_language,
+    record_shipped_variant as _db_record_shipped_variant,
+)
 from cqc_lem.utilities.env_constants import (
     API_URL_FINAL,
     DEFAULT_IMAGE_MODEL,

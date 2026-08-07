@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities import cost_routing as cr
-from cqc_lem.utilities import routing_policy as rp
+from cqc_lem.utilities import cost_routing as cr, routing_policy as rp
 
 pytestmark = pytest.mark.unit
 

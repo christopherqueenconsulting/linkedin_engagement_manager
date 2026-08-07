@@ -1,5 +1,32 @@
 {
-  "enabledMcpjsonServers": ["selenium-lem", "playwright"],
+  "permissions": {
+    "allow": [
+      "Bash(git push *)",
+      "Bash(gh issue *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'refactor\\(observability\\): single lock-guarded write for the redis failure counter *)",
+      "Bash(gh pr *)",
+      "Bash(gh pr comment 1080 --body 'Temporarily off the merge lane: this PR'\\\\''s diff shifts the accepted log_escalation.py alert'\\\\''s line on every merge-queue ref, which fails the required CodeQL PR Gate and evicts it from the queue \\(~one full CI suite burned every 5 minutes — same mechanism that held #1067, see #1082/#1087\\). PR #1086 removes the alert at the source; agent:working goes back on the moment it merges and this will flow straight through. *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(sudo docker ps -a --format '{{.Names}}\\\\t{{.Status}}\\\\t{{.Image}}')",
+      "Bash(git fetch *)",
+      "Bash(sudo cat /opt/lem/.last_good_tag)",
+      "Bash(sudo ls /opt/lem)",
+      "Bash(curl -s -m 10 http://localhost/api/app-info)",
+      "Bash(curl -s -m 10 http://localhost/health)",
+      "Bash(curl -s -m 10 http://localhost/health/deep)",
+      "Bash(sudo grep -rE 'upstream|proxy_pass|server web_api' /opt/lem/compose/*/nginx* /opt/lem/deploy)",
+      "Bash(sudo docker exec web_app sh -c 'cat /etc/nginx/conf.d/*.conf 2>/dev/null | grep -E \"proxy_pass|upstream|server \" | head')",
+      "Bash(sudo docker ps --format '{{.Names}}\\\\t{{.Ports}}')",
+      "Bash(sudo docker exec web_app sh -c 'grep -E \"set \\\\\\\\$backend|listen\" /etc/nginx/conf.d/default.conf')",
+      "Bash(sudo docker exec -i -e PYTHONPATH=/tmp/probe970/src celery_worker_selenium python - --user-id 1 --profile-experiences 'https://www.linkedin.com/in/christopherqueen/')",
+      "Bash(echo \"EXIT=$?\")"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "selenium-lem",
+    "playwright"
+  ],
   "worktree": {
     "symlinkDirectories": [
       ".venv",

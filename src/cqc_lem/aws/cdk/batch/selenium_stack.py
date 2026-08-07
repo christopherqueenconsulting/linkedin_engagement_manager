@@ -1,13 +1,16 @@
 from typing import Dict, List, Optional
 
-from aws_cdk import Duration, Stack
-from aws_cdk import aws_applicationautoscaling as applicationautoscaling
-from aws_cdk import aws_cloudwatch as cloudwatch
-from aws_cdk import aws_ec2 as ec2
-from aws_cdk import aws_ecs as ecs
-from aws_cdk import aws_elasticloadbalancingv2 as elbv2
-from aws_cdk import aws_iam as iam
-from aws_cdk import aws_logs as logs
+from aws_cdk import (
+    Duration,
+    Stack,
+    aws_applicationautoscaling as applicationautoscaling,
+    aws_cloudwatch as cloudwatch,
+    aws_ec2 as ec2,
+    aws_ecs as ecs,
+    aws_elasticloadbalancingv2 as elbv2,
+    aws_iam as iam,
+    aws_logs as logs,
+)
 from aws_cdk.aws_servicediscovery import DnsRecordType
 from constructs import Construct
 

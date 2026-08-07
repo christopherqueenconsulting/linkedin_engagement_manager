@@ -9,8 +9,7 @@ import replicate
 from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai import content_framework as _framework
-from cqc_lem.utilities.ai import slop_lint as _slop
+from cqc_lem.utilities.ai import content_framework as _framework, slop_lint as _slop
 from cqc_lem.utilities.ai.client import attribution_metadata, client
 
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
@@ -18,51 +17,30 @@ from cqc_lem.utilities.ai.client import attribution_metadata, client
 # (and the tests that import it) stable while the definitions live in exactly one place.
 from cqc_lem.utilities.ai.content_alignment import (
     COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,  # lgtm[py/unused-global-variable]
-)
-from cqc_lem.utilities.ai.content_alignment import (
     DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,  # lgtm[py/unused-global-variable]
-)
-from cqc_lem.utilities.ai.content_alignment import (
     NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     alignment_directive as _alignment_directive,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     focus_directive as _focus_directive,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     humanize_text as _humanize_text,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     humanize_title as _humanize_title,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     intention_directive as _intention_directive,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     select_focus_topic as _select_focus_topic,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     style_directive as _style_directive,
-)
-from cqc_lem.utilities.ai.content_alignment import (
     voice_reference as _voice_reference,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news
-from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER, supports_audio
 
 # create_runway_video lives in video_models (model abstraction); re-exported here
 # so existing `from ai_helper import create_runway_video` imports keep working.
 # The redundant `as create_runway_video` alias marks it an intentional re-export.
-from cqc_lem.utilities.ai.video_models import create_runway_video as create_runway_video  # noqa: F401
+from cqc_lem.utilities.ai.video_models import (
+    AUDIO_DIRECTION_MARKER,
+    create_runway_video as create_runway_video,  # noqa: F401
+    supports_audio,
+)
 from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name

@@ -1,24 +1,31 @@
 name: Docstring & Lint Gate
 
-# The one gate that decides whether a change meets the house code standard: ruff's E/F/I/T201 rules
-# plus Google-convention docstrings (`D`), configured in pyproject.toml.
+# The gate that decides whether a change meets the house code standard: ruff's E/F/I/T201 rules plus
+# Google-convention docstrings (`D`), configured in pyproject.toml.
 #
 # It is a SEPARATE workflow from `CI / Unit Tests` on purpose. The lint step inside the test workflow
-# runs with `continue-on-error: true`, so it reports green whatever it finds — that is how ~26,900
+# runs with `continue-on-error: true`, so it reports green whatever it finds — that is how 24,584
 # line-too-long errors (ruff measuring against its 88-column default while the code is written to
 # 120) sat unnoticed and took every real violation down with them. A gate that cannot fail is not a
-# gate; this one can.
+# gate.
 #
-# A failure here is NOT a dead end for an agent-authored PR: `docstring-lint-router.yml` labels the
-# PR `agent:docfix` and the pipeline's priority lane fixes it on-branch (RUNBOOK MODE=docfix), the
-# same shape as the Dependabot `agent:depfix` lane.
+# ── It is a RATCHET, not a cliff ────────────────────────────────────────────────────────────────
+# The tree does not meet the standard yet (`.ruff-baseline` holds the count that remains). Failing
+# on any violation would fail every PR on debt it did not create, and — because
+# `docstring-lint-router.yml` labels a failing PR `agent:docfix`, which `tick.sh` services in a
+# PRIORITY lane ahead of all roadmap work — it would point every open PR at the same ~3,400-item
+# backlog, burn three Claude attempts each, and stall the pipeline behind a standard nobody had
+# finished adopting.
+#
+# So the gate fails on REGRESSION: more violations than the committed baseline. Each sweep PR lowers
+# the baseline; when it reaches 0 this becomes an ordinary zero-tolerance gate and the ratchet
+# machinery can be deleted. Lowering the baseline is the only way it moves — nothing raises it
+# without a human reading the diff.
 
 on:
   pull_request:
     branches: [main]
   merge_group:
-  push:
-    branches: [main]
 
 jobs:
   lint:
@@ -36,30 +43,48 @@ jobs:
           python-version: "3.12"
           install-args: --with lint
 
-      - name: Run ruff (code rules + Google docstrings)
-        id: ruff
+      - name: Compare violations against the baseline
         shell: bash
         run: |
-          set -o pipefail
-          poetry run ruff check src/ tests/ --output-format=concise | tee /tmp/ruff.txt
+          set -uo pipefail
+          BASELINE="$(tr -cd '0-9' < .ruff-baseline)"
+          : "${BASELINE:=0}"
 
-      - name: Explain a failure in the job summary
-        if: failure() && steps.ruff.outcome == 'failure'
-        shell: bash
-        run: |
+          poetry run ruff check src/ tests/ --output-format=concise > /tmp/ruff.txt 2>&1 || true
+          COUNT="$(grep -cE '^[^ ].*:[0-9]+:[0-9]+: ' /tmp/ruff.txt || true)"
+          : "${COUNT:=0}"
+
+          echo "baseline=$BASELINE  current=$COUNT"
           {
-            echo "## Docstring & Lint Gate failed"
+            echo "## Docstring & Lint Gate"
             echo
-            echo "Top rules:"
-            echo '```'
-            poetry run ruff check src/ tests/ --statistics | head -20 || true
-            echo '```'
-            echo
-            echo "Fix the mechanical ones locally with:"
-            echo '```sh'
-            echo 'poetry run ruff check src/ tests/ --fix   # never --unsafe-fixes: it deletes'
-            echo '                                          # deliberate re-export imports'
-            echo '```'
-            echo
-            echo "The standard, and what each rule is protecting: \`docs/docstring-standard.md\`."
+            echo "| | count |"
+            echo "|---|---|"
+            echo "| baseline (\`.ruff-baseline\`) | $BASELINE |"
+            echo "| this branch | $COUNT |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            {
+              echo
+              echo "**Failed:** this branch adds $((COUNT - BASELINE)) violation(s)."
+              echo
+              echo '```'
+              poetry run ruff check src/ tests/ --statistics 2>&1 | head -20 || true
+              echo '```'
+              echo
+              echo "Fix the mechanical ones with \`poetry run ruff check src/ tests/ --fix\`."
+              echo "**Never \`--unsafe-fixes\`** — see \`docs/docstring-standard.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Lint violations rose from $BASELINE to $COUNT."
+            exit 1
+          fi
+
+          if [ "$COUNT" -lt "$BASELINE" ]; then
+            {
+              echo
+              echo "This branch REMOVES $((BASELINE - COUNT)) violation(s). Ratchet \`.ruff-baseline\`"
+              echo "down to **$COUNT** in this PR so the gain cannot be given back."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Baseline can ratchet down to $COUNT (currently $BASELINE)."
+          fi

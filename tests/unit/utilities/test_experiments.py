@@ -11,8 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities import experiments as ex
-from cqc_lem.utilities import routing_policy as rp
+from cqc_lem.utilities import experiments as ex, routing_policy as rp
 
 pytestmark = pytest.mark.unit
 

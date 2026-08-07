@@ -3,20 +3,10 @@ from aws_cdk import (
     RemovalPolicy,
     Stack,
     TimeZone,
-)
-from aws_cdk import (
     aws_applicationautoscaling as appscaling,
-)
-from aws_cdk import (
     aws_ec2 as ec2,
-)
-from aws_cdk import (
     aws_ecs as ecs,
-)
-from aws_cdk import (
     aws_elasticloadbalancingv2 as elbv2,
-)
-from aws_cdk import (
     aws_logs as logs,
 )
 from constructs import Construct

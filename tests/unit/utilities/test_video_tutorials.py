@@ -13,8 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities.marketing import video_tutorials as vt
-from cqc_lem.utilities.marketing import youtube_auth as ya
+from cqc_lem.utilities.marketing import video_tutorials as vt, youtube_auth as ya
 
 pytestmark = pytest.mark.unit
 

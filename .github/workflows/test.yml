@@ -113,10 +113,11 @@ jobs:
         run: |
           poetry install --with lint
 
-      # Informational only, and deliberately so: the BLOCKING copy of this check is the
-      # `Docstring & Lint Gate` workflow, which is what branch protection requires. Keeping a
-      # `continue-on-error` duplicate here would be the thing that hid every real violation for
-      # months — it stays purely so a test run still shows the count inline.
+      # Informational only, and deliberately so: the enforcing copy of this check is the
+      # `Docstring & Lint Gate` workflow (a ratchet against `.ruff-baseline`; not yet a required
+      # check — that flips when the baseline reaches 0). Keeping a `continue-on-error` duplicate
+      # here would be the thing that hid every real violation for months — it stays purely so a
+      # test run still shows the count inline.
       - name: Run ruff linter (informational — the gate is Docstring & Lint Gate)
         run: |
           poetry run ruff check src/ tests/ --statistics || true
