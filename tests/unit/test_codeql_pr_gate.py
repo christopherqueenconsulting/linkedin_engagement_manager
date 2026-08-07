@@ -405,7 +405,7 @@ class TestComparedAlertsLog:
         assert "shift_matched_count=0" in outputs
 
     def test_a_genuinely_new_alert_still_fails_the_gate(self, monkeypatch, tmp_path):
-        code, kwargs, _ = self._run(
+        code, kwargs, outputs = self._run(
             [_raw_alert(2623, "src/a.py", 4253), _raw_alert(9001, "src/b.py", 12)],
             [_raw_alert(2623, "src/a.py", 4240)],
             monkeypatch,
@@ -414,3 +414,6 @@ class TestComparedAlertsLog:
         assert code == 1
         assert kwargs["new_count"] == 1
         assert kwargs["shift_matched"] == 1
+        # The failing run is the one whose over-match matters most — a gate that blocks a PR
+        # while having dismissed alerts on number alone must still say how many.
+        assert "shift_matched_count=1" in outputs

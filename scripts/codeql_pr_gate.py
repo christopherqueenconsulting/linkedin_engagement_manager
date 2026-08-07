@@ -11,7 +11,9 @@ It runs in a GitHub Actions workflow
 1. Waits for the existing CodeQL workflows to upload SARIF *for the commit being
    gated* — not merely for the ref (see `wait_for_analysis`).
 2. Fetches open code-scanning alerts for the head and base refs.
-3. Computes newly introduced alerts by (rule, file, line, message).
+3. Computes newly introduced alerts by (rule, file, line, message) — plus the
+   repo-global alert number, so an alert whose line merely moved is not new
+   (`compare_alerts`, #1087).
 4. Buckets them:
    - Security-severity alerts: always blocking, never auto-fixed.
    - Mechanical quality alerts: auto-fixed where safe (unused imports /
@@ -418,10 +420,11 @@ class AlertComparison:
     """The head-vs-base diff, and HOW each head alert the gate dismissed was matched.
 
     `shift_matched` is the number the gate must never keep to itself: those head alerts were
-    dismissed only because the base ref carries the same alert NUMBER somewhere else in the
-    file, not because anything about their location agreed. That is the line-shift case this
-    tolerance exists for, and it is also the only way the comparison can over-match — so it is
-    reported on every run rather than inferred from a gate that went quiet.
+    dismissed only because the base ref carries the same alert NUMBER, not because anything
+    about their `Alert.key` agreed — usually a moved line, but a changed path or message lands
+    here too. That is the line-shift case this tolerance exists for, and it is also the only way
+    the comparison can over-match — so it is reported on every run rather than inferred from a
+    gate that went quiet.
     """
 
     new_alerts: list[Alert]
