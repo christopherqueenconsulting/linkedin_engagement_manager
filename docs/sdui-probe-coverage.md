@@ -37,7 +37,7 @@ code is missing from this table.
 | Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | no (needs a target) | dialog controls must be present before Send (#1012); a missing note affordance is graded against the bare-send control, never warned (#1039) |
 | Catch-up moment cards | `_CATCHUP_CARD_LOCATORS` | `--catchup-cards` | yes | zero cards vs `main div[role='listitem']` (#1013) |
 | Group share box / editor | `auto_post_to_group` | `--group-composer` | no (needs a group) | `_unpostable` rotates past the group (#858) |
-| Groups directory + a group's membership controls | `_enumerate_joined_groups` / `auto_comment_in_groups` | `--group-membership` | yes | directory anchors the sync matched none of; a group header carrying no join/leave control (#1052) |
+| Groups directory + a group's membership controls | `_enumerate_joined_groups` / `auto_comment_in_groups` | `--group-membership` | yes | directory anchors the sync matched none of, or that no section heading could be attributed to (the reading that says whether the sync counts recommendation cards as joins — unanswered is drift, never `ok`); a group header carrying no join/leave control (#1052) |
 | Company-page invite modal | `automate_invitations` | `--company-invite` | yes | zero ticked boxes vs the picker's own rows → `drift` ≠ `no_candidates` (#1021) |
 | Invitation manager → Sent | `read_pending_invites` | `--sent-invites` | yes | zero rows vs the page's own empty-state copy (#969) |
 | Roster activity Follow control | `_resolve_follow_control` | `--roster-follow` | no (needs a target) | `unknown` clicks nothing; blocked visits recorded (#962) |

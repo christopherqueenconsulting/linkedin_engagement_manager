@@ -2296,6 +2296,26 @@ def _labels_matching(labels: Optional[list], markers: tuple) -> list:
     return out
 
 
+def _control_labels_matching(labels: Optional[list], markers: tuple) -> list:
+    """Controls whose label LEADS with one of these action words, not merely contains it.
+
+    A control label often carries the group's own NAME — the 2026-08-07 header rendered
+    `More options for <group>` — so a substring match makes the membership answer depend on what the
+    group is called: a group named "Join the Data Guild" would read `not_member` while its share box
+    was sitting right there. That is the #1012 hazard one layer down, in the reading rather than the
+    click, and it flips the answer to the one direction that must never be wrong. LinkedIn's real
+    membership controls all lead with the verb ("Join", "Request to join", "Leave", "Requested",
+    "Withdraw request"), so anchoring at the start keeps every live reading and fails to `unknown`
+    (re-ground it) instead of to a confident wrong answer."""
+    out = []
+    for label in labels or []:
+        text = str(label or "")
+        stripped = text.strip().lower()
+        if any(stripped.startswith(marker) for marker in markers):
+            out.append(text[:80])
+    return out
+
+
 def group_membership_signal(header_controls: Optional[list], share_box_present: bool = False) -> str:
     """WHICH reading decided the answer — the fix is written against the signal, not the word.
 
@@ -2303,11 +2323,11 @@ def group_membership_signal(header_controls: Optional[list], share_box_present: 
     at all: every marker missed and the share box carried it. Reporting only the word made that read
     as "the header says member", which would have sent the fix looking for a Leave button that this
     surface does not render."""
-    if _labels_matching(header_controls, _GROUP_PENDING_MARKERS):
+    if _control_labels_matching(header_controls, _GROUP_PENDING_MARKERS):
         return "pending_control"
-    if _labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
+    if _control_labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
         return "leave_control"
-    if _labels_matching(header_controls, _GROUP_JOIN_MARKERS):
+    if _control_labels_matching(header_controls, _GROUP_JOIN_MARKERS):
         return "join_control"
     return "share_box" if share_box_present else "none"
 
@@ -2352,10 +2372,30 @@ def group_enumeration_findings(directory: Optional[dict]) -> dict:
                                         if anchor_total <= len(anchors) else [])}
 
 
+def stale_set_grounded(reading: Optional[dict]) -> bool:
+    """Whether `stored_not_live` is evidence of anything at all.
+
+    It is a set difference, so it inherits the enumeration's blind spots: if the sync matched none of
+    the page's anchors, EVERY enabled group lands in it and the list says the probe couldn't see the
+    directory, not that the user left six groups. Same when the DB list was unreadable — an empty
+    enabled set makes an empty difference, which would otherwise read as a clean bill of health."""
+    reading = dict(reading or {})
+    directory = dict(reading.get("directory") or {})
+    if not reading.get("enabled_ids_readable", True):
+        return False
+    if not str(directory.get("page_text") or "").strip():
+        return False
+    return not (directory.get("anchors") and not directory.get("enumerated"))
+
+
 def group_membership_state(reading: Optional[dict]) -> str:
     """`drift` is reserved for the finding that blocks the fix: the group page RENDERED and still
     said nothing either way. `not_member` is not drift — it is the probe working, and it is the
-    reporter's own symptom showing up in the report."""
+    reporter's own symptom showing up in the report.
+
+    A directory whose anchors could be attributed to NO section is drift for the same reason: this
+    surface is swept weekly, and the sweep only ever looks at `drift`, so grading an unanswerable
+    reading `ok` is how the enumeration question stays open forever with a green report over it."""
     reading = dict(reading or {})
     group = dict(reading.get("group_page") or {})
     directory = dict(reading.get("directory") or {})
@@ -2363,7 +2403,9 @@ def group_membership_state(reading: Optional[dict]) -> str:
     states = []
     if str(directory.get("page_text") or "").strip():
         blind = directory.get("anchors") and not directory.get("enumerated")
-        states.append(STATE_DRIFT if (blind or findings["enumerated_under_recommendation"]
+        unattributed = directory.get("anchors") and not findings["sections_readable"]
+        states.append(STATE_DRIFT if (blind or unattributed
+                                      or findings["enumerated_under_recommendation"]
                                       or findings["enumerated_not_anchored"]) else STATE_OK)
     else:
         states.append(STATE_UNKNOWN)
@@ -2377,6 +2419,7 @@ def group_membership_state(reading: Optional[dict]) -> str:
 
 
 def group_membership_verdict(reading: Optional[dict]) -> str:
+    """The prose half of the grade: what each half of the read established, and what it did NOT."""
     reading = dict(reading or {})
     group = dict(reading.get("group_page") or {})
     directory = dict(reading.get("directory") or {})
@@ -2418,9 +2461,19 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
     else:
         parts.append(f"the group header reads `{group.get('membership')}` from "
                      f"`{group.get('membership_signal')}` in {group.get('header_controls') or []}")
-    if stale:
+    if group.get("group_id") and reading.get("target_source") == "directory":
+        parts.append("that group came from the live directory, NOT from the DB — its membership is "
+                     "not the #1052 symptom whatever it says")
+    if not reading.get("enabled_ids_readable", True):
+        parts.append("the enabled-group list could not be read from the DB, so nothing here says "
+                     "which groups production actually comments in")
+    elif stale and stale_set_grounded(reading):
         parts.append(f"{len(stale)} group(s) enabled in the DB were not enumerated live "
                      f"({_first_few(stale)}) — the #1052 symptom")
+    elif stale:
+        parts.append(f"the {len(stale)} enabled group(s) the directory did not list "
+                     f"({_first_few(stale)}) are UNVERIFIABLE, not stale — the enumeration this set "
+                     f"is differenced against saw nothing")
     return "; ".join(parts)
 
 
@@ -2440,12 +2493,17 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
     posted, and no stored membership is changed."""
     if enumerate_groups is None:
         from cqc_lem.app.run_automation import _enumerate_joined_groups as enumerate_groups
+    # An unreadable DB list is not an empty one: it makes `stored_not_live` empty, which is the exact
+    # shape of "nothing is stale". Say which happened.
+    enabled_ids_readable = True
+    enabled_ids_error = ""
     if enabled_ids is None:
         try:
             from cqc_lem.utilities.db import get_enabled_group_ids
             enabled_ids = [str(g) for g in (get_enabled_group_ids(user_id) or [])]
-        except Exception:
-            enabled_ids = []
+        except Exception as e:
+            enabled_ids, enabled_ids_readable = [], False
+            enabled_ids_error = f"{type(e).__name__}: {e}"[:200]
     enabled_ids = [str(g) for g in (enabled_ids or [])]
 
     enumerated = [(str(gid), name) for gid, name in (enumerate_groups(driver) or [])]
@@ -2461,10 +2519,14 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
     live_ids = {gid for gid, _ in enumerated}
     reading = {"user_id": user_id,
                "enabled_group_ids": enabled_ids,
+               "enabled_ids_readable": enabled_ids_readable,
                # The reporter's symptom, as a set difference: production comments in these, the
                # directory does not list them.
                "stored_not_live": [gid for gid in enabled_ids if gid not in live_ids],
                "directory": directory}
+    if enabled_ids_error:
+        reading["enabled_ids_error"] = enabled_ids_error
+    reading["stored_not_live_grounded"] = stale_set_grounded(reading)
 
     target = str(group_id) if group_id else (enabled_ids[0] if enabled_ids
                                              else (sorted(live_ids)[0] if live_ids else ""))
@@ -2493,10 +2555,10 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
             "page_controls": list(header.get("all_controls") or []),
             "share_box_present": share_box is not None,
         })
-        group_page["join_controls_in_header"] = _labels_matching(group_page["header_controls"],
-                                                                 _GROUP_JOIN_MARKERS)
-        group_page["join_controls_on_page"] = _labels_matching(group_page["page_controls"],
-                                                               _GROUP_JOIN_MARKERS)
+        group_page["join_controls_in_header"] = _control_labels_matching(
+            group_page["header_controls"], _GROUP_JOIN_MARKERS)
+        group_page["join_controls_on_page"] = _control_labels_matching(
+            group_page["page_controls"], _GROUP_JOIN_MARKERS)
         group_page["membership_signal"] = group_membership_signal(group_page["header_controls"],
                                                                    group_page["share_box_present"])
         group_page["membership"] = group_membership_answer(group_page["header_controls"],
