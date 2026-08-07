@@ -6,11 +6,25 @@ name: Dependabot CI Auto-Fix Router
 # or open a main-side fix PR + @dependabot rebase when it isn't the bump's fault), then clears the
 # label. Copilot remains the (free) reviewer only.
 
+# The list below must cover every workflow that can BLOCK a merge, or the lane is deaf to the
+# failures that matter. It previously watched four workflows while branch protection required six
+# checks, four of which come from workflows that were NOT here — including `UI Build`, which is the
+# single likeliest way an npm group bump breaks this repo. A Dependabot PR failing one of those went
+# red with no label and no agent, indistinguishable from the lane never firing.
+#
+# `workflow_run.workflows` matches a workflow's `name:` field, not a check name. Keep this list in
+# step with the required contexts on `main`.
 on:
   workflow_run:
     workflows:
-      - "CI / Unit Tests"
-      - "CI / Integration Test w/ Coverage"
+      # Required checks on main
+      - "CI / Unit Tests"                     # Unit Tests (Python 3.12)
+      - "CI / Integration Test w/ Coverage"   # Integration Tests
+      - "UI Build"                            # UI Build
+      - "GitGuardian Security Scan"           # GitGuardian Scan
+      - "Migration Versions"                  # Migration Versions
+      - "CodeQL PR Gate"                      # CodeQL PR Quality Gate
+      # Not required, but a failure here is still worth an agent's attention
       - "CI / E2E Test w/ Coverage"
       - "CodeQL Advanced"
     types:
