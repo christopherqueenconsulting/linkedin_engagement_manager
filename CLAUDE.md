@@ -22,7 +22,7 @@ Code paths in **Feature Areas** below. Subsections carry `docs/*.md` pointers ho
 | AI proxy | LiteLLM (port 4000) |
 | Frontend | React 18 + Vite + TailwindCSS |
 | Package manager | Poetry |
-| Infra | Docker Compose (local), AWS CDK (cloud) |
+| Infra | Docker Compose — the ONLY supported deploy (VPS). The `aws/` CDK tree is UNSUPPORTED (#973) |
 | Observability | PostHog |
 
 ## Directory Map
@@ -42,7 +42,7 @@ src/cqc_lem/
 │   ├── logger.py  Structured logger — log_info/log_error/etc. preferred over myprint()
 │   └── selenium_util.py  get_docker_driver() + MV3 proxy-auth extension builder
 ├── ui/            React SPA (Account.tsx holds engagement prefs)
-└── aws/           AWS CDK stacks
+└── aws/           AWS CDK stacks — UNSUPPORTED deploy path (#973), kept for reference only
 tests/
 ├── unit/          Fast tests — mock all I/O
 ├── integration/   Require MySQL + Redis service containers
@@ -173,7 +173,7 @@ Browser capacity is a **fixed pool of Chrome session slots shared by the Celery 
 - **Sign-in visibility** (`utilities/linkedin/login_status.py`, #933, `docs/linkedin-session-health.md`): `_persist_session_cookies` is where both login paths meet, so it's where a sign-in is recorded (`mark_signed_in`); the device-approval wait loop always closes `approval_pending` (never keep asking for a tap already given). Redis-backed, fails open: `unknown` means nothing recorded, NOT a broken connection.
 - **OAuth token renewal** (`utilities/linkedin/token_refresh.py`, #600, same doc): `resolve_token_status` is the ONE place token state is decided — SPA countdown and renewal beat read the same function. LinkedIn caps auth at 60 days, so the daily beat `refresh-linkedin-tokens` (08:30) renewing everyone inside `EXPIRY_WARNING_DAYS` is the only way a token outlives that. `days_remaining` is `None`, never 0, when unreadable.
 - 429 / auth-wall backoff and resilience (`utilities/linkedin/rate_limit.py`).
-- **Secrets at rest** (`utilities/crypto.py`, #745): `li_at`, OAuth tokens and the stored password are AES-256-GCM envelopes keyed per user+column off `LEM_SECRET_KEY`; `db.py` is the ONE caller and the field-name constants are AAD — renaming one orphans every row. Reads dual-mode until `ENCRYPTION_REQUIRED`; failed decrypt → None. Daily `auto_encrypt_secrets_at_rest` backfills AND rotates. Full: `docs/secrets-at-rest.md`.
+- **Secrets at rest** (`utilities/crypto.py`, #745): `li_at`, OAuth tokens and the stored password are AES-256-GCM envelopes keyed per user+column off `LEM_SECRET_KEY`; `db.py` is the ONE caller and the field-name constants are AAD — renaming one orphans every row. `ENCRYPTION_REQUIRED=true` in prod since 2026-08-07, so reads are FAIL-CLOSED — legacy plaintext is no longer silently accepted; failed decrypt → None. Daily `auto_encrypt_secrets_at_rest` backfills AND rotates. Full: `docs/secrets-at-rest.md`.
 - **LEM identity + sessions** (#745 phase 2b, `docs/identity-and-sessions.md`): `users.public_uid` is the identity; email is a movable ATTRIBUTE (`change_user_email`, PIN to the NEW address, other sessions revoked). `sessions.session_token` stores an UNKEYED `SHA-256(token)` — a rotated `LEM_SECRET_KEY` must never log everyone out — in an **httpOnly** cookie. `api/main.get_session_user_id()` is the ONE resolver (explicit token that RESOLVES wins, else the cookie; the SPA sends sentinel `'cookie'`), and **since #914 EVERY `/api` route resolves its caller through it**: `require_session_user_id()` is it plus a 401; an `email`/`user_id`/`post_id` is a TARGET to authorise (403 + audited `foreign_target_denied`), never the actor; `db.user_owns_posts` FAILS CLOSED; a DB fault is **503**, not 403. **CSRF (#957):** a cookie-authenticated `/api` write must send `X-LEM-Client` (403 `client_header_required`). The shared bearer (`API_ACCESS_TOKENS`) is a NON-BROWSER credential since #950 — never in the SPA build. Auth limiting is Redis windows (fails open) + the durable PIN lockout in `verify_pin_for_email`, all audited in `auth_audit_log`.
 - **The docs surface is INSIDE `/api`** (#1020): `/api/docs`, `/api/redoc`, `/api/openapi.json` (old paths 301), re-opened as leaf entries in `_PUBLIC_API_PREFIXES`; `_hide_admin_routes_from_schema()` keeps every `/api/admin/*` operation OUT of the published schema, derived from the route table so a new admin route inherits it. Hidden ≠ gated — their auth is unchanged, Swagger just can't drive them (curl/Postman per `docs/TESTING_ENGAGEMENT_API.md`). The unauthenticated `GET /health/deep` returns COUNTS only, `"status":"healthy"` first — a monitor contract (`docs/stack-watchdog.md`). Mechanism: `docs/identity-and-sessions.md`.
 - **Strong auth + step-up** (#745 phase 2c, `docs/strong-authentication.md`): `utilities/auth_factors.py` is the ONE place factor state is decided (`webauthn_util.py` holds the ceremonies). Once an account enrols a passkey or TOTP the email PIN is a **bootstrap** only; a **passkey** login is the only path arriving already stepped up, a **recovery code** never does. `sessions.last_verified_at` gates every credential-touching write — refusal is **403 `step_up_required`**, never 401. **The FIRST factor is free, every one after it is gated, removing one always is.** Second-factor attempts are durable (`auth_challenges.attempts`), counted **per account** over `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` and carried into the next handle: **401 = wrong code, retry; 400 = handle gone; 429 = budget spent**. `STRONG_AUTH_ENABLED=false` reverts to 2b.
@@ -210,11 +210,18 @@ cases. Plan with this table, drill in with the doc.
 
 ## CI Gates
 
-Before merging any PR, all of the following must pass:
-- `CI / Unit Tests`
-- `CI / Integration Test w/ Coverage`
-- `CodeQL Security Analysis`
-- `GitGuardian Security Scan`
+The SIX contexts branch protection actually requires on `main` (verified against the API — the
+earlier list named four, two of them wrong):
+- `Unit Tests (Python 3.12)`
+- `Integration Tests`
+- `UI Build`
+- `Migration Versions`
+- `GitGuardian Scan`
+- `CodeQL PR Quality Gate`
+
+`CodeQL Security Analysis` runs but is NOT required. `Docstring & Lint Gate` is not required either —
+it is a ratchet against `.ruff-baseline` and joins this list when that reaches 0. **`required_approving_review_count`
+is 0**, so `require_code_owner_reviews` enforces nothing (`docs/contribution-security.md`).
 
 ## Production Deployment & Environment
 

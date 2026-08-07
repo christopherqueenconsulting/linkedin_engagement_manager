@@ -76,7 +76,9 @@ tests/
 - **Imports:** Absolute from `cqc_lem.*` throughout.
 - **Database:** All DB access through functions in `utilities/db.py`. No raw SQL in other modules.
 - **Secrets:** Never hardcode. Use `.env` with `load_dotenv()`. See `.env.example` for required vars.
-- **Comments:** Only add when WHY is non-obvious.
+- **Comments & docstrings:** Only add when WHY is non-obvious — which is what a docstring is for.
+  Google-convention docstrings are required and machine-checked (`docs/docstring-standard.md`).
+  Never restate the signature, never invent behaviour to satisfy the linter.
 
 ## Files Copilot Must Never Modify
 
