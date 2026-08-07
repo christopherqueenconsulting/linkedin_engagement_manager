@@ -53,36 +53,36 @@ the only recovery path.
 
 ## 2. P1 — automation that is silently not running
 
-### 2.1 The agent pipeline is running stale code
+### 2.1 The agent pipeline was running stale code — ✅ DONE 2026-08-07
 
-The repo's `scripts/agent-pipeline/tick.sh` is 89,185 bytes (today); the installed
-`/home/lem/agent-pipeline/tick.sh` is 75,502 bytes (2026-08-05). **Today's fixes to both auto-fix
-lanes are not live until you re-install.**
+The box was running `tick.sh` from 2026-08-05, **165 lines behind `main`**. Verified first that no
+on-box hotfixes would be lost: all 13 differing lines were simply older versions.
 
-**Your action:** `scripts/agent-pipeline/install.sh`
-**Before running:** confirm no on-box hotfixes since Aug 5 would be overwritten — the installer
-copies repo → box in one direction.
+Installed from `origin/main` by copying `tick.sh` + `RUNBOOK.md` directly rather than running
+`install.sh` — **the installer does `touch PAUSED` and rewrites the crontab to hourly**, which would
+have stopped the pipeline and changed its cadence from the `*/5` it actually runs at. Backups at
+`/home/lem/agent-pipeline/*.bak-20260807`. Verified with a `DRY_RUN=1` tick.
 
-### 2.2 The weekly SDUI drift check was never installed
+**⚠️ Still owed:** the two auto-fix-lane fixes (`AGENT_CI_LABEL_ACTORS`, the branch-scoped attempt
+counter) are on PR #1100, not yet on `main`. **Re-copy after #1100 merges** or both lanes stay dead.
 
-`scripts/weekly_sdui_drift_check.sh` exists and is executable; `crontab -l` has **zero** SDUI
-entries. The "one issue per drift" safety net CLAUDE.md describes has therefore never fired — which
-is why #964, #1009, #1012, #970, #1007 and #1006 were each found dead by hand instead.
+### 2.2 The weekly SDUI drift check — ✅ INSTALLED 2026-08-07
 
-**Your action:**
 ```sh
 40 6 * * 1 /home/lem/linkedin_engagement_manager/scripts/weekly_sdui_drift_check.sh
 ```
-Also set `SDUI_PROBE_PROFILE_URL` in `/opt/lem/.env` to a **2nd/3rd-degree** profile, or the degree
-badge stays ungrounded (`docs/sdui-probe-coverage.md:99-101`).
+It had never been scheduled, which is why #964, #1009, #1012, #970, #1007 and #1006 were each found
+dead by hand instead of by the sweep.
 
-### 2.3 The perf/margin snapshot cron runs the superseded script
+**⚠️ Still owed by you:** set `SDUI_PROBE_PROFILE_URL` in `/opt/lem/.env` to a **2nd/3rd-degree**
+profile, or the degree badge stays ungrounded (`docs/sdui-probe-coverage.md:99-101`). One line.
 
-Your crontab runs `/home/lem/perf-tracking/snapshot.sh` (Jul 24, zero `margin` references). The repo
-successor `scripts/perf_snapshot.sh` has 12. **The daily cost/margin block has never been captured.**
+### 2.3 The perf/margin snapshot cron — ✅ REPOINTED 2026-08-07
 
-**Your action:** repoint the 23:30 entry at
-`/home/lem/linkedin_engagement_manager/scripts/perf_snapshot.sh`.
+The 23:30 entry now runs `/home/lem/linkedin_engagement_manager/scripts/perf_snapshot.sh`. The old
+on-box `snapshot.sh` had **zero** `margin` references against the successor's 12, so the daily
+cost/unit-economics block (#491) had never been captured. Crontab backup at
+`/tmp/lem-gh/crontab.bak-20260807`.
 
 ### 2.4 YouTube OAuth token is dead · issue #1094
 
@@ -207,15 +207,51 @@ not to act on them if you read them before the fix lands.
 
 ---
 
-## 8. Could not verify — treat as unknown, not as done
+## 8. PostHog — measured 2026-08-07 against the live project
 
-1. **All PostHog dashboard-side state** — whether `posthog_provision.py` / `_experiments` /
-   `_flags` / `_surveys` `--apply` have ever run, whether replay sampling and error alerts exist.
-   Env prerequisites are all present; the UI state was not readable.
-2. **`POSTHOG_PERSONAL_API_KEY` scopes** (see the trap in §3).
-3. **Whether an external uptime monitor is actually armed** on `/health/deep`.
-   `docs/stack-watchdog.md:172-176`: *"a silently disarmed dead-man's switch is the one failure this
-   layer cannot report about itself."*
-4. **DB-level state** — admin flag, `linkedin_display_name`, story-bank rows, orphaned cookies.
-5. **SendGrid/DNS** — SPF, DKIM and DMARC policy level.
-6. **Stripe live-vs-test mode** — `STRIPE_API_KEY` is set; the value was not read.
+Queried project `475262` with the prod key. Most of the surface **is** provisioned; two things are
+not, and one of them matters.
+
+| Object | Count | Verdict |
+|---|---|---|
+| Dashboards | 13 | ✅ `posthog_provision.py --apply` has run |
+| Insights | 73 | ✅ |
+| Alerts | 4 | ✅ |
+| Subscriptions | 1 | ✅ |
+| Annotations | 51 | ✅ release annotations are landing |
+| Feature flags | 5 | ✅ provisioned |
+| **Surveys** | **0** | ❌ `posthog_surveys.py --apply --launch` has never run |
+| **Experiments** | **0** | ❌ **see below** |
+
+**Session replay is correct:** `session_recording_opt_in: true`, `minimum_duration: 5000 ms`, and
+project sampling is `None` — which is right, because `CLAUDE.md` says never to set project sampling
+(it multiplies with the SDK-side slice).
+
+**The experiments finding is the important one.** `CLAUDE.md` lists three registered experiments —
+`cost-routing-arm`, `comment-contract-prompt`, `post-media-variant` — and none of the five live flags
+is any of them. `utilities/experiments.py` resolves an unresolvable experiment to **CONTROL**, so all
+three have been silently serving control since they shipped. **No experiment has ever actually run.**
+Nothing is broken and nothing is at risk; the arms just never split.
+
+**Your action (optional, when you want the data):** `python scripts/posthog_experiments.py --apply`,
+and `python scripts/posthog_surveys.py --apply --launch` for NPS/CSAT. The `UI_POSTHOG_KEY`
+precondition for surveys is already met.
+
+**Flag rollouts** are all `0%` except `feed-fallback-when-empty-default` at 100% — consistent with
+the env-var defaults, since `utilities/flags.py` fails open to the env var.
+
+## 9. Confirmed by the owner 2026-08-07
+
+- **Uptime monitor is armed** on `/health/deep`. Closes the §2 gap in `docs/stack-watchdog.md`.
+- **Stripe is in TEST mode.** Worth remembering before the early-adopter program opens —
+  `EARLY_ADOPTER_TRIAL_ENABLED` is `False` and `EARLY_ADOPTER_COUPON_ID` is empty, so nothing can
+  transact by accident today.
+
+## 10. Still could not verify
+
+1. **`POSTHOG_PERSONAL_API_KEY` scopes** — the key works for dashboards, flags, alerts and
+   annotations, so those scopes are present. Survey/experiment write scopes are untested because
+   there is nothing to read. See the trap in §3.
+2. **DB-level state** — admin flag, `users.linkedin_display_name`, story-bank rows, orphaned cookies.
+   `docker exec` into the app containers was blocked.
+3. **SendGrid/DNS** — SPF, DKIM and DMARC policy level. PIN/parse mail is evidently working.
