@@ -247,6 +247,7 @@ from cqc_lem.utilities.human_pacing import (
     remaining_actions,
 )
 from cqc_lem.utilities.lead_scoring import person_key
+from cqc_lem.utilities.linkedin import zero_walk as _zw
 from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
 from cqc_lem.utilities.linkedin.company_page_inviter import (
     INVITE_STATUS_FAILED,
@@ -819,54 +820,16 @@ return null;
 # renders two text nodes inside one card still widens. Issue #916.
 _POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by']"]
 
-# ── zero-walk tripwires (issue #1013) ────────────────────────────────────────────────────────
-# A walk that returns zero items is ambiguous, and every silent SDUI outage of Aug 2026 lived in
-# that ambiguity: #964's catch-up scan logged `no_moments` daily while the feed showed ten moments,
-# and #1009's viewer walk engaged nobody for weeks. The fix is the same everywhere — before a zero
-# is treated as "nothing to do", ask the PAGE, through an anchor the walk itself does not depend on.
-# The independence is the whole point: cross-checking a chain against its own selector proves
-# nothing, since a rotated anchor answers zero to both questions.
+# ── zero-walk tripwires (issues #1013, #1021) ────────────────────────────────────────────────
+# The grading itself lives in utilities/linkedin/zero_walk.py, because scrapper and
+# company_page_inviter need it too and both are imported BY this module. Re-exported under the
+# names this module already used so every call site (and its tests) keeps one spelling.
 _FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
 _CATCHUP_CARD_CROSSCHECK_SEL = "main div[role='listitem']"
 
-
-def _page_native_count(driver, selector: str) -> "int | None":
-    """How many of `selector` the page renders, or None when the read itself failed. None is
-    load-bearing: "we could not ask the page" must never be recorded as "the page said zero".
-    """
-    try:
-        return len(driver.find_elements(By.CSS_SELECTOR, selector))
-    except WebDriverException:
-        return None
-
-
-def zero_walk_verdict(page_native: "int | None") -> str:
-    """What a zero-item walk means, given the page's own count of an INDEPENDENT anchor.
-
-    'drift'   — the page renders items the walk could not see. A real defect.
-    'empty'   — the page renders none either. An ordinary quiet day, and a no-op.
-    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect.
-    """
-    if page_native is None:
-        return "unknown"
-    return "drift" if page_native > 0 else "empty"
-
-
-def _report_zero_walk(driver, selector: str, what: str, **context) -> str:
-    """Cross-check a zero-item walk and log at the level the answer deserves.
-
-    Drift is a WARNING on purpose — once is a warning, repeatedly is a defect, and repeated selector
-    rot is exactly the defect that should file itself. An empty page and an unreadable cross-check
-    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md).
-    """
-    count = _page_native_count(driver, selector)
-    verdict = zero_walk_verdict(count)
-    if verdict == "drift":
-        log_warning(f"{what} matched nothing while the page still renders cards — selector drift",
-                    **context)
-    else:
-        log_debug(f"{what} matched nothing and the page shows none either ({verdict})", **context)
-    return verdict
+zero_walk_verdict = _zw.zero_walk_verdict
+_grade_zero_walk = _zw.grade_zero_walk
+_report_zero_walk = _zw.report_zero_walk
 
 
 _SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
@@ -1191,6 +1154,42 @@ def _post_social_counts(card) -> dict:
     return {"reactions": _num(_REACTIONS_RE, "reactions"), "comments": _num(_COMMENTS_RE, "comments"),
             "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
             "saves": _num(_SAVES_RE, "saves")}
+
+
+# The zero-walk cross-check for a stats read that scored EVERY signal 0 (issue #1021): a post with
+# no engagement and a post whose layout the parser no longer matches look identical in the numbers.
+# Deliberately a DIFFERENT vocabulary from _STACKED_LABEL_FIRST — a cross-check that only knows the
+# labels the parser maps could never see the rename that broke it — and it demands a NON-ZERO count
+# beside the label, so a genuinely quiet post ("Impressions / 0") reads `empty`, never drift.
+_CROSSCHECK_LABEL_RE = re.compile(
+    r"^(?:reaction|like|comment|repost|share|save|impression|view|member[s]?\s+reached)s?$",
+    re.IGNORECASE)
+
+
+def _rendered_count_signals(text: str) -> int:
+    """How many engagement counts the PAGE renders as a non-zero number beside its own label.
+
+    Shares the parser's adjacency assumption but not its label map: a layout that moves a value away
+    from its label counts 0 here, which grades `empty` — the fail-safe direction for a tripwire.
+    """
+    lines = [line.strip() for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    found = 0
+    for i, line in enumerate(lines):
+        if not _CROSSCHECK_LABEL_RE.match(line.rstrip(":")):
+            continue
+        neighbours = ([lines[i - 1]] if i else []) + ([lines[i + 1]] if i + 1 < len(lines) else [])
+        if any(_BARE_COUNT_RE.match(n) and _parse_count(n) > 0 for n in neighbours):
+            found += 1
+    return found
+
+
+def _main_text(driver) -> "str | None":
+    """The rendered <main> text, or None when it cannot be read at all."""
+    try:
+        return driver.find_element(By.TAG_NAME, "main").text or ""
+    except Exception:
+        return None
 
 
 # Feed-post prioritization weights — defaults below, each overridable per-deploy via the matching
@@ -3907,6 +3906,7 @@ def auto_scrape_post_stats(self, user_id: int):
                 container = driver.find_element(By.TAG_NAME, "main")
             except Exception:
                 container = None
+            detail_text = _main_text(driver) if container is not None else None
             counts = _post_social_counts(container) if container is not None else {}
             # The detail page's social bar carries reactions/comments/reposts; saves and a reliable
             # impression count exist ONLY on the author's analytics page — merge by max so a signal
@@ -3922,6 +3922,16 @@ def auto_scrape_post_stats(self, user_id: int):
                 log_debug("Post page unreadable — leaving it uncaptured", user_id=user_id,
                           post_id=pid, task_name="auto_scrape_post_stats")
                 continue
+            # An all-zero read is the OTHER fabricated row (#1021): a quiet post and a rotated
+            # layout score identically. Ask the page — the analytics view is the one on screen now,
+            # so both texts are cross-checked — and leave a drifted read uncaptured for the same
+            # reason an unreadable one is left: a written zero is permanent for a backfilled post.
+            if not any(counts.values()):
+                texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
+                native = sum(_rendered_count_signals(text) for text in texts) if texts else None
+                if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
+                                    post_id=pid, task_name="auto_scrape_post_stats") == "drift":
+                    continue
             record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
                               reposts=counts.get("reposts") or 0,
                               impressions=counts.get("impressions") or None,
@@ -7470,27 +7480,87 @@ def _send_lead_response(signal_id: int) -> str:
         quit_gracefully(driver)
 
 
-# The connection-degree badge on a profile page. Only used to ABORT a pointless invite, so a
-# selector that stops matching costs nothing but the old behaviour (issue #623).
+# The connection-degree badge on a profile page. `span.dist-value` / `span.distance-badge` are
+# CLASS anchors, and class anchors are gone from the SDUI profile — both were confirmed dead on
+# 2026-08-03, which left this read (and, through `profile.is_1st_connection`, the whole
+# profile-viewer 1st-vs-other branch) blind. The chain now leads with what the page still WRITES:
+# the badge is its own leaf node whose entire text is the degree. Class anchors stay last, as a
+# legacy tail that costs nothing if a pre-SDUI layout is ever served (issues #623, #1021).
+#
+# The two text shapes are ONE union expression, not two locators, because a union comes back in
+# DOCUMENT order — and document order is the only thing that attributes a badge to THIS profile.
+# `<main>` carries other people's badges too (mutual-connection highlights, "More profiles for
+# you"), so the top card's badge is the FIRST one and every later one names a different entity —
+# the #1012 rule read backwards. Two separate locators would let a highlight's bare "1st" outrank
+# the top card's "2nd degree connection" purely because its locator came first in the list.
+_DEGREE_TOKENS = ("1st", "2nd", "3rd", "3rd+")
+_DEGREE_LEAF_XPATH = (
+    "//main//*[self::span or self::div or self::li or self::p][not(*)]["
+    + " or ".join(f"normalize-space()='{t}' or normalize-space()='· {t}'" for t in _DEGREE_TOKENS)
+    + "]"
+    " | //main//*[not(*)][contains(normalize-space(),'degree connection')]")
 _PROFILE_DEGREE_LOCATORS = [
+    (By.XPATH, _DEGREE_LEAF_XPATH),
     (By.CSS_SELECTOR, "main span.dist-value"),
     (By.CSS_SELECTOR, "main span.distance-badge"),
     (By.XPATH, "//main//span[contains(@class,'distance-badge')]"),
 ]
 
+# The cross-check for a chain that matched NOTHING: the page's own degree line, read out of the
+# rendered text rather than through a locator. Whole-line on purpose — a loose `\b1st\b` would
+# fire on a headline ("1st place, 2026 awards") and warn on a healthy profile forever.
+_DEGREE_LINE_RE = re.compile(r"^(?:·\s*)?(1st|2nd|3rd)\+?(?:\s+degree(?:\s+connection)?)?$",
+                             re.IGNORECASE)
 
-def _profile_is_first_degree(driver) -> bool:
-    """True only when the profile page SAYS 1st degree. Fails open (False) on any read problem —
-    a missed badge just means we try the invite, which is the old behaviour.
+
+def _degree_lines_on_page(driver) -> "int | None":
+    """How many degree-badge LINES the page renders, or None when the read itself failed."""
+    try:
+        text = driver.find_element(By.TAG_NAME, "main").text or ""
+    except Exception:
+        return None
+    return sum(1 for line in text.splitlines() if _DEGREE_LINE_RE.match(line.strip()))
+
+
+def _degree_badge_texts(driver) -> "list[str] | None":
+    """Every degree-badge text the locator chain can READ, in chain-then-document order, or None
+    when the read itself failed. None and [] are different answers: an unreadable page grounds
+    nothing, an empty chain on a readable page is the zero worth cross-checking. A matched node with
+    no text counts as neither — a locator that resolves to an empty element is as blind as one that
+    resolves to nothing.
     """
+    texts: "list[str]" = []
     try:
         for by, selector in _PROFILE_DEGREE_LOCATORS:
             for element in driver.find_elements(by, selector):
-                if is_first_degree(element.text or ""):
-                    return True
+                if (element.text or "").strip():
+                    texts.append(element.text)
     except Exception as e:
         log_warning("Could not read the connection-degree badge; attempting the invite anyway",
                     exc=e, action_type="invite_connect")
+        return None
+    return texts
+
+
+def _profile_is_first_degree(driver) -> bool:
+    """True only when THIS profile's own badge says 1st degree. Fails open (False) on any read
+    problem — a missed badge just means we try the invite, which is the old behaviour. A chain that
+    matched NO badge at all is cross-checked against the page's own degree line first, so the blind
+    read that #1012 paid for cannot recur silently (issue #1021).
+
+    Only the FIRST badge is judged, never "any of them": the top card is the first thing under
+    <main>, and every badge below it — a mutual-connection highlight, a "More profiles for you"
+    card — belongs to somebody else. Reading those would abort the invite to a 2nd-degree target
+    just because one of their mutuals is a 1st, which is #1012's mistake in a read instead of a
+    click.
+    """
+    texts = _degree_badge_texts(driver)
+    if texts is None:
+        return False
+    if texts:
+        return is_first_degree(texts[0])
+    _grade_zero_walk(_degree_lines_on_page(driver), "Profile degree-badge chain",
+                     action_type="invite_connect")
     return False
 
 

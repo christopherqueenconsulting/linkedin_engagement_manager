@@ -20,7 +20,9 @@ proceed as if it were success.
 
 The same rule reads backwards for a walk that finds nothing: **zero items is not "nothing to do"
 until the page agrees.** Cross-check against an anchor the walk does not itself depend on
-(`_report_zero_walk` / `zero_walk_verdict` in `run_automation.py`), because a rotated selector
+(`report_zero_walk` / `zero_walk_verdict` in `utilities/linkedin/zero_walk.py` — the ONE grader,
+re-exported from `run_automation` under the `_`-prefixed names its call sites already used),
+because a rotated selector
 answers zero to both questions. `drift` there warns — once is a warning, repeatedly is a defect, and
 repeated selector rot is exactly the defect that should file itself. An empty page and an unreadable
 cross-check stay DEBUG.
@@ -164,6 +166,31 @@ once above them. `_company_from_ancestors` reads it from the container's leading
 leading run that already contains a date range stops the walk — that run belongs to the previous
 role, not to a company header. A header without a total-duration line (a bare "Experience" heading)
 is never a company.
+
+## The degree badge is a leaf node's TEXT, never a class
+
+`span.dist-value` / `span.distance-badge` were confirmed dead on the same 2026-08-03 grab. Both are
+class anchors, and every class anchor on the profile is now hashed. What the top card still writes
+is the degree itself, as its own leaf node whose entire text is `1st` / `2nd` / `3rd+` (sometimes
+`· 2nd`, sometimes spelled out as `2nd degree connection`) — so `_PROFILE_DEGREE_LOCATORS` and
+`scrapper._degree_from_source` both key off that text, with the class anchors kept only as a legacy
+tail. This read is load-bearing twice over: `_profile_is_first_degree` aborts a pointless invite
+with it, and `LinkedInProfile.is_1st_connection` (fed by `parse_profile_header`) is what routes a
+profile viewer down the comment branch instead of the connection-request branch — a dead badge made
+**every** viewer look like a non-connection. A chain that matches no badge at all is cross-checked
+against the page's own degree LINE (whole-line, never `\b1st\b`, which would fire on
+"1st place, 2026 awards"); re-ground with `scripts/linkedin_live_validation.py --profile-scrape`
+against a 2nd/3rd-degree profile and read `degree_anchors` in the report.
+
+**The FIRST badge is the profile's; every later one names somebody else.** A text anchor is far
+broader than the class anchor it replaced, and a profile page is full of other people's badges —
+the "People also viewed" rail outside `<main>`, mutual-connection highlights inside it. So both
+reads take the first match in DOCUMENT order and nothing else: `_PROFILE_DEGREE_LOCATORS` leads
+with a single **union** XPath (a union returns nodes in document order, two locators would not) and
+`_profile_is_first_degree` judges `texts[0]`, while `_degree_from_source` is scoped to `<main>` and
+returns on the first hit. Reading "any badge on the page" is the #1012 rail hazard in a read
+instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
+1st.
 
 ## The comment composer has no `<form>`
 

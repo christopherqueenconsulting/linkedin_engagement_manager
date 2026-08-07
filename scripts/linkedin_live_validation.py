@@ -1901,19 +1901,26 @@ def _page_owner_name(driver) -> str:
 
 
 # ─────────────────────────────── profile header scrape (#1013) ───────────────────────────────
-# The degree badge, page-natively. `_PROFILE_DEGREE_LOCATORS` is class-based (`span.dist-value` /
-# `span.distance-badge`) and was confirmed dead on 2026-08-03, so the cross-check has to come from
-# the page's own words: the top card still writes the degree as TEXT.
+# The degree badge, page-natively. The class half of `_PROFILE_DEGREE_LOCATORS` (`span.dist-value` /
+# `span.distance-badge`) was confirmed dead on 2026-08-03 and the chain now leads with the badge's
+# TEXT (#1021) — but the cross-check must stay independent of whatever the chain currently does, so
+# it keeps coming from the page's own words rather than from a locator.
 _DEGREE_TEXT_RE = re.compile(r"\b(1st|2nd|3rd)\b", re.IGNORECASE)
 
 # Candidate re-grounding anchors: leaf nodes under <main> whose whole text IS a degree badge.
+# The dump must be able to report EVERY shape the shipped chain leads with, or a re-grounding run
+# comes back empty on exactly the profile it was pointed at: the separator is optional because the
+# SDUI top card writes the badge as "· 2nd", and the `+` is matched on its own because a 3rd-degree
+# badge renders as the bare token "3rd+" (`_DEGREE_TOKENS`). Keeping `+` inside the `degree` group
+# made a 3rd-degree profile — one of the two this probe is meant to be run against — dump nothing.
+# `tests/unit/test_linkedin_live_validation.py` holds this pattern against `_DEGREE_TOKENS`.
 _DEGREE_ANCHOR_JS = """
 const out = [];
 const root = document.querySelector('main') || document.body;
 for (const el of root.querySelectorAll('span,div,p,li')) {
   if (el.children.length) { continue; }
   const t = (el.textContent || '').trim();
-  if (/^(1st|2nd|3rd)(\\s*\\+?\\s*degree.*)?$/i.test(t)) {
+  if (/^[·•]?\\s*(1st|2nd|3rd)\\s*\\+?(\\s*degree.*)?$/i.test(t)) {
     out.push({tag: el.tagName.toLowerCase(), cls: el.getAttribute('class') || '',
               testid: el.getAttribute('data-testid') || '',
               aria: el.getAttribute('aria-label') || '', text: t});
@@ -1966,9 +1973,9 @@ def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
     degree-badge locator chain against a real profile, and cross-check both against what the page
     itself says. Read-only — it navigates and reads.
 
-    `degree_anchors` is the point: `span.dist-value` / `span.distance-badge` are class anchors and
-    CLAUDE.md says class anchors are gone, so this hands back the leaf nodes that DO carry the
-    badge today, which is what the replacement chain gets written from."""
+    `degree_anchors` is the point: class anchors are gone from the SDUI profile, so this hands back
+    the leaf nodes that DO carry the badge today. #1021's chain was written from that reading, and
+    the next rotation gets re-grounded from it the same way."""
     from cqc_lem.app.run_automation import _PROFILE_DEGREE_LOCATORS
     from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
     from bs4 import BeautifulSoup

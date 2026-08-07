@@ -54,6 +54,7 @@ from cqc_lem.utilities.human_pacing import (
     remaining_actions,
 )
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+from cqc_lem.utilities.linkedin.zero_walk import report_zero_walk
 from cqc_lem.utilities.logger import log_info, myprint
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
@@ -70,6 +71,11 @@ INVITE_STATUS_BUDGET_REACHED = "budget_reached"
 INVITE_STATUS_DISABLED = "disabled"           # the user's cap (or max_invites_per_day) is 0
 INVITE_STATUS_CREDITS_EXHAUSTED = "credits_exhausted"
 INVITE_STATUS_NO_CANDIDATES = "no_candidates"
+# Zero invitees while the modal still renders invitee rows — the row/checkbox XPaths rotated. Kept
+# apart from `no_candidates` for the reason `session_failed` is kept apart from `failed`: "everyone
+# is already invited" is a quiet day and "we cannot see the list" is a defect, and a run that
+# reported both as `no_candidates` made the second one invisible (issue #1021).
+INVITE_STATUS_DRIFT = "drift"
 INVITE_STATUS_NO_PAGE = "no_page"
 INVITE_STATUS_FAILED = "failed"
 INVITE_STATUS_PAUSED = "paused"
@@ -235,6 +241,15 @@ def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
     return delay
 
 
+# The zero-walk cross-check for select_connection_checkboxes (#1021). Independent of BOTH XPaths
+# that walk drives (`scaffold-finite-scroll__content//li` and `input[id*=invitee]`): an invitee row
+# renders the member's avatar, and an avatar is still there when the row markup rotates. A
+# cross-check that itself stops matching counts 0 → `empty` → DEBUG, which is the fail-safe
+# direction: this tripwire may never turn "everyone is already invited" into a filed defect.
+_INVITEE_ROW_CROSSCHECK_SEL = ("#invitee-picker-results-container img, "
+                               "div[role='dialog'] [role='listitem']")
+
+
 def select_connection_checkboxes(driver, wait, limit):
     """Tick invitees until the picker's own selected count reaches `limit`, and return that count.
 
@@ -396,8 +411,12 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
 
     selected_count = select_connection_checkboxes(driver, wait, budget)
     if selected_count <= 0:
+        # Zero ticked boxes is ambiguous, so ask the modal before calling it a quiet day (#1021).
+        verdict = report_zero_walk(driver, _INVITEE_ROW_CROSSCHECK_SEL, "Company invitee-row walk",
+                                   user_id=user_id, action_type="company_invite")
         myprint("No more connections to invite or already selected. Exiting automate_invitations.")
-        return _report(INVITE_STATUS_NO_CANDIDATES, **base)
+        return _report(INVITE_STATUS_DRIFT if verdict == "drift" else INVITE_STATUS_NO_CANDIDATES,
+                       **base)
 
     if not invite_selected_connections(driver, wait):
         insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
