@@ -138,11 +138,12 @@ def _redis():
 def _record_redis_failure() -> None:
     global _redis_failures, _redis_disabled_until
     with _lock:
-        _redis_failures += 1
-        if _redis_failures >= _int_env("LOG_ESCALATE_REDIS_FAILURES", 3):
+        failures = _redis_failures + 1
+        if failures >= _int_env("LOG_ESCALATE_REDIS_FAILURES", 3):
             _redis_disabled_until = time.monotonic() + _int_env(
                 "LOG_ESCALATE_REDIS_COOLDOWN_SECONDS", 300)
-            _redis_failures = 0
+            failures = 0
+        _redis_failures = failures
 
 
 def _record_redis_success() -> None:
