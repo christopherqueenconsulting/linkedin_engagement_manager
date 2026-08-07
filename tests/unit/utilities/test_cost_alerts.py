@@ -423,7 +423,8 @@ class TestDelivery:
 
     def test_breach_warnings_are_excluded_from_recurrence_escalation(self):
         """The warning path is the one that escalates, and a breach recurs every day the spend
-        stays over the ceiling — so its message must carry the never-escalate prefix (#1071)."""
+        stays over the ceiling — so its message must carry the never-escalate prefix (#1071).
+        """
         from cqc_lem.utilities.log_escalation import BUILTIN_EXCLUDED_PREFIXES
 
         report = ca.build_cost_alert_report(DAY, _margin_report(gross_margin_pct=0.1,

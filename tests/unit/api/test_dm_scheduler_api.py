@@ -1,7 +1,8 @@
 """Unit tests for the scheduled-DM API endpoints (issue #306)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +20,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -82,7 +84,8 @@ class TestListDms:
 
     def test_datetimes_serialized_as_explicit_utc(self, client):
         """Issue #546 — db.get_scheduled_dms isoformats naive UTC with no offset; the endpoint must
-        stamp the 'Z' or the SPA parses it as local time and shows the wrong send time."""
+        stamp the 'Z' or the SPA parses it as local time and shows the wrong send time.
+        """
         from datetime import datetime
         dms = [{"id": 3, "scheduled_time": datetime(2026, 8, 1, 13, 0),
                 "created_at": datetime(2026, 7, 30, 8, 0), "updated_at": None}]

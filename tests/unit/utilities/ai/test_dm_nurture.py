@@ -1,8 +1,10 @@
 """Unit tests for DM reply-intent classification (issue #485) — the branch that decides whether a
-lead's reply becomes a call proposal, an answered objection, a light touch, or a hard stop."""
+lead's reply becomes a call proposal, an answered objection, a light touch, or a hard stop.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

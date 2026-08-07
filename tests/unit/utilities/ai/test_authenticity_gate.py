@@ -1,6 +1,7 @@
 """Unit tests for the authenticity gate (issue #382 — 360Brew defense): the LLM-judge scorer in
 content_alignment (threshold config, JSON coercion, fail-open behavior) and its integration into
-the content pipeline (persist the score, demote a low-scoring auto-approve APPROVED -> PENDING)."""
+the content pipeline (persist the score, demote a low-scoring auto-approve APPROVED -> PENDING).
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -179,7 +180,8 @@ class TestScoreAndPersistHelper:
 
 class TestStatusDemotion:
     """The gate at the content-plan status-setter: a low authenticity score demotes an auto-approve
-    to PENDING; it never upgrades, never blocks an unscored post, and honors the disable toggle."""
+    to PENDING; it never upgrades, never blocks an unscored post, and honors the disable toggle.
+    """
 
     def _run(self, score, auto_schedule=True, gate_enabled=True, score_min=60):
         from cqc_lem.app import run_content_plan as rcp

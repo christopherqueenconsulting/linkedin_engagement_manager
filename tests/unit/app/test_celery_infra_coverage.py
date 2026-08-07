@@ -1,9 +1,11 @@
 """Coverage tests for Celery infra helpers: celeryconfig SQS setup, my_celery signal
-handlers/queue metrics, and the AWS test task."""
+handlers/queue metrics, and the AWS test task.
+"""
 
-import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +109,7 @@ class TestCelerySignalHandlers:
 
     def test_configure_posthog_sets_sync_mode(self):
         import posthog
+
         import cqc_lem.app.my_celery as mc
         old = getattr(posthog, "sync_mode", False)
         try:

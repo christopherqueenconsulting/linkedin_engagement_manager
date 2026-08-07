@@ -1,7 +1,8 @@
 """Unit tests for POST /api/user/linkedin-cookie."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +20,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -93,7 +95,8 @@ class TestCookieOnlyMigration:
 
     def test_password_kept_by_default(self, client):
         """The browser extension posts this body on every reconnect; it must never silently
-        delete the user's password."""
+        delete the user's password.
+        """
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True), \
              patch("cqc_lem.api.main.clear_user_linkedin_password") as clear:

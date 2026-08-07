@@ -65,7 +65,8 @@ def hold_seconds() -> int:
 
 def _rate(numerator: int, denominator: int) -> Optional[float]:
     """Share as a 0–1 float, or None when there is nothing to divide by. None is not 0.0: an empty
-    window has no reply rate, and charting it as zero reads as a collapse that never happened."""
+    window has no reply rate, and charting it as zero reads as a collapse that never happened.
+    """
     if not denominator:
         return None
     return round(numerator / denominator, 4)
@@ -166,6 +167,7 @@ def quality_verdict(summary: Optional[Mapping[str, Any]]) -> dict:
 
 def comment_quality_report(rows: Optional[Iterable[Mapping[str, Any]]], days: int = 7) -> dict:
     """The one shape shared by the weekly PostHog event, the analytics endpoint and the dashboard —
-    so the number the user reads and the number the guard acts on can never diverge."""
+    so the number the user reads and the number the guard acts on can never diverge.
+    """
     summary = summarize_outcomes(rows)
     return {"days": int(days), **summary, "verdict": quality_verdict(summary)}

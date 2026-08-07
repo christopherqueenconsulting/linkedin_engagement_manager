@@ -1,9 +1,9 @@
 """Unit tests for deploy maintenance mode (utilities/maintenance.py, issue #549)."""
 
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

@@ -13,12 +13,22 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from cqc_lem.utilities.db import (
-    OnboardingStep, ONBOARDING_STEPS, PostStatus,
-    ensure_onboarding_state, get_onboarding_state, mark_onboarding_step,
-    get_onboarding_nudges_sent, record_onboarding_nudge,
-    get_engagement_preferences, has_engagement_preferences, has_linkedin_session,
-    has_post_with_status, has_automated_engagement, get_user_subscription_info,
-    count_story_bank_entries, STORY_BANK_TARGET_ENTRIES,
+    ONBOARDING_STEPS,
+    STORY_BANK_TARGET_ENTRIES,
+    OnboardingStep,
+    PostStatus,
+    count_story_bank_entries,
+    ensure_onboarding_state,
+    get_engagement_preferences,
+    get_onboarding_nudges_sent,
+    get_onboarding_state,
+    get_user_subscription_info,
+    has_automated_engagement,
+    has_engagement_preferences,
+    has_linkedin_session,
+    has_post_with_status,
+    mark_onboarding_step,
+    record_onboarding_nudge,
 )
 from cqc_lem.utilities.logger import log_info, log_warning
 
@@ -147,7 +157,8 @@ def evaluate_steps(user_id: int) -> dict:
 
 def sync_onboarding_state(user_id: int) -> dict:
     """Persist newly-completed steps and emit one PostHog event per step the FIRST time it completes.
-    Returns the refreshed `onboarding_state` row."""
+    Returns the refreshed `onboarding_state` row.
+    """
     ensure_onboarding_state(user_id)
     steps = evaluate_steps(user_id)
     state = get_onboarding_state(user_id)
@@ -167,7 +178,8 @@ def _convert_referral(user_id: int) -> None:
     Activation is the trigger — not signup and certainly not a click — because that is what makes a
     referral farm worthless: dormant accounts never reach the aha moment. It rides on
     `mark_onboarding_step` returning True, which happens exactly once per user, so a repeated sync
-    cannot pay twice. Never fatal: a reward is a perk, and onboarding must complete regardless."""
+    cannot pay twice. Never fatal: a reward is a perk, and onboarding must complete regardless.
+    """
     try:
         from cqc_lem.utilities.marketing.affiliate import convert_referral
         convert_referral(user_id)
@@ -179,8 +191,10 @@ def _track_step(user_id: int, step: "OnboardingStep", started_at: Optional[datet
     """Emit the activation-funnel event. Never fatal — analytics must not break onboarding."""
     try:
         from cqc_lem.utilities.observability import (
-            track_onboarding_step, track_funnel_event,
-            FUNNEL_ONBOARDING_STEP_COMPLETED, FUNNEL_ACTIVATED,
+            FUNNEL_ACTIVATED,
+            FUNNEL_ONBOARDING_STEP_COMPLETED,
+            track_funnel_event,
+            track_onboarding_step,
         )
         hours = None
         if started_at:
@@ -208,7 +222,8 @@ def select_nudge(steps: dict, started_at: Optional[datetime] = None,
     nudge per NUDGE_COOLDOWN_HOURS (`last_sent_at`); a step nudge only fires once its grace period
     has elapsed since `started_at`; the earliest incomplete step wins, then the story-bank seeding
     nudge, and the trial-ending nudge is the fallback once the blocking step has already been
-    nudged."""
+    nudged.
+    """
     now = now or datetime.now()
     if steps.get(OnboardingStep.ACTIVATED):
         return None
@@ -283,7 +298,8 @@ def onboarding_snapshot(user_id: int) -> dict:
 
 def send_onboarding_nudge(user_id: int, nudge: dict) -> bool:
     """Email the nudge (copy refreshed by `lem-simple`, falling back to the static body) and record
-    it so it never sends twice. Returns True only when an email actually went out."""
+    it so it never sends twice. Returns True only when an email actually went out.
+    """
     from cqc_lem.utilities.notifications import notify_onboarding_nudge
     body = nudge.get("body") or ""
     try:

@@ -1,7 +1,8 @@
 """Unit tests for choose_post_reaction — the fast reaction picker with OpenAI + random fallbacks."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -27,7 +28,7 @@ class TestChoosePostReaction:
             assert choose_post_reaction("Here's the data", "Good breakdown") == "Insightful"
 
     def test_invalid_llm_word_falls_back_to_random(self):
-        from cqc_lem.utilities.ai.ai_helper import choose_post_reaction, POST_REACTIONS
+        from cqc_lem.utilities.ai.ai_helper import POST_REACTIONS, choose_post_reaction
         with patch(f"{_AH}.client") as client:
             client.chat.completions.create.return_value = _resp("Banana")
             assert choose_post_reaction("p", "c") in POST_REACTIONS
@@ -41,7 +42,7 @@ class TestChoosePostReaction:
             assert oa.OpenAI.called
 
     def test_all_providers_fail_returns_random(self):
-        from cqc_lem.utilities.ai.ai_helper import choose_post_reaction, POST_REACTIONS
+        from cqc_lem.utilities.ai.ai_helper import POST_REACTIONS, choose_post_reaction
         with patch(f"{_AH}.client") as client, patch(f"{_AH}.openai") as oa:
             client.chat.completions.create.side_effect = Exception("proxy down")
             oa.OpenAI.return_value.chat.completions.create.side_effect = Exception("openai down")

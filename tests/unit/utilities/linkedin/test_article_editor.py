@@ -19,7 +19,8 @@ pytestmark = pytest.mark.unit
 
 def _load_probe_module():
     """Load `scripts/linkedin_live_validation.py` by path — `scripts/` is not an importable package
-    (and is not baked into the runtime image), so the probe is exercised the same way it ships."""
+    (and is not baked into the runtime image), so the probe is exercised the same way it ships.
+    """
     import importlib.util
     from pathlib import Path
     script_path = Path(__file__).resolve().parents[4] / "scripts" / "linkedin_live_validation.py"
@@ -724,7 +725,8 @@ class TestTwoScreenGrading:
     def test_fill_proceeds_when_publish_only_appears_after_next(self, monkeypatch):
         """The #804 regression: the pre-flight used to demand Publish on the editor screen, so the
         flow returned `article_publish` without typing a character. It must now type, click Next,
-        and only then require Publish."""
+        and only then require Publish.
+        """
         title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
         body = FakeElement(tag="div", attrs={"role": "textbox", "aria-label": "Article editor content"})
         nxt = FakeElement(tag="button", attrs={"type": "submit"})
@@ -789,7 +791,8 @@ class TestLiveValidationProbe:
         """The live 2026-07-31 shape: title/body/next resolve, no publish control on the screen.
 
         The probe never clicks Next, so publish must read UNKNOWN and must not drag `all_ok` down —
-        and the buttons it DID see are what make that grading checkable."""
+        and the buttons it DID see are what make that grading checkable.
+        """
         llv = _load_probe_module()
         title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
         body = FakeElement(tag="div", attrs={"role": "textbox",

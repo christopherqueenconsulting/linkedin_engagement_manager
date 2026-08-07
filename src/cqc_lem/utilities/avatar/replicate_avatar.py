@@ -6,7 +6,7 @@ import replicate
 from replicate.exceptions import ReplicateError
 
 from cqc_lem.utilities.env_constants import REPLICATE_USERNAME
-from cqc_lem.utilities.logger import log_info, log_error, log_warning
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 TRAINER_MODEL = "replicate/fast-flux-trainer"
 

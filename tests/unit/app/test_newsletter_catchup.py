@@ -1,5 +1,6 @@
 """Newsletter catch-up publishing: at most one edition per user per run, and a missed-slot backlog
-shifts forward (order preserved) instead of all publishing at once."""
+shifts forward (order preserved) instead of all publishing at once.
+"""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch

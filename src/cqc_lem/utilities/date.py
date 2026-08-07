@@ -15,7 +15,6 @@ def format_year(year: str) -> str:
     Returns:
     A 2 digit year.
     """
-
     year = int(year)
 
     if year < 100:

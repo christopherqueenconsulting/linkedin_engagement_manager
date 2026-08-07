@@ -1,9 +1,9 @@
 """Unit tests for blog-align source resolution (issue #967)."""
 
 import random
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 from cqc_lem.utilities.blog_source import BLOG_SOURCE_MAX_CHARS, _plain_text, resolve_blog_source
 

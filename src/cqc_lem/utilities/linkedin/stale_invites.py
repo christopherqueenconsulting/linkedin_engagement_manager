@@ -36,13 +36,25 @@ from typing import Callable, Optional
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
 
-from cqc_lem.utilities.db import (get_engagement_preferences, insert_new_log, LogActionType,
-                                  LogResultType, count_invite_withdrawals_today,
-                                  STALE_INVITE_WITHDRAWN_MESSAGE)
-from cqc_lem.utilities.human_pacing import (ACTION_WITHDRAW_INVITE, engagement_caps_from_prefs,
-                                            record_action, remaining_actions)
-from cqc_lem.utilities.linkedin.rate_limit import (automation_pause_reason, is_automation_paused,
-                                                   rate_limit_cooldown_remaining)
+from cqc_lem.utilities.db import (
+    STALE_INVITE_WITHDRAWN_MESSAGE,
+    LogActionType,
+    LogResultType,
+    count_invite_withdrawals_today,
+    get_engagement_preferences,
+    insert_new_log,
+)
+from cqc_lem.utilities.human_pacing import (
+    ACTION_WITHDRAW_INVITE,
+    engagement_caps_from_prefs,
+    record_action,
+    remaining_actions,
+)
+from cqc_lem.utilities.linkedin.rate_limit import (
+    automation_pause_reason,
+    is_automation_paused,
+    rate_limit_cooldown_remaining,
+)
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # LinkedIn's own "Manage invitations -> Sent" surface. The only page that lists what is actually
@@ -144,7 +156,8 @@ return null;
 
 def withdrawal_lane_enabled() -> bool:
     """Opt-in switch, OFF by default. The selectors here have not been through a live grounding run,
-    and a withdrawal cannot be taken back — so nothing goes out until someone turns this on."""
+    and a withdrawal cannot be taken back — so nothing goes out until someone turns this on.
+    """
     return (os.environ.get("STALE_INVITE_WITHDRAWAL_ENABLED") or "false").strip().lower() \
         in ("1", "true", "yes")
 
@@ -162,7 +175,8 @@ def _env_int(name: str, default: int) -> int:
 
 def stale_after_days() -> int:
     """How old a PENDING invite has to be before it is withdrawable. 0 disables the lane rather than
-    withdrawing everything — "withdraw invites older than nothing" is never what someone meant."""
+    withdrawing everything — "withdraw invites older than nothing" is never what someone meant.
+    """
     return _env_int("STALE_INVITE_AGE_DAYS", STALE_INVITE_AGE_DAYS_DEFAULT)
 
 
@@ -240,7 +254,8 @@ def _hold_reason(user_id: int) -> str:
     Pacing only ever slows the lane down; these are the harder gates, and they are re-read per
     withdrawal because the 429 breaker can trip mid-run. The #629 suppression tripwire rides
     `is_automation_paused`, so one check covers the manual pause, the deploy pause and a suppression
-    hold."""
+    hold.
+    """
     if is_automation_paused():
         return automation_pause_reason() or "automation paused"
     if rate_limit_cooldown_remaining() > 0:
@@ -254,7 +269,8 @@ def _load_more_rows(driver: WebDriver, sleep: Callable[[float], None] = time.sle
     The sent list renders newest-first, so the invites this lane exists for are at the BOTTOM. A run
     that never loads past the first page can only ever see rows it must not touch — which would look
     exactly like "nothing is stale". Returns how many times it expanded, so the report can say the
-    walk ran out of road rather than out of stale invites."""
+    walk ran out of road rather than out of stale invites.
+    """
     clicks = 0
     for _ in range(SHOW_MORE_MAX_CLICKS):
         try:
@@ -289,7 +305,8 @@ def read_pending_invites(driver: WebDriver) -> list[dict]:
 
     `age_days` is `None` when the row's "Sent ... ago" stamp could not be read — the caller skips
     those. An empty list means the page rendered nothing we recognise, which is NOT the same as "no
-    pending invites"; only the caller knows which of those it is looking at."""
+    pending invites"; only the caller knows which of those it is looking at.
+    """
     try:
         rows = driver.execute_script(_SENT_INVITE_ROWS_JS, MAX_ROWS_SCANNED)
     except Exception as e:
@@ -311,7 +328,8 @@ def _confirm_withdrawal(driver: WebDriver, sleep: Callable[[float], None]) -> bo
     """Click the confirmation dialog's Withdraw button. False when no dialog resolved.
 
     Returning False is NOT "the invite survived" — LinkedIn has shipped both a confirmed and an
-    unconfirmed withdrawal, so the caller has to re-read the list either way."""
+    unconfirmed withdrawal, so the caller has to re-read the list either way.
+    """
     for attempt in range(WITHDRAW_CONFIRM_ATTEMPTS):
         if attempt:
             sleep(WITHDRAW_CONFIRM_WAIT_SECONDS)
@@ -336,7 +354,8 @@ def _invite_still_pending(driver: WebDriver, profile_url: str,
 
     The list re-renders rather than relabelling the row, so a single immediate re-read races that
     render. An invite we cannot prove is gone is reported as unverified, never as withdrawn — and a
-    row that carried no profile link is unverifiable by definition, so it stays 'pending' here."""
+    row that carried no profile link is unverifiable by definition, so it stays 'pending' here.
+    """
     if not profile_url:
         return True
     for _ in range(WITHDRAW_CONFIRM_ATTEMPTS):
@@ -373,7 +392,8 @@ def _record_withdrawal(user_id: int, invite: dict, verified: bool) -> None:
     `count_invite_withdrawals_today` counts these rows regardless of result, because the budget is
     spent on the CLICK: the action already reached LinkedIn, and a lane whose verification broke must
     not be free to click every row on the page. The result flag is what an operator reads to tell an
-    unverified withdrawal apart from a confirmed one."""
+    unverified withdrawal apart from a confirmed one.
+    """
     insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                    result=LogResultType.SUCCESS if verified else LogResultType.FAILURE,
                    post_url=invite.get("profile_url") or None,
@@ -397,7 +417,8 @@ def withdraw_stale_invites(driver: WebDriver, wait: WebDriverWait, user_id: int,
     Returns the run report; the caller turns it into telemetry. `wait` is accepted for symmetry with
     the other Selenium lanes (and so a future selector fallback can use it) — the row resolution
     itself runs in one page-side pass, which is what keeps a 100-row list from costing 100 round
-    trips."""
+    trips.
+    """
     plan = plan if plan is not None else plan_withdrawals(user_id)
     budget = max(0, int(plan.get("allowance") or 0))
     threshold = float(plan.get("threshold_days") or 0)

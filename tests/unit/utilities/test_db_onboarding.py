@@ -1,10 +1,10 @@
 """Unit tests for the onboarding/activation DB helpers (issue #500)."""
 
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ class TestOnboardingState:
     def test_mark_step_only_writes_the_first_completion(self):
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import mark_onboarding_step, OnboardingStep
+            from cqc_lem.utilities.db import OnboardingStep, mark_onboarding_step
             assert mark_onboarding_step(4, OnboardingStep.VOICE_SET) is True
         sql = cur.execute.call_args[0][0]
         assert "SET voice_set_at = NOW()" in sql
@@ -65,14 +65,18 @@ class TestOnboardingState:
 
         conn, _cur = _conn(rowcount=0)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import mark_onboarding_step, OnboardingStep
+            from cqc_lem.utilities.db import OnboardingStep, mark_onboarding_step
             assert mark_onboarding_step(4, OnboardingStep.VOICE_SET) is False
 
     def test_state_errors_are_swallowed(self):
         conn, _cur = _erroring_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (ensure_onboarding_state, get_onboarding_state,
-                                              mark_onboarding_step, OnboardingStep)
+            from cqc_lem.utilities.db import (
+                OnboardingStep,
+                ensure_onboarding_state,
+                get_onboarding_state,
+                mark_onboarding_step,
+            )
             assert ensure_onboarding_state(4) is False
             assert get_onboarding_state(4) == {}
             assert mark_onboarding_step(4, OnboardingStep.ACTIVATED) is False
@@ -142,7 +146,7 @@ class TestStepEvidenceQueries:
     def test_has_post_with_status_expands_placeholders(self):
         conn, cur = _conn(fetchone=(1,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_post_with_status, PostStatus
+            from cqc_lem.utilities.db import PostStatus, has_post_with_status
             assert has_post_with_status(4, (PostStatus.APPROVED, PostStatus.POSTED)) is True
         sql, params = cur.execute.call_args[0]
         assert "status IN (%s, %s)" in sql
@@ -167,8 +171,12 @@ class TestStepEvidenceQueries:
     def test_evidence_errors_are_swallowed(self):
         conn, _cur = _erroring_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (has_engagement_preferences, has_post_with_status,
-                                              has_automated_engagement, PostStatus)
+            from cqc_lem.utilities.db import (
+                PostStatus,
+                has_automated_engagement,
+                has_engagement_preferences,
+                has_post_with_status,
+            )
             assert has_engagement_preferences(4) is False
             assert has_post_with_status(4, (PostStatus.POSTED,)) is False
             assert has_automated_engagement(4) is False

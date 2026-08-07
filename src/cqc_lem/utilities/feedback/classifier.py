@@ -170,7 +170,8 @@ def validate_classification(data: object) -> list[str]:
     """Validate `data` against FEEDBACK_CLASSIFICATION_SCHEMA, returning a list of human-readable
     errors (empty == valid). Supports the JSON Schema subset the contract above uses — object /
     required / properties / type (incl. union lists) / enum / maxLength / minimum / maximum — so
-    the schema stays the single source of truth without pulling in a runtime dependency."""
+    the schema stays the single source of truth without pulling in a runtime dependency.
+    """
     errors: list[str] = []
     if not isinstance(data, dict):
         return [f"expected an object, got {type(data).__name__}"]
@@ -218,7 +219,8 @@ def _validate_value(value: object, rule: dict) -> list[str]:
 @dataclass(frozen=True)
 class FeedbackClassification:
     """One classified feedback item. `labels` and `route` are derived deterministically from the
-    taxonomy fields — the model does not choose them."""
+    taxonomy fields — the model does not choose them.
+    """
     category: FeedbackCategory
     severity: FeedbackSeverity
     component: str
@@ -258,7 +260,8 @@ class FeedbackClassification:
 
 def min_confidence() -> float:
     """Confidence floor for acting without a human, read at call time (the live-env pattern used by
-    POST_SIMILARITY_MAX) so it can be tuned per-deploy without a restart."""
+    POST_SIMILARITY_MAX) so it can be tuned per-deploy without a restart.
+    """
     raw = (os.environ.get("FEEDBACK_CLASSIFIER_MIN_CONFIDENCE") or "").strip()
     try:
         value = float(raw) if raw else DEFAULT_MIN_CONFIDENCE
@@ -273,7 +276,8 @@ def classifier_model() -> str:
 
 def route_for(category: FeedbackCategory, confidence: float) -> FeedbackRoute:
     """Deterministic routing. An unsure verdict ALWAYS wins over the category — we would rather put
-    a human on a praise message than silently drop a real bug the model misread."""
+    a human on a praise message than silently drop a real bug the model misread.
+    """
     if confidence < min_confidence():
         return FeedbackRoute.NEEDS_HUMAN
     if category == FeedbackCategory.NOISE:
@@ -288,7 +292,8 @@ def labels_for(category: FeedbackCategory, severity: FeedbackSeverity,
                route: Optional[FeedbackRoute] = None) -> list[str]:
     """Map the taxonomy onto labels that exist in the repo. Dropped items get none; questions get
     only `question` (they never become a prioritized work item); human-triage items carry
-    `needs-human` so the escalation queue is one label filter."""
+    `needs-human` so the escalation queue is one label filter.
+    """
     route = route if route is not None else FeedbackRoute.AUTO_WORK
     if route == FeedbackRoute.DROP:
         return []
@@ -369,7 +374,8 @@ def _build_user_prompt(body: str, type_hint: Optional[str], context: Optional[di
 
 def _normalize(data: dict, candidate_ids: set[int]) -> dict:
     """Fold aliases/casing/None into the taxonomy and clamp lengths BEFORE schema validation, so a
-    model that answers 'Fix' / 'P1' / 'DB' is accepted while genuinely unusable output still fails."""
+    model that answers 'Fix' / 'P1' / 'DB' is accepted while genuinely unusable output still fails.
+    """
     out = dict(data)
 
     raw_category = str(out.get("category") or "").strip().lower()
@@ -404,7 +410,8 @@ def _normalize(data: dict, candidate_ids: set[int]) -> dict:
 
 def _balanced_end(text: str, start: int) -> Optional[int]:
     """Index just past the `}` that closes the `{` at `start`, or None if it never closes. Brace
-    counting is string-aware so braces inside JSON string values don't shift the depth."""
+    counting is string-aware so braces inside JSON string values don't shift the depth.
+    """
     depth = 0
     in_string = False
     escaped = False
@@ -431,7 +438,8 @@ def _balanced_end(text: str, start: int) -> Optional[int]:
 
 def _json_object_candidates(text: str):
     """Yield each top-level balanced `{...}` span in order. A greedy `\\{.*\\}` would swallow prose
-    braces and a second object into one unparseable blob; this hands out real objects one at a time."""
+    braces and a second object into one unparseable blob; this hands out real objects one at a time.
+    """
     index = 0
     while True:
         start = text.find("{", index)
@@ -449,7 +457,8 @@ def parse_classification(raw_text: Optional[str], candidate_ids: Optional[set[in
                          ) -> tuple[Optional[dict], list[str]]:
     """Parse the model's reply into a schema-valid dict. Returns (data, errors) — data is None when
     the reply is not usable. Tolerates ```json fences, prose (even prose with braces) around the
-    object, and a trailing second object; the first span that is valid JSON decides the result."""
+    object, and a trailing second object; the first span that is valid JSON decides the result.
+    """
     errors: list[str] = []
     for candidate in _json_object_candidates(raw_text or ""):
         try:
@@ -481,7 +490,8 @@ def _from_dict(data: dict) -> FeedbackClassification:
 def _unclassified(body: Optional[str], type_hint: Optional[str],
                   errors: list[str]) -> FeedbackClassification:
     """The fail-SAFE result: confidence 0.0, which always routes to NEEDS_HUMAN. The type hint is
-    the only thing we trust here, purely so the triage queue is sortable."""
+    the only thing we trust here, purely so the triage queue is sortable.
+    """
     hint = str(type_hint or "").strip().lower()
     category = _CATEGORY_ALIASES.get(hint)
     if category is None:
@@ -511,7 +521,8 @@ def classify_feedback(body: Optional[str], type_hint: Optional[str] = None,
     `duplicate_candidates` is an optional list of {'id': int, 'title'|'body': str} the model may
     point `duplicate_of` at; anything else it names is discarded. NEVER raises — an empty body, a
     failed call, or an off-contract answer all come back as a confidence-0.0 result whose route is
-    NEEDS_HUMAN."""
+    NEEDS_HUMAN.
+    """
     text = (body or "").strip()[:MAX_BODY_CHARS]
     if not text:
         return _unclassified(text, type_hint, ["empty feedback body"])

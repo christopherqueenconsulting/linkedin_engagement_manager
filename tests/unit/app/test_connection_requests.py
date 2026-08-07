@@ -1,7 +1,8 @@
 """Unit tests for the proactive connection-request task + scanner (issue #398)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
 

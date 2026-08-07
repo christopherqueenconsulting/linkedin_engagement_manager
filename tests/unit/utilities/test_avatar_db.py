@@ -1,7 +1,8 @@
 """Unit tests for avatar credit and training DB functions."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def _make_db_mocks(fetchone_return=None, fetchall_return=None, rowcount=1):

@@ -4,9 +4,10 @@ Veo has no language API parameter, so the language a premium video speaks/ambien
 whatever the prompt says. These cover where that language comes from.
 """
 
-import pytest
-import mysql.connector
 from unittest.mock import patch
+
+import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 

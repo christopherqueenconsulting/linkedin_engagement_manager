@@ -1,10 +1,10 @@
 """Unit tests for the shipped-notice DB helpers (issue #502)."""
 
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -62,7 +62,8 @@ class TestResolveCluster:
 
     def test_resolves_cluster_attached_rows_the_same_way_reporters_are_mapped(self):
         """The UPDATE must span the same self-join as get_feedback_reporters_for_issue, or a row
-        attached by cluster_id before the issue number propagated stays open forever."""
+        attached by cluster_id before the issue number propagated stays open forever.
+        """
         conn, cur = _conn(rowcount=2)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_feedback_resolved_for_issue

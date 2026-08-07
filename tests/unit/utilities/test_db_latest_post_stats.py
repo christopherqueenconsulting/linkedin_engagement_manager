@@ -1,8 +1,9 @@
 """Unit tests for get_latest_post_stats — the scrape's own numbers, read back for the #645 probe."""
 
+from unittest.mock import patch
+
 import mysql.connector
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 

@@ -1,7 +1,8 @@
 """Unit tests for LinkedIn scraper pure functions (no Selenium required)."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 
 @pytest.mark.unit

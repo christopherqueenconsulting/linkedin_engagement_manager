@@ -1,5 +1,6 @@
 """Unit tests for scripts/posthog_ops_destination.py — the realtime 429-breaker-trip CDP
-destination (issue #655, PH10 spike)."""
+destination (issue #655, PH10 spike).
+"""
 
 import importlib.util
 import pathlib

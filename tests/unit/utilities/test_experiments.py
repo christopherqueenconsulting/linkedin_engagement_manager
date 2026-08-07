@@ -58,7 +58,8 @@ def test_registry_rows_expose_every_field_docs_and_provisioning_need():
 
 def test_comment_variant_name_matches_the_content_core_literal():
     """content_framework keeps its own copy so the shared content core never imports PostHog — if
-    these two drift, the treatment arm silently renders the control prompt."""
+    these two drift, the treatment arm silently renders the control prompt.
+    """
     from cqc_lem.utilities.ai.content_framework import COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT
     assert COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT == ex.COMMENT_CONTRACT_AUTHOR_QUESTION
     assert ex.COMMENT_CONTRACT_AUTHOR_QUESTION in ex.spec(ex.COMMENT_CONTRACT_PROMPT).variants
@@ -97,7 +98,8 @@ def test_lookup_failure_is_the_control_arm(enrolled):
 @pytest.mark.parametrize("value", [None, True, False, "", "some-other-arm"])
 def test_unusable_flag_values_are_the_control_arm(enrolled, value):
     """A boolean means the flag isn't multivariate; an unknown string means it was reconfigured
-    behind the code's back. Neither may become an arm the code has no branch for."""
+    behind the code's back. Neither may become an arm the code has no branch for.
+    """
     mock_ph, _ = enrolled
     mock_ph.get_feature_flag.return_value = value
     assert ex.resolve_variant(ex.COMMENT_CONTRACT_PROMPT, 7) == ex.CONTROL
@@ -106,7 +108,8 @@ def test_unusable_flag_values_are_the_control_arm(enrolled, value):
 
 def test_missing_flag_surface_reports_once_and_reads_as_not_ready(monkeypatch):
     """Both halves of the lazy import have to be removed: the parent package caches an imported
-    submodule as an attribute, so blanking only `sys.modules` still resolves the real module."""
+    submodule as an attribute, so blanking only `sys.modules` still resolves the real module.
+    """
     import sys
 
     import cqc_lem.utilities as pkg
@@ -201,7 +204,8 @@ def test_experiment_properties_drops_an_empty_shipped_arm():
 
 def test_the_kill_switch_also_strips_a_shipped_arm_label(monkeypatch):
     """A shipped arm has no flag to read, so it would otherwise sail past the kill switch and leave
-    a switched-off experiment rendering a populated property breakdown."""
+    a switched-off experiment rendering a populated property breakdown.
+    """
     monkeypatch.setenv("EXPERIMENTS_ENABLED", "false")
     assert ex.experiment_properties(7, extra={ex.POST_MEDIA_VARIANT: "flux|gen4|1:1"}) == {}
 

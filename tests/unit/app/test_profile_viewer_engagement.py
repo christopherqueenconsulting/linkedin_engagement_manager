@@ -36,7 +36,8 @@ def _driver_scripting(rows_per_round: list[list[dict]], headline_stat=None) -> M
     """A driver whose execute_script answers the three JS reads the walk makes.
 
     `rows_per_round` is consumed one list per rows-read; the last list repeats once exhausted
-    (the real list stops growing)."""
+    (the real list stops growing).
+    """
     driver = MagicMock(name="driver")
     reads = {"i": 0}
 

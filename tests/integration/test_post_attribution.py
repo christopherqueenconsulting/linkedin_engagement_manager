@@ -6,9 +6,10 @@ tables, so a captured stat row provably resolves back to its post's hook/format/
 acceptance criterion — without needing a live MySQL container.
 """
 import re
-import pytest
 from datetime import datetime
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -88,8 +89,7 @@ class _FakeConn:
 
 class TestPostAttributionFeedbackLoop:
     def test_captured_stat_resolves_to_post_hook_format_topic(self):
-        from cqc_lem.utilities.db import (update_db_post_shape, record_post_stats,
-                                          get_post_engagement_rows)
+        from cqc_lem.utilities.db import get_post_engagement_rows, record_post_stats, update_db_post_shape
 
         posts = {9: {"user_id": 1, "post_type": "carousel", "buyer_stage": "consideration",
                      "scheduled_time": datetime(2026, 7, 20, 14, 0),
@@ -119,9 +119,9 @@ class TestPostAttributionFeedbackLoop:
 
     def test_stat_snapshot_survives_later_post_edit(self):
         """The snapshot is taken at capture time, so re-shaping the post afterward does NOT
-        rewrite the historical stat's attribution."""
-        from cqc_lem.utilities.db import (update_db_post_shape, record_post_stats,
-                                          get_post_engagement_rows)
+        rewrite the historical stat's attribution.
+        """
+        from cqc_lem.utilities.db import get_post_engagement_rows, record_post_stats, update_db_post_shape
 
         posts = {5: {"user_id": 1, "post_type": "text", "buyer_stage": "awareness",
                      "scheduled_time": datetime(2026, 7, 21, 9, 0),

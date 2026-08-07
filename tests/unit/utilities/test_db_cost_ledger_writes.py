@@ -4,9 +4,9 @@ The read-only accessors the margin report uses live in test_db_cost_ledger.py.
 """
 
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -27,7 +27,7 @@ class TestInsertCostLedgerEntry:
     def test_inserts_row_with_defaults(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_cost_ledger_entry, CostCategory
+            from cqc_lem.utilities.db import CostCategory, insert_cost_ledger_entry
             assert insert_cost_ledger_entry("content", CostCategory.MEDIA, 0.25) is True
 
         sql, params = cur.execute.call_args[0]
@@ -69,7 +69,7 @@ class TestAccrueMonthlyFixedCosts:
         # First accrual already present for this period, second is new.
         cur.fetchone.side_effect = [(1,), None]
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import accrue_monthly_fixed_costs, CostCategory
+            from cqc_lem.utilities.db import CostCategory, accrue_monthly_fixed_costs
             written = accrue_monthly_fixed_costs(date(2026, 7, 1), [
                 {"user_id": 1, "category": CostCategory.PROXY, "usd": 3.0, "provider": "per_user_proxy"},
                 {"user_id": 2, "category": CostCategory.INFRA, "usd": 1.5, "provider": "hosting", "qty": 1},

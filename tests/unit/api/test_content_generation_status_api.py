@@ -1,8 +1,10 @@
 """Unit tests for GET /api/content_generation_status/ and the queued-on-dispatch progress
-record written by POST /api/create_weekly_content/ (issue #545)."""
+record written by POST /api/create_weekly_content/ (issue #545).
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -22,6 +24,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc

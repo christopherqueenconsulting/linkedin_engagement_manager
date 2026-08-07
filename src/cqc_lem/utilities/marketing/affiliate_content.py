@@ -29,14 +29,21 @@ from __future__ import annotations
 
 from typing import Optional
 
-from cqc_lem.utilities.env_constants import (AFFILIATE_PROMO_CONTENT_ENABLED,
-                                             AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS,
-                                             AFFILIATE_PROMO_MAX_PER_DAY,
-                                             AFFILIATE_PROMO_PRODUCT_NAME)
-from cqc_lem.utilities.marketing.affiliate import (apply_disclosure, disclosure_report,
-                                                   disclosure_text, is_affiliate_content,
-                                                   link_for_user, program_enabled,
-                                                   promo_content_allowed)
+from cqc_lem.utilities.env_constants import (
+    AFFILIATE_PROMO_CONTENT_ENABLED,
+    AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS,
+    AFFILIATE_PROMO_MAX_PER_DAY,
+    AFFILIATE_PROMO_PRODUCT_NAME,
+)
+from cqc_lem.utilities.marketing.affiliate import (
+    apply_disclosure,
+    disclosure_report,
+    disclosure_text,
+    is_affiliate_content,
+    link_for_user,
+    program_enabled,
+    promo_content_allowed,
+)
 
 # Why the writer declined or refused. Only the last three (`_blocked`) are events: they mean copy
 # that was supposed to be compliant could not be made so. Declining to write — no consent, not this
@@ -85,13 +92,15 @@ _SYSTEM_PROMPT = (
 
 def generator_enabled() -> bool:
     """Whether this deployment runs the (B) writer at all. Off restores the pre-#770 product: the
-    consent toggle still exists and still records consent, nothing writes against it."""
+    consent toggle still exists and still records consent, nothing writes against it.
+    """
     return bool(AFFILIATE_PROMO_CONTENT_ENABLED)
 
 
 def promo_slot_cadence() -> int:
     """How many promo slots pass per affiliate one. Clamped at 1 — a zero or negative setting must
-    never read as "no cadence, take every slot" via a modulo that divides by zero."""
+    never read as "no cadence, take every slot" via a modulo that divides by zero.
+    """
     try:
         return max(1, int(AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS))
     except (TypeError, ValueError):
@@ -109,7 +118,8 @@ def product_name() -> str:
 def promo_allowed_for_user(user_id: int) -> bool:
     """Whether THIS user has authorised promotional content — the stored consent, read through the
     one gate that answers it. An unreadable enrollment row is a no: the failure mode of guessing is
-    publishing an ad on somebody's professional identity."""
+    publishing an ad on somebody's professional identity.
+    """
     from cqc_lem.utilities.db import get_affiliate_enrollment
     from cqc_lem.utilities.logger import log_warning
     try:
@@ -123,7 +133,8 @@ def promo_allowed_for_user(user_id: int) -> bool:
 def _selected_by_cadence(post_id: Optional[int]) -> bool:
     """Deterministic 1-in-N over promo slots, keyed on a stable per-post integer exactly like
     `should_include_lead_magnet_cta` — so the same post always makes the same choice and a retry
-    cannot turn an ordinary promo slot into an affiliate one."""
+    cannot turn an ordinary promo slot into an affiliate one.
+    """
     if post_id is None:
         return False
     n = promo_slot_cadence()
@@ -134,9 +145,9 @@ def _within_daily_pace(user_id: int) -> bool:
     """Whether today's paced allowance has room for another promotional piece.
 
     Fails OPEN on a pacing error, like every other reader of the engine: the hard limits on this
-    path are consent and the promo slot itself, and neither of them lives in Redis."""
-    from cqc_lem.utilities.human_pacing import (ACTION_AFFILIATE_PROMO, actions_used_today,
-                                                daily_budget)
+    path are consent and the promo slot itself, and neither of them lives in Redis.
+    """
+    from cqc_lem.utilities.human_pacing import ACTION_AFFILIATE_PROMO, actions_used_today, daily_budget
     from cqc_lem.utilities.logger import log_warning
     cap = max_promo_per_day()
     if cap <= 0:
@@ -154,7 +165,8 @@ def promo_slot_verdict(user_id: int, post_id: Optional[int], content_mix: Option
     """Whether an affiliate post may claim THIS planned slot, and why not when it may not.
 
     Ordered cheapest-first so the overwhelmingly common answer (this is not a promo slot) costs no
-    DB read and no Redis round trip."""
+    DB read and no Redis round trip.
+    """
     from cqc_lem.utilities.ai.content_alignment import ContentMix, normalize_content_mix
     if not program_enabled() or not generator_enabled():
         return REASON_DISABLED
@@ -179,7 +191,8 @@ def claims_promo_slot(user_id: int, post_id: Optional[int], content_mix: Optiona
     Reports the refusal HERE rather than leaving it to `generate_promo_post`: this is the call the
     content plan actually makes, and it short-circuits the writer entirely — so a deployment whose
     consented users can never publish (no disclosure sentence configured) would otherwise say so
-    nowhere at all."""
+    nowhere at all.
+    """
     verdict = promo_slot_verdict(user_id, post_id, content_mix)
     if verdict:
         _declined(user_id, post_id, verdict)
@@ -204,7 +217,8 @@ def _blocked(user_id: int, post_id: Optional[int], reason: str) -> None:
 def _declined(user_id: int, post_id: Optional[int], reason: str) -> None:
     """Not writing is the normal answer, so it is DEBUG, not a warning — a user who never consented
     would otherwise emit one warning per planned promo slot forever. The exception is a deployment
-    that consented users cannot publish from at all: that one is a misconfiguration."""
+    that consented users cannot publish from at all: that one is a misconfiguration.
+    """
     from cqc_lem.utilities.logger import log_debug, log_warning
     if reason == REASON_NO_DISCLOSURE_CONFIGURED:
         log_warning("Affiliate promo content skipped — AFFILIATE_DISCLOSURE_TEXT is blank, so this "
@@ -268,7 +282,8 @@ def _finalize(user_id: int, draft: str, referral_link: str) -> str:
 
     The link survives `sanitize_for_linkedin` on its own since #823 — that function masks URLs
     around the markdown transforms, so `utm_source=…&utm_medium=…` is no longer eaten by the italic
-    pass. This used to carry its own repair for that one URL; two half-fixes is worse than one."""
+    pass. This used to carry its own repair for that one URL; two half-fixes is worse than one.
+    """
     from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
     body = sanitize_for_linkedin(draft).strip()
     if referral_link and referral_link not in body:
@@ -286,9 +301,9 @@ def generate_promo_post(user_id: int, post_id: Optional[int] = None,
     consented, this slot is not an affiliate one, the day's pace is spent, or no draft could be made
     compliant. The model call and every gate read fail CLOSED to None rather than propagating, and
     the content-plan caller contains the rest — a user who opted into (B) must never lose the post
-    they would otherwise have had because the promotional one failed."""
-    from cqc_lem.utilities.ai.slop_lint import (lint_report, slop_max_attempts, slop_retry_directive,
-                                                violation_reasons)
+    they would otherwise have had because the promotional one failed.
+    """
+    from cqc_lem.utilities.ai.slop_lint import lint_report, slop_max_attempts, slop_retry_directive, violation_reasons
     from cqc_lem.utilities.logger import log_info, log_warning
     from cqc_lem.utilities.observability import AFFILIATE_PROMO_GENERATED
 
@@ -347,7 +362,8 @@ def _record_generated(user_id: int) -> None:
 def is_affiliate_post(content: Optional[str], user_id: Optional[int] = None,
                       first_comment_links: Optional[list] = None) -> bool:
     """Whether a finished post is affiliate promotion — graded on the body AND any link the #392
-    split carried into the first comment, the same text the publish gate grades."""
+    split carried into the first comment, the same text the publish gate grades.
+    """
     graded = "\n".join([content or "", *(first_comment_links or [])])
     return is_affiliate_content(graded, user_id=user_id)
 
@@ -357,7 +373,8 @@ def record_promo_published(user_id: int, post_id: int, content: Optional[str],
                            post_url: Optional[str] = None) -> bool:
     """Emit `affiliate_promo_published` for a post that just went live carrying the user's referral
     link. Best-effort and never raises — the post is already published; analytics cannot un-publish
-    it and must not turn a successful share into a task failure."""
+    it and must not turn a successful share into a task failure.
+    """
     from cqc_lem.utilities.logger import log_warning
     from cqc_lem.utilities.observability import AFFILIATE_PROMO_PUBLISHED
     try:

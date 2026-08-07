@@ -4,11 +4,21 @@ import shutil
 
 from cqc_lem import assets_dir
 from cqc_lem.app.run_automation import post_to_linkedin
-from cqc_lem.app.run_content_plan import create_content, auto_generate_content, auto_create_weekly_content, \
-    get_main_blog_url_content, fetch_sitemap_urls, filter_relevant_urls, is_blog_post_combined, plan_content_for_user
-from cqc_lem.utilities.ai.ai_helper import get_industry_trend_analysis_based_on_user_profile, \
-    get_thought_leadership_post_from_ai, get_flux_image_prompt_from_ai
-
+from cqc_lem.app.run_content_plan import (
+    auto_create_weekly_content,
+    auto_generate_content,
+    create_content,
+    fetch_sitemap_urls,
+    filter_relevant_urls,
+    get_main_blog_url_content,
+    is_blog_post_combined,
+    plan_content_for_user,
+)
+from cqc_lem.utilities.ai.ai_helper import (
+    get_flux_image_prompt_from_ai,
+    get_industry_trend_analysis_based_on_user_profile,
+    get_thought_leadership_post_from_ai,
+)
 from cqc_lem.utilities.db import get_user_password_pair_by_id
 from cqc_lem.utilities.env_constants import API_BASE_URL, API_PORT
 from cqc_lem.utilities.linkedin.helper import get_my_profile

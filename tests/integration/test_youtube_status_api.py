@@ -39,6 +39,7 @@ def _response(status_code=200, payload=None):
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 

@@ -21,7 +21,8 @@ ROUTER_PATH = Path(__file__).resolve().parents[2] / ".litellm" / "complexity_rou
 @pytest.fixture
 def router_module(monkeypatch):
     """Import the hook fresh with `litellm` stubbed, and with the shared decision core importable
-    the same way the container sees it (a bare `routing_policy` next to the hook)."""
+    the same way the container sees it (a bare `routing_policy` next to the hook).
+    """
     litellm = types.ModuleType("litellm")
     integrations = types.ModuleType("litellm.integrations")
     custom_logger = types.ModuleType("litellm.integrations.custom_logger")
@@ -190,7 +191,8 @@ async def test_the_flag_cohort_survives_the_container_boundary(router_module, mo
     routing_policy.py cannot call PostHog (it is mounted into a container with no LEM install), so the
     `arms` map in the policy document IS the hand-off. Building the document with the real
     `cost_routing` code and serializing it the way `publish_policy` does is what pins that both halves
-    still agree — including that a JSON round-trip turns the int user id into a string key."""
+    still agree — including that a JSON round-trip turns the int user id into a string key.
+    """
     from datetime import date
 
     from cqc_lem.utilities import cost_routing

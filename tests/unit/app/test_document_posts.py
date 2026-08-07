@@ -1,8 +1,9 @@
 """Unit tests for native document posts in the publish + planning pipelines (issue #390)."""
 
-import pytest
 from contextlib import ExitStack
 from unittest.mock import patch
+
+import pytest
 
 BASE_PATCHES = [
     ("cqc_lem.app.run_automation.get_post_status", {"return_value": "approved"}),
@@ -22,8 +23,8 @@ BASE_PATCHES = [
 class TestPostToLinkedinDocument:
 
     def test_document_post_calls_share_document_on_linkedin(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         slides = ["/assets/images/carousel/40/slide_01.png", "/assets/images/carousel/40/slide_02.png"]
         with ExitStack() as stack:
@@ -44,8 +45,8 @@ class TestPostToLinkedinDocument:
             mock_share.assert_not_called()
 
     def test_document_post_without_slides_is_flagged_error(self):
-        from cqc_lem.utilities.db import PostType, PostStatus
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -66,8 +67,8 @@ class TestPostToLinkedinDocument:
 
     def test_document_publish_failure_does_not_blame_the_slide_images(self):
         """A None URN from a deck that HAD slides may be creds/API — don't send ops after images."""
-        from cqc_lem.utilities.db import PostType, PostStatus
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:

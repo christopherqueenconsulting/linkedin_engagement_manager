@@ -1,7 +1,8 @@
 """Unit tests for DM follow-up queue DB helpers."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -21,8 +22,9 @@ class TestFollowupQueue:
     def test_enqueue_inserts_pending(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import enqueue_followup
             import datetime
+
+            from cqc_lem.utilities.db import enqueue_followup
             ok = enqueue_followup(1, "https://x/in/jane", "Jane", "connection_accepted", 1,
                                   datetime.datetime(2026, 7, 4, 8, 0))
         assert ok is True
@@ -33,8 +35,9 @@ class TestFollowupQueue:
                  "event_type": "connection_accepted", "next_step": 1}]
         conn, cursor = _mock_conn(fetch_all=rows)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_due_followups
             import datetime
+
+            from cqc_lem.utilities.db import get_due_followups
             out = get_due_followups(datetime.datetime(2026, 7, 4, 9, 0))
         assert out == rows
         assert "status='pending'" in cursor.execute.call_args[0][0] and "due_at <= %s" in cursor.execute.call_args[0][0]

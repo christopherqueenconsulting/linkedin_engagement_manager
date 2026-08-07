@@ -9,14 +9,11 @@ from enum import StrEnum
 from typing import Any, NamedTuple, Optional, Union
 
 import mysql.connector
-from cqc_lem.utilities.env_constants import (
-    AWS_MYSQL_SECRET_NAME,
-    AWS_REGION,
-    MYSQL_POOL_ENABLED,
-    MYSQL_POOL_SIZE,
-    SESSION_ABSOLUTE_MAX_DAYS,
-    SESSION_IDLE_HOURS,
-)
+from dotenv import load_dotenv
+from mysql.connector import errorcode
+from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
+from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
+
 from cqc_lem.utilities.crypto import (
     decrypt_secret,
     encrypt_secret,
@@ -25,13 +22,17 @@ from cqc_lem.utilities.crypto import (
     hash_session_token,
     needs_reencrypt,
 )
+from cqc_lem.utilities.env_constants import (
+    AWS_MYSQL_SECRET_NAME,
+    AWS_REGION,
+    MYSQL_POOL_ENABLED,
+    MYSQL_POOL_SIZE,
+    SESSION_ABSOLUTE_MAX_DAYS,
+    SESSION_IDLE_HOURS,
+)
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_info, log_warning
-from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
-from dotenv import load_dotenv
-from mysql.connector import errorcode
-from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
-from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.utils import get_aws_ssm_secret, get_top_level_domain
 
 # Load .env file
 load_dotenv()
@@ -54,7 +55,8 @@ class _PoolState:
     """Per-process pool bookkeeping, held on one mutable object rather than several module globals.
 
     Rebinding module globals across calls reads as a dead store to static analysis (CodeQL
-    py/unused-global-variable) because each assignment is only consumed by a LATER invocation."""
+    py/unused-global-variable) because each assignment is only consumed by a LATER invocation.
+    """
 
     pool: Optional[MySQLConnectionPool] = None
     pid: Optional[int] = None
@@ -68,7 +70,6 @@ _POOL_STATE = _PoolState()
 
 def _get_mysql_config() -> dict[str, Any]:
     """Resolves the MySQL connection arguments, preferring the AWS secret when one is configured."""
-
     global MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_PORT
 
     # if MYSQL_USER and MYSQL_PASSWORD are empty try to get it from AWS using get_secret function
@@ -97,8 +98,8 @@ def _get_connection_pool(config: dict[str, Any]) -> MySQLConnectionPool:
     the same live socket to parent and child. The pool is created WITHOUT connection kwargs so it
     opens nothing up front — connections are added on demand in _get_pooled_connection() — because
     every app process would otherwise pre-open MYSQL_POOL_SIZE sockets at first use and the sum
-    across ~20 processes would blow past MySQL's max_connections."""
-
+    across ~20 processes would blow past MySQL's max_connections.
+    """
     pid = os.getpid()
     if _POOL_STATE.pool is None or _POOL_STATE.pid != pid:
         pool_size = max(1, min(MYSQL_POOL_SIZE, CNX_POOL_MAXSIZE))
@@ -119,8 +120,8 @@ def _get_pooled_connection(config: dict[str, Any]) -> Optional[DbConnection]:
     """Checks a connection out of the process pool, growing it lazily up to its size.
 
     Returns None when the pool is at capacity so the caller can fall back to an unpooled
-    connection instead of failing a task during a fan-out burst."""
-
+    connection instead of failing a task during a fan-out burst.
+    """
     with _POOL_LOCK:
         pool = _get_connection_pool(config)
         try:
@@ -140,8 +141,8 @@ def reset_connection_pool() -> None:
     """Drops this process's pool reference so the next call builds a fresh one (tests/diagnostics).
 
     Deliberately does NOT close the pooled connections: after a fork those sockets belong to the
-    parent process, and closing them there would break the parent's in-flight queries."""
-
+    parent process, and closing them there would break the parent's in-flight queries.
+    """
     with _POOL_LOCK:
         _POOL_STATE.pool = None
         _POOL_STATE.pid = None
@@ -158,7 +159,6 @@ def get_db_connection() -> DbConnection:
     Raises:
         mysql.connector.Error: If there is an error connecting to the database.
     """
-
     config = _get_mysql_config()
 
     if MYSQL_POOL_ENABLED:
@@ -180,7 +180,8 @@ def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
     a naive one is assumed to already be UTC. Normalizing here rather than at each call site matters
     because mysql-connector serializes a datetime from its wall-clock fields and silently DROPS
     tzinfo — an aware non-UTC value would otherwise be stored as its local wall clock, i.e. off by
-    the sender's UTC offset, and the post/DM would fire hours away from what the user scheduled."""
+    the sender's UTC offset, and the post/DM would fire hours away from what the user scheduled.
+    """
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -227,7 +228,8 @@ class ConnectionRequestStatus(StrEnum):
 
 class CatchupEventType(StrEnum):
     """A LinkedIn Catch-up "moment" we can congratulate on (issue #482). Ordered most→least
-    BD-relevant: a new job or promotion is a real trigger event, a birthday is small talk."""
+    BD-relevant: a new job or promotion is a real trigger event, a birthday is small talk.
+    """
     JOB_CHANGE = 'job_change'
     PROMOTION = 'promotion'
     WORK_ANNIVERSARY = 'work_anniversary'
@@ -250,7 +252,8 @@ class CatchupTouchStatus(StrEnum):
 class GroupPostDraftStatus(StrEnum):
     """Status of the weekly group post's draft (issue #932). The draft is written days before the
     publish slot so the user can read and revise it — silence ships it, which is why the resting
-    state is READY rather than a pending-approval one."""
+    state is READY rather than a pending-approval one.
+    """
     READY = 'ready'          # drafted (and editable) — publishes at the weekly slot unless skipped
     SKIPPED = 'skipped'      # the user cancelled this week's post, or its group stopped taking posts
     PUBLISHED = 'published'  # it shipped into the group
@@ -319,7 +322,8 @@ class LeadStage(StrEnum):
 
 class LeadSignalKind(StrEnum):
     """The engagement signals a lead score is built from (issue #484). Every one is read from data
-    the automation already records — no new scraping."""
+    the automation already records — no new scraping.
+    """
     ENGAGED = 'engaged'            # commented/reacted on one of our posts (post_engagers)
     INTENT = 'intent'              # raised a buying signal (lead_signals, issue #483)
     DM = 'dm'                      # we sent them a DM (scheduled_dms / dm_followups)
@@ -330,7 +334,8 @@ class LeadSignalKind(StrEnum):
 
 class FeedbackSource(StrEnum):
     """Where a piece of user feedback came in from (issue #496). Only WIDGET is captured today —
-    the rest are the channels the feedback->auto-work loop will add later."""
+    the rest are the channels the feedback->auto-work loop will add later.
+    """
     WIDGET = 'widget'    # the in-app feedback/bug widget
     BUG = 'bug'          # a bug report raised outside the widget (e.g. support email)
     NPS = 'nps'          # an NPS survey response
@@ -351,7 +356,8 @@ class FeedbackStatus(StrEnum):
 
 class FaqStatus(StrEnum):
     """Lifecycle of a public FAQ answer (issue #506). Only PUBLISHED rows are served on the front
-    page — an auto-generated answer lands as DRAFT until it is reviewed."""
+    page — an auto-generated answer lands as DRAFT until it is reviewed.
+    """
     PUBLISHED = 'published'
     DRAFT = 'draft'
     ARCHIVED = 'archived'
@@ -361,7 +367,8 @@ class AffiliateStatus(StrEnum):
     """(A) affiliate STATUS (issue #737) — whether the user holds a referral link and earns trial
     time for it. Default ENROLLED, one click to OPTED_OUT. This says nothing at all about (B),
     whether LEM may publish promo content from their account; that is `promo_content_opt_in`, is
-    default-off, and is stored beside this column precisely so the two can never be conflated."""
+    default-off, and is stored beside this column precisely so the two can never be conflated.
+    """
     ENROLLED = 'enrolled'
     OPTED_OUT = 'opted_out'
 
@@ -369,7 +376,8 @@ class AffiliateStatus(StrEnum):
 class ReferralStatus(StrEnum):
     """A referral's lifecycle. PENDING on signup through a member's link; CONVERTED only once the
     referred user ACTIVATES (a real activated signup, not a click); REJECTED for self-referral and
-    the other fraud shapes — stored rather than dropped so the signal is countable."""
+    the other fraud shapes — stored rather than dropped so the signal is countable.
+    """
     PENDING = 'pending'
     CONVERTED = 'converted'
     REJECTED = 'rejected'
@@ -378,7 +386,8 @@ class ReferralStatus(StrEnum):
 class AffiliateRewardKind(StrEnum):
     """What a `affiliate_rewards` row paid for. ENROLLMENT is the status-linked bonus (revoked on
     opt-out via a negative REVOKED row); REFERRAL was earned by driving an activation and is never
-    clawed back."""
+    clawed back.
+    """
     ENROLLMENT = 'enrollment'
     REFERRAL = 'referral'
     REVOKED = 'revoked'
@@ -386,7 +395,8 @@ class AffiliateRewardKind(StrEnum):
 
 class OnboardingStep(StrEnum):
     """Steps of the activation checklist (issue #500), in the order a user completes them.
-    ACTIVATED is the "aha" moment: first AI post published AND first automated comment/DM sent."""
+    ACTIVATED is the "aha" moment: first AI post published AND first automated comment/DM sent.
+    """
     LINKEDIN_CONNECTED = 'linkedin_connected'
     VOICE_SET = 'voice_set'
     FIRST_POST_APPROVED = 'first_post_approved'
@@ -549,7 +559,8 @@ def prune_superseded_cookies(user_id: int) -> int:
 
     Conservative by design: it only deletes a row when a STRICTLY newer sibling of the same
     name exists for the same user, so it never removes the newest copy and never touches a
-    uniquely-named cookie. Best-effort — a failure here never breaks the cookie write."""
+    uniquely-named cookie. Best-effort — a failure here never breaks the cookie write.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     deleted = 0
@@ -1217,7 +1228,8 @@ def get_dashboard_counts(user_id: int, week_start) -> dict:
     """Dashboard top-line counts via SQL aggregates over ALL of the user's posts. Replaces the old
     approach of counting in Python over get_posts()'s 10-oldest-posts slice (which made 'posted'
     cap near 10 and 'scheduled this week' read ~0). week_start is coerced to a naive UTC datetime so
-    it compares cleanly against the naive UTC scheduled_time column (no tz TypeError)."""
+    it compares cleanly against the naive UTC scheduled_time column (no tz TypeError).
+    """
     if week_start is not None and getattr(week_start, "tzinfo", None) is not None:
         week_start = week_start.astimezone(timezone.utc).replace(tzinfo=None)
     connection = get_db_connection()
@@ -1247,7 +1259,8 @@ def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
     """Upcoming (future-dated, non-terminal) work for the dashboard "Planned Tasks" card:
     scheduled/approved/pending POSTS, scheduled DMs, and upcoming NEWSLETTER editions — each
     labeled by `kind` (Post / DM / Newsletter). Terminal states (posted/sent/published/etc.)
-    are excluded, results are merged and sorted soonest-first, capped at `limit`."""
+    are excluded, results are merged and sorted soonest-first, capped at `limit`.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     tasks: list[dict] = []
@@ -1312,7 +1325,8 @@ def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
 def get_default_video_quality(user_id: int) -> str:
     """The user's preferred default video quality for AUTO-generated posts (engagement_preferences).
     Falls back to 'standard' when unset/invalid — premium is only ever honored when credits exist,
-    which is enforced separately at render time."""
+    which is enforced separately at render time.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -1332,7 +1346,8 @@ def get_default_video_quality(user_id: int) -> str:
 
 def set_default_video_quality(user_id: int, quality: str) -> bool:
     """Set the user's default video quality preference (upserts the engagement_preferences row).
-    Invalid values are coerced to 'standard'."""
+    Invalid values are coerced to 'standard'.
+    """
     if quality not in VALID_VIDEO_QUALITIES:
         quality = "standard"
     return update_engagement_preferences(user_id, {"default_video_quality": quality})
@@ -1407,7 +1422,8 @@ class OwnershipUnprovable(Exception):
     ownership. Both refuse the action — that is the fail-closed half and it is not negotiable — but
     they are not the same fact and must not be reported as the same one: "Forbidden" tells a user
     they lack permission to their own drafts, and sends on-call hunting an authorisation bug while
-    the database is the thing that is down."""
+    the database is the thing that is down.
+    """
 
 
 def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
@@ -1417,7 +1433,8 @@ def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
     authorisation read that stands between one account and another's drafts. It fails CLOSED: an
     empty list and a missing row both answer False, because "we could not prove ownership" must
     never be spelled the same way as "they own it". A database error raises `OwnershipUnprovable`
-    rather than answering False — still a refusal at the call site, but a truthful one."""
+    rather than answering False — still a refusal at the call site, but a truthful one.
+    """
     if not user_id or not post_ids:
         return False
 
@@ -1513,7 +1530,8 @@ def get_post_buyer_stage(post_id: int) -> Optional[str]:
 
 def get_post_content_mix(post_id: int) -> Optional[str]:
     """This post's 70/20/10 mix class as assigned by the content-plan governor (issue #618).
-    None for a post planned before the governor existed (or created by hand)."""
+    None for a post planned before the governor existed (or created by hand).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -1532,7 +1550,8 @@ def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
     """Planned/published post counts per 70/20/10 mix class for the analytics dashboard's mix-
     compliance ratio (issue #618). Rejected posts are excluded (they were never part of the mix the
     audience saw), unclassified posts are counted under 'unclassified'. `days` windows on
-    scheduled_time (None = every post)."""
+    scheduled_time (None = every post).
+    """
     counts = {"unclassified": 0}
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -1612,7 +1631,8 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
 
     The API checks ownership before it calls this, so the scope is redundant today — that is the
     point. It closes the window between the check and the write, and it means a future caller that
-    forgets the check cannot reach across accounts anyway."""
+    forgets the check cannot reach across accounts anyway.
+    """
     if not post_ids:
         return False
 
@@ -1678,7 +1698,8 @@ def update_db_post_rejection_reason(post_id: int, rejection_reason: Optional[str
 
     Empty or whitespace-only input is stored as NULL so the UI doesn't render a blank reason.
     `user_id` scopes the write to one account's row for the same reason as `bulk_update_posts`
-    (issue #914) — every sibling write on this table carries it."""
+    (issue #914) — every sibling write on this table carries it.
+    """
     from cqc_lem.utilities.logger import log_error
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -1744,7 +1765,8 @@ def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Opt
                          topic: Optional[str] = None) -> bool:
     """Persist the SHAPE (short-form archetype + hook style + topic) assigned to a generated post —
     the rotation history that keeps a user's next post from reusing a recently used shape (V51), and
-    the topic attribution the feedback loop reads back off each captured stat row (#386)."""
+    the topic attribution the feedback loop reads back off each captured stat row (#386).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1766,7 +1788,8 @@ def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Opt
 def update_db_post_authenticity_score(post_id: int, score: Optional[int]) -> bool:
     """Persist the authenticity gate's LLM-judged score (0-100, or NULL) for a post — the reader that
     gives the previously dead post-quality column a purpose (issue #382, V57 authenticity_score). The
-    content-plan status-setter reads this back to demote a low-scoring auto-approve to PENDING."""
+    content-plan status-setter reads this back to demote a low-scoring auto-approve to PENDING.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1804,7 +1827,8 @@ def get_post_authenticity_score(post_id: int) -> Optional[int]:
 def update_db_post_gate_reason(post_id: int, findings: Optional[list]) -> bool:
     """Persist WHY a post is held for review (issue #421): the quality gates' structured findings
     (see utilities/quality_gates.py) as a JSON array on posts.gate_reason. An empty/None list clears
-    the column, so a post that passes on re-score stops showing a stale reason."""
+    the column, so a post that passes on re-score stops showing a stale reason.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1843,7 +1867,8 @@ def get_post_gate_reason(post_id: int) -> list:
 def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
     """Persist the deterministic 0-100 dwell-proxy score for a post (issue #391, dwell_score column).
     Advisory metric stored next to authenticity_score — it is never read back to gate a status, so a
-    failed write only costs the datapoint."""
+    failed write only costs the datapoint.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1881,7 +1906,8 @@ def get_post_dwell_score(post_id: int) -> Optional[int]:
 def update_db_post_first_comment_link(post_id: int, link: Optional[str]) -> bool:
     """Stash the external link(s) stripped from a post body at publish time (issue #392, C3) so the
     seed-comment task can deliver them in the author's first comment. Newline-separated for multiple
-    links; None clears it."""
+    links; None clears it.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1919,7 +1945,8 @@ def get_post_first_comment_link(post_id: int) -> Optional[str]:
 def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
     """Recent posts' SHAPE history — {archetype, hook_style} dicts, most-recent first — fed to the
     shared content framework so a new post rotates away from recently used archetypes/hooks (the
-    post-side twin of get_recent_newsletter_blueprint_history)."""
+    post-side twin of get_recent_newsletter_blueprint_history).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -1939,7 +1966,8 @@ def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
 def get_post_archetype(post_id: int) -> Optional[str]:
     """The short-form ARCHETYPE assigned to one post (V51 `posts.archetype`). The quality gates read
     it back so the archetype-specific checks (the no-fabrication guard on a build receipt, issue
-    #619) know which contract this draft was written to."""
+    #619) know which contract this draft was written to.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1961,7 +1989,8 @@ def get_recent_post_texts(user_id: int, limit: int = 20,
     avoidance steering and the pre-persist similarity gate in create_text_post. Openers/subjects
     are derived from content on demand, so no new column is needed. `exclude_post_id` drops one post
     from the history — needed when re-scoring an ALREADY-SAVED post (issue #421), which would
-    otherwise match itself at 100%."""
+    otherwise match itself at 100%.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2015,7 +2044,6 @@ def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] 
 
 def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minutes=20) -> list:
     """Query the database for any pending posts that are scheduled to post now or earlier"""
-
     now = datetime.now(timezone.utc)
     if pre_post_time is None:
         # Get time for post_time_delta after now
@@ -2216,7 +2244,8 @@ def get_linked_in_profile_by_user_id(user_id: int, updated_less_than_days_ago: i
 def get_profile_synthesis(user_id: int) -> Optional[tuple]:
     """Return the user's cached (synthesis_text, synthesis_generated_at) or None when there is no
     profile row / no synthesis yet. Kept separate from the profile-JSON getters so the small, stable
-    voice brief can be read cheaply on every generation call without pulling the full profile blob."""
+    voice brief can be read cheaply on every generation call without pulling the full profile blob.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2237,7 +2266,8 @@ def get_profile_synthesis(user_id: int) -> Optional[tuple]:
 
 def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
     """Persist a freshly generated voice synthesis and stamp synthesis_generated_at = NOW() (drives
-    the weekly staleness selector). No-op-safe: returns False if the profile row doesn't exist yet."""
+    the weekly staleness selector). No-op-safe: returns False if the profile row doesn't exist yet.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2257,7 +2287,8 @@ def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
 
 def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
     """User IDs whose cached profile synthesis is MISSING or older than `stale_days` — the work list
-    for the weekly refresh task. Only rows that actually have a profile (user_id NOT NULL) qualify."""
+    for the weekly refresh task. Only rows that actually have a profile (user_id NOT NULL) qualify.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2559,7 +2590,8 @@ def get_user_sitemap_url(user_id: int):
 
 def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
     """Return the user's own LinkedIn profile URL (e.g. https://www.linkedin.com/in/<vanity>/).
-    Only the user's own scraped profile carries a non-null user_id in the profiles table."""
+    Only the user's own scraped profile carries a non-null user_id in the profiles table.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2669,7 +2701,8 @@ def get_linkedin_token_user_ids() -> list[int]:
 
     Deliberately NOT get_active_user_ids(): that one requires an unexpired token, so the users the
     renewal pass most needs to reach — the ones whose authorization already lapsed — are exactly
-    the ones it filters out."""
+    the ones it filters out.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2735,7 +2768,8 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
 def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
     """How many top-level comments WE have successfully left on this post URL. Replies
     (LogActionType.REPLY) are deliberately not counted — the self-comment cap (issue #622) is about
-    seeding our own thread, not about answering the people in it."""
+    seeding our own thread, not about answering the people in it.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2766,7 +2800,8 @@ def get_post_age_minutes(user_id: int, post_id: int):
     late (issue #622). The subtraction is done in SQL against the server's own NOW() so the reading
     never depends on the app and the database agreeing about the timezone: `logs.created_at` is
     written in the DB session's zone (`TZ`, not UTC), so comparing it to a Python UTC clock would
-    skew every latency by the offset."""
+    skew every latency by the offset.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2907,7 +2942,8 @@ def get_company_linked_in_url_for_user(user_id: int):
 
 def update_company_linked_in_url_for_user(user_id: int, company_linked_in_url: Optional[str]) -> bool:
     """Set (or clear, when None/empty) the user's LinkedIn company page URL used by the
-    monthly company-page invite automation."""
+    monthly company-page invite automation.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2950,7 +2986,8 @@ def get_user_linkedin_display_name(user_id: int) -> Optional[str]:
     """The user's own name exactly as LinkedIn renders it on their messages (issue #731), or None.
 
     This is what reply detection compares the last sender against, so it is stored per user rather
-    than re-derived from a scrape that may be stale or unavailable."""
+    than re-derived from a scrape that may be stale or unavailable.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3035,7 +3072,8 @@ def clear_user_linkedin_password(user_id: int) -> bool:
 
 def has_linkedin_password(user_id: int) -> bool:
     """True when a LinkedIn password is still stored for this user — the signal that drives the
-    one-time 'paste a cookie instead' prompt (design §5.4 item 3)."""
+    one-time 'paste a cookie instead' prompt (design §5.4 item 3).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3209,7 +3247,8 @@ def delete_pin_for_email(email: str) -> None:
 
 def get_pin_lockout(email: str) -> Optional[datetime]:
     """When this email's PIN entry is locked until, or None. Read by the API so a locked account
-    gets a 429 with a wait time instead of an indistinguishable 401."""
+    gets a 429 with a wait time instead of an indistinguishable 401.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3233,7 +3272,8 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
     PIN_MAX_ATTEMPTS is reached (issue #745, 2b) — a 6-digit space is otherwise walkable.
 
     A new /auth/email/init clears the unused rows and therefore the lock; that path is bounded
-    separately by the per-email request limiter in `utilities/auth_rate_limit.py`."""
+    separately by the per-email request limiter in `utilities/auth_rate_limit.py`.
+    """
     from cqc_lem.utilities.env_constants import PIN_LOCKOUT_MINUTES, PIN_MAX_ATTEMPTS
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
@@ -3321,7 +3361,8 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
     `ttl_hours` overrides the idle window for sessions that are NOT idle-driven (issue #1026). A
     headless agent runs on a schedule — a weekly one would find a 24h session dead every single
     run — so its row gets an explicit, longer life. It is still an ordinary revocable row on the
-    Security card, so a long TTL is not a one-way door."""
+    Security card, so a long TTL is not a one-way door.
+    """
     import secrets
     token = secrets.token_hex(32)
     now = datetime.now(timezone.utc)
@@ -3353,7 +3394,8 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
 
 def _device_label(user_agent: Optional[str]) -> str:
     """A short, human-readable name for a session row ("Chrome on macOS"). Best effort: the account
-    page has to show the user something they can recognise before they revoke it."""
+    page has to show the user something they can recognise before they revoke it.
+    """
     if not user_agent:
         return "Unknown device"
     ua = user_agent.lower()
@@ -3382,7 +3424,8 @@ def resolve_session(token: str) -> Optional[dict]:
 
     `scope` rides along because the API resolver has to decide, on the SAME request, whether a
     restricted session (`extension`, `enroll`) may reach the path it is calling (2c.1, issue #905).
-    Reading it separately would double a query every authenticated request already makes."""
+    Reading it separately would double a query every authenticated request already makes.
+    """
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
@@ -3443,7 +3486,8 @@ def resolve_session(token: str) -> Optional[dict]:
 
 def get_session_user_id(token: str) -> Optional[int]:
     """The user behind a live session token, or None. Thin wrapper over `resolve_session` so there
-    stays exactly ONE place that validates a token and slides its expiry."""
+    stays exactly ONE place that validates a token and slides its expiry.
+    """
     resolved = resolve_session(token)
     return resolved["user_id"] if resolved else None
 
@@ -3488,7 +3532,8 @@ def delete_session(token: str) -> bool:
 def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> list[dict]:
     """Live sessions for the account page. Never returns a token or a hash — the caller gets the
     row id it revokes by, plus enough device detail to recognise it. `is_current` is resolved here
-    so the SPA never has to compare tokens."""
+    so the SPA never has to compare tokens.
+    """
     current_hash = hash_session_token(current_token)
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
@@ -3520,7 +3565,8 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
 
 def revoke_session(user_id: int, session_id: int) -> bool:
     """Revoke ONE session. Scoped by user_id on purpose — a session id from another account must
-    never be revocable by guessing the number."""
+    never be revocable by guessing the number.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3541,7 +3587,8 @@ def revoke_session(user_id: int, session_id: int) -> bool:
 
 def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int:
     """Revoke every session except the one presenting `keep_token` (None revokes all). Returns how
-    many rows were revoked — "sign out everywhere", and what an email change triggers."""
+    many rows were revoked — "sign out everywhere", and what an email change triggers.
+    """
     keep_hash = hash_session_token(keep_token)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -3610,7 +3657,8 @@ def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
                       user_agent: Optional[str] = None, session_id: Optional[int] = None,
                       success: bool = True, details: Optional[dict] = None) -> bool:
     """Append one row to `auth_audit_log`. Best effort — an audit write must never fail a login,
-    but a failure is logged so a silently blind audit trail is visible."""
+    but a failure is logged so a silently blind audit trail is visible.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3634,7 +3682,8 @@ def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
 
 def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
     """Recent auth history for the account page — what a user needs to spot a login they didn't
-    make. Returns no IP hash: it is stored for forensics, not for display."""
+    make. Returns no IP hash: it is stored for forensics, not for display.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3671,7 +3720,8 @@ def _credential_id_hash(credential_id: Optional[str]) -> Optional[str]:
     """SHA-256 of a base64url credential id — what carries the UNIQUE index and every lookup.
 
     A credential id is public (the browser hands it to any site that asks), so this is a length
-    normaliser, not a secret-protection measure: raw ids run past what MySQL will index."""
+    normaliser, not a secret-protection measure: raw ids run past what MySQL will index.
+    """
     if not credential_id:
         return None
     return hashlib.sha256(credential_id.encode("utf-8")).hexdigest()
@@ -3680,7 +3730,8 @@ def _credential_id_hash(credential_id: Optional[str]) -> Optional[str]:
 def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_count: int = 0,
                        label: Optional[str] = None, transports: Optional[str] = None) -> Optional[int]:
     """Store a verified passkey. Confirmed on insert — a registration response only reaches here
-    after `verify_registration_response` accepted it, so there is no unproven state to hold."""
+    after `verify_registration_response` accepted it, so there is no unproven state to hold.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3710,7 +3761,8 @@ def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_c
 def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
     """The stored passkey for a credential id, with the user it belongs to. This is how a
     discoverable-credential login resolves WHO is signing in — the assertion names the credential,
-    not the account."""
+    not the account.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3731,7 +3783,8 @@ def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
 
 def get_user_passkey_credential_ids(user_id: int) -> list[str]:
     """Credential ids already enrolled — passed to the browser as `excludeCredentials` so the same
-    authenticator cannot be registered twice, and as `allowCredentials` for a non-discoverable one."""
+    authenticator cannot be registered twice, and as `allowCredentials` for a non-discoverable one.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3755,7 +3808,8 @@ def update_factor_counter(factor_id: int, counter: int) -> bool:
     ONE column for both kinds because both are the same idea: a passkey's WebAuthn signature count,
     and an authenticator app's accepted TOTP time step. Each must strictly INCREASE, and that is
     what makes a cloned authenticator (a counter that went backwards) and a re-typed TOTP code
-    (the same 30-second step twice) fail instead of pass."""
+    (the same 30-second step twice) fail instead of pass.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3781,7 +3835,8 @@ def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -
     A CONFIRMED row is deliberately left alone here, and `auth_factors.begin_totp_enrollment` is
     what refuses to call this while one exists: an account holds at most one authenticator app, and
     silently deleting the working one to start an enrolment nobody may finish would hand a stolen
-    session a way to take the factor off the account."""
+    session a way to take the factor off the account.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3808,7 +3863,8 @@ def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -
 def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]:
     """The account's TOTP factor with its secret decrypted. Returns None when the envelope cannot
     be opened — a caller that got the raw envelope back would compare a code against ciphertext and
-    reject every valid one silently."""
+    reject every valid one silently.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3833,7 +3889,8 @@ def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]
 
 def confirm_totp_factor(factor_id: int, user_id: int) -> bool:
     """Mark a TOTP seed proven. Scoped by user_id so a guessed factor id cannot confirm someone
-    else's enrolment, and idempotent-safe: only an unconfirmed row is touched."""
+    else's enrolment, and idempotent-safe: only an unconfirmed row is touched.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3871,7 +3928,8 @@ def touch_auth_factor(factor_id: int) -> bool:
 
 def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
     """The account's strong factors for the Security card. Never returns a secret or a public key —
-    only what a person needs to recognise a factor before removing it."""
+    only what a person needs to recognise a factor before removing it.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3892,7 +3950,8 @@ def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
 
 def count_auth_factors(user_id: int) -> int:
     """How many CONFIRMED strong factors the account holds. The one question the login path and the
-    step-up gate both ask, so it is one indexed COUNT rather than a list the caller measures."""
+    step-up gate both ask, so it is one indexed COUNT rather than a list the caller measures.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3913,7 +3972,8 @@ def count_auth_factors(user_id: int) -> int:
 
 def delete_auth_factor(user_id: int, factor_id: int) -> bool:
     """Remove ONE factor. Scoped by user_id — a factor id from another account must never be
-    removable by guessing the number."""
+    removable by guessing the number.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3931,7 +3991,8 @@ def delete_auth_factor(user_id: int, factor_id: int) -> bool:
 
 def replace_recovery_codes(user_id: int, code_hashes: list[str]) -> bool:
     """Install a fresh set of recovery codes, invalidating every previous one — including the ones
-    already spent, since a regenerate is the user saying "the old sheet is gone"."""
+    already spent, since a regenerate is the user saying "the old sheet is gone".
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3970,7 +4031,8 @@ def get_unused_recovery_codes(user_id: int) -> list[dict]:
 
 def consume_recovery_code(user_id: int, code_id: int) -> bool:
     """Spend one code. The `used_at IS NULL` predicate is the single-use guarantee: two requests
-    racing the same code produce one winner, because MySQL only lets one UPDATE match."""
+    racing the same code produce one winner, because MySQL only lets one UPDATE match.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -4019,7 +4081,8 @@ def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[
     `initial_attempts` carries a guessing budget already spent into the new row. Without it the
     per-handle counter is no bound at all on a second-factor login: a fresh handle costs one more
     round of the stage before it, so the same 6-digit code space could be walked five guesses at a
-    time forever (see `count_challenge_attempts`)."""
+    time forever (see `count_challenge_attempts`).
+    """
     import secrets as _secrets
     handle = _secrets.token_urlsafe(24)
     connection = get_db_connection()
@@ -4049,7 +4112,8 @@ def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
     used, or for a different purpose.
 
     The claim is an UPDATE with `consumed_at IS NULL` in the predicate, not a SELECT-then-UPDATE:
-    two replays of one assertion must not both find an unconsumed row."""
+    two replays of one assertion must not both find an unconsumed row.
+    """
     handle_hash = hash_session_token(handle)
     if not handle_hash:
         return None
@@ -4093,7 +4157,8 @@ def claim_auth_challenge_attempt(handle: str, purpose: str,
 
     The count is in MySQL rather than the Redis limiter in front of it on purpose: that limiter
     fails open (utilities/auth_rate_limit.py), and a guessing bound that disappears when Redis does
-    is not a bound."""
+    is not a bound.
+    """
     handle_hash = hash_session_token(handle)
     if not handle_hash:
         return None
@@ -4139,7 +4204,8 @@ def count_challenge_attempts(user_id: int, purpose: str, since: datetime) -> int
     the ACCOUNT. They are not the same bound, and only this one is real: re-running the stage that
     issues the handle mints a fresh counter, so an attacker who can reach that stage (an unbounded
     PIN bypass, or a compromised mailbox — threat T2, the one 2c exists to defeat) otherwise gets
-    five guesses per round with nothing accumulating."""
+    five guesses per round with nothing accumulating.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -4163,7 +4229,8 @@ def count_challenge_attempts(user_id: int, purpose: str, since: datetime) -> int
 def clear_challenge_attempts(user_id: int, purpose: str) -> bool:
     """Zero this account's spent guesses — called only after a factor actually verified. A correct
     code is proof, and the same proof is what clears the Redis buckets on every other login path;
-    without it a user who fat-fingered a code stays part-throttled into their next sign-in."""
+    without it a user who fat-fingered a code stays part-throttled into their next sign-in.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -4183,7 +4250,8 @@ def clear_challenge_attempts(user_id: int, purpose: str) -> bool:
 
 def finish_auth_challenge(handle: str) -> bool:
     """Burn a challenge that has served its purpose — the success half of
-    `claim_auth_challenge_attempt`, which leaves the handle live while attempts remain."""
+    `claim_auth_challenge_attempt`, which leaves the handle live while attempts remain.
+    """
     handle_hash = hash_session_token(handle)
     if not handle_hash:
         return False
@@ -4207,7 +4275,8 @@ def finish_auth_challenge(handle: str) -> bool:
 
 def mark_session_verified(token: str) -> bool:
     """Stamp `sessions.last_verified_at` — this session just proved a strong factor, which is what
-    the step-up gate reads. Live sessions only: a revoked row must not become verified."""
+    the step-up gate reads. Live sessions only: a revoked row must not become verified.
+    """
     token_hash = hash_session_token(token)
     if not token_hash:
         return False
@@ -4231,7 +4300,8 @@ def mark_session_verified(token: str) -> bool:
 
 def get_session_auth_state(token: str) -> Optional[dict]:
     """(`last_verified_at`, `scope`) for a live session — everything the step-up gate needs in one
-    read. None when the token names no live session."""
+    read. None when the token names no live session.
+    """
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
@@ -4258,7 +4328,8 @@ def release_enrollment_scope(token: str) -> bool:
 
     Conditional on the CURRENT scope in the same statement: a `full`, `recovery` or `extension`
     session enrolling a factor must not be widened by this, and two concurrent enrolments cannot
-    both promote. Returns False for the ordinary case where nothing was held — not an error."""
+    both promote. Returns False for the ordinary case where nothing was held — not an error.
+    """
     token_hash = hash_session_token(token)
     if not token_hash:
         return False
@@ -4342,7 +4413,8 @@ def add_user_by_email(email: str) -> Optional[int]:
 
 def get_user_public_uid(user_id: int) -> Optional[str]:
     """The account's public identifier (issue #745, 2b). Lazily minted for a row that predates the
-    column and somehow escaped the migration backfill, so callers never have to handle None."""
+    column and somehow escaped the migration backfill, so callers never have to handle None.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4382,7 +4454,8 @@ def get_user_id_by_public_uid(public_uid: str) -> Optional[int]:
 
 def mark_email_verified(user_id: int) -> bool:
     """Stamp `users.email_verified_at` — the email is an attribute of the account, and this is the
-    proof that the current value was actually reached."""
+    proof that the current value was actually reached.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -4403,7 +4476,8 @@ def change_user_email(user_id: int, new_email: str,
     """Point the account at a different email and record the move in `user_email_history`.
 
     The account identity is `users.id` / `public_uid`, so nothing else has to move. Returns False
-    when the new address already belongs to another account — the caller must not merge accounts."""
+    when the new address already belongs to another account — the caller must not merge accounts.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4466,7 +4540,8 @@ def get_user_analytics_profile(user_id: int) -> dict:
     activation "aha", not signup — a user who signed up and stalled has no opinion worth surveying)
     and how many posts the user has ever approved. "Ever approved" is deliberately not
     `status='approved'`: an approved post moves on to scheduled and then posted, so counting the
-    current status alone would reset the tally the moment automation ran."""
+    current status alone would reset the tally the moment automation ran.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4823,7 +4898,8 @@ ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trial")
 def is_premium_subscriber(user_id: int) -> bool:
     """True when the user is on a currently-active professional/enterprise plan. Anything else —
     free trial, starter, lapsed, unknown, or a DB error — is treated as NOT premium, so a premium-only
-    allowance can never be granted by accident."""
+    allowance can never be granted by accident.
+    """
     try:
         info = get_user_subscription_info(user_id)
     except Exception:
@@ -4857,7 +4933,8 @@ POSTING_DAY_MIN, POSTING_DAY_MAX = 0, 6
 def normalize_posting_days(value) -> list:
     """A de-duped, sorted list of valid weekday ints — or the Mon-Fri default when the input holds
     nothing usable. Never returns an empty set: an empty cadence would schedule no content at all,
-    and a bad value must not be persisted into the one-row prefs upsert (the V52 lesson)."""
+    and a bad value must not be persisted into the one-row prefs upsert (the V52 lesson).
+    """
     days = []
     for raw in _coerce_json_list(value):
         try:
@@ -4991,7 +5068,8 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
 
     Deliberately lets `mysql.connector.Error` escape: a read failure is not the same as a missing
     row, and `update_engagement_preferences` must be able to tell them apart before it rewrites
-    every column (issue #639)."""
+    every column (issue #639).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -5040,7 +5118,8 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
 def _code_engagement_defaults(user_id: int) -> dict:
     """`_ENGAGEMENT_DEFAULTS` with the one field whose FLEET default is runtime-controlled resolved
     for this user (issue #651). Only reached when the user has no saved row: once they save one, the
-    column holds their own explicit 0/1 and the flag can never override it."""
+    column holds their own explicit 0/1 and the flag can never override it.
+    """
     from cqc_lem.utilities.flags import FEED_FALLBACK_DEFAULT, flag_enabled
     defaults = dict(_ENGAGEMENT_DEFAULTS)
     defaults["feed_fallback_when_empty"] = flag_enabled(FEED_FALLBACK_DEFAULT, user_id=user_id)
@@ -5049,7 +5128,8 @@ def _code_engagement_defaults(user_id: int) -> dict:
 
 def get_engagement_preferences(user_id: int) -> dict:
     """Return the user's engagement preferences (voice/targeting/caps) with code-level
-    defaults when no row exists — so behaviour is unchanged until the user customizes."""
+    defaults when no row exists — so behaviour is unchanged until the user customizes.
+    """
     try:
         row = _select_engagement_row(user_id)
     except mysql.connector.Error as err:
@@ -5066,7 +5146,8 @@ def engagement_preferences_are_configured(user_id: int) -> Optional[bool]:
 
     Three-valued: None means the row could not be READ, which is NOT the same as "never configured"
     (issue #639). A caller that would otherwise write policy defaults over settings the user chose
-    has to be able to tell those two apart (issue #952)."""
+    has to be able to tell those two apart (issue #952).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -5155,8 +5236,11 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     merged["posting_days"] = normalize_posting_days(merged.get("posting_days"))
     # Quality-gate thresholds (issue #421): None means "use the deploy default", anything else is
     # clamped to its valid band so an out-of-range slider can never make a gate un-passable.
-    from cqc_lem.utilities.quality_gates import (AUTHENTICITY_SCORE_MIN_BOUNDS,
-                                                 SIMILARITY_MAX_PCT_BOUNDS, clamp_threshold)
+    from cqc_lem.utilities.quality_gates import (
+        AUTHENTICITY_SCORE_MIN_BOUNDS,
+        SIMILARITY_MAX_PCT_BOUNDS,
+        clamp_threshold,
+    )
     merged["authenticity_score_min"] = clamp_threshold(
         merged.get("authenticity_score_min"), *AUTHENTICITY_SCORE_MIN_BOUNDS)
     merged["post_similarity_max_pct"] = clamp_threshold(
@@ -5219,7 +5303,8 @@ class FollowStatus(StrEnum):
     """Follow state of a roster target (issue #962) — the ONE vocabulary, shared by the MySQL ENUM,
     the DOM reading the resolver returns, and every write site, so a typo is an import error instead
     of a MySQL error at 3am. `StrEnum`, so a raw column value read back from the DB compares equal
-    to a member without a conversion at every boundary."""
+    to a member without a conversion at every boundary.
+    """
     UNKNOWN = 'unknown'                # we could not read the card — never "there is nothing to follow"
     NOT_FOLLOWING = 'not_following'
     FOLLOWING = 'following'
@@ -5233,7 +5318,8 @@ class ConnectStatus(StrEnum):
 
     The rung above follow: it is only ever reached by a target that IS followed and is STILL
     un-commentable, so 'needs_connection' is a claim backed by evidence rather than a guess about
-    someone's privacy settings."""
+    someone's privacy settings.
+    """
     UNKNOWN = 'unknown'                  # nothing known / nothing to do — the resting state
     NEEDS_CONNECTION = 'needs_connection'
     REQUESTED = 'requested'
@@ -5269,7 +5355,8 @@ _ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comment
 def resolve_weekly_cap(value: Any) -> int:
     """The per-author weekly cap, with an EXPLICIT 0 preserved. 0 is how the SPA pauses an account
     without removing it, so `value or DEFAULT` would read that pause as "unset" and hand the account
-    the default two comments a week — the opposite of what the operator asked for."""
+    the default two comments a week — the opposite of what the operator asked for.
+    """
     if value is None:
         return ENGAGEMENT_TARGET_WEEKLY_DEFAULT
     try:
@@ -5286,7 +5373,8 @@ def engagement_week_start(today: Optional[date] = None) -> date:
 
 def _clean_target_row(row: dict) -> dict:
     """Normalize a roster row: bools as bools, and a STALE weekly counter reported as 0 so a target
-    whose cap was spent last week is immediately eligible again without a reset job."""
+    whose cap was spent last week is immediately eligible again without a reset job.
+    """
     row["active"] = bool(row.get("active"))
     if row.get("week_start") != engagement_week_start():
         row["comments_this_week"] = 0
@@ -5304,7 +5392,8 @@ def _clean_target_row(row: dict) -> dict:
 def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
     """The user's engagement roster, grouped by category and oldest-configured first within each
     category. `comments_this_week` is already week-aware (0 once the stored week_start is not the
-    current week)."""
+    current week).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -5325,7 +5414,8 @@ def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
 
 def upsert_engagement_targets(user_id: int, targets: list) -> bool:
     """Upsert roster rows keyed on (user_id, profile_url). Only the editable fields are written —
-    last_engaged_at / the weekly counter belong to the automation, so an edit never resets a cap."""
+    last_engaged_at / the weekly counter belong to the automation, so an edit never resets a cap.
+    """
     rows = []
     for t in targets or []:
         url = str(t.get("profile_url") or "").strip()
@@ -5393,7 +5483,8 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
     For the same reason a pending 'needs_connection' escalation (issue #979) is stood back down to
     'unknown': it means "following did not unlock commenting", and commenting just worked. Only that
     one state is cleared — an invite already sent ('requested'/'failed'/'connected') is a fact about
-    LinkedIn that a comment landing does not undo."""
+    LinkedIn that a comment landing does not undo.
+    """
     week = engagement_week_start()
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -5418,7 +5509,8 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
 class BlockedVisit(NamedTuple):
     """What one recorded blocked visit left behind: the new streak, and the target's connect state
     AFTER the escalation check ran. Both come out of the same statement, so a caller can never
-    report a streak the escalation disagrees with."""
+    report a streak the escalation disagrees with.
+    """
     streak: int
     connect_status: str
 
@@ -5437,7 +5529,8 @@ def record_target_comment_blocked(user_id: int, profile_url: str) -> BlockedVisi
     The escalation is guarded on evidence, not on hope: the target must be `following`, must have a
     `followed_at`, and its PREVIOUS blocked visit must already have been after that follow. So this
     visit is the SECOND post-follow block — one is a render race, two is the account telling us
-    following was not the missing permission. A target that was never followed is never escalated."""
+    following was not the missing permission. A target that was never followed is never escalated.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     url = str(profile_url or "").strip()
@@ -5476,7 +5569,8 @@ def record_target_comment_blocked(user_id: int, profile_url: str) -> BlockedVisi
 def set_target_follow_status(user_id: int, profile_url: str, status: FollowStatus) -> bool:
     """Write a roster target's follow state (issue #962). 'following' stamps `followed_at` and
     clears the attempt counter — it is reached both by a verified click and by the zero-cost
-    catch-up where the top card already said "Following"."""
+    catch-up where the top card already said "Following".
+    """
     if status not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
         log_error(f"Refusing to write unknown follow status {status!r}", user_id=user_id)
         return False
@@ -5508,7 +5602,8 @@ def record_target_follow_failure(user_id: int, profile_url: str) -> int:
 
     At `ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS` the status goes terminal ('follow_failed') in the
     same statement, which both badges the target for the user and stops the roster pass from
-    spending a click on it every single run."""
+    spending a click on it every single run.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     url = str(profile_url or "").strip()
@@ -5545,7 +5640,8 @@ def set_target_connect_status(user_id: int, profile_url: str, status: ConnectSta
     invite went out", and a later read-only visit that merely re-observes a Pending control must not
     keep moving that date forward. Standing a target back down to 'needs_connection' (a dispatch
     that was throttled before anything reached LinkedIn) clears the stamp, because no invite exists
-    to date."""
+    to date.
+    """
     if status not in ENGAGEMENT_TARGET_CONNECT_STATUSES:
         log_error(f"Refusing to write unknown connect status {status!r}", user_id=user_id)
         return False
@@ -5581,7 +5677,8 @@ def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
     """Seed candidates for an empty roster: people who recently engaged with the user's OWN posts
     (post_engagers), minus anyone already on the roster. Costs no scraping. Suggested as 'icp' —
     someone reacting to your content is far likelier to be a buyer than a peer — and the operator
-    re-categorizes in the editor."""
+    re-categorizes in the editor.
+    """
     if limit <= 0:
         return []
     existing = {str(t.get("profile_url") or "").rstrip("/").lower()
@@ -5620,7 +5717,8 @@ def _clean_story_row(row: dict) -> dict:
 
 def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
     """The user's story bank, least-recently-used first — the rotation order the selector consumes
-    directly (never-used entries sort ahead of used ones, oldest use next)."""
+    directly (never-used entries sort ahead of used ones, oldest use next).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -5659,7 +5757,8 @@ def count_story_bank_entries(user_id: int, active_only: bool = True) -> int:
 
 def upsert_story_bank_entries(user_id: int, entries: list) -> bool:
     """Insert new entries and update existing ones (matched on id + user_id). The rotation counters
-    belong to generation, so an edit never resets used_count/last_used_at."""
+    belong to generation, so an edit never resets used_count/last_used_at.
+    """
     inserts, updates = [], []
     for e in entries or []:
         title = str(e.get("title") or "").strip()[:_LEN_STORY_TITLE]
@@ -5736,7 +5835,8 @@ def record_story_bank_use(user_id: int, entry_id: int) -> bool:
 def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
     """The user's PERSISTENT inbound token for the comment-notification forwarding address
     (reply+<token>@parse-domain). Minted once and stored on the users row so the Gmail forward
-    filter the user sets up keeps resolving to them. Returns None only on DB error."""
+    filter the user sets up keeps resolving to them. Returns None only on DB error.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -5776,7 +5876,8 @@ def get_user_id_by_reply_token(token: str) -> Optional[int]:
 
 def get_users_with_reply_mode(mode: str) -> list:
     """user_ids whose engagement prefs set reply_check_mode = mode (drives the scheduled sweep
-    dispatcher). Users with no prefs row default to 'event', so they never appear for 'scheduled'."""
+    dispatcher). Users with no prefs row default to 'event', so they never appear for 'scheduled'.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -5859,7 +5960,8 @@ def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
 def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str = None) -> bool:
     """True when this person already has a queued DM that hasn't gone out yet (issue #485 dedup —
     one drafted next message per conversation). Fails SAFE to True: on a DB error we skip drafting
-    rather than risk stacking two messages on one thread."""
+    rather than risk stacking two messages on one thread.
+    """
     if not recipient_profile_url:
         return True
     where = "user_id=%s AND recipient_profile_url=%s"
@@ -5886,7 +5988,8 @@ def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str 
 def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
     """How many DMs were DRAFTED for this user today (optionally only from one source). The daily
     send cap already guards delivery; this bounds the auto-nurture drafting itself, since each draft
-    costs an LLM call and fills the operator's approval queue."""
+    costs an LLM call and fills the operator's approval queue.
+    """
     where = "user_id=%s AND created_at >= CURDATE()"
     params: list = [user_id]
     if source:
@@ -5964,7 +6067,8 @@ def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
     """Approved DMs whose scheduled_time is at or before now+delta. Deliberately NO lower bound:
     an approved DM can drift arbitrarily far past its slot (e.g. deferred repeatedly by the daily
     DM cap) and must stay eligible until sent/canceled. Oldest first so overdue DMs drain in order.
-    Returns (id, scheduled_time, user_id) tuples."""
+    Returns (id, scheduled_time, user_id) tuples.
+    """
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(minutes=post_time_delta_minutes)
     connection = get_db_connection()
@@ -5987,7 +6091,8 @@ def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
 def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
     """DMs stuck in 'scheduled' whose send task was lost (e.g. Celery queue purged on container
     restart) before reaching sent/failed. Mirrors get_orphaned_scheduled_posts — the lookback gap
-    avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples."""
+    avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -6055,7 +6160,8 @@ def count_invites_sent_today(user_id: int) -> int:
     both the reactive profile-viewer flow and the proactive connect flow send via invite_to_connect_now,
     which logs an ENGAGED/SUCCESS row with CONNECTION_REQUEST_SENT_MESSAGE on every real send. Counting
     those immutable logs (by created_at) covers both flows without double-counting a proactive send (which
-    also has a connection_requests row) and avoids the mutable connection_requests.updated_at clock."""
+    also has a connection_requests row) and avoids the mutable connection_requests.updated_at clock.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6081,7 +6187,8 @@ def count_invite_withdrawals_today(user_id: int) -> int:
     Counts BOTH result values on purpose: the row is written when the withdrawal is DISPATCHED, and
     an unverified one still cost LinkedIn an action. Reading it back out of the immutable logs (not
     Redis) is what keeps a second run the same day, or a worker restart, from re-spending the day's
-    allowance."""
+    allowance.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6105,7 +6212,8 @@ def count_company_page_invites_sent_today(user_id: int) -> int:
     A page invite is a BATCH action (select N, click Invite once), so one log row carries a count
     rather than one row per invitee; the trailing number in COMPANY_PAGE_INVITE_SENT_MESSAGE is
     summed instead of the rows being counted. Reading it back out of the immutable logs (not Redis)
-    is what makes a second run the same day idempotent across worker restarts."""
+    is what makes a second run the same day idempotent across worker restarts.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6211,7 +6319,8 @@ def get_connection_requests(user_id: int, status_filter: str = None, page: int =
 
 def get_approved_connection_requests() -> list:
     """Approved connection requests waiting to be sent, oldest first. Returns (id, user_id) tuples.
-    The daily cap is enforced by the scanner/send task, not here."""
+    The daily cap is enforced by the scanner/send task, not here.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6230,7 +6339,8 @@ def get_approved_connection_requests() -> list:
 def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
     """Requests stuck in 'sending' whose send task was lost (e.g. Celery queue purged on restart).
     Mirrors get_orphaned_scheduled_dms — the lookback gap avoids racing an in-flight task.
-    Returns (id, user_id) tuples."""
+    Returns (id, user_id) tuples.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -6252,7 +6362,8 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
                                      failure_reason: str = None) -> bool:
     """Move a request to `status`. `failure_reason` records WHY a send failed (issue #623) — it is
     written on every call, so a request that later succeeds or is deferred clears the stale reason
-    instead of showing yesterday's failure next to today's status."""
+    instead of showing yesterday's failure next to today's status.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6303,7 +6414,8 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
 def count_open_connection_requests(user_id: int) -> int:
     """Targets already queued but not yet sent (pending / approved / sending). The sourcing scan
     subtracts these from the daily invite budget so it can't pile up a backlog that would spend
-    tomorrow's cap the moment it opens."""
+    tomorrow's cap the moment it opens.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6323,7 +6435,8 @@ def count_open_connection_requests(user_id: int) -> int:
 def get_requested_person_keys(user_id: int) -> set:
     """person_key()s for everyone this user has EVER had a connection request row for, any status.
     The dedup set for the nightly sourcing scan: a canceled/failed target must not come back every
-    night, and someone already invited must never be invited twice."""
+    night, and someone already invited must never be invited twice.
+    """
     from cqc_lem.utilities.lead_scoring import person_key
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -6349,7 +6462,8 @@ def get_engager_candidates(user_id: int, days: int = 30) -> list:
     """People who recently engaged with the user's OWN posts, as connection-targeting candidates:
     [{'person_name', 'person_profile_url', 'connection_degree', 'occurred_at'}]. Only rows with a
     profile URL — without one there is nobody to invite. Read from post_engagers, so this costs no
-    scraping. `connection_degree` lets the caller drop people we're already connected to (#623)."""
+    scraping. `connection_degree` lets the caller drop people we're already connected to (#623).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6468,7 +6582,8 @@ def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: 
 
 def get_approved_outreach_targets(user_id: int) -> list:
     """Approved, not-yet-completed funnel targets for a user — the rows the processor may fire.
-    Oldest-updated first so a backlog drains in order. Returns dict rows."""
+    Oldest-updated first so a backlog drains in order. Returns dict rows.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6488,7 +6603,8 @@ def get_approved_outreach_targets(user_id: int) -> list:
 def count_open_outreach_targets(user_id: int) -> int:
     """Funnel targets still awaiting a human or a stage fire (pending / approved, not completed).
     The sourcing scan (issue #623) stops adding once this backlog is deep enough — a review queue
-    nobody works through is the same as no queue at all."""
+    nobody works through is the same as no queue at all.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6580,7 +6696,8 @@ def insert_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEve
                          status: "CatchupTouchStatus" = CatchupTouchStatus.PENDING) -> Optional[int]:
     """Record a drafted catch-up touch. Returns None when the milestone is already in the ledger —
     the (user, profile, event_type, event_period) unique key is the dedup guarantee, so a moment that
-    stays in the feed for days can never be messaged twice."""
+    stays in the feed for days can never be messaged twice.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6622,7 +6739,8 @@ def get_catchup_touch_user_id(touch_id: int) -> Optional[int]:
 def has_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventType",
                       event_period: str) -> bool:
     """True if this exact milestone has already been drafted/sent — checked before drafting so we
-    don't spend an LLM call on a moment the unique key would reject anyway."""
+    don't spend an LLM call on a moment the unique key would reject anyway.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6677,7 +6795,8 @@ def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filt
 
 def get_approved_catchup_touches() -> list:
     """Approved touches waiting to be sent, highest-scoring first so the best moments go out within
-    the daily cap. Returns (id, user_id) tuples; the cap is enforced by the scanner/send task."""
+    the daily cap. Returns (id, user_id) tuples; the cap is enforced by the scanner/send task.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6696,7 +6815,8 @@ def get_approved_catchup_touches() -> list:
 def count_pending_catchup_touches() -> int:
     """Drafted touches still waiting on human approval, fleet-wide. The send drip reports this so a
     queue that exists but was never approved cannot read as an empty one (issue #792) — the drafts
-    land 'pending' unless the user opted into catchup_touch_mode='auto_approve'."""
+    land 'pending' unless the user opted into catchup_touch_mode='auto_approve'.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6715,7 +6835,8 @@ def count_pending_catchup_touches() -> int:
 
 def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
     """Touches stuck in 'sending' whose send task was lost (e.g. Celery queue purged on restart).
-    Mirrors get_orphaned_connection_requests. Returns (id, user_id) tuples."""
+    Mirrors get_orphaned_connection_requests. Returns (id, user_id) tuples.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -6796,7 +6917,8 @@ def update_catchup_touch(touch_id: int, message: str = None, person_name: str = 
 def has_scheduled_post_today(user_id: int) -> bool:
     """True if the user has a post going out today (UTC) — those days are already covered by the
     pre-post commenting trigger, so the standalone daily engagement run should skip them. Fails
-    safe to True (skip the standalone run) so an error never causes double-commenting."""
+    safe to True (skip the standalone run) so an error never causes double-commenting.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6818,7 +6940,8 @@ def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = N
     """Record that `engager_name` engaged with the user's post (or refresh their last-engaged
     time). No-op on a blank name or if the table isn't present yet. `connection_degree` is the
     scraped badge ('1st'/'2nd'/'3rd+', issue #623) — COALESCEd, so a later sighting that rendered no
-    badge never erases a degree we already know."""
+    badge never erases a degree we already know.
+    """
     if not engager_name or not engager_name.strip():
         return False
     connection = get_db_connection()
@@ -6844,7 +6967,8 @@ def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = N
 
 def get_recent_engagers(user_id: int, days: int = 14) -> set:
     """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
-    targets to prioritize commenting back on. Empty set if the tracking table isn't present yet."""
+    targets to prioritize commenting back on. Empty set if the tracking table isn't present yet.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6874,7 +6998,8 @@ def claim_post_for_comment(user_id: int, post_key: str, stale_after_minutes: int
     chance to run its except-branch release). Without the takeover, a task re-queued by
     task_acks_late would keep short-circuiting on its own abandoned claim and the comment would be
     lost for good — see issue #549. The window is far longer than a comment run, so a takeover
-    can't race a task that is genuinely still working."""
+    can't race a task that is genuinely still working.
+    """
     if not post_key or not str(post_key).strip():
         return False
     connection = get_db_connection()
@@ -6954,7 +7079,8 @@ def mark_post_reacted(user_id: int, post_key: str) -> bool:
 
 def release_post_claim(user_id: int, post_key: str) -> bool:
     """Release an in-flight claim (comment never posted) so a later run can retry the post. Only
-    deletes rows still in the 'claimed' state — a successful 'commented' record is never released."""
+    deletes rows still in the 'claimed' state — a successful 'commented' record is never released.
+    """
     if not post_key:
         return False
     connection = get_db_connection()
@@ -6975,7 +7101,8 @@ def release_post_claim(user_id: int, post_key: str) -> bool:
 
 def has_commented_post(user_id: int, post_key: str) -> bool:
     """True if this post is already claimed or commented for the user (persistent, cross-run
-    dedup). Empty/False if the ledger table isn't present yet."""
+    dedup). Empty/False if the ledger table isn't present yet.
+    """
     if not post_key:
         return False
     connection = get_db_connection()
@@ -6997,7 +7124,8 @@ def get_recent_navigable_commented_posts(user_id: int, days: int = 3) -> list:
     """Posts we automated a comment on in the last `days` whose ledger key is a navigable URN
     (feedurn://urn:li:...), newest first. These are the posts the follow-up sweep can revisit to
     handle replies to our comment (issue #478). Pre-#474 'feedpost://' hash keys aren't navigable
-    and are excluded."""
+    and are excluded.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7017,7 +7145,8 @@ def get_recent_navigable_commented_posts(user_id: int, days: int = 3) -> list:
 def get_recent_commented_rows_with_text(user_id: int, days: int = 3) -> list:
     """Recent commented_posts rows plus the comment text we left (from the most recent matching
     SUCCESS comment log), for the URN reconcile backfill. Includes legacy 'feedpost://' rows so
-    they can be matched by text and upgraded (issue #478)."""
+    they can be matched by text and upgraded (issue #478).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7041,7 +7170,8 @@ def get_recent_commented_rows_with_text(user_id: int, days: int = 3) -> list:
 
 def get_comment_followup(user_id: int, reply_key: str) -> "dict | None":
     """The follow-up ledger row for a specific reply (reacted/replied flags), or None if we have
-    never handled this reply. Dedup anchor for the follow-up sweep."""
+    never handled this reply. Dedup anchor for the follow-up sweep.
+    """
     if not reply_key:
         return None
     connection = get_db_connection()
@@ -7062,7 +7192,8 @@ def record_comment_followup(user_id: int, post_key: str, reply_key: str,
                             reacted: bool = False, replied: bool = False) -> bool:
     """Upsert a follow-up record for a reply. Flags are latched ON (never cleared) so a later
     partial pass can't undo an earlier action, and the UNIQUE(user_id, reply_key) constraint makes
-    this the single source of truth for 'already reacted/replied to this reply'."""
+    this the single source of truth for 'already reacted/replied to this reply'.
+    """
     if not reply_key:
         return False
     connection = get_db_connection()
@@ -7105,7 +7236,8 @@ def update_commented_post_key(user_id: int, old_key: str, new_key: str) -> bool:
     """Backfill: upgrade a commented_posts row's key from the old 'feedpost://' content hash to the
     navigable 'feedurn://' URN once we recover it (issue #478 reconcile). If the new key already
     exists for this user (already commented under the URN), drop the stale hash row instead so the
-    UNIQUE(user_id, post_key) constraint isn't violated."""
+    UNIQUE(user_id, post_key) constraint isn't violated.
+    """
     if not old_key or not new_key or old_key == new_key:
         return False
     connection = get_db_connection()
@@ -7176,7 +7308,8 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
     reason), which is what stops an unfindable comment being re-walked every night.
 
     `visible_most_relevant` stays NULL when the read was ambiguous — never coerced to a boolean,
-    because a guess would feed the demotion rate that gates commenting."""
+    because a guess would feed the demotion rate that gates commenting.
+    """
     if not log_id:
         return False
     visible = None if visible_most_relevant is None else int(bool(visible_most_relevant))
@@ -7208,7 +7341,8 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
 
 def get_comment_outcomes(user_id: int, days: int = 7) -> list:
     """Comment-outcome rows checked in the last `days`, newest first — the input to the weekly
-    quality score (`utilities/comment_outcomes.py`)."""
+    quality score (`utilities/comment_outcomes.py`).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7229,7 +7363,8 @@ def get_comment_outcomes(user_id: int, days: int = 7) -> list:
 def get_duplicate_comment_posts(user_id: int, hours: int = 24):
     """Read-only report: posts the user commented on MORE THAN ONCE in the last `hours`, from the
     SUCCESS comment logs. Returns list of (post_url, comment_count, first_at, last_at) ordered by
-    most-duplicated first. Used to size/verify the multiple-comment bug and drive consolidation."""
+    most-duplicated first. Used to size/verify the multiple-comment bug and drive consolidation.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7252,7 +7387,8 @@ def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
     """The bodies of the user's most recently POSTED comments, newest first — the history the
     comment-side similarity gate dedups a fresh draft against (issue #617). No new column and no
     stored embeddings: `logs.message` already holds the exact text of every successful comment, so
-    the gate recomputes from the log."""
+    the gate recomputes from the log.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7355,7 +7491,8 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
     makes the weekly rollup's week-over-week comparison stable.
 
     Every measured column is nullable and is written as NULL when the dimension was not measured; a 0
-    would read as "clean" or "no reach" instead of "not scored"."""
+    would read as "clean" or "no reach" instead of "not scored".
+    """
     score = dict(score or {})
     ref_id = str(score.get("ref_id") or "").strip()
     if not ref_id:
@@ -7400,7 +7537,8 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
 def get_content_quality_scores(user_id: int, days: int = 14) -> list:
     """Scored content rows shipped in the last `days`, newest first — the input to the weekly rollup
     and the analytics panel (issue #630). The rollup needs TWO periods, so callers pass twice their
-    comparison window."""
+    comparison window.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7429,7 +7567,8 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
 
 def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
     """Record a joined group (new groups default to enabled=1). Refreshes name + last_synced_at
-    without clobbering the user's enabled choice on an existing row."""
+    without clobbering the user's enabled choice on an existing row.
+    """
     if not group_id:
         return False
     connection = get_db_connection()
@@ -7495,7 +7634,8 @@ def get_next_group_for_post(user_id: int) -> Optional[dict]:
     Ordering reads `last_post_run_at` (every run that reached the group), NOT `last_posted_at`
     (successful posts only) — a group where members cannot post never stamps the latter, so ordering
     on it left that group "next" every week forever and starved the rest (issue #858). The COALESCE
-    covers any row stamped before `last_post_run_at` existed."""
+    covers any row stamped before `last_post_run_at` existed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7517,7 +7657,8 @@ def get_next_group_for_post(user_id: int) -> Optional[dict]:
 
 def record_group_post(user_id: int, group_id: str) -> bool:
     """Stamp a group as just-posted-in so the rotation moves on to the next one. A successful post
-    is also a run, so both columns advance together."""
+    is also a run, so both columns advance together.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7539,7 +7680,8 @@ def record_group_post_run(user_id: int, group_id: str) -> bool:
     left alone because nothing was published. Called only when the run reached the group and the
     group itself turned out to be unpostable (no share box / editor / Post button — admin-only or
     announcement groups). A run that never reached the group stamps neither column, so a transient
-    session failure still leaves that group next in line."""
+    session failure still leaves that group next in line.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7563,7 +7705,8 @@ def record_group_post_run(user_id: int, group_id: str) -> bool:
 def set_groups_enabled(user_id: int, group_states: dict) -> bool:
     """Bulk-update per-group flags. Each value is either a bare bool (engagement only — the shape
     the pre-#769 SPA bundle still sends) or {"enabled": bool, "post_enabled": bool}; only the keys
-    present are written, so a partial payload never silently resets the other flag."""
+    present are written, so a partial payload never silently resets the other flag.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7592,7 +7735,8 @@ def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
 
     None (never []) when the read FAILED, so a caller can tell "opted out of every group" from "we
     could not tell": the weekly publish run cancels a reviewed draft on the former, and a read error
-    that answered [] would silently cancel every user's approved group post (issue #932)."""
+    that answered [] would silently cancel every user's approved group post (issue #932).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7638,7 +7782,8 @@ def create_group_post_draft(user_id: int, group_id: str, content: str,
 
 def get_open_group_post_draft(user_id: int) -> Optional[dict]:
     """The user's ONE open group-post draft — the row the SPA previews and the weekly publish run
-    consumes. None when nothing is waiting."""
+    consumes. None when nothing is waiting.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7678,7 +7823,8 @@ def get_group_post_draft(draft_id: int) -> Optional[dict]:
 def update_group_post_draft(draft_id: int, content: str = None,
                             status: "GroupPostDraftStatus" = None) -> bool:
     """Save the user's revision and/or move the draft's status. `published_at` is stamped by the
-    status change itself, so the publish run can never claim a ship time without the status."""
+    status change itself, so the publish run can never claim a ship time without the status.
+    """
     fields, params = [], []
     if content is not None:
         fields.append("content = %s")
@@ -7739,7 +7885,8 @@ def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
     """The most recent captured counts for one post, or None when nothing was ever captured.
 
     `impressions` stays NULL when the capture never read one — the API probe (#645) grades a
-    signal it cannot compare as ungraded rather than as a disagreement."""
+    signal it cannot compare as ungraded rather than as a disagreement.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7785,7 +7932,8 @@ def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5)
     Only posts with a logged permalink are offered. The sweep can do nothing with the others, and
     since a post leaves this set only by GAINING a stat row, a handful of permalink-less posts at
     the head of the window would otherwise hold every slot of the cap on every run — the backfill
-    would report as working while never reaching a post it could actually capture."""
+    would report as working while never reaching a post it could actually capture.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7817,7 +7965,8 @@ def get_post_coverage_counts(user_id: int, days: int = 90) -> dict:
     with a captured `post_stats` row). This returns the two POST-side numbers — all-time posted and
     posted within the analytics window — so the UI can say WHY it is showing a subset instead of
     reading as broken. The measured count stays with the stats read (`get_post_performance_rows`),
-    so the panel can never contradict its own sample size."""
+    so the panel can never contradict its own sample size.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7843,7 +7992,8 @@ def get_post_engagement_rows(user_id: int) -> list:
     attribution columns are the snapshot captured on the stat row, so they reflect the post as it
     was when scraped. `impressions` may be NULL (only the author's own view exposes it) — it
     trails the tuple so index-based readers of the older shape keep working, and it lets
-    `post_stats` score by engagement RATE when coverage is complete (#388)."""
+    `post_stats` score by engagement RATE when coverage is complete (#388).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7873,7 +8023,8 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
     ``{"samples", "reactions", "comments", "reposts", "impressions", "impression_samples"}``.
     ``impressions`` sums only rows where impressions is non-NULL (``impression_samples`` counts
     them) so the caller can tell whether impression-normalized scoring is available yet (B2/B3).
-    The engagement-metric/weighting policy lives in ``content_framework``; this stays pure access."""
+    The engagement-metric/weighting policy lives in ``content_framework``; this stays pure access.
+    """
     result = {"format": {}, "hook": {}}
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -7916,7 +8067,8 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
     post (``MAX(id)``), but returns dicts carrying ``post_id`` and ``saves`` so the UI can key each
     row and surface the save signal (#387). ``impressions`` may be NULL (only the author's own view
     exposes it). ``days`` optionally windows to posts scheduled within the last N days (None = all),
-    newest first."""
+    newest first.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7950,7 +8102,8 @@ def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
                            variant_index: Optional[int] = None) -> bool:
     """Persist which A/B variant actually SHIPPED for a post (issue #396 / D2) so its realized
     `post_stats` can be attributed back to that variant when picking winners. One row per post —
-    re-recording overwrites. `combo` is stored as JSON for provenance."""
+    re-recording overwrites. `combo` is stored as JSON for provenance.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7976,7 +8129,8 @@ def get_shipped_variant_keys(user_id: int) -> dict:
 
     Read once per stats sweep so each `post_outcome` event can carry the variant it belongs to
     (issue #652) — the per-post alternative would be one query per post inside the Selenium loop.
-    An empty dict on any DB error: a missing experiment label must never cost us the outcome."""
+    An empty dict on any DB error: a missing experiment label must never cost us the outcome.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7995,7 +8149,8 @@ def get_variant_outcome_rows(user_id: int) -> list:
     variant (`post_variants`) with its post's LATEST captured `post_stats` row → dicts of
     ``{variant_key, scheduled_time, reactions, comments, reposts, impressions}`` that feed
     ``post_stats.select_variant_winners``. `impressions` may be NULL (only the author's own view
-    exposes it), so winner selection falls back to raw counts until coverage is complete."""
+    exposes it), so winner selection falls back to raw counts until coverage is complete.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8103,7 +8258,8 @@ def insert_lead_signal(user_id: int, source: "LeadSignalSource", thread_key: str
                        channel: "LeadSignalChannel" = LeadSignalChannel.REPLY) -> Optional[int]:
     """Record a detected buying signal. Deduped by UNIQUE(user_id, thread_key) — a second detection
     on the same conversation returns None instead of re-flagging it (and never overwrites an
-    operator's edited draft or their dismissal)."""
+    operator's edited draft or their dismissal).
+    """
     if not thread_key:
         return None
     connection = get_db_connection()
@@ -8128,7 +8284,8 @@ def insert_lead_signal(user_id: int, source: "LeadSignalSource", thread_key: str
 
 def has_lead_signal(user_id: int, thread_key: str) -> bool:
     """True if this conversation was already flagged. Checked BEFORE the expensive draft generation
-    so a re-scan of the same thread costs nothing. Fails safe to True (skip) on error."""
+    so a re-scan of the same thread costs nothing. Fails safe to True (skip) on error.
+    """
     if not thread_key:
         return True
     connection = get_db_connection()
@@ -8161,7 +8318,8 @@ def get_lead_signal(signal_id: int) -> Optional[dict]:
 def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, page_size: int = 25,
                      sort_order: str = "desc") -> dict:
     """Paginated leads inbox for a user (mirrors the scheduled-DM/outreach list response). Hottest
-    first within a timestamp: newest signals matter most — a slow response kills an inbound lead."""
+    first within a timestamp: newest signals matter most — a slow response kills an inbound lead.
+    """
     order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
     where = "WHERE user_id = %s"
     params: list = [user_id]
@@ -8281,7 +8439,8 @@ _LEAD_COLS = ("id", "user_id", "person_key", "person_name", "person_profile_url"
 def get_lead_activity(user_id: int, days: int = 90) -> list:
     """Every engagement signal about every person who touched this user in the window, normalized
     for the scorer. Each source is queried independently so one unavailable table degrades that
-    signal instead of losing the whole pipeline."""
+    signal instead of losing the whole pipeline.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     rows: list = []
@@ -8304,7 +8463,8 @@ def _profile_url_variants(profile_url: str) -> list:
     """Every spelling of one profile URL worth looking up. Activity rows carry tracking
     querystrings and inconsistent trailing slashes (`/in/jane?trk=feed` vs `/in/jane/`) while
     `profiles` stores whichever form the scraper saw, so an exact match would miss most people —
-    same reason get_linked_in_profile_by_url() queries both slash variants."""
+    same reason get_linked_in_profile_by_url() queries both slash variants.
+    """
     raw = str(profile_url or "").strip()
     if not raw:
         return []
@@ -8317,7 +8477,8 @@ def _profile_url_variants(profile_url: str) -> list:
 def get_profile_facts(profile_urls: list) -> dict:
     """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by the
     profile URL as stored in `profiles` (callers match on the /in/ slug, not the raw string).
-    People we never scraped simply aren't in the result — the scorer treats them as neutral."""
+    People we never scraped simply aren't in the result — the scorer treats them as neutral.
+    """
     urls = list(dict.fromkeys(v for u in (profile_urls or []) if u
                               for v in _profile_url_variants(u)))
     if not urls:
@@ -8346,7 +8507,8 @@ def reset_lead_scores(user_id: int) -> bool:
     'hot' instead of keeping a stale score forever. next_action is cleared with the rest: a lead
     with no fresh activity gets no upsert, and a leftover 'reach out today' on someone who decayed
     to cold is worse than no recommendation. Operator columns (manual_stage, notes, dismissed) are
-    untouched."""
+    untouched.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8371,7 +8533,8 @@ def upsert_lead(user_id: int, person_key: str, person_name: str = None,
                 last_signal_at: "datetime" = None) -> bool:
     """Write one scored lead. Idempotent on (user_id, person_key) — the nightly rebuild re-runs
     freely. Only COMPUTED columns are updated: an operator's manual_stage, notes, and dismissal
-    survive every re-score."""
+    survive every re-score.
+    """
     if not person_key:
         return False
     connection = get_db_connection()
@@ -8424,7 +8587,8 @@ def get_lead(lead_id: int) -> Optional[dict]:
 def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = False,
               page: int = 1, page_size: int = 100) -> dict:
     """The pipeline board: scored leads hottest first. A manual_stage overrides the computed stage
-    for filtering, so moving someone by hand actually moves them on the board."""
+    for filtering, so moving someone by hand actually moves them on the board.
+    """
     where = "WHERE user_id = %s"
     params: list = [user_id]
     if not include_dismissed:
@@ -8496,7 +8660,8 @@ def count_hot_leads(user_id: int) -> int:
 def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = None,
                 dismissed: bool = None) -> bool:
     """Operator edits only — the nightly rebuild never writes these columns, so a correction sticks.
-    Passing manual_stage='' clears the override and hands the lead back to the scorer."""
+    Passing manual_stage='' clears the override and hands the lead back to the scorer.
+    """
     fields, params = [], []
     if notes is not None:
         fields.append("notes = %s")
@@ -8572,7 +8737,8 @@ def get_newsletter_settings(user_id: int) -> dict:
 def update_newsletter_settings(user_id: int, settings: dict) -> bool:
     """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog,
     plus the opt-in invite flow: invite_connections_enabled/max_invites_per_run, and the opt-in
-    AI cover generation: cover_image_auto)."""
+    AI cover generation: cover_image_auto).
+    """
     merged = {**_NEWSLETTER_DEFAULTS, **{k: v for k, v in settings.items() if k in _NEWSLETTER_COLS}}
     values = [user_id] + [
         (1 if merged[c] else 0) if c in _NEWSLETTER_BOOL_COLS else merged[c]
@@ -8618,7 +8784,8 @@ def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | Non
                                       invites_sent: int = 0) -> bool:
     """Append one subscriber-growth snapshot for the user: the scraped subscriber_count (NULL when
     the page couldn't be read) and how many connections were invited on this run. One row per
-    tracking run so growth can be charted over time (issue #400)."""
+    tracking run so growth can be charted over time (issue #400).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8638,7 +8805,8 @@ def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | Non
 
 def get_newsletter_subscriber_stats(user_id: int, limit: int = 52) -> list:
     """Return the user's subscriber-growth snapshots, most recent first (default last 52 runs — a
-    year of weekly tracking). Each item: subscriber_count, invites_sent, captured_at."""
+    year of weekly tracking). Each item: subscriber_count, invites_sent, captured_at.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -8676,7 +8844,8 @@ def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
 def _like_literal(value: str, escape: str = "!") -> str:
     """Escape LIKE metacharacters so a value is matched literally. A newsletter URL can carry
     percent-encoding ('%20'), and an unescaped '%' inside the pattern matches ANY text — which would
-    silently over-count the attribution it feeds."""
+    silently over-count the attribution it feeds.
+    """
     return (str(value).replace(escape, escape + escape)
             .replace("%", escape + "%").replace("_", escape + "_"))
 
@@ -8697,7 +8866,8 @@ def count_artifact_cta_deliveries(user_id: int, days: int = 90,
     `mark_newsletter_published` from a linkedin.com article URL, and #392's split deliberately leaves
     in-platform links in the BODY (they carry no reach penalty), so `first_comment_link` alone would
     report 0 forever for the mainline LinkedIn newsletter. An off-platform newsletter (Substack &c.)
-    is the reverse: the split moves it out of `content` and into `first_comment_link`."""
+    is the reverse: the split moves it out of `content` and into `first_comment_link`.
+    """
     window = max(1, int(days or 1))
     out: dict = {"window_days": window, "lead_magnet_dms": 0, "newsletter_links": None}
     connection = get_db_connection()
@@ -8735,7 +8905,8 @@ def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
     """Append one audience snapshot for the user (issue #627). Every count is optional: a value the
     capture could not read is stored as NULL, never 0, so the growth deltas can tell "not measured"
     apart from "the audience really is that size". Returns False when NOTHING was readable — there
-    is no point writing an all-NULL row that only adds noise to the series."""
+    is no point writing an all-NULL row that only adds noise to the series.
+    """
     if all(v is None for v in (follower_count, connection_count, profile_views, search_appearances)):
         return False
     connection = get_db_connection()
@@ -8758,7 +8929,8 @@ def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
 def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 400) -> list:
     """The user's audience snapshots, most recent first (issue #627). `days` optionally windows to
     captures within the last N days. Each item:
-    id, follower_count, connection_count, profile_views, search_appearances, captured_at."""
+    id, follower_count, connection_count, profile_views, search_appearances, captured_at.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -8781,7 +8953,8 @@ def get_daily_action_counts(user_id: int, days: int = 90,
                             action_types: Optional[list] = None) -> list:
     """Daily count of the user's SUCCESSFUL automation actions, for overlaying what we DID on the
     audience-growth chart (issue #627). Defaults to the outbound actions a follower can react to:
-    posts, feed comments, replies and DMs. Returns dicts of {date, action_type, count}."""
+    posts, feed comments, replies and DMs. Returns dicts of {date, action_type, count}.
+    """
     types = [LogActionType.POST.value, LogActionType.COMMENT.value, LogActionType.REPLY.value,
              LogActionType.DM.value] if action_types is None else list(action_types)
     if not types:
@@ -8848,7 +9021,8 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
     """Insert a draft newsletter edition (status defaults to 'draft'). Returns its id. `subject` is
     the planned topic/angle; `edition_format`/`hook_style`/`opening_line`/`blueprint` record the
     edition's assigned SHAPE, so the planner can rotate formats/hooks/openers (not just subjects)
-    against prior editions across runs."""
+    against prior editions across runs.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9008,7 +9182,8 @@ def set_edition_cover_image(edition_id: int, user_id: int, cover_image_path: str
 
 def set_edition_cover_status(edition_id: int, user_id: int, status: str) -> bool:
     """Move an edition's cover between 'pending_review' and 'approved' — the human half of the
-    cover gate. Only an edition that HAS a cover can change its status."""
+    cover gate. Only an edition that HAS a cover can change its status.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9028,7 +9203,8 @@ def set_edition_cover_status(edition_id: int, user_id: int, status: str) -> bool
 
 def clear_edition_cover_image(edition_id: int, user_id: int) -> bool:
     """Drop an edition's cover entirely. `update_newsletter_edition` is COALESCE-based and so can
-    never null a column — removing a cover needs its own statement."""
+    never null a column — removing a cover needs its own statement.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9048,7 +9224,8 @@ def clear_edition_cover_image(edition_id: int, user_id: int) -> bool:
 def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
     """Recent edition SUBJECTS (published, queued draft/approved, AND skipped) for a user — the dedup
     history fed to the topic planner so a new edition never repeats a subject already covered or
-    recently rejected. Most-recent first; NULL/blank subjects excluded."""
+    recently rejected. Most-recent first; NULL/blank subjects excluded.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9070,7 +9247,8 @@ def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> li
     """Recent editions' SHAPE history — {subject, format, hook_style, opening_line} dicts, most-recent
     first, across queued/published/skipped editions. Fed to the planner and regenerator so new
     editions rotate away from recently used formats, hook styles, AND actual opening lines (the
-    'every edition opens the same way' bug), not just subjects."""
+    'every edition opens the same way' bug), not just subjects.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9203,7 +9381,8 @@ _DM_DEFAULT_TEMPLATES = {
 
 def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[dict]:
     """Return {template_text, delay_hours, step} for (user, event, step). Falls back to the
-    code default for step 0; None for higher steps that aren't configured."""
+    code default for step 0; None for higher steps that aren't configured.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9301,7 +9480,8 @@ def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
 def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> bool:
     """Whether this person was already thanked for this event. Read-only — the CLAIM is what makes
     the decision (see claim_appreciation_touch); this exists so a scraper can skip parsing work and
-    so the live probe can report what production would do without writing a row."""
+    so the live probe can report what production would do without writing a row.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9456,7 +9636,8 @@ def update_user_location(user_id: int, latitude: float, longitude: float,
                          locale: Optional[str] = None, timezone: Optional[str] = None,
                          source: str = "manual") -> bool:
     """Persist the user's location. timezone is updated only when provided so the
-    user's display-timezone preference is preserved unless autocapture supplies one."""
+    user's display-timezone preference is preserved unless autocapture supplies one.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9526,7 +9707,8 @@ def update_user_proxy(user_id: int, proxy_url: Optional[str]) -> bool:
 
 def get_user_timezone(user_id: int) -> str:
     """Return the IANA timezone string for the user. Defaults to America/New_York to match the
-    users.timezone column default and the UI default (not UTC, which would misrender local times)."""
+    users.timezone column default and the UI default (not UTC, which would misrender local times).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9825,7 +10007,8 @@ def get_post_carousel_slides(post_id: int):
 def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
     """Posts not yet posted, due within `within_days`, whose required media asset is
     missing: video posts with no video_url, or carousel posts with no slides. Used by the
-    backfill safety net. Returns (id, user_id, post_type, buyer_stage, scheduled_time)."""
+    backfill safety net. Returns (id, user_id, post_type, buyer_stage, scheduled_time).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9977,7 +10160,8 @@ _AVATAR_COLUMNS = """id, training_id, model_ref, trigger_word, status, is_active
 
 def _avatar_row_to_dict(row: dict) -> dict:
     """One shape for an avatar row everywhere — the guardrails read approval_status and the
-    subject clause reads the declared attributes, so neither may depend on which query ran."""
+    subject clause reads the declared attributes, so neither may depend on which query ran.
+    """
     try:
         samples = json.loads(row.get("sample_paths") or "[]")
     except (TypeError, ValueError):
@@ -10075,8 +10259,7 @@ def update_avatar_attributes(user_id: int, avatar_id: int,
     Values are normalized by ``utilities.avatar.attributes`` first; an unrecognized value is
     stored as NULL, which renders an empty subject clause rather than a guess.
     """
-    from cqc_lem.utilities.avatar.attributes import (normalize_age_band,
-                                                     normalize_gender_presentation)
+    from cqc_lem.utilities.avatar.attributes import normalize_age_band, normalize_gender_presentation
     gender = normalize_gender_presentation(gender_presentation)
     band = normalize_age_band(age_band)
 
@@ -10313,7 +10496,8 @@ def get_post_use_avatar(post_id: Optional[int]) -> Optional[bool]:
 
 def update_post_use_avatar(post_id: int, use_avatar: Optional[bool]) -> bool:
     """Set the compose-time avatar choice on an existing post. None clears it back to
-    "follow my preferences" — the field is three-valued everywhere it is read."""
+    "follow my preferences" — the field is three-valued everywhere it is read.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -10454,7 +10638,8 @@ def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
 
 def get_users_proxy_config(user_ids: list) -> list:
     """(user_id, proxy_url, country) for the given users — the inputs proxy.resolve_proxy() needs
-    to decide which egress proxy (and therefore which monthly cost) applies to each user."""
+    to decide which egress proxy (and therefore which monthly cost) applies to each user.
+    """
     if not user_ids:
         return []
 
@@ -10496,7 +10681,8 @@ COST_ROLLUP_COLUMNS = {
 
 def cost_ledger_available() -> bool:
     """True when the durable cost_ledger table exists. The margin report uses this to say whether a
-    $0 spend figure means "nothing spent" or "not capturing yet"."""
+    $0 spend figure means "nothing spent" or "not capturing yet".
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -10516,7 +10702,8 @@ def get_cost_rollup(start_date, end_date, group_by: str = "feature",
     (NULL user_id) included, which is what the system-wide margin totals need. Rows with a NULL
     group value collapse into the "unknown" key so their spend is never dropped — the column is CAST
     to CHAR first so a numeric dimension (user_id) can't coerce 'unknown' into 0 and merge NULL
-    rows with a real user 0."""
+    rows with a real user 0.
+    """
     column = COST_ROLLUP_COLUMNS.get(group_by)
     if not column:
         myprint(f"Unsupported cost rollup dimension '{group_by}'")
@@ -10548,7 +10735,8 @@ def get_daily_cost_totals(start_date, end_date) -> dict:
     """Total spend per DAY over [start_date, end_date] → `{'YYYY-MM-DD': usd}` — the trailing series
     the §E.2 spend-anomaly check scores today against. A day with no ledger rows is ABSENT rather
     than 0.0 so a ledger that only started capturing mid-window can't manufacture a zero baseline
-    (and then flag the first real day of spend as an anomaly)."""
+    (and then flag the first real day of spend as an anomaly).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -10573,7 +10761,8 @@ def get_post_quality_rows(start_date, end_date) -> list:
     every POSTED post with captured stats, using the LATEST `post_stats` row per post.
 
     Read-only and cross-user by design — the A/B arms are cohorts of users, so the comparison has to
-    see every user's posts, unlike the per-user `get_post_engagement_rows`."""
+    see every user's posts, unlike the per-user `get_post_engagement_rows`.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10611,7 +10800,8 @@ def get_margin_users() -> list:
     """Users the margin report covers: everyone on an active/past-due subscription or an open trial.
     Trials are included (tier `free_trial`, $0 MRR) so the cost they incur still lands in system
     margin instead of vanishing. `cohort` is the signup month — `users` has no created_at, so
-    trial_started_at is the signup timestamp, falling back to updated_at for pre-trial rows."""
+    trial_started_at is the signup timestamp, falling back to updated_at for pre-trial rows.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10636,7 +10826,8 @@ def insert_feedback(body: str, user_id: int = None,
                     sentiment: str = None) -> Optional[int]:
     """Persist one piece of user feedback (issue #496). user_id is optional — the widget is offered
     to logged-out visitors too. `context` is the auto-attached client context (route, app version,
-    PostHog session id, optional screenshot) and is stored as JSON."""
+    PostHog session id, optional screenshot) and is stored as JSON.
+    """
     if not body or not str(body).strip():
         return None
     connection = get_db_connection()
@@ -10688,7 +10879,8 @@ def _prefixed_feedback_columns(alias: str = "f") -> str:
 def _admin_reporter_join(alias: str = "f") -> tuple:
     """LEFT JOIN + params that mark whether a feedback row was submitted by an admin (#793).
 
-    LEFT so it can express both halves: `au.id IS NOT NULL` is admin, `au.id IS NULL` is pending."""
+    LEFT so it can express both halves: `au.id IS NOT NULL` is admin, `au.id IS NULL` is pending.
+    """
     allow = sorted(admin_email_allowlist())
     email_clause = f" OR LOWER(au.email) IN ({','.join(['%s'] * len(allow))})" if allow else ""
     join = (f"LEFT JOIN users au ON au.id = {alias}.user_id "
@@ -10706,7 +10898,8 @@ def get_unprocessed_feedback(limit: int = 25, statuses: tuple = (FeedbackStatus.
     `admin_only` (issue #793) restricts the result to reports from admin users. It filters in SQL,
     NOT in the caller's loop: non-admin rows keep their `new`/NULL-cluster shape forever while they
     wait on the panel, so a caller-side skip would let `limit` fill with the same parked rows every
-    pass and admin feedback would never be reached again."""
+    pass and admin feedback would never be reached again.
+    """
     wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
     if not wanted:
         return []
@@ -10734,7 +10927,8 @@ def count_pending_admin_review(statuses: tuple = (FeedbackStatus.NEW,)) -> int:
     """How many un-clustered reports are waiting on an admin decision (issue #793).
 
     The inverse of `get_unprocessed_feedback(admin_only=True)`: everything the auto-filer skipped.
-    Reported by `process_new_feedback` so a silent backlog is visible without opening the panel."""
+    Reported by `process_new_feedback` so a silent backlog is visible without opening the panel.
+    """
     wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
     if not wanted:
         return 0
@@ -10762,7 +10956,8 @@ def get_open_feedback_clusters(limit: int = 100) -> list:
 
     One row per cluster: the seed's body/embedding (what similarity is measured against), the GitHub
     issue it was filed as, plus `item_count` and `reporter_count` (DISTINCT non-null user_id) — the
-    demand signal that decides whether a *feature* cluster is allowed to auto-work."""
+    demand signal that decides whether a *feature* cluster is allowed to auto-work.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10788,7 +10983,8 @@ def get_open_feedback_clusters(limit: int = 100) -> list:
 
 def count_feedback_filed_by_user(user_id: int, hours: int = 24) -> int:
     """How many of this user's reports reached GitHub in the last `hours` — the abuse guard's counter
-    (issue #498). Anonymous feedback (NULL user_id) is not attributable, so it is never counted."""
+    (issue #498). Anonymous feedback (NULL user_id) is not attributable, so it is never counted.
+    """
     if user_id is None:
         return 0
     connection = get_db_connection()
@@ -10818,7 +11014,8 @@ def update_feedback_triage(feedback_id: int,
 
     `status` is checked against `FeedbackStatus` BEFORE the write (issue #668): the column is a
     MySQL ENUM, so an out-of-vocabulary value used to surface as an opaque `1265 Data truncated for
-    column 'status'` AND roll back the cluster/issue/embedding travelling in the same UPDATE."""
+    column 'status'` AND roll back the cluster/issue/embedding travelling in the same UPDATE.
+    """
     updates: list = []
     params: list = []
     if status is not None:
@@ -10877,7 +11074,8 @@ def is_user_admin(user_id: int) -> bool:
     exists so a deploy with no flagged user yet can still reach the triage panel and release the
     feedback the auto-filer is now parking.
 
-    Fails CLOSED — a missing user or DB error is never interpreted as admin rights."""
+    Fails CLOSED — a missing user or DB error is never interpreted as admin rights.
+    """
     if user_id is None:
         return False
     connection = get_db_connection()
@@ -10909,7 +11107,8 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     `embedding` is deliberately NOT selected — the panel never shows it, and a page of 50 rows would
     drag 50 full vectors out of MySQL to be thrown away. `is_admin` answers the same question the
     auto-filer's join does, so it honours ADMIN_USER_EMAILS too: an allowlisted reporter's feedback
-    IS auto-filed, and the panel must not label it as awaiting review."""
+    IS auto-filed, and the panel must not label it as awaiting review.
+    """
     filters: list = []
     params: list = []
     if status is not None:
@@ -10960,7 +11159,8 @@ def record_feedback_review(feedback_id: int, reviewer_user_id: int,
     """Stamp who reviewed a feedback row and when, optionally updating its status (issue #793).
 
     Status is validated the same way as `update_feedback_triage` so a typo can never corrupt the
-    ENUM column."""
+    ENUM column.
+    """
     if feedback_id is None or reviewer_user_id is None:
         return False
     updates: list = ["reviewed_by=%s", "reviewed_at=%s"]
@@ -10995,7 +11195,8 @@ def record_feedback_review(feedback_id: int, reviewer_user_id: int,
 # --- NPS/CSAT + review surveys (issue #501) -----------------------------------------
 def get_latest_feedback_at(user_id: int, source: "FeedbackSource") -> Optional[datetime]:
     """When this user last answered a survey of the given source, or None if they never have.
-    Drives both "don't ask again" suppression and the review gate on the extended trial."""
+    Drives both "don't ask again" suppression and the review gate on the extended trial.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11014,7 +11215,8 @@ def get_latest_feedback_at(user_id: int, source: "FeedbackSource") -> Optional[d
 
 def has_review_feedback(user_id: int) -> bool:
     """The extended-trial gate (issue #499 consumes this): True once the user has submitted a
-    review. Fails CLOSED — a DB error never hands out a trial extension."""
+    review. Fails CLOSED — a DB error never hands out a trial extension.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11047,7 +11249,8 @@ def get_survey_prompts_sent(user_id: int) -> dict:
 
 def record_survey_prompt(user_id: int, survey_key: str) -> bool:
     """Record that a survey was asked. Returns False when it was already asked (the PK makes each
-    survey one-shot per user, whether it went out in-app or by email)."""
+    survey one-shot per user, whether it went out in-app or by email).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11066,7 +11269,8 @@ def record_survey_prompt(user_id: int, survey_key: str) -> bool:
 def get_survey_candidate_user_ids() -> list:
     """Users worth surveying: on an active plan or an unexpired trial. Unlike the onboarding
     candidates this does NOT exclude activated users — activation is exactly what makes someone
-    worth asking (the day-3 NPS fires off their activation timestamp)."""
+    worth asking (the day-3 NPS fires off their activation timestamp).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11092,7 +11296,8 @@ def get_feedback_reporters_for_issue(github_issue_number: int) -> list:
 
     Matches BOTH the rows stamped with the issue directly (the seed and every deduped report) and
     any row that only carries the seed's `cluster_id`, so a report attached by the nightly recluster
-    pass before the issue number propagated is still counted. Anonymous rows have no one to tell."""
+    pass before the issue number propagated is still counted. Anonymous rows have no one to tell.
+    """
     if not github_issue_number:
         return []
     connection = get_db_connection()
@@ -11120,7 +11325,8 @@ def mark_feedback_resolved_for_issue(github_issue_number: int) -> int:
 
     Uses the SAME self-join as `get_feedback_reporters_for_issue`, so a report attached to the seed
     by `cluster_id` before the issue number propagated is resolved too — otherwise the users we
-    notify and the rows we close would drift apart."""
+    notify and the rows we close would drift apart.
+    """
     if not github_issue_number:
         return 0
     connection = get_db_connection()
@@ -11165,7 +11371,8 @@ def record_shipped_notice(github_issue_number: int, changelog_line: str, pr_numb
                           title: str = None) -> Optional[int]:
     """Record the changelog line for a shipped issue and return its notice id. One notice per issue
     (the UNIQUE key), so a re-run of the notify pass re-uses the existing row instead of writing a
-    second changelog entry for the same fix."""
+    second changelog entry for the same fix.
+    """
     if not github_issue_number or not (changelog_line or "").strip():
         return None
     connection = get_db_connection()
@@ -11193,7 +11400,8 @@ def record_shipped_notice(github_issue_number: int, changelog_line: str, pr_numb
 
 def record_shipped_notice_recipient(notice_id: int, user_id: int) -> bool:
     """Attach a reporter to a shipped notice. Returns True ONLY the first time — that is what makes
-    "notified once" true no matter how often the notify pass runs."""
+    "notified once" true no matter how often the notify pass runs.
+    """
     if not notice_id or not user_id:
         return False
     connection = get_db_connection()
@@ -11215,7 +11423,8 @@ def record_shipped_notice_recipient(notice_id: int, user_id: int) -> bool:
 
 def get_shipped_notice_recipient_ids(notice_id: int) -> list:
     """Who has already been told about this shipped fix. Read BEFORE sending, so a re-run of the
-    notify pass never re-emails a reporter — the recipient PK only stops the duplicate ROW."""
+    notify pass never re-emails a reporter — the recipient PK only stops the duplicate ROW.
+    """
     if not notice_id:
         return []
     connection = get_db_connection()
@@ -11237,7 +11446,8 @@ def get_unseen_shipped_notices(user_id: int, delay_hours: int = 0, limit: int = 
 
     `delay_hours` is what SCHEDULES the micro-CSAT: a notice is only surfaced once the user has had
     that long with the fix, so "did this fix it?" is asked after they could have used it rather than
-    in the same minute the email went out."""
+    in the same minute the email went out.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -11260,7 +11470,8 @@ def get_unseen_shipped_notices(user_id: int, delay_hours: int = 0, limit: int = 
 
 def mark_shipped_notice_seen(notice_id: int, user_id: int) -> bool:
     """The user answered or dismissed the notice — stop surfacing it. Idempotent: only the first
-    acknowledgement writes a timestamp."""
+    acknowledgement writes a timestamp.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11298,7 +11509,8 @@ def get_recent_shipped_notices(limit: int = 10) -> list:
 # --- Public FAQ (issue #506) --------------------------------------------------------
 def get_published_faq_entries(limit: int = 50) -> list:
     """The published FAQ shown on the landing page, in display order. Only PUBLISHED rows leave the
-    database — drafts written by the auto-FAQ pass stay unpublished until reviewed."""
+    database — drafts written by the auto-FAQ pass stay unpublished until reviewed.
+    """
     # Connect inside the try: an unreachable database must degrade to an empty FAQ, never bubble an
     # exception up into the logged-out landing page.
     connection = None
@@ -11328,7 +11540,8 @@ _FAQ_COLUMNS = "id, question, answer, cluster_id, status, sort_order, created_at
 def get_faq_entries(statuses: tuple = (FaqStatus.PUBLISHED, FaqStatus.DRAFT),
                     limit: int = 200) -> list:
     """Every FAQ entry the auto-FAQ pass matches an incoming question against (issue #507) — drafts
-    included, so a question that already has a proposed answer is never answered twice."""
+    included, so a question that already has a proposed answer is never answered twice.
+    """
     wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FaqStatus)]
     if not wanted:
         return []
@@ -11374,7 +11587,8 @@ def upsert_faq_entry(question: str, answer: str, cluster_id: int = None,
     `id=LAST_INSERT_ID(id)` trick makes that the EXISTING id when the question is already there, so
     the caller can version the revision instead of creating a duplicate entry.
 
-    `sort_order` is only written on insert: re-answering a question must never re-order the page."""
+    `sort_order` is only written on insert: re-answering a question must never re-order the page.
+    """
     if not question or not str(question).strip() or not answer or not str(answer).strip():
         return None
     connection = get_db_connection()
@@ -11401,7 +11615,8 @@ def record_faq_entry_version(faq_entry_id: int, question: str, answer: str,
                              status: "FaqStatus" = FaqStatus.DRAFT,
                              source: str = 'auto') -> Optional[int]:
     """Append the state an FAQ entry was just put into (issue #507). History is append-only, so any
-    earlier answer stays revertible after the auto-FAQ pass rewrites it."""
+    earlier answer stays revertible after the auto-FAQ pass rewrites it.
+    """
     if faq_entry_id is None or not answer or not str(answer).strip():
         return None
     connection = get_db_connection()
@@ -11445,7 +11660,8 @@ def apply_faq_entry_version(faq_entry_id: int, version_id: int) -> Optional[dict
     """Re-apply a stored version's copy and status onto its entry (issue #507) — the revert half of
     versioned answers. Returns the applied version, or None when it doesn't belong to that entry.
 
-    Recording the revert itself as a NEW version is the caller's job, so history stays append-only."""
+    Recording the revert itself as a NEW version is the caller's job, so history stays append-only.
+    """
     if faq_entry_id is None or version_id is None:
         return None
     connection = get_db_connection()
@@ -11475,7 +11691,8 @@ def get_faq_candidate_feedback(limit: int = 50) -> list:
     """Feedback the auto-FAQ pass may answer (issue #507): rows the auto-filer already looked at
     (`triaged`) and did NOT turn into work (still unclustered) — the FAQ-routed questions and public
     review free-text. Rows still in `new` are deliberately excluded: the filer classifies first, so
-    the FAQ pass can never claim a report that was going to become an issue."""
+    the FAQ pass can never claim a report that was going to become an issue.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -11495,7 +11712,8 @@ def get_faq_candidate_feedback(limit: int = 50) -> list:
 # --- Onboarding / activation checklist (issue #500) ---------------------------------
 def ensure_onboarding_state(user_id: int) -> bool:
     """Create the user's onboarding row if it doesn't exist. `started_at` is the trial start when we
-    know it, so the nudge clock measures time-since-signup rather than time-since-first-scan."""
+    know it, so the nudge clock measures time-since-signup rather than time-since-first-scan.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11514,7 +11732,8 @@ def ensure_onboarding_state(user_id: int) -> bool:
 
 def get_onboarding_state(user_id: int) -> dict:
     """The persisted checklist row (started_at + one completion timestamp per step). Empty dict when
-    the user has no row yet."""
+    the user has no row yet.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -11532,7 +11751,8 @@ def get_onboarding_state(user_id: int) -> dict:
 
 def mark_onboarding_step(user_id: int, step: "OnboardingStep") -> bool:
     """Stamp a checklist step as complete. Idempotent: only the FIRST completion writes, and True is
-    returned only then — so the caller emits its PostHog event exactly once."""
+    returned only then — so the caller emits its PostHog event exactly once.
+    """
     column = f"{OnboardingStep(step).value}_at"
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -11568,7 +11788,8 @@ def get_onboarding_nudges_sent(user_id: int) -> dict:
 
 def record_onboarding_nudge(user_id: int, nudge_key: str) -> bool:
     """Record that a nudge was sent. Returns False when this nudge was already sent (the PK makes
-    each nudge one-shot per user)."""
+    each nudge one-shot per user).
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11587,7 +11808,8 @@ def record_onboarding_nudge(user_id: int, nudge_key: str) -> bool:
 def get_onboarding_candidate_user_ids() -> list:
     """Users still working toward activation: paying or on an unexpired trial, and not yet activated.
     Deliberately NOT get_active_user_ids() — that requires a live LinkedIn connection, which is the
-    very step most stalled users are stuck on."""
+    very step most stalled users are stuck on.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11617,7 +11839,8 @@ def has_engagement_preferences(user_id: int) -> bool:
 
     The two-valued view of `engagement_preferences_are_configured` for callers that only steer UI
     copy: an unreadable row reads as False, exactly as this has always behaved. A caller that would
-    WRITE on the answer must use the three-valued function instead (issue #952)."""
+    WRITE on the answer must use the three-valued function instead (issue #952).
+    """
     return engagement_preferences_are_configured(user_id) is True
 
 
@@ -11643,7 +11866,8 @@ def has_post_with_status(user_id: int, statuses: tuple) -> bool:
 
 def has_automated_engagement(user_id: int) -> bool:
     """True once automation has successfully commented, replied, or DM'd on the user's behalf —
-    the engagement half of the activation ("aha") moment."""
+    the engagement half of the activation ("aha") moment.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11678,7 +11902,8 @@ TRIAL_EXTENDABLE_STATUSES = ("trial", "inactive")
 
 def _as_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
     """MySQL DATETIME columns come back naive; our own timestamps are UTC-aware. Normalize both to
-    naive-UTC so they can be compared without a TypeError."""
+    naive-UTC so they can be compared without a TypeError.
+    """
     if dt is None or dt.tzinfo is None:
         return dt
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
@@ -11686,7 +11911,8 @@ def _as_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
 
 def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
     """The most recent `feedback` row this user filed with source='review' — the gate the
-    early-adopter extension is traded for. None when they haven't left a review yet."""
+    early-adopter extension is traded for. None when they haven't left a review yet.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11706,7 +11932,8 @@ def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
 
 def get_early_adopter_grant(user_id: int) -> Optional[dict]:
     """The user's early-adopter grant, or None. Read by the checkout flow so the extension mirrors
-    into Stripe on conversion."""
+    into Stripe on conversion.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -11755,7 +11982,10 @@ def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> di
     user_not_found | error.
     """
     from cqc_lem.utilities.env_constants import (
-        EARLY_ADOPTER_P0_SLOTS, EARLY_ADOPTER_P1_SLOTS, EARLY_ADOPTER_TRIAL_DAYS, FREE_TRIAL_DAYS,
+        EARLY_ADOPTER_P0_SLOTS,
+        EARLY_ADOPTER_P1_SLOTS,
+        EARLY_ADOPTER_TRIAL_DAYS,
+        FREE_TRIAL_DAYS,
     )
     capacities = {"P0": EARLY_ADOPTER_P0_SLOTS, "P1": EARLY_ADOPTER_P1_SLOTS}
 
@@ -11868,7 +12098,8 @@ def get_affiliate_enrollment(user_id: int) -> Optional[dict]:
     """The user's affiliate row, or None when they have never been enrolled.
 
     The row here carries columns only — no `created` key. That flag exists solely on what
-    `ensure_affiliate_enrollment` returns, because only the call that wrote the row can know it."""
+    `ensure_affiliate_enrollment` returns, because only the call that wrote the row can know it.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -11902,7 +12133,8 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
     builds its payload field by field).
 
     On a DB error this returns None, so a caller can never read `created=False` from a write that
-    did not happen — the row will not exist either, and the next call re-inserts it."""
+    did not happen — the row will not exist either, and the next call re-inserts it.
+    """
     code = str(referral_code or user_id)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -11931,7 +12163,8 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
 def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:
     """Opt the user in or out of (A) affiliate status. Immediate — the caller reflects the resulting
     trial length back to the user, and the reward side (grant/revoke of the enrollment bonus) is the
-    caller's separate, ledgered step so a status flip can never silently move money."""
+    caller's separate, ledgered step so a status flip can never silently move money.
+    """
     status = AffiliateStatus.ENROLLED if enrolled else AffiliateStatus.OPTED_OUT
     now = datetime.now(timezone.utc)
     connection = get_db_connection()
@@ -11955,7 +12188,8 @@ def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:
 def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str) -> Optional[dict]:
     """(B) — whether LEM may publish promotional content about LEM from the user's own LinkedIn
     account. Enabling stamps the consent timestamp AND the version of the copy consented to;
-    disabling clears both, so a re-enable can never inherit an old consent record."""
+    disabling clears both, so a re-enable can never inherit an old consent record.
+    """
     now = datetime.now(timezone.utc) if enabled else None
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -11977,7 +12211,8 @@ def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str
 
 def mark_affiliate_notice_seen(user_id: int) -> bool:
     """Record that the user has actually SEEN the enrollment notice. Default-enrollment is only
-    honest if the notice was delivered, so this timestamp is the evidence — not a UI nicety."""
+    honest if the notice was delivered, so this timestamp is the evidence — not a UI nicety.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -11998,7 +12233,8 @@ def mark_affiliate_notice_seen(user_id: int) -> bool:
 def get_affiliate_reward_totals(user_id: int) -> dict:
     """`{total, enrollment, referral}` granted days. `total` is the SUM over the whole ledger,
     revocations included as negatives — it is what the per-user cap is measured against, so a user
-    who opts out and back in cannot use the round trip to mint days."""
+    who opts out and back in cannot use the round trip to mint days.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -12071,7 +12307,8 @@ def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, refe
     A rejected referral is WRITTEN (status='rejected' + a reason) rather than discarded: the caller
     has already decided it doesn't pay, and a self-referral we can count is a fraud signal, while a
     self-referral we dropped is nothing. The UNIQUE key on referred_user_id is what makes a replayed
-    signup a no-op rather than a second attribution."""
+    signup a no-op rather than a second attribution.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -12096,7 +12333,8 @@ def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, refe
 def convert_affiliate_referral(referred_user_id: int) -> Optional[dict]:
     """Mark a PENDING referral converted, and return it. Returns None when there is nothing to
     convert — no referral, already converted, or rejected — so the caller's reward grant is driven
-    by the rowcount rather than by a re-read that a concurrent activation could race."""
+    by the rowcount rather than by a re-read that a concurrent activation could race.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -12121,7 +12359,8 @@ def convert_affiliate_referral(referred_user_id: int) -> Optional[dict]:
 def _affiliate_baseline_trial_end(cursor, user_id: int, started: datetime) -> datetime:
     """The trial end a revoked enrollment bonus may never take the user below: their standard trial,
     any early-adopter grant (#499), and every referral day they EARNED. Only the enrollment bonus is
-    contingent on status; nothing else the user holds is."""
+    contingent on status; nothing else the user holds is.
+    """
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
     baseline = started + timedelta(days=FREE_TRIAL_DAYS)
     cursor.execute("SELECT trial_ends_at FROM early_adopter_grants WHERE user_id=%s", (user_id,))
@@ -12240,7 +12479,8 @@ def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
 
     Never takes the trial below `_affiliate_baseline_trial_end` — the standard trial, any
     early-adopter grant, and every referral day the user EARNED all survive an opt-out. That is what
-    keeps "your trial returns to the standard N days" true rather than punitive."""
+    keeps "your trial returns to the standard N days" true rather than punitive.
+    """
     def _result(revoked: bool, why: str, days: int = 0,
                 ends_at: Optional[datetime] = None) -> dict:
         return {"revoked": revoked, "reason": why, "days": days, "trial_ends_at": ends_at}
@@ -12299,7 +12539,8 @@ def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
 
 def get_app_credential(name: str) -> Optional[str]:
     """The stored value for `name`, or None when unset/unreadable. A DB problem returns None so the
-    caller falls back to its env seed rather than losing the credential entirely."""
+    caller falls back to its env seed rather than losing the credential entirely.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:

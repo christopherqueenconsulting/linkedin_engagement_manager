@@ -15,8 +15,9 @@ already leaked it into a log line and a latency signal, so each case asserts the
 called.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from tests.unit.api.conftest import SESSION_EMAIL, SESSION_TOKEN, SESSION_USER_ID
 
@@ -41,6 +42,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -144,13 +146,15 @@ class TestAnotherAccountsTargetIs403:
 
 def _touched(mock) -> bool:
     """Celery tasks are patched as objects, so the call that matters is `.apply_async`, not the
-    task itself."""
+    task itself.
+    """
     return bool(mock.called or mock.apply_async.called)
 
 
 class TestOwnTargetStillWorks:
     """The rule is "not another account", not "no parameter" — a legacy client that names its OWN
-    address keeps working, or this lands as an outage rather than a fix."""
+    address keeps working, or this lands as an outage rather than a fix.
+    """
 
     def test_own_email_is_accepted(self, client, signed_in):
         with patch(f"{_M}.get_recent_logs", return_value=[]) as logs:
@@ -200,7 +204,8 @@ class TestEmailChangeIsNotHere:
 
     def test_new_email_is_refused_out_loud_not_ignored(self, client, signed_in):
         """400 and a pointer, never a silent 200 — a client that believes it moved the address
-        while the account still answers to the old one is its own failure mode."""
+        while the account still answers to the old one is its own failure mode.
+        """
         with patch(f"{_M}.update_user", return_value=True) as upd:
             resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
                                                   "new_email": "attacker@evil.example",
@@ -222,11 +227,13 @@ class TestDenialsAreVisible:
     """A 403 here is a broken client or somebody working the hole #914 closed. Neither is an
     expected no-op, so both warn — and the recurrence escalation turning a repeat into a filed
     defect is the point. A 401 is the opposite: sessions expire in the ordinary course of things
-    and the SPA polls, so warning on one would file a defect for working behaviour."""
+    and the SPA polls, so warning on one would file a defect for working behaviour.
+    """
 
     def test_a_foreign_target_warns(self):
-        from cqc_lem.api.main import _reject_foreign_user_id
         from fastapi import HTTPException
+
+        from cqc_lem.api.main import _reject_foreign_user_id
 
         with patch(f"{_M}.log_warning") as warn, \
              patch(f"{_M}.record_auth_event", return_value=True):
@@ -237,8 +244,9 @@ class TestDenialsAreVisible:
         assert warn.call_args.kwargs["user_id"] == SESSION_USER_ID
 
     def test_an_expired_session_does_not_warn(self):
-        from cqc_lem.api.main import require_session_user_id
         from fastapi import HTTPException
+
+        from cqc_lem.api.main import require_session_user_id
 
         with patch(f"{_M}.get_session_user_id", return_value=None), \
              patch(f"{_M}.log_warning") as warn, patch(f"{_M}.log_debug") as dbg:
@@ -250,9 +258,11 @@ class TestDenialsAreVisible:
 
     def test_an_unparseable_target_fails_closed_instead_of_500ing(self):
         """FastAPI coerces today's query parameters; the helper has to hold on its own the day it
-        is reused from a body model."""
-        from cqc_lem.api.main import _reject_foreign_user_id
+        is reused from a body model.
+        """
         from fastapi import HTTPException
+
+        from cqc_lem.api.main import _reject_foreign_user_id
 
         with patch(f"{_M}.log_warning"), patch(f"{_M}.record_auth_event", return_value=True):
             with pytest.raises(HTTPException) as exc:
@@ -270,7 +280,8 @@ class TestDenialsAreVisible:
 class TestADeniedTargetIsAudited:
     """A log line is greppable; an audit row is queryable per account. "Has this user been naming
     other people's accounts?" is a question asked about ONE user after the fact, which is the same
-    reason `_scope_checked` writes one for a misused extension token."""
+    reason `_scope_checked` writes one for a misused extension token.
+    """
 
     def test_the_row_names_the_kind_of_identifier_and_the_path_only(self, client, no_session):
         from cqc_lem.api.main import AuthAuditEvent
@@ -307,7 +318,8 @@ class TestAnOutageIsNotAPermissionError:
     """`user_owns_posts` fails closed either way — but "you may not touch these posts" and "we
     could not find out" are different facts. Answering 403 for a database fault tells a user they
     lack permission to their own drafts, sends on-call hunting an authorisation bug, and files a
-    security-shaped defect through `_deny`'s recurrence escalation."""
+    security-shaped defect through `_deny`'s recurrence escalation.
+    """
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _POST_ID_CASES,
                              ids=_ids(_POST_ID_CASES))
@@ -323,10 +335,12 @@ class TestAnOutageIsNotAPermissionError:
 
     def test_an_outage_does_not_warn_as_a_denial(self):
         """`_deny` escalates a repeat into a filed GitHub issue — a database blip must not be the
-        thing that files it."""
+        thing that files it.
+        """
+        from fastapi import HTTPException
+
         from cqc_lem.api.main import _require_own_posts
         from cqc_lem.utilities.db import OwnershipUnprovable
-        from fastapi import HTTPException
 
         with patch(f"{_M}.user_owns_posts", side_effect=OwnershipUnprovable("db down")), \
              patch(f"{_M}.log_warning") as warn, \
@@ -342,12 +356,13 @@ class TestAnOutageIsNotAPermissionError:
 class TestACredentialNeverRendersInAModelRepr:
     """`/update_post/` carried `myprint(f"Received Post Request: {post}")` and gained a
     `session_token` field in the same change. Deleting that line fixed the instance; `repr=False`
-    is what makes the next such line harmless."""
+    is what makes the next such line harmless.
+    """
 
     def test_session_token_is_absent_from_the_model_repr(self):
-        from cqc_lem.api.main import PostRequest, BulkUpdateRequest, BulkDeleteRequest, \
-            UserSettingsRequest
         from datetime import datetime, timezone
+
+        from cqc_lem.api.main import BulkDeleteRequest, BulkUpdateRequest, PostRequest, UserSettingsRequest
 
         models = [
             PostRequest(session_token="live-secret", content="hi",
@@ -365,7 +380,8 @@ class TestACredentialNeverRendersInAModelRepr:
 
 class TestTheAuthorisedIdIsTheOnlyOneThatReachesATask:
     """Two names for one account is how these routes got here. The parameter is authorised and then
-    never used again — `caller_id` is the only thing that reaches Celery."""
+    never used again — `caller_id` is the only thing that reaches Celery.
+    """
 
     def test_weekly_content_runs_as_the_caller_not_the_parameter(self, client, signed_in):
         with patch(f"{_M}.mark_queued") as queued, \
@@ -392,7 +408,8 @@ class TestTheAuthorisedIdIsTheOnlyOneThatReachesATask:
 
 class TestAResolvedSessionWithNoAddressIsOurFault:
     """`schedule_post` answered 403 "User not found" for a session that RESOLVED — which tells the
-    caller they lack permission to their own account while hiding a data fault."""
+    caller they lack permission to their own account while hiding a data fault.
+    """
 
     def test_it_is_a_500_not_a_403(self, client, no_session):
         with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
@@ -410,10 +427,12 @@ class TestAResolvedSessionWithNoAddressIsOurFault:
 class TestNoHandlerNamesAnAccountItDoesNotUse:
     """`/auth/linkedin/` took an `email` it never read — the user comes from the `session_token`
     carried in the OAuth `state`. Dead, but it was the last signature in the file naming an account
-    as a parameter, and it put the address in a URL (history, `Referer`) for nothing."""
+    as a parameter, and it put the address in a URL (history, `Referer`) for nothing.
+    """
 
     def test_linkedin_auth_init_takes_no_email(self):
         import inspect
+
         from cqc_lem.api.main import linkedin_auth_init
 
         assert "email" not in inspect.signature(linkedin_auth_init).parameters

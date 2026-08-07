@@ -1,7 +1,8 @@
 """Unit tests for LinkedIn poster utilities."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -209,7 +210,8 @@ class TestShareCarouselOnLinkedin:
     def test_pexels_miss_returns_none_no_default(self):
         """Prod incident fix: text slides with a Pexels miss must NOT fall back to a default
         placeholder image (that posted a carousel of one repeated image). The carousel is
-        not posted at all (returns None) so the caller can flag the post 'error'."""
+        not posted at all (returns None) so the caller can flag the post 'error'.
+        """
         with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="abc"), \
              patch("cqc_lem.utilities.linkedin.poster.get_user_access_token", return_value="tok"), \
              patch("cqc_lem.utilities.linkedin.poster.RestliClient", return_value=self._make_mock_restli()), \
@@ -225,7 +227,8 @@ class TestShareCarouselOnLinkedin:
 
     def test_missing_local_slide_returns_none(self):
         """A local slide whose file was purged → no real image → don't post a placeholder;
-        return None (caller flags 'error'). No text-only fallback."""
+        return None (caller flags 'error'). No text-only fallback.
+        """
         with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="abc"), \
              patch("cqc_lem.utilities.linkedin.poster.get_user_access_token", return_value="tok"), \
              patch("cqc_lem.utilities.linkedin.poster.RestliClient", return_value=self._make_mock_restli()), \
@@ -242,7 +245,8 @@ class TestShareCarouselOnLinkedin:
 
     def test_all_image_url_slides_post_without_default(self):
         """The normal path: real per-slide image URLs (branded slides) post directly, with
-        no Pexels/default involvement."""
+        no Pexels/default involvement.
+        """
         slides = ["https://cdn/api/assets?file_name=images/carousel/9/slide_01.png",
                   "https://cdn/api/assets?file_name=images/carousel/9/slide_02.png"]
         with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="abc"), \
@@ -268,7 +272,8 @@ class TestShareCarouselOnLinkedin:
 
     def test_returns_none_when_no_uploads_succeed(self):
         """If every media upload fails, don't silently post a text-only carousel — return
-        None so the caller flags the post 'error'."""
+        None so the caller flags the post 'error'.
+        """
         slides = ["https://example.com/slide.png"]
         with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="abc"), \
              patch("cqc_lem.utilities.linkedin.poster.get_user_access_token", return_value="tok"), \
@@ -372,8 +377,9 @@ class TestSocialActionsComments:
         assert client.delete.call_args.kwargs["path_keys"]["commentId"] == "12345"
 
     def test_restli_factory_registers_raise_hook(self):
-        from cqc_lem.utilities.linkedin.poster import _restli
         from linkedin_api.clients.restli.client import RestliClient
+
+        from cqc_lem.utilities.linkedin.poster import _restli
         c = _restli()
         assert isinstance(c, RestliClient)
         assert len(c.session.hooks["response"]) >= 1

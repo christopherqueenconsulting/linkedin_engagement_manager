@@ -1,7 +1,8 @@
 """Unit tests for the cached profile-synthesis DB helpers (get/set + stale selector)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

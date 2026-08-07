@@ -1,7 +1,8 @@
 """Unit tests for the launch-funnel tracker in cqc_lem.utilities.observability (issue #503)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -14,13 +15,13 @@ class TestResolveChannel:
         assert resolve_channel({"channel": "Affiliate", "utm_source": "linkedin"}) == "affiliate"
 
     def test_unknown_explicit_channel_falls_back_to_other(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_OTHER
+        from cqc_lem.utilities.observability import CHANNEL_OTHER, resolve_channel
         # A typo or an invented value must not open a new bucket the CAC breakdown can't group.
         assert resolve_channel({"channel": "linkdin"}) == CHANNEL_OTHER
         assert resolve_channel({"channel": "tiktok", "utm_source": "google"}) == CHANNEL_OTHER
 
     def test_paid_medium_beats_a_search_engine_source(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_PAID
+        from cqc_lem.utilities.observability import CHANNEL_PAID, resolve_channel
         assert resolve_channel({"utm_source": "google", "utm_medium": "cpc"}) == CHANNEL_PAID
 
     @pytest.mark.parametrize("source,expected", [
@@ -48,7 +49,7 @@ class TestResolveChannel:
         assert resolve_channel({"utm_medium": medium}) == expected
 
     def test_unrecognised_utms_are_other_not_direct(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_OTHER
+        from cqc_lem.utilities.observability import CHANNEL_OTHER, resolve_channel
         assert resolve_channel({"utm_source": "some-podcast"}) == CHANNEL_OTHER
 
     def test_referrer_host_is_the_fallback(self):
@@ -56,16 +57,16 @@ class TestResolveChannel:
         assert resolve_channel({"referrer": "https://www.linkedin.com/feed/"}) == "linkedin"
 
     def test_unknown_referrer_is_a_referral(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_REFERRAL
+        from cqc_lem.utilities.observability import CHANNEL_REFERRAL, resolve_channel
         assert resolve_channel({"referrer": "https://news.ycombinator.com/"}) == CHANNEL_REFERRAL
 
     def test_unparseable_referrer_still_resolves(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_REFERRAL
+        from cqc_lem.utilities.observability import CHANNEL_REFERRAL, resolve_channel
         # urlparse raises on a malformed IPv6 URL — the channel must not blow up with it.
         assert resolve_channel({"referrer": "http://["}) == CHANNEL_REFERRAL
 
     def test_no_signal_is_direct(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_DIRECT
+        from cqc_lem.utilities.observability import CHANNEL_DIRECT, resolve_channel
         assert resolve_channel({}) == CHANNEL_DIRECT
         assert resolve_channel(None) == CHANNEL_DIRECT
         assert resolve_channel("not-a-dict") == CHANNEL_DIRECT
@@ -73,18 +74,18 @@ class TestResolveChannel:
     def test_youtube_has_its_own_bucket(self):
         # Issue #658: the tutorial videos tag utm_source=youtube and YouTube passes no usable
         # referrer, so without this rule every video-driven signup would be `other`.
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_YOUTUBE
+        from cqc_lem.utilities.observability import CHANNEL_YOUTUBE, resolve_channel
         assert resolve_channel({"utm_source": "youtube", "utm_medium": "video"}) == CHANNEL_YOUTUBE
         assert resolve_channel({"referrer": "https://www.youtube.com/watch?v=x"}) == CHANNEL_YOUTUBE
 
     def test_a_bare_ref_with_no_utms_is_still_a_referral(self):
         # A member who pastes their referral link into a DM often loses the query string except
         # the ref — that arrival is a referral, not direct (issue #658).
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_REFERRAL
+        from cqc_lem.utilities.observability import CHANNEL_REFERRAL, resolve_channel
         assert resolve_channel({"ref": "7"}) == CHANNEL_REFERRAL
 
     def test_utms_still_win_over_a_ref(self):
-        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_LINKEDIN
+        from cqc_lem.utilities.observability import CHANNEL_LINKEDIN, resolve_channel
         assert resolve_channel({"ref": "7", "utm_source": "linkedin"}) == CHANNEL_LINKEDIN
 
 
@@ -104,11 +105,11 @@ class TestNormalizeAttribution:
         assert props["ref"] == "7" and props["channel"] == "referral"
 
     def test_channel_is_always_present(self):
-        from cqc_lem.utilities.observability import normalize_attribution, CHANNEL_DIRECT
+        from cqc_lem.utilities.observability import CHANNEL_DIRECT, normalize_attribution
         assert normalize_attribution(None) == {"channel": CHANNEL_DIRECT}
 
     def test_long_values_are_truncated(self):
-        from cqc_lem.utilities.observability import normalize_attribution, _ATTRIBUTION_MAX_LEN
+        from cqc_lem.utilities.observability import _ATTRIBUTION_MAX_LEN, normalize_attribution
         props = normalize_attribution({"utm_campaign": "x" * 500})
         assert len(props["utm_campaign"]) == _ATTRIBUTION_MAX_LEN
 
@@ -130,7 +131,7 @@ class TestAnonymousDistinctId:
 
 class TestTrackFunnelEvent:
     def test_captures_event_with_channel_and_extras(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_TRIAL_STARTED
+        from cqc_lem.utilities.observability import FUNNEL_TRIAL_STARTED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_TRIAL_STARTED, user_id=7,
                                attribution={"utm_source": "linkedin", "utm_medium": "social"},
@@ -146,7 +147,7 @@ class TestTrackFunnelEvent:
         assert props["trial_days"] == 14
 
     def test_sets_first_touch_person_properties_once(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_SIGNUP_COMPLETED
+        from cqc_lem.utilities.observability import FUNNEL_SIGNUP_COMPLETED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_SIGNUP_COMPLETED, user_id=3,
                                attribution={"utm_campaign": "beta"})
@@ -155,7 +156,7 @@ class TestTrackFunnelEvent:
         assert set_once == {"initial_utm_campaign": "beta", "initial_channel": "other"}
 
     def test_anonymous_distinct_id_is_used_when_there_is_no_user(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_SIGNUP_STARTED
+        from cqc_lem.utilities.observability import FUNNEL_SIGNUP_STARTED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_SIGNUP_STARTED, distinct_id="anon_abc")
 
@@ -163,28 +164,28 @@ class TestTrackFunnelEvent:
         assert mock_ph.alias.called is False
 
     def test_falls_back_to_the_anonymous_bucket(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_SIGNUP_STARTED
+        from cqc_lem.utilities.observability import FUNNEL_SIGNUP_STARTED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_SIGNUP_STARTED)
 
         assert mock_ph.capture.call_args.kwargs["distinct_id"] == "anonymous"
 
     def test_user_id_zero_still_keys_to_the_user(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_ACTIVATED
+        from cqc_lem.utilities.observability import FUNNEL_ACTIVATED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_ACTIVATED, user_id=0, distinct_id="anon_abc")
 
         assert mock_ph.capture.call_args.kwargs["distinct_id"] == "0"
 
     def test_alias_merges_the_pre_signup_person(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_SIGNUP_COMPLETED
+        from cqc_lem.utilities.observability import FUNNEL_SIGNUP_COMPLETED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_SIGNUP_COMPLETED, user_id=9, alias_from="anon_abc")
 
         mock_ph.alias.assert_called_once_with(previous_id="anon_abc", distinct_id="9")
 
     def test_alias_is_skipped_when_it_would_be_a_self_alias(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_SIGNUP_STARTED
+        from cqc_lem.utilities.observability import FUNNEL_SIGNUP_STARTED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph:
             track_funnel_event(FUNNEL_SIGNUP_STARTED, distinct_id="anon_abc",
                                alias_from="anon_abc")
@@ -201,7 +202,7 @@ class TestTrackFunnelEvent:
         assert mock_ph.capture.call_args.kwargs["event"] == "signup_startd"
 
     def test_never_raises_when_posthog_fails(self):
-        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_CHURNED
+        from cqc_lem.utilities.observability import FUNNEL_CHURNED, track_funnel_event
         with patch(f"{_MOD}.posthog") as mock_ph, \
              patch("cqc_lem.utilities.logger.log_warning") as warn:
             mock_ph.capture.side_effect = RuntimeError("posthog down")

@@ -54,7 +54,8 @@ class TestRenderAvatarSamplesTask:
 
     def test_no_samples_leaves_the_avatar_un_approvable(self):
         """Storing an empty list would look like 'previewed'; leaving it alone keeps the
-        approve endpoint's 400 in place."""
+        approve endpoint's 400 in place.
+        """
         result, store, _, _ = _run(_SUCCEEDED, samples=[])
         assert result == 0
         store.assert_not_called()

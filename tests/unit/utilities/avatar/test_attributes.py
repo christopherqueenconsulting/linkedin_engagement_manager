@@ -5,10 +5,15 @@ inference this module could plausibly make is a bug, so most of these tests asse
 """
 import pytest
 
-from cqc_lem.utilities.avatar.attributes import (AGE_BANDS, GENDER_PRESENTATIONS,
-                                                 apply_subject_clause, normalize_age_band,
-                                                 normalize_gender_presentation, subject_clause,
-                                                 subject_directive)
+from cqc_lem.utilities.avatar.attributes import (
+    AGE_BANDS,
+    GENDER_PRESENTATIONS,
+    apply_subject_clause,
+    normalize_age_band,
+    normalize_gender_presentation,
+    subject_clause,
+    subject_directive,
+)
 
 pytestmark = pytest.mark.unit
 

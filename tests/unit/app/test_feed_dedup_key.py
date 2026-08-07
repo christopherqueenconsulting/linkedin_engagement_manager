@@ -9,8 +9,9 @@ URN lives on an ancestor of the card `_card_for_textbox` returns — the outerHT
 and the hash covered the whole body, which differs between the truncated and the expanded render.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -19,8 +20,11 @@ def _fns():
     # Lazy import: importing run_automation at module scope instantiates the OpenAI client at
     # collection time, which fails in CI (no OPENAI_API_KEY).
     from cqc_lem.app.run_automation import (
-        _normalize_post_text, _feed_post_key, _feed_post_urn_from_card,
-        _stable_feed_post_key, _feed_content_fingerprints,
+        _feed_content_fingerprints,
+        _feed_post_key,
+        _feed_post_urn_from_card,
+        _normalize_post_text,
+        _stable_feed_post_key,
     )
     return (_normalize_post_text, _feed_post_key, _feed_post_urn_from_card,
             _stable_feed_post_key, _feed_content_fingerprints)
@@ -28,7 +32,8 @@ def _fns():
 
 def _card(outer_html=None, permalink_href=None, scan_result=None, scan_raises=False):
     """A feed card. `scan_result` is what the ancestor/attribute URN scan (a JS call through the
-    driver) returns — MagicMock's default is a non-str sentinel, i.e. 'scan found nothing'."""
+    driver) returns — MagicMock's default is a non-str sentinel, i.e. 'scan found nothing'.
+    """
     card = MagicMock()
     card.get_attribute.return_value = outer_html or ""
     if scan_raises:

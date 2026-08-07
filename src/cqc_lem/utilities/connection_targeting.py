@@ -14,8 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterable, Optional
 
-from cqc_lem.utilities.lead_scoring import ICP_UNKNOWN, icp_fit, person_key, profile_slug, \
-    recency_weight
+from cqc_lem.utilities.lead_scoring import ICP_UNKNOWN, icp_fit, person_key, profile_slug, recency_weight
 
 # How they showed up on our radar. Engaging with OUR content is a stronger statement of interest in
 # US than engaging with someone else's post about the same topic.
@@ -89,7 +88,8 @@ def target_terms_from_prefs(prefs: dict) -> list:
 
 def warmth_strength(signals: Iterable[CandidateSignal], now: datetime) -> int:
     """0-100 from recency, frequency and source. Repeats add with diminishing returns (1, 1/2, 1/3 …)
-    so ten drive-by reactions never outrank someone who keeps showing up on our own posts."""
+    so ten drive-by reactions never outrank someone who keeps showing up on our own posts.
+    """
     items = sorted((signals or []),
                    key=lambda s: (s.occurred_at is not None, s.occurred_at), reverse=True)
     total = 0.0
@@ -146,7 +146,8 @@ def group_signals(signals: Iterable[CandidateSignal]) -> dict:
     """Collapse raw signals into {person_key: [signals]}, so the same human found on our post and on
     an adjacent author's post becomes ONE candidate. Keyed by lead_scoring.person_key, so a
     name-only sighting stays separate from a URL one (display names collide — merging them would
-    silently blend two people)."""
+    silently blend two people).
+    """
     people: dict = {}
     for s in signals or []:
         key = person_key(s.person_name, s.person_profile_url)
@@ -246,7 +247,8 @@ def first_name(name: str = None) -> str:
 def default_connect_note(candidate: ScoredCandidate, topic: str = None) -> str:
     """The pre-AI connect note. Grounded in the actual reason we found them — a note that names the
     shared context reads like a human wrote it, which is the whole point of warm targeting.
-    Kept under LinkedIn's 300-char note limit even before refinement."""
+    Kept under LinkedIn's 300-char note limit even before refinement.
+    """
     name = first_name(candidate.person_name)
     about = f" about {topic}" if topic else ""
     if candidate.source == SOURCE_ROSTER:

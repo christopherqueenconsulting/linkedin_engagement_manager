@@ -7,7 +7,7 @@ pytestmark = pytest.mark.unit
 
 class TestTiers:
     def test_credits_and_premium(self):
-        from cqc_lem.utilities.ai.video_models import model_credits, is_premium
+        from cqc_lem.utilities.ai.video_models import is_premium, model_credits
         assert model_credits("gen4_turbo") == 0 and is_premium("gen4_turbo") is False
         assert model_credits("veo3.1_fast") == 1 and is_premium("veo3.1_fast") is True
         assert model_credits("veo3.1") == 3 and is_premium("veo3.1") is True
@@ -67,6 +67,7 @@ class TestAudioDirectionGate:
 
     def test_cost_meta_records_the_downgrade(self, mock_runwayml):
         from unittest.mock import patch
+
         from cqc_lem.utilities.ai.video_models import create_runway_video
         with patch("cqc_lem.utilities.ai.video_models.track_media_cost") as track:
             create_runway_video("https://img/x.png", "slow push-in", model="veo3.1_fast", audio=True)

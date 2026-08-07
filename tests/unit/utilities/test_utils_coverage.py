@@ -1,8 +1,10 @@
 """Coverage tests for cqc_lem.utilities.utils helpers (debug wrapper, prompts, file/AWS
-helpers, asset purging)."""
+helpers, asset purging).
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -210,6 +212,7 @@ class TestPurgePostAssets:
 class TestGetPostTime:
     def test_prefers_user_recommendation_for_weekday(self):
         from datetime import date, time
+
         from cqc_lem.utilities.utils import get_post_time
         # 2026-07-08 is a Wednesday (weekday 2); default is 16:00
         recs = [{"weekday_num": 2, "hour": 9}]
@@ -220,12 +223,14 @@ class TestGetPostTime:
 
     def test_falls_back_to_default_without_user(self):
         from datetime import date, time
-        from cqc_lem.utilities.utils import get_post_time, get_best_posting_time
+
+        from cqc_lem.utilities.utils import get_best_posting_time, get_post_time
         d = date(2026, 7, 8)
         assert get_post_time(d) == get_best_posting_time(d) == time(16, 0)
 
     def test_falls_back_to_default_on_error(self):
         from datetime import date, time
+
         from cqc_lem.utilities.utils import get_post_time
         with patch("cqc_lem.utilities.db.get_post_engagement_rows",
                    side_effect=RuntimeError("db down")):

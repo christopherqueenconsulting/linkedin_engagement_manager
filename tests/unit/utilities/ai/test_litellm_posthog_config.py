@@ -37,18 +37,21 @@ class TestPostHogCallback:
 
     def test_the_complexity_router_is_still_mounted(self):
         """success_callback and custom_callbacks are separate keys — adding one must not shadow the
-        cost-aware routing hook (issue #494)."""
+        cost-aware routing hook (issue #494).
+        """
         assert "custom_callbacks:" in CONFIG_SETTINGS
         assert "/app/.litellm/complexity_router.py" in CONFIG_SETTINGS
 
     def test_prompts_and_completions_are_redacted(self):
         """$ai_input/$ai_output_choices would otherwise carry the user's own LinkedIn material —
-        the SPA masks exactly this content, and the proxy must not leak it out the back."""
+        the SPA masks exactly this content, and the proxy must not leak it out the back.
+        """
         assert re.search(r"turn_off_message_logging:\s*true", CONFIG_SETTINGS)
 
     def test_the_proxy_container_gets_the_posthog_credentials(self):
         """The logger reads these two names specifically; POSTHOG_HOST is the app's own var, so both
-        halves of the stack report to one project."""
+        halves of the stack report to one project.
+        """
         service = _litellm_service()
         assert "- POSTHOG_API_KEY=${POSTHOG_API_KEY}" in service
         assert "- POSTHOG_API_URL=${POSTHOG_HOST" in service

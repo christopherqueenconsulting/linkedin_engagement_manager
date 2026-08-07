@@ -2,11 +2,13 @@
 
 The name is what reply detection compares a DM thread's last sender against, so the endpoint is a
 REQUIRED field: an empty save is a 400, not a silent clear that would leave the follow-up sequencer
-skipping every person it looks at."""
+skipping every person it looks at.
+"""
 
 import json
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -15,6 +17,7 @@ _API = "cqc_lem.api.main"
 
 def _client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app)
 

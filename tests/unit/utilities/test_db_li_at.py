@@ -1,7 +1,8 @@
 """Unit tests for store_linkedin_li_at (cookie-session ingest helper)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

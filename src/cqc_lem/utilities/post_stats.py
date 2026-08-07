@@ -1,6 +1,7 @@
 """Post-time recommendations and content-attribution ranking from captured engagement stats
 (pure functions). Scoring is impression-normalized (engagement RATE) whenever every row in the
-comparison set carries impressions, and always recency-weighted so stale posts fade out."""
+comparison set carries impressions, and always recency-weighted so stale posts fade out.
+"""
 
 from collections import defaultdict
 from datetime import datetime, timezone, tzinfo
@@ -39,7 +40,8 @@ def engagement_score(reactions: Optional[int], comments: Optional[int],
 def engagement_rate(reactions: Optional[int], comments: Optional[int], reposts: Optional[int] = 0,
                     impressions: Optional[int] = None) -> Optional[float]:
     """Impression-normalized engagement — `engagement_score` per impression. None when impressions
-    are unknown or zero so callers can fall back to raw counts instead of scoring a post as 0."""
+    are unknown or zero so callers can fall back to raw counts instead of scoring a post as 0.
+    """
     views = int(impressions or 0)
     if views <= 0:
         return None
@@ -49,7 +51,8 @@ def engagement_rate(reactions: Optional[int], comments: Optional[int], reposts: 
 def recency_weight(scheduled_time: Optional[datetime], now: Optional[datetime] = None,
                    half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> float:
     """Exponential half-life decay on a post's age. Missing/future timestamps and mixed timezone
-    awareness degrade to 1.0 (unweighted) rather than distorting the average."""
+    awareness degrade to 1.0 (unweighted) rather than distorting the average.
+    """
     if scheduled_time is None:
         return 1.0
     if now is None:
@@ -69,7 +72,8 @@ def _cell(row: Sequence, index: int) -> Any:
 
 def _rate_mode(rows: Sequence) -> bool:
     """True only when EVERY row has impressions, so rate and per-post counts are never mixed on
-    one ranking (mirrors the same gate in `content_framework.performance_weights`)."""
+    one ranking (mirrors the same gate in `content_framework.performance_weights`).
+    """
     return bool(rows) and all(int(_cell(r, _IDX_IMPRESSIONS) or 0) > 0 for r in rows)
 
 
@@ -96,7 +100,8 @@ def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[date
     support left, so it cannot outrank a well-sampled recent one on a stale fluke.
 
     Returns (unrounded score, payload) — callers rank on the unrounded value so display rounding
-    can never flip the ordering, and only ever emit the rounded `score`."""
+    can never flip the ordering, and only ever emit the rounded `score`.
+    """
     weighted = 0.0
     support = 0.0
     samples = 0
@@ -114,7 +119,8 @@ def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[date
 
 def _local_wall_clock(scheduled: datetime, zone: Optional[tzinfo]) -> datetime:
     """Stored scheduled_time is naive UTC (docs/timezone-contract.md); a "best hour" is only
-    meaningful as the AUDIENCE's wall clock, so shift it into the user's zone before bucketing."""
+    meaningful as the AUDIENCE's wall clock, so shift it into the user's zone before bucketing.
+    """
     if zone is None:
         return scheduled
     aware = scheduled.replace(tzinfo=timezone.utc) if scheduled.tzinfo is None else scheduled
@@ -133,7 +139,8 @@ def recommend_post_times(rows: Iterable[Sequence], top_n: int = 3, min_posts: in
     `tz` is the user's IANA timezone: the returned weekday/hour are that zone's wall clock, which is
     what callers need — get_post_time hands the hour straight back to the scheduler as a LOCAL time
     to be converted to UTC for storage, so bucketing the raw UTC hour would shift every
-    recommendation by the user's offset twice. Omitted (or unknown) means UTC."""
+    recommendation by the user's offset twice. Omitted (or unknown) means UTC.
+    """
     usable = [row for row in rows if row and _cell(row, _IDX_SCHEDULED) is not None]
     if len(usable) < min_posts:
         return []
@@ -167,7 +174,8 @@ def rank_content_attributes(rows: Iterable[Sequence], attributes: Optional[Itera
     `recommend_post_times`. Returns
     {attribute: [{"key", "score", "avg_engagement", "support", "samples", "metric"}, ...]} sorted
     best-first; attribute values seen fewer than `min_samples` times are dropped, and attributes
-    with no qualifying data map to an empty list."""
+    with no qualifying data map to an empty list.
+    """
     names = list(attributes) if attributes else list(ATTRIBUTE_INDEXES)
     materialized = [row for row in rows if row]  # rows may be a one-shot cursor iterable
     result = {}
@@ -205,7 +213,8 @@ def select_variant_winners(rows: Iterable[Mapping], top_n: Optional[int] = None,
     ``{"winner": <key or None>, "ranking": [{"key","score","avg_engagement","support","samples",
     "metric"}, ...]}`` best-first; keys seen fewer than `min_samples` times are dropped. Pure — no
     DB. The ranking entries share `rank_content_attributes`' shape so B3/B4 consumers can read
-    them the same way."""
+    them the same way.
+    """
     groups: dict = defaultdict(list)
     for r in rows:
         if not r:
@@ -244,7 +253,8 @@ def _int(value: Any) -> int:
 
 def _impressions(value: Any) -> Optional[int]:
     """Impressions normalized to a positive count or None — mirrors `engagement_rate`'s treatment
-    of 0/missing impressions as unknown, so a row never shows `impressions: 0` beside a null rate."""
+    of 0/missing impressions as unknown, so a row never shows `impressions: 0` beside a null rate.
+    """
     views = _int(value)
     return views if views > 0 else None
 
@@ -259,7 +269,8 @@ def build_performance_table(rows: Iterable[Mapping]) -> list:
     signals plus the derived `engagement` (weighted count) and `engagement_rate` (per impression;
     None when impressions are unknown). Pure — no DB and no recency weighting: the table shows the
     actual per-post outcome, not the recency-decayed ranking metric used by `recommend_post_times`
-    / `rank_content_attributes`."""
+    / `rank_content_attributes`.
+    """
     out = []
     for r in rows:
         if not r:
@@ -292,7 +303,8 @@ def build_engagement_trend(rows: Iterable[Mapping]) -> list:
     time. `engagement_rate` is filled only when EVERY post that day carried impressions — otherwise
     the day's impression total is incomplete and a rate would mislead, so both `impressions` and
     `engagement_rate` come back None (the same rate-mode gate `post_stats` uses elsewhere). Pure —
-    no DB."""
+    no DB.
+    """
     buckets: dict = {}
     for r in rows:
         if not r:

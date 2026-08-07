@@ -1,30 +1,31 @@
 """Unit tests for the structured, deterministic carousel content-slide image
-selection + layout routing (cqc_lem.utilities.carousel_creator)."""
+selection + layout routing (cqc_lem.utilities.carousel_creator).
+"""
 
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities import carousel_creator as cc
 from cqc_lem.utilities.carousel_creator import (
     EducationalContentCarousel,
-    choose_content_layout,
-    create_carousel_slide_images,
-    create_one_column_text_layout_slide,
-    create_one_column_text_1_layout_slide,
-    create_title_and_body_layout_slide,
-    create_title_and_body_1_layout_slide,
-    derive_image_query,
-    select_slide_image,
     _carousel_content_type,
     _fit_and_crop_image,
+    _generate_avatar_slide_image,
     _heuristic_image_query,
     _seeded_unit,
-    _should_include_slide_image,
     _should_generate_with_replicate,
+    _should_include_slide_image,
     _user_has_active_avatar,
-    _generate_avatar_slide_image,
+    choose_content_layout,
+    create_carousel_slide_images,
+    create_one_column_text_1_layout_slide,
+    create_one_column_text_layout_slide,
+    create_title_and_body_1_layout_slide,
+    create_title_and_body_layout_slide,
+    derive_image_query,
+    select_slide_image,
 )
 
 ENV = "cqc_lem.utilities.env_constants"
@@ -169,7 +170,8 @@ class TestAvatarGating:
 
     def test_carousel_opt_in_off_false(self):
         """Guardrail (issue #744): an approved avatar is still not used until the user opts
-        carousels in."""
+        carousels in.
+        """
         avatar = {"status": "succeeded", "model_ref": "user/model:v1",
                   "approval_status": "approved"}
         with patch("cqc_lem.utilities.db.get_avatar_preferences",
@@ -224,7 +226,8 @@ class TestGenerateAvatarSlideImage:
 
     def test_object_query_is_not_routed_to_the_lora(self):
         """Prepending the trigger word to 'quarterly dashboard metrics' asked the LoRA to insert
-        the user's face into a scene never written to contain a person (issue #744)."""
+        the user's face into a scene never written to contain a person (issue #744).
+        """
         with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
                    return_value="/tmp/gen.png") as gen:
             _generate_avatar_slide_image("quarterly dashboard metrics", 5, 9, "educational")
@@ -421,7 +424,8 @@ class TestContentTypeMapping:
 @pytest.mark.unit
 class TestPillowComposition:
     """The posted PNGs: content slides composite a photo band; cover/CTA never do;
-    a miss or decode failure falls back to text-only. RED marks the image region."""
+    a miss or decode failure falls back to text-only. RED marks the image region.
+    """
 
     RED = (220, 30, 30)
     BAND_SAMPLE = (540, 860)  # deep inside the bottom photo band on content slides
@@ -487,7 +491,8 @@ class TestPillowComposition:
 @pytest.mark.unit
 class TestWrapText:
     """Word-wrap must never produce a line wider than the budget — including long
-    tokens (URLs) which are hard-broken — so slide text never bleeds past the margin."""
+    tokens (URLs) which are hard-broken — so slide text never bleeds past the margin.
+    """
 
     def _draw_font(self):
         from PIL import Image, ImageDraw, ImageFont

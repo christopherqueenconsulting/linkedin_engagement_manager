@@ -1,11 +1,22 @@
 import os
 
 from aws_cdk import (
-    aws_lambda as _lambda,
+    Duration,
+    NestedStack,
+    RemovalPolicy,
+)
+from aws_cdk import (
     aws_ec2 as ec2,
-    aws_logs as logs,
+)
+from aws_cdk import (
+    aws_lambda as _lambda,
+)
+from aws_cdk import (
     aws_lambda_python_alpha as _lambda_python_alpha,
-    Duration, NestedStack, RemovalPolicy, )
+)
+from aws_cdk import (
+    aws_logs as logs,
+)
 from aws_cdk.aws_lambda import Tracing
 from constructs import Construct
 

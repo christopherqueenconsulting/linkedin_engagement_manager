@@ -74,7 +74,10 @@ class TestBuildWorkload:
         # would silently hash every user_id to a different offset than the real beat) — and then
         # round up to the next STAGGER_TICK_MINUTES boundary, since the beat only ticks every 15 min.
         from cqc_lem.utilities.engagement_window import (
-            STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_TICK_MINUTES, stagger_offset_minutes,
+            STAGGER_APPRECIATION_DM,
+            STAGGER_GOLDEN_HOUR,
+            STAGGER_TICK_MINUTES,
+            stagger_offset_minutes,
         )
         jobs = slt.build_workload(5)
         golden = {job.user_id: job.ready_at for job in jobs if job.name == "golden_hour_commenting"}

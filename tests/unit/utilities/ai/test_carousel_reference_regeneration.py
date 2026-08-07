@@ -1,10 +1,12 @@
 """Unit tests for the carousel generator's reference-value loop (issue #728): a deck whose slides
 carry nothing reusable is REGENERATED with a directive naming exactly what was missing, the retry is
-bounded, and a passing deck never costs a second call."""
+bounded, and a passing deck never costs a second call.
+"""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -114,7 +116,8 @@ class TestReferenceGateRegeneration:
 
 class TestTheRetryNeverCostsUsTheDraftWeHave:
     """The gate's whole posture is 'a narrative deck beats no post'. A second call that errors or
-    comes back unparseable must not turn a shippable deck into a failed task or an empty one."""
+    comes back unparseable must not turn a shippable deck into a failed task or an empty one.
+    """
 
     def test_a_retry_that_raises_keeps_the_first_deck(self):
         text, deck, call = _generate([_response(_NARRATIVE), RuntimeError("provider down")],

@@ -10,8 +10,7 @@ being accepted.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from selenium.common import (NoSuchElementException, StaleElementReferenceException,
-                             WebDriverException)
+from selenium.common import NoSuchElementException, StaleElementReferenceException, WebDriverException
 
 from cqc_lem.utilities.db import LogResultType
 from cqc_lem.utilities.linkedin.message_thread import ComposerOpen
@@ -92,7 +91,8 @@ class TestOutcomeIsRecorded:
 
 class TestSendLanded:
     """'Sent' has to be the message being THERE. The old path set sent=True the moment the Send
-    button accepted a click, which is why 8 failures reported as 8 dispatches."""
+    button accepted a click, which is why 8 failures reported as 8 dispatches.
+    """
 
     @staticmethod
     def _driver(composer_text=""):
@@ -138,7 +138,8 @@ class TestSendLanded:
 class TestTypingSurvivesTheComposerRemount:
     """The compose overlay re-mounts while LinkedIn hydrates it, so a handle taken when the box first
     appears goes stale a keystroke later. That is what killed the re-queued sends on 2026-08-04 once
-    the composer had started resolving."""
+    the composer had started resolving.
+    """
 
     @staticmethod
     def _box(stale_on_send=0):

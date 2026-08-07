@@ -1,9 +1,10 @@
 """Unit tests for timezone-related database functions."""
 
-import pytest
-import mysql.connector
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
+
+import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 

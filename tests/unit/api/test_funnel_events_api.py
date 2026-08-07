@@ -1,7 +1,8 @@
 """Funnel-event emission from the signup and billing endpoints (issue #503)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.unit
@@ -14,7 +15,8 @@ def _auth_hardening_side_effects():
     """Issue #745 (2b): every login now stamps `email_verified_at`, writes an `auth_audit_log` row
     and reads the PIN lockout, and /auth/session resolves the account's public_uid. Those are DB
     calls these tests never mocked — pin them so each test still exercises the flow it was written
-    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py)."""
+    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
+    """
     with patch("cqc_lem.api.main.record_auth_event", return_value=True), \
          patch("cqc_lem.api.main.mark_email_verified", return_value=True), \
          patch("cqc_lem.api.main.get_pin_lockout", return_value=None), \
@@ -74,7 +76,8 @@ class TestSignupFunnel:
 
     def test_a_referral_ref_survives_the_request_model(self, client):
         """Issue #658: `?ref=<user id>` is what a referral link carries. It has to be declared on
-        FunnelAttribution or FastAPI drops it before normalize_attribution ever sees it."""
+        FunnelAttribution or FastAPI drops it before normalize_attribution ever sees it.
+        """
         with patch(f"{_MAIN}.get_user_id", return_value=None), \
              patch(f"{_MAIN}.generate_pin", return_value="123456"), \
              patch(f"{_MAIN}.hash_pin", return_value="hashed"), \

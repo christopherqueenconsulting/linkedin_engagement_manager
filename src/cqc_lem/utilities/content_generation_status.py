@@ -30,7 +30,8 @@ _DEFAULT_RESULT_TTL_SECONDS = 60 * 60
 class RedisLike(Protocol):
     """The slice of the Redis API this module uses — structural, so `redis.Redis` and the test
     doubles both satisfy it without importing `redis` at module scope (it is imported lazily so
-    the module keeps working, no-opping, when the client is unavailable)."""
+    the module keeps working, no-opping, when the client is unavailable).
+    """
 
     def get(self, name: str) -> Any: ...  # lgtm[py/ineffectual-statement]
 
@@ -69,7 +70,8 @@ def _ttl_seconds() -> int:
 def _result_ttl_seconds() -> int:
     """A FINISHED run expires sooner than a running one: "5 posts are ready to review" is useful
     right after the run and just noise a day later, and expiring it server-side keeps the SPA from
-    having to reason about how stale a result is."""
+    having to reason about how stale a result is.
+    """
     try:
         return int(os.getenv("CONTENT_GENERATION_RESULT_TTL_SECONDS",
                              str(_DEFAULT_RESULT_TTL_SECONDS)))
@@ -143,7 +145,8 @@ def _write(client: RedisLike, user_id: int, status: dict, ttl: Optional[int] = N
 
 def mark_queued(user_id: int) -> None:
     """Record that a generation run was dispatched, before any post is processed. Called by the
-    API so the SPA gets an immediate 'queued' the moment the user clicks Generate."""
+    API so the SPA gets an immediate 'queued' the moment the user clicks Generate.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -209,7 +212,8 @@ def record_post_generated(user_id: int, post_id: int) -> None:
 
 def record_post_failed(user_id: int, post_id: int) -> None:
     """One post could not be generated — surfaced per-post in the SPA so a media failure is
-    visible instead of silently missing from the batch."""
+    visible instead of silently missing from the batch.
+    """
     _record(user_id, post_id, failed=True)
 
 

@@ -4,14 +4,22 @@ from typing import Optional
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import (worker_process_init, task_received, task_success, task_sent,
-                            task_prerun, task_postrun, task_failure, task_retry)
+from celery.signals import (
+    task_failure,
+    task_postrun,
+    task_prerun,
+    task_received,
+    task_retry,
+    task_sent,
+    task_success,
+    worker_process_init,
+)
 
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import AWS_REGION
-from cqc_lem.utilities.logger import myprint, logger
+from cqc_lem.utilities.logger import logger, myprint
 from cqc_lem.utilities.observability import capture_exception, track_task
 from cqc_lem.utilities.utils import get_cloudwatch_client
 
@@ -448,7 +456,8 @@ def on_task_postrun(task_id: str = None, task=None, state: str = None, **kwargs)
 
 def _task_user_id(kwargs) -> Optional[int]:
     """The user a task was dispatched for. Every per-user task in LEM carries `user_id` in its
-    kwargs, which is the only attribution a signal handler can see."""
+    kwargs, which is the only attribution a signal handler can see.
+    """
     if not isinstance(kwargs, dict):
         return None
     user_id = kwargs.get("user_id")
@@ -463,7 +472,8 @@ def on_task_failure(task_id: str = None, exception: BaseException = None, sender
                     kwargs: dict = None, einfo=None, **_) -> None:
     """File a failed task's exception as a grouped PostHog error-tracking issue (issue #648). Celery
     swallows the traceback into its own logger, so without this the only trace of a crashed task is
-    a log line — nothing that groups, counts or alerts."""
+    a log line — nothing that groups, counts or alerts.
+    """
     capture_exception(
         exception,
         user_id=_task_user_id(kwargs),
@@ -478,7 +488,8 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
     """A retry is a failure that will be tried again — worth the same issue so a task that only ever
     succeeds on its 3rd attempt is still visible. `reason` is the exception when the retry was
     raised from one; anything else (a bare `self.retry()`) carries no exception to group and is
-    skipped rather than filed as a synthetic one."""
+    skipped rather than filed as a synthetic one.
+    """
     if not isinstance(reason, BaseException):
         return
     capture_exception(
@@ -495,8 +506,7 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
 @task_received.connect
 @task_success.connect
 def update_queue_length_metric(sender=None, headers=None, **kwargs) -> int:
-    """
-    Get the current queue length from Redis broker and push to CloudWatch
+    """Get the current queue length from Redis broker and push to CloudWatch
     """
     # Use the global app
     global app

@@ -1,8 +1,20 @@
 from aws_cdk import (
+    CfnOutput,
+    NestedStack,
+    Stack,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_ecs as ecs,
+)
+from aws_cdk import (
     aws_efs as efs,
+)
+from aws_cdk import (
     aws_iam as iam,
-    aws_ec2 as ec2, CfnOutput, NestedStack, Stack, )
+)
 from constructs import Construct
 
 from cqc_lem.aws.cdk.efs import CONTAINER_APP_ASSETS_PATH, EFS_VOLUME_NAME

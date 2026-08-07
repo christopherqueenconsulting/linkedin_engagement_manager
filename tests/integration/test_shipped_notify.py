@@ -13,9 +13,9 @@ stateful fake cursor that models `feedback`, `shipped_notices`, `shipped_notice_
 """
 import json
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -157,6 +157,7 @@ class _FakeConn:
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 
@@ -165,7 +166,8 @@ def client():
 def store():
     """Two reporters (4 and 7) behind cluster/issue #498, plus one anonymous report, one report
     attached to the seed by `cluster_id` only (the issue number never propagated to it), and one
-    unrelated report that must never be notified."""
+    unrelated report that must never be notified.
+    """
     return {
         "feedback": [
             {"id": 1, "user_id": 4, "body": "comments never post", "status": "issue_created",
@@ -248,7 +250,8 @@ class TestShippedNotifyLoop:
 
     def test_an_ack_inside_the_delay_cannot_burn_the_notice(self, client, store):
         """The ack endpoint applies the SAME delay gate as the GET — otherwise a client could ack
-        (and CSAT) a notice it was never shown, and the notice would never surface afterwards."""
+        (and CSAT) a notice it was never shown, and the notice would never surface afterwards.
+        """
         _run_pass(store)
         store["recipients"][(1, 4)]["notified_at"] = datetime.now()  # notified just now
 

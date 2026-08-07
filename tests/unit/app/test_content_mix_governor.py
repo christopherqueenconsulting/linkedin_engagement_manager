@@ -1,7 +1,8 @@
 """Unit tests for the 70/20/10 governor inside the content pipeline (issue #618): the plan
 classifies every post and keeps promo at/below the ceiling, the class is persisted and flows back
 into generation, the promo slot is forced into a case-study shape, and a meeting-ask CTA is both
-repaired deterministically and failed by the review gate."""
+repaired deterministically and failed by the review gate.
+"""
 
 from datetime import time
 from unittest.mock import MagicMock, patch
@@ -29,7 +30,8 @@ _NO_NEWSLETTER = {"enabled": False, "title": None}
 def _plan(user_id=1, counts=None, mixes=None):
     """Run plan_content_for_user and return the saved daily plan. The plan's LENGTH depends on the
     days left in the real current month, so tests that need a specific class in a specific slot pass
-    `mixes` (a long-enough class list) instead of assuming a 30-entry plan."""
+    `mixes` (a long-enough class list) instead of assuming a 30-entry plan.
+    """
     from cqc_lem.app.run_content_plan import plan_content_for_user
     patches = [
         patch(f"{_RCP}.save_content_plan"),
@@ -97,8 +99,9 @@ class TestPlanGovernor:
 
 class TestSaveContentPlan:
     def test_persists_the_mix_class(self):
-        from cqc_lem.app.run_content_plan import save_content_plan
         from datetime import datetime
+
+        from cqc_lem.app.run_content_plan import save_content_plan
         plan = [{"scheduled_datetime": datetime(2026, 8, 1, 14, 0), "post_type": "text",
                  "stage": "awareness", "content_mix": "promo"}]
         with patch(f"{_RCP}.insert_planned_post") as insert:
@@ -106,8 +109,9 @@ class TestSaveContentPlan:
         assert insert.call_args.kwargs["content_mix"] == "promo"
 
     def test_missing_mix_is_none_not_an_error(self):
-        from cqc_lem.app.run_content_plan import save_content_plan
         from datetime import datetime
+
+        from cqc_lem.app.run_content_plan import save_content_plan
         plan = [{"scheduled_datetime": datetime(2026, 8, 1, 14, 0), "post_type": "text",
                  "stage": "awareness"}]
         with patch(f"{_RCP}.insert_planned_post") as insert:

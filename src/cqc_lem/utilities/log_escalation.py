@@ -108,7 +108,8 @@ _MAX_MESSAGE = 300
 
 def normalize_message(message: str) -> Tuple[str, str]:
     """-> (display, key). `display` keeps original casing and becomes the exception's value, so the
-    filed issue is readable; `key` is casefolded and is what gets hashed."""
+    filed issue is readable; `key` is casefolded and is what gets hashed.
+    """
     text = (message or "")[:_MAX_MESSAGE]
     for pattern, replacement in _MASKS:
         text = pattern.sub(replacement, text)
@@ -121,7 +122,8 @@ def fingerprint(level: str, origin: str, key_text: str) -> str:
 
     The call site is part of the key so a generic message emitted from two modules stays two
     problems. It is module+function and deliberately NOT the line number — a line moving during an
-    unrelated edit must not reset the counter and fork a new issue."""
+    unrelated edit must not reset the counter and fork a new issue.
+    """
     raw = f"{level}|{origin}|{key_text}".encode("utf-8", "replace")
     return hashlib.sha1(raw).hexdigest()[:12]  # nosec B324 - grouping key, not a security boundary
 
@@ -176,7 +178,8 @@ def note(message: str, level: str, origin: str, context: Optional[dict] = None) 
     """Count this occurrence; return an escalation record when it crosses the threshold, else None.
 
     Never raises. Returning None means "carry on exactly as before" — that is the fail-open path for
-    a missing Redis, a disabled switch, an excluded message, or any internal error."""
+    a missing Redis, a disabled switch, an excluded message, or any internal error.
+    """
     try:
         if not enabled() or getattr(_state, "escalating", False):
             return None
@@ -234,7 +237,8 @@ def escalate(result: dict, context: Optional[dict] = None, exc: Optional[BaseExc
     Grouping is pinned with an explicit `$exception_fingerprint`. PostHog's default fingerprint is
     exception type + first in-app stack frame, and every `Selector miss: ...` is raised from the same
     line of `find_first` — so without the override, "Feed sort control" and "Open reactions menu"
-    would collapse into ONE issue and the distinct breakages would be invisible."""
+    would collapse into ONE issue and the distinct breakages would be invisible.
+    """
     if getattr(_state, "escalating", False):
         return
     _state.escalating = True

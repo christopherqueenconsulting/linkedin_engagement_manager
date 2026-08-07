@@ -4,19 +4,32 @@ import time
 from datetime import datetime, timedelta
 
 from celery_once import AlreadyQueued
-from cqc_lem.app.run_automation import engage_with_profile_viewer, comment_on_post, invite_to_connect, check_commented, \
-    navigate_to_feed, automate_reply_commenting, send_private_dm, post_to_linkedin, \
-    automate_invites_to_company_page_for_user
+
+from cqc_lem.app.run_automation import (
+    automate_invites_to_company_page_for_user,
+    automate_reply_commenting,
+    check_commented,
+    comment_on_post,
+    engage_with_profile_viewer,
+    invite_to_connect,
+    navigate_to_feed,
+    post_to_linkedin,
+    send_private_dm,
+)
 from cqc_lem.app.run_scheduler import auto_clean_stale_profiles, organize_videos_by_name_and_timestamp
-from cqc_lem.utilities.ai.ai_helper import get_ai_message_refinement, get_ai_description_of_profile, \
-    generate_ai_response, summarize_recent_activity
+from cqc_lem.utilities.ai.ai_helper import (
+    generate_ai_response,
+    get_ai_description_of_profile,
+    get_ai_message_refinement,
+    summarize_recent_activity,
+)
 from cqc_lem.utilities.date import convert_viewed_on_to_date
-from cqc_lem.utilities.db import update_db_post_status, PostStatus
-from cqc_lem.utilities.env_constants import LI_USER, LI_PASSWORD
-from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_linkedin_profile_from_url, get_my_profile
+from cqc_lem.utilities.db import PostStatus, update_db_post_status
+from cqc_lem.utilities.env_constants import LI_PASSWORD, LI_USER
+from cqc_lem.utilities.linkedin.helper import get_linkedin_profile_from_url, get_my_profile, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint
-from cqc_lem.utilities.selenium_util import create_driver, get_driver_wait, clear_sessions, get_driver_wait_pair
+from cqc_lem.utilities.selenium_util import clear_sessions, create_driver, get_driver_wait, get_driver_wait_pair
 
 
 def test_ai_responses():

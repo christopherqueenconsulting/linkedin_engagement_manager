@@ -1,9 +1,9 @@
+import random
 import re
 from datetime import datetime
-import random
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, HttpUrl, Field, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class LinkedInSkill(BaseModel):
@@ -122,8 +122,8 @@ class LinkedInProfile(BaseModel):
         if recent_activity_message:
             message += f" Also, {recent_activity_message}"
         else:
-            final_option = [f" I also saw your recent post/comment and found it insightful.",
-                            f" I am very impressed by your professional background."]
+            final_option = [" I also saw your recent post/comment and found it insightful.",
+                            " I am very impressed by your professional background."]
             message += random.choice(final_option)
 
         # Handle mutual connections, if they exist

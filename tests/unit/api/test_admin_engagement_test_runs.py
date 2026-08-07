@@ -5,8 +5,9 @@ X-Admin-Secret header (the bearer check is a no-op in tests because
 API_ACCESS_TOKENS is unset, so only the admin secret is exercised here).
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 pytestmark = pytest.mark.unit
 
@@ -22,6 +23,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc

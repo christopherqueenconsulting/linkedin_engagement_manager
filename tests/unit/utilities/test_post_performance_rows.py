@@ -1,9 +1,11 @@
 """Unit tests for db.get_post_performance_rows — the per-post source for the analytics
-dashboard (issue #395)."""
+dashboard (issue #395).
+"""
+
+from datetime import datetime
 
 import mysql.connector
 import pytest
-from datetime import datetime
 
 pytestmark = pytest.mark.unit
 

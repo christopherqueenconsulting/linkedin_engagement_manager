@@ -9,9 +9,9 @@ cancellation).
 import re
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -66,6 +66,7 @@ def _entry(entry_id, question, sort_order, status="published", cluster_id=None):
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 

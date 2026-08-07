@@ -1,8 +1,9 @@
 """Unit tests for the engagement-roster DB helpers (issue #616)."""
 
-import pytest
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -70,7 +71,7 @@ class TestGetEngagementTargets:
     def test_a_missing_cap_falls_back_to_the_default(self):
         conn, _ = _mock_conn(fetch_all=[self._row(max_comments_per_week=None)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_engagement_targets, ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+            from cqc_lem.utilities.db import ENGAGEMENT_TARGET_WEEKLY_DEFAULT, get_engagement_targets
             rows = get_engagement_targets(1)
         assert rows[0]["max_comments_per_week"] == ENGAGEMENT_TARGET_WEEKLY_DEFAULT
 
@@ -114,7 +115,7 @@ class TestUpsertEngagementTargets:
     def test_non_numeric_cap_falls_back_to_the_default(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import upsert_engagement_targets, ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+            from cqc_lem.utilities.db import ENGAGEMENT_TARGET_WEEKLY_DEFAULT, upsert_engagement_targets
             upsert_engagement_targets(1, [{"profile_url": "https://x/in/j", "max_comments_per_week": "lots"}])
         assert cursor.executemany.call_args[0][1][0][4] == ENGAGEMENT_TARGET_WEEKLY_DEFAULT
 
@@ -257,6 +258,7 @@ class TestRecordTargetCommentBlocked:
 
     def test_a_db_error_is_never_read_as_a_streak(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import ConnectStatus
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error("boom")
@@ -317,6 +319,7 @@ class TestConnectStatusEnum:
         # from the migration so a member added without one fails HERE and not at 3am.
         import re
         from pathlib import Path
+
         from cqc_lem.utilities.db import ConnectStatus
         sql = Path("compose/local/database/migrations/"
                    "V20260803083627__add_roster_connect_state.sql").read_text()
@@ -324,7 +327,7 @@ class TestConnectStatusEnum:
         assert {m.value for m in ConnectStatus} == set(re.findall(r"'([^']+)'", declared))
 
     def test_one_shot_states_are_terminal_for_automation(self):
-        from cqc_lem.utilities.db import ConnectStatus, ENGAGEMENT_TARGET_CONNECT_TERMINAL
+        from cqc_lem.utilities.db import ENGAGEMENT_TARGET_CONNECT_TERMINAL, ConnectStatus
         assert "requested" in ENGAGEMENT_TARGET_CONNECT_TERMINAL
         assert "failed" in ENGAGEMENT_TARGET_CONNECT_TERMINAL
         assert "connected" in ENGAGEMENT_TARGET_CONNECT_TERMINAL
@@ -370,6 +373,7 @@ class TestFollowStatusEnum:
         # MySQL error. Read from the migration so adding a member without one fails HERE.
         import re
         from pathlib import Path
+
         from cqc_lem.utilities.db import FollowStatus
         sql = Path("compose/local/database/migrations/"
                    "V20260803032507__add_roster_follow_state.sql").read_text()
@@ -378,7 +382,7 @@ class TestFollowStatusEnum:
 
     def test_a_raw_column_value_compares_equal_to_a_member(self):
         # StrEnum, so a status read back off the DB needs no conversion at any boundary.
-        from cqc_lem.utilities.db import FollowStatus, ENGAGEMENT_TARGET_FOLLOW_TERMINAL
+        from cqc_lem.utilities.db import ENGAGEMENT_TARGET_FOLLOW_TERMINAL, FollowStatus
         assert "following" == FollowStatus.FOLLOWING
         assert "following" in ENGAGEMENT_TARGET_FOLLOW_TERMINAL
         assert "follow_failed" in ENGAGEMENT_TARGET_FOLLOW_TERMINAL

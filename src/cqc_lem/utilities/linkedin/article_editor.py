@@ -281,7 +281,7 @@ def resolve_article_editor_step(
             # requiring it to be displayed here would reject the only element that can be
             # driven and every cover attach would silently miss.
             if visible_only and not _is_displayed_safe(element):
-                log_debug(f"Article editor route found but not visible",
+                log_debug("Article editor route found but not visible",
                           step=step, route=route_id, user_id=user_id, action_type="article_editor")
                 continue
             enabled = _is_enabled(element)
@@ -289,7 +289,7 @@ def resolve_article_editor_step(
                 result.element = element
                 result.route = route_id
                 result.enabled = True
-                log_debug(f"Article editor step resolved",
+                log_debug("Article editor step resolved",
                           step=step, route=route_id, user_id=user_id, action_type="article_editor")
                 return result
             result.enabled = False
@@ -404,7 +404,8 @@ def _confirm_cover_dialog(driver: WebDriver, wait: WebDriverWait,
     the article cannot be published while it is up. Click its confirm button when one is there.
 
     A miss is DEBUG, not a warning: on the variants that attach the cover straight away there IS no
-    dialog, and warning would file a defect for the working path."""
+    dialog, and warning would file a defect for the working path.
+    """
     confirm = find_first(driver, wait, [
         (By.XPATH, "//button[normalize-space()='Apply']"),
         (By.XPATH, "//button[normalize-space()='Save']"),

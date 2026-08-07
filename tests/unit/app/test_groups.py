@@ -1,7 +1,8 @@
 """Unit tests for Groups engagement (enumeration, commenting, posting, dispatchers)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -27,7 +28,7 @@ class TestUserGroupsDB:
     def test_upsert_and_enabled_and_bulk(self):
         conn, cur = self._conn(fetch_all=[("123",), ("456",)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import upsert_user_group, get_enabled_group_ids, set_groups_enabled
+            from cqc_lem.utilities.db import get_enabled_group_ids, set_groups_enabled, upsert_user_group
             assert upsert_user_group(1, "123", "Growth Group") is True
             assert get_enabled_group_ids(1) == ["123", "456"]
             assert set_groups_enabled(1, {"123": False, "456": True}) is True
@@ -102,7 +103,8 @@ class TestUserGroupsDB:
 
     def test_record_group_post_run_failure_is_visible(self):
         """A lost stamp leaves the group least-recently-tried — i.e. it re-creates the starvation —
-        and the caller can do nothing with the False, so the failure has to log at ERROR."""
+        and the caller can do nothing with the False, so the failure has to log at ERROR.
+        """
         import mysql.connector
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error("connection gone")
@@ -156,7 +158,7 @@ class TestGroupPostDraftDB:
     def test_publishing_stamps_the_ship_time_with_the_status(self):
         conn, cur = self._conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_group_post_draft, GroupPostDraftStatus
+            from cqc_lem.utilities.db import GroupPostDraftStatus, update_group_post_draft
             assert update_group_post_draft(7, status=GroupPostDraftStatus.PUBLISHED) is True
         sql = cur.execute.call_args[0][0]
         assert "status = %s" in sql and "published_at = NOW()" in sql
@@ -165,7 +167,7 @@ class TestGroupPostDraftDB:
     def test_skipping_never_claims_a_ship_time(self):
         conn, cur = self._conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_group_post_draft, GroupPostDraftStatus
+            from cqc_lem.utilities.db import GroupPostDraftStatus, update_group_post_draft
             assert update_group_post_draft(7, status=GroupPostDraftStatus.SKIPPED) is True
         assert "published_at" not in cur.execute.call_args[0][0]
 
@@ -193,7 +195,8 @@ class TestGroupPostDraftDB:
 
     def test_an_unreadable_switch_answers_unknown_not_opted_out(self):
         """[] means "no group takes posts", which CANCELS a reviewed draft — a failed read must
-        never be able to say that, so it answers None."""
+        never be able to say that, so it answers None.
+        """
         import mysql.connector
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error("db down")
@@ -286,9 +289,11 @@ class TestCommentInGroups:
     def test_a_session_quit_out_from_under_the_run_ends_it_on_what_shipped(self):
         """Issue #988: a deploy recreates the containers once the drain window is spent, so a group
         walk that outlives it loses its browser. That is a routine release, not a defect — the run
-        keeps the comments it already posted, logs INFO, and never raises."""
-        from cqc_lem.app.run_automation import auto_comment_in_groups
+        keeps the comments it already posted, logs INFO, and never raises.
+        """
         from selenium.common import InvalidSessionIdException
+
+        from cqc_lem.app.run_automation import auto_comment_in_groups
         driver = MagicMock()
         driver.get.side_effect = [None, InvalidSessionIdException("Unable to find session with ID: abc")]
         with patch(f"{_RA}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
@@ -330,7 +335,8 @@ class TestPostToGroup:
 
     def test_publishes_the_reviewed_draft_and_stamps_rotation(self):
         """Issue #932: the published text is the draft the user could read and revise — nothing is
-        generated here. Only a post that actually shipped moves the rotation on."""
+        generated here. Only a post that actually shipped moves the rotation on.
+        """
         from cqc_lem.app.run_automation import auto_post_to_group
         with self._driver_patches(), \
              patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
@@ -357,7 +363,8 @@ class TestPostToGroup:
     ])
     def test_never_publishes_without_a_reviewed_draft(self, draft):
         """A draft that was skipped, belongs to someone else, or is simply gone means NO post —
-        falling back to a fresh generation would ship the un-previewed post #932 removed."""
+        falling back to a fresh generation would ship the un-previewed post #932 removed.
+        """
         from cqc_lem.app.run_automation import auto_post_to_group
         with patch(f"{_RA}.get_group_post_draft", return_value=draft), \
              patch(f"{_RA}.get_current_profile") as gcp, \
@@ -389,7 +396,8 @@ class TestPostToGroup:
     def test_unpostable_group_advances_the_rotation_without_claiming_a_post(self, miss, expected):
         """Issue #858: a group whose composer never renders (admin-only / announcement) is stamped
         as TRIED so it moves to the back of the queue — but `last_posted_at` stays untouched. The
-        draft was written for THAT group, so it dies with the group's turn (#932)."""
+        draft was written for THAT group, so it dies with the group's turn (#932).
+        """
         from cqc_lem.app.run_automation import auto_post_to_group
         clicks = {"share_box": [None], "editor": [MagicMock()],
                   "post_button": [MagicMock(), None]}[miss]
@@ -409,7 +417,8 @@ class TestPostToGroup:
 
     def test_failure_before_the_group_is_reached_does_not_advance_the_rotation(self):
         """A dead session is transient and not the group's fault — it keeps its turn, and the draft
-        stays open so next week's run publishes the text the user already approved."""
+        stays open so next week's run publishes the text the user already approved.
+        """
         from cqc_lem.app.run_automation import auto_post_to_group
         with patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_RA}.get_current_profile", side_effect=Exception("no session")), \
@@ -489,7 +498,8 @@ class TestGroupDispatchers:
 
     def test_unreadable_post_switches_hold_the_draft_rather_than_cancelling_it(self):
         """A DB hiccup must not be able to cancel a post the user read and approved — the draft
-        stays open and ships at the next slot."""
+        stays open and ships at the next slot.
+        """
         from cqc_lem.app.run_scheduler import auto_group_posts
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
@@ -515,8 +525,9 @@ class TestGroupDispatchers:
 
     def test_group_engagement_waits_for_each_users_slot(self):
         """Issue #554: the beat ticks every 15 min, so a connected user still only runs when
-        their staggered slot on the single se_content lane comes up."""
-        from cqc_lem.app.run_scheduler import auto_group_engagement, STAGGER_GROUP_ENGAGEMENT
+        their staggered slot on the single se_content lane comes up.
+        """
+        from cqc_lem.app.run_scheduler import STAGGER_GROUP_ENGAGEMENT, auto_group_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", side_effect=lambda u, *_: u == 2) as due, \
@@ -530,7 +541,8 @@ class TestGroupDispatchers:
 class TestGroupPostBeats:
     def test_the_draft_beat_lands_before_the_publish_beat(self):
         """The review window IS the feature (#932): a draft written after the publish slot would
-        only ever be read once the post it describes had already gone out."""
+        only ever be read once the post it describes had already gone out.
+        """
         from cqc_lem.app.my_celery import app
         drafts = app.conf.beat_schedule["group-post-drafts"]
         posts = app.conf.beat_schedule["group-posts"]

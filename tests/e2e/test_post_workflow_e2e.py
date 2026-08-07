@@ -24,9 +24,10 @@ Cleanup is handled automatically by the module-scoped fixture.
 
 import os
 import socket
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
+
 import pytest
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
 
 pytestmark = pytest.mark.e2e
 
@@ -71,7 +72,8 @@ def _get_db():
 
 def _create_test_user(cursor, email: str) -> int:
     """Insert a minimal test user and return its id.  Uses INSERT IGNORE so
-    the test is idempotent when the user already exists."""
+    the test is idempotent when the user already exists.
+    """
     cursor.execute(
         """INSERT IGNORE INTO users (email, linkedin_connection_status, subscription_status)
            VALUES (%s, 'connected', 'active')""",
@@ -148,7 +150,8 @@ def workflow_state():
 class TestSchedulerPicksUpApprovedPost:
     def test_auto_check_transitions_post_to_scheduled(self, workflow_state):
         """auto_check_scheduled_posts must find the approved post and change its
-        status to 'scheduled', then dispatch post_to_linkedin via apply_async."""
+        status to 'scheduled', then dispatch post_to_linkedin via apply_async.
+        """
         post_id = workflow_state["post_id"]
         user_id = workflow_state["user_id"]
 
@@ -198,7 +201,8 @@ class TestSchedulerPicksUpApprovedPost:
 class TestPostToLinkedinSuccessPath:
     def test_post_published_updates_db_and_writes_log(self, workflow_state):
         """post_to_linkedin must: update status→posted, write success activity log,
-        dispatch automate_reply_commenting."""
+        dispatch automate_reply_commenting.
+        """
         post_id = workflow_state["post_id"]
         user_id = workflow_state["user_id"]
         fake_urn = workflow_state["fake_urn"]
@@ -243,7 +247,8 @@ class TestPostToLinkedinSuccessPath:
 
     def test_already_posted_skips_duplicate(self, workflow_state):
         """If post_to_linkedin is called again for an already-posted post, it must
-        skip without re-publishing."""
+        skip without re-publishing.
+        """
         post_id = workflow_state["post_id"]
         user_id = workflow_state["user_id"]
 
@@ -262,7 +267,8 @@ class TestPostToLinkedinSuccessPath:
 class TestOrphanedPostRecovery:
     def test_orphaned_scheduled_post_is_requeued_by_scheduler(self):
         """A post stuck in 'scheduled' status (task lost on restart) must be
-        re-dispatched by get_orphaned_scheduled_posts on the next scheduler pass."""
+        re-dispatched by get_orphaned_scheduled_posts on the next scheduler pass.
+        """
         stuck_time = datetime.now(timezone.utc) - timedelta(hours=3)
         orphaned = [(9999, stuck_time, 1)]
 
@@ -318,7 +324,8 @@ class TestAccessTokenSqlCorrectness:
     @_requires_mysql
     def test_access_token_retrieved_for_connected_user(self):
         """Regression: get_user_access_token must NOT reference the non-existent
-        'token_expiry' column (which caused a MySQL error blocking all posts)."""
+        'token_expiry' column (which caused a MySQL error blocking all posts).
+        """
         from cqc_lem.utilities.db import get_user_access_token
 
         conn = _get_db()

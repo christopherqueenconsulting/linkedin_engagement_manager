@@ -34,7 +34,7 @@ class TestApplyDebugNode:
              patch(f"{_MOD}.SELENIUM_HUB_HOST", "selenium-hub"), \
              patch(f"{_MOD}.SELENIUM_HUB_PORT", "4444"), \
              patch(f"{_MOD}.log_info"):
-            from cqc_lem.utilities.selenium_util import apply_debug_node, SELENIUM_DEBUG_CAPABILITY
+            from cqc_lem.utilities.selenium_util import SELENIUM_DEBUG_CAPABILITY, apply_debug_node
             assert apply_debug_node(options, debug=True) is True
             assert options.to_capabilities().get(SELENIUM_DEBUG_CAPABILITY) is True
 
@@ -45,7 +45,7 @@ class TestApplyDebugNode:
              patch(f"{_MOD}.SELENIUM_DEBUG_NODE_HOST", "selenium-node-debug"), \
              patch(f"{_MOD}.SELENIUM_HUB_HOST", "selenium-hub"), \
              patch(f"{_MOD}.SELENIUM_HUB_PORT", "4444"):
-            from cqc_lem.utilities.selenium_util import apply_debug_node, SELENIUM_DEBUG_CAPABILITY
+            from cqc_lem.utilities.selenium_util import SELENIUM_DEBUG_CAPABILITY, apply_debug_node
             assert apply_debug_node(options, debug=False) is False
             assert SELENIUM_DEBUG_CAPABILITY not in options.to_capabilities()
 
@@ -57,7 +57,7 @@ class TestApplyDebugNode:
              patch(f"{_MOD}.SELENIUM_HUB_HOST", "selenium-hub"), \
              patch(f"{_MOD}.SELENIUM_HUB_PORT", "4444"), \
              patch(f"{_MOD}.log_warning") as warn:
-            from cqc_lem.utilities.selenium_util import apply_debug_node, SELENIUM_DEBUG_CAPABILITY
+            from cqc_lem.utilities.selenium_util import SELENIUM_DEBUG_CAPABILITY, apply_debug_node
             assert apply_debug_node(options, debug=True) is False
             assert SELENIUM_DEBUG_CAPABILITY not in options.to_capabilities()
             warn.assert_called_once()
@@ -73,7 +73,7 @@ class TestApplyDebugNode:
              patch(f"{_MOD}.SELENIUM_HUB_HOST", "selenium-hub"), \
              patch(f"{_MOD}.SELENIUM_HUB_PORT", "4444"), \
              patch(f"{_MOD}.log_warning"):
-            from cqc_lem.utilities.selenium_util import apply_debug_node, SELENIUM_DEBUG_CAPABILITY
+            from cqc_lem.utilities.selenium_util import SELENIUM_DEBUG_CAPABILITY, apply_debug_node
             assert apply_debug_node(options, debug=True) is False
             assert SELENIUM_DEBUG_CAPABILITY not in options.to_capabilities()
 
@@ -84,7 +84,7 @@ class TestApplyDebugNode:
              patch(f"{_MOD}.SELENIUM_HUB_HOST", "selenium-hub"), \
              patch(f"{_MOD}.SELENIUM_HUB_PORT", "4444"), \
              patch(f"{_MOD}.log_warning"):
-            from cqc_lem.utilities.selenium_util import apply_debug_node, SELENIUM_DEBUG_CAPABILITY
+            from cqc_lem.utilities.selenium_util import SELENIUM_DEBUG_CAPABILITY, apply_debug_node
             assert apply_debug_node(options, debug=True) is False
             assert SELENIUM_DEBUG_CAPABILITY not in options.to_capabilities()
 
@@ -92,7 +92,7 @@ class TestApplyDebugNode:
         options = Options()
         with patch(f"{_MOD}.SELENIUM_DEBUG_NODE_HOST", ""), \
              patch(f"{_MOD}.log_warning"):
-            from cqc_lem.utilities.selenium_util import apply_debug_node, SELENIUM_DEBUG_CAPABILITY
+            from cqc_lem.utilities.selenium_util import SELENIUM_DEBUG_CAPABILITY, apply_debug_node
             assert apply_debug_node(options, debug=True) is False
             assert SELENIUM_DEBUG_CAPABILITY not in options.to_capabilities()
 

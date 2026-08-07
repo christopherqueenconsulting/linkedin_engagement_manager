@@ -20,15 +20,20 @@ import json
 import os
 import secrets
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import Optional
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.client import client
-from cqc_lem.utilities.env_constants import (DEFAULT_IMAGE_MODEL, IMAGE_BACKEND,
-                                             IMAGE_GATE_MAX_ATTEMPTS, IMAGE_QUALITY,
-                                             IMAGE_QUALITY_GATE_SURFACES)
+from cqc_lem.utilities.env_constants import (
+    DEFAULT_IMAGE_MODEL,
+    IMAGE_BACKEND,
+    IMAGE_GATE_MAX_ATTEMPTS,
+    IMAGE_QUALITY,
+    IMAGE_QUALITY_GATE_SURFACES,
+)
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # gpt-image accepts exactly these; anything else falls back to square.

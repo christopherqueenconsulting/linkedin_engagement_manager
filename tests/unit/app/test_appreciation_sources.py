@@ -4,8 +4,9 @@ Both surfaces are STANDING lists, so the two things that must hold are: nothing 
 lookback window is thanked, and nobody is thanked twice however often the beat re-runs.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -38,9 +39,11 @@ def _card(text: str, href: str = "https://www.linkedin.com/in/jane?trk=x", name:
 class TestFlagAndWindow:
     def test_sources_are_off_by_default(self, monkeypatch):
         """An ungrounded scraper must not send DMs — the flip is the owner's."""
-        from cqc_lem.app.run_automation import (appreciation_sources_enabled,
-                                                get_recent_collaborators,
-                                                get_recent_recommendations)
+        from cqc_lem.app.run_automation import (
+            appreciation_sources_enabled,
+            get_recent_collaborators,
+            get_recent_recommendations,
+        )
         monkeypatch.delenv("APPRECIATION_SOURCES_ENABLED", raising=False)
         driver = MagicMock()
         assert appreciation_sources_enabled() is False
@@ -60,6 +63,7 @@ class TestFlagAndWindow:
 class TestDateParsers:
     def test_recommendation_date_age(self):
         from datetime import datetime, timezone
+
         from cqc_lem.app.run_automation import _parse_recommendation_date
         now = datetime(2026, 8, 3, tzinfo=timezone.utc)
         assert _parse_recommendation_date("July 24, 2026, Jane worked with me", now) == pytest.approx(10.0)
@@ -89,7 +93,8 @@ class TestDateParsers:
     def test_a_number_inside_the_quoted_post_is_not_the_timestamp(self, quoted):
         """A notification card carries the quoted post as well as its own age. '$5m' clears a `\\b`,
         so without the standalone-token rule a two-year-old mention reads as posted minutes ago —
-        and gets thanked."""
+        and gets thanked.
+        """
         from cqc_lem.app.run_automation import _parse_relative_age_days
         assert _parse_relative_age_days(f"Jane mentioned you: '{quoted}' 2h") == 0.0
 
@@ -104,13 +109,15 @@ class TestDateParsers:
 def _rec_row(text: str, href: str = "https://www.linkedin.com/in/jane?trk=x",
              name: str = "Jane Doe\n· 1st\nHead of Ops") -> dict:
     """One row as `_RECOMMENDATION_ROWS_JS` returns it: the card block's text plus the `/in/`
-    anchor it was resolved from."""
+    anchor it was resolved from.
+    """
     return {"href": href, "name": name.split("\n")[0], "text": text}
 
 
 class TestRecommendations:
     """#1007: the card read is a single JS pass over `/in/` anchors, not a locator ladder — the
-    ladder was unmatchable on the live SDUI DOM and read zero cards forever."""
+    ladder was unmatchable on the live SDUI DOM and read zero cards forever.
+    """
 
     def _run(self, rows, own="https://www.linkedin.com/in/me", page_dated=None):
         from cqc_lem.app.run_automation import get_recent_recommendations
@@ -146,7 +153,8 @@ class TestRecommendations:
     def test_blocks_that_all_fail_the_date_parser_still_warn(self):
         """The reader-vs-parser half of the tripwire: every block carried a date-SHAPED line and not
         one parsed. `page_dated` cannot see this — the page and the JS agree, the PARSER is what
-        drifted — and without a warning it reads as 'no recent recommendations' forever."""
+        drifted — and without a warning it reads as 'no recent recommendations' forever.
+        """
         got, _, warn = self._run([_rec_row("February 30, 2026, Jane was my client"),
                                   _rec_row("September 31, 2026, John was my client",
                                            href="https://www.linkedin.com/in/john", name="John")])
@@ -166,13 +174,15 @@ class TestRecommendations:
 
     def test_zero_cards_on_a_dated_page_is_drift_and_warns(self):
         """The failure this issue exists for: the page plainly shows dated recommendations and the
-        read resolves none. Silently returning {} is how the dead ladder survived a merge."""
+        read resolves none. Silently returning {} is how the dead ladder survived a merge.
+        """
         got, _, warn = self._run([], page_dated=True)
         assert got == {}
         warn.assert_called_once()
 
     def test_an_unreadable_page_is_not_a_recommendation(self):
         from selenium.common.exceptions import WebDriverException
+
         from cqc_lem.app.run_automation import get_recent_recommendations
         driver = MagicMock()
         driver.execute_script.side_effect = WebDriverException("no such execution context")
@@ -184,7 +194,8 @@ class TestRecommendations:
 
     def test_a_non_dict_script_result_is_not_a_crash(self):
         """An `undefined`/None answer from `execute_script` must read as 'nothing', not blow up the
-        appreciation pass that called it."""
+        appreciation pass that called it.
+        """
         from cqc_lem.app.run_automation import get_recent_recommendations
         driver = MagicMock()
         driver.execute_script.return_value = None
@@ -201,9 +212,9 @@ class TestRecommendations:
 
     def test_the_render_poll_retries_an_empty_first_paint(self):
         """The SDUI page paints asynchronously — an immediate zero is not evidence of an empty
-        section, so an empty read is re-tried before it is believed."""
-        from cqc_lem.app.run_automation import (_RECOMMENDATION_RENDER_ATTEMPTS,
-                                                get_recent_recommendations)
+        section, so an empty read is re-tried before it is believed.
+        """
+        from cqc_lem.app.run_automation import _RECOMMENDATION_RENDER_ATTEMPTS, get_recent_recommendations
         driver = MagicMock()
         empty = {"rows": [], "anchors": 4, "page_dated": False}
         painted = {"rows": [_rec_row("July 24, 2026, Jane was my client")], "anchors": 4,
@@ -278,7 +289,8 @@ class TestCollaborators:
 
     def test_actor_name_falls_back_to_the_card_sentence(self):
         """The live grounding run (#968) found an actor link with NO text — the name only existed in
-        the card's own sentence. Read it from there rather than DM a real person as "there"."""
+        the card's own sentence. Read it from there rather than DM a real person as "there".
+        """
         got, _ = self._run([_card("Status is online\nUnread notification.\n"
                                   "Utkarsh Tiwari mentioned you in a comment in a group 2h",
                                   href="https://www.linkedin.com/in/utkarsh%2Dtiwari%2D98164814b",
@@ -298,7 +310,8 @@ class TestCollaborators:
 
     def test_percent_encoded_slug_is_one_person_not_two(self):
         """SDUI escapes the hyphens in a vanity slug. Encoded and decoded must key the ledger the
-        same way or the once-ever guarantee quietly breaks."""
+        same way or the once-ever guarantee quietly breaks.
+        """
         from cqc_lem.app.run_automation import _normalize_profile_url
         assert (_normalize_profile_url("https://www.linkedin.com/in/jane%2Ddoe%2D1234?trk=x")
                 == _normalize_profile_url("https://www.linkedin.com/in/jane-doe-1234/")
@@ -307,7 +320,8 @@ class TestCollaborators:
 
 class TestDispatchDedup:
     """`automate_appreciation_dms_for_user` re-queues itself every ~60s, so the ledger claim is the
-    only thing standing between one thank-you and a thank-you a minute."""
+    only thing standing between one thank-you and a thank-you a minute.
+    """
 
     def _dispatch(self, thanked: bool, claimed: bool = True):
         from cqc_lem.app.run_automation import _dispatch_appreciation_dms
@@ -356,7 +370,8 @@ class TestDispatchDedup:
 class TestDailyDmBudget:
     """A standing list can hand back a month of people at once, so the appreciation lane spends the
     SAME per-day DM allowance every other DM lane does. Whoever it can't afford is left UNCLAIMED,
-    so a later pass thanks them rather than nobody ever doing so."""
+    so a later pass thanks them rather than nobody ever doing so.
+    """
 
     _PEOPLE = {f"https://www.linkedin.com/in/p{i}": f"Person {i}" for i in range(5)}
 
@@ -414,7 +429,8 @@ class TestDailyDmBudget:
 
 class TestTheBeatSpendsOneBudget:
     """The three triggers share ONE day's allowance — three lanes each spending the full cap is the
-    burst the cap exists to prevent."""
+    burst the cap exists to prevent.
+    """
 
     def _run(self, budget, dispatched=0):
         from cqc_lem.app.run_automation import automate_appreciation_dms_for_user
@@ -433,7 +449,8 @@ class TestTheBeatSpendsOneBudget:
 
     def test_a_spent_budget_never_opens_the_scrapers(self):
         """Two page loads to build a list we cannot act on — and the standing lists are the pages
-        most worth not hammering."""
+        most worth not hammering.
+        """
         dispatch, recs, mentions = self._run(budget=0)
         recs.assert_not_called()
         mentions.assert_not_called()
@@ -441,7 +458,8 @@ class TestTheBeatSpendsOneBudget:
 
     def test_what_one_trigger_spends_the_next_one_cannot(self):
         """Two of the day's DMs left: connections take one, recommendations take the other, and
-        the mentions scan never opens."""
+        the mentions scan never opens.
+        """
         dispatch, recs, mentions = self._run(budget=2, dispatched=1)
         recs.assert_called_once()
         mentions.assert_not_called()

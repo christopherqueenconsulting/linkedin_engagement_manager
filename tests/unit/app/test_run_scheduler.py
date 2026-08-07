@@ -1,8 +1,9 @@
 """Unit tests for cqc_lem.app.run_scheduler Celery tasks."""
 
-import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -38,7 +39,8 @@ _PATCH_RECORD_SKIPPED = f"{_MOD}.record_pre_post_skipped"
 @pytest.fixture(autouse=True)
 def _not_throttled():
     """Keep the automation throttle (manual pause + 429 breaker) OPEN=off and hermetic by default so
-    dispatcher tests never touch Redis. Tests exercising the throttle gate patch these explicitly."""
+    dispatcher tests never touch Redis. Tests exercising the throttle gate patch these explicitly.
+    """
     with patch(f"{_MOD}.is_automation_paused", return_value=False), \
          patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=0):
         yield
@@ -464,7 +466,8 @@ class TestAutoCheckScheduledPosts:
 
     def test_pre_post_commenting_is_dispatched_to_its_own_lane(self):
         """Issue #553: the eta-bound warm-up must land on se_prepost, not se_engage, or it waits
-        behind a 15-minute golden-hour loop and starts after its own window closed."""
+        behind a 15-minute golden-hour loop and starts after its own window closed.
+        """
         from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
 
         scheduled_dt = _future_dt(60)
@@ -489,7 +492,8 @@ class TestAutoCheckScheduledPosts:
 
     def test_late_pickup_clamps_eta_to_now_and_shortens_loop(self):
         """A post picked up 5 min before its time gets an eta that is NOT in the past, and a loop
-        that ends at the post time instead of running past it."""
+        that ends at the post time instead of running past it.
+        """
         scheduled_dt = _future_dt(5)
         posts = [(43, scheduled_dt, 7)]
 
@@ -512,7 +516,8 @@ class TestAutoCheckScheduledPosts:
 
     def test_post_past_its_time_gets_no_pre_post_tasks(self):
         """The stale-eta bug: a post already at/past its scheduled time must NOT trigger a
-        'pre'-post warm-up loop that would actually run during/after publication."""
+        'pre'-post warm-up loop that would actually run during/after publication.
+        """
         scheduled_dt = datetime(2025, 6, 20, 14, 0, 0, tzinfo=timezone.utc)
         posts = [(44, scheduled_dt, 7)]
 
@@ -705,14 +710,15 @@ class TestAutoAppreciateDms:
 
     def test_only_users_whose_slot_is_due_are_dispatched(self):
         """Issue #554: the beat ticks every 15 min and the single se_outreach lane gets only the
-        users whose staggered slot came up — not every active user at once."""
+        users whose staggered slot came up — not every active user at once.
+        """
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[1, 2, 3]), \
              patch(_PATCH_HAS_SESSION, return_value=True), \
              patch(_PATCH_STAGGER_DUE, side_effect=lambda u, *_: u == 3) as due, \
              patch(_PATCH_APPRECIATE, mock_task):
-            from cqc_lem.app.run_scheduler import auto_appreciate_dms, STAGGER_APPRECIATION_DM
+            from cqc_lem.app.run_scheduler import STAGGER_APPRECIATION_DM, auto_appreciate_dms
             result = auto_appreciate_dms.run()
 
         mock_task.apply_async.assert_called_once()
@@ -722,7 +728,8 @@ class TestAutoAppreciateDms:
 
     def test_a_user_without_a_session_does_not_burn_their_slot(self):
         """The DM run is a Selenium login too, so a user with no stored session must be dropped
-        BEFORE the once-a-day claim — reconnecting later still earns that day's outreach."""
+        BEFORE the once-a-day claim — reconnecting later still earns that day's outreach.
+        """
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[9]), \

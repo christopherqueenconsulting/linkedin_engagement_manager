@@ -2,9 +2,9 @@
 
 import json
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -23,7 +23,7 @@ class TestInsertFeedback:
     def test_insert_returns_id_and_serializes_context(self):
         conn, cur = _conn(lastrowid=42)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_feedback, FeedbackSource
+            from cqc_lem.utilities.db import FeedbackSource, insert_feedback
             got = insert_feedback("The schedule tab 500s", user_id=3,
                                   source=FeedbackSource.WIDGET, type_hint="bug",
                                   context={"route": "/content"}, sentiment="negative")
@@ -140,7 +140,7 @@ class TestGetUnprocessedFeedback:
     def test_widened_statuses_are_all_bound_as_parameters(self):
         conn, cur = _dict_conn(rows=[])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_unprocessed_feedback, FeedbackStatus
+            from cqc_lem.utilities.db import FeedbackStatus, get_unprocessed_feedback
             get_unprocessed_feedback(limit=9, statuses=(FeedbackStatus.NEW,
                                                         FeedbackStatus.TRIAGED))
         sql, params = cur.execute.call_args[0]
@@ -150,7 +150,8 @@ class TestGetUnprocessedFeedback:
     def test_admin_only_filters_in_sql_not_in_the_caller(self, monkeypatch):
         """Issue #793: parked non-admin rows stay `new` with a NULL cluster forever, so if the
         filter lived in the caller's loop they would fill `limit` every pass and starve admin
-        feedback out of the queue permanently."""
+        feedback out of the queue permanently.
+        """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
         conn, cur = _dict_conn(rows=[])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
@@ -245,7 +246,7 @@ class TestUpdateFeedbackTriage:
     def test_writes_only_the_fields_passed(self):
         conn, cur = _dict_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_feedback_triage, FeedbackStatus
+            from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
             assert update_feedback_triage(3, status=FeedbackStatus.ISSUE_CREATED,
                                          cluster_id=3, github_issue_number=88,
                                          embedding=[0.5, 0.25]) is True
@@ -273,7 +274,7 @@ class TestUpdateFeedbackTriage:
     def test_missing_row_returns_false(self):
         conn, cur = _dict_conn(rowcount=0)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_feedback_triage, FeedbackStatus
+            from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
             assert update_feedback_triage(99, status=FeedbackStatus.TRIAGED) is False
 
     def test_over_long_sentiment_is_truncated(self):
@@ -289,7 +290,7 @@ class TestUpdateFeedbackTriage:
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
              patch(f"{_DB}.log_error") as log:
-            from cqc_lem.utilities.db import update_feedback_triage, FeedbackStatus
+            from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
             assert update_feedback_triage(3, status=FeedbackStatus.TRIAGED) is False
         cur.close.assert_called_once()
         conn.close.assert_called_once()
@@ -317,7 +318,7 @@ class TestUpdateFeedbackTriage:
         assert cur.execute.call_args[0][1] == ("issue_created", 3)
 
     def test_every_feedback_status_member_is_writable(self):
-        from cqc_lem.utilities.db import update_feedback_triage, FeedbackStatus
+        from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
         for member in FeedbackStatus:
             conn, cur = _dict_conn()
             with patch(f"{_DB}.get_db_connection", return_value=conn):
@@ -350,7 +351,8 @@ class TestIsUserAdmin:
 
     def test_email_allowlist_grants_admin_when_the_column_is_zero(self, monkeypatch):
         """Bootstrap path (#793): with no flagged user the auto-filer parks everything and nobody
-        can reach the panel to release it."""
+        can reach the panel to release it.
+        """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
                             "owner@example.com")
         conn, _ = _dict_conn(one={"is_admin": 0, "email": " Owner@Example.com "})
@@ -431,8 +433,7 @@ class TestGetFeedbackList:
     def test_status_filter_is_validated_and_bound(self):
         conn, cur = _dict_conn(rows=[])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_feedback_list, FeedbackStatus
-            from cqc_lem.utilities.db import FeedbackSource
+            from cqc_lem.utilities.db import FeedbackSource, FeedbackStatus, get_feedback_list
             get_feedback_list(status=FeedbackStatus.NEW, source=FeedbackSource.WIDGET, limit=2)
         sql, params = cur.execute.call_args[0]
         assert "f.status = %s" in sql
@@ -441,7 +442,8 @@ class TestGetFeedbackList:
 
     def test_embedding_is_not_dragged_into_the_panel(self):
         """A page of 50 rows would pull 50 full vectors MySQL-side for a column the panel never
-        renders."""
+        renders.
+        """
         conn, cur = _dict_conn(rows=[])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_list
@@ -450,7 +452,8 @@ class TestGetFeedbackList:
 
     def test_allowlisted_reporter_reads_as_admin(self, monkeypatch):
         """The auto-filer's join counts ADMIN_USER_EMAILS as admin, so their reports ARE filed
-        automatically — the panel must not show them as still awaiting review."""
+        automatically — the panel must not show them as still awaiting review.
+        """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
                             "owner@example.com")
         conn, _ = _dict_conn(rows=[{"id": 1, "email": " Owner@Example.com ", "is_admin": 0},
@@ -481,7 +484,7 @@ class TestRecordFeedbackReview:
         conn, cur = _dict_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
                 patch(f"{_DB}.datetime") as dt:
-            from cqc_lem.utilities.db import record_feedback_review, FeedbackStatus
+            from cqc_lem.utilities.db import FeedbackStatus, record_feedback_review
             now = datetime(2026, 7, 29, 12, 0, 0, tzinfo=timezone.utc)
             dt.now.return_value = now
             assert record_feedback_review(7, 3, status=FeedbackStatus.DISMISSED) is True

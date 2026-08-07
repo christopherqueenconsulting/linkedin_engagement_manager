@@ -29,16 +29,18 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from cqc_lem.utilities.env_constants import (AFFILIATE_DEFAULT_ENROLLED, AFFILIATE_DISCLOSURE_TEXT,
-                                             AFFILIATE_ENROLLMENT_BONUS_DAYS,
-                                             AFFILIATE_MAX_REWARD_DAYS,
-                                             AFFILIATE_PROGRAM_ENABLED,
-                                             AFFILIATE_PROMO_CONSENT_VERSION,
-                                             AFFILIATE_REFERRAL_BONUS_DAYS,
-                                             AFFILIATE_REQUIRE_COMPANY_PAGE)
 from cqc_lem.utilities.db import AffiliateRewardKind, AffiliateStatus, ReferralStatus
-from cqc_lem.utilities.marketing.attribution import (REFERRAL_PARAM, is_owned_link, referral_code,
-                                                     referral_url)
+from cqc_lem.utilities.env_constants import (
+    AFFILIATE_DEFAULT_ENROLLED,
+    AFFILIATE_DISCLOSURE_TEXT,
+    AFFILIATE_ENROLLMENT_BONUS_DAYS,
+    AFFILIATE_MAX_REWARD_DAYS,
+    AFFILIATE_PROGRAM_ENABLED,
+    AFFILIATE_PROMO_CONSENT_VERSION,
+    AFFILIATE_REFERRAL_BONUS_DAYS,
+    AFFILIATE_REQUIRE_COMPANY_PAGE,
+)
+from cqc_lem.utilities.marketing.attribution import REFERRAL_PARAM, is_owned_link, referral_code, referral_url
 
 # The stored values come from `db.py`'s enums, per CLAUDE.md — spelled once here so policy code can
 # compare without importing the DB layer at every call site.
@@ -84,20 +86,23 @@ _WORD_BOUNDARY = re.compile(r"[a-z0-9_#']+")
 
 def program_enabled() -> bool:
     """Whether this deployment runs the program at all. A dev/CI environment that mints no referral
-    links reads exactly like the pre-#737 product."""
+    links reads exactly like the pre-#737 product.
+    """
     return bool(AFFILIATE_PROGRAM_ENABLED)
 
 
 def enrollment_default() -> str:
     """The status a brand-new user starts at. Default-on is the owner's intent AND the low-risk half
-    of the split — it is (A), not (B)."""
+    of the split — it is (A), not (B).
+    """
     return STATUS_ENROLLED if (program_enabled() and AFFILIATE_DEFAULT_ENROLLED) else STATUS_OPTED_OUT
 
 
 def is_eligible(has_company_page: bool = True) -> bool:
     """Whether a user may hold affiliate status. The company-page boundary is opt-in per environment
     (`AFFILIATE_REQUIRE_COMPANY_PAGE`); with it off, every user is eligible. Eligibility is evaluated
-    LIVE rather than frozen at signup, so adding or removing a page moves the user immediately."""
+    LIVE rather than frozen at signup, so adding or removing a page moves the user immediately.
+    """
     if not program_enabled():
         return False
     return bool(has_company_page) if AFFILIATE_REQUIRE_COMPANY_PAGE else True
@@ -106,7 +111,8 @@ def is_eligible(has_company_page: bool = True) -> bool:
 def code_for_user(user_id: Optional[int]) -> str:
     """The referral code stamped on a member's link. It is #658's `ref` value (the user id), NOT a
     new identifier: the capture side already resolves a person by it, and a second code space would
-    mean two ways to answer the same question."""
+    mean two ways to answer the same question.
+    """
     return referral_code(user_id)
 
 
@@ -117,7 +123,8 @@ def link_for_user(user_id: Optional[int], base: Optional[str] = None) -> str:
 
 def parse_referrer_id(ref: Optional[str]) -> Optional[int]:
     """The referrer's user id off an inbound `ref` value, or None when it isn't one. Anything
-    non-numeric or non-positive is somebody's typo (or a probe), never a referrer."""
+    non-numeric or non-positive is somebody's typo (or a probe), never a referrer.
+    """
     try:
         value = int(str(ref or "").strip())
     except (TypeError, ValueError):
@@ -148,7 +155,8 @@ def max_reward_days() -> int:
 def grantable_days(already_granted: int, requested: int) -> int:
     """How many of `requested` days may actually be granted under the per-user cap. Returns 0 rather
     than a negative number when the user is already at or over the ceiling, so a caller can treat
-    "nothing to grant" and "capped out" the same way."""
+    "nothing to grant" and "capped out" the same way.
+    """
     cap = max_reward_days()
     remaining = cap - max(0, int(already_granted))
     return max(0, min(int(requested), remaining))
@@ -166,7 +174,8 @@ def promo_content_allowed(enrollment: Optional[dict]) -> bool:
     Requires ALL of: the program on, the user still enrolled, the opt-in flag set, AND a recorded
     consent timestamp. The timestamp is not decoration — a flag with no consent record is a row that
     was set by something other than the user saying yes, and that is exactly the case this must
-    refuse."""
+    refuse.
+    """
     if not program_enabled() or not isinstance(enrollment, dict):
         return False
     if str(enrollment.get("status") or "") != STATUS_ENROLLED:
@@ -181,7 +190,8 @@ def promo_content_allowed(enrollment: Optional[dict]) -> bool:
 def disclosure_text() -> str:
     """The disclosure LEM stamps on affiliate content. Empty means this deployment has no disclosure
     configured, which `disclosure_report` treats as "affiliate content cannot be published here" —
-    never as "no disclosure needed"."""
+    never as "no disclosure needed".
+    """
     return str(AFFILIATE_DISCLOSURE_TEXT or "").strip()
 
 
@@ -191,7 +201,8 @@ def _normalized(text: Optional[str]) -> str:
 
 def has_disclosure(text: Optional[str]) -> bool:
     """Whether `text` already discloses the material connection — the configured sentence, one of the
-    recognised hashtags, or an explicit compensated-relationship phrase."""
+    recognised hashtags, or an explicit compensated-relationship phrase.
+    """
     normalized = _normalized(text)
     if not normalized:
         return False
@@ -210,7 +221,8 @@ def carries_referral_link(text: Optional[str], user_id: Optional[int] = None) ->
     This is the operative definition of affiliate content, and it is the right one: the material
     connection is created by the link that earns the user trial time, not by the topic. When
     `user_id` is given only THAT member's code counts, so one user's post quoting somebody else's
-    link is not silently attributed to them."""
+    link is not silently attributed to them.
+    """
     body = str(text or "")
     if not body:
         return False
@@ -231,7 +243,8 @@ def is_affiliate_content(text: Optional[str], user_id: Optional[int] = None,
                          tagged: bool = False) -> bool:
     """Whether `text` is affiliate promotion. `tagged=True` is for content LEM generated as (B)
     promotional content, which is affiliate promotion whether or not a link survived the #392
-    body/first-comment split."""
+    body/first-comment split.
+    """
     return bool(tagged) or carries_referral_link(text, user_id=user_id)
 
 
@@ -243,7 +256,8 @@ def disclosure_report(text: Optional[str], user_id: Optional[int] = None,
     program does not put a disclosure obligation on the 99% of posts that never mention LEM. Affiliate
     content is `ok` only when the disclosure is present; a deployment with `AFFILIATE_DISCLOSURE_TEXT`
     blanked cannot publish affiliate content at all (`reason='no_disclosure_configured'`), because
-    the failure mode of guessing is publishing an undisclosed paid endorsement."""
+    the failure mode of guessing is publishing an undisclosed paid endorsement.
+    """
     affiliate = is_affiliate_content(text, user_id=user_id, tagged=tagged)
     disclosed = has_disclosure(text)
     if not affiliate:
@@ -265,7 +279,8 @@ def apply_disclosure(text: Optional[str], user_id: Optional[int] = None,
     leaves the writer already disclosed, so the publish gate is a backstop rather than the mechanism.
     A no-op on non-affiliate content, on content already disclosed, and when no disclosure sentence
     is configured (there is nothing honest to append — `disclosure_report` blocks that case instead
-    of letting it slip through here)."""
+    of letting it slip through here).
+    """
     body = str(text or "")
     if not is_affiliate_content(body, user_id=user_id, tagged=tagged) or has_disclosure(body):
         return body
@@ -284,7 +299,8 @@ def apply_disclosure(text: Optional[str], user_id: Optional[int] = None,
 
 def _company_page(user_id: int) -> bool:
     """Whether the user has a LinkedIn company page — only consulted when the eligibility boundary
-    is switched on, so the common configuration costs no query."""
+    is switched on, so the common configuration costs no query.
+    """
     if not AFFILIATE_REQUIRE_COMPANY_PAGE:
         return True
     from cqc_lem.utilities.db import get_company_linked_in_url_for_user
@@ -307,7 +323,8 @@ def enroll_user(user_id: int, grant_bonus: bool = True) -> dict:
     does not emit it again from here (`set_status` emits its own `affiliate_enrolled` with
     `source="opt_in"` for that flip). Read the funnel's count as distinct users enrolled.
 
-    Returns the enrollment row, or `{}` when the program is off / the user is ineligible."""
+    Returns the enrollment row, or `{}` when the program is off / the user is ineligible.
+    """
     from cqc_lem.utilities.db import ensure_affiliate_enrollment, grant_affiliate_trial_days
     from cqc_lem.utilities.observability import AFFILIATE_ENROLLED, track_affiliate_event
 
@@ -336,12 +353,15 @@ def attribute_referral(referred_user_id: int, attribution: Optional[dict]) -> Op
     Every rejection shape is decided HERE and stored, never guessed later: a `ref` that is not a
     number, a referrer who doesn't exist, a referrer who has opted out — and self-referral, which is
     the one that actually pays if it slips through, so it is checked before anything else. Returns
-    `{referral_id, referrer_user_id, status, reason}` or None when the signup carried no `ref`."""
-    from cqc_lem.utilities.db import (get_affiliate_enrollment, get_user_email,
-                                      record_affiliate_referral)
+    `{referral_id, referrer_user_id, status, reason}` or None when the signup carried no `ref`.
+    """
+    from cqc_lem.utilities.db import get_affiliate_enrollment, get_user_email, record_affiliate_referral
     from cqc_lem.utilities.logger import log_warning
-    from cqc_lem.utilities.observability import (AFFILIATE_REFERRAL_ATTRIBUTED,
-                                                 AFFILIATE_REFERRAL_REJECTED, track_affiliate_event)
+    from cqc_lem.utilities.observability import (
+        AFFILIATE_REFERRAL_ATTRIBUTED,
+        AFFILIATE_REFERRAL_REJECTED,
+        track_affiliate_event,
+    )
 
     if not program_enabled():
         return None
@@ -393,10 +413,14 @@ def convert_referral(referred_user_id: int) -> Optional[dict]:
     from signup: the issue is explicit that a referral counts on a real activated signup, so a raw
     signup (or a click) earns nothing and a farm of dormant accounts pays nobody.
 
-    Returns the grant result, or None when there was no pending referral to convert."""
+    Returns the grant result, or None when there was no pending referral to convert.
+    """
     from cqc_lem.utilities.db import convert_affiliate_referral, grant_affiliate_trial_days
-    from cqc_lem.utilities.observability import (AFFILIATE_REFERRAL_CONVERTED,
-                                                 AFFILIATE_REWARD_GRANTED, track_affiliate_event)
+    from cqc_lem.utilities.observability import (
+        AFFILIATE_REFERRAL_CONVERTED,
+        AFFILIATE_REWARD_GRANTED,
+        track_affiliate_event,
+    )
 
     if not program_enabled():
         return None
@@ -420,13 +444,22 @@ def set_status(user_id: int, enrolled: bool) -> dict:
     standard trial), opting back in re-grants it under the same per-user cap.
 
     Opting out ALSO clears (B): consent to publish promo content from the user's account cannot
-    outlive the program membership it was given for."""
-    from cqc_lem.utilities.db import (ensure_affiliate_enrollment, grant_affiliate_trial_days,
-                                      revoke_affiliate_enrollment_bonus, set_affiliate_promo_opt_in,
-                                      set_affiliate_status)
-    from cqc_lem.utilities.observability import (AFFILIATE_ENROLLED, AFFILIATE_OPTED_OUT,
-                                                 AFFILIATE_REWARD_GRANTED, AFFILIATE_REWARD_REVOKED,
-                                                 track_affiliate_event)
+    outlive the program membership it was given for.
+    """
+    from cqc_lem.utilities.db import (
+        ensure_affiliate_enrollment,
+        grant_affiliate_trial_days,
+        revoke_affiliate_enrollment_bonus,
+        set_affiliate_promo_opt_in,
+        set_affiliate_status,
+    )
+    from cqc_lem.utilities.observability import (
+        AFFILIATE_ENROLLED,
+        AFFILIATE_OPTED_OUT,
+        AFFILIATE_REWARD_GRANTED,
+        AFFILIATE_REWARD_REVOKED,
+        track_affiliate_event,
+    )
 
     ensure_affiliate_enrollment(user_id, status=STATUS_OPTED_OUT, referral_code=code_for_user(user_id))
     enrollment = set_affiliate_status(user_id, enrolled) or {}
@@ -449,7 +482,8 @@ def set_status(user_id: int, enrolled: bool) -> dict:
 
 def set_promo_consent(user_id: int, enabled: bool) -> dict:
     """Record (B) consent — the only way `promo_content_opt_in` is ever set. Enabling requires the
-    user to already hold affiliate status: LEM cannot publish promotion for a program they left."""
+    user to already hold affiliate status: LEM cannot publish promotion for a program they left.
+    """
     from cqc_lem.utilities.db import get_affiliate_enrollment, set_affiliate_promo_opt_in
     from cqc_lem.utilities.observability import AFFILIATE_PROMO_CONSENT, track_affiliate_event
 
@@ -476,9 +510,13 @@ def affiliate_state(user_id: int) -> dict:
     still claws back after the config went to 0 — telling them "you keep every trial day you have
     already earned" off the config value would be a factual misstatement made right before an
     irreversible click. Same arithmetic as the revoke does (ENROLLMENT + REVOKED, revocations being
-    negative), off totals already read here, so it costs no extra query."""
-    from cqc_lem.utilities.db import (get_affiliate_enrollment, get_affiliate_referral_counts,
-                                      get_affiliate_reward_totals)
+    negative), off totals already read here, so it costs no extra query.
+    """
+    from cqc_lem.utilities.db import (
+        get_affiliate_enrollment,
+        get_affiliate_referral_counts,
+        get_affiliate_reward_totals,
+    )
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
 
     enrollment = get_affiliate_enrollment(user_id) or {}

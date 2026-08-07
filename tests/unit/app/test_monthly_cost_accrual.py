@@ -1,9 +1,9 @@
 """Unit tests for the monthly proxy/infra accrual + daily LLM rollup tasks (issue #490)."""
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 

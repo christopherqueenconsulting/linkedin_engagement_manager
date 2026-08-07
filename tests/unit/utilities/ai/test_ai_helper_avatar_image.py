@@ -93,7 +93,8 @@ class TestGeneratePostImage:
 
     def test_pinned_replicate_model_stays_a_flux_render(self):
         """The admin variant tool names a specific FLUX model — that must not silently
-        become a gpt-image render."""
+        become a gpt-image render.
+        """
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
              patch(f"{_AH}.generate_flux1_image_from_prompt", return_value="/tmp/f.webp") as flux:
             assert self._generate(image_model="black-forest-labs/flux-1.1-pro") == "/tmp/f.webp"

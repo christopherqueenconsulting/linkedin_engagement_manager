@@ -1,11 +1,11 @@
 """Extended unit tests for database utility functions not covered by test_db.py."""
 
 import json
-import pytest
-from unittest.mock import patch
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import mysql.connector
+import pytest
 from mysql.connector import errorcode
 
 pytestmark = pytest.mark.unit
@@ -322,7 +322,7 @@ class TestGetUserLinkedSubId:
 
 class TestInsertPlannedPost:
     def test_success_returns_true(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_planned_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_planned_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -342,7 +342,7 @@ class TestInsertPlannedPost:
             mock_database_connection["connection"].commit.assert_called_once()
 
     def test_tz_naive_datetime_is_handled(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_planned_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_planned_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -359,7 +359,7 @@ class TestInsertPlannedPost:
             assert result is True
 
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_planned_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_planned_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -381,7 +381,7 @@ class TestInsertPlannedPost:
 
 class TestUpdateDbPost:
     def test_success_returns_true(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -400,7 +400,7 @@ class TestUpdateDbPost:
             mock_database_connection["connection"].commit.assert_called_once()
 
     def test_tz_naive_scheduled_time_is_handled(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -418,7 +418,7 @@ class TestUpdateDbPost:
             assert result is True
 
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -673,7 +673,7 @@ class TestBulkUpdatePostsExtended:
             assert "scheduled_time" in call_args[0]
 
     def test_updates_both_status_and_time(self, mock_database_connection):
-        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, bulk_update_posts
 
         new_time = datetime(2025, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -703,7 +703,7 @@ class TestBulkUpdatePostsExtended:
             assert result is True
 
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, bulk_update_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -720,7 +720,7 @@ class TestBulkUpdatePostsExtended:
 
 class TestSoftDeletePostsDirect:
     def test_calls_bulk_update_with_rejected_status(self, mock_database_connection):
-        from cqc_lem.utilities.db import soft_delete_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, soft_delete_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -739,7 +739,7 @@ class TestSoftDeletePostsDirect:
 
 class TestInsertPostDbError:
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
@@ -757,7 +757,7 @@ class TestInsertPostDbError:
             assert result is False
 
     def test_inserts_with_carousel_slides_serialized(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_post
 
         slides = ["First slide", "Second slide"]
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
@@ -779,7 +779,7 @@ class TestInsertPostDbError:
             assert json.dumps(slides) in call_args[1]
 
     def test_tz_naive_scheduled_time_becomes_utc(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \

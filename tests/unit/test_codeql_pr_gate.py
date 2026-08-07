@@ -147,7 +147,8 @@ class TestWaitForAnalysis:
     def test_first_push_calibrates_off_the_base_ref(self):
         """The live hole this closes: on PR #913's own run the gate accepted at 07:10:36
         with javascript + python/advanced in, while /language:python landed at
-        07:10:54 — head was compared two-deep against a three-category base."""
+        07:10:54 — head was compared two-deep against a three-category base.
+        """
         base = [_analysis(OLD_SHA, PY), _analysis(OLD_SHA, JS),
                 _analysis(OLD_SHA, PY_ADVANCED)]
         client = _FakeClient(

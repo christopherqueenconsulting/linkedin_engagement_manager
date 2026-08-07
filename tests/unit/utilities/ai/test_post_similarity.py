@@ -1,6 +1,7 @@
 """Unit tests for the post-history uniqueness engine in content_framework (deterministic token-set
 similarity, opener/subject fingerprints, avoid directive) and the focus-alignment heuristic in
-content_alignment."""
+content_alignment.
+"""
 
 import pytest
 

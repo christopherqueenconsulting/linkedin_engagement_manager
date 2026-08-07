@@ -42,7 +42,8 @@ SIMILARITY_MAX_PCT_BOUNDS = (10, 100)
 
 def clamp_threshold(value: Any, low: int, high: int) -> Optional[int]:
     """Clamp a user-supplied threshold into [low, high]. None (and anything unparseable) stays None,
-    which every reader treats as 'use the deploy default'."""
+    which every reader treats as 'use the deploy default'.
+    """
     if value is None or value == "":
         return None
     try:
@@ -55,7 +56,8 @@ def build_finding(gate: str, explanation: str, remediation: str,
                   score: Optional[float] = None, threshold: Optional[float] = None,
                   demoted: bool = True, details: Optional[list] = None) -> dict:
     """One gate result in the shape the SPA renders. `demoted` marks the findings that actually
-    held the post at PENDING — the others are advisory notes shown alongside them."""
+    held the post at PENDING — the others are advisory notes shown alongside them.
+    """
     return {
         "gate": gate,
         "label": GATE_LABELS.get(gate, gate),
@@ -127,7 +129,8 @@ def missing_asset_finding(post_type: str) -> dict:
 def meeting_cta_finding(phrases: Optional[list] = None) -> dict:
     """The draft closes on a meeting ask — the CTA shape the 70/20/10 policy bans (issue #618).
     Held, not just flagged: a call-booking close is the single biggest reach penalty in 2026 and the
-    fix is a one-line edit."""
+    fix is a one-line edit.
+    """
     return build_finding(
         GATE_MEETING_CTA,
         explanation=("This draft asks the reader for a call or meeting. Salesy CTAs cost up to 70% of "
@@ -142,7 +145,8 @@ def fact_grounding_finding(unverified: Optional[list] = None,
                            placeholders: Optional[list] = None) -> dict:
     """No-fabrication guard for the save-targeted archetypes (issue #619 / G4). Two shapes, both
     holding the post: a draft that stated specifics nothing verifies (it made them up), and a draft
-    that honestly deferred them to placeholders the author still has to fill in."""
+    that honestly deferred them to placeholders the author still has to fill in.
+    """
     made_up = [str(u).strip() for u in (unverified or []) if str(u).strip()]
     to_fill = [str(p).strip() for p in (placeholders or []) if str(p).strip()]
     if made_up:
@@ -166,7 +170,8 @@ def slop_finding(hard_reasons: Optional[list] = None,
                  warn_reasons: Optional[list] = None) -> dict:
     """Deterministic AI-slop lint (issue #625 / D1). The draft still carries a pattern LinkedIn's
     2026 ranking suppresses after its regeneration budget ran out, so it is held with the exact
-    constructions named — this gate is the only one that can tell the user *which sentence* to fix."""
+    constructions named — this gate is the only one that can tell the user *which sentence* to fix.
+    """
     hard = [str(r).strip() for r in (hard_reasons or []) if str(r).strip()]
     warn = [str(r).strip() for r in (warn_reasons or []) if str(r).strip()]
     return build_finding(
@@ -190,7 +195,8 @@ def affiliate_promo_finding(disclosure: Optional[str] = None) -> dict:
     particular sentence going out over the author's name, and an endorsement is the one post type
     where "I never saw it before it published" is the outcome that costs them something. So every
     affiliate post waits for an explicit approval, and re-scoring cannot clear it: only the author
-    pressing approve (or deleting the referral link) can."""
+    pressing approve (or deleting the referral link) can.
+    """
     return build_finding(
         GATE_AFFILIATE_PROMO,
         explanation=("This post promotes LinkedIn Engagement Manager and carries your referral link, "
@@ -205,7 +211,8 @@ def affiliate_promo_finding(disclosure: Optional[str] = None) -> dict:
 def parse_gate_findings(raw: Any) -> list[dict]:
     """Coerce a persisted `posts.gate_reason` value (JSON string, bytes, or already-decoded list)
     into a list of findings. Anything unusable reads as 'no findings' — a malformed reason must
-    never break the review queue."""
+    never break the review queue.
+    """
     if raw is None or raw == "":
         return []
     if isinstance(raw, (bytes, bytearray)):

@@ -1,9 +1,9 @@
 """Unit tests for the weekly margin-report beat task (issue #491)."""
 
 from datetime import date
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 

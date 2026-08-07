@@ -1,8 +1,9 @@
 """Unit tests for cqc_lem.utilities.utils (non-AWS functions)."""
 
 import datetime
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

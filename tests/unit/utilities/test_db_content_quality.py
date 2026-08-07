@@ -1,6 +1,7 @@
 """Unit tests for the content_quality_scores DB helpers (issue #630): reading the day's shipped
 content off all three surfaces, upserting one scored row, and reading the two-period history back for
-the weekly rollup."""
+the weekly rollup.
+"""
 
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -14,7 +15,8 @@ _DB = "cqc_lem.utilities.db"
 
 def _mock_conn(fetch_batches=None, fetch_all=None):
     """`fetch_batches` feeds a different result set to each successive fetchall() — the shipped-content
-    reader runs three queries on ONE cursor."""
+    reader runs three queries on ONE cursor.
+    """
     conn = MagicMock()
     cur = MagicMock()
     if fetch_batches is not None:
@@ -90,6 +92,7 @@ class TestGetShippedContentForQuality:
         # The three queries share a connection; a failure on the newsletter read must not throw away
         # the posts and comments already collected.
         import mysql.connector
+
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         batches = self._batches()
         conn, cur = _mock_conn(fetch_batches=[batches[0], batches[1]])
@@ -100,6 +103,7 @@ class TestGetShippedContentForQuality:
 
     def test_empty_on_a_first_query_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, cur = _mock_conn(fetch_batches=[[], [], []])
         cur.execute.side_effect = mysql.connector.Error("boom")
@@ -164,6 +168,7 @@ class TestRecordContentQualityScore:
 
     def test_false_on_db_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
@@ -198,6 +203,7 @@ class TestGetContentQualityScores:
 
     def test_empty_when_the_table_is_not_there_yet(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_content_quality_scores
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("no such table")

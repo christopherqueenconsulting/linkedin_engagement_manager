@@ -1,9 +1,9 @@
 """Unit tests for media-cost tracking and the daily LLM cost rollup (issue #490)."""
 
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -47,7 +47,7 @@ class TestTrackMediaCost:
         assert row["feature"] == "content"
 
     def test_falls_back_to_attribution_scope(self):
-        from cqc_lem.utilities.observability import llm_attribution, track_media_cost, FEATURE_NEWSLETTER
+        from cqc_lem.utilities.observability import FEATURE_NEWSLETTER, llm_attribution, track_media_cost
         with patch(f"{_MOD}.posthog"), patch(f"{_MOD}._write_cost_ledger") as ledger:
             with llm_attribution(user_id=12, feature=FEATURE_NEWSLETTER):
                 track_media_cost("image", "openai", 0.08, qty=1, model="dall-e-3", feature=None)
@@ -220,7 +220,8 @@ class TestFlushLlmCostRollup:
 
 class TestLongModelIdentifiersNeverBreakTheLedger:
     """Regression: an avatar LoRA ref (~100 chars) overflowed cost_ledger.model_tier
-    VARCHAR(64), so MySQL rejected the row and the spend vanished entirely."""
+    VARCHAR(64), so MySQL rejected the row and the spend vanished entirely.
+    """
 
     _LORA = ("gitchrisqueen/lemcqv1-avatar-60:"
              "3ac08f699b61bc2afd323d578532d28a7a62f7371da89cfc928101baebacbf76")

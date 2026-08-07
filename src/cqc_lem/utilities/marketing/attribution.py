@@ -27,8 +27,7 @@ import re
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from cqc_lem.utilities.env_constants import (BRAND_SIGNUP_URL, MARKETING_OWNED_DOMAINS,
-                                             PUBLIC_BASE_URL)
+from cqc_lem.utilities.env_constants import BRAND_SIGNUP_URL, MARKETING_OWNED_DOMAINS, PUBLIC_BASE_URL
 
 # `utm_source` values. These feed observability.resolve_channel, which maps a source onto one of its
 # `CHANNELS` — so a new source needs a rule there or it lands in `other`.
@@ -91,7 +90,8 @@ def _bare_host(value: str) -> str:
     It has to be the same shape or the comparison in `is_owned_link` silently never matches, and a
     domain the operator configured is simply never tagged — the failure looks exactly like the
     pre-#658 behaviour, so nothing surfaces it. `www.` and a port are the two that actually get
-    typed ("www.example.com", "example.com:8443")."""
+    typed ("www.example.com", "example.com:8443").
+    """
     host = str(value or "").strip().lower().lstrip(".")
     host = host.split("//")[-1].split("/")[0].split("?")[0].split("#")[0]
     host = host.split("@")[-1].split(":")[0]
@@ -101,7 +101,8 @@ def _bare_host(value: str) -> str:
 def owned_hosts() -> set:
     """Hosts whose analytics we own, so tagging them is ours to do: this deployment's public base
     URL, the configured trial signup URL, and anything else the operator lists in
-    MARKETING_OWNED_DOMAINS (the marketing site / blog, which live outside the app)."""
+    MARKETING_OWNED_DOMAINS (the marketing site / blog, which live outside the app).
+    """
     hosts = {_host(PUBLIC_BASE_URL), _host(BRAND_SIGNUP_URL)}
     for entry in str(MARKETING_OWNED_DOMAINS or "").split(","):
         candidate = entry.strip()
@@ -115,7 +116,8 @@ def owned_hosts() -> set:
 def is_owned_link(url: Optional[str]) -> bool:
     """Whether `url` points at a destination whose analytics we own. Subdomains of an owned host
     count (a docs/blog subdomain is the same property); an unparseable, relative or non-http URL
-    never does."""
+    never does.
+    """
     host = _host(url)
     if not host:
         return False
@@ -129,7 +131,8 @@ def build_utm_url(url: Optional[str], source: str, medium: str, campaign: str,
 
     Existing query parameters are preserved and existing UTMs are NEVER overwritten — a hand-tagged
     link keeps its own attribution, and running this twice on the same URL is a no-op. A blank or
-    non-http URL comes back byte-identical, so a call site never has to guard before calling."""
+    non-http URL comes back byte-identical, so a call site never has to guard before calling.
+    """
     raw = str(url or "").strip()
     if not raw:
         return raw
@@ -159,7 +162,8 @@ def tag_owned_link(url: Optional[str], source: str, medium: str, campaign: str,
                    content: Optional[str] = None, ref: Optional[str] = None) -> str:
     """`build_utm_url` for a link we own, and a pass-through for anything else. This is what call
     sites use: an artifact CTA may hold the user's own newsletter on linkedin.com, a post may cite a
-    news article, and neither is ours to stamp."""
+    news article, and neither is ours to stamp.
+    """
     if not is_owned_link(url):
         return str(url or "")
     return build_utm_url(url, source, medium, campaign, content=content, ref=ref)
@@ -172,7 +176,8 @@ def mark_placement(url: Optional[str], placement: str) -> str:
     This is the one deliberate exception to "never overwrite": a promo CTA is written days before
     publish and assumes its link stays in the body, but #392's split decides at publish time whether
     the link is carried into the first comment instead. Only `utm_content` is touched, and only on a
-    link we own — source, medium and campaign are still first-write-wins."""
+    link we own — source, medium and campaign are still first-write-wins.
+    """
     if not is_owned_link(url) or not _slug(placement):
         return str(url or "")
     parsed = urlparse(str(url).strip())
@@ -186,7 +191,8 @@ def tag_links_in_text(text: Optional[str], source: str, medium: str, campaign: s
                       content: Optional[str] = None) -> str:
     """Rewrite every OWNED link inside a body of text with its UTMs, leaving third-party links (and
     the surrounding prose) untouched. Used where the link is embedded in copy a model wrote — a post
-    body, a video description — rather than handed to us as a bare URL."""
+    body, a video description — rather than handed to us as a bare URL.
+    """
     body = str(text or "")
     if not body:
         return body
@@ -209,7 +215,8 @@ def tag_links_in_text(text: Optional[str], source: str, medium: str, campaign: s
 
 def campaign_for_post(post_id: Optional[int] = None, archetype: Optional[str] = None) -> str:
     """The campaign for a LinkedIn post's links. `archetype` (the #619 blueprint format) rides along
-    so the breakdown can answer "which SHAPE of post converts", not just which one."""
+    so the breakdown can answer "which SHAPE of post converts", not just which one.
+    """
     parts = ["post"]
     if post_id is not None:
         parts.append(str(int(post_id)))
@@ -226,7 +233,8 @@ def campaign_for_edition(edition_id: Optional[int] = None) -> str:
 
 def campaign_for_tutorial(flow_key: Optional[str] = None) -> str:
     """The campaign for a tutorial video's description links — one per feature flow, since a flow is
-    re-filmed in place rather than re-published under a new id."""
+    re-filmed in place rather than re-published under a new id.
+    """
     slug = _slug(flow_key)
     return (f"tutorial-{slug}" if slug else "tutorial")[:_CAMPAIGN_MAX_LEN]
 
@@ -237,7 +245,8 @@ def signup_landing() -> str:
     """Where a trial CTA points. `BRAND_SIGNUP_URL` when the deployment names one, otherwise this
     deployment's own public base URL — the landing page IS the signup surface, so the brand engine
     needs no extra configuration to have a link to publish (issue #736). Empty only when neither is
-    set, which every caller reads as "there is no CTA link to publish"."""
+    set, which every caller reads as "there is no CTA link to publish".
+    """
     return str(BRAND_SIGNUP_URL or "").strip() or str(PUBLIC_BASE_URL or "").strip()
 
 
@@ -253,7 +262,8 @@ def signup_url(source: str, medium: str, campaign: str, content: Optional[str] =
 def referral_code(user_id: Optional[int]) -> str:
     """The `ref` value identifying the referrer. The user id, which is what the capture side already
     resolves a person by — the full referral program (codes, rewards) is its own launch-plan issue;
-    this is only the link format so the groundwork is in place and measurable."""
+    this is only the link format so the groundwork is in place and measurable.
+    """
     if user_id is None:
         return ""
     try:
@@ -264,7 +274,8 @@ def referral_code(user_id: Optional[int]) -> str:
 
 def referral_url(user_id: Optional[int], base: Optional[str] = None) -> str:
     """A member's referral link: `utm_source=referral&utm_medium=referral&ref=<user>`. Falls back to
-    the signup URL when no explicit landing page is given; empty when neither is configured."""
+    the signup URL when no explicit landing page is given; empty when neither is configured.
+    """
     code = referral_code(user_id)
     if not code:
         return ""
@@ -278,7 +289,8 @@ def parse_referral(url: Optional[str]) -> dict:
     """The attribution properties carried on an inbound URL — the UTMs plus `ref`. Used server-side
     to read a landing URL we were handed; the SPA does the same read off `window.location` in
     `utils/attribution.ts`. Keys with no value are omitted, so the result can be merged straight
-    into a funnel event's attribution without inventing empty buckets."""
+    into a funnel event's attribution without inventing empty buckets.
+    """
     try:
         query = urlparse(str(url or "").strip()).query
     except ValueError:

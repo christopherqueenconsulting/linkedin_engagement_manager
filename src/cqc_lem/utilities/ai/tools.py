@@ -8,8 +8,7 @@ from cqc_lem.utilities.ai.client import client
 
 
 def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
-    """
-    Search for recent information using Perplexity Sonar (online search-augmented LLM).
+    """Search for recent information using Perplexity Sonar (online search-augmented LLM).
 
     Returns {query, answer, sources} where sources is a list of {url} dicts.
     Raises RuntimeError if PERPLEXITY_API_KEY is not set.
@@ -48,8 +47,7 @@ def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
 
 # Define the tool for GoogleNews search
 def search_recent_news(industry: str, days: int = 7) -> dict:
-    """
-    Search recent news articles using GoogleNews.
+    """Search recent news articles using GoogleNews.
 
     Parameters:
     - industry (str): The industry or topic to search for.
@@ -79,8 +77,7 @@ def search_recent_news(industry: str, days: int = 7) -> dict:
 
 # Define a function to generate prompts for OpenAI ChatCompletion
 def news_analysis_prompt(industry: str, articles: list) -> str:
-    """
-    Generate a prompt for OpenAI to analyze news articles and extract keywords/categories.
+    """Generate a prompt for OpenAI to analyze news articles and extract keywords/categories.
 
     Parameters:
     - industry (str): The industry related to the articles.
@@ -107,8 +104,7 @@ def news_analysis_prompt(industry: str, articles: list) -> str:
 
 # Tool definition for GoogleNews search and analysis
 def google_news_tool(parameters: Dict) -> Dict:
-    """
-    Tool function for searching recent news and performing analysis.
+    """Tool function for searching recent news and performing analysis.
     Expects 'industry' and 'days' in parameters.
     """
     industry = parameters.get("industry", "Technology")
@@ -170,8 +166,7 @@ news_tool = {
 
 
 def chat_with_tools(industry: str, days: int):
-    """
-    ChatCompletion with integrated tools for GoogleNews analysis.
+    """ChatCompletion with integrated tools for GoogleNews analysis.
     """
     # Messages for the chat session
     messages = [
@@ -192,8 +187,7 @@ def chat_with_tools(industry: str, days: int):
     return output
 
 def chat_about_news(news, industry):
-    """
-    ChatCompletion with integrated tools for GoogleNews analysis.
+    """ChatCompletion with integrated tools for GoogleNews analysis.
     """
     # Messages for the chat session
     messages = [

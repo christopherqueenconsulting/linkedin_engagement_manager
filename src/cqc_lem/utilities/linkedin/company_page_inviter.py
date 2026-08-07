@@ -34,17 +34,34 @@ from typing import Optional
 from selenium.common import TimeoutException
 from selenium.webdriver import ActionChains
 
-from cqc_lem.utilities.db import get_user_password_pair_by_id, get_company_linked_in_url_for_user, \
-    insert_new_log, LogActionType, LogResultType, get_engagement_preferences, \
-    count_company_page_invites_sent_today, COMPANY_PAGE_INVITE_SENT_MESSAGE, \
-    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
-from cqc_lem.utilities.human_pacing import (ACTION_COMPANY_INVITE, ACTION_INVITE,
-                                            engagement_caps_from_prefs, pacing_enabled,
-                                            record_action, remaining_actions)
+from cqc_lem.utilities.db import (
+    COMPANY_PAGE_INVITE_SENT_MESSAGE,
+    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT,
+    LogActionType,
+    LogResultType,
+    count_company_page_invites_sent_today,
+    get_company_linked_in_url_for_user,
+    get_engagement_preferences,
+    get_user_password_pair_by_id,
+    insert_new_log,
+)
+from cqc_lem.utilities.human_pacing import (
+    ACTION_COMPANY_INVITE,
+    ACTION_INVITE,
+    engagement_caps_from_prefs,
+    pacing_enabled,
+    record_action,
+    remaining_actions,
+)
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
-from cqc_lem.utilities.logger import myprint, log_info
-from cqc_lem.utilities.selenium_util import get_element_wait_retry, get_elements_as_list_wait_stale, getText, \
-    wait_for_ajax, click_element_wait_retry
+from cqc_lem.utilities.logger import log_info, myprint
+from cqc_lem.utilities.selenium_util import (
+    click_element_wait_retry,
+    get_element_wait_retry,
+    get_elements_as_list_wait_stale,
+    getText,
+    wait_for_ajax,
+)
 
 # Run statuses — stable strings, so "why did this account send nothing yesterday?" is a group-by on
 # the telemetry rather than a log grep.
@@ -70,7 +87,8 @@ SELECTION_PAUSE_MAX_SECONDS = 2.5
 
 def days_left_in_month(day: Optional[date] = None) -> int:
     """Days remaining in `day`'s month, counting today. The credit pool renews on the 1st, so this
-    is the horizon the remaining credits have to cover."""
+    is the horizon the remaining credits have to cover.
+    """
     day = day or datetime.now(timezone.utc).date()
     return calendar.monthrange(day.year, day.month)[1] - day.day + 1
 
@@ -80,7 +98,8 @@ def credit_spread_budget(credits_remaining: int, day: Optional[date] = None) -> 
 
     Floor division of credits over the days left, with a floor of 1 while any credit remains — a
     thin pool late in the month should still drip rather than stop entirely (the daily cap and the
-    credit count are the real ceilings above this). 0 credits is 0, never 1."""
+    credit count are the real ceilings above this). 0 credits is 0, never 1.
+    """
     credits = max(0, int(credits_remaining or 0))
     if credits <= 0:
         return 0
@@ -91,7 +110,8 @@ def invite_cap_for_user(prefs: Optional[dict]) -> int:
     """The lane's own per-day ceiling: its cap, bounded by the account-wide invite cap.
 
     `max_invites_per_day` is the harder bound on purpose — it is what `brand_account`'s launch-phase
-    policy clamps, so the brand account can never run page invites hotter than its phase allows."""
+    policy clamps, so the brand account can never run page invites hotter than its phase allows.
+    """
     prefs = prefs or {}
 
     def _cap(key: str, default: int) -> int:
@@ -111,7 +131,8 @@ def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
     Returns `{'allowance': int, 'status': str, 'cap': int, 'sent_today': int}`. A zero allowance is
     the common case on most days (rest day, budget already spent, cap of 0) and must not cost a
     Chrome slot, which is why this is separate from the Selenium half. `status` is only meaningful
-    when the allowance is 0 — it says WHY nothing may go out."""
+    when the allowance is 0 — it says WHY nothing may go out.
+    """
     prefs = prefs if prefs is not None else get_engagement_preferences(user_id)
     cap = invite_cap_for_user(prefs)
     if cap <= 0:  # lane switched off — don't spend a DB round-trip proving it
@@ -182,7 +203,8 @@ def scroll_invitee_list(driver, wait):
 
 def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
     """A short human pause between ticking two invitees. 0 (and no sleep) when pacing is off, so
-    HUMAN_PACING_ENABLED=false restores the pre-#626 behaviour here too."""
+    HUMAN_PACING_ENABLED=false restores the pre-#626 behaviour here too.
+    """
     if not pacing_enabled():
         return 0.0
     delay = (rng or random).uniform(SELECTION_PAUSE_MIN_SECONDS, SELECTION_PAUSE_MAX_SECONDS)
@@ -279,7 +301,8 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
     """Send AT MOST today's paced budget of company-page invites, in one pass.
 
     Returns the run report — the caller turns it into telemetry. `plan` lets the task reuse the
-    allowance it already computed to decide whether opening a browser was worth it at all."""
+    allowance it already computed to decide whether opening a browser was worth it at all.
+    """
     myprint("Automate invitations to Company Page.")
 
     plan = plan if plan is not None else plan_daily_invites(user_id)

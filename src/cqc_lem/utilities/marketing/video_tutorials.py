@@ -24,35 +24,47 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai.content_alignment import (apply_contractions, cap_em_dashes,
-                                                    find_ai_tell_words, humanize_text)
-from cqc_lem.utilities.env_constants import (API_URL_FINAL, ELEVENLABS_API_KEY,
-                                             ELEVENLABS_COST_PER_1K_CHARS, ELEVENLABS_MODEL,
-                                             ELEVENLABS_VOICE_ID, TUTORIAL_BURN_CAPTIONS,
-                                             TUTORIAL_DEMO_EMAIL, TUTORIAL_DEMO_SESSION_TOKEN,
-                                             TUTORIAL_MAX_NARRATION_CHARS,
-                                             TUTORIAL_REFRESH_DAYS,
-                                             TUTORIAL_RENDER_COST_PER_MINUTE,
-                                             TUTORIAL_SPA_BASE_URL,
-                                             TUTORIAL_THUMBNAIL_ENABLED,
-                                             TUTORIAL_TTS_COST_PER_1K_CHARS, TUTORIAL_TTS_MODEL,
-                                             TUTORIAL_TTS_PROVIDER, TUTORIAL_TTS_VOICE,
-                                             WAIT_DEFAULT_TIMEOUT, YOUTUBE_PRIVACY_STATUS)
+from cqc_lem.utilities.ai.content_alignment import apply_contractions, cap_em_dashes, find_ai_tell_words, humanize_text
+from cqc_lem.utilities.env_constants import (
+    API_URL_FINAL,
+    ELEVENLABS_API_KEY,
+    ELEVENLABS_COST_PER_1K_CHARS,
+    ELEVENLABS_MODEL,
+    ELEVENLABS_VOICE_ID,
+    TUTORIAL_BURN_CAPTIONS,
+    TUTORIAL_DEMO_EMAIL,
+    TUTORIAL_DEMO_SESSION_TOKEN,
+    TUTORIAL_MAX_NARRATION_CHARS,
+    TUTORIAL_REFRESH_DAYS,
+    TUTORIAL_RENDER_COST_PER_MINUTE,
+    TUTORIAL_SPA_BASE_URL,
+    TUTORIAL_THUMBNAIL_ENABLED,
+    TUTORIAL_TTS_COST_PER_1K_CHARS,
+    TUTORIAL_TTS_MODEL,
+    TUTORIAL_TTS_PROVIDER,
+    TUTORIAL_TTS_VOICE,
+    WAIT_DEFAULT_TIMEOUT,
+    YOUTUBE_PRIVACY_STATUS,
+)
 from cqc_lem.utilities.flags import TUTORIAL_VIDEOS, flag_enabled
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
-from cqc_lem.utilities.marketing.attribution import (MEDIUM_VIDEO, PLACEMENT_VIDEO_DESCRIPTION,
-                                                     SOURCE_YOUTUBE, campaign_for_tutorial,
-                                                     signup_url, tag_links_in_text)
-from cqc_lem.utilities.marketing.youtube_auth import (mint_access_token, preflight,
-                                                      youtube_configured)
+from cqc_lem.utilities.marketing.attribution import (
+    MEDIUM_VIDEO,
+    PLACEMENT_VIDEO_DESCRIPTION,
+    SOURCE_YOUTUBE,
+    campaign_for_tutorial,
+    signup_url,
+    tag_links_in_text,
+)
+from cqc_lem.utilities.marketing.youtube_auth import mint_access_token, preflight, youtube_configured
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
 from cqc_lem.utilities.utils import create_folder_if_not_exists
 
@@ -187,7 +199,8 @@ def spa_base_url() -> str:
 
 def ui_fingerprint(markers: list) -> str:
     """Hash of the text read off each captured screen. A changed fingerprint means the UI moved,
-    which is the trigger to re-film — the "refresh on UI-change" half of the cadence."""
+    which is the trigger to re-film — the "refresh on UI-change" half of the cadence.
+    """
     joined = "\n".join(re.sub(r"\s+", " ", str(m or "")).strip()[:400] for m in markers)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
@@ -198,7 +211,8 @@ def _flow_available(flow: TutorialFlow) -> bool:
 
 def next_flow(manifest: Optional[dict] = None) -> Optional[TutorialFlow]:
     """The one flow worth producing this run: an uncovered feature first (the weekly cadence runs
-    until every top-level feature has a tutorial), then the stalest covered one."""
+    until every top-level feature has a tutorial), then the stalest covered one.
+    """
     manifest = manifest if manifest is not None else load_manifest()
     videos = manifest.get("videos") or {}
     candidates = [f for f in TUTORIAL_FLOWS.values() if _flow_available(f)]
@@ -214,7 +228,8 @@ def next_flow(manifest: Optional[dict] = None) -> Optional[TutorialFlow]:
 
 def is_current(record: Optional[dict], fingerprint: str) -> bool:
     """True when an existing tutorial still shows today's UI and is inside the refresh window —
-    the two conditions that make re-filming pure spend."""
+    the two conditions that make re-filming pure spend.
+    """
     if not record:
         return False
     if record.get("fingerprint") != fingerprint:
@@ -240,7 +255,8 @@ def _produced_before(record: Optional[dict], cutoff: datetime) -> bool:
 
 def _seed_demo_session(driver, base_url: str) -> None:
     """Put the demo account's session token where the SPA's AuthContext reads it, so protected
-    routes render the real product instead of the login modal."""
+    routes render the real product instead of the login modal.
+    """
     driver.get(f"{base_url}/")
     driver.execute_script(
         "window.localStorage.setItem('lem_session', arguments[0]);"
@@ -252,7 +268,8 @@ def _seed_demo_session(driver, base_url: str) -> None:
 def capture_flow(flow: TutorialFlow, driver=None) -> dict:
     """Screenshot every step of `flow` against the running SPA. Raises TutorialCaptureError the
     moment a declared anchor is missing or a screenshot fails — a tutorial is never built on a
-    screen we could not verify."""
+    screen we could not verify.
+    """
     from cqc_lem.utilities.selenium_util import click_first, find_first, get_docker_driver
 
     if flow.requires_auth and not TUTORIAL_DEMO_SESSION_TOKEN:
@@ -354,7 +371,8 @@ def grounding_text(flow: TutorialFlow, capture: dict) -> str:
 
 def ungrounded_claims(narration: str, allowed: str) -> list:
     """Numeric/price claims in the narration that appear nowhere in the flow definition or the
-    captured screen text. Deterministic — no LLM, so the gate itself can never hallucinate."""
+    captured screen text. Deterministic — no LLM, so the gate itself can never hallucinate.
+    """
     allowed_numbers = set(_NUMERIC_CLAIM_RE.findall(allowed or ""))
     allowed_norm = {n.replace(" ", "") for n in allowed_numbers}
     out = []
@@ -366,7 +384,8 @@ def ungrounded_claims(narration: str, allowed: str) -> list:
 
 def check_narration(narration: str, allowed: str) -> None:
     """Publish guardrails, in fail-closed order: something to say, inside the TTS budget, clean,
-    and free of invented specifics."""
+    and free of invented specifics.
+    """
     text = (narration or "").strip()
     if not text:
         raise TutorialGuardrailError("Script produced no narration")
@@ -385,13 +404,15 @@ def check_narration(narration: str, allowed: str) -> None:
 
 def _spoken(text: str) -> str:
     """Plain, TTS-safe prose: at most one em-dash (capped BEFORE normalization folds them into
-    hyphens), no smart punctuation to mispronounce, and the contractions a person actually says."""
+    hyphens), no smart punctuation to mispronounce, and the contractions a person actually says.
+    """
     return apply_contractions(normalize_public_text(cap_em_dashes(str(text or ""), 1)).strip())
 
 
 def generate_script(flow: TutorialFlow, capture: dict) -> dict:
     """Brand-voice, grounded narration for a captured flow. Raises TutorialGuardrailError before
-    any TTS/publish spend if the result is unusable."""
+    any TTS/publish spend if the result is unusable.
+    """
     from cqc_lem.utilities.ai.ai_helper import _call_llm
 
     response = _call_llm(
@@ -442,7 +463,8 @@ def description_with_cta(description: str, flow: TutorialFlow,
     does not already carry it, so re-running never stacks two.
 
     The cap is applied to the PROSE, never to the finished string: truncating afterwards would chop
-    a long description's CTA mid-URL and publish a broken link, which is worse than shipping none."""
+    a long description's CTA mid-URL and publish a broken link, which is worse than shipping none.
+    """
     campaign = campaign_for_tutorial(flow.key)
     body = tag_links_in_text(description or "", SOURCE_YOUTUBE, MEDIUM_VIDEO, campaign,
                              content=PLACEMENT_VIDEO_DESCRIPTION)
@@ -558,6 +580,7 @@ def audio_duration(path: str) -> float:
 def brand_card(text: str, out_path: str, subtitle: str = "") -> str:
     """Branded intro/outro frame. PIL only — no design service, no network."""
     import textwrap
+
     from PIL import Image, ImageDraw
     image = Image.new("RGB", (FRAME_WIDTH, FRAME_HEIGHT), (11, 34, 64))  # LEM deep blue
     draw = ImageDraw.Draw(image)
@@ -677,7 +700,8 @@ def publish_to_youtube(mp4_path: str, title: str, description: str,
                        tags: Optional[list] = None) -> Optional[str]:
     """Resumable upload via the YouTube Data API v3 (plain requests — no extra SDK). Returns the
     watch URL, or None when YouTube is not configured or the upload fails: an unpublished MP4 is
-    still a usable asset, so this never fails the whole production."""
+    still a usable asset, so this never fails the whole production.
+    """
     if not youtube_configured():
         log_info("YouTube publish skipped — no OAuth credentials configured", task_name=TASK_NAME)
         return None
@@ -718,7 +742,8 @@ def publish_to_youtube(mp4_path: str, title: str, description: str,
 def produce_tutorial(flow_key: Optional[str] = None, driver=None) -> Optional[dict]:
     """Produce (and publish) ONE tutorial end to end. Returns the manifest record, or None when
     the pipeline is disabled or there is nothing due. Raises on capture/guardrail/render failure —
-    a broken tutorial must never reach YouTube."""
+    a broken tutorial must never reach YouTube.
+    """
     # Runtime toggle (issue #651): the `tutorial-videos-enabled` flag, falling back to
     # TUTORIAL_VIDEOS_ENABLED whenever PostHog has no answer. Checked HERE rather than read at
     # import so a flip lands on the next beat instead of the next deploy.

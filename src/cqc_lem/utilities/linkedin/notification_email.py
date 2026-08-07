@@ -24,7 +24,8 @@ _REACTION_PHRASES = ("liked", "reacted to", "celebrates", "loves", "supports",
 
 def reply_inbound_address(token: str) -> str:
     """The forwarding address the user points a Gmail filter at. Host is LINKEDIN_PARSE_DOMAIN if
-    set, else derived from the configured domain (see _default_parse_domain)."""
+    set, else derived from the configured domain (see _default_parse_domain).
+    """
     domain = os.getenv("LINKEDIN_PARSE_DOMAIN") or _default_parse_domain()
     return f"reply+{token}@{domain}"
 
@@ -40,7 +41,8 @@ def extract_reply_token_from_address(value: str) -> Optional[str]:
 def is_comment_notification(subject: str, text: str = "") -> bool:
     """True when the forwarded LinkedIn email is a COMMENT/REPLY notification (something to reply to),
     False for reactions/likes/mentions/other. Reads the subject plus the top of the body (like
-    extract_pin_from_text) so quoted history can't flip the classification."""
+    extract_pin_from_text) so quoted history can't flip the classification.
+    """
     subject = (subject or "").lower()
     # Top of the body only — stop at quoted history so a forwarded chain doesn't add noise.
     head_lines = []
@@ -88,7 +90,8 @@ _GMAIL_CONFIRM_CODE_RES = (
 
 def is_gmail_forwarding_confirmation(sender: str, subject: str, text: str = "") -> bool:
     """True when the inbound email is a Gmail 'Forwarding Confirmation' asking us to verify the
-    forwarding address (from forwarding-noreply@google.com)."""
+    forwarding address (from forwarding-noreply@google.com).
+    """
     if "forwarding-noreply@google.com" in (sender or "").lower():
         return True
     subj = (subject or "").lower()
@@ -100,7 +103,8 @@ def is_gmail_forwarding_confirmation(sender: str, subject: str, text: str = "") 
 
 def extract_gmail_confirmation_url(text: str) -> Optional[str]:
     """The Gmail verify link to click (prefers the vf-/uf- confirmation link). Pass the HTML part
-    when available — the plain-text part wraps the very long URL across lines, which breaks it."""
+    when available — the plain-text part wraps the very long URL across lines, which breaks it.
+    """
     if not text:
         return None
     # href="...&amp;..." → real & ; also undo soft-wrap that split the URL across lines.

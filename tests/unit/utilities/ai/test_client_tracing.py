@@ -45,7 +45,8 @@ def _client() -> tuple:
 @contextmanager
 def _silent_posthog():
     """The trace/span events themselves are asserted in test_llm_traces.py — here they'd just be
-    network noise from a real PostHog client."""
+    network noise from a real PostHog client.
+    """
     with patch("cqc_lem.utilities.observability.posthog"):
         yield
 
@@ -86,7 +87,8 @@ class TestTraceOnTheWire:
 
     def test_a_call_directly_under_the_trace_parents_onto_the_trace_itself(self):
         """A step-less call is a DIRECT child of the trace, and PostHog only counts one as such when
-        $ai_parent_id is the trace id (traces_query_runner.py) — anything else and it disappears."""
+        $ai_parent_id is the trace id (traces_query_runner.py) — anything else and it disappears.
+        """
         from cqc_lem.utilities.observability import llm_trace
         client, recorder = _client()
         with _silent_posthog():
@@ -97,7 +99,8 @@ class TestTraceOnTheWire:
 
     def test_a_callers_own_metadata_still_joins_the_trace(self):
         """`_call_llm` always sets its own metadata, which is why tracing cannot ride inside the
-        attribution hook — it bails out on exactly that case."""
+        attribution hook — it bails out on exactly that case.
+        """
         from cqc_lem.utilities.observability import llm_span, llm_trace
         client, recorder = _client()
         with _silent_posthog():
@@ -118,7 +121,8 @@ class TestTraceOnTheWire:
 
     def test_raw_provider_models_are_never_traced(self):
         """Only tier aliases go through the proxy's PostHog logger — a direct provider call has
-        nothing to join."""
+        nothing to join.
+        """
         from cqc_lem.utilities.observability import llm_trace
         client, recorder = _client()
         with _silent_posthog():

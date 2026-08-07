@@ -1,8 +1,10 @@
 """The task/generator entry points must scope their LLM calls to the right user + feature, so
-PostHog cost lands on a real user instead of 'system'."""
+PostHog cost lands on a real user instead of 'system'.
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -56,8 +58,9 @@ class TestContentAttribution:
 
 class TestNewsletterAttribution:
     def test_newsletter_topup_attributes_the_newsletter_feature(self, seen_attribution):
-        from cqc_lem.app.run_scheduler import _topup_newsletter_drafts_for_user
         from datetime import datetime
+
+        from cqc_lem.app.run_scheduler import _topup_newsletter_drafts_for_user
         captured, capture = seen_attribution
 
         # Bail out right after the attribution scope opens: the settings read is the first thing the

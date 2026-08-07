@@ -5,9 +5,10 @@ first comment carries the link. Exercises the real chain — post_to_linkedin �
 engagement_preferences) → auto_seed_comment_on_post — over a stateful fake cursor, so the handoff
 between publish and seed goes through the actual persisted columns without needing a live MySQL.
 """
-import pytest
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -110,8 +111,9 @@ def _store(link_pref_row=None):
 
 def _run_publish_and_seed(store):
     """Publish the post, then run the seed-comment task the publish dispatched — inline, so the
-    handoff happens through the persisted columns exactly as it does in the worker."""
-    from cqc_lem.app.run_automation import post_to_linkedin, auto_seed_comment_on_post
+    handoff happens through the persisted columns exactly as it does in the worker.
+    """
+    from cqc_lem.app.run_automation import auto_seed_comment_on_post, post_to_linkedin
 
     seed_task = MagicMock()
     seed_task.apply_async.side_effect = lambda kwargs=None, **kw: auto_seed_comment_on_post.run(**kwargs)

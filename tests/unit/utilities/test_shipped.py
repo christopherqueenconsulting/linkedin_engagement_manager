@@ -1,9 +1,9 @@
 """Unit tests for the shipped-fix changelog + reporter notification (issue #502)."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -57,9 +57,12 @@ class TestChangelogLine:
 
 class TestEnvKnobs:
     def test_lookback_and_delay_defaults_and_clamps(self, monkeypatch):
-        from cqc_lem.utilities.feedback.shipped import (FIX_CSAT_DELAY_HOURS_DEFAULT,
-                                                        LOOKBACK_HOURS_DEFAULT,
-                                                        fix_csat_delay_hours, lookback_hours)
+        from cqc_lem.utilities.feedback.shipped import (
+            FIX_CSAT_DELAY_HOURS_DEFAULT,
+            LOOKBACK_HOURS_DEFAULT,
+            fix_csat_delay_hours,
+            lookback_hours,
+        )
         monkeypatch.delenv("FEEDBACK_SHIPPED_LOOKBACK_HOURS", raising=False)
         monkeypatch.delenv("FEEDBACK_FIX_CSAT_DELAY_HOURS", raising=False)
         assert lookback_hours() == LOOKBACK_HOURS_DEFAULT

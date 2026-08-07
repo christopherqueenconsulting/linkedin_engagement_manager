@@ -1,9 +1,11 @@
 """Unit tests for post SHAPE rotation in create_text_post: one blueprint per post, rotated away
 from the user's recent post shapes (V51 history) via the shared framework core, persisted so the
-NEXT post rotates too."""
+NEXT post rotates too.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

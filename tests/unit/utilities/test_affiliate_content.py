@@ -141,7 +141,8 @@ class TestDisclosure:
 
     def test_a_deployment_with_no_disclosure_configured_writes_nothing(self):
         """Blank means 'affiliate content cannot be published here', never 'no disclosure needed' —
-        so there is no point spending a generation on copy the publish gate would refuse."""
+        so there is no point spending a generation on copy the publish gate would refuse.
+        """
         with ExitStack() as stack:
             _env(stack, disclosure="")
             content, call = _generate(stack)
@@ -151,7 +152,8 @@ class TestDisclosure:
     def test_a_deployment_that_cannot_publish_affiliate_content_says_so(self):
         """The one refusal that is a MISCONFIGURATION rather than the healthy common case, and the
         content plan short-circuits on `claims_promo_slot` — so it has to be reported from there or
-        the deployment silently never promotes."""
+        the deployment silently never promotes.
+        """
         with ExitStack() as stack:
             _env(stack, disclosure="")
             warn = stack.enter_context(patch("cqc_lem.utilities.logger.log_warning"))
@@ -186,7 +188,8 @@ class TestReferralLinkIntegrity:
         markdown italics — `_word_` being exactly the shape of `utm_source=…&utm_medium=…`. Left
         un-repaired the post publishes `utmsource=`, a dead link, AND a second clean copy beside it
         because the mangled one no longer matches. The sanitizer masks URLs since #823; this stays
-        as the end-to-end guard that the one URL earning the trial time reaches the post verbatim."""
+        as the end-to-end guard that the one URL earning the trial time reaches the post verbatim.
+        """
         from cqc_lem.utilities.marketing.affiliate import link_for_user
         with ExitStack() as stack:
             _env(stack)
@@ -212,7 +215,8 @@ class TestPromoMixCap:
     @pytest.mark.parametrize("mix", ["value", "authority", None, "", "unknown"])
     def test_only_the_governors_promo_slot_can_be_claimed(self, mix):
         """The 10% ceiling holds by construction: affiliate promotion replaces the author's own
-        case-study post in a slot the mix governor already allowed, so it can never raise the ratio."""
+        case-study post in a slot the mix governor already allowed, so it can never raise the ratio.
+        """
         with ExitStack() as stack:
             _env(stack)
             content, call = _generate(stack, content_mix=mix)
@@ -315,7 +319,8 @@ class TestQualityGates:
 
     def test_the_writer_states_nothing_about_the_product_it_was_not_given(self):
         """The prompt's allow-list is the product-fact list and nothing else — the same posture the
-        story bank takes for personal specifics."""
+        story bank takes for personal specifics.
+        """
         with ExitStack() as stack:
             _env(stack)
             content, call = _generate(stack)

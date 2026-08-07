@@ -96,7 +96,8 @@ def inspect_post_image_bytes(data: bytes) -> PostImageVerdict:
 
 def post_image_relative_dir(user_id: int, post_id: Optional[int]) -> str:
     """Assets-relative dir this image belongs in — per POST once there is one, per USER while the
-    author is still composing (a preview has no row to be scoped by)."""
+    author is still composing (a preview has no row to be scoped by).
+    """
     if post_id:
         return f"{POST_IMAGE_SUBDIR}/{int(post_id)}"
     return f"{POST_IMAGE_PREVIEW_SUBDIR}/{int(user_id)}"

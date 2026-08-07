@@ -1,5 +1,6 @@
 """Unit tests for the lead scorer (issue #484) — identity keys, recency/frequency weighting, ICP
-fit, stage derivation, recommended actions, and the end-to-end ranking."""
+fit, stage derivation, recommended actions, and the end-to-end ranking.
+"""
 
 from datetime import datetime, timedelta, timezone
 
@@ -7,8 +8,18 @@ import pytest
 
 from cqc_lem.utilities.db import LeadSignalKind, LeadStage
 from cqc_lem.utilities.lead_scoring import (
-    ICP_UNKNOWN, LeadActivity, derive_stage, engagement_strength, group_activity, icp_fit,
-    person_key, profile_slug, recency_weight, recommend_action, score_lead, score_leads,
+    ICP_UNKNOWN,
+    LeadActivity,
+    derive_stage,
+    engagement_strength,
+    group_activity,
+    icp_fit,
+    person_key,
+    profile_slug,
+    recency_weight,
+    recommend_action,
+    score_lead,
+    score_leads,
 )
 
 pytestmark = pytest.mark.unit

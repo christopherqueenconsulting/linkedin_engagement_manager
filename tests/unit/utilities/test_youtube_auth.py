@@ -164,7 +164,8 @@ class TestProbe:
         """`persist=False` is about the Redis audit record, NOT the credential: Google retires the
         old value the moment it hands back a new one, so dropping it here would leave the publish
         that follows this very preflight holding a dead token — the wasted render spend #742 exists
-        to prevent."""
+        to prevent.
+        """
         stored = {}
         monkeypatch.setattr(ya, "set_app_credential",
                             lambda name, value, note=None: stored.update({name: value}) or True)
@@ -176,7 +177,8 @@ class TestProbe:
     def test_a_credential_store_outage_never_turns_a_probe_into_an_exception(self, monkeypatch):
         """`get_db_connection` raises when MySQL is down, and it is called outside `db.py`'s own
         try/except — so an unguarded write here would propagate out of probe(), past the beat's
-        narrow except clause, and abort a tutorial run that had nothing wrong with it."""
+        narrow except clause, and abort a tutorial run that had nothing wrong with it.
+        """
         def _boom(*args, **kwargs):
             raise mysql.connector.Error("db down")
 

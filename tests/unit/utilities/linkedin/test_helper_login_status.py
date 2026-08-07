@@ -5,8 +5,9 @@ ever visible, so a user who had already tapped Yes could not confirm LEM receive
 tests pin the three transitions the Account page renders.
 """
 
-import pytest
 from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -65,7 +66,8 @@ class TestSignedIn:
 
     def test_recorded_even_when_the_cookie_write_is_lost(self, status_marks, monkeypatch):
         """The approval landed whether or not the cookies persisted — the sign-in is the fact
-        the user is asking about, so a failed cookie write must not suppress it."""
+        the user is asking about, so a failed cookie write must not suppress it.
+        """
         monkeypatch.setenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "0")
         driver = _make_driver("https://www.linkedin.com/feed/")
         with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
@@ -118,7 +120,8 @@ class TestApprovalChallenge:
 
     def test_giving_up_closes_the_pending_record(self, status_marks, monkeypatch):
         """A pending record that only expired would leave the SPA saying "waiting for you" long
-        after nothing was waiting."""
+        after nothing was waiting.
+        """
         monkeypatch.setenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "0")
         self._run_challenge(["https://www.linkedin.com/checkpoint/challenge"])
 
@@ -141,7 +144,8 @@ class TestApprovalChallenge:
     def test_a_landed_approval_is_recorded_even_if_the_login_dies_after_it(
             self, status_marks, monkeypatch):
         """The user tapped Yes; the login then fell over before it could persist cookies. Leaving
-        the record PENDING would keep the Account page asking for an approval already given."""
+        the record PENDING would keep the Account page asking for an approval already given.
+        """
         monkeypatch.setenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "60")
         with patch(f"{_MODULE}._persist_session_cookies"):
             self._run_challenge([

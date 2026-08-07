@@ -1,7 +1,8 @@
 """Unit tests for the avatar Replicate utility."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture

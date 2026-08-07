@@ -1,9 +1,9 @@
 """Unit tests for the LinkedIn sign-in status store (issue #933)."""
 
 import json
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -64,7 +64,11 @@ class TestTtl:
 class TestLifecycle:
     def test_pending_then_signed_in_records_the_approval_landed(self, fake_redis):
         from cqc_lem.utilities.linkedin.login_status import (
-            LinkedInLoginState, get_login_status, mark_approval_pending, mark_signed_in)
+            LinkedInLoginState,
+            get_login_status,
+            mark_approval_pending,
+            mark_signed_in,
+        )
 
         mark_approval_pending(7)
         pending = get_login_status(7)
@@ -81,9 +85,9 @@ class TestLifecycle:
 
     def test_the_cookie_persist_does_not_erase_the_approval_it_follows(self, fake_redis):
         """One login records the sign-in twice — when the approval clears and again when the
-        cookies persist. The second write must not wipe the fact the user's tap landed."""
-        from cqc_lem.utilities.linkedin.login_status import (
-            get_login_status, mark_approval_pending, mark_signed_in)
+        cookies persist. The second write must not wipe the fact the user's tap landed.
+        """
+        from cqc_lem.utilities.linkedin.login_status import get_login_status, mark_approval_pending, mark_signed_in
 
         mark_approval_pending(7)
         mark_signed_in(7)
@@ -96,9 +100,9 @@ class TestLifecycle:
 
     def test_a_later_sign_in_does_not_re_claim_an_old_approval(self, fake_redis):
         """Only the approval THIS login cleared counts — a routine sign-in weeks later must not
-        keep telling the user their device approval came through."""
-        from cqc_lem.utilities.linkedin.login_status import (
-            _key, get_login_status, mark_signed_in)
+        keep telling the user their device approval came through.
+        """
+        from cqc_lem.utilities.linkedin.login_status import _key, get_login_status, mark_signed_in
 
         fake_redis.store[_key(7)] = json.dumps({
             "state": "signed_in",
@@ -128,8 +132,12 @@ class TestLifecycle:
 
     def test_timeout_keeps_the_last_good_sign_in(self, fake_redis):
         from cqc_lem.utilities.linkedin.login_status import (
-            LinkedInLoginState, get_login_status, mark_approval_pending,
-            mark_approval_timed_out, mark_signed_in)
+            LinkedInLoginState,
+            get_login_status,
+            mark_approval_pending,
+            mark_approval_timed_out,
+            mark_signed_in,
+        )
 
         mark_signed_in(7)
         first = get_login_status(7)["signed_in_at"]
@@ -145,8 +153,7 @@ class TestLifecycle:
     def test_pending_expires_sooner_than_a_settled_record(self, fake_redis, monkeypatch):
         monkeypatch.delenv("LINKEDIN_LOGIN_STATUS_TTL_SECONDS", raising=False)
         monkeypatch.delenv("LINKEDIN_LOGIN_STATUS_PENDING_TTL_SECONDS", raising=False)
-        from cqc_lem.utilities.linkedin.login_status import (
-            _key, mark_approval_pending, mark_signed_in)
+        from cqc_lem.utilities.linkedin.login_status import _key, mark_approval_pending, mark_signed_in
 
         mark_approval_pending(7)
         pending_ttl = fake_redis.ttls[_key(7)]
@@ -164,7 +171,11 @@ class TestLifecycle:
 class TestFailsOpen:
     def test_no_redis_is_a_silent_no_op(self, no_redis):
         from cqc_lem.utilities.linkedin.login_status import (
-            get_login_status, mark_approval_pending, mark_approval_timed_out, mark_signed_in)
+            get_login_status,
+            mark_approval_pending,
+            mark_approval_timed_out,
+            mark_signed_in,
+        )
 
         mark_approval_pending(7)
         mark_approval_timed_out(7)

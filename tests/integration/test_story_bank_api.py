@@ -5,8 +5,9 @@ has to be able to read it, seed it, edit it and retire entries — and none of t
 users.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 _SESSION = "tok"
 _USER = 5
@@ -25,6 +26,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc

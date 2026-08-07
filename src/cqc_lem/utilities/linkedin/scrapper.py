@@ -2,16 +2,20 @@ import random
 import re
 from typing import List, Optional
 
-from bs4 import BeautifulSoup, CData, Comment, Declaration, Doctype, PageElement, \
-    ProcessingInstruction
-from cqc_lem.utilities.date import convert_datetime_to_start_of_day
-from cqc_lem.utilities.date import convert_viewed_on_to_date
-from cqc_lem.utilities.logger import log_debug, log_warning, myprint
-from cqc_lem.utilities.selenium_util import window_scroll, click_element_wait_retry, get_driver_wait, \
-    get_elements_as_list_wait_stale, \
-    getText, wait_for_ajax
+from bs4 import BeautifulSoup, CData, Comment, Declaration, Doctype, PageElement, ProcessingInstruction
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+
+from cqc_lem.utilities.date import convert_datetime_to_start_of_day, convert_viewed_on_to_date
+from cqc_lem.utilities.logger import log_debug, log_warning, myprint
+from cqc_lem.utilities.selenium_util import (
+    click_element_wait_retry,
+    get_driver_wait,
+    get_elements_as_list_wait_stale,
+    getText,
+    wait_for_ajax,
+    window_scroll,
+)
 
 start_identifier_map = {
     "education": 19,
@@ -43,7 +47,7 @@ def get_start_identifier(list_text: List[str]) -> int:
 
 
 def print_header(text):
-    """ Print to the console with 5 newlines before text and dashes before and after text to mark as header"""
+    """Print to the console with 5 newlines before text and dashes before and after text to mark as header"""
     dashes = "-" * 10
     break_lines = "\n" * 5
     print(break_lines + dashes + text + dashes + "\n" * 2)
@@ -52,7 +56,8 @@ def print_header(text):
 class ProfileUnavailableError(Exception):
     """Raised when a LinkedIn profile page can't be parsed (rate-limited, auth-wall,
     challenge, or a DOM change) — lets callers handle it gracefully instead of
-    crashing with an opaque AttributeError on a None element."""
+    crashing with an opaque AttributeError on a None element.
+    """
 
 
 # Signatures of the non-profile pages LinkedIn serves at the same URL (rate-limit
@@ -377,7 +382,8 @@ def _clean_lines(raw: List[str]) -> List[str]:
 
     LinkedIn renders most text twice — a visible `aria-hidden="true"` node and a `visually-hidden`
     twin — so the same string arrives back-to-back. Collapsing ADJACENT duplicates only, never all
-    duplicates: two roles legitimately share a title, and a repeated date range is real data."""
+    duplicates: two roles legitimately share a title, and a repeated date range is real data.
+    """
     out: List[str] = []
     for line in raw:
         line = " ".join((line or "").split())
@@ -398,7 +404,8 @@ def _rendered_lines(node: PageElement) -> List[str]:
     `get_text("\\n")` splits on every text node, which is not what a reader sees: LinkedIn renders
     "Mar 2019 - Present · 7 yrs 6 mos" as three inline spans, and splitting them shatters the date
     range that anchors the whole parse. Adjacent identical segments collapse here too — the a11y twin
-    is a sibling span, so on the fallback path it would otherwise join as "Engineer Engineer"."""
+    is a sibling span, so on the fallback path it would otherwise join as "Engineer Engineer".
+    """
     lines: List[str] = []
     current: List[str] = []
 
@@ -445,7 +452,8 @@ def visible_lines(node: PageElement) -> List[str]:
     span is not counted twice) — but only when that half actually covers the node's text. The live
     /details/experience/ render carries no doubling at all, and reading a page like that through a
     stray decorative `aria-hidden` icon would return an entity's text as one icon's worth of it. Full
-    text is the fallback, where `_clean_lines` still removes any duplication."""
+    text is the fallback, where `_clean_lines` still removes any duplication.
+    """
     chosen: List[PageElement] = []
     chosen_ids = set()
     for el in node.find_all(attrs={"aria-hidden": "true"}):
@@ -481,7 +489,8 @@ def experience_entity_nodes(source) -> tuple:
     is decided by selector specificity alone, and the live run behind this rebuild is exactly why
     that fails: `div[data-sdui-screen] div[role='listitem']` matched three footer help-links and beat
     the rung holding the actual roles. An undated rung is still returned when NO rung is dated, so
-    the probe (and the warning path) can report what the page did render."""
+    the probe (and the warning path) can report what the page did render.
+    """
     fallback: tuple = ([], "")
     for selector in _EXPERIENCE_ENTITY_SELECTORS:
         nodes = source.select(selector) if source else []
@@ -505,7 +514,8 @@ def _is_location_line(line: str) -> bool:
     """Only ever tested on lines BELOW the date range, where LinkedIn puts the location.
 
     Never above it: "Founder, CEO" is a title, and a comma-and-short heuristic applied to a title
-    line would silently delete it."""
+    line would silently delete it.
+    """
     tail = line.rsplit("·", 1)[-1].strip().lower()
     if tail in _WORKPLACE_TYPES:
         return True
@@ -516,7 +526,8 @@ def _is_location_line(line: str) -> bool:
 
 def _is_qualifier_line(line: str) -> bool:
     """Employment type / workplace type / bare duration — sits between a title and its dates, and
-    is never the title itself."""
+    is never the title itself.
+    """
     low = line.lower()
     return (low in _EMPLOYMENT_TYPES or low in _WORKPLACE_TYPES
             or bool(_DURATION_RE.match(line)))
@@ -534,7 +545,8 @@ def _split_skills(blob: str) -> List[str]:
     """"Python · Kubernetes" and "Compliance, AI for Business, +9 skills" are both skill lists.
 
     The live 2026-08-03 render separates them with commas and ends on a "+9 skills" overflow chip;
-    splitting on "·" alone turned the whole line into one nonsense skill."""
+    splitting on "·" alone turned the whole line into one nonsense skill.
+    """
     parts = blob.split("·") if "·" in blob else blob.split(",")
     return [skill for skill in (part.strip() for part in parts)
             if skill and not _SKILL_OVERFLOW_RE.match(skill)]
@@ -604,7 +616,8 @@ def parse_experience_entity(lines: List[str], grouped: bool = False) -> Optional
 
     `grouped` says the entity holds roles as child entities, which is the ONE thing the lines alone
     cannot tell you: a single-role entity reads title-then-company, a one-role group reads
-    company-then-title, and the two are the same three lines in a different order."""
+    company-then-title, and the two are the same three lines in a different order.
+    """
     date_indexes = [i for i, line in enumerate(lines) if _DATE_RANGE_RE.match(line)]
     if not lines or not date_indexes:
         return None
@@ -659,7 +672,8 @@ def _company_header(lines: List[str]) -> str:
     range of its own ("Christopher Queen Consulting" / "9 yrs 6 mos").
 
     The duration is required: without it a bare heading like "Experience" would be read as a company
-    and then attached to every role beneath it."""
+    and then attached to every role beneath it.
+    """
     if not lines or _has_date_range(lines):
         return ""
     if not any(_DURATION_RE.match(line) for line in lines):
@@ -675,7 +689,8 @@ def _company_from_ancestors(node: PageElement, lines: List[str]) -> str:
     The grouped shape puts the company once, above its roles. When the ladder selects the ROLE nodes
     (on the live page they are the `li`s), that name is only in an ancestor's leading lines — the
     text above this role's first line. A leading run that already contains a date range belongs to a
-    previous role, not to a company header, so the walk stops rather than guessing."""
+    previous role, not to a company header, so the walk stops rather than guessing.
+    """
     if not lines:
         return ""
     first = lines[0]
@@ -700,7 +715,8 @@ def _company_from_ancestors(node: PageElement, lines: List[str]) -> str:
 
 def parse_profile_experiences(source) -> List[dict]:
     """Pure parse of a rendered `/details/experience/` page — no Selenium, so it is unit-testable
-    against captured DOM instead of only against a live session."""
+    against captured DOM instead of only against a live session.
+    """
     experiences = []
     nodes, _selector = experience_entity_nodes(source)
     pending_company = ""

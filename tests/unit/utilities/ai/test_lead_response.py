@@ -1,8 +1,10 @@
 """Unit tests for the hot-lead response generator (issue #483) — the approval-gated draft sent to
-someone showing inbound buying intent."""
+someone showing inbound buying intent.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

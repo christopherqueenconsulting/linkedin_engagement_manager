@@ -1,5 +1,4 @@
-"""
-Stripe billing integration.
+"""Stripe billing integration.
 
 Test mode:  set STRIPE_API_KEY=sk_test_... in .env
 Live mode:  set STRIPE_API_KEY=sk_live_... in .env (switch when ready for production)
@@ -282,8 +281,8 @@ def create_avatar_credits_checkout(
                         "product_data": {
                             "name": f"Avatar Training Credits — {pkg['label']}",
                             "description": (
-                                f"Use these credits to train a personalized AI avatar "
-                                f"on Replicate. Each credit = 1 training job."
+                                "Use these credits to train a personalized AI avatar "
+                                "on Replicate. Each credit = 1 training job."
                             ),
                         },
                     },

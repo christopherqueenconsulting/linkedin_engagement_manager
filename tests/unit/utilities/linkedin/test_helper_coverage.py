@@ -2,9 +2,9 @@
 
 import sys
 import types
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from selenium.common.exceptions import WebDriverException
 
 pytestmark = pytest.mark.unit

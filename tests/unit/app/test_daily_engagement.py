@@ -1,9 +1,10 @@
 """Unit tests for the no-post-day standalone commenting run."""
 
-import pytest
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -44,7 +45,8 @@ class TestAutoDailyEngagement:
         """Issue #553 gave the pre-post warm-up its own se_prepost lane by overriding queue= at
         that dispatch site only — the daily loop must keep falling through to the task's own
         se_engage queue, or it would crowd out the deadline-bound warm-ups. The #626 jitter shim
-        sits in front of the dispatch, so check the hop that actually queues the Selenium run."""
+        sits in front of the dispatch, so check the hop that actually queues the Selenium run.
+        """
         from cqc_lem.app.run_scheduler import auto_daily_engagement, dispatch_golden_hour_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
@@ -58,8 +60,9 @@ class TestAutoDailyEngagement:
 
     def test_only_users_whose_slot_is_due_are_dispatched(self):
         """The beat now ticks every 15 minutes (issue #554) — a tick must hand se_engage only the
-        users whose staggered slot came up, not the whole fleet."""
-        from cqc_lem.app.run_scheduler import auto_daily_engagement, STAGGER_GOLDEN_HOUR
+        users whose staggered slot came up, not the whole fleet.
+        """
+        from cqc_lem.app.run_scheduler import STAGGER_GOLDEN_HOUR, auto_daily_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2, 3]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", side_effect=lambda u, *_: u == 2) as due, \
@@ -72,7 +75,8 @@ class TestAutoDailyEngagement:
 
     def test_a_user_without_a_session_does_not_burn_their_slot(self):
         """The claim is once-a-day, so it must not be spent on a user who can't run anyway —
-        connecting later in the day still earns that day's golden-hour run."""
+        connecting later in the day still earns that day's golden-hour run.
+        """
         from cqc_lem.app.run_scheduler import auto_daily_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[9]), \
              patch(f"{_RS}.has_linkedin_session", return_value=False), \
@@ -91,7 +95,7 @@ class TestStaggerDue:
                                at=datetime(2026, 7, 25, 13, 42))
 
     def _run(self, slot, claimed, tz="America/New_York"):
-        from cqc_lem.app.run_scheduler import _stagger_due, STAGGER_GOLDEN_HOUR
+        from cqc_lem.app.run_scheduler import STAGGER_GOLDEN_HOUR, _stagger_due
         with patch(f"{_RS}.get_user_timezone", return_value=tz) as get_tz, \
              patch(f"{_RS}.plan_daily_slot", return_value=slot) as plan, \
              patch(f"{_RS}.claim_daily_slot", return_value=claimed) as claim:
@@ -110,7 +114,8 @@ class TestStaggerDue:
 
     def test_the_claim_is_keyed_to_the_slots_local_date(self):
         """A catch-up claimed late in the day must not still be held at tomorrow's slot — the
-        claim carries the local date rather than relying on a flat sub-day TTL."""
+        claim carries the local date rather than relying on a flat sub-day TTL.
+        """
         _, _, _, claim = self._run(self._slot(), True)
         assert claim.call_args[0][2] == "2026-07-25"
 
@@ -120,7 +125,8 @@ class TestStaggerDue:
 
     def test_missed_tick_catches_up_on_the_next_one(self):
         """Beat (or the 429 breaker) down over the slot → the claim is still free, so the run
-        happens later that day instead of being lost."""
+        happens later that day instead of being lost.
+        """
         result, _, _, _ = self._run(self._slot(in_tick_window=False), True)
         assert result is True
 
@@ -142,7 +148,8 @@ class TestStaggerDue:
 
 class TestStaggeredBeatSchedule:
     """The per-user slot only works if the beat actually ticks at STAGGER_TICK_MINUTES — a
-    once-a-day crontab would fire one arbitrary slot and drop everyone else (issue #554)."""
+    once-a-day crontab would fire one arbitrary slot and drop everyone else (issue #554).
+    """
 
     def _schedule(self):
         from cqc_lem.app.my_celery import app

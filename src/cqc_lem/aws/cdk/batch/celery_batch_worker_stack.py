@@ -1,11 +1,30 @@
 from aws_cdk import (
-    aws_ecs as ecs,
-    aws_logs as logs,
+    CfnOutput,
+    Duration,
+    Size,
+    Stack,
+)
+from aws_cdk import (
     aws_batch as batch,
+)
+from aws_cdk import (
     aws_cloudwatch as cloudwatch,
-    aws_events_targets as targets,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
+    aws_ecs as ecs,
+)
+from aws_cdk import (
     aws_events as events,
-    aws_ec2 as ec2, Size, CfnOutput, Stack, Duration, )
+)
+from aws_cdk import (
+    aws_events_targets as targets,
+)
+from aws_cdk import (
+    aws_logs as logs,
+)
 from constructs import Construct
 
 from cqc_lem.aws.cdk.shared_stack_props import SharedStackProps

@@ -1,17 +1,29 @@
 """Unit tests for the quality-gate reasons the review UI renders (issue #421): every finding carries
 the score it failed on, the threshold it failed against, and a specific remediation; the persisted
-JSON round-trips; and the user's own thresholds override the deploy defaults."""
+JSON round-trips; and the user's own thresholds override the deploy defaults.
+"""
 
 import json
+
 import pytest
 
 pytestmark = pytest.mark.unit
 
 from cqc_lem.utilities.quality_gates import (  # noqa: E402
-    GATE_AUTHENTICITY, GATE_SIMILARITY, GATE_FOCUS, GATE_MISSING_ASSET,
-    AUTHENTICITY_SCORE_MIN_BOUNDS, SIMILARITY_MAX_PCT_BOUNDS,
-    authenticity_finding, similarity_finding, focus_finding, missing_asset_finding,
-    clamp_threshold, parse_gate_findings, demoting_findings)
+    AUTHENTICITY_SCORE_MIN_BOUNDS,
+    GATE_AUTHENTICITY,
+    GATE_FOCUS,
+    GATE_MISSING_ASSET,
+    GATE_SIMILARITY,
+    SIMILARITY_MAX_PCT_BOUNDS,
+    authenticity_finding,
+    clamp_threshold,
+    demoting_findings,
+    focus_finding,
+    missing_asset_finding,
+    parse_gate_findings,
+    similarity_finding,
+)
 
 
 class TestFindings:

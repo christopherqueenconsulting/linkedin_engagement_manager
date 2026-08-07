@@ -1,7 +1,8 @@
 """Unit tests for sweep_reply_comments — the recent-posts reply sweep that replaces the 24h loop."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -58,7 +59,8 @@ class TestSweepReplyComments:
 
     def test_rate_limited_golden_hour_sweep_retries_inside_the_window(self):
         """#401's amplifier lost the whole hour to one transient 429 — the sweep now asks for one
-        more attempt while the window is still open (#622)."""
+        more attempt while the window is still open (#622).
+        """
         from cqc_lem.app.run_automation import sweep_reply_comments
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with patch(f"{_RA}.get_engagement_preferences", return_value={}), \
@@ -119,7 +121,8 @@ class TestGoldenHourReporting:
 
     def test_stale_post_is_not_reported(self):
         """The sweep walks the last couple of days on purpose; only fresh posts say anything about
-        the amplifier's timing, so old ones emit nothing rather than permanent out-of-window noise."""
+        the amplifier's timing, so old ones emit nothing rather than permanent out-of-window noise.
+        """
         from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
         with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(3 * 24 * 60)), \
              patch(f"{_RA}.track_golden_hour_report") as track:
@@ -128,7 +131,8 @@ class TestGoldenHourReporting:
 
     def test_a_routine_revisit_of_an_older_post_is_not_graded(self):
         """Every sweep walks yesterday's post too. Grading those revisits would put a permanent
-        stream of out-of-window readings into the on-time rate — and a WARNING per sweep."""
+        stream of out-of-window readings into the on-time rate — and a WARNING per sweep.
+        """
         from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
         with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(10 * 60)), \
              patch(f"{_RA}.track_golden_hour_report") as track, \
@@ -160,7 +164,8 @@ class TestGoldenHourReporting:
 
     def test_an_unreadable_post_age_never_breaks_the_sweep(self):
         """Measurement must not abort the thing it measures — a DB hiccup on the age read reports
-        an unknown latency instead of killing the sweep mid-post."""
+        an unknown latency instead of killing the sweep mid-post.
+        """
         from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
         with patch(f"{_RA}.get_post_age_minutes", side_effect=RuntimeError("db down")), \
              patch(f"{_RA}.track_golden_hour_report") as track, \
@@ -197,7 +202,8 @@ class TestGoldenHourSweepRetry:
 
     def test_a_sweep_that_could_not_run_reports_why(self):
         """The audit's whole question was "late, rate-limited, or nothing to reply to?" — a sweep
-        that never got a session emits its own report so the silent hour has a cause (#622)."""
+        that never got a session emits its own report so the silent hour has a cause (#622).
+        """
         from cqc_lem.app.run_automation import _retry_golden_hour_sweep
         with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[10]), \
              patch(f"{_RA}.get_post_age_minutes", return_value=self._published(15)), \
@@ -246,23 +252,22 @@ class TestGoldenHourSweepCountdowns:
         assert _golden_hour_sweep_countdowns(3) == [20 * 60, 40 * 60, 60 * 60]
 
     def test_default_matches_module_constant(self):
-        from cqc_lem.app.run_automation import (_golden_hour_sweep_countdowns,
-                                                _GOLDEN_HOUR_REPLY_SWEEPS)
+        from cqc_lem.app.run_automation import _GOLDEN_HOUR_REPLY_SWEEPS, _golden_hour_sweep_countdowns
         assert len(_golden_hour_sweep_countdowns()) == _GOLDEN_HOUR_REPLY_SWEEPS
 
     def test_last_sweep_lands_at_end_of_window(self):
-        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MINUTES
+        from cqc_lem.app.run_automation import _GOLDEN_HOUR_MINUTES, _golden_hour_sweep_countdowns
         for n in (1, 2, 4, 6):
             cds = _golden_hour_sweep_countdowns(n)
             assert cds[-1] == _GOLDEN_HOUR_MINUTES * 60      # last sweep closes the golden hour
             assert cds == sorted(cds) and len(cds) == n       # strictly ordered, right count
 
     def test_non_positive_count_floors_to_one(self):
-        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MINUTES
+        from cqc_lem.app.run_automation import _GOLDEN_HOUR_MINUTES, _golden_hour_sweep_countdowns
         assert _golden_hour_sweep_countdowns(0) == [_GOLDEN_HOUR_MINUTES * 60]
 
     def test_oversized_count_is_clamped(self):
-        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MAX_SWEEPS
+        from cqc_lem.app.run_automation import _GOLDEN_HOUR_MAX_SWEEPS, _golden_hour_sweep_countdowns
         # A misconfigured huge value can't schedule an unbounded number of ETA sweeps.
         assert len(_golden_hour_sweep_countdowns(1000)) == _GOLDEN_HOUR_MAX_SWEEPS
 
@@ -314,7 +319,8 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_load_more_miss_never_warns(self):
         """Issue #1041: the miss IS the expansion loop's exit condition — every sweep ends on one,
-        so warning would escalate to a grouped $exception for working behaviour."""
+        so warning would escalate to a grouped $exception for working behaviour.
+        """
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         driver = MagicMock(); driver.current_url = "x"
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
@@ -333,7 +339,8 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_load_more_expands_until_the_control_is_gone(self):
         """Silencing the miss must not silence the expansion: a rendered control still gets clicked
-        until LinkedIn stops rendering it."""
+        until LinkedIn stops rendering it.
+        """
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         driver = MagicMock(); driver.current_url = "x"
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
@@ -395,9 +402,11 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_bails_when_profile_slug_unresolvable(self):
         """LOOP SAFETY: with no profile slug we can't dedup our own / already-replied comments, so
-        the sweep must skip replying entirely rather than risk duplicate/self replies."""
-        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        the sweep must skip replying entirely rather than risk duplicate/self replies.
+        """
         from unittest.mock import MagicMock
+
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         prof = MagicMock(); prof.profile_url = None; prof.full_name = "Me"
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_RA}.get_post_content", return_value="body"), \
@@ -414,8 +423,9 @@ class TestReplyToCommentsOnOpenPost:
         rep.assert_not_called()
 
     def test_reply_cap_limits_burst(self):
-        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post, _MAX_REPLIES_PER_SWEEP
         from unittest.mock import MagicMock
+
+        from cqc_lem.app.run_automation import _MAX_REPLIES_PER_SWEEP, _reply_to_comments_on_open_post
         boxes = [_FakeComment(f"comment number {i}") for i in range(_MAX_REPLIES_PER_SWEEP + 5)]
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
              patch(f"{_RA}.get_post_content", return_value="body"), \
@@ -440,7 +450,8 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_skips_own_comment(self):
         """A seed or second-wave self-comment must never be treated as a target for a reply;
-        replying to our own comment looks like the user talking to themselves in the activity feed."""
+        replying to our own comment looks like the user talking to themselves in the activity feed.
+        """
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         driver = MagicMock(); driver.current_url = "x"
         own = _FakeComment("Here is my seed comment insight", author="Me Myself",
@@ -461,7 +472,8 @@ class TestReplyToCommentsOnOpenPost:
 
     def test_redis_dedup_prevents_cross_sweep_duplicate(self):
         """Issue #775: even if the DOM no longer shows our previous reply, Redis remembers we already
-        replied to this commenter+text on this post and stops a second reply."""
+        replied to this commenter+text on this post and stops a second reply.
+        """
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         driver = MagicMock(); driver.current_url = "x"
         redis = MagicMock(); redis.get.return_value = b"1"
@@ -532,7 +544,7 @@ class TestFeedFunnelStorage:
         import json
         redis = MagicMock()
         with patch(f"{_RA}._redis_client", return_value=redis):
-            from cqc_lem.app.run_automation import set_feed_funnel, get_feed_funnel
+            from cqc_lem.app.run_automation import get_feed_funnel, set_feed_funnel
             set_feed_funnel(1, {"examined": 5, "commented": 2})
             stored = redis.set.call_args
             assert stored.args[0] == "linkedin:feed_funnel:1"
@@ -549,7 +561,7 @@ class TestFeedFunnelStorage:
 
     def test_no_redis_is_safe(self):
         with patch(f"{_RA}._redis_client", return_value=None):
-            from cqc_lem.app.run_automation import set_feed_funnel, get_feed_funnel
+            from cqc_lem.app.run_automation import get_feed_funnel, set_feed_funnel
             set_feed_funnel(1, {"x": 1})     # must not raise
             assert get_feed_funnel(1) is None
 

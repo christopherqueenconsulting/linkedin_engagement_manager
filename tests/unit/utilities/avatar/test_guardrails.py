@@ -8,11 +8,15 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities.avatar.guardrails import (AVATAR_SURFACE_CAROUSEL,
-                                                 AVATAR_SURFACE_NEWSLETTER,
-                                                 AVATAR_SURFACE_POST_IMAGE, AVATAR_SURFACE_VIDEO,
-                                                 avatar_allowed_for, avatar_is_usable,
-                                                 resolve_avatar_for)
+from cqc_lem.utilities.avatar.guardrails import (
+    AVATAR_SURFACE_CAROUSEL,
+    AVATAR_SURFACE_NEWSLETTER,
+    AVATAR_SURFACE_POST_IMAGE,
+    AVATAR_SURFACE_VIDEO,
+    avatar_allowed_for,
+    avatar_is_usable,
+    resolve_avatar_for,
+)
 
 pytestmark = pytest.mark.unit
 

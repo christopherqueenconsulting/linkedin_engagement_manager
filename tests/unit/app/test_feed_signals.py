@@ -1,7 +1,8 @@
 """Unit tests for feed post recency + social-count extraction."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

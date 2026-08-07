@@ -7,8 +7,9 @@ every credential-touching endpoint refuses — with a 403 the SPA can react to, 
 would log the user out — until this session has proved a factor.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -31,6 +32,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -99,7 +101,8 @@ class TestPinDemotion:
 
     def test_the_mailbox_is_still_recorded_as_verified(self, client):
         """The PIN stops being a key but it is still proof the address was reached — 2b's
-        `email_verified_at` has to keep meaning that."""
+        `email_verified_at` has to keep meaning that.
+        """
         with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.get_pin_lockout", return_value=None), \
              patch(f"{_M}.hash_pin", return_value="h"), \
@@ -114,7 +117,8 @@ class TestPinDemotion:
 
     def test_the_no_mail_provider_bypass_is_gated_too(self, client):
         """The weakest way in skips the PIN entirely — leaving it ungated would be a hole straight
-        through 2c on any deployment with mail unconfigured."""
+        through 2c on any deployment with mail unconfigured.
+        """
         with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
              patch(f"{_M}.get_user_id", return_value=_UID), \
              patch(f"{_M}.send_pin_email", return_value=(True, True)), \
@@ -153,7 +157,8 @@ class TestSecondFactor:
 
     def test_a_recovery_code_signs_in_but_does_not_unlock_the_credentials(self, client):
         """Design §6.8: a recovery code gets you back in to enrol a factor. If it also stepped the
-        session up, a found sheet of codes would be a stolen LinkedIn session."""
+        session up, a found sheet of codes would be a stolen LinkedIn session.
+        """
         with self._pending(), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.get_user_email", return_value=_EMAIL), \
@@ -172,7 +177,8 @@ class TestSecondFactor:
 
     def test_a_replayed_pending_token_is_refused(self, client):
         """The handle is claimed by an UPDATE with `consumed_at IS NULL`, so a spent one finds
-        nothing — one bootstrapped login cannot become two sessions."""
+        nothing — one bootstrapped login cannot become two sessions.
+        """
         with patch(f"{_M}.claim_auth_challenge_attempt", return_value=None), \
              patch(f"{_M}.create_session") as create_session:
             resp = client.post("/api/auth/second-factor/verify",
@@ -194,7 +200,8 @@ class TestSecondFactor:
     def test_a_mistyped_code_does_not_end_the_sign_in(self, client):
         """The failure mode this replaced: consuming the handle on first touch meant one wrong
         digit killed the login, and the only way back was the whole email round trip again. 401
-        (not 400) is what tells the SPA to leave the user on the code field."""
+        (not 400) is what tells the SPA to leave the user on the code field.
+        """
         with self._pending(attempts=1), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.get_user_email", return_value=_EMAIL), \
@@ -207,7 +214,8 @@ class TestSecondFactor:
 
     def test_the_last_allowed_attempt_burns_the_handle(self, client):
         """Guessing is bounded in MySQL, not only in Redis — the rate limiter in front of this
-        fails open, so it cannot be the thing that stops a 6-digit space being walked."""
+        fails open, so it cannot be the thing that stops a 6-digit space being walked.
+        """
         with self._pending(attempts=5), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.get_user_email", return_value=_EMAIL), \
@@ -267,7 +275,8 @@ class TestPasskeyLogin:
 
     def test_a_verified_assertion_mints_a_session_already_stepped_up(self, client):
         """The one login path that is phishing-resistant end to end. Asking the user to prove the
-        same factor again before they can paste a cookie would be theatre."""
+        same factor again before they can paste a cookie would be theatre.
+        """
         with patch(f"{_M}.webauthn_relying_party"), \
              patch(f"{_M}.consume_auth_challenge", return_value={"user_id": None,
                                                                  "challenge": "chal"}), \
@@ -327,7 +336,8 @@ class TestPasskeyLogin:
 class TestEnrollment:
     def test_the_first_factor_needs_a_session_but_not_step_up(self, client):
         """An account with nothing enrolled has nothing to prove with — gating the first factor
-        would mean no account could ever get one."""
+        would mean no account could ever get one.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.step_up_satisfied", return_value=False), \
              patch(f"{_M}.webauthn_relying_party"), \
@@ -348,7 +358,8 @@ class TestEnrollment:
     def test_adding_a_SECOND_factor_is_step_up_gated(self, client, path, body):
         """The escalation this closes: enrolling stamps the session as verified, so an ungated
         enrolment hands a stolen session a step-up it never proved — add your own passkey, then
-        walk into the LinkedIn credentials with it (threat T4)."""
+        walk into the LinkedIn credentials with it (threat T4).
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.enrollment_allowed", return_value=False), \
              patch(f"{_M}.available_methods", return_value=["passkey"]), \
@@ -365,7 +376,8 @@ class TestEnrollment:
 
     def test_a_recovery_code_session_may_still_enrol_a_replacement(self, client):
         """The anti-lockout half (design §6.8): the one person who cannot prove a factor is the
-        one who lost it, and a recovery code is how they get back to enrol another."""
+        one who lost it, and a recovery code is how they get back to enrol another.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.enrollment_allowed", return_value=True), \
              patch(f"{_M}.session_signed_in_with_recovery_code", return_value=True), \
@@ -380,7 +392,8 @@ class TestEnrollment:
     def test_a_recovery_code_session_is_not_stepped_up_by_enrolling(self, client):
         """Otherwise a found sheet of codes IS a LinkedIn session: sign in, enrol, get stamped,
         read the cookie. It runs the ordinary step-up with the new factor instead — one touch, and
-        an audited one."""
+        an audited one.
+        """
         class _Result:
             credential_id = "cred"
             public_key = "pk"
@@ -402,7 +415,8 @@ class TestEnrollment:
 
     def test_a_second_authenticator_app_is_refused(self, client):
         """A second confirmed TOTP row would count towards has_strong_factor and show on the
-        Security card while only the newer seed's codes were ever checked."""
+        Security card while only the newer seed's codes were ever checked.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.has_confirmed_totp", return_value=True), \
              patch(f"{_M}.begin_totp_enrollment") as began:
@@ -423,7 +437,8 @@ class TestEnrollment:
 
     def test_a_verified_registration_steps_the_session_up(self, client):
         """The ceremony IS a fresh proof of possession — otherwise a user who just touched their
-        sensor would be asked to touch it again to save recovery codes."""
+        sensor would be asked to touch it again to save recovery codes.
+        """
         class _Result:
             credential_id = "cred"
             public_key = "pk"
@@ -484,7 +499,8 @@ class TestEnrollment:
 
     def test_regenerating_recovery_codes_is_step_up_gated(self, client):
         """A new sheet silently invalidates the old one — an attacker could otherwise lock the real
-        owner out of their own recovery path without touching a factor."""
+        owner out of their own recovery path without touching a factor.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.step_up_satisfied", return_value=False), \
              patch(f"{_M}.available_methods", return_value=["totp"]), \
@@ -538,7 +554,8 @@ class TestStepUpGate:
     def test_the_refusal_is_403_not_401(self, client):
         """The SPA's axios interceptor treats ANY 401 as a dead session — it clears the cookie
         sentinel and redirects. Answering "prove it's you" with a 401 would log the user out
-        instead of asking them anything."""
+        instead of asking them anything.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.step_up_satisfied", return_value=False), \
              patch(f"{_M}.available_methods", return_value=[]):
@@ -557,7 +574,8 @@ class TestStepUpGate:
 
     def test_only_the_cookie_endpoint_accepts_the_extension_scope(self, client):
         """A stolen extension token must not be able to change the email address or revoke every
-        device — the scope exemption is opt-in per call site, and only one site opts in."""
+        device — the scope exemption is opt-in per call site, and only one site opts in.
+        """
         seen: dict[str, bool] = {}
 
         def record(user_id, token, extension_scope_ok=False):
@@ -601,7 +619,8 @@ class TestStepUpVerify:
 
     def test_a_recovery_code_never_steps_a_session_up(self, client):
         """It gets you back INTO the account; it must not by itself unlock the LinkedIn
-        credentials, or a stolen recovery sheet is a stolen LinkedIn session."""
+        credentials, or a stolen recovery sheet is a stolen LinkedIn session.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.get_user_email", return_value=_EMAIL), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
@@ -667,7 +686,8 @@ class TestStepUpVerify:
 
 class TestSessionRequired:
     """Every 2c endpoint that acts on an account needs a live session first. Cheap to get wrong on
-    a new endpoint, and getting it wrong means an unauthenticated caller enrolling a factor."""
+    a new endpoint, and getting it wrong means an unauthenticated caller enrolling a factor.
+    """
 
     ENDPOINTS = [
         ("post", "/api/user/passkeys/register/begin", {}),
@@ -754,7 +774,8 @@ class TestFailedWrites:
 
     def test_a_pin_that_cannot_open_a_pending_login_does_not_fall_back_to_a_session(self, client):
         """If the handle cannot be stored the login must fail — quietly minting a session instead
-        would turn a storage error into a bypass of the second factor."""
+        would turn a storage error into a bypass of the second factor.
+        """
         with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.get_pin_lockout", return_value=None), \
              patch(f"{_M}.hash_pin", return_value="h"), \
@@ -829,12 +850,14 @@ class TestFactorSummaryEndpoint:
 
 class TestTwoStageLoginSeams:
     """A login that used to be one request is now two, and the two share a rate-limit bucket, an
-    audit trail and a session stamp. Each test here is a way that seam can leak."""
+    audit trail and a session stamp. Each test here is a way that seam can leak.
+    """
 
     def test_a_correct_pin_clears_the_limiter_before_handing_over_to_the_factor(self, client):
         """Without this the user's own earlier PIN typos throttle the passkey/TOTP prompt they are
         about to answer correctly — self-inflicted lockout on the one path that has no way around
-        it."""
+        it.
+        """
         with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.get_pin_lockout", return_value=None), \
              patch(f"{_M}.hash_pin", return_value="h"), \
@@ -853,7 +876,8 @@ class TestTwoStageLoginSeams:
         """The mirror image, and the reason the two branches differ: nothing is proved on the
         bypass — no PIN is ever typed — so there are no legitimate typo counters to forgive, and
         clearing them would let an unauthenticated caller reset every limiter in front of the
-        second factor once per request."""
+        second factor once per request.
+        """
         with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
              patch(f"{_M}.get_user_id", return_value=_UID), \
              patch(f"{_M}.send_pin_email", return_value=(True, True)), \
@@ -874,7 +898,8 @@ class TestSecondFactorBudget:
     """`auth_challenges.attempts` bounds ONE pending login. Re-running the stage in front of it
     mints a new handle and a new counter for free, and both ways in are inside the threat model —
     the no-mail-provider bypass proves nothing, and a compromised mailbox (T2) mints PINs at will.
-    So the budget has to be counted per ACCOUNT and carried into the new handle."""
+    So the budget has to be counted per ACCOUNT and carried into the new handle.
+    """
 
     def _pin_login(self, client, spent: int):
         with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
@@ -896,14 +921,16 @@ class TestSecondFactorBudget:
 
     def test_a_spent_budget_refuses_to_issue_another_handle(self, client):
         """Five guesses per round with unlimited rounds walks a 6-digit space. The 429 is what
-        makes the round cost something."""
+        makes the round cost something.
+        """
         resp, challenge = self._pin_login(client, spent=5)
         assert resp.status_code == 429
         challenge.assert_not_called()
 
     def test_an_unreadable_budget_fails_closed(self, client):
         """count_challenge_attempts returns -1 when the DB will not answer. A bound that reads as
-        empty exactly when the database is unhappy is not a bound."""
+        empty exactly when the database is unhappy is not a bound.
+        """
         resp, challenge = self._pin_login(client, spent=-1)
         assert resp.status_code == 429
         challenge.assert_not_called()
@@ -923,7 +950,8 @@ class TestSecondFactorBudget:
 
     def test_a_correct_code_clears_the_account_budget(self, client):
         """A correct code is the proof that clears it — otherwise one earlier typo follows the user
-        into their next sign-in."""
+        into their next sign-in.
+        """
         with patch(f"{_M}.claim_auth_challenge_attempt",
                    return_value={"user_id": _UID, "challenge": None, "attempts": 3}), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
@@ -959,7 +987,8 @@ class TestSecondFactorBudget:
 
     def test_a_duplicate_passkey_is_not_a_cross_account_oracle(self, client):
         """Credential ids are globally unique, so "already registered" would tell this caller a
-        passkey they hold is enrolled on somebody ELSE's account."""
+        passkey they hold is enrolled on somebody ELSE's account.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
              patch(f"{_M}.consume_auth_challenge",
@@ -976,7 +1005,8 @@ class TestSecondFactorBudget:
 
     def test_a_verified_step_up_that_does_not_stamp_is_a_500_not_a_silent_loop(self, client):
         """A 200 with no stamp means the very next write asks again, forever, with nothing logged
-        anywhere — the failure mode is invisible, so it has to be loud."""
+        anywhere — the failure mode is invisible, so it has to be loud.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.get_user_email", return_value=_EMAIL), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
@@ -988,7 +1018,8 @@ class TestSecondFactorBudget:
 
     def test_an_account_with_no_email_still_gets_its_own_limiter_bucket(self, client):
         """A blank identity is skipped by the limiter, so falling back to "" would leave these
-        accounts unlimited at step-up."""
+        accounts unlimited at step-up.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.get_user_email", return_value=None), \
              patch(f"{_M}.check_auth_verify", return_value=_Allowed()) as limiter, \
@@ -1000,7 +1031,8 @@ class TestSecondFactorBudget:
 
     def test_a_denied_step_up_audits_the_client_that_was_refused(self, client):
         """STEP_UP_DENIED is the row that most often means someone else is holding this session —
-        without ip/user-agent on it there is nothing to chase."""
+        without ip/user-agent on it there is nothing to chase.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.step_up_satisfied", return_value=False), \
              patch(f"{_M}.available_methods", return_value=["passkey"]), \

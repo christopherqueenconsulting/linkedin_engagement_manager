@@ -237,7 +237,7 @@ class TestEveryLaneIsGated:
 
     @pytest.mark.parametrize("lane_label", ["agent:depfix", "agent:phasefix", "agent:revise"])
     def test_each_pr_lane_calls_pr_admissible_with_its_own_label(self, lane_label):
-        assert f'pr_admissible "$' in SOURCE
+        assert 'pr_admissible "$' in SOURCE
         assert f'"{lane_label}"' in SOURCE
 
     def test_the_merge_fast_path_is_gated(self):
@@ -267,7 +267,8 @@ class TestEveryLaneIsGated:
 
 class TestRunbookFramesUntrustedText:
     """The agent fetches the issue itself (`gh issue view`), so there is no prompt string to
-    sanitize — the framing has to live in the runbook it reads first."""
+    sanitize — the framing has to live in the runbook it reads first.
+    """
 
     RUNBOOK = (Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline"
                / "RUNBOOK.md").read_text(encoding="utf-8")
@@ -452,7 +453,8 @@ class TestPaginationDoesNotBreakLabelProvenance:
 
 class TestEmptyQueueExplainsItself:
     """"Pipeline idle" and "every candidate was excluded" were the same log line. That is the
-    failure the reaper's own header warns about — silence looking identical to done."""
+    failure the reaper's own header warns about — silence looking identical to done.
+    """
 
     def test_the_diagnostic_exists_and_is_called_on_the_idle_path(self):
         assert "explain_empty_queue() {" in SOURCE

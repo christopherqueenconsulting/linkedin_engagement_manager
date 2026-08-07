@@ -79,7 +79,8 @@ class TestRoundTrip:
 
 class TestRowBinding:
     """AAD binds the ciphertext to (column, user, key version) — the property that stops an
-    attacker with MySQL WRITE access from grafting one user's LinkedIn session onto another."""
+    attacker with MySQL WRITE access from grafting one user's LinkedIn session onto another.
+    """
 
     def test_other_users_row_cannot_decrypt_it(self, keyed):
         blob = encrypt_secret("victim-li-at", 7, FIELD)
@@ -168,7 +169,8 @@ class TestFailClosedMode:
 
     def test_missing_user_id_raises_rather_than_writing_plaintext(self, keyed, monkeypatch):
         """An unbindable row is the other way plaintext could reach MySQL in fail-closed mode —
-        a cookie stored for an email with no user row would otherwise land in the clear."""
+        a cookie stored for an email with no user row would otherwise land in the clear.
+        """
         monkeypatch.setenv("ENCRYPTION_REQUIRED", "true")
         with pytest.raises(SecretEncryptionError):
             encrypt_secret("orphan-cookie", None, FIELD)
@@ -199,7 +201,8 @@ class TestRotation:
     def test_previous_key_never_takes_the_current_version_slot(self, keyed, monkeypatch):
         """A misconfigured rotation that leaves both keys claiming one version must not seal NEW
         writes under the OLD key: needs_reencrypt() would call them current, and removing
-        LEM_SECRET_KEY_PREVIOUS would then make every one of them undecryptable forever."""
+        LEM_SECRET_KEY_PREVIOUS would then make every one of them undecryptable forever.
+        """
         monkeypatch.setenv("LEM_SECRET_KEY", KEY_B)
         monkeypatch.setenv("LEM_SECRET_KEY_VERSION", "1")
         monkeypatch.setenv("LEM_SECRET_KEY_PREVIOUS", KEY_A)
@@ -248,7 +251,8 @@ class TestIsEncrypted:
 
 def test_master_key_is_read_at_call_time_not_import_time():
     """A key rotation lands on worker restart without a code change — and tests can set it
-    per-case — only because the keyring is read from os.environ on every call."""
+    per-case — only because the keyring is read from os.environ on every call.
+    """
     with patch.dict(os.environ, {"LEM_SECRET_KEY": KEY_A, "LEM_SECRET_KEY_VERSION": "1"},
                     clear=False):
         assert encryption_enabled()

@@ -1,6 +1,7 @@
 """Unit tests for the 70/20/10 content-mix governor and the artifact-CTA policy (issue #618):
 the deterministic class assignment, the mix directive injected into post prompts, the meeting-ask
-detector + deterministic repair, and the compliance summary the analytics dashboard renders."""
+detector + deterministic repair, and the compliance summary the analytics dashboard renders.
+"""
 
 from collections import Counter
 
@@ -20,13 +21,13 @@ class TestAssignContentMix:
 
     def test_thirty_day_plan_promo_within_ten_percent(self):
         """The acceptance criterion: a 30-day plan is at most 10% promo."""
-        from cqc_lem.utilities.ai.content_alignment import assign_content_mix, PROMO_MAX_RATIO
+        from cqc_lem.utilities.ai.content_alignment import PROMO_MAX_RATIO, assign_content_mix
         mixes = assign_content_mix(30)
         assert mixes.count("promo") / len(mixes) <= PROMO_MAX_RATIO
 
     @pytest.mark.parametrize("count", [1, 5, 7, 9, 12, 28, 31, 60])
     def test_promo_never_exceeds_the_ceiling_for_any_plan_length(self, count):
-        from cqc_lem.utilities.ai.content_alignment import assign_content_mix, PROMO_MAX_RATIO
+        from cqc_lem.utilities.ai.content_alignment import PROMO_MAX_RATIO, assign_content_mix
         mixes = assign_content_mix(count)
         assert len(mixes) == count
         assert mixes.count("promo") / count <= PROMO_MAX_RATIO
@@ -38,7 +39,8 @@ class TestAssignContentMix:
 
     def test_offset_continues_the_cadence_across_plans(self):
         """A second plan must not restart the rotation — that could place two promo posts back to
-        back across the plan boundary."""
+        back across the plan boundary.
+        """
         from cqc_lem.utilities.ai.content_alignment import assign_content_mix
         first = assign_content_mix(12)
         second = assign_content_mix(12, offset=12)
@@ -189,8 +191,7 @@ class TestReplaceMeetingAskCta:
               "Want the same? Book a call with me this week.")
 
     def test_routes_to_the_lead_magnet_when_configured(self):
-        from cqc_lem.utilities.ai.content_alignment import (contains_meeting_ask,
-                                                            replace_meeting_ask_cta)
+        from cqc_lem.utilities.ai.content_alignment import contains_meeting_ask, replace_meeting_ask_cta
         out = replace_meeting_ask_cta(self._DRAFT, lead_magnet=_LM, post_id=3)
         assert contains_meeting_ask(out) is False
         assert "AUDIT" in out and "comment" in out.lower()
@@ -202,8 +203,7 @@ class TestReplaceMeetingAskCta:
         assert "The Retention Brief" in out and "subscribe" in out.lower()
 
     def test_drops_the_ask_when_the_user_has_no_artifact(self):
-        from cqc_lem.utilities.ai.content_alignment import (contains_meeting_ask,
-                                                            replace_meeting_ask_cta)
+        from cqc_lem.utilities.ai.content_alignment import contains_meeting_ask, replace_meeting_ask_cta
         out = replace_meeting_ask_cta(self._DRAFT)
         assert contains_meeting_ask(out) is False
         assert "subscribe" not in out.lower() and "comment" not in out.lower()

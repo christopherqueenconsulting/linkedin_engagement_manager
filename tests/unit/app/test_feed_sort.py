@@ -1,9 +1,11 @@
 """Unit tests for the feed 'Recent' sort — issue #569 (`Error during feed sort` paging 11x/24h)
-and issue #817 (a silent miss let the recency-dominant scorer rank the algorithmic feed)."""
+and issue #817 (a silent miss let the recency-dominant scorer rank the algorithmic feed).
+"""
 
-import pytest
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -41,7 +43,8 @@ class TestSwitchFeedToRecent:
 
         #817 keeps that guarantee by a stronger mechanism than #872's `warn_on_miss=False`: the
         surface is rejected BEFORE the lookup, so there is no miss to warn about, and none of the
-        wall clock a lookup costs on a surface that never had the control."""
+        wall clock a lookup costs on a surface that never had the control.
+        """
         from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/groups/12345/"
@@ -53,7 +56,8 @@ class TestSwitchFeedToRecent:
     def test_missing_sort_control_still_warns_on_the_home_feed(self):
         """The home feed DOES render the control — silencing the miss there would hide the selector
         rot that leaves the recency-dominant engine reading a 'Top' feed. `find_first` warns on a
-        miss by default, so the home feed is the one surface where the lookup actually runs."""
+        miss by default, so the home feed is the one surface where the lookup actually runs.
+        """
         from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/"
@@ -67,7 +71,8 @@ class TestSwitchFeedToRecent:
     def test_unreadable_url_does_not_warn(self):
         """A dead session can't say which surface it was on — never escalate on a guess (#872).
         The URL read must not raise out of `_is_home_feed` either, or the outer handler logs
-        `Feed recent-sort failed` at WARNING and files the defect by the other door."""
+        `Feed recent-sort failed` at WARNING and files the defect by the other door.
+        """
         from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
 
         class _DeadSession:
@@ -103,7 +108,8 @@ class TestSwitchFeedToRecent:
 
     def test_unverified_flip_is_never_reported_as_sorted(self):
         """The control re-renders unreadable after the click: 'we could not tell' must not be
-        recorded as 'recent', or #622's effect gets measured against runs that never sorted."""
+        recorded as 'recent', or #622's effect gets measured against runs that never sorted.
+        """
         from cqc_lem.app.run_automation import FEED_SORT_UNKNOWN, _switch_feed_to_recent
         with patch(f"{_MOD}.find_first",
                    side_effect=[_control("Sort by: Top"), _control("Recent"), None]), \
@@ -132,7 +138,8 @@ class TestSwitchFeedToRecent:
     def test_a_label_naming_both_sorts_is_not_read_as_already_recent(self):
         """A trigger that spells its OPTIONS into the accessible name mentions 'Recent' while the
         feed is still on Top. Reading that as sorted would skip the flip AND record the run as
-        recency-sorted — both halves of the lie #817 exists to stop, in one label."""
+        recency-sorted — both halves of the lie #817 exists to stop, in one label.
+        """
         from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
         ambiguous = MagicMock()
         ambiguous.text = ""
@@ -160,7 +167,8 @@ class TestSwitchFeedToRecent:
 
     def test_group_feed_is_an_expected_no_op_not_a_warning(self):
         """A group feed reuses the commenting engine but never had a home-feed sort control, so a
-        miss there is working behaviour — warning on it would file a defect for it (#817)."""
+        miss there is working behaviour — warning on it would file a defect for it (#817).
+        """
         from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
         driver = _driver("https://www.linkedin.com/groups/12345/")
         with patch(f"{_MOD}.find_first") as find_first, \
@@ -223,7 +231,8 @@ class TestIsHomeFeed:
 
 class TestScanRecordsTheSortItRanAgainst:
     """#817's second acceptance criterion: a miss is RECORDED, not just logged. Without this the
-    funnel and the feed_scan series cannot tell a recency-sorted scan from an algorithmic one."""
+    funnel and the feed_scan series cannot tell a recency-sorted scan from an algorithmic one.
+    """
 
     @staticmethod
     def _scan(sort_state):

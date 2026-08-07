@@ -10,14 +10,14 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from cqc_lem.utilities.db import (
-    get_user_email,
     get_linkedin_session_email_sent_at,
+    get_user_email,
     set_linkedin_session_email_sent_at,
 )
 from cqc_lem.utilities.email import (
     send_connect_linkedin_email,
-    send_session_revalidation_email,
     send_newsletter_draft_ready_email,
+    send_session_revalidation_email,
 )
 from cqc_lem.utilities.logger import log_info, log_warning, myprint
 
@@ -25,7 +25,8 @@ from cqc_lem.utilities.logger import log_info, log_warning, myprint
 def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
     """Email the user to connect (revalidation=False) or reconnect (True) their LinkedIn
     session. Throttled per LINKEDIN_SESSION_EMAIL_THROTTLE_DAYS (default 7). Returns True
-    only if an email was actually sent."""
+    only if an email was actually sent.
+    """
     throttle_days = int(os.getenv("LINKEDIN_SESSION_EMAIL_THROTTLE_DAYS", "7"))
     last = get_linkedin_session_email_sent_at(user_id)
     if last and throttle_days > 0:
@@ -57,7 +58,8 @@ def notify_linkedin_token_expiring(user_id: int, days_remaining: Optional[int] =
     #600). Throttled per-user to LINKEDIN_TOKEN_EMAIL_THROTTLE_DAYS (default 7) through Redis, so
     the daily renewal beat can run every day without spamming. **Fails open**: the reported bug was
     an expiry warning in the SPA with no email behind it, so a Redis outage degrades to at most one
-    email a day rather than to silence. Returns True only if an email was actually sent."""
+    email a day rather than to silence. Returns True only if an email was actually sent.
+    """
     throttle_days = int(os.getenv("LINKEDIN_TOKEN_EMAIL_THROTTLE_DAYS", "7"))
     key = TOKEN_EXPIRY_EMAIL_KEY.format(user_id=user_id)
     claimed_client = None
@@ -101,7 +103,8 @@ def notify_linkedin_token_expiring(user_id: int, days_remaining: Optional[int] =
 def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
     """Email a stalled user their next-best activation nudge (issue #500). Throttling is the caller's
     job — each nudge is one-shot per user via the onboarding_nudges ledger. Returns True only if an
-    email was actually sent."""
+    email was actually sent.
+    """
     try:
         email = get_user_email(user_id)
         if not email:
@@ -129,7 +132,8 @@ def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
 
 def notify_survey_prompt(user_id: int, survey: dict) -> bool:
     """Email an NPS/review invite (issue #501). One-shot per survey is the caller's job (the
-    survey_prompts ledger). Returns True only if an email was actually sent."""
+    survey_prompts ledger). Returns True only if an email was actually sent.
+    """
     try:
         email = get_user_email(user_id)
         if not email:
@@ -158,7 +162,8 @@ def notify_survey_prompt(user_id: int, survey: dict) -> bool:
 def notify_shipped_fix(user_id: int, changelog_line: str, issue_number: int) -> bool:
     """Email a reporter that their fix shipped (issue #502). "Notified once" is the caller's job —
     the shipped_notice_recipients PK — so this stays a pure send. Returns True only if an email
-    actually went out; a False keeps the reporter in the queue for the next pass."""
+    actually went out; a False keeps the reporter in the queue for the next pass.
+    """
     try:
         email = get_user_email(user_id)
         if not email:
@@ -180,7 +185,8 @@ def notify_shipped_fix(user_id: int, changelog_line: str, issue_number: int) -> 
 def notify_faq_answer(user_id: int, question: str, answer: str) -> bool:
     """Send an asker the answer the auto-FAQ pass wrote for their question (issue #507). "Answered
     once" is the caller's job (the feedback row moves to `resolved`), so this stays a pure send.
-    Returns True only if an email actually went out."""
+    Returns True only if an email actually went out.
+    """
     try:
         email = get_user_email(user_id)
         if not email:
@@ -199,7 +205,8 @@ def notify_faq_answer(user_id: int, question: str, answer: str) -> bool:
 def notify_content_generation_ready(user_id: int, ready_count: int, failed_count: int = 0) -> bool:
     """Email the user that their weekly content finished generating (issue #545). Sent once per
     run by the generation task — no throttling ledger, the run itself is the trigger. Non-fatal:
-    returns True only if an email was actually sent."""
+    returns True only if an email was actually sent.
+    """
     try:
         if ready_count <= 0:
             return False
@@ -222,7 +229,8 @@ def notify_suppression_tripwire(user_id: int, reason: str) -> bool:
     """Email the user that the suppression tripwire paused their engagement automation (issue #629).
     No throttling ledger: the trip itself is one-shot per user until a human re-enables, so the task
     only ever calls this on the transition into a tripped state. Non-fatal — a failed send must not
-    undo the pause, which is the part that actually protects the account."""
+    undo the pause, which is the part that actually protects the account.
+    """
     try:
         email = get_user_email(user_id)
         if not email:
@@ -241,7 +249,8 @@ def notify_suppression_tripwire(user_id: int, reason: str) -> bool:
 
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
-    Non-fatal — returns True only if an email was actually sent."""
+    Non-fatal — returns True only if an email was actually sent.
+    """
     try:
         email = get_user_email(user_id)
         if not email:

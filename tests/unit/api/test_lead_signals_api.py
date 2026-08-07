@@ -1,8 +1,10 @@
 """Unit tests for the leads-inbox API endpoints (issue #483) — listing, editing a draft, dismissing,
-and the approval gate that is the ONLY thing that dispatches a response."""
+and the approval gate that is the ONLY thing that dispatches a response.
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -22,6 +24,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -50,7 +53,7 @@ class TestListLeadSignals:
 
     def test_requires_a_session(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get(f"/api/lead_signals?session_token=bad")
+            resp = client.get("/api/lead_signals?session_token=bad")
         assert resp.status_code == 401
 
 

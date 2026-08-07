@@ -1,11 +1,12 @@
 """Deep coverage tests for run_content_plan generation paths: carousel content,
 create_text_post routing/refinement/shape persistence, premium video tiers, and
-regenerate task wrappers."""
+regenerate task wrappers.
+"""
 
 import os
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -445,6 +446,7 @@ class TestGetMainBlogUrlNonWordpressFallbacks:
 
     def test_generic_request_error_falls_back_to_scraping(self):
         import requests
+
         from cqc_lem.app.run_content_plan import get_main_blog_url_content
         session = MagicMock()
         session.get.side_effect = requests.exceptions.RequestException("odd failure")
@@ -458,6 +460,7 @@ class TestGetMainBlogUrlNonWordpressFallbacks:
 class TestScrapeRecentPostsErrorPath:
     def test_request_exception_returns_empty(self):
         import requests
+
         from cqc_lem.app.run_content_plan import scrape_recent_posts
         with patch(f"{_RCP}.fetch_content",
                    side_effect=requests.exceptions.RequestException("net down")):

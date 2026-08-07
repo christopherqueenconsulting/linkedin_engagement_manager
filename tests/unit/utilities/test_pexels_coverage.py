@@ -1,7 +1,8 @@
 """Coverage tests for pexels_helper video search/download and photo helpers."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

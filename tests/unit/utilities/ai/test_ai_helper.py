@@ -1,8 +1,9 @@
 """Unit tests for AI helper utilities."""
 
 import json
+from unittest.mock import MagicMock, call, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, call
 
 
 @pytest.mark.unit
@@ -97,7 +98,7 @@ class TestSummarizeRecentActivity:
     def test_calls_api_for_profiles_with_activities(self, mock_openai_client, sample_linkedin_profile):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
             from cqc_lem.utilities.ai.ai_helper import summarize_recent_activity
-            from cqc_lem.utilities.linkedin.profile import LinkedInProfile, LinkedInActivity
+            from cqc_lem.utilities.linkedin.profile import LinkedInActivity, LinkedInProfile
 
             main_profile = LinkedInProfile(**sample_linkedin_profile)
             active_data = {
@@ -478,7 +479,8 @@ class TestAiCheckMessageHistory:
 @pytest.mark.unit
 class TestGenerateCarouselContent:
     """Tests for generate_carousel_content(). The function lazy-imports db and selenium helpers
-    inside its body, so we patch those at their source module paths."""
+    inside its body, so we patch those at their source module paths.
+    """
 
     def _make_carousel_response(self, mock_client, post_text="Check this out!", carousel=None):
         if carousel is None:

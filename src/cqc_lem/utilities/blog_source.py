@@ -64,8 +64,7 @@ def _from_sitemap(sitemap_url: str, user_id: int) -> "tuple[str, bool]":
     resolves per edition, so a deterministic pick would hand every edition queued in one run the
     same page — exactly what the blog path already avoids by choosing its article at random.
     """
-    from cqc_lem.app.run_content_plan import (extract_page_content, fetch_sitemap_urls,
-                                              filter_relevant_urls)
+    from cqc_lem.app.run_content_plan import extract_page_content, fetch_sitemap_urls, filter_relevant_urls
     try:
         urls = list(filter_relevant_urls(fetch_sitemap_urls(sitemap_url) or []))
     except Exception as e:

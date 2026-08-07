@@ -1,12 +1,8 @@
-from aws_cdk import (
-    NestedStack,
-    aws_ec2 as ec2,
-    aws_servicediscovery as servicediscovery,
-    aws_ecs as ecs,
-    aws_elasticloadbalancingv2 as elbv2,
-    CfnOutput
-
-)
+from aws_cdk import CfnOutput, NestedStack
+from aws_cdk import aws_ec2 as ec2
+from aws_cdk import aws_ecs as ecs
+from aws_cdk import aws_elasticloadbalancingv2 as elbv2
+from aws_cdk import aws_servicediscovery as servicediscovery
 from constructs import Construct
 
 from cqc_lem.aws.cdk.shared_stack_props import SharedStackProps

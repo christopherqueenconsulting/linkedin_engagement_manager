@@ -1,5 +1,6 @@
 """Unit tests for scripts/posthog_provision.py — the Health/Growth specs, the funnels, the alert
-thresholds, the weekly subscription and the create/update planner (issue #650)."""
+thresholds, the weekly subscription and the create/update planner (issue #650).
+"""
 
 import importlib.util
 import pathlib

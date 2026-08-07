@@ -5,8 +5,9 @@ generate_carousel_content → create_carousel_slide_images → update_db_post_ca
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def _make_ai_response(payload: dict) -> MagicMock:

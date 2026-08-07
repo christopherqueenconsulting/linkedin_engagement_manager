@@ -1,7 +1,8 @@
 """Unit tests for the SDUI inline reply helpers in run_automation."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -16,7 +17,8 @@ def _no_sleep():
 
 def _wait():
     """Minimal WebDriverWait stand-in so a real `find_first` can run: poll once, TimeoutException on
-    a falsy result (what a total selector miss looks like to it)."""
+    a falsy result (what a total selector miss looks like to it).
+    """
     from selenium.common import TimeoutException
     w = MagicMock()
 
@@ -56,7 +58,8 @@ def _driver(*boxes):
 class TestReplyComposerForComment:
     """Issue #883. The composer lookup was page-wide, so the first VISIBLE role=textbox in document
     order won — the post's main 'Add a comment' box (the reply then posts as a standalone comment),
-    or one left mounted by a comment already answered earlier in the same sweep."""
+    or one left mounted by a comment already answered earlier in the same sweep.
+    """
 
     def test_prefers_the_composer_nested_in_this_comment(self):
         from cqc_lem.app import run_automation as ra
@@ -232,7 +235,8 @@ class TestReplyInline:
 
 def _thread_comment(y, height=120, composers=()):
     """`_reply_under_comment_inline`'s comment: a rendered container that also answers the Reply
-    button lookup (`button[aria-label='Reply']`) the composer lookup does not."""
+    button lookup (`button[aria-label='Reply']`) the composer lookup does not.
+    """
     el = _comment(y, height=height, composers=composers)
     el.find_elements.side_effect = lambda by, value: (
         list(composers) if "textbox" in value else [MagicMock(name="reply_btn")])
@@ -243,7 +247,8 @@ class TestReplyUnderCommentComposerPick:
     """Issue #886. #478 only PENALISED a composer above the comment (`+1e6`), so when the post's main
     'Add a comment' box was the ONLY visible role=textbox — our reply box never opened, the thread
     re-rendered, the box collapsed — it still won as `best` and the reply posted as a standalone
-    top-level comment. Resolution is now shared with `_reply_to_comment_inline` (#883): hard filter."""
+    top-level comment. Resolution is now shared with `_reply_to_comment_inline` (#883): hard filter.
+    """
 
     def test_main_comment_box_as_the_only_composer_is_never_borrowed(self):
         from cqc_lem.app import run_automation as ra

@@ -1,5 +1,6 @@
 """Unit tests for the FastAPI unhandled-exception capture in the observability middleware
-(issue #648)."""
+(issue #648).
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +13,8 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(scope="module")
 def app_with_probe_routes():
     """The real app plus two probe routes: one that raises an unhandled error, one that raises the
-    HTTPException a route uses for a normal 4xx."""
+    HTTPException a route uses for a normal 4xx.
+    """
     from cqc_lem.api.main import app
 
     original_routes = list(app.router.routes)
@@ -58,7 +60,8 @@ def client(app_with_probe_routes):
 
 def _capturing_posthog() -> MagicMock:
     """A stand-in for the posthog module that reports itself enabled, so capture_exception runs its
-    real body instead of returning early on the keyless test env."""
+    real body instead of returning early on the keyless test env.
+    """
     fake = MagicMock()
     fake.disabled = False
     return fake
@@ -69,7 +72,8 @@ class TestProbeRoutesAreReachable:
         """Guards the fixture itself: an unmatched path resolves to a catch-all and answers 200, so
         the 500/404 the probes return below can only mean they were matched ahead of it. If the
         probes stop being registered first they go back to answering 200 too, and the tests below
-        stop proving anything."""
+        stop proving anything.
+        """
         response = client.get("/__no_such_route")
 
         assert response.status_code == 200
@@ -90,7 +94,8 @@ class TestUnhandledExceptionCapture:
 
     def test_http_exception_is_not_captured(self, client):
         """A 404/401 is a normal response, not an error-tracking issue — capturing it would drown
-        real crashes in expected 4xx noise."""
+        real crashes in expected 4xx noise.
+        """
         with patch("cqc_lem.api.main.capture_exception") as mock_capture:
             response = client.get("/__probe_http_error")
 
@@ -109,7 +114,8 @@ class TestUnhandledExceptionCapture:
 
 class TestExceptionReachesPostHog:
     """End to end through the real capture_exception — the middleware calling a mock proves the
-    wiring, not that an `$exception` is actually emitted with route context."""
+    wiring, not that an `$exception` is actually emitted with route context.
+    """
 
     def test_unhandled_route_error_emits_exception_event(self, client):
         fake_posthog = _capturing_posthog()

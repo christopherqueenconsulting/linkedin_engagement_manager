@@ -1,8 +1,9 @@
 """Unit tests for carousel creator utilities."""
 
-import pytest
-from unittest.mock import MagicMock, patch
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -151,7 +152,8 @@ class TestCarouselContent:
 @pytest.mark.unit
 class TestPicturePlaceholderInsertion:
     """Tests for the PPTX picture-insertion fallback that prevents non-picture
-    placeholders from crashing carousel export."""
+    placeholders from crashing carousel export.
+    """
 
     def test_insert_picture_uses_native_method_for_picture_placeholder(self):
         """A PicturePlaceholder should receive insert_picture directly."""

@@ -1,9 +1,11 @@
 """Unit tests for the story bank / fact-intake core (issue #620): which entry anchors a post, how
 the rotation drains the bank, what happens when the bank can't ground the post, and the
-fabricated-specific detector that enforces the no-invention rule."""
+fabricated-specific detector that enforces the no-invention rule.
+"""
+
+from datetime import date, datetime, timedelta
 
 import pytest
-from datetime import date, datetime, timedelta
 
 from cqc_lem.utilities.ai import story_bank as sb
 

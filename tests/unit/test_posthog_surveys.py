@@ -1,5 +1,6 @@
 """Unit tests for scripts/posthog_surveys.py — the NPS/CSAT survey specs, the targeting rules and
-the create/update planner (issue #653)."""
+the create/update planner (issue #653).
+"""
 
 import copy
 import importlib.util
@@ -31,7 +32,8 @@ def _spec(name):
 def _live(spec, **overrides):
     """What PostHog would return for a survey created from `spec` — the shape drift is measured
     against, including the targeting flag echoed back under its own key. Deep-copied: a test that
-    edits the "live" side must not edit the spec it is being compared to."""
+    edits the "live" side must not edit the spec it is being compared to.
+    """
     spec = copy.deepcopy(spec)
     live = {k: v for k, v in spec.items() if k != "targeting_flag_filters"}
     live.update({"id": "0199-abc", "archived": False, "start_date": None,

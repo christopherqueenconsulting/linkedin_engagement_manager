@@ -79,7 +79,8 @@ LEDGER_MISSING_REASON = "cost_ledger not present — spend is unknown, not $0"
 
 def default_thresholds() -> dict:
     """Thresholds from the environment (`COST_ALERT_*`). Every caller merges over this, so a test —
-    or a CLI run — can override one threshold without restating the rest."""
+    or a CLI run — can override one threshold without restating the rest.
+    """
     return {
         "user_cost_pct_of_mrr": COST_ALERT_USER_COST_PCT,
         "gross_margin_floor": COST_ALERT_MARGIN_FLOOR,
@@ -117,7 +118,8 @@ def evaluate_user_cost_ceiling(users: Optional[Sequence[Mapping]],
     run-rate basis, so they are comparable with monthly MRR). Users with $0 MRR — free trials — are
     skipped: "% of MRR" is undefined against no revenue, and their drag is caught by the system
     gross-margin floor instead. A user whose cost exceeds their whole MRR is critical: that user is
-    margin-negative, not merely expensive."""
+    margin-negative, not merely expensive.
+    """
     alerts, judged = [], 0
     for row in users or []:
         mrr = float(row.get("mrr_usd") or 0.0)
@@ -148,7 +150,8 @@ def evaluate_user_cost_ceiling(users: Optional[Sequence[Mapping]],
 def evaluate_gross_margin_floor(system: Optional[Mapping],
                                 floor: float = COST_ALERT_MARGIN_FLOOR) -> dict:
     """§E.2 system gross-margin floor. `gross_margin_pct` is None with no revenue (see
-    `margin.margin_pct`) — that is undefined, not a breach, so the check skips."""
+    `margin.margin_pct`) — that is undefined, not a breach, so the check skips.
+    """
     pct = (system or {}).get("gross_margin_pct")
     if pct is None:
         return _check(CHECK_MARGIN_FLOOR, STATUS_SKIPPED, reason="no revenue — margin % undefined")
@@ -184,7 +187,8 @@ def evaluate_spend_anomaly(daily_spend: Optional[Mapping], day: date,
     would otherwise show a zero baseline and flag its first real day as a spike. `min_spend_usd` is
     the noise floor: on a near-idle ledger σ collapses to ~0 and any movement clears μ+Nσ, so a day
     under the floor never alerts. The absolute budget is judged independently of the baseline, since
-    it is meaningful on day one."""
+    it is meaningful on day one.
+    """
     series = {str(k): float(v or 0.0) for k, v in (daily_spend or {}).items()}
     key = _day_key(day)
     today = series.get(key)
@@ -233,7 +237,8 @@ def evaluate_cache_hit_collapse(cache: Optional[Mapping],
 
     Alerts on a RELATIVE drop against the trailing baseline — the absolute rate is workload-dependent,
     the drop is what predicts a cost spike — and optionally on an absolute floor (0 disables it).
-    Both are gated on `min_calls` so a quiet day of a handful of calls can't read as a collapse."""
+    Both are gated on `min_calls` so a quiet day of a handful of calls can't read as a collapse.
+    """
     if not cache:
         return _check(CHECK_CACHE_COLLAPSE, STATUS_SKIPPED,
                       reason="PostHog llm_call data unavailable")
@@ -275,7 +280,8 @@ def evaluate_unattributed_spend(system: Optional[Mapping], cost_by_feature: Opti
     """§E.2 unattributed spend — an instrumentation regression detector, on BOTH dimensions:
     spend carrying no `user_id` (the margin report's `unattributed_cost_usd`, i.e. system/shared
     ledger rows) and spend whose `feature` is missing or `system`. The larger share drives the alert
-    so a regression on either dimension surfaces."""
+    so a regression on either dimension surfaces.
+    """
     total = float((system or {}).get("period_cost_usd") or 0.0)
     if total <= 0:
         return _check(CHECK_UNATTRIBUTED, STATUS_SKIPPED, reason="no spend in the window")
@@ -316,7 +322,8 @@ def build_cost_alert_report(day: date, margin_report: Optional[Mapping],
 
     When the margin report says `ledger_available: false` the `LEDGER_BACKED_CHECKS` are not run at
     all — their inputs would be zeros from empty rollups, not measurements. Only the PostHog-fed
-    cache check still has real data to judge."""
+    cache check still has real data to judge.
+    """
     limits = {**default_thresholds(), **(thresholds or {})}
     report = margin_report or {}
     system = report.get("system") or {}
@@ -350,7 +357,8 @@ def build_cost_alert_report(day: date, margin_report: Optional[Mapping],
 
 def render_cost_alerts_text(report: Mapping) -> str:
     """Plain-text alert digest — also the plaintext alternative of the email (a missing text/plain
-    part is a spam signal, see `email._dispatch_email`)."""
+    part is a spam signal, see `email._dispatch_email`).
+    """
     lines = [f"LEM cost alerts — {report.get('date')} "
              f"({report.get('alert_count', 0)} alert(s), "
              f"{report.get('critical_count', 0)} critical)", ""]
@@ -371,7 +379,8 @@ def render_cost_alerts_text(report: Mapping) -> str:
 
 def render_cost_alerts_html(report: Mapping) -> str:
     """HTML body of the owner email — the text digest in a <pre> block reads correctly in every
-    client without a template, and the numbers are identical to the plaintext part."""
+    client without a template, and the numbers are identical to the plaintext part.
+    """
     body = (render_cost_alerts_text(report)
             .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     return ("<h2>LEM cost alerts</h2><pre style=\"font-family:ui-monospace,monospace;"
@@ -386,7 +395,8 @@ def _today() -> date:
 
 def _last_complete_day() -> date:
     """Yesterday (UTC). The checks score a WHOLE day — today is still filling up, and a partial day
-    would read as a spend collapse rather than a real signal."""
+    would read as a spend collapse rather than a real signal.
+    """
     return _today() - timedelta(days=1)
 
 
@@ -407,7 +417,8 @@ def collect_cache_hit_stats(day: Optional[date] = None,
     `llm_call` events (the only place the `cached` flag lives — `cost_ledger` stores net spend).
     None when the PostHog read path isn't configured or the query fails, which the check reports as
     skipped. The baseline is call-weighted, not a mean of daily rates, so one low-volume day can't
-    swing it."""
+    swing it.
+    """
     from cqc_lem.utilities.observability import posthog_hogql_query
 
     day = day or _last_complete_day()
@@ -443,7 +454,8 @@ def collect_cost_alert_report(day: Optional[date] = None, days: int = ANOMALY_WI
 
     The margin report is reused wholesale rather than re-deriving spend-vs-MRR here — it already
     computes the §C.1 per-user and system figures the ceiling, margin-floor and unattributed checks
-    need, from the same `cost_ledger`."""
+    need, from the same `cost_ledger`.
+    """
     from cqc_lem.utilities.db import get_cost_rollup, get_daily_cost_totals
     from cqc_lem.utilities.margin import collect_margin_report
 
@@ -471,7 +483,8 @@ def send_cost_alerts(report: Optional[Mapping] = None,
     The per-alert line is deliberately kept out of recurrence escalation (`ALERT_LOG_PREFIX`): a
     breach is what this function was asked to REPORT, and it fires again every day the spend stays
     over the ceiling — filing it as a recurring code defect describes nothing anyone can fix here.
-    A failure to DELIVER an alert is a different thing and still warns normally."""
+    A failure to DELIVER an alert is a different thing and still warns normally.
+    """
     from cqc_lem.utilities.email import _dispatch_email
     from cqc_lem.utilities.observability import track_cost_alert
 

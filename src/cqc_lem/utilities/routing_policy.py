@@ -99,7 +99,8 @@ def cheaper_tier(tier: Optional[str]) -> Optional[str]:
 
 def bucket_key(feature: Optional[str], tier: Optional[str]) -> str:
     """Feature×tier is the optimization bucket: the same tier can be safe to down-route for comments
-    and unsafe for long-form content, so they are never judged together."""
+    and unsafe for long-form content, so they are never judged together.
+    """
     return f"{feature or 'system'}:{tier}"
 
 
@@ -107,7 +108,8 @@ def bucket_key(feature: Optional[str], tier: Optional[str]) -> str:
 
 def prompt_text(messages: Any) -> str:
     """Flatten a chat payload to lowercase text for signal matching. Non-string content (image
-    parts) is skipped rather than stringified — it would add noise to the token estimate."""
+    parts) is skipped rather than stringified — it would add noise to the token estimate.
+    """
     parts = []
     for message in messages or []:
         if isinstance(message, Mapping):
@@ -125,7 +127,8 @@ def complexity_score(prompt: str) -> int:
 def complexity_tier(prompt: str) -> str:
     """The tier `lem-router` resolves to from prompt shape alone — the pre-cost baseline. Cost-aware
     down-routing is applied to this result, never in place of it, so a complex prompt still starts
-    from the complex tier and only moves if the DATA says the cheaper tier holds up."""
+    from the complex tier and only moves if the DATA says the cheaper tier holds up.
+    """
     score = complexity_score(prompt)
     token_estimate = len(prompt.split())
     if score >= 2 or token_estimate > 800:
@@ -140,7 +143,8 @@ def complexity_tier(prompt: str) -> str:
 def normalize_policy(policy: Optional[Mapping]) -> dict:
     """Coerce whatever came out of Redis into a policy dict, or `{}` when it is unusable. A policy
     written by a NEWER version is treated as unusable rather than best-guessed — routing fails open
-    to complexity-only, which is always the safe direction."""
+    to complexity-only, which is always the safe direction.
+    """
     if not isinstance(policy, Mapping):
         return {}
     try:
@@ -169,7 +173,8 @@ def flag_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> Optional[str]
     Redis as `"7"`, and reading it back as 7 would silently lose every assignment.
 
     A value that is not one of `ARMS` is None, not a guess: a hand-edited document must fall back to
-    the hash rather than route traffic on a typo."""
+    the hash rather than route traffic on a typo.
+    """
     if not isinstance(bucket, Mapping) or user_id is None:
         return None
     arms = bucket.get("arms")

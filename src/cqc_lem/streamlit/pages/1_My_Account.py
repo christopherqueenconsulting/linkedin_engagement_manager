@@ -107,7 +107,7 @@ def main():
                 unsafe_allow_html=True
             )
 
-        st.link_button(label=f"Sign In with LinkedIn", url=auth_url, disabled=not consent)
+        st.link_button(label="Sign In with LinkedIn", url=auth_url, disabled=not consent)
 
 
 if __name__ == '__main__':

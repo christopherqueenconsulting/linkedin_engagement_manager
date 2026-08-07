@@ -1,6 +1,7 @@
 """Unit tests for the posts.content_mix DB helpers (issue #618): the mix class is written with the
 planned post, read back for a regenerate, returned with the buffer's planned rows, and aggregated for
-the analytics dashboard's mix-compliance ratio."""
+the analytics dashboard's mix-compliance ratio.
+"""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -57,6 +58,7 @@ class TestGetPostContentMix:
 
     def test_none_on_db_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_post_content_mix
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
@@ -99,6 +101,7 @@ class TestGetContentMixCounts:
 
     def test_empty_on_db_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_content_mix_counts
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")

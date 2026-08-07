@@ -1,7 +1,8 @@
 """Unit tests for _post_permalink_from_card — reading real /feed/update/ permalinks off SDUI cards."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

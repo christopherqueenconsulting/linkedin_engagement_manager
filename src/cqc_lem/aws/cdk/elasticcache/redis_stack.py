@@ -1,6 +1,13 @@
 from aws_cdk import (
+    CfnOutput,
+    NestedStack,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_elasticache as elasticache,
-    aws_ec2 as ec2, CfnOutput, NestedStack, )
+)
 from constructs import Construct
 
 

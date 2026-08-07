@@ -46,7 +46,8 @@ _MAX_CONNECT_RETRY_DELAY = 60.0
 
 def _env_number(name: str, default: Any, cast: Callable[[str], Any]) -> Any:
     """Read a numeric setting at CALL time (so a restart-free change lands) and fall back to the
-    default on anything unparseable — a typo in `.env` must not take LLM traffic down."""
+    default on anything unparseable — a typo in `.env` must not take LLM traffic down.
+    """
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
@@ -60,16 +61,18 @@ def _proxy_unreachable(exc: BaseException) -> bool:
     """True only when the TCP connection to the proxy was NEVER ESTABLISHED — it is down or still
     starting, and nothing was sent, so retrying cannot duplicate provider spend. httpx raises
     `ConnectError` for exactly that case; a timeout or a read/write error mid-request may already
-    have reached a provider, and a 4xx/5xx is the proxy answering, so none of those are retried."""
+    have reached a provider, and a 4xx/5xx is the proxy answering, so none of those are retried.
+    """
     return isinstance(exc, APIConnectionError) and isinstance(exc.__cause__, httpx.ConnectError)
 
 
 def current_attribution() -> Tuple[Optional[Any], Optional[str]]:
     """(user_id, feature) for the LLM call happening right now, or (None, None) if attribution is
     unavailable. Imported lazily: observability pulls in the DB and PostHog, and this module is the
-    one every AI helper imports first."""
+    one every AI helper imports first.
+    """
     try:
-        from cqc_lem.utilities.observability import current_llm_attribution, FEATURE_SYSTEM
+        from cqc_lem.utilities.observability import FEATURE_SYSTEM, current_llm_attribution
         user_id, feature = current_llm_attribution()
         return user_id, feature or FEATURE_SYSTEM
     except Exception:
@@ -78,7 +81,8 @@ def current_attribution() -> Tuple[Optional[Any], Optional[str]]:
 
 def current_trace() -> Tuple[Optional[str], Optional[str]]:
     """(trace_id, span_id) of the multi-call pipeline running right now, or (None, None) when there
-    is none. Lazily imported for the same reason `current_attribution` is."""
+    is none. Lazily imported for the same reason `current_attribution` is.
+    """
     try:
         from cqc_lem.utilities.observability import current_llm_trace
         return current_llm_trace()
@@ -126,7 +130,8 @@ def _attach_attribution(options) -> None:
 
 def _request_metadata(options) -> Optional[dict]:
     """The metadata dict this request will actually send, whoever put it there — `_call_llm` sets its
-    own in `extra_body`, `_attach_attribution` sets the ambient one in `extra_json`."""
+    own in `extra_body`, `_attach_attribution` sets the ambient one in `extra_json`.
+    """
     for source in (getattr(options, "json_data", None), getattr(options, "extra_json", None)):
         if isinstance(source, dict) and isinstance(source.get("metadata"), dict):
             return source["metadata"]

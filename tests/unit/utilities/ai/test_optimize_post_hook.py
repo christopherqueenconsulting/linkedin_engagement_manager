@@ -1,7 +1,8 @@
 """Unit tests for the hook + save-worthy post pass."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

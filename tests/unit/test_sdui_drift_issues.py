@@ -37,13 +37,15 @@ class TestDriftRows:
 
     def test_unknown_is_never_filed(self):
         """A page that did not render grounds nothing. Filing it would put the same non-finding in
-        the backlog every Monday until it buried the real drift underneath."""
+        the backlog every Monday until it buried the real drift underneath.
+        """
         sweep = _sweep(a={"state": "unknown"}, b={"state": "unknown"})
         assert filer.drift_rows(sweep) == []
 
     def test_rows_are_read_from_probes_not_from_the_summary(self):
         """The summary is a convenience for humans; a filer that planned from a derived field would
-        file nothing at all the day that field goes stale."""
+        file nothing at all the day that field goes stale.
+        """
         sweep = _sweep(catchup_cards={"state": "drift"})
         sweep["summary"]["drift"] = []
         assert len(filer.drift_rows(sweep)) == 1
@@ -117,7 +119,8 @@ class TestGitHubLayer:
 
     def test_dedup_searches_open_issues_only(self):
         """Unlike the PostHog error filer, a CLOSED issue must not suppress a re-file: a surface
-        that rotted, got re-grounded, and rotted again six months later is a NEW defect."""
+        that rotted, got re-grounded, and rotted again six months later is a NEW defect.
+        """
         github = self._github()
         github.is_filed("sdui-drift-feed_sort")
         args = github._run.call_args[0][0]
@@ -141,7 +144,8 @@ class TestGitHubLayer:
 
     def test_the_live_linkedin_risk_label_is_applied(self):
         """Re-grounding a rotated locator cannot be verified without a live probe run, so the merge
-        belongs to the owner."""
+        belongs to the owner.
+        """
         assert "risk:live-linkedin" in filer.LABELS
         assert "agent:ready" in filer.LABELS
 
@@ -198,7 +202,8 @@ class TestMain:
 class TestFencedReport:
     """The probe runs inside the Celery worker, where the app logger writes to stdout too. The
     week's sweep is `<log lines> <fence> <json> <fence>` — one unparsed line ahead of the JSON used
-    to lose the entire run."""
+    to lose the entire run.
+    """
 
     def test_the_report_is_cut_out_of_the_workers_log_noise(self, tmp_path):
         path = tmp_path / "sweep.json"

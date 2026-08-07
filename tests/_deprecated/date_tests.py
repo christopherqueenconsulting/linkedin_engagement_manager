@@ -1,10 +1,10 @@
 import datetime
 from datetime import timedelta
 
+import tzlocal
+
 from cqc_lem.utilities import add_local_tz_to_datetime
 from cqc_lem.utilities.db import get_posts
-
-import tzlocal
 
 # Get the current system's timezone
 

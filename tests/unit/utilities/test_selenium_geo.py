@@ -1,7 +1,8 @@
 """Unit tests for per-user geo/timezone/locale spoofing in get_docker_driver."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 pytestmark = pytest.mark.unit
 

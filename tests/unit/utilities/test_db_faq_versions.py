@@ -1,10 +1,10 @@
 """Unit tests for the auto-FAQ DB helpers — issue #507 (entries, versions, candidate queue)."""
 
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

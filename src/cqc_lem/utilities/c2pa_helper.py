@@ -13,7 +13,7 @@ Everything here is best-effort: it never raises into the generation pipeline.
 """
 import os
 
-from cqc_lem.utilities.env_constants import C2PA_ENABLED, C2PA_CERT_PATH, C2PA_KEY_PATH
+from cqc_lem.utilities.env_constants import C2PA_CERT_PATH, C2PA_ENABLED, C2PA_KEY_PATH
 from cqc_lem.utilities.logger import log_debug, log_warning
 
 _AI_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"

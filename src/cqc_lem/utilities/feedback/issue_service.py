@@ -50,12 +50,24 @@ from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import as_vector, cosine_similarity, text_similarity
 from cqc_lem.utilities.db import (
-    FeedbackStatus, count_feedback_filed_by_user, count_pending_admin_review,
-    get_open_feedback_clusters, get_unprocessed_feedback, update_feedback_triage,
+    FeedbackStatus,
+    count_feedback_filed_by_user,
+    count_pending_admin_review,
+    get_open_feedback_clusters,
+    get_unprocessed_feedback,
+    update_feedback_triage,
 )
 from cqc_lem.utilities.feedback.classifier import (
-    MAX_BODY_CHARS, NEEDS_HUMAN_LABEL, RISK_LABELS, FeedbackCategory, FeedbackClassification,
-    FeedbackRisk, FeedbackRoute, FeedbackSeverity, classify_feedback, labels_for,
+    MAX_BODY_CHARS,
+    NEEDS_HUMAN_LABEL,
+    RISK_LABELS,
+    FeedbackCategory,
+    FeedbackClassification,
+    FeedbackRisk,
+    FeedbackRoute,
+    FeedbackSeverity,
+    classify_feedback,
+    labels_for,
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 
@@ -333,7 +345,8 @@ def similarity(text_a: str, text_b: str, vector_a: object = None,
                vector_b: object = None) -> float:
     """How alike two reports are. Prefers embedding cosine (catches "comments never post" vs "my
     replies don't go through", which share almost no vocabulary); falls back to the deterministic
-    token-overlap measure whenever either embedding is missing or unusable."""
+    token-overlap measure whenever either embedding is missing or unusable.
+    """
     va, vb = as_vector(vector_a), as_vector(vector_b)
     if va and vb and len(va) == len(vb):
         return cosine_similarity(va, vb)
@@ -342,7 +355,8 @@ def similarity(text_a: str, text_b: str, vector_a: object = None,
 
 def embed_text(text: Optional[str]) -> Optional[list]:
     """Embed one feedback body via the LiteLLM proxy. Returns None on any failure — callers must
-    treat a missing embedding as "compare lexically", never as "no duplicates exist"."""
+    treat a missing embedding as "compare lexically", never as "no duplicates exist".
+    """
     body = (text or "").strip()[:MAX_BODY_CHARS]
     if not body:
         return None
@@ -365,7 +379,8 @@ def embed_text(text: Optional[str]) -> Optional[list]:
 def find_duplicate_cluster(body: str, vector: Optional[list], clusters: Optional[list],
                            threshold: float = None) -> tuple:
     """(cluster, score) of the most similar OPEN cluster at-or-above the threshold, else (None, best
-    score seen). Clusters with no filed issue are skipped — there is nothing to +1."""
+    score seen). Clusters with no filed issue are skipped — there is nothing to +1.
+    """
     limit = duplicate_similarity_min() if threshold is None else threshold
     best_cluster, best_score = None, 0.0
     for cluster in (clusters or [])[:MAX_CLUSTER_CANDIDATES]:
@@ -381,7 +396,8 @@ def find_duplicate_cluster(body: str, vector: Optional[list], clusters: Optional
 
 def cluster_by_id(clusters: Optional[list], cluster_id: Optional[int]) -> Optional[dict]:
     """The cluster whose id the classifier named in `duplicate_of` (it sees the same candidates), or
-    None. Its judgement is honored even below the cosine threshold — it read both texts."""
+    None. Its judgement is honored even below the cosine threshold — it read both texts.
+    """
     if cluster_id is None:
         return None
     for cluster in clusters or []:
@@ -393,7 +409,8 @@ def cluster_by_id(clusters: Optional[list], cluster_id: Optional[int]) -> Option
 
 def duplicate_candidates(clusters: Optional[list]) -> list:
     """Open clusters in the {'id', 'title'} shape `classify_feedback(duplicate_candidates=...)`
-    expects, so the LLM can flag a duplicate the vectors miss."""
+    expects, so the LLM can flag a duplicate the vectors miss.
+    """
     return [{"id": c.get("cluster_id"), "title": (c.get("body") or "").strip()}
             for c in (clusters or []) if c and c.get("cluster_id") and c.get("github_issue_number")]
 
@@ -403,7 +420,8 @@ def duplicate_candidates(clusters: Optional[list]) -> list:
 def feature_demand_met(category: FeedbackCategory, reporter_count: int) -> bool:
     """Plan §B.3 abuse guard: bugs auto-file immediately, but a FEATURE needs demand from enough
     distinct reporters before the pipeline may build it unattended — so a first-of-its-kind feature
-    request is filed and HELD for the owner rather than built on one person's word."""
+    request is filed and HELD for the owner rather than built on one person's word.
+    """
     if category != FeedbackCategory.FEATURE:
         return True
     return int(reporter_count or 0) >= feature_demand_min()
@@ -424,7 +442,8 @@ def classifier_would_auto_work(classification: FeedbackClassification,
 
 def is_agent_ready(classification: FeedbackClassification, reporter_count: int = 1) -> bool:
     """Whether the pipeline may build this with no human in the loop. Always False — see
-    `FEEDBACK_MAY_GRANT_AGENT_READY`."""
+    `FEEDBACK_MAY_GRANT_AGENT_READY`.
+    """
     return (FEEDBACK_MAY_GRANT_AGENT_READY
             and classifier_would_auto_work(classification, reporter_count))
 
@@ -432,7 +451,8 @@ def is_agent_ready(classification: FeedbackClassification, reporter_count: int =
 def labels_for_issue(classification: FeedbackClassification, reporter_count: int = 1) -> list:
     """The full label set for a filed issue: the classifier's taxonomy labels, the `feedback-loop`
     provenance label, and EXACTLY ONE of `agent:ready` (safe to build unattended) or `needs-human`
-    (risky or unproven demand — the pipeline holds it)."""
+    (risky or unproven demand — the pipeline holds it).
+    """
     labels = list(labels_for(classification.category, classification.severity,
                              classification.risk, classification.route))
     labels.append(FEEDBACK_LABEL)
@@ -458,7 +478,8 @@ def _files_hint(component: str) -> list:
 def replay_url_from_context(context: object) -> Optional[str]:
     """The PostHog replay link for the session a report was filed from (issue #649), or None. The
     widget stamps `posthog_session_id` onto every report; without this the id sits in the DB and
-    nobody ever watches the session that produced the bug."""
+    nobody ever watches the session that produced the bug.
+    """
     if not isinstance(context, dict):
         return None
     from cqc_lem.utilities.observability import session_replay_url
@@ -470,7 +491,8 @@ def build_issue_body(classification: FeedbackClassification, feedback_id: Option
                      replay_url: Optional[str] = None) -> str:
     """The `MODE=start` body: Why / Scope / Files / Acceptance, plus the provenance the pipeline and
     a human both need. Only the classifier's factual summary is included — never the raw report; a
-    replay link is a pointer into PostHog, which is access-controlled and masks the same content."""
+    replay link is a pointer into PostHog, which is access-controlled and masks the same content.
+    """
     ready = is_agent_ready(classification, reporter_count)
     demand = (f"Reported by {max(0, int(reporter_count or 0))} distinct user(s) across "
               f"{max(1, int(item_count or 0))} feedback item(s).")
@@ -513,7 +535,8 @@ def build_issue_body(classification: FeedbackClassification, feedback_id: Option
 
 def hold_reason(classification: FeedbackClassification, reporter_count: int = 1) -> Optional[str]:
     """Why this item can't ship unattended — `risk:<kind>`, `unproven-demand`, `low-confidence` — or
-    None when it is `agent:ready`. This is the `risk:` line of the Decision Comment."""
+    None when it is `agent:ready`. This is the `risk:` line of the Decision Comment.
+    """
     if is_agent_ready(classification, reporter_count):
         return None
     # Say WHICH gate held it. Falling through to "low-confidence" for an item the classifier was
@@ -531,7 +554,8 @@ def build_decision_comment(classification: FeedbackClassification,
                            reporter_count: int = 1) -> str:
     """The RUNBOOK Decision Comment for a HELD auto-filed item: ONE genuine question (should this be
     built, and under what constraint), lettered options with consequences, and a recommendation. The
-    question is chosen by why it is actually held — risk, unproven demand, or low confidence."""
+    question is chosen by why it is actually held — risk, unproven demand, or low confidence.
+    """
     reason = hold_reason(classification, reporter_count) or "low-confidence"
     if classification.risk != FeedbackRisk.NONE:
         question, *options = _RISK_QUESTIONS[classification.risk]
@@ -558,7 +582,8 @@ def build_duplicate_comment(classification: FeedbackClassification,
                             item_count: int = 1, replay_url: Optional[str] = None) -> str:
     """The +1 that a repeat report leaves on the EXISTING issue instead of opening a new one — the
     demand signal the pipeline prioritizes by. Each repeat carries its OWN replay: the second
-    reporter's session is often the one that shows what the first report couldn't explain."""
+    reporter's session is often the one that shows what the first report couldn't explain.
+    """
     lines = [
         "**+1 — reported again via in-app feedback.**",
         "",
@@ -582,7 +607,8 @@ def build_duplicate_comment(classification: FeedbackClassification,
 def github_unreachable() -> bool:
     """True while `github_request`'s transport cool-off is open — the call a caller just lost was
     the network being down, not GitHub refusing it. Callers use this to keep an outage from being
-    reported as the permission failure it looks like (issue #767)."""
+    reported as the permission failure it looks like (issue #767).
+    """
     return time.monotonic() < _unreachable_until
 
 
@@ -591,7 +617,8 @@ def _is_transport_failure(exc: BaseException) -> bool:
     (ConnectionError, Timeout, SSLError, …) subclasses `RequestException` -> `IOError`, as do the
     builtin socket errors — an unreachable host is exactly the OSError family, anything else is
     ours. The deterministic `requests` faults share that base but are ours too, so they are named
-    out by class rather than imported (this module keeps `requests` a lazy import)."""
+    out by class rather than imported (this module keeps `requests` a lazy import).
+    """
     if any(base.__name__ in NON_TRANSPORT_REQUEST_ERRORS for base in type(exc).__mro__):
         return False
     return isinstance(exc, OSError)
@@ -600,7 +627,8 @@ def _is_transport_failure(exc: BaseException) -> bool:
 def _log_lost_write(message: str) -> None:
     """A refused WRITE breaks the loop and is an ERROR — the operator has to fix the token. But when
     the transport is down (issue #767) that hint is a lie: nothing was refused, the call never left
-    the host, and the repair pass re-attaches on the next beat."""
+    the host, and the repair pass re-attaches on the next beat.
+    """
     if github_unreachable():
         log_warning(f"{message} — GitHub is unreachable from this host; the repair pass re-attaches",
                     api_provider="github")
@@ -612,7 +640,8 @@ def github_request(method: str, path: str, payload: dict = None) -> Optional[obj
     """One GitHub REST call, shared with the shipped-fix notifier (issue #502). Returns the parsed
     body (a dict, or a list for collection endpoints), or None when unconfigured/failed — filing is
     best-effort by design: a GitHub outage must never lose the feedback row. `path` may carry its
-    own query string."""
+    own query string.
+    """
     global _unreachable_until
     token = github_token()
     if not token:
@@ -671,7 +700,8 @@ def create_github_issue(title: str, body: str, labels: list,
     loses the issue — the row is already on GitHub by then — but it is an ERROR, not a warning
     (issue #718): a label-less issue is invisible to the agent pipeline until a human hand-labels
     it, so the loop is BROKEN, and only an error reaches PostHog at the default threshold.
-    `repair_auto_filed_issues` re-attaches what a failed pass dropped."""
+    `repair_auto_filed_issues` re-attaches what a failed pass dropped.
+    """
     data = github_request("POST", "issues", {"title": title, "body": body})
     number = data.get("number") if isinstance(data, dict) else None
     if number is None:
@@ -716,7 +746,8 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
     Approve on this specific row in the triage panel. Two of the guards below exist purely because
     the batch pass runs with nobody watching, and re-applying them to an explicit human decision is
     what made the button look dead — the row was left in `new`, so the panel re-rendered it
-    unchanged."""
+    unchanged.
+    """
     row = feedback or {}
     feedback_id = row.get("id")
     body = row.get("body") or ""
@@ -843,7 +874,8 @@ def process_new_feedback(limit: int = 25) -> dict:
 
     Issue #793: only rows from admin users are filed automatically. Non-admin feedback is left in
     `new` status so the admin triage panel can approve or dismiss it — the filter is applied by the
-    query (`admin_only`), not here, so parked rows can never crowd admin rows out of `limit`."""
+    query (`admin_only`), not here, so parked rows can never crowd admin rows out of `limit`.
+    """
     rows = get_unprocessed_feedback(limit, admin_only=True)
     clusters = get_open_feedback_clusters()
     counts: dict = {}
@@ -871,7 +903,8 @@ def recluster_feedback(limit: int = 200) -> dict:
     `process_new_feedback` so a nightly re-run can never open a second issue for a known problem.
 
     Auto-closing issues whose cluster is resolved is NOT here — resolution is tracked on the GitHub
-    side by the changelog/notify stage (issue #502)."""
+    side by the changelog/notify stage (issue #502).
+    """
     clusters = get_open_feedback_clusters()
     # Unlike the filing pass, this one also reconsiders rows already parked in `triaged` — a report
     # a human never got to may well be the same problem as an issue filed since.
@@ -933,7 +966,8 @@ def parse_filed_issue(title: str, body: str) -> Optional[tuple]:
     body. Everything above that block is the `## Why` summary — model-written from user-supplied
     text — so a report whose summary quotes "reported by 5 distinct users" would otherwise dictate
     the demand its own issue is repaired with, and that is exactly the signal that decides whether a
-    feature is built unattended."""
+    feature is built unattended.
+    """
     text = body or ""
     marker = text.find(FILED_PROVENANCE_MARKER)
     provenance = _PROVENANCE_RE.search(text, max(marker, 0))
@@ -963,7 +997,8 @@ def parse_filed_issue(title: str, body: str) -> Optional[tuple]:
 
 def issue_comment_bodies(issue_number: int) -> Optional[list]:
     """Every comment body on an issue, or None when the read failed (never [] on failure — "we could
-    not look" must not read as "there is no Decision Comment")."""
+    not look" must not read as "there is no Decision Comment").
+    """
     data = github_request("GET", f"issues/{int(issue_number)}/comments"
                                  f"?per_page={REPAIR_COMMENT_PAGE_SIZE}")
     if not isinstance(data, list):
@@ -977,7 +1012,8 @@ def repair_filed_issue(issue: dict) -> str:
     Only ever ADDS: the title/body are never rewritten (a human may have edited them by now) and no
     label is ever removed. `feedback-loop` is the tripwire — this loop is the only thing that
     attaches it, and it goes on in the same call as every other label, so its presence means that
-    call had permission and whatever else is on the issue is a human's curation, not our loss."""
+    call had permission and whatever else is on the issue is a human's curation, not our loss.
+    """
     if not isinstance(issue, dict):
         return RepairAction.SKIPPED
     number = int(issue.get("number") or 0)
@@ -1021,7 +1057,8 @@ def repair_auto_filed_issues(limit: int = MAX_REPAIR_ISSUES) -> dict:
     and hammering GitHub would only bury the one error that says why. A refused READ gets the same
     treatment after `REPAIR_READ_FAILURE_STOP` in a row — one unreadable issue is just a deleted
     issue, but a run of them is the same broken token and must not cost 50 errors every beat. Reads
-    lost to an unreachable transport (issue #767) are neither: the pass defers with one warning."""
+    lost to an unreachable transport (issue #767) are neither: the pass defers with one warning.
+    """
     if not github_token():
         return {"scanned": 0, "repaired": 0, "failed": 0}
     seen: set = set()

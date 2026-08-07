@@ -1,7 +1,8 @@
 """Unit tests for the live-sweep selector/parse fixes (groups + post-stats impressions)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -56,7 +57,8 @@ class TestSocialCountsRepostsSavesParsing:
 class TestLiveAnalyticsPageLayout:
     """Fixture text taken verbatim from a real /analytics/post-summary capture (owner grab on
     2026-07-23, PR #427 review): labels and values land on separate lines, and the Discovery block
-    stacks value-first while the Engagement block stacks label-first."""
+    stacks value-first while the Engagement block stacks label-first.
+    """
 
     LIVE = ("Discovery\n72\nImpressions\nIn-network (followers and connections)\n21%\n"
             "Out-of-network\n79%\n45\nMembers reached\nVideo performance\n16\nVideo views\n"
@@ -130,7 +132,8 @@ class TestScrapeRecordsImpressions:
 
     def test_outcome_event_carries_the_variant_the_post_shipped(self):
         """Issue #652: the shipped A/B variant is looked up ONCE per sweep, not per post inside the
-        Selenium loop, and rides onto each post's outcome event as its experiment arm."""
+        Selenium loop, and rides onto each post's outcome event as its experiment arm.
+        """
         counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 0}
         with patch(f"{_RA}.time.sleep"), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9, 10]), \
@@ -171,7 +174,8 @@ class TestScrapeRecordsImpressions:
 class TestScrapeBackfillsNeverCapturedPosts:
     """Issue #809: the sweep walks a short window but the dashboard reads 90 days, so a post whose
     capture was missed while it was fresh stayed unmeasurable forever — and the analytics rendered a
-    shrinking subset of the account."""
+    shrinking subset of the account.
+    """
 
     def _run(self, recent, uncaptured, env=None, counts=None):
         with patch(f"{_RA}.time.sleep"), \
@@ -223,14 +227,16 @@ class TestScrapeBackfillsNeverCapturedPosts:
     def test_an_unreadable_page_records_nothing_instead_of_a_zero_row(self):
         """A page that never rendered (auth wall, 429, dead permalink) parses to NO signals at all —
         writing the zeros would publish a fabricated row, and for a backfilled post it is permanent:
-        the stat row retires it from the never-captured queue on a single bad read."""
+        the stat row retires it from the never-captured queue on a single bad read.
+        """
         result, rec, _ = self._run(recent=[], uncaptured=[4], counts={})
         rec.assert_not_called()
         assert "0" in result
 
     def test_a_genuinely_zero_engagement_post_is_still_recorded(self):
         """A readable page always yields the full zero-filled dict, so 'no engagement' must keep
-        being measured — only 'nothing read' is skipped."""
+        being measured — only 'nothing read' is skipped.
+        """
         _, rec, _ = self._run(recent=[9], uncaptured=[],
                               counts={"reactions": 0, "comments": 0, "reposts": 0,
                                       "impressions": 0, "saves": 0})

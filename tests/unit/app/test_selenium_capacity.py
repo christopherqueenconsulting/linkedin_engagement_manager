@@ -100,7 +100,8 @@ class TestChromeResourceBudget:
 class TestGridOverlay:
     """docker-compose.grid.yml is the Phase-2 horizontal path (issue #556). It replaces the
     standalone with hub + N single-session nodes, so the SAME cap == Σ-lanes invariant has to hold
-    there — only now the cap is the node count. See docs/SELENIUM_GRID.md."""
+    there — only now the cap is the node count. See docs/SELENIUM_GRID.md.
+    """
 
     @staticmethod
     def _node_block() -> str:
@@ -200,7 +201,8 @@ class TestGridOverlay:
 class TestDeployComposesTheDeployedTopology:
     """The overlay only matters if a deploy actually composes it. Before this, `deploy.sh` used
     base + prod only, so every release quietly put the box back on the standalone (issue: the
-    2026-07-27 cutover lasted until the next deploy)."""
+    2026-07-27 cutover lasted until the next deploy).
+    """
 
     DEPLOY = (REPO_ROOT / "scripts" / "deploy.sh").read_text()
 
@@ -240,7 +242,8 @@ class TestDeployComposesTheDeployedTopology:
 
 class TestLoadTestMirrorsTheDeployedTopology:
     """The load-test harness projects a VPS/second-box decision from these numbers, so they must be
-    the numbers actually deployed — not a snapshot of them (issue #556)."""
+    the numbers actually deployed — not a snapshot of them (issue #556).
+    """
 
     def test_default_lanes_match_compose(self):
         from cqc_lem.utilities.selenium_load_test import DEFAULT_LANES

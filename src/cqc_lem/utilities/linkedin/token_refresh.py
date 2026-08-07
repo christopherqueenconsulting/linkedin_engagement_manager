@@ -54,7 +54,8 @@ def is_token_expiring_soon(token_info: dict, days: int = EXPIRY_WARNING_DAYS) ->
 def days_until_expiry(token_info: dict) -> Optional[int]:
     """Whole days left on the access token — None when the expiry is unknown, which is NOT the
     same as zero: the SPA renders 'unknown' rather than an alarming '0 days'. Floored, so a token
-    with 29h left reads '1 day' and never rounds up into a promise we can't keep."""
+    with 29h left reads '1 day' and never rounds up into a promise we can't keep.
+    """
     expiry = get_token_expiry(token_info)
     if expiry is None:
         return None
@@ -65,7 +66,8 @@ def days_until_expiry(token_info: dict) -> Optional[int]:
 def refresh_token_usable(token_info: dict) -> bool:
     """True when a refresh token exists AND has not itself lapsed. LinkedIn only issues refresh
     tokens to approved apps, so 'no refresh token' is the ordinary case — a user on that path can
-    only ever reconnect by hand, which is what the expiry email is for."""
+    only ever reconnect by hand, which is what the expiry email is for.
+    """
     refresh_token = token_info.get('refresh_token')
     if not refresh_token:
         return False
@@ -141,7 +143,8 @@ def resolve_token_status(user_id: int, auto_refresh: bool = True) -> dict:
     Both readers use it — the SPA's `/user/token_status` and the daily renewal beat — so the
     countdown a user sees and the countdown that triggers their email can never disagree.
     `auto_refresh` renews in place when the token is inside the warning window and a usable refresh
-    token exists; the returned state is the state AFTER that attempt."""
+    token exists; the returned state is the state AFTER that attempt.
+    """
     from cqc_lem.utilities.db import get_user_token_info
 
     token_info = get_user_token_info(user_id)

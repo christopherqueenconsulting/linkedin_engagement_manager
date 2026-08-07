@@ -1,7 +1,8 @@
 """Unit tests for the dwell-time optimization core (issue #391 — C2): the writer-side directives
 that shape generation for hold time, the deterministic dwell-proxy score, and the no-LLM structural
 repair. Dwell is the dominant 2026 ranking signal, so the measuring side must stay deterministic —
-no LLM, no I/O — and the score must never gate a post."""
+no LLM, no I/O — and the score must never gate a post.
+"""
 
 import pytest
 

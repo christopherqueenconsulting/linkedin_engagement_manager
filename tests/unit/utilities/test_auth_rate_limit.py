@@ -4,8 +4,9 @@ The two properties that matter: the counters actually bound a walk of the PIN sp
 outage does NOT stop people signing in.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

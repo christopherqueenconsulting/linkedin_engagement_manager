@@ -1,8 +1,10 @@
 """Unit tests for the lead-pipeline API (issue #484) — the scored board, operator edits (manual
-stage, notes, dismiss/restore), ownership checks, and the on-demand re-score."""
+stage, notes, dismiss/restore), ownership checks, and the on-demand re-score.
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -22,6 +24,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc

@@ -7,11 +7,11 @@ branches were previously untested, plus the success paths of the small post-fiel
 """
 
 import json
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -249,7 +249,7 @@ class TestPostFieldGetters:
     def test_get_post_type_returns_enum(self):
         conn, _ = _conn(fetch_one={"post_type": "carousel"})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_post_type, PostType
+            from cqc_lem.utilities.db import PostType, get_post_type
             assert get_post_type(9) is PostType.CAROUSEL
 
     def test_get_post_type_invalid_value_returns_none(self):

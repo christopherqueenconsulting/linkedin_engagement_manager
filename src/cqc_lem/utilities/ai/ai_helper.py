@@ -6,45 +6,76 @@ from typing import Any, Optional
 
 import openai
 import replicate
+from dotenv import load_dotenv
+
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai.client import client, attribution_metadata
 from cqc_lem.utilities.ai import content_framework as _framework
+from cqc_lem.utilities.ai import slop_lint as _slop
+from cqc_lem.utilities.ai.client import attribution_metadata, client
+
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
 # (and the tests that import it) stable while the definitions live in exactly one place.
 from cqc_lem.utilities.ai.content_alignment import (
     COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,  # lgtm[py/unused-global-variable]
-    NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
-    NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
+)
+from cqc_lem.utilities.ai.content_alignment import (
     DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,  # lgtm[py/unused-global-variable]
-    style_directive as _style_directive,
-    focus_directive as _focus_directive,
-    intention_directive as _intention_directive,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
+)
+from cqc_lem.utilities.ai.content_alignment import (
     alignment_directive as _alignment_directive,
-    voice_reference as _voice_reference,
-    select_focus_topic as _select_focus_topic,
-    lead_magnet_preserve_note as _lead_magnet_preserve_note,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    focus_directive as _focus_directive,
+)
+from cqc_lem.utilities.ai.content_alignment import (
     humanize_text as _humanize_text,
+)
+from cqc_lem.utilities.ai.content_alignment import (
     humanize_title as _humanize_title,
 )
-from cqc_lem.utilities.ai import slop_lint as _slop
+from cqc_lem.utilities.ai.content_alignment import (
+    intention_directive as _intention_directive,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    lead_magnet_preserve_note as _lead_magnet_preserve_note,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    select_focus_topic as _select_focus_topic,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    style_directive as _style_directive,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    voice_reference as _voice_reference,
+)
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news
-from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
-from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE, \
-    linkedin_post_format_directive, enforce_post_readability
-from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_info, log_warning
-from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
-from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
-from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO
+from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER, supports_audio
+
 # create_runway_video lives in video_models (model abstraction); re-exported here
 # so existing `from ai_helper import create_runway_video` imports keep working.
 # The redundant `as create_runway_video` alias marks it an intentional re-export.
 from cqc_lem.utilities.ai.video_models import create_runway_video as create_runway_video  # noqa: F401
-from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER, supports_audio
+from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
+from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
-from dotenv import load_dotenv
+from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin_formatter import (
+    PLAIN_PUNCTUATION_DIRECTIVE,
+    enforce_post_readability,
+    linkedin_post_format_directive,
+    normalize_public_text,
+)
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
+from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 
 # Load .env file
 load_dotenv()
@@ -59,7 +90,8 @@ def _attach_routing_metadata(kwargs: dict, user_id, feature) -> None:
     The client attaches this from the ambient scope for every request already; doing it here is what
     lets `_call_llm`'s explicit `_track_user_id`/`_track_feature` beat that scope. Only tier aliases
     are routable, so nothing is attached to raw provider models. Best-effort: an existing
-    `extra_body` from the caller wins over ours."""
+    `extra_body` from the caller wins over ours.
+    """
     if not str(kwargs.get("model") or "").startswith("lem-"):
         return
     extra_body = kwargs.setdefault("extra_body", {})
@@ -73,7 +105,8 @@ def _resolve_serving_model(response, requested_model: str) -> str:
 
     LiteLLM returns the deployed model id in `response.model` (OpenAI SDK shape) or inside
     `_hidden_params.model` / `_hidden_params.model_id`. When neither is present, the requested
-    alias is the best fallback — spend is then priced by the tier the caller asked for."""
+    alias is the best fallback — spend is then priced by the tier the caller asked for.
+    """
     if response is None:
         return requested_model
     serving = getattr(response, "model", None)
@@ -93,7 +126,8 @@ def _first_choice(response) -> "Optional[Any]":
     Some proxy / edge responses return a response object with `choices=None`
     (or an empty list) instead of raising. Treating that as "no usable output"
     lets the caller degrade gracefully rather than surfacing a TypeError into
-    error tracking (issue #768)."""
+    error tracking (issue #768).
+    """
     try:
         choices = getattr(response, "choices", None)
         if choices and len(choices) > 0:
@@ -110,15 +144,16 @@ def _call_llm(**kwargs):
     both are popped before the LiteLLM call. Omitted values fall back to the ambient
     `llm_attribution()` scope, then to the running Celery task's name. The serving model (what
     LiteLLM actually ran) is captured from the response and passed to `track_llm_call` separately
-    from the requested tier alias, so fallback/down-routed calls price by the real model."""
+    from the requested tier alias, so fallback/down-routed calls price by the real model.
+    """
     track_user_id = kwargs.pop("_track_user_id", None)
     track_feature = kwargs.pop("_track_feature", None)
     model = kwargs.get("model", "unknown")
     start = time.time()
-    log_debug(f"LLM call starting", ai_model=model)
+    log_debug("LLM call starting", ai_model=model)
 
     def _attribution():
-        from cqc_lem.utilities.observability import current_llm_attribution, FEATURE_SYSTEM
+        from cqc_lem.utilities.observability import FEATURE_SYSTEM, current_llm_attribution
         ambient_user_id, ambient_feature = current_llm_attribution()
         return (
             track_user_id if track_user_id is not None else ambient_user_id,
@@ -144,7 +179,7 @@ def _call_llm(**kwargs):
             duration_ms=duration_ms,
         )
         try:
-            from cqc_lem.utilities.observability import track_llm_call, llm_cache_hit
+            from cqc_lem.utilities.observability import llm_cache_hit, track_llm_call
             user_id, feature = _attribution()
             track_llm_call(
                 model=model,
@@ -234,7 +269,8 @@ def synthesize_profile(profile: "LinkedInProfile") -> str:
     It captures who they are (role, industry/domain), core expertise, the audience they serve, their
     tone/voice characteristics, and credibility points/values. It DELIBERATELY EXCLUDES the volatile
     "currently building X / working on Y" noise in `recent_activities` (stripped from the input, and
-    hard-excluded again in the prompt) so nothing here can reintroduce project/self-promo drift."""
+    hard-excluded again in the prompt) so nothing here can reintroduce project/self-promo drift.
+    """
     import json as _json
     durable = profile.model_dump(mode="json", exclude=_SYNTHESIS_EXCLUDE_FIELDS)
     durable_json = _json.dumps(durable, default=str)
@@ -281,7 +317,8 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
     """Return the user's cached profile synthesis, lazily generating + persisting it when missing or
     stale so generation never breaks before the first weekly refresh. Returns the cached value (even
     if stale) or None when there is nothing to synthesize from — callers pass the result straight to
-    the generators, which fall back to the guarded full JSON when it is None."""
+    the generators, which fall back to the guarded full JSON when it is None.
+    """
     from cqc_lem.utilities.db import get_profile_synthesis, set_profile_synthesis
     cached_text = None
     try:
@@ -325,7 +362,8 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
     got — these surfaces (seed comments, thread replies, DMs) have no review queue to hold a draft
     in, so a still-slopped one ships with a structured warning rather than nothing at all. The feed
     comment path and the post gate are the two that actually block; see `generate_ai_response` and
-    `evaluate_post_gates`."""
+    `evaluate_post_gates`.
+    """
     current = draft
     if not current:
         return current
@@ -349,7 +387,8 @@ def _comment_contract_variant(user_id: int = None) -> "str | None":
     """This user's arm of the comment-contract prompt experiment (issue #652). Never raises: a
     PostHog problem must cost us the experiment, not the comment — and `comment_contract_directive`
     treats None (like any unknown arm) as the control contract, which is the prompt that shipped
-    before the experiment existed."""
+    before the experiment existed.
+    """
     try:
         from cqc_lem.utilities.experiments import COMMENT_CONTRACT_PROMPT, resolve_variant
         return resolve_variant(COMMENT_CONTRACT_PROMPT, user_id)
@@ -384,7 +423,8 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     The contract's closing ask is the pilot LLM prompt experiment (issue #652): `user_id` decides the
     arm, and it is scoped to FRESH FEED comments only because that is the only surface the #628 T+24h
     sweep measures author-reply rate on — the seed and second-wave comments would add exposures the
-    metric can never cover."""
+    metric can never cover.
+    """
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
@@ -506,7 +546,8 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     The checks run on the FINAL text (post-humanization) — what would actually ship — so nothing
     downstream can reintroduce a banned opener or a tell. Shared by every self-authored comment
     surface (feed comments #617, the golden-hour second wave #622) so a new surface can never ship
-    with a weaker contract than the one it copied."""
+    with a weaker contract than the one it copied.
+    """
     fix_directive = ""
     failures = []
     attempts = _framework.comment_gate_max_attempts()
@@ -559,7 +600,8 @@ def choose_post_reaction(post_content: str, comment_text: str = None,
 
     Light + fast: one short `lem-simple` call with minimal context (a post snippet + our comment).
     If the LiteLLM proxy fails it retries once directly against OpenAI; if that also fails it returns
-    a random choice — so a valid reaction is always returned."""
+    a random choice — so a valid reaction is always returned.
+    """
     options = allowed or POST_REACTIONS
     messages = [
         {"role": "system",
@@ -597,7 +639,8 @@ def choose_post_reaction(post_content: str, comment_text: str = None,
 def _clean_newsletter_body(body: str) -> str:
     """Safety net: strip stray markdown the model may slip in (headers, bold, bullet markers) so the
     body typed via Selenium send_keys is clean — LinkedIn's article editor does NOT render markdown.
-    Reuses sanitize_for_linkedin (which keeps blank-line spacing between sections intact)."""
+    Reuses sanitize_for_linkedin (which keeps blank-line spacing between sections intact).
+    """
     from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
     return sanitize_for_linkedin(body or "")
 
@@ -615,7 +658,8 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
     `recent_hook_styles` (most-recent first) are AVOIDED so no SHAPE repeats — and
     enforce_blueprint_variety GUARANTEES that in code regardless of what the model returns. Each item
     is {"subject", "angle", "format", "hook_style", "cta_style", "structure"}. Robust JSON parsing;
-    returns [] on any failure so the caller can gracefully fall back to single-topic generation."""
+    returns [] on any failure so the caller can gracefully fall back to single-topic generation.
+    """
     import json as _json
     count = max(1, int(count))
     prior = [str(s).strip() for s in (prior_subjects or []) if str(s).strip()]
@@ -732,7 +776,8 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     from the durable `profile_synthesis` (falls back to the guarded full profile JSON only when none
     supplied). `guidance` is optional free-text steering for a regeneration (edit the same subject or
     take a completely different direction). Returns {'title','subtitle','subject','body',
-    'format','hook_style','cta_style','opening_line'} or None."""
+    'format','hook_style','cta_style','opening_line'} or None.
+    """
     import json as _json
     src = f"\n\nSource material to repurpose (from the author's blog):\n{blog_content[:4000]}" if blog_content else ""
     topic_line = f"Newsletter overall theme/description: {topic}\n" if topic else ""
@@ -884,7 +929,8 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
 def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None,
                         profile_synthesis: str = None) -> "str | None":
     """A short, value-add post for a LinkedIn Group — a genuine insight or open question for that
-    community, NEVER promotional (groups penalize/moderate self-promo). Ends inviting discussion."""
+    community, NEVER promotional (groups penalize/moderate self-promo). Ends inviting discussion.
+    """
     ctx = f"for the LinkedIn group \"{group_name}\"" if group_name else "for a professional LinkedIn group"
     system_prompt = {
         "role": "system",
@@ -916,7 +962,8 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
     """The author's own FIRST comment on their post, to seed a discussion thread (threads drive
     reach). The model picks whatever fits the post — an open question to the audience OR a short
     behind-the-scenes insight/context the post didn't cover — and always invites replies. No
-    links (link-in-first-comment is penalized in 2026), no hashtags, short and human."""
+    links (link-in-first-comment is penalized in 2026), no hashtags, short and human.
+    """
     system_prompt = {
         "role": "system",
         "content": """You are the AUTHOR of the LinkedIn post below, writing the FIRST comment on
@@ -965,7 +1012,8 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
     draft that fails — an empty second wave costs nothing, a filler one costs reach.
 
     `story_directive` is the story-bank injection (issue #620): its facts are the ONLY personal
-    specifics the model may state, so the added insight is the user's own material, never invented."""
+    specifics the model may state, so the added insight is the user's own material, never invented.
+    """
     system_prompt = {
         "role": "system",
         "content": """You are the AUTHOR of the LinkedIn post below, adding a follow-up comment on
@@ -1015,7 +1063,8 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
                           prefs: dict = None, profile_synthesis: str = None) -> "str | None":
     """Reply to a commenter on the AUTHOR's own post so the thread KEEPS GOING: acknowledge their
     specific point, add one useful thought, and END with a genuine, easy follow-up question directed
-    back to them. First-hour thread depth is the top 2026 reach signal. Short."""
+    back to them. First-hour thread depth is the top 2026 reach signal. Short.
+    """
     system_prompt = {
         "role": "system",
         "content": """You are the post AUTHOR replying to a comment on YOUR OWN post. Keep the
@@ -1050,7 +1099,8 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
     """Reply to someone who replied to OUR comment on SOMEONE ELSE'S post (issue #478). Unlike
     generate_thread_reply, we are NOT the post author here — we're a guest in their thread, so the
     prompt must not speak as if we own the post. Acknowledge their specific point, add one useful
-    thought, optionally a light question. Short, in our own voice."""
+    thought, optionally a light question. Short, in our own voice.
+    """
     system_prompt = {
         "role": "system",
         "content": """You are replying to someone who responded to YOUR comment on SOMEONE ELSE'S
@@ -1090,7 +1140,8 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
     pricing, availability, or whether we can help. This is the one place the no-self-promo guardrail
     does NOT apply: they raised their hand, so answering directly is what they want. Never invent
     prices, timelines, or capabilities — acknowledge the ask, give one genuinely useful line, and
-    move it to a real conversation. The draft is APPROVAL-GATED; a human sends it."""
+    move it to a real conversation. The draft is APPROVAL-GATED; a human sends it.
+    """
     is_dm = str(channel).lower() == "dm"
     limit = 300 if is_dm else 500
     system_prompt = {
@@ -1137,7 +1188,8 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     `intent` branches the brief (interested -> propose a call, objection -> address it, not-now ->
     light touch, neutral -> stay human); `template_hint` is the operator's own nurture template for
     this step, used as the intended direction rather than text to copy. Never invent prices,
-    timelines, or capabilities. The draft is APPROVAL-GATED; a human sends it."""
+    timelines, or capabilities. The draft is APPROVAL-GATED; a human sends it.
+    """
     from cqc_lem.utilities.ai.dm_nurture import nurture_guidance
     system_prompt = {
         "role": "system",
@@ -1187,7 +1239,8 @@ def optimize_post_hook(post_content: str, prefs: dict = None,
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
     characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy
     (a framework/checklist) with ONE soft 'save this' invite. Preserves substance + voice. Returns
-    the original text on any failure."""
+    the original text on any failure.
+    """
     if not post_content:
         return post_content
     system_prompt = {
@@ -1221,7 +1274,8 @@ def optimize_post_hook(post_content: str, prefs: dict = None,
 def post_is_relevant(post_content: str, include_topics: list) -> bool:
     """LLM relevance gate: is this post about any of the user's include_topics? Used on top of
     literal keyword matching so targeting catches topical fit beyond exact words. Fails OPEN
-    (returns True) on any error so a classifier hiccup never silently blocks all engagement."""
+    (returns True) on any error so a classifier hiccup never silently blocks all engagement.
+    """
     if not include_topics:
         return True
     try:
@@ -1257,7 +1311,7 @@ def get_ai_description_of_profile(linked_in_profile: LinkedInProfile):
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a professional career coach and personality analyst with over 20 years of experience in understanding human behavior through social media profiles, particularly LinkedIn. Your expertise is in evaluating profiles to determine personal and professional character traits based on the content of their work experience, endorsements, skills, recommendations, posts, and interactions.
+        "content": """Act like a professional career coach and personality analyst with over 20 years of experience in understanding human behavior through social media profiles, particularly LinkedIn. Your expertise is in evaluating profiles to determine personal and professional character traits based on the content of their work experience, endorsements, skills, recommendations, posts, and interactions.
 
         Your objective is to thoroughly analyze LinkedIn profile data to extract insights about the individual’s character traits, such as leadership, teamwork, creativity, reliability, adaptability, communication skills, and more. Use subtle cues from the person's descriptions of job roles, their endorsements from others, the language used in their recommendations, and their professional interactions to form a comprehensive assessment. Ensure to identify both overt and nuanced traits, and support each finding with examples from the profile content. Pay special attention to the consistency between the skills endorsed by others and the responsibilities listed by the individual.
         
@@ -1292,7 +1346,6 @@ def get_ai_description_of_profile(linked_in_profile: LinkedInProfile):
 
 def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, industry_count: int = 3):
     """Generate industries based on the LinkedIn user profile."""
-
     # Use json to output to string
     linked_in_profile_json = linked_in_profile.model_dump_json()
     prompt = f"""Please tell me what {industry_count} industry(s) that most align with the following LinkedIn Profile's career and personal interest.
@@ -1309,7 +1362,7 @@ def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, indust
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a professional career analyst specializing in LinkedIn profile analysis. 
+        "content": """Act like a professional career analyst specializing in LinkedIn profile analysis. 
         You have 15 years of experience identifying professional interests, career trajectories, and industry affiliations based on online profiles. 
         Your expertise includes assessing user activities, language use, endorsements, skills, and affiliations to infer professional domains and preferences.  
 
@@ -1487,7 +1540,8 @@ def apply_post_guidance(post_content: str, guidance: str, prefs: dict = None,
     their voice and every alignment rule (focus/goals, anti-self-promo, emoji/hashtag prefs). This
     is the post-side of the newsletter 'regenerate with suggestions' flow — the base post is produced
     by the normal generation pipeline (which honors saved settings) and this pass folds in the typed
-    guidance. Returns the revised post; on empty guidance returns the input unchanged."""
+    guidance. Returns the revised post; on empty guidance returns the input unchanged.
+    """
     if not (guidance or "").strip():
         return post_content
 
@@ -1522,7 +1576,8 @@ Return ONLY the revised post text — no preamble, no explanation.
 def get_ai_message_refinement(original_message: str, character_limit: int = 300,
                               extra_directive: str = ""):
     """`extra_directive` is appended to the editor's system prompt — the DM path uses it to feed the
-    slop lint's violations back in on a re-refine (issue #625)."""
+    slop lint's violations back in on a re-refine (issue #625).
+    """
     character_limit_string = f"\nThe refined message needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand\n\n " if character_limit > 0 else ""
 
     prompt = f"""Please review and refine the following message. {character_limit_string} Message: {original_message}
@@ -1535,7 +1590,7 @@ def get_ai_message_refinement(original_message: str, character_limit: int = 300,
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a professional editor with expertise in communication for business professionals, particularly on platforms like LinkedIn. 
+        "content": """Act like a professional editor with expertise in communication for business professionals, particularly on platforms like LinkedIn. 
             You have helped clients refine and streamline their messaging for more than 15 years, ensuring clarity, professionalism, and engagement.
     
             Your task is to review a provided message. The goal is to ensure the message makes sense, reads smoothly, and presents key information in a clear, concise, and professional manner. 
@@ -1588,7 +1643,6 @@ def get_ai_message_refinement(original_message: str, character_limit: int = 300,
 def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                               profile_synthesis: str = None, prefs: dict = None):
     """Generate video content based on the LinkedIn user profile and buyer stage."""
-
     # Voice/credibility reference — prefer the stable synthesis, else the guarded full JSON.
     linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
@@ -1628,7 +1682,7 @@ def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage:
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like an experienced video marketing strategist and content creator.** You have years of expertise in crafting LinkedIn-specific video content designed to appeal to distinct stages of the buyer's journey, from awareness to decision. Your goal is to ensure the video aligns closely with the user's input and ChatGPT's known limitations, providing a professional, impactful result.
+        "content": """Act like an experienced video marketing strategist and content creator.** You have years of expertise in crafting LinkedIn-specific video content designed to appeal to distinct stages of the buyer's journey, from awareness to decision. Your goal is to ensure the video aligns closely with the user's input and ChatGPT's known limitations, providing a professional, impactful result.
 
         ### Objective
         Based on the LinkedIn profile data and specified buyer’s journey stage provided by the user, generate a script and design elements for a LinkedIn-optimized video. This video should resonate with the intended audience and adhere to LinkedIn’s best practices for viewer engagement and platform compatibility.
@@ -1720,7 +1774,7 @@ def summarize_recent_activity(recent_activity_profile: LinkedInProfile, main_pro
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a professional career coach and personality analyst with over 20 years of experience in analyzing LinkedIn profiles and assessing professional interests. Your expertise lies in evaluating profiles to understand character traits and key interests, as well as identifying relevant connections between users based on their professional activities and interactions.
+        "content": """Act like a professional career coach and personality analyst with over 20 years of experience in analyzing LinkedIn profiles and assessing professional interests. Your expertise lies in evaluating profiles to understand character traits and key interests, as well as identifying relevant connections between users based on their professional activities and interactions.
 
         You will be provided with details of a LinkedIn profile (main_profile) and a list of recent activities from another profile (recent_activities). Your objective is twofold:
         
@@ -1764,7 +1818,8 @@ def summarize_recent_activity(recent_activity_profile: LinkedInProfile, main_pro
 def _subject_anchor_line(trends: dict) -> str:
     """SUBJECT anchor injected into trend-based post prompts when the trend analysis was anchored to
     one of the user's focus topics — states the assigned subject explicitly so the writer model
-    builds the post around it instead of picking any random thread from the industry analysis."""
+    builds the post around it instead of picking any random thread from the industry analysis.
+    """
     focus_topic = (trends or {}).get("focus_topic")
     if not focus_topic:
         return ""
@@ -1781,11 +1836,9 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
                                         blueprint: dict = None, lead_magnet_cta: str = None,
                                         post_id: int = None, history_directive: str = None,
                                         story_directive: str = None, content_mix: str = None):
+    """Generate a thought leadership post based on user's expertise and industry.
+    Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
     """
-        Generate a thought leadership post based on user's expertise and industry.
-        Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
-    """
-
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=10,
                                                                prefs=prefs, sequence_index=post_id)
     # Fall back to the user's OWN profile industry before the generic "Technology" — a fixed
@@ -1837,7 +1890,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like an experienced thought leadership content creator. You have years of expertise crafting high-impact insights tailored to an executive audience across various industries. Your goal is to develop a compelling, informative, and engaging thought leadership post that reflects the user’s unique perspective and experience. Follow the steps carefully to ensure the content is insightful and relevant.
+        "content": """Act like an experienced thought leadership content creator. You have years of expertise crafting high-impact insights tailored to an executive audience across various industries. Your goal is to develop a compelling, informative, and engaging thought leadership post that reflects the user’s unique perspective and experience. Follow the steps carefully to ensure the content is insightful and relevant.
 
         ### Objective
         Create a thought leadership post based on the user’s expertise and current industry trends. This post should:
@@ -1966,7 +2019,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     if randomize:
         random.shuffle(articles)
-        myprint(f"Articles Shuffled")
+        myprint("Articles Shuffled")
 
     if limit_to and len(articles) > limit_to:
         articles = articles[:limit_to]
@@ -1991,10 +2044,8 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
                                    blueprint: dict = None, lead_magnet_cta: str = None,
                                    post_id: int = None, history_directive: str = None,
                                    story_directive: str = None, content_mix: str = None):
+    """Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
-       Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
-    """
-
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=3,
                                                                prefs=prefs, sequence_index=post_id)
     # Profile industry beats the generic "Technology" fallback (misalignment guard).
@@ -2021,7 +2072,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
     prompt += _subject_anchor_line(trends)
 
-    prompt += f"""\n\n
+    prompt += """\n\n
     ---
     \n
     Make the post insightful and end with a question or prompt that invites engagement from readers.
@@ -2046,7 +2097,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a seasoned industry analyst and content strategist. You specialize in creating timely, relevant posts that share current industry news while showcasing the user's unique insights and expertise. Your goal is to craft a post based on trending topics or news in the user's industry, as inferred from their LinkedIn profile. Tailor the post to align with the buyer’s current stage in their journey—whether they are at the Awareness, Consideration, or Decision stage.
+        "content": """Act like a seasoned industry analyst and content strategist. You specialize in creating timely, relevant posts that share current industry news while showcasing the user's unique insights and expertise. Your goal is to craft a post based on trending topics or news in the user's industry, as inferred from their LinkedIn profile. Tailor the post to align with the buyer’s current stage in their journey—whether they are at the Awareness, Consideration, or Decision stage.
  
         ### Instructions:
         1. **Analyze the User’s Profile**:  
@@ -2102,7 +2153,6 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
 
 def get_industry_trend_from_ai(industry: str, articles: list):
     """Generate industry trend based on the LinkedIn user profile."""
-
     articles_text = "\n".join([
         f"- {article['title']} ({article['date']}): {article['link']}"
         for article in articles
@@ -2124,7 +2174,7 @@ def get_industry_trend_from_ai(industry: str, articles: list):
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a professional market analyst with over 15 years of experience in identifying industry trends and providing actionable insights. Your role is to analyze and interpret data from news articles to uncover patterns, emerging trends, and key industry dynamics.*
+        "content": """Act like a professional market analyst with over 15 years of experience in identifying industry trends and providing actionable insights. Your role is to analyze and interpret data from news articles to uncover patterns, emerging trends, and key industry dynamics.*
 
         When analyzing news articles:
         
@@ -2187,8 +2237,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
                                     blueprint: dict = None, lead_magnet_cta: str = None,
                                     post_id: int = None, history_directive: str = None,
                                     story_directive: str = None, content_mix: str = None):
-    """
-    Generate a post sharing a personal or professional story, based on the user's profile.
+    """Generate a post sharing a personal or professional story, based on the user's profile.
     """
     # Pull from the user's recent milestones, achievements, or challenges
     # Example content: "Reflecting on my journey as a [job title], I’ve learned that..."
@@ -2221,7 +2270,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
     prompt += _subject_anchor_line(trends)
 
-    prompt += f"""\n\n
+    prompt += """\n\n
         ---
         \n
         Conclude with an engaging question or prompt that encourages readers to reflect on similar experiences.
@@ -2246,7 +2295,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a professional storyteller and content strategist. Your goal is to create a meaningful post that shares a personal or professional story from the user’s career journey, highlighting key milestones, achievements, or challenges. Craft a narrative that resonates with readers, giving them insights into the user’s experiences and growth within their field.
+        "content": """Act like a professional storyteller and content strategist. Your goal is to create a meaningful post that shares a personal or professional story from the user’s career journey, highlighting key milestones, achievements, or challenges. Craft a narrative that resonates with readers, giving them insights into the user’s experiences and growth within their field.
  
         ### Instructions:
         1. **Analyze the User’s Profile**:  
@@ -2312,8 +2361,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
                                     blueprint: dict = None, lead_magnet_cta: str = None,
                                     post_id: int = None, history_directive: str = None,
                                     story_directive: str = None, content_mix: str = None):
-    """
-    Generate a question or prompt that encourages engagement from followers.
+    """Generate a question or prompt that encourages engagement from followers.
     """
     # Create a question or engagement prompt related to the user's field
     # Example content: "As a [job title], I’m curious to hear how others are handling [challenge]..."
@@ -2344,7 +2392,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
     prompt += _subject_anchor_line(trends)
 
-    prompt += f"""\n\n
+    prompt += """\n\n
             ---
             \n
             Make the question open-ended and relatable to create meaningful engagement.
@@ -2369,7 +2417,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a social media engagement strategist with expertise in crafting questions that spark meaningful conversations among professionals. Your task is to generate an engaging question or prompt that encourages the user’s followers to share their insights, experiences, or thoughts on a relevant industry topic.
+        "content": """Act like a social media engagement strategist with expertise in crafting questions that spark meaningful conversations among professionals. Your task is to generate an engaging question or prompt that encourages the user’s followers to share their insights, experiences, or thoughts on a relevant industry topic.
  
     ### Instructions:
     1. **Analyze the User’s Profile**:  
@@ -2433,8 +2481,7 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
                                   blueprint: dict = None, lead_magnet_cta: str = None,
                                   history_directive: str = None,
                                   story_directive: str = None, content_mix: str = None):
-    """
-    Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
+    """Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
     # create a LinkedIn-friendly summary
 
@@ -2556,9 +2603,8 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
                                      blueprint: dict = None, lead_magnet_cta: str = None,
                                      history_directive: str = None,
                                      story_directive: str = None, content_mix: str = None):
+    """Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
-        Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
-        """
     # create a LinkedIn-friendly summary
 
     # Use json to output to string
@@ -2755,7 +2801,7 @@ def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
     # Save the generated image
     image_file_path = save_video_url_to_dir(url, save_dir)
 
-    from cqc_lem.utilities.observability import track_media_cost, image_cost_usd
+    from cqc_lem.utilities.observability import image_cost_usd, track_media_cost
     # Price on the FULL ref, but record the model without its ":<64-char digest>" version — an
     # avatar LoRA ref is ~100 chars and cost_ledger.model_tier is VARCHAR(64), so the untrimmed
     # value failed every avatar render's ledger write ("Data too long for column 'model_tier'").
@@ -2768,7 +2814,8 @@ def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
 def generate_flux1_image_from_prompt(prompt: str, *, ratio: str = DEFAULT_IMAGE_RATIO,
                                      image_model: str = DEFAULT_IMAGE_MODEL):
     """Explicit FLUX render — for callers that need a SPECIFIC Replicate model (the admin
-    variant tool, the avatar fallback). Everything else goes through image_gen.render_image_*."""
+    variant tool, the avatar fallback). Everything else goes through image_gen.render_image_*.
+    """
     return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio)
 
 
@@ -2863,7 +2910,6 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     model's output — the LLM is told to stay off audio entirely, because the clause it would
     have to write is made of negatives this system prompt otherwise forbids.
     """
-
     audio_direction = _audio_direction(model, language)
     audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
                   "direction is appended automatically." if audio_direction else "")
@@ -2935,7 +2981,6 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
 
 def ai_check_message_history(message_history_json: str, main_focus: str, message: str, user_name: str = "the recipient"):
     """Check if the message history contains sentiments of the message already. It will return it or try to generate a seamless new message that is tied to the main_focus"""
-
     """Here is the fully optimized and structured prompt based on your one-liner. This prompt includes a clearly defined identity, objective, and step-by-step logic tailored to maximize performance in ChatGPT:
 
     
@@ -2943,7 +2988,7 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
 """
 
     myprint(
-        f'Generating message to the recipient based on the given message history.')
+        'Generating message to the recipient based on the given message history.')
 
 
 
@@ -2969,7 +3014,7 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like a conversational continuity assistant and dialogue analyzer. You specialize in evaluating JSON-formatted message histories between two users to determine logical continuity and sentiment consistency. Your goal is to either repeat a given message or generate a seamless continuation based on conversational context.
+        "content": """Act like a conversational continuity assistant and dialogue analyzer. You specialize in evaluating JSON-formatted message histories between two users to determine logical continuity and sentiment consistency. Your goal is to either repeat a given message or generate a seamless continuation based on conversational context.
     
     Objective:
     You are provided with:
@@ -3051,8 +3096,8 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     """
     from cqc_lem.utilities.db import get_user_password_pair_by_id
     from cqc_lem.utilities.linkedin.helper import get_my_profile
-    from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile as _Profile
+    from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 
     stage_lower = (stage or "").lower()
     if "awareness" in stage_lower:
@@ -3238,7 +3283,8 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
 
 def _normalize_carousel_strings(value):
     """Recursively normalize every string in the carousel data (slide titles/content) so rogue
-    typographic characters never get rendered onto the slide images."""
+    typographic characters never get rendered onto the slide images.
+    """
     if isinstance(value, str):
         return normalize_public_text(value)
     if isinstance(value, dict):
@@ -3259,7 +3305,8 @@ _LEM_BRAND_VOICE = (
 
 def generate_onboarding_nudge_copy(user_id: int, nudge: dict) -> str:
     """Rewrite a stalled-user activation nudge (issue #500) in LEM's brand voice. Short, one call to
-    `lem-simple`. Returns the default body on any failure — the nudge must never depend on the LLM."""
+    `lem-simple`. Returns the default body on any failure — the nudge must never depend on the LLM.
+    """
     default_body = (nudge or {}).get("body") or ""
     try:
         response = _call_llm(

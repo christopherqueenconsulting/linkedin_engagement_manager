@@ -96,7 +96,8 @@ class TestAttributionMetadata:
 
     def test_embeddings_are_attributed_too(self):
         """Embeddings bypass _call_llm entirely (comment dedup, feedback clustering) — the client is
-        the only thing standing between them and an anonymous $ai_embedding."""
+        the only thing standing between them and an anonymous $ai_embedding.
+        """
         client, recorder = _client()
         with patch("cqc_lem.utilities.observability.current_llm_attribution",
                    return_value=(5, "comment")):
@@ -111,7 +112,8 @@ class TestTheSharedClient:
     """The tests above build their own AttributedOpenAI, so they all still pass if the module-level
     `client` — the ONE instance every AI helper imports — is ever rebuilt as a plain `OpenAI()`.
     That regression would silently strip distinct_id + feature off every proxy event and leave no
-    other trace, which is exactly the failure this design exists to prevent. Pin it here."""
+    other trace, which is exactly the failure this design exists to prevent. Pin it here.
+    """
 
     def test_the_shared_client_is_the_attributed_one(self):
         from cqc_lem.utilities.ai.client import AttributedOpenAI, client
@@ -119,7 +121,8 @@ class TestTheSharedClient:
 
     def test_the_shared_client_stamps_the_request_it_actually_builds(self):
         """Driven through the real singleton's own request builder — no network, no substitute
-        client — so the assertion covers the object production uses."""
+        client — so the assertion covers the object production uses.
+        """
         from openai._models import FinalRequestOptions
 
         from cqc_lem.utilities.ai.client import client

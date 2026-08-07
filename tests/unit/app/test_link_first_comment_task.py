@@ -1,9 +1,11 @@
 """Unit tests for the link-in-first-comment mechanic at the task layer (issue #392 — C3):
-post_to_linkedin holds the link back, auto_seed_comment_on_post delivers it."""
+post_to_linkedin holds the link back, auto_seed_comment_on_post delivers it.
+"""
 
-import pytest
 from contextlib import ExitStack
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -72,7 +74,8 @@ class TestPostToLinkedinHoldsLinkBack:
 
     def test_seed_comment_is_dispatched_after_publish(self):
         """The seed task is dispatched HERE (not by the scheduler) because it needs the published
-        post's URL — and it is what delivers the held-back link."""
+        post's URL — and it is what delivers the held-back link.
+        """
         from cqc_lem.app.run_automation import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, _BODY_WITH_LINK)
@@ -94,7 +97,8 @@ class TestPostToLinkedinHoldsLinkBack:
 
     def test_failed_publish_leaves_the_stored_post_intact(self):
         """The split is in-memory until the share succeeds — a failed publish must not strand the
-        post in the link-held-back state, or a retry would publish a body whose link is gone."""
+        post in the link-held-back state, or a retry would publish a body whose link is gone.
+        """
         from cqc_lem.app.run_automation import post_to_linkedin
         with ExitStack() as stack:
             _post_patches(stack, _BODY_WITH_LINK, share_urn=None)
@@ -107,8 +111,8 @@ class TestPostToLinkedinHoldsLinkBack:
 
     def test_failed_carousel_leaves_the_stored_post_intact(self):
         """Same for the carousel early-return path (no usable slide images)."""
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
         with ExitStack() as stack:
             m = _post_patches(stack, _BODY_WITH_LINK)
             m["get_post_type"].return_value = PostType.CAROUSEL
@@ -124,8 +128,9 @@ class TestPostToLinkedinHoldsLinkBack:
 
 class TestSeedCommentDeliversTheLink:
     def _seed(self, stack, held_link, seed_text="What surprised you most?", already_commented=False):
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
         from unittest.mock import MagicMock
+
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
         stack.enter_context(patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL))
         stack.enter_context(patch(f"{_RA}.has_user_commented_on_post_url", return_value=already_commented))
         stack.enter_context(patch(f"{_RA}.get_post_content", return_value="Three lessons."))

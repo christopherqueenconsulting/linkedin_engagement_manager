@@ -1,9 +1,9 @@
 """Unit tests for POST /api/trial/extend and the Stripe conversion mirror (issue #499)."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.unit

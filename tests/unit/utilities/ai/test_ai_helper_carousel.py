@@ -1,8 +1,9 @@
 """Unit tests for generate_carousel_content() in ai_helper.py."""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def _make_llm_mock(json_content: dict) -> MagicMock:
@@ -38,8 +39,8 @@ class TestGenerateCarouselContent:
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         profile = LinkedInProfile(full_name="Test User", job_title="CTO", company_name="ACME", industry="Technology")
         # generate_carousel_content uses local imports from their source modules
-        from contextlib import ExitStack
         import contextlib
+        from contextlib import ExitStack
 
         @contextlib.contextmanager
         def _multi():
@@ -90,7 +91,8 @@ class TestGenerateCarouselContent:
 
     def test_guidance_reaches_the_slide_prompt(self):
         """Issue #794: the regenerate flow's free-text guidance must steer the SLIDES, not just the
-        caption — and must not license an invented number to satisfy the request."""
+        caption — and must not license an invented number to satisfy the request.
+        """
         payload = _educational_carousel_json()
         with self._patch_llm(payload) as mock_llm, self._patch_profile():
             from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
@@ -128,8 +130,10 @@ class TestGenerateCarouselContent:
 @pytest.mark.unit
 def test_wall_of_text_caption_is_reflowed_and_capped():
     """Regression (post 72): a caption that comes back as a long single paragraph must be reflowed
-    into scannable paragraphs and hard-capped under the LinkedIn limit."""
+    into scannable paragraphs and hard-capped under the LinkedIn limit.
+    """
     from contextlib import contextmanager
+
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 
     wall = " ".join(f"Intro sentence number {i} is here." for i in range(150))  # long, no line breaks
@@ -149,7 +153,7 @@ def test_wall_of_text_caption_is_reflowed_and_capped():
             yield
 
     with _env():
-        from cqc_lem.utilities.ai.ai_helper import generate_carousel_content, _CAROUSEL_CAPTION_MAX_CHARS
+        from cqc_lem.utilities.ai.ai_helper import _CAROUSEL_CAPTION_MAX_CHARS, generate_carousel_content
         post_text, _ = generate_carousel_content(user_id=1, stage="awareness")
 
     assert len(post_text) <= _CAROUSEL_CAPTION_MAX_CHARS   # hard-capped

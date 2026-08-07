@@ -1,10 +1,12 @@
 """Unit tests for the topic-drift fix: when a user declares focus_topics, trend-based post subjects
 are ANCHORED to the intersection of their industry and a deterministically ROTATED focus topic —
 research queries, the GoogleNews fallback, and the writer prompt all receive the anchor. With no
-focus topics, the original profile-industry-only behavior is byte-for-byte unchanged."""
+focus topics, the original profile-industry-only behavior is byte-for-byte unchanged.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

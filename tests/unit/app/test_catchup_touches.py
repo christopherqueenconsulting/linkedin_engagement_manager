@@ -1,8 +1,10 @@
 """Unit tests for LinkedIn Catch-up automation (issue #482): classification, scoring, dedup,
-approval gating, the capped send drip and the reply->funnel routing."""
+approval gating, the capped send drip and the reply->funnel routing.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities.linkedin.message_thread import ThreadState
 
@@ -15,7 +17,8 @@ _RS = "cqc_lem.app.run_scheduler"
 @pytest.fixture(autouse=True)
 def _no_pending_backlog():
     """The send drip counts the drafted-but-unapproved backlog on every beat (issue #792). Default it
-    to an empty queue so only the tests that care about it have to say so."""
+    to an empty queue so only the tests that care about it have to say so.
+    """
     with patch(f"{_RS}.count_pending_catchup_touches", return_value=0):
         yield
 
@@ -72,15 +75,17 @@ class TestClassifyCatchupMoment:
 
 class TestCatchupEventPeriod:
     def test_annual_events_bucket_by_year(self):
-        from cqc_lem.app.run_automation import _catchup_event_period
         from datetime import datetime, timezone
+
+        from cqc_lem.app.run_automation import _catchup_event_period
         now = datetime(2026, 7, 24, tzinfo=timezone.utc)
         assert _catchup_event_period("birthday", now) == "2026"
         assert _catchup_event_period("work_anniversary", now) == "2026"
 
     def test_one_off_events_bucket_by_month(self):
-        from cqc_lem.app.run_automation import _catchup_event_period
         from datetime import datetime, timezone
+
+        from cqc_lem.app.run_automation import _catchup_event_period
         now = datetime(2026, 7, 24, tzinfo=timezone.utc)
         assert _catchup_event_period("job_change", now) == "2026-07"
         assert _catchup_event_period("promotion", now) == "2026-07"
@@ -177,7 +182,8 @@ class TestScrapeCatchupMoments:
     def test_skips_cards_without_a_profile_link(self):
         """An empty feed is a normal day and the scan runs daily per user, so this is DEBUG — three
         WARNINGs inside the escalation window re-emit at ERROR and file a grouped $exception for a
-        no-op. The `no_moments` run report (issue #792) is what carries it."""
+        no-op. The `no_moments` run report (issue #792) is what carries it.
+        """
         from cqc_lem.app.run_automation import _scrape_catchup_moments
         card = MagicMock()
         card.find_elements.return_value = []
@@ -263,7 +269,8 @@ class TestLinkedInDraftHarvest:
     def test_button_chrome_is_never_mistaken_for_a_message(self, chrome):
         """`button[aria-label*='congrats']` matches LinkedIn's OWN trigger, and an empty composer
         renders its placeholder — both clear the length floor, so without this the card's chrome
-        becomes the congratulations we queue (and, on auto-approve, SEND). Issue #792."""
+        becomes the congratulations we queue (and, on auto-approve, SEND). Issue #792.
+        """
         from cqc_lem.app.run_automation import _clean_suggested_message
         assert _clean_suggested_message(chrome) == ""
 
@@ -346,8 +353,9 @@ class TestLinkedInDraftHarvest:
         chains.assert_called_once()  # fell back to Escape
 
     def test_a_selenium_error_is_swallowed(self):
-        from cqc_lem.app.run_automation import _harvest_linkedin_draft
         from selenium.common import ElementNotInteractableException
+
+        from cqc_lem.app.run_automation import _harvest_linkedin_draft
         trigger = self._trigger()
         trigger.click.side_effect = ElementNotInteractableException("nope")
         card = MagicMock()
@@ -667,7 +675,8 @@ class TestSendCatchupTouch:
 class TestScheduleCatchupFollowup:
     """The row this schedules is what process_user_followups reads — and the reply check it drives is
     the ONLY thing that routes a replying prospect into the funnel, so it has to exist even for a user
-    who never configured a step-1 template (the defaults only cover step 0)."""
+    who never configured a step-1 template (the defaults only cover step 0).
+    """
 
     def test_configured_step_one_template_runs_the_normal_sequence(self):
         from cqc_lem.app.run_automation import _schedule_catchup_followup
@@ -680,7 +689,8 @@ class TestScheduleCatchupFollowup:
     @pytest.mark.parametrize("event_type", ["job_change", "promotion"])
     def test_high_value_milestone_gets_a_reply_check_without_a_template(self, event_type):
         from datetime import datetime, timezone
-        from cqc_lem.app.run_automation import _schedule_catchup_followup, CATCHUP_REPLY_CHECK_HOURS
+
+        from cqc_lem.app.run_automation import CATCHUP_REPLY_CHECK_HOURS, _schedule_catchup_followup
         with patch(f"{_RA}.get_dm_template", return_value=None), \
              patch(f"{_RA}.enqueue_next_followup") as nxt, patch(f"{_RA}.enqueue_followup") as enq:
             _schedule_catchup_followup(1, "https://www.linkedin.com/in/jane", "Jane", event_type)
@@ -746,7 +756,8 @@ class TestRouteRepliedCatchupToFunnel:
 
 class TestCatchupHandoffToNurture:
     """The reply path is shared with DM auto-nurture (issue #485): the nurture draft wins when there
-    is one, the funnel hand-off is the fallback, and an explicit 'no' gets neither."""
+    is one, the funnel hand-off is the fallback, and an explicit 'no' gets neither.
+    """
 
     def _followup(self):
         return {"id": 3, "user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
@@ -880,7 +891,8 @@ class TestCatchupDispatchers:
 
 class TestCatchupRunReport:
     """Issue #792: EVERY catch-up run reports, including the ones that draft or send nothing —
-    otherwise "the feed had nothing today" and "the lane is broken" are the same silence."""
+    otherwise "the feed had nothing today" and "the lane is broken" are the same silence.
+    """
 
     def _patches(self, moments, prefs=None):
         return TestAutomateCatchupTouches()._patches(moments, prefs=prefs)
@@ -914,7 +926,8 @@ class TestCatchupRunReport:
 
     def test_unclassifiable_moments_report_none_qualified_with_zero_classified(self):
         """The feed rendered cards but none read as a milestone — a selector/copy drift, not a quiet
-        day. `classified == 0` beside `moments > 0` is what separates the two."""
+        day. `classified == 0` beside `moments > 0` is what separates the two.
+        """
         report = self._run_scan([_moment(text="People you may know"),
                                  _moment(text="Suggested for you",
                                          profile_url="https://www.linkedin.com/in/pat")])
@@ -1020,7 +1033,8 @@ class TestCatchupRunReport:
     def test_send_drip_separates_an_unapproved_backlog_from_an_empty_queue(self):
         """The reported symptom: drafts exist, none were approved, so nothing ever sends. The scan
         reports its `drafted` count once a day — for the other 23 hours this beat is the only
-        evidence, and it read `nothing_to_send` exactly like a lane that had drafted nothing."""
+        evidence, and it read `nothing_to_send` exactly like a lane that had drafted nothing.
+        """
         from cqc_lem.app.run_scheduler import auto_check_catchup_touches
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_approved_catchup_touches", return_value=[]), \
@@ -1038,7 +1052,8 @@ class TestCatchupRunReport:
 
     def test_a_dispatching_beat_still_reports_the_backlog_behind_it(self):
         """`pending` rides on every beat, not just the idle ones — a lane sending its cap while a
-        backlog piles up unapproved is a different story from one that has cleared its queue."""
+        backlog piles up unapproved is a different story from one that has cleared its queue.
+        """
         from cqc_lem.app.run_scheduler import auto_check_catchup_touches
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7)]), \
@@ -1077,7 +1092,8 @@ class TestCatchupRunReport:
 
     def test_an_unapproved_backlog_stays_debug_not_a_repeating_warning(self):
         """This beats 72x a day. A steady, working state must not log at INFO/WARNING — the
-        recurrence escalation would re-emit it at ERROR and file a grouped $exception."""
+        recurrence escalation would re-emit it at ERROR and file a grouped $exception.
+        """
         from cqc_lem.app.run_automation import report_catchup_run
         with patch(f"{_RA}.track_catchup_run"), \
              patch(f"{_RA}.log_debug") as dbg, patch(f"{_RA}.log_info") as info:
@@ -1090,7 +1106,8 @@ class TestCatchupRunReport:
     def test_send_drip_reports_a_queue_stuck_behind_a_disconnected_account(self):
         """Approved touches whose owner isn't connected used to be counted nowhere, so the report
         read `nothing_to_send` while a real queue sat there — and the per-touch skip warned every
-        20 minutes, which the recurrence escalation re-emits at ERROR."""
+        20 minutes, which the recurrence escalation re-emits at ERROR.
+        """
         from cqc_lem.app.run_scheduler import auto_check_catchup_touches
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7), (2, 7)]), \
@@ -1119,7 +1136,8 @@ class TestCatchupRunReport:
 class TestCatchupDeliveryReport:
     """Issue #792: `dispatched` is not `sent`. A deferred touch goes back to 'approved' and the drip
     re-dispatches it on the next 20-minute beat, so the send phase alone shows a climbing dispatch
-    count for a lane that has delivered nothing all day — the reporter's exact symptom."""
+    count for a lane that has delivered nothing all day — the reporter's exact symptom.
+    """
 
     def _send(self, **overrides):
         from cqc_lem.app.run_automation import send_catchup_touch
@@ -1146,7 +1164,8 @@ class TestCatchupDeliveryReport:
 
     def test_the_account_wide_dm_cap_is_distinguishable_from_the_catchup_cap(self):
         """The two deferrals look identical from the drip — both leave the row 'approved'. Only the
-        status says which cap the user has to raise."""
+        status says which cap the user has to raise.
+        """
         assert self._send(dms_today=20)["status"] == "dm_capped"
         assert self._send(catchup_today=5)["status"] == "capped"
 
@@ -1180,7 +1199,8 @@ class TestZeroWalkTripwire:
 
     #964's catch-up scan matched zero cards on a feed showing ten and logged `no_moments` daily for
     weeks. The cross-check anchor is deliberately independent of the chain — cross-checking a chain
-    against its own selector proves nothing, since a rotated anchor answers zero to both."""
+    against its own selector proves nothing, since a rotated anchor answers zero to both.
+    """
 
     @pytest.fixture(autouse=True)
     def _no_sleeps(self):
@@ -1216,8 +1236,9 @@ class TestZeroWalkTripwire:
         debug.assert_called_once()
 
     def test_an_unreadable_cross_check_is_never_a_defect(self):
-        from cqc_lem.app.run_automation import _scrape_catchup_moments
         from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
         driver = MagicMock()
         driver.find_elements.side_effect = WebDriverException("session gone")
         with patch(f"{_RA}.find_all_first", return_value=[]), \
@@ -1227,7 +1248,8 @@ class TestZeroWalkTripwire:
 
     def test_cards_that_render_but_yield_no_moments_do_not_trip_the_wire(self):
         """Ads and prompts render as listitems and are filtered by design — that is the funnel
-        doing its job, not the locator being blind."""
+        doing its job, not the locator being blind.
+        """
         from cqc_lem.app.run_automation import _scrape_catchup_moments
         card = MagicMock()
         card.find_elements.return_value = []
@@ -1241,7 +1263,8 @@ class TestZeroWalkTripwire:
 
 class TestCatchupNameFromCard:
     """The profile link wraps the WHOLE card on today's surface, so its text is a milestone sentence,
-    not a name. Every one of these is a real card from the 2026-08-04 production rows (issue #1030)."""
+    not a name. Every one of these is a real card from the 2026-08-04 production rows (issue #1030).
+    """
 
     @staticmethod
     def _link(text, href="https://www.linkedin.com/in/jay-bailey-1a2b3c"):

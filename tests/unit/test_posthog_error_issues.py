@@ -1,5 +1,6 @@
 """Unit tests for scripts/posthog_error_issues.py — the PostHog-issue -> GitHub-issue filer that
-replaces the log-grep cron (issue #648)."""
+replaces the log-grep cron (issue #648).
+"""
 
 import importlib.util
 import sys

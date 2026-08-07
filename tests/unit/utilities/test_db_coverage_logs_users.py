@@ -1,9 +1,9 @@
 """Coverage tests for log-query, user-settings and token DB helpers (db.py)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 from mysql.connector import errorcode
 
 pytestmark = pytest.mark.unit
@@ -26,7 +26,7 @@ class TestInsertNewLog:
     def test_inserts_with_enum_values(self):
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_new_log, LogActionType, LogResultType
+            from cqc_lem.utilities.db import LogActionType, LogResultType, insert_new_log
             ok = insert_new_log(1, LogActionType.COMMENT, LogResultType.SUCCESS,
                                 post_id=9, post_url="https://li.com/p/1", message="hi")
         assert ok is True
@@ -37,7 +37,7 @@ class TestInsertNewLog:
     def test_rowcount_not_one_returns_false(self):
         conn, _ = _conn(rowcount=0)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_new_log, LogActionType, LogResultType
+            from cqc_lem.utilities.db import LogActionType, LogResultType, insert_new_log
             assert insert_new_log(1, LogActionType.DM, LogResultType.FAILURE) is False
 
 

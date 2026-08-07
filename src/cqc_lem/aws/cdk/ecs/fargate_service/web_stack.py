@@ -1,9 +1,20 @@
 from aws_cdk import (
     Duration,
+    RemovalPolicy,
+    Stack,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_ecs as ecs,
-    aws_logs as logs,
+)
+from aws_cdk import (
     aws_elasticloadbalancingv2 as elbv2,
-    aws_ec2 as ec2, Stack, RemovalPolicy, )
+)
+from aws_cdk import (
+    aws_logs as logs,
+)
 from constructs import Construct
 
 from cqc_lem.aws.cdk.shared_stack_props import SharedStackProps

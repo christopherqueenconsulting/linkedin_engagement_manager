@@ -1,7 +1,8 @@
 """Unit tests for video credit Stripe packages + checkout."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

@@ -275,8 +275,7 @@ class TestPullForward:
 
     def test_repeated_clicks_cannot_walk_the_cap_down_the_calendar(self, progress):
         """Everything ahead is already generated — report it instead of generating the month."""
-        from cqc_lem.app.run_content_plan import (auto_create_weekly_content,
-                                                  _PULL_FORWARD_READY_HORIZON_DAYS)
+        from cqc_lem.app.run_content_plan import _PULL_FORWARD_READY_HORIZON_DAYS, auto_create_weekly_content
         from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
         # 0 ready inside the 5-day window, 5 ready across everything generated ahead.
         ready_by_days = {5: 0, _PULL_FORWARD_READY_HORIZON_DAYS: 5}
@@ -296,7 +295,8 @@ class TestPullForward:
     def test_cap_counts_posts_generated_past_the_buffer_ceiling(self, progress):
         """A pulled-forward post can land past MAX_CONTENT_BUFFER_DAYS — the plan appends a month
         after the LAST planning row, so a laid-out plan reaches ~60 days out. Counting the cap over
-        the 30-day ceiling would not see those, and the next click would re-earn the whole cap."""
+        the 30-day ceiling would not see those, and the next click would re-earn the whole cap.
+        """
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
         from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS

@@ -1,10 +1,12 @@
 """Unit tests proving POSTS and COMMENTS now run on the same unified framework/research/alignment
 core the newsletter uses: archetype blueprints injected into post prompts, per-comment angle
 rotation grounded in the target post, shared research routing with the comment-cost gate, and no
-resurrection of the deleted one-size-fits-all viral suffix."""
+resurrection of the deleted one-size-fits-all viral suffix.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities.ai import content_framework as fw
 

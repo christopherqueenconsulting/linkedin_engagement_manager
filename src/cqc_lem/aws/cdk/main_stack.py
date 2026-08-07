@@ -1,8 +1,16 @@
 from aws_cdk import (
+    RemovalPolicy,
     Stack,
-    aws_logs as logs,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_iam as iam,
-    aws_ec2 as ec2, RemovalPolicy, )
+)
+from aws_cdk import (
+    aws_logs as logs,
+)
 from constructs import Construct
 
 from cqc_lem.aws.cdk.ecr.ecr_stack import EcrStack

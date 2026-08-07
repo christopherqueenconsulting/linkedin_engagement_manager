@@ -33,7 +33,7 @@ from pptx import Presentation
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml import parse_xml
 from pptx.slide import Slide
-from pydantic import BaseModel, Field, HttpUrl, conlist, StrictStr
+from pydantic import BaseModel, Field, HttpUrl, StrictStr, conlist
 from pydantic_extra_types.color import Color
 
 
@@ -305,7 +305,7 @@ def derive_image_query(title: Optional[str], content: Optional[str],
 
 
 def _should_include_slide_image(post_id: Optional[int], slide_index: int) -> bool:
-    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGES_ENABLED, CAROUSEL_IMAGE_RATE
+    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGE_RATE, CAROUSEL_IMAGES_ENABLED
     if not CAROUSEL_IMAGES_ENABLED:
         return False
     if CAROUSEL_IMAGE_RATE >= 1.0:
@@ -351,7 +351,8 @@ def _query_depicts_person(query: Optional[str], content_type: Optional[str]) -> 
 def _should_generate_with_replicate(post_id: Optional[int], slide_index: int,
                                     user_id: Optional[int], content_type: Optional[str]) -> bool:
     """Replicate generation is gated: globally enabled, avatar-relevant content type,
-    a deterministic low-rate sample, AND the user's guardrails allow the avatar here."""
+    a deterministic low-rate sample, AND the user's guardrails allow the avatar here.
+    """
     from cqc_lem.utilities.env_constants import CAROUSEL_REPLICATE_ENABLED, CAROUSEL_REPLICATE_RATE
     if not CAROUSEL_REPLICATE_ENABLED or user_id is None:
         return False
@@ -426,7 +427,8 @@ def select_slide_image(
 
 def _content_layout_pools() -> tuple[list[Callable], list[Callable]]:
     """(image-capable, text-only) content layout pools. Image-capable layouts have a
-    picture placeholder; text-only layouts render title+body with no image slot."""
+    picture placeholder; text-only layouts render title+body with no image slot.
+    """
     image_layouts = [create_one_column_text_layout_slide, create_one_column_text_1_layout_slide]
     text_layouts = [create_title_and_body_layout_slide, create_title_and_body_1_layout_slide]
     return image_layouts, text_layouts
@@ -442,7 +444,8 @@ def choose_content_layout(
     """Route a content slide to a layout. When ``image_path`` is set the slide is
     guaranteed an IMAGE-CAPABLE layout (with a picture placeholder) so the fetched
     image never lands on a layout that silently discards it; otherwise a text-only
-    layout is used. The choice is deterministic per (post_id, slide_index)."""
+    layout is used. The choice is deterministic per (post_id, slide_index).
+    """
     default_img, default_txt = _content_layout_pools()
     image_layouts = image_layouts or default_img
     text_layouts = text_layouts or default_txt
@@ -473,15 +476,13 @@ def _insert_picture_into_placeholder(slide: Slide, placeholder, image_path: str)
 def create_ppt_educational_content_carousel(prs: Presentation, carousel: EducationalContentCarousel,
                                             post_id: Optional[int] = None,
                                             user_id: Optional[int] = None) -> Presentation:
-    """
-    Create a PowerPoint presentation for Educational Content Carousel.
+    """Create a PowerPoint presentation for Educational Content Carousel.
 
     Parameters:
     - prs: Presentation object to add slides to.
     - carousel: EducationalContentCarousel containing carouseldata.
 
     """
-
     # Get the default image path local to this file
     default_image_path = get_default_image_path()
 
@@ -528,14 +529,12 @@ def create_ppt_educational_content_carousel(prs: Presentation, carousel: Educati
 def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseStudyCarousel,
                                    post_id: Optional[int] = None,
                                    user_id: Optional[int] = None) -> Presentation:
-    """
-    Create a PowerPoint presentation for Case Study Carousel.
+    """Create a PowerPoint presentation for Case Study Carousel.
 
     Parameters:
     - prs: Presentation object to add slides to.
     - case_study_carousel: CaseStudyCarousel instance with structured content for each slide.
     """
-
     # Slide 1: Cover
     cover_layouts = [create_title_layout_slide, create_section_header_layout_slide, create_title_only_layout_slide]
     cover_kwargs = {
@@ -853,7 +852,6 @@ def create_title_layout_slide(prs: Presentation, title: str, subtitle: str, **kw
     - subtitle: Additional descriptive text.
     - **kwargs: Additional keyword arguments are thrown away to allow for flexible function calls.
     """
-
     # Get the layout and add a slide
     layout = prs.slide_layouts[0]  # Assuming 0 index is the TITLE layout
     slide = prs.slides.add_slide(layout)
@@ -871,8 +869,7 @@ def create_title_layout_slide(prs: Presentation, title: str, subtitle: str, **kw
 
 def create_section_header_layout_slide(prs: Presentation, percentage: str, title: str, subtitle: str,
                                        **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the SECTION_HEADER layout.
+    """Create a PowerPoint slide with the SECTION_HEADER layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -917,8 +914,7 @@ def debug_master_slide_placeholders_and_text(design_number: int = 1):
 
 
 def create_title_and_body_layout_slide(prs: Presentation, title: str, body_text: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_BODY layout.
+    """Create a PowerPoint slide with the TITLE_AND_BODY layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -946,8 +942,7 @@ def create_title_and_two_columns_layout_slide(prs: Presentation, title: str,
                                               right_column_title: str, right_column_subtitle: str,
                                               **kwargs
                                               ) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS layout.
+    """Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -980,8 +975,7 @@ def create_title_and_two_columns_layout_slide(prs: Presentation, title: str,
 
 
 def create_title_only_layout_slide(prs: Presentation, title: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_ONLY layout.
+    """Create a PowerPoint slide with the TITLE_ONLY layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1004,8 +998,7 @@ def create_title_only_layout_slide(prs: Presentation, title: str, **kwargs) -> S
 
 
 def create_main_point_layout_slide(prs: Presentation, title: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the MAIN_POINT layout.
+    """Create a PowerPoint slide with the MAIN_POINT layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1029,8 +1022,7 @@ def create_main_point_layout_slide(prs: Presentation, title: str, **kwargs) -> S
 
 def create_one_column_text_layout_slide(prs: Presentation, title: str, body_text: str, image_path: str = None,
                                         **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the ONE_COLUMN_TEXT layout.
+    """Create a PowerPoint slide with the ONE_COLUMN_TEXT layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1065,8 +1057,7 @@ def create_one_column_text_layout_slide(prs: Presentation, title: str, body_text
 
 def create_section_title_and_description_layout_slide(prs: Presentation, title: str, description: str,
                                                       **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the SECTION_TITLE_AND_DESCRIPTION layout.
+    """Create a PowerPoint slide with the SECTION_TITLE_AND_DESCRIPTION layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1094,8 +1085,7 @@ def create_section_title_and_description_layout_slide(prs: Presentation, title: 
 
 
 def create_caption_only_layout_slide(prs: Presentation, title: str, image_path: str = None, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the CAPTION_ONLY layout.
+    """Create a PowerPoint slide with the CAPTION_ONLY layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1124,8 +1114,7 @@ def create_caption_only_layout_slide(prs: Presentation, title: str, image_path: 
 
 
 def create_big_number_layout_slide(prs: Presentation, big_number: str, subtitle: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the BIG_NUMBER layout.
+    """Create a PowerPoint slide with the BIG_NUMBER layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1153,8 +1142,7 @@ def create_big_number_layout_slide(prs: Presentation, big_number: str, subtitle:
 
 
 def create_blank_layout_slide(prs: Presentation, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the BLANK layout.
+    """Create a PowerPoint slide with the BLANK layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1172,8 +1160,7 @@ def create_blank_layout_slide(prs: Presentation, **kwargs) -> Slide:
 
 
 def create_custom_6_1_layout_slide(prs: Presentation, title: str, columns: list[dict], **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the CUSTOM_6_1 (Title and Three Columns) layout.
+    """Create a PowerPoint slide with the CUSTOM_6_1 (Title and Three Columns) layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1212,8 +1199,7 @@ def create_custom_6_1_layout_slide(prs: Presentation, title: str, columns: list[
 
 
 def create_title_only_1_1_layout_slide(prs: Presentation, title: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_ONLY_1_1 layout.
+    """Create a PowerPoint slide with the TITLE_ONLY_1_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1237,8 +1223,7 @@ def create_title_only_1_1_layout_slide(prs: Presentation, title: str, **kwargs) 
 
 def create_one_column_text_1_layout_slide(prs: Presentation, title: str, body_text: str, image_path: str = None,
                                           **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the ONE_COLUMN_TEXT_1 layout.
+    """Create a PowerPoint slide with the ONE_COLUMN_TEXT_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1272,8 +1257,7 @@ def create_one_column_text_1_layout_slide(prs: Presentation, title: str, body_te
 
 
 def create_blank_1_1_layout_slide(prs: Presentation, quote: str, author: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the BLANK_1_1 (Quote) layout.
+    """Create a PowerPoint slide with the BLANK_1_1 (Quote) layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1302,8 +1286,7 @@ def create_blank_1_1_layout_slide(prs: Presentation, quote: str, author: str, **
 
 def create_title_and_two_columns_1_layout_slide(prs: Presentation, title: str, column_1: dict,
                                                 column_2: dict, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS_1 layout.
+    """Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1342,8 +1325,7 @@ def create_title_and_two_columns_1_layout_slide(prs: Presentation, title: str, c
 
 
 def create_title_and_body_1_layout_slide(prs: Presentation, title: str, body_text: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_BODY_1 layout.
+    """Create a PowerPoint slide with the TITLE_AND_BODY_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1371,8 +1353,7 @@ def create_title_and_body_1_layout_slide(prs: Presentation, title: str, body_tex
 
 
 def create_custom_3_1_layout_slide(prs: Presentation, title: str, subtitle: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the CUSTOM_3_1 (Thanks) layout.
+    """Create a PowerPoint slide with the CUSTOM_3_1 (Thanks) layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1400,8 +1381,7 @@ def create_custom_3_1_layout_slide(prs: Presentation, title: str, subtitle: str,
 
 
 def test_create_educational_ppt():
-    """
-    Test function to create an EducationalContentCarousel presentation and test the create_ppt function.
+    """Test function to create an EducationalContentCarousel presentation and test the create_ppt function.
     """
     # Sample data for an educational content carousel
     carousel_data = {
@@ -1428,8 +1408,7 @@ def test_create_educational_ppt():
 
 
 def test_create_case_study_ppt():
-    """
-    Test function to create an CaseStudyCarousel presentation and test the create_ppt function.
+    """Test function to create an CaseStudyCarousel presentation and test the create_ppt function.
     """
     # Sample data for an case study content carousel
     carousel_data = {
@@ -1624,7 +1603,8 @@ def _fit_and_crop_image(image_path: str, target_w: int, target_h: int):
 
 def _carousel_content_type(carousel_data) -> str:
     """Map a carousel model instance to the content_type string used by the shared
-    image-selection engine (query derivation + avatar relevance)."""
+    image-selection engine (query derivation + avatar relevance).
+    """
     return {
         EducationalContentCarousel: "educational",
         CaseStudyCarousel: "case_study",
@@ -1671,6 +1651,7 @@ def create_carousel_slide_images(
     are left as-is.
     """
     from PIL import Image, ImageDraw, ImageFont
+
     from cqc_lem.utilities.logger import log_warning
 
     W, H = 1080, 1080
@@ -2405,6 +2386,7 @@ def create_carousel_pdf(image_paths: list[str], post_id: int,
     partial/placeholder deck — the caller flags the post 'error' instead).
     """
     from PIL import Image
+
     from cqc_lem.utilities.logger import log_warning
 
     pages = []

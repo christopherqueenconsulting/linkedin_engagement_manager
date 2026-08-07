@@ -118,7 +118,8 @@ def active_task_count() -> int:
 def _snapshot_ttl_seconds(pause_seconds: int) -> int:
     """The snapshot must outlive the window it describes, or end_maintenance() would have nothing
     to restore consumers from. Scale with the caller's pause (a long manual window included) and
-    never go below the default deploy window."""
+    never go below the default deploy window.
+    """
     return max(int(pause_seconds), DEFAULT_PAUSE_SECONDS) * 2
 
 

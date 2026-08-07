@@ -1,9 +1,9 @@
 """Unit tests for the recent-post-content DB helper feeding the post dedup steering + review gate."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 

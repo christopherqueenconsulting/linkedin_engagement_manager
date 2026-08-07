@@ -147,7 +147,8 @@ def _today(day: Optional[date] = None) -> date:
 
 def _seeded_rng(*parts) -> random.Random:
     """A Random seeded from the given parts — the same (user, action, day) always draws the same
-    numbers, which is what makes a day's budget survive retries and Redis outages alike."""
+    numbers, which is what makes a day's budget survive retries and Redis outages alike.
+    """
     salt = os.environ.get("PACING_SEED") or ""
     digest = hashlib.sha256(":".join([salt] + [str(p) for p in parts]).encode("utf-8")).digest()
     return random.Random(int.from_bytes(digest[:8], "big"))
@@ -193,7 +194,8 @@ def dispatch_jitter_seconds(profile: str = PACE_STANDARD,
                             rng: Optional[random.Random] = None) -> int:
     """A countdown (seconds) to hand `apply_async` so a beat-dispatched engagement task doesn't
     start on the crontab's exact minute. `PACE_RESPONSIVE` keeps replies on our own post fast
-    (seconds of jitter) while still breaking the machine-exact timing. 0 when pacing is disabled."""
+    (seconds of jitter) while still breaking the machine-exact timing. 0 when pacing is disabled.
+    """
     if not pacing_enabled():
         return 0
     rng = rng or random
@@ -208,7 +210,8 @@ def dispatch_jitter_seconds(profile: str = PACE_STANDARD,
 
 def is_rest_day(user_id: int, day: Optional[date] = None) -> bool:
     """True on the occasional day this account does no discretionary engagement at all. Account-level
-    (not per-lane) — a human who is offline is offline for everything."""
+    (not per-lane) — a human who is offline is offline for everything.
+    """
     if not pacing_enabled():
         return False
     chance = min(1.0, max(0.0, _env_float("PACING_REST_DAY_CHANCE")))
@@ -268,7 +271,8 @@ def daily_budget(user_id: int, action: str, cap: int, day: Optional[date] = None
 def engagement_caps_from_prefs(prefs: Optional[dict]) -> Dict[str, int]:
     """The per-lane caps the governor's envelope is built from, read off engagement_preferences.
 
-    Only ENVELOPE_ACTIONS appear — replies are outside the envelope on purpose (see above)."""
+    Only ENVELOPE_ACTIONS appear — replies are outside the envelope on purpose (see above).
+    """
     prefs = prefs or {}
     caps: Dict[str, int] = {}
     for action in ENVELOPE_ACTIONS:
@@ -286,7 +290,8 @@ def record_action(user_id: int, action: str, count: int = 1) -> None:
 
     Only ENVELOPE_ACTIONS add to the account total; a reply is counted in its own field so the day
     can still be audited, without letting a busy thread on the user's own post eat the outbound
-    budget."""
+    budget.
+    """
     if count <= 0:
         return
     client = shared_redis_client()
@@ -306,7 +311,8 @@ def actions_used_today(user_id: int, action: Optional[str] = None,
                        day: Optional[date] = None) -> int:
     """Actions this account has spent today across every lane (or in one lane when `action` is
     given). 0 when Redis is unavailable — the governor then can't restrict anything, which is the
-    intended fail-open."""
+    intended fail-open.
+    """
     client = shared_redis_client()
     if client is None:
         return 0
@@ -324,7 +330,8 @@ def actions_used_today(user_id: int, action: Optional[str] = None,
 
 def account_envelope(user_id: int, caps: Dict[str, int], day: Optional[date] = None) -> int:
     """The account's total engagement allowance today — the sum of every lane's paced budget. This
-    is what stops commenting, DMs and invites from each spending a full cap on the same day."""
+    is what stops commenting, DMs and invites from each spending a full cap on the same day.
+    """
     return sum(daily_budget(user_id, action, cap, day) for action, cap in (caps or {}).items())
 
 

@@ -6,9 +6,9 @@ finished provably lands as a persisted row (and emits its funnel event exactly o
 a live MySQL container.
 """
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -77,6 +77,7 @@ class _FakeConn:
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 

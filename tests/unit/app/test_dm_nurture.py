@@ -1,8 +1,10 @@
 """Unit tests for DM conversation auto-nurture (issue #485) — a lead's reply becomes an
-APPROVAL-GATED next message instead of the end of the thread."""
+APPROVAL-GATED next message instead of the end of the thread.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities.linkedin.message_thread import ThreadState
 
@@ -58,8 +60,9 @@ class TestNurtureAfterReply:
         assert mocks["insert_scheduled_dm"].call_args[0][2] == "Worth a quick call?"
 
     def test_schedules_by_intent(self):
+        from datetime import datetime, timedelta, timezone
+
         from cqc_lem.utilities.ai.dm_nurture import nurture_delay_hours
-        from datetime import datetime, timezone, timedelta
         got, mocks, _enq = _run_nurture(classify_reply_intent={"intent": "not_now", "matched": [],
                                                                "method": "heuristic"})
         due = mocks["insert_scheduled_dm"].call_args[0][3]
@@ -84,7 +87,8 @@ class TestNurtureAfterReply:
 
     def test_an_open_artifact_draft_also_blocks_a_nurture_draft(self):
         """Issue #624: the owned-asset delivery writes to the SAME thread, so the one-open-draft
-        rule has to hold across both mechanics — otherwise the person gets two pending messages."""
+        rule has to hold across both mechanics — otherwise the person gets two pending messages.
+        """
         from cqc_lem.app.run_automation import _nurture_after_reply
         from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_ARTIFACT
 
@@ -184,7 +188,8 @@ class TestNurtureAfterReply:
 class TestProcessUserFollowupsNurture:
     def _run(self, due_rows, extra: dict):
         """Run the follow-up task with the driver/DB collaborators stubbed, returning
-        (result, {name: mock}) for the caller's own patches."""
+        (result, {name: mock}) for the caller's own patches.
+        """
         from cqc_lem.app.run_automation import process_user_followups
         base = {
             "get_due_followups": patch(f"{_RA}.get_due_followups", return_value=due_rows),

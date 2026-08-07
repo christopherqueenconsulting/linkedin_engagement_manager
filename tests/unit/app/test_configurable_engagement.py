@@ -1,10 +1,12 @@
 """Configurability-audit tests for the engagement side: env-tunable feed-scoring weights
 (FEED_SCORE_W_* / FEED_RECENCY_HALFLIFE_MIN, defaults preserved when unset/invalid), the
 profile-viewer comment path honoring engagement preferences, and the create_text_post profile
-fallback preferring the cached DB profile over a hardcoded persona."""
+fallback preferring the cached DB profile over a hardcoded persona.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

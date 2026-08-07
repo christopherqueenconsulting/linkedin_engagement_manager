@@ -1,6 +1,10 @@
 from aws_cdk import (
     Stack,
+)
+from aws_cdk import (
     aws_devicefarm as devicefarm,
+)
+from aws_cdk import (
     aws_ec2 as ec2,
 )
 from constructs import Construct

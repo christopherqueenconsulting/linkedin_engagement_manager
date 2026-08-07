@@ -5,7 +5,6 @@ import streamlit as st
 
 from cqc_lem.streamlit.utils import get_custom_css
 
-
 # Initialize session state variables
 # init_session_state()
 

@@ -1,6 +1,7 @@
 """Unit tests for post-time recommendation and content-attribution ranking logic."""
 
 import datetime as dt
+
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -142,7 +143,8 @@ class TestRecommendPostTimes:
 
     def test_display_rounding_does_not_flip_order(self):
         """Ranking is on the unrounded score: these two slots tie at display precision, and the
-        weekday tiebreak would otherwise put the WORSE (Monday) slot first."""
+        weekday tiebreak would otherwise put the WORSE (Monday) slot first.
+        """
         from cqc_lem.utilities.post_stats import recommend_post_times
         rows = [
             _stat_row(dt.datetime(2026, 7, 27, 9, 0), reactions=1, impressions=1_000_000),
@@ -200,7 +202,8 @@ class TestRankContentAttributes:
 
     def test_display_rounding_does_not_flip_order(self):
         """Same guarantee as the time buckets: the alphabetical tiebreak must not promote the
-        weaker key just because both scores round to the same displayed value."""
+        weaker key just because both scores round to the same displayed value.
+        """
         from cqc_lem.utilities.post_stats import rank_content_attributes
         recent = dt.datetime(2026, 7, 25, 9, 0)
         rows = [

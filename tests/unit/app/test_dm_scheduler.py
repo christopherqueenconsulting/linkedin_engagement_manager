@@ -1,8 +1,9 @@
 """Unit tests for the DM scheduler task + scanner (issue #306)."""
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

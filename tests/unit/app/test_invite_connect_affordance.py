@@ -24,7 +24,8 @@ _SEND_BARE_XPATH = '//button[contains(@aria-label,"Send without a note")]'
 
 class _Routes:
     """Configurable stand-ins for find_first / click_first / click_element_wait_retry, recording
-    every locator so the rail-hazard regression can assert nothing 'Invite …' is ever clicked."""
+    every locator so the rail-hazard regression can assert nothing 'Invite …' is ever clicked.
+    """
 
     def __init__(self, dialog_on_url=False, dialog_after_menu=False,
                  more_menu=False, menu_item=False, send_xpaths=frozenset()):
@@ -152,8 +153,8 @@ class TestNoRouteOpensTheDialog:
 
 class TestSluglessProfileUrl:
     def test_a_url_without_a_slug_skips_straight_to_the_profile_route(self):
-        from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
         from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
         routes = _Routes()
         driver = MagicMock()
         driver.current_url = "about:blank"

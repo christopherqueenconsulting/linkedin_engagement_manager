@@ -138,7 +138,8 @@ def record_pre_post_scheduled(post_id: int, user_id: int, window: PrePostWindow,
 def record_pre_post_skipped(post_id: int, user_id: int, reason: str,
                             task_name: str = PRE_POST_TASK_COMMENTING) -> None:
     """Mark that no pre-post engagement ran for this post, and why (throttle, inactive user, or a
-    window that already closed) — the skip is as important to a report as the run."""
+    window that already closed) — the skip is as important to a report as the run.
+    """
     log_warning(f"Pre-post engagement window skipped — {reason}",
                 post_id=post_id, user_id=user_id, task_name=task_name)
     _write_marker(post_id, task_name, {
@@ -155,7 +156,8 @@ def record_pre_post_run(post_id: int, user_id: int, comments: Optional[int],
                         now: Optional[datetime] = None) -> None:
     """Record one completed pre-post engagement pass and the comments it left. The loop re-queues
     itself across the window, so runs/comments ACCUMULATE — the marker answers "pre-post commenting
-    ran N times for post X and left M comments"."""
+    ran N times for post X and left M comments".
+    """
     ran_at = _as_utc(now if now is not None else datetime.now(timezone.utc))
     log_info(f"Pre-post engagement pass complete — {comments} comment(s)",
              post_id=post_id, user_id=user_id, task_name=PRE_POST_TASK_COMMENTING)
@@ -168,7 +170,8 @@ def record_pre_post_run(post_id: int, user_id: int, comments: Optional[int],
 
 def get_pre_post_window_stat(post_id: int, task_name: str = PRE_POST_TASK_COMMENTING) -> dict:
     """Read back a post's engagement-window marker for one pre-post task (defaults to feed
-    commenting; empty dict when unknown / Redis unavailable)."""
+    commenting; empty dict when unknown / Redis unavailable).
+    """
     client = shared_redis_client()
     if client is None:
         return {}
@@ -333,7 +336,8 @@ def stagger_config(fanout: Tuple[str, int, int]) -> StaggerConfig:
 def stagger_offset_minutes(user_id: int, window_minutes: int, salt: str = "") -> int:
     """A user's stable minute inside the window. Hashed (not user_id % window) so ids that were
     created together don't clump, and salted per fan-out so the same user isn't first — or last —
-    in every window of the day."""
+    in every window of the day.
+    """
     window = max(1, int(window_minutes))
     digest = hashlib.sha256(f"{salt}:{int(user_id)}".encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big") % window

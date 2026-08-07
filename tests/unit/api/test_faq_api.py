@@ -1,9 +1,9 @@
 """Unit tests for the public FAQ endpoint (issue #506)."""
 
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -27,6 +27,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -54,7 +55,7 @@ class TestFaqEndpoint:
 
     def test_is_reachable_by_a_logged_out_visitor(self):
         """The landing page carries no bearer token — /api/faq must stay outside the token gate."""
-        from cqc_lem.api.main import _api_token_required, _PUBLIC_API_PREFIXES
+        from cqc_lem.api.main import _PUBLIC_API_PREFIXES, _api_token_required
         assert "/api/faq" in _PUBLIC_API_PREFIXES
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"secret"}):
             assert _api_token_required("/api/faq") is False

@@ -1,7 +1,8 @@
 """Unit tests for the DM follow-up sequencer (enqueue, process, dispatch)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from cqc_lem.utilities.linkedin.message_thread import ThreadState
 
@@ -179,7 +180,8 @@ class TestProcessUserFollowups:
 
 class TestCheckDmReplied:
     """The reply verdict itself. The ladder that opens the thread is covered in
-    tests/unit/utilities/linkedin/test_message_thread.py — here it is stubbed."""
+    tests/unit/utilities/linkedin/test_message_thread.py — here it is stubbed.
+    """
 
     def _opened(self, opened=True, route="anchor"):
         from cqc_lem.utilities.linkedin.message_thread import ThreadOpen

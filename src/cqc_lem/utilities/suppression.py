@@ -79,7 +79,8 @@ def tripwire_enabled() -> bool:
 
 def drop_ratio() -> float:
     """Share below the trailing median that counts as collapsed, clamped to a real 0-1 share so a
-    misconfigured 70 (meaning percent) can never make the tripwire unreachable."""
+    misconfigured 70 (meaning percent) can never make the tripwire unreachable.
+    """
     return min(0.99, max(0.01, _env_float("SUPPRESSION_DROP_RATIO", DEFAULT_DROP_RATIO)))
 
 
@@ -101,7 +102,8 @@ def pause_seconds() -> int:
 
 def history_days() -> int:
     """How far back the caller must read so a full baseline still exists behind the recent run.
-    The recent run is counted in POSTING days, so allow generous calendar room for a sparse poster."""
+    The recent run is counted in POSTING days, so allow generous calendar room for a sparse poster.
+    """
     return baseline_days() + consecutive_days() * 7
 
 
@@ -111,7 +113,8 @@ def comment_history_days() -> int:
     #628 scores comment visibility over a rolling week and its own hold expires in one, so a
     demotion episode that has since been remediated still sits in a 35-day window for weeks. Reading
     the reach baseline's window here would let a month-old, already-fixed episode trip a 90-day
-    engagement pause today."""
+    engagement pause today.
+    """
     return max(1, _env_int("SUPPRESSION_COMMENT_DAYS", DEFAULT_COMMENT_DAYS))
 
 
@@ -125,7 +128,8 @@ def _posts(day: Mapping[str, Any]) -> int:
 def _impressions(day: Mapping[str, Any]) -> Optional[int]:
     """Positive impression total for the day, or None when the day's total is unknown.
     `build_engagement_trend` already returns None whenever any post that day lacked impressions, so
-    a partial day never masquerades as a low one."""
+    a partial day never masquerades as a low one.
+    """
     value = day.get("impressions")
     if value is None:
         return None
@@ -152,7 +156,8 @@ def _day_value(day: Mapping[str, Any], metric: str) -> Optional[float]:
 def _pick_metric(days: Sequence[Mapping[str, Any]]) -> str:
     """Impressions are the real reach signal, but only the author's own analytics view exposes them,
     so they are often absent. Use them only when EVERY day being compared has them — mixing a
-    complete baseline with an impression-less recent day would read as a total collapse."""
+    complete baseline with an impression-less recent day would read as a total collapse.
+    """
     if days and all(_impressions(day) is not None for day in days):
         return METRIC_IMPRESSIONS
     return METRIC_ENGAGEMENT
@@ -164,7 +169,8 @@ def _date(day: Mapping[str, Any]) -> str:
 
 def _posting_days(trend: Optional[Iterable[Mapping[str, Any]]]) -> list:
     """Days that actually carried a post, oldest first. A day with no post has no reach to measure —
-    counting it as a zero is how a weekend off becomes a false penalty."""
+    counting it as a zero is how a weekend off becomes a false penalty.
+    """
     days = [dict(day) for day in (trend or []) if day and _posts(day) > 0 and _date(day)]
     days.sort(key=_date)
     return days
@@ -173,7 +179,8 @@ def _posting_days(trend: Optional[Iterable[Mapping[str, Any]]]) -> list:
 def _comment_signal(comment_quality: Optional[Mapping[str, Any]]) -> dict:
     """The D4 comment-demotion verdict (issue #628) read as a suppression signal. Its own hold only
     stops commenting; sustained demotion of a user's comments is also evidence the ACCOUNT is being
-    suppressed, which is a bigger stop."""
+    suppressed, which is a bigger stop.
+    """
     verdict = dict((comment_quality or {}).get("verdict") or {})
     status = verdict.get("status")
     signal = {"name": SIGNAL_COMMENT_DEMOTION, "status": STATUS_UNKNOWN,

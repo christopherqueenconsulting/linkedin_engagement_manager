@@ -4,18 +4,18 @@ import os
 import tempfile
 import zipfile
 from random import randint
-from typing import Tuple, Any
+from typing import Any, Tuple
 
 import mammoth
-from streamlit.runtime.uploaded_file_manager import UploadedFile
-
 import streamlit as st
 import streamlit_ext as ste
+
 #from docx import Document
 from markdownify import markdownify as md
 from openai import OpenAI
-#from cqc_lem.streamlit import UploadedFile
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 
+#from cqc_lem.streamlit import UploadedFile
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 
 CODE_LANGUAGES = [
@@ -246,8 +246,7 @@ def upload_file_to_temp_path(uploaded_file: UploadedFile):
 
 
 def process_file(file_path, allowed_file_extensions):
-    """ Using a file path determine if the file is a zip or single file and gives the contents back if single or dict mapping the studnet name and timestamp back to the combined contents"""
-
+    """Using a file path determine if the file is a zip or single file and gives the contents back if single or dict mapping the studnet name and timestamp back to the combined contents"""
     # If it's a zip file
     if file_path.endswith('.zip'):
         with zipfile.ZipFile(file_path, 'r') as zip_file:
@@ -341,7 +340,7 @@ def convert_tables_to_json_in_tmp__file(doc: Document) -> str:
 
 @st.cache_data
 def read_file(file_path: str, convert_to_markdown: bool = False) -> str:
-    """ Return the file contents in string format. If file ends in .docx will convert it to json and return"""
+    """Return the file contents in string format. If file ends in .docx will convert it to json and return"""
     file_name, file_extension = os.path.splitext(file_path)
 
     if convert_to_markdown:

@@ -200,7 +200,8 @@ FROZEN_TAGS = ("deepseek-v4-flash", "deepseek-v4-flash:0731", "deepseek-v4-pro",
 
 def _frozen_catalog() -> dict:
     """Real catalog names, pinned in time. `plan_family_upgrades` reads tag NAMES only, so the
-    per-tag metadata the live fixture carries is not part of what these tests assert."""
+    per-tag metadata the live fixture carries is not part of what these tests assert.
+    """
     return {name: {} for name in FROZEN_TAGS}
 
 
@@ -256,7 +257,8 @@ class TestParseRetirements:
 
     def test_a_cell_that_is_not_a_model_tag_is_dropped(self):
         """cloud.md is remote and its cells become model_upgrades.yaml values, which the reactive
-        half applies to the live config — a quote or newline there must never reach that writer."""
+        half applies to the live config — a quote or newline there must never reach that writer.
+        """
         md = ('## Retirements\n\n### Upcoming retirements\n\n'
               "| Retirement date | Model | Recommended alternative |\n| --- | --- | --- |\n"
               '| March 3, 2027 | `real-1` | `evil" injected: "yes` |\n'
@@ -367,7 +369,8 @@ class TestAppendUpgradeMappings:
 
     def test_a_non_tag_value_can_never_inject_extra_mappings(self):
         """Last line of defence: the writer refuses anything it hasn't checked, so a poisoned
-        cell that reached this far still cannot add a mapping of its own."""
+        cell that reached this far still cannot add a mapping of its own.
+        """
         text, added = mhc.append_upgrade_mappings(
             self.MAP, {"good": "fine", "victim": 'evil"\n  "injected": "yes'}, "2026-07-20")
         assert added == ["good"]
@@ -402,7 +405,8 @@ class TestCatalogSnapshot:
 
     def test_the_committed_fixture_is_exactly_what_the_renderer_would_write(self):
         """The fixture and the snapshot are two views of ONE fetch. If a refresh moves only the
-        snapshot, the shipped-state guard below fails on every PR the weekly cron opens."""
+        snapshot, the shipped-state guard below fails on every PR the weekly cron opens.
+        """
         assert (FIXTURES / "tags.json").read_text() == mhc.render_tags_payload(mhc.parse_catalog(
             _tags()))
 
@@ -426,7 +430,8 @@ _NEW_BUILD = {"modified_at": "2026-07-31T00:00:00Z", "size": 167_000_000_000}
 
 class TestPlanRepoints:
     """Issue #925 — the catalog move a tag-NAME diff cannot see: the same id now serves a different
-    build, so a live tier changed model with no repo change and no benchmark."""
+    build, so a live tier changed model with no repo change and no benchmark.
+    """
 
     def test_a_configured_tag_whose_build_moved_is_reported(self):
         out = mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
@@ -464,7 +469,8 @@ class TestPlanRepoints:
 
     def test_a_missing_baseline_field_is_not_a_build_swap(self):
         """A snapshot written before a field was captured has NO baseline for it. Reading that as a
-        re-point would file an issue for every configured tag at once."""
+        re-point would file an issue for every configured tag at once.
+        """
         assert mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
                                  {"deepseek-v4-flash": {"size": 0, "modified_at": ""}},
                                  {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
@@ -496,7 +502,8 @@ class TestRepointIssue:
 
     def test_a_second_repoint_of_the_same_tag_is_not_deduped_away(self):
         """The acceptance criterion the tag name alone would fail: once #925's issue is filed for
-        build A, a later move to build B must still reach a human."""
+        build A, a later move to build B must still reach a human.
+        """
         first = mhc.repoint_marker(self._repoint())
         second = mhc.repoint_marker(self._repoint({"modified_at": "2026-09-02T00:00:00Z",
                                                    "size": 171_000_000_000}))
@@ -523,7 +530,8 @@ class TestRepointIssue:
     def test_body_pins_the_champion_side_not_only_the_candidate(self):
         """The re-pointed tag IS the config champion, so it already resolves to the NEW build. A
         default `benchmark_models.py` run would measure that build against itself and tie every
-        `beats champion` expectation — the issue has to say to pin the champion to the old build."""
+        `beats champion` expectation — the issue has to say to pin the champion to the old build.
+        """
         body = mhc.build_repoint_issue_body([self._repoint()], "2026-08-02")
         assert "--champions" in body
         assert "against itself" in body
@@ -572,7 +580,8 @@ class TestParseModelVersion:
 
 class TestPlanFamilyUpgrades:
     """Reads `_frozen_catalog()`, never the cron-rewritten fixture: every assertion here names the
-    candidate the planner must pick, and a vendor release must not turn that into a red CI run."""
+    candidate the planner must pick, and a vendor release must not turn that into a red CI run.
+    """
 
     def _rows(self, *models):
         return mhc.parse_deployments(_ollama_cfg(*models))
@@ -714,7 +723,8 @@ class TestIssueRendering:
 
 class TestCatalogPRRendering:
     """The PR this cron opens is the ONLY thing a reviewer sees before merging a config-adjacent
-    file, so its title and body have to be the diff — not the job description."""
+    file, so its title and body have to be the diff — not the job description.
+    """
 
     def _plan(self, **over) -> dict:
         plan = {"today": "2026-08-02", "map_additions": {}, "snapshot_changed": True,
@@ -763,7 +773,8 @@ class TestCatalogPRRendering:
 
     def test_a_re_pointed_tag_is_not_filed_under_metadata_moved(self):
         """Merging re-baselines the fingerprint, so this PR is the LAST run that can report the
-        swap — a body that calls it 'metadata' loses it for good (issue #925)."""
+        swap — a body that calls it 'metadata' loses it for good (issue #925).
+        """
         plan = self._plan(repoints=[{"tag": "gpt-oss:120b", "model": "ollama/gpt-oss:120b",
                                      "groups": ["lem-complex"],
                                      "changes": [{"field": "size", "old": 65_000_000_000,
@@ -889,7 +900,8 @@ class TestFileIssues:
 
     def test_a_plan_saved_before_a_kind_existed_files_the_rest(self):
         """--plan-file may carry a plan written by an older copy of this tool; a missing kind is
-        nothing to file, never a KeyError that drops the issues that WERE planned."""
+        nothing to file, never a KeyError that drops the issues that WERE planned.
+        """
         plan = _plan_with_issues(["a -> b"])
         del plan["issues"]["repoint"]
         gh = _FakeGitHub()
@@ -1007,7 +1019,8 @@ class TestFetchDegradation:
 class TestCatalogScanCLI:
     """The dry-run proof required by the issue: a future-dated retirement of a CONFIGURED model
     produces the alert + the map addition, and a new tag renders the evaluation issue — all with
-    the network replaced by the committed fixtures."""
+    the network replaced by the committed fixtures.
+    """
 
     def _workspace(self, tmp_path, model="minimax-m2.5", drop=("minimax-m3", "glm-5.2"),
                    stale=None):
@@ -1056,7 +1069,8 @@ class TestCatalogScanCLI:
 
     def test_catalog_apply_refreshes_the_offline_fixture_from_the_same_fetch(self, tmp_path):
         """Without this the cron's own PR is red on arrival: it moves the snapshot, the fixture
-        stays on last week's catalog, and the shipped-state guard diffs the two."""
+        stays on last week's catalog, and the shipped-state guard diffs the two.
+        """
         args = self._workspace(tmp_path)
         fixture = tmp_path / "tags.json"
         mhc.main(["--catalog-apply", f"--tags-fixture={fixture}", *args])
@@ -1084,7 +1098,8 @@ class TestCatalogScanCLI:
     def test_a_configured_tag_leaving_the_catalog_is_flagged_in_the_plan_and_the_dry_run(
             self, tmp_path, capsys):
         """A configured model vanishing from /api/tags is next week's 410, found early — it must
-        not read the same as an unconfigured tag being tidied away."""
+        not read the same as an unconfigured tag being tidied away.
+        """
         args = self._workspace(tmp_path, model="gone-model:1b", drop=())
         snapshot = mhc.parse_catalog(_tags())
         snapshot["gone-model:1b"] = {"modified_at": "", "size": 0, "parameter_size": "",
@@ -1145,7 +1160,8 @@ class TestCatalogScanCLI:
                                                                  monkeypatch):
         """The orchestrator files from the plan it already read. A second scan would re-fetch
         docs/api-tags, and an outage there would file NOTHING and say nothing — while the snapshot
-        PR opened in the same run makes those tags no longer 'new', losing the issue for good."""
+        PR opened in the same run makes those tags no longer 'new', losing the issue for good.
+        """
         args = self._workspace(tmp_path)
         mhc.main(["--catalog-json", *args])
         plan_path = tmp_path / "plan.json"
@@ -1171,7 +1187,8 @@ class TestCatalogScanCLI:
 
     def test_a_saved_plan_can_never_drive_the_snapshot_write(self, tmp_path, capsys):
         """--catalog-json strips the raw catalog, so applying from a saved plan would silently skip
-        the snapshot refresh. Refuse instead."""
+        the snapshot refresh. Refuse instead.
+        """
         args = self._workspace(tmp_path)
         mhc.main(["--catalog-json", *args])
         plan_path = tmp_path / "plan.json"
@@ -1183,7 +1200,8 @@ class TestCatalogScanCLI:
         """Guards the shipped state: no configured model is scheduled to retire, the committed
         snapshot matches the catalog fixture, and — since the #717 roster refresh dropped the
         trailing minimax-m2.7 — no configured model is a version behind its own family either.
-        A fresh run therefore files nothing at all."""
+        A fresh run therefore files nothing at all.
+        """
         code = mhc.main(["--catalog-scan", "--no-usage-levels",
                          f"--config={_ROOT / '.litellm' / 'config.yaml'}",
                          f"--map={_ROOT / '.litellm' / 'model_upgrades.yaml'}",

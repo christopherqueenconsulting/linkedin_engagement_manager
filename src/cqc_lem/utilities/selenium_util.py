@@ -11,9 +11,15 @@ from urllib.parse import urlparse
 import requests
 import selenium
 from selenium import webdriver
-from selenium.common import ElementNotInteractableException, StaleElementReferenceException, \
-    TimeoutException, WebDriverException, NoSuchElementException, SessionNotCreatedException, \
-    InvalidSessionIdException
+from selenium.common import (
+    ElementNotInteractableException,
+    InvalidSessionIdException,
+    NoSuchElementException,
+    SessionNotCreatedException,
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -23,7 +29,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
-from cqc_lem.utilities.logger import myprint, log_debug, log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning, myprint
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
 # Last-resort geolocation when a session has no user_id and therefore no stored Login Location.
@@ -34,7 +40,7 @@ _DEFAULT_LONGITUDE = -81.6556
 def quit_gracefully(driver: WebDriver):
     try:
         driver.quit()
-        myprint(f"Driver session closed.")
+        myprint("Driver session closed.")
     except Exception as e:
         myprint(f"Error while quitting driver: {e}")
         pass
@@ -103,7 +109,8 @@ def get_available_session_driver_id(wait_for_available=True, wait_time=60, retry
 
 def _record_session_wait(seconds: float) -> None:
     """Feed one session-acquisition duration to the capacity monitor. Imported lazily and swallowed
-    whole: instrumentation must never cost a browser session."""
+    whole: instrumentation must never cost a browser session.
+    """
     try:
         from cqc_lem.utilities.capacity_alerts import record_session_wait
         record_session_wait(seconds)
@@ -649,7 +656,8 @@ def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str
     """Find (via `find_first`) then click the first matching element, with the same resilient
     fallback + structured-miss-logging behavior — including `warn_on_miss`, so a control the caller
     already has a working fallback for logs BOTH of its miss paths (not found, and found but not
-    clickable) at DEBUG. Returns the clicked element or None."""
+    clickable) at DEBUG. Returns the clicked element or None.
+    """
     element = find_first(driver, wait, locators, label, required=required,
                          parent_element=parent_element, max_try=max_try, visible_only=True,
                          warn_on_miss=warn_on_miss, user_id=user_id, post_id=post_id)
@@ -676,7 +684,8 @@ def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str
 
 def find_all_first(driver: WebDriver, locators: list[tuple[str, str]]) -> list[WebElement]:
     """Return the element list from the FIRST locator that yields any matches (ordered fallback
-    for collections, e.g. a comment list). Empty list if none match — caller logs if needed."""
+    for collections, e.g. a comment list). Empty list if none match — caller logs if needed.
+    """
     for find_by, value in locators:
         try:
             els = driver.find_elements(find_by, value)
@@ -716,8 +725,7 @@ def wait_for_ajax(driver):
 
 
 def getText(curElement: WebElement):
-    """
-    Get Selenium element text
+    """Get Selenium element text
 
     Args:
         curElement (WebElement): selenium web element

@@ -1,10 +1,10 @@
 """Coverage tests for avatar-training, group, post-stats and scheduled-DM DB helpers (db.py)."""
 
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -81,7 +81,8 @@ class TestAvatarTrainings:
 
     def test_set_active_avatar_refuses_unapproved(self):
         """The approval gate (issue #744): activation is no longer reachable from 'succeeded'
-        alone, and refusing must leave the current active avatar untouched."""
+        alone, and refusing must leave the current active avatar untouched.
+        """
         conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "pending"})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar

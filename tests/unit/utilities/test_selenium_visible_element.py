@@ -4,9 +4,9 @@ LinkedIn's redesigned login renders duplicate hidden+visible copies of each fiel
 so the finder must skip invisible matches and try locators in order.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 

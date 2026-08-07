@@ -18,7 +18,7 @@ def deploy_stacks_in_order():
     stack_flag = '--stack' in sys.argv
 
     if all_flag:
-        print(f"Deploying All Stacks")
+        print("Deploying All Stacks")
         subprocess.run(['npx', '-p', 'node@22', 'cdk', 'deploy', '--require-approval', 'never', '--all'], check=False)
     elif stack_flag:
         stack_index = sys.argv.index('--stack')
@@ -30,7 +30,7 @@ def deploy_stacks_in_order():
         subprocess.run(command, check=False)
     else:
         with open('cdk.json') as f:
-            print(f"Deploying Sequentially")
+            print("Deploying Sequentially")
             config = json.load(f)
             deploy_order = config['context']['deployOrder']
             for stack in deploy_order:

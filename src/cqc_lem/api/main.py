@@ -7,165 +7,366 @@ import zipfile
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
-from typing import Dict, List, Union
-from typing import Optional, Any, NoReturn, Annotated, Awaitable, Callable, Iterator
+from typing import Annotated, Any, Awaitable, Callable, Dict, Iterator, List, NoReturn, Optional, Union
 from urllib.parse import urlparse
+
+import requests
+from celery import chain as celery_chain
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from linkedin_api.clients.auth.client import AuthClient
+from linkedin_api.clients.restli.client import RestliClient
+from linkedin_api.common.errors import ResponseFormattingError
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from cqc_lem import assets_dir
 from cqc_lem.api.spa_assets import ArchivedStaticFiles, spa_index_headers, sync_build_to_archive
 from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.run_automation import (
-    automate_invites_to_company_page_for_user, automate_reply_commenting,
-    automate_commenting, automate_appreciation_dms_for_user,
-    send_private_dm, consolidate_duplicate_comments_for_user, sweep_reply_comments,
+    automate_appreciation_dms_for_user,
+    automate_commenting,
+    automate_invites_to_company_page_for_user,
+    automate_reply_commenting,
+    consolidate_duplicate_comments_for_user,
     send_lead_response,
+    send_private_dm,
+    sweep_reply_comments,
 )
-from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
-from cqc_lem.utilities.db import (
-    insert_post, get_posts, get_user_id, update_db_post, get_post_user_id, user_owns_posts,
-    OwnershipUnprovable,
-    add_user_with_access_token, update_user, PostType, PostStatus, get_dashboard_counts,
-    get_planned_tasks,
-    get_recent_logs, bulk_update_posts, soft_delete_posts,
-    insert_scheduled_dm, get_scheduled_dms, get_scheduled_dm_user_id,
-    update_scheduled_dm, update_scheduled_dm_status, ScheduledDmStatus,
-    insert_connection_request, get_connection_requests, get_connection_request_user_id,
-    update_connection_request, update_connection_request_status, ConnectionRequestStatus,
-    insert_outreach_target, get_outreach_targets, get_outreach_target_user_id,
-    get_outreach_target_by_url, update_outreach_target, update_outreach_target_status,
-    OutreachStatus,
-    get_lead_signals, get_lead_signal, update_lead_signal,
-    count_new_lead_signals, LeadSignalStatus,
-    get_leads, get_lead, update_lead, count_hot_leads, LeadStage,
-    get_catchup_touches, get_catchup_touch, get_catchup_touch_user_id, update_catchup_touch,
-    update_catchup_touch_status, CatchupTouchStatus, CatchupEventType,
-    DEFAULT_CATCHUP_EVENT_TYPES, VALID_CATCHUP_TOUCH_MODES, VALID_CATCHUP_MESSAGE_SOURCES,
-    CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX, CATCHUP_TOUCHES_MAX_STANDARD,
-    max_catchup_touches_allowed,
-    create_pin_for_email, verify_pin_for_email, delete_pin_for_email, get_pin_lockout,
-    create_session, get_session_user_id as _db_get_session_user_id, delete_session,
-    resolve_session as _db_resolve_session, release_enrollment_scope,
-    get_session_id, list_user_sessions, revoke_session, revoke_other_sessions,
-    record_auth_event, get_auth_audit_events, AuthAuditEvent,
-    add_passkey_factor, get_passkey_by_credential_id, get_user_passkey_credential_ids,
-    update_factor_counter, delete_auth_factor, count_recovery_codes,
-    create_auth_challenge, consume_auth_challenge, claim_auth_challenge_attempt,
-    count_challenge_attempts, clear_challenge_attempts,
-    finish_auth_challenge,
-    SESSION_SCOPE_AGENT, SESSION_SCOPE_ENROLL, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_FULL,
-    SESSION_SCOPE_RECOVERY,
-    get_user_public_uid, mark_email_verified, change_user_email,
-    add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
-    store_linkedin_li_at,
-    has_linkedin_session, has_linkedin_password, clear_user_linkedin_password,
-    get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
-    get_user_subscription_info, get_user_preferences, update_user_preferences,
-    DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS,
-    MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS,
-    get_engagement_preferences, has_engagement_preferences, update_engagement_preferences,
-    DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX,
-    DEFAULT_POSTING_DAYS, normalize_posting_days,
-    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT, COMPANY_PAGE_INVITES_PER_DAY_MIN,
-    COMPANY_PAGE_INVITES_PER_DAY_MAX,
-    ROSTER_FOLLOWS_PER_DAY_DEFAULT, ROSTER_FOLLOWS_PER_DAY_MIN, ROSTER_FOLLOWS_PER_DAY_MAX,
-    get_or_create_reply_inbound_token,
-    get_newsletter_settings, update_newsletter_settings,
-    get_pending_newsletter_editions,
-    get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
-    get_user_groups, set_groups_enabled, get_next_group_for_post,
-    get_open_group_post_draft, update_group_post_draft, GroupPostDraftStatus,
-    get_post_engagement_rows, get_post_performance_rows, get_post_coverage_counts,
-    get_content_mix_counts, get_comment_outcomes,
-    get_follower_stats, get_daily_action_counts,
-    get_lead_magnet_settings, update_lead_magnet_settings,
-    get_dm_templates, upsert_dm_templates,
-    get_engagement_targets, upsert_engagement_targets, delete_engagement_target,
-    suggest_engagement_targets, ENGAGEMENT_TARGET_CATEGORIES, ENGAGEMENT_TARGET_SOURCES,
-    ENGAGEMENT_TARGET_WEEKLY_DEFAULT, ENGAGEMENT_TARGET_WEEKLY_MAX,
-    get_story_bank_entries, upsert_story_bank_entries, delete_story_bank_entry,
-    STORY_BANK_KINDS, STORY_BANK_TARGET_ENTRIES,
-    update_subscription_from_stripe, update_user_linkedin_token,
-    update_user_linkedin_password,
-    get_user_linkedin_display_name, update_user_linkedin_display_name,
-    get_user_blog_url, get_user_sitemap_url, get_linkedin_profile_url_by_user_id,
-    get_user_by_stripe_customer_id, get_avatar_credit_ledger_entry_by_session,
-    get_avatar_credit_balance, add_avatar_credits,
-    get_video_credit_balance, add_video_credits,
-    get_video_credit_ledger_entry_by_session, update_post_video_quality,
-    deduct_avatar_credit, insert_avatar_training,
-    update_avatar_training_status, set_active_avatar,
-    get_avatar_trainings, get_active_avatar, get_avatar_training,
-    update_avatar_attributes, set_avatar_approval,
-    claim_avatar_sample_render, release_avatar_sample_render,
-    get_avatar_preferences, update_avatar_preferences, update_post_use_avatar,
-    AVATAR_APPROVAL_APPROVED, AVATAR_APPROVAL_REJECTED,
-    get_user_timezone, update_user_timezone,
-    get_user_geo, update_user_location, get_user_content_language,
-    replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
-    update_db_post_rejection_reason,
-    get_post_url_from_log_for_user, get_post_content,
-    get_post_image_url, update_db_post_image_url,
-    insert_feedback, FeedbackSource, FeedbackStatus,
-    get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
-    is_user_admin, get_feedback_list, record_feedback_review, get_feedback_by_id,
-)
-from cqc_lem.utilities.content_generation_status import mark_queued, get_generation_status, \
-    clear_generation_status
-from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
-from cqc_lem.utilities.linkedin.verification_pin import (
-    extract_pin_from_text, extract_token_from_address, submit_pin_by_token)
-from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
-from cqc_lem.utilities.linkedin.login_status import get_login_status
-from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
-from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
-    DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, \
-    SESSION_ABSOLUTE_MAX_DAYS, SESSION_COOKIE_NAME, SESSION_COOKIE_SAMESITE, SESSION_COOKIE_SECURE, \
-    AUTH_CHALLENGE_TTL_SECONDS, SECOND_FACTOR_MAX_ATTEMPTS, \
-    SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES
-from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify, clear_auth_limits
 from cqc_lem.utilities.auth_factors import (
-    METHOD_PASSKEY, METHOD_RECOVERY, METHOD_TOTP,
-    available_methods, begin_totp_enrollment, confirm_totp_enrollment, enrollment_allowed,
-    enrollment_hold_active, enrollment_required, factor_summary, generate_recovery_codes,
-    has_confirmed_totp, has_strong_factor, record_step_up, session_signed_in_with_recovery_code,
-    step_up_satisfied, strong_factor_deadline, strong_factor_prompt_due, verify_recovery_code,
+    METHOD_PASSKEY,
+    METHOD_RECOVERY,
+    METHOD_TOTP,
+    available_methods,
+    begin_totp_enrollment,
+    confirm_totp_enrollment,
+    enrollment_allowed,
+    enrollment_hold_active,
+    enrollment_required,
+    factor_summary,
+    generate_recovery_codes,
+    has_confirmed_totp,
+    has_strong_factor,
+    record_step_up,
+    session_signed_in_with_recovery_code,
+    step_up_satisfied,
+    strong_factor_deadline,
+    strong_factor_prompt_due,
+    verify_recovery_code,
     verify_totp_code,
 )
-from cqc_lem.utilities.webauthn_util import (
-    RelyingParty, WebAuthnUnavailable,
-    build_authentication_options, build_registration_options, credential_id_from_response,
-    relying_party as webauthn_relying_party,
-    verify_assertion as verify_passkey_assertion,
-    verify_registration as verify_passkey_registration,
+from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify, clear_auth_limits
+from cqc_lem.utilities.content_generation_status import clear_generation_status, get_generation_status, mark_queued
+from cqc_lem.utilities.db import (
+    AVATAR_APPROVAL_APPROVED,
+    AVATAR_APPROVAL_REJECTED,
+    CATCHUP_TOUCHES_MAX,
+    CATCHUP_TOUCHES_MAX_STANDARD,
+    CATCHUP_TOUCHES_MIN,
+    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT,
+    COMPANY_PAGE_INVITES_PER_DAY_MAX,
+    COMPANY_PAGE_INVITES_PER_DAY_MIN,
+    DEFAULT_CATCHUP_EVENT_TYPES,
+    DEFAULT_CONTENT_BUFFER_DAYS,
+    DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+    DEFAULT_POSTING_DAYS,
+    DEFAULT_POSTS_PER_WEEK,
+    ENGAGEMENT_TARGET_CATEGORIES,
+    ENGAGEMENT_TARGET_SOURCES,
+    ENGAGEMENT_TARGET_WEEKLY_DEFAULT,
+    ENGAGEMENT_TARGET_WEEKLY_MAX,
+    MAX_CONTENT_BUFFER_DAYS,
+    MAX_CONTENT_BUFFER_POSTS,
+    POSTS_PER_WEEK_MAX,
+    POSTS_PER_WEEK_MIN,
+    ROSTER_FOLLOWS_PER_DAY_DEFAULT,
+    ROSTER_FOLLOWS_PER_DAY_MAX,
+    ROSTER_FOLLOWS_PER_DAY_MIN,
+    SESSION_SCOPE_AGENT,
+    SESSION_SCOPE_ENROLL,
+    SESSION_SCOPE_EXTENSION,
+    SESSION_SCOPE_FULL,
+    SESSION_SCOPE_RECOVERY,
+    STORY_BANK_KINDS,
+    STORY_BANK_TARGET_ENTRIES,
+    VALID_CATCHUP_MESSAGE_SOURCES,
+    VALID_CATCHUP_TOUCH_MODES,
+    AuthAuditEvent,
+    CatchupEventType,
+    CatchupTouchStatus,
+    ConnectionRequestStatus,
+    FeedbackSource,
+    FeedbackStatus,
+    GroupPostDraftStatus,
+    LeadSignalStatus,
+    LeadStage,
+    OutreachStatus,
+    OwnershipUnprovable,
+    PostStatus,
+    PostType,
+    ScheduledDmStatus,
+    add_avatar_credits,
+    add_passkey_factor,
+    add_user_by_email,
+    add_user_with_access_token,
+    add_video_credits,
+    bulk_update_posts,
+    change_user_email,
+    claim_auth_challenge_attempt,
+    claim_avatar_sample_render,
+    clear_challenge_attempts,
+    clear_user_linkedin_password,
+    consume_auth_challenge,
+    count_challenge_attempts,
+    count_hot_leads,
+    count_new_lead_signals,
+    count_recovery_codes,
+    create_auth_challenge,
+    create_pin_for_email,
+    create_session,
+    deduct_avatar_credit,
+    delete_auth_factor,
+    delete_engagement_target,
+    delete_pin_for_email,
+    delete_session,
+    delete_story_bank_entry,
+    extend_trial_for_user,
+    finish_auth_challenge,
+    get_active_avatar,
+    get_auth_audit_events,
+    get_avatar_credit_balance,
+    get_avatar_credit_ledger_entry_by_session,
+    get_avatar_preferences,
+    get_avatar_training,
+    get_avatar_trainings,
+    get_catchup_touch,
+    get_catchup_touch_user_id,
+    get_catchup_touches,
+    get_comment_outcomes,
+    get_company_linked_in_url_for_user,
+    get_connection_request_user_id,
+    get_connection_requests,
+    get_content_mix_counts,
+    get_daily_action_counts,
+    get_dashboard_counts,
+    get_dm_templates,
+    get_early_adopter_grant,
+    get_engagement_preferences,
+    get_engagement_targets,
+    get_feedback_by_id,
+    get_feedback_list,
+    get_follower_stats,
+    get_latest_edition_scheduled_for,
+    get_latest_review_feedback_id,
+    get_lead,
+    get_lead_magnet_settings,
+    get_lead_signal,
+    get_lead_signals,
+    get_leads,
+    get_linkedin_profile_url_by_user_id,
+    get_newsletter_edition,
+    get_newsletter_settings,
+    get_next_group_for_post,
+    get_open_group_post_draft,
+    get_or_create_reply_inbound_token,
+    get_outreach_target_by_url,
+    get_outreach_target_user_id,
+    get_outreach_targets,
+    get_passkey_by_credential_id,
+    get_pending_newsletter_editions,
+    get_pin_lockout,
+    get_planned_tasks,
+    get_post_buyer_stage,
+    get_post_content,
+    get_post_coverage_counts,
+    get_post_engagement_rows,
+    get_post_image_url,
+    get_post_performance_rows,
+    get_post_status,
+    get_post_type,
+    get_post_url_from_log_for_user,
+    get_post_user_id,
+    get_posts,
+    get_recent_logs,
+    get_scheduled_dm_user_id,
+    get_scheduled_dms,
+    get_session_id,
+    get_story_bank_entries,
+    get_user_analytics_profile,
+    get_user_blog_url,
+    get_user_by_stripe_customer_id,
+    get_user_content_language,
+    get_user_email,
+    get_user_geo,
+    get_user_groups,
+    get_user_id,
+    get_user_linkedin_display_name,
+    get_user_passkey_credential_ids,
+    get_user_preferences,
+    get_user_public_uid,
+    get_user_sitemap_url,
+    get_user_subscription_info,
+    get_user_timezone,
+    get_user_token_info,
+    get_video_credit_balance,
+    get_video_credit_ledger_entry_by_session,
+    has_engagement_preferences,
+    has_linkedin_password,
+    has_linkedin_session,
+    insert_avatar_training,
+    insert_connection_request,
+    insert_feedback,
+    insert_outreach_target,
+    insert_post,
+    insert_scheduled_dm,
+    is_user_admin,
+    list_user_sessions,
+    mark_email_verified,
+    max_catchup_touches_allowed,
+    normalize_posting_days,
+    record_auth_event,
+    record_feedback_review,
+    release_avatar_sample_render,
+    release_enrollment_scope,
+    replace_video_url_base,
+    revoke_other_sessions,
+    revoke_session,
+    set_active_avatar,
+    set_avatar_approval,
+    set_groups_enabled,
+    soft_delete_posts,
+    store_linkedin_li_at,
+    suggest_engagement_targets,
+    update_avatar_attributes,
+    update_avatar_preferences,
+    update_avatar_training_status,
+    update_catchup_touch,
+    update_catchup_touch_status,
+    update_company_linked_in_url_for_user,
+    update_connection_request,
+    update_connection_request_status,
+    update_db_post,
+    update_db_post_image_url,
+    update_db_post_rejection_reason,
+    update_engagement_preferences,
+    update_factor_counter,
+    update_group_post_draft,
+    update_lead,
+    update_lead_magnet_settings,
+    update_lead_signal,
+    update_newsletter_edition,
+    update_newsletter_settings,
+    update_outreach_target,
+    update_outreach_target_status,
+    update_post_use_avatar,
+    update_post_video_quality,
+    update_scheduled_dm,
+    update_scheduled_dm_status,
+    update_subscription_from_stripe,
+    update_user,
+    update_user_linkedin_display_name,
+    update_user_linkedin_password,
+    update_user_linkedin_token,
+    update_user_location,
+    update_user_preferences,
+    update_user_timezone,
+    upsert_dm_templates,
+    upsert_engagement_targets,
+    upsert_story_bank_entries,
+    user_owns_posts,
+    verify_pin_for_email,
 )
-import requests
-from cqc_lem.utilities.logger import myprint, log_debug, log_warning, log_info, log_error
+from cqc_lem.utilities.db import (
+    get_session_user_id as _db_get_session_user_id,
+)
+from cqc_lem.utilities.db import (
+    resolve_session as _db_resolve_session,
+)
+from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
+from cqc_lem.utilities.env_constants import (
+    ADMIN_SECRET,
+    API_ACCESS_TOKENS,
+    AUTH_CHALLENGE_TTL_SECONDS,
+    DEFAULT_IMAGE_MODEL,
+    DEFAULT_VIDEO_MODEL,
+    DEFAULT_VIDEO_RATIO,
+    LI_CLIENT_ID,
+    LI_CLIENT_SECRET,
+    LI_REDIRECT_URL,
+    LI_STATE_SALT,
+    SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES,
+    SECOND_FACTOR_MAX_ATTEMPTS,
+    SESSION_ABSOLUTE_MAX_DAYS,
+    SESSION_COOKIE_NAME,
+    SESSION_COOKIE_SAMESITE,
+    SESSION_COOKIE_SECURE,
+)
+from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
+from cqc_lem.utilities.linkedin.login_status import get_login_status
+from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
+from cqc_lem.utilities.linkedin.verification_pin import (
+    extract_pin_from_text,
+    extract_token_from_address,
+    submit_pin_by_token,
+)
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
-from cqc_lem.utilities.post_image import (PostImageRejected, claim_manual_generation,
-                                          generate_image_for_post, owns_post_image_url,
-                                          remove_post_image_file, save_post_image_bytes)
-from cqc_lem.utilities.quality_gates import (parse_gate_findings, clamp_threshold,
-                                             AUTHENTICITY_SCORE_MIN_BOUNDS,
-                                             SIMILARITY_MAX_PCT_BOUNDS)
 from cqc_lem.utilities.observability import (
-    capture_exception, track_api_call, track_funnel_event, anonymous_distinct_id,
-    FUNNEL_SIGNUP_STARTED, FUNNEL_SIGNUP_COMPLETED, FUNNEL_TRIAL_STARTED,
-    FUNNEL_SUBSCRIPTION_STARTED, FUNNEL_CHURNED,
+    FUNNEL_CHURNED,
+    FUNNEL_SIGNUP_COMPLETED,
+    FUNNEL_SIGNUP_STARTED,
+    FUNNEL_SUBSCRIPTION_STARTED,
+    FUNNEL_TRIAL_STARTED,
+    anonymous_distinct_id,
+    capture_exception,
+    track_api_call,
+    track_funnel_event,
+)
+from cqc_lem.utilities.post_image import (
+    PostImageRejected,
+    claim_manual_generation,
+    generate_image_for_post,
+    owns_post_image_url,
+    remove_post_image_file,
+    save_post_image_bytes,
+)
+from cqc_lem.utilities.quality_gates import (
+    AUTHENTICITY_SCORE_MIN_BOUNDS,
+    SIMILARITY_MAX_PCT_BOUNDS,
+    clamp_threshold,
+    parse_gate_findings,
 )
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
-from fastapi import FastAPI, HTTPException, Request, Response, status, APIRouter, Header, Depends
-from fastapi import File, Form, Query, UploadFile
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
-from fastapi.responses import FileResponse
-from fastapi.responses import JSONResponse
-from fastapi.responses import HTMLResponse
-from fastapi.responses import RedirectResponse
-from fastapi.responses import StreamingResponse
-from linkedin_api.clients.auth.client import AuthClient
-from linkedin_api.clients.restli.client import RestliClient
-from linkedin_api.common.errors import ResponseFormattingError
-from pydantic import BaseModel, field_validator, model_validator, Field
+from cqc_lem.utilities.webauthn_util import (
+    RelyingParty,
+    WebAuthnUnavailable,
+    build_authentication_options,
+    build_registration_options,
+    credential_id_from_response,
+)
+from cqc_lem.utilities.webauthn_util import (
+    relying_party as webauthn_relying_party,
+)
+from cqc_lem.utilities.webauthn_util import (
+    verify_assertion as verify_passkey_assertion,
+)
+from cqc_lem.utilities.webauthn_util import (
+    verify_registration as verify_passkey_registration,
+)
 
 # The docs surface lives UNDER /api (issue #1020). At the FastAPI defaults it sits at /docs,
 # /redoc and /openapi.json — outside /api, so the credential gate below (which only inspects paths
@@ -439,7 +640,8 @@ def _scope_path(path: Optional[str]) -> Optional[str]:
     The router is mounted under `/api`, and a handful of routes (the LinkedIn OAuth redirect
     targets, `/health`, the SPA catch-all) also sit at the root — so the `/api` prefix is stripped
     and both spellings map to one entry. Matching is exact set membership, never a prefix, so
-    `/user/auth-factors` cannot open a future `/user/auth-factors-admin`."""
+    `/user/auth-factors` cannot open a future `/user/auth-factors-admin`.
+    """
     if not path:
         return None
     if path == "/api":
@@ -457,7 +659,8 @@ def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
     reached a handler by a route this middleware never saw. An unknown SCOPE means a value nobody
     taught this table about — a typo, a hand-edited row, or a scope some later phase added and
     only half wired up — and granting it everything by omission would make the table itself the
-    opt-in thing this design exists to avoid."""
+    opt-in thing this design exists to avoid.
+    """
     effective = scope or SESSION_SCOPE_FULL
     if effective in _UNRESTRICTED_SCOPES:
         return True
@@ -470,7 +673,8 @@ def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
 
 def _scope_refusal(scope: str) -> HTTPException:
     """403, never 401: the SPA's axios interceptor reads any 401 as a dead session and signs the
-    user out, which would turn "finish enrolling" into "you have been logged out"."""
+    user out, which would turn "finish enrolling" into "you have been logged out".
+    """
     return HTTPException(status_code=403, detail={
         "code": _SCOPE_REFUSAL_CODE.get(scope, "session_scope_forbidden"),
         "message": ("Finish setting up two-factor sign-in to use the rest of LEM."
@@ -535,7 +739,8 @@ def _bearer_authenticated(request: Optional[Request]) -> bool:
     """Did this caller present a configured non-browser bearer token?
 
     False when no tokens are configured at all: nothing is a valid bearer then, so nothing is
-    exempt — a deployment that runs the gate open must not also opt out of the CSRF layer."""
+    exempt — a deployment that runs the gate open must not also opt out of the CSRF layer.
+    """
     if request is None or not _API_ACCESS_TOKEN_SET:
         return False
     return _bearer_token(request.headers.get("Authorization")) in _API_ACCESS_TOKEN_SET
@@ -544,7 +749,8 @@ def _bearer_authenticated(request: Optional[Request]) -> bool:
 def _csrf_refusal() -> HTTPException:
     """403, never 401 — same reason as `_scope_refusal`: the SPA's axios interceptor reads any 401
     as a dead session and signs the user out, so a stale bundle would log people out rather than
-    tell them to reload."""
+    tell them to reload.
+    """
     return HTTPException(status_code=403, detail={
         "code": "client_header_required",
         "message": f"This request must be sent by the LEM app ({CLIENT_HEADER_NAME} header missing).",
@@ -553,7 +759,8 @@ def _csrf_refusal() -> HTTPException:
 
 def _require_client_header() -> None:
     """Refuse a state-changing request that authenticated on the session COOKIE and did not come
-    from the SPA. Read-only requests and non-browser bearer callers pass straight through."""
+    from the SPA. Read-only requests and non-browser bearer callers pass straight through.
+    """
     request = _request_object.get()
     if request is None:
         # `session_cookie_middleware` sets this ContextVar and the cookie one in the SAME block, so a
@@ -595,7 +802,8 @@ def current_session_token(session_token: Optional[str] = None) -> Optional[str]:
     token to the cookie, so returning that stale token here would mean logout deletes nothing (the
     live session row outlives the logout) and "sign out all other devices" revokes the caller's OWN
     live session, having failed to match it as the one to keep. The resolve is skipped when there is
-    no cookie to fall through to — a non-browser caller costs no extra query."""
+    no cookie to fall through to — a non-browser caller costs no extra query.
+    """
     explicit = _explicit_token(session_token)
     cookie_token = _request_session_cookie.get()
     if explicit and (not cookie_token or _db_get_session_user_id(explicit)):
@@ -617,7 +825,8 @@ def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
     A session that resolves off the COOKIE on a state-changing request must also carry the SPA's
     client header (#957) — the cookie is the one credential a browser attaches by itself, so it is
     the only one a cross-site form can forge with. An explicit token is not: the attacker would have
-    to know it, and it is httpOnly."""
+    to know it, and it is httpOnly.
+    """
     explicit = _explicit_token(session_token)
     if explicit:
         resolved = _db_resolve_session(explicit)
@@ -645,7 +854,8 @@ def _enrollment_held() -> bool:
 
     Takes no token on purpose. An earlier draft accepted one and discarded it "for call-site
     shape", which in an auth module is a signature that lies: it would answer about the CURRENT
-    request no matter whose token you passed."""
+    request no matter whose token you passed.
+    """
     return _request_session_scope.get() == SESSION_SCOPE_ENROLL
 
 
@@ -655,7 +865,8 @@ def _release_enrollment_hold(user_id: int, session_token: Optional[str]) -> None
     Conditional on the scope inside the UPDATE, so this is a no-op for the ordinary case — a full,
     recovery or extension session enrolling a factor is not widened by it. Short-circuited on the
     rollout being live for the same reason the login path is: a deployment with no deadline cannot
-    hold a session, so it should not pay a write to find that out."""
+    hold a session, so it should not pay a write to find that out.
+    """
     if not enrollment_hold_active():
         return
     token = current_session_token(session_token)
@@ -666,7 +877,8 @@ def _release_enrollment_hold(user_id: int, session_token: Optional[str]) -> None
 def _release_hold(token: str) -> bool:
     """Best effort. The hold is re-decided from the ACCOUNT on every request, so a promotion that
     does not land costs one extra query next time, never access — which is why this is caught at
-    all. It is still a write that should have worked, so it warns rather than whispers."""
+    all. It is still a write that should have worked, so it warns rather than whispers.
+    """
     try:
         return release_enrollment_scope(token)
     except Exception as e:
@@ -687,7 +899,8 @@ def _mint_login_session(user_id: int, *, user_agent: Optional[str],
     The strong-factor login paths (`/auth/passkey/login/complete`, `/auth/second-factor/verify`)
     deliberately do NOT call this: reaching either one proves the account HOLDS a factor, so
     `enrollment_required` is false for them by construction and a hold there would be unreachable
-    code pretending to be a control."""
+    code pretending to be a control.
+    """
     held = enrollment_required(user_id)
     token = create_session(user_id, user_agent=user_agent, ip=ip,
                            scope=(SESSION_SCOPE_ENROLL if held else SESSION_SCOPE_FULL))
@@ -736,7 +949,8 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
 def _safe_auth_event(event: "AuthAuditEvent", **kwargs) -> None:
     """The audit row must never be the reason a refusal turns into a 500 — the refusal IS the
     control, the row is the record of it. Losing the record still matters: this row is the only
-    signal that someone else may be holding an extension token, so a failed write warns."""
+    signal that someone else may be holding an extension token, so a failed write warns.
+    """
     try:
         record_auth_event(event, **kwargs)
     except Exception as e:
@@ -749,7 +963,8 @@ def require_session_user_id(session_token: Optional[str] = None) -> int:
     Until this landed, a set of routes read the acting user out of an `email` / `user_id` REQUEST
     PARAMETER, behind nothing but the shared bearer token the SPA ships in its build. That token is
     known to anyone who loads the page, so those routes were "name an account, act on it". A
-    parameter now only ever names a TARGET, and a target has to be authorised against this."""
+    parameter now only ever names a TARGET, and a target has to be authorised against this.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         # DEBUG, not WARNING: sessions expire in the ordinary course of things and the SPA polls,
@@ -771,7 +986,8 @@ def _deny(reason: str, user_id: int, **context: Any) -> NoReturn:
     It also writes an `auth_audit_log` row, for the same reason `_scope_checked` does: a log line is
     greppable, an audit row is queryable per account, and "who has been naming other people's
     accounts" is a question you ask about ONE user after the fact. Only the KIND of identifier and
-    the path go in — never the caller-supplied value, which is somebody else's address."""
+    the path go in — never the caller-supplied value, which is somebody else's address.
+    """
     log_warning(f"Rejected a foreign target on /api: {reason}", user_id=user_id, **context)
     http_request = _request_object.get()
     _safe_auth_event(AuthAuditEvent.FOREIGN_TARGET_DENIED, user_id=user_id, success=False,
@@ -785,7 +1001,8 @@ def _reject_foreign_email(user_id: int, email: Optional[str]) -> None:
 
     The parameter is redundant now — the session already decided whose data this is — but the SPA
     and the legacy clients still send it, and answering a mismatch with the CALLER's data would be a
-    silent substitution. 403 says what happened."""
+    silent substitution. 403 says what happened.
+    """
     named = (email or "").strip().lower()
     if not named:
         return
@@ -818,7 +1035,8 @@ def _require_own_posts(user_id: int, post_ids: List[int]) -> None:
     A database fault answers 503, not 403. The action is refused either way — that is the
     fail-closed half — but "you may not touch these posts" and "we could not find out" are different
     facts and a security-shaped 403 for an infrastructure outage sends the user and on-call in the
-    wrong direction, on top of filing a defect through `_deny`'s recurrence escalation."""
+    wrong direction, on top of filing a defect through `_deny`'s recurrence escalation.
+    """
     try:
         owns = user_owns_posts(user_id, post_ids)
     except OwnershipUnprovable:
@@ -837,7 +1055,8 @@ def _client_ip(request: Optional[Request]) -> Optional[str]:
     APPENDS to the chain the client supplied, so its first entry is attacker-controlled, and reading
     it as the client would let a single host reset its own per-IP auth limit with one header and
     write a forged ip_hash into the audit log. It stays only as the fallback for a deployment with
-    no Cloudflare in front, where nothing else knows the original address."""
+    no Cloudflare in front, where nothing else knows the original address.
+    """
     if request is None:
         return None
     cf_ip = (request.headers.get("CF-Connecting-IP") or "").strip()
@@ -857,7 +1076,8 @@ def _user_agent(request: Optional[Request]) -> Optional[str]:
 
 def _samesite() -> str:
     """Starlette rejects anything outside lax/strict/none, and a typo in the env must not turn every
-    login into a 500. Unknown values fall back to the documented default."""
+    login into a 500. Unknown values fall back to the documented default.
+    """
     value = (SESSION_COOKIE_SAMESITE or "").strip().lower()
     return value if value in ("lax", "strict", "none") else "lax"
 
@@ -865,7 +1085,8 @@ def _samesite() -> str:
 def _set_session_cookie(response: Response, token: str) -> None:
     """Issue the session cookie. max_age is the ABSOLUTE session cap, not the idle window — the
     server slides the idle expiry itself, and a cookie that expired mid-idle-window would log an
-    active user out."""
+    active user out.
+    """
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -915,7 +1136,8 @@ def _utc_iso(dt) -> Optional[str]:
     """Serialize a datetime as an explicit-UTC ISO string (trailing 'Z') so clients localize it
     correctly. Stored datetimes are UTC but historically naive — assume naive means UTC. Without the
     offset the browser parses the string as local time and every displayed value is off by its
-    UTC offset."""
+    UTC offset.
+    """
     if dt is None:
         return None
     if isinstance(dt, str):
@@ -933,7 +1155,8 @@ def _warn_if_naive_schedule(dt, endpoint: str, **context) -> None:
     their own zone is stored verbatim and the post fires offset-hours away from the time they saw
     (issue #774 — a 9am post published at 5am). We keep interpreting it as UTC (the contract, and
     what every legacy caller relies on) but leave a breadcrumb, because today the only evidence is
-    the wrong publish time itself."""
+    the wrong publish time itself.
+    """
     if dt is not None and getattr(dt, "tzinfo", None) is None:
         log_warning(
             f"Naive scheduled_datetime received by {endpoint} — assuming UTC "
@@ -944,7 +1167,8 @@ def _warn_if_naive_schedule(dt, endpoint: str, **context) -> None:
 
 def _public_post_url(value) -> Optional[str]:
     """Only surface real http(s) permalinks. Home-feed comments have no LinkedIn permalink and are
-    logged under a synthetic 'feedpost://<hash>' dedup key — never expose that raw string to the UI."""
+    logged under a synthetic 'feedpost://<hash>' dedup key — never expose that raw string to the UI.
+    """
     if isinstance(value, str) and value.lower().startswith(("http://", "https://")):
         return value
     return None
@@ -1004,7 +1228,8 @@ class AvatarActivateRequest(BaseModel):
 
 class AvatarAttributesRequest(BaseModel):
     """Self-declared likeness attributes (issue #744, decision 3A). Both fields are optional and
-    a null clears the declaration — an undeclared attribute renders no subject clause at all."""
+    a null clears the declaration — an undeclared attribute renders no subject clause at all.
+    """
     session_token: str
     gender_presentation: Optional[str] = None
     age_band: Optional[str] = None
@@ -1050,7 +1275,8 @@ class UserSettingsRequest(BaseModel):
 
 class FunnelAttribution(BaseModel):
     """Where a visitor came from, captured client-side on first landing (issue #503). Every field is
-    optional — a direct visit sends none of them."""
+    optional — a direct visit sends none of them.
+    """
     utm_source: Optional[str] = None
     utm_medium: Optional[str] = None
     utm_campaign: Optional[str] = None
@@ -1081,7 +1307,8 @@ class LogoutRequest(BaseModel):
 
 class RevokeSessionRequest(BaseModel):
     """Per-device revocation (issue #745, 2b). `session_id` revokes one device; `all_others`
-    revokes every device except the one making the call."""
+    revokes every device except the one making the call.
+    """
     session_token: SessionTokenField = None
     session_id: Optional[int] = None
     all_others: bool = False
@@ -1093,7 +1320,8 @@ class ExtensionTokenRequest(BaseModel):
 
 class AgentTokenRequest(BaseModel):
     """Mint a token for a headless automation (issue #1026). `label` is what the operator will
-    read on the Security card when deciding which machine to revoke."""
+    read on the Security card when deciding which machine to revoke.
+    """
     session_token: SessionTokenField = None
     label: Optional[str] = Field(default=None, max_length=120)
     ttl_days: int = Field(default=90, ge=1, le=365)
@@ -1129,7 +1357,8 @@ class PasskeyLoginBeginRequest(BaseModel):
     account.
 
     No attribution field either: an account that holds a passkey enrolled it while signed in, so
-    this path can never be a signup and nothing downstream would read one."""
+    this path can never be a signup and nothing downstream would read one.
+    """
 
 
 class PasskeyLoginCompleteRequest(BaseModel):
@@ -1149,7 +1378,8 @@ class AuthFactorDeleteRequest(BaseModel):
 
 class SecondFactorVerifyRequest(BaseModel):
     """Finish a login that a PIN only bootstrapped. `pending_token` is the handle issued by
-    /auth/email/verify; it is single-use and short-lived."""
+    /auth/email/verify; it is single-use and short-lived.
+    """
     pending_token: str
     method: str
     code: str
@@ -1304,7 +1534,8 @@ class PostRescoreRequest(BaseModel):
 
 class PostImageGenerateRequest(BaseModel):
     """Render an image for a post (issue #1030). `post_id` is absent while the author is still
-    composing — there is no row yet — in which case `content` is the only text there is."""
+    composing — there is no row yet — in which case `content` is the only text there is.
+    """
     session_token: SessionTokenField = None
     post_id: Optional[int] = None
     content: Optional[str] = Field(default=None, max_length=_LEN_IMAGE_PROMPT_SOURCE)
@@ -1648,7 +1879,8 @@ class EngagementTargetDeleteRequest(BaseModel):
 
 class StoryBankItem(BaseModel):
     """One piece of the user's own raw material (issue #620). `body` is the only required field —
-    quick capture is a textarea, not a form wizard, so the title defaults from the body."""
+    quick capture is a textarea, not a form wizard, so the title defaults from the body.
+    """
     id: Optional[int] = None
     kind: str = "anecdote"
     title: Optional[str] = Field(default=None, max_length=_LEN_STORY_TITLE)
@@ -1789,7 +2021,8 @@ class GenerateCarouselPreviewRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     """In-app feedback / bug report (issue #496). session_token is optional: the widget is offered
-    to logged-out visitors too, and those land with a NULL user_id."""
+    to logged-out visitors too, and those land with a NULL user_id.
+    """
     body: str = Field(min_length=1, max_length=_LEN_FEEDBACK_BODY)
     session_token: SessionTokenField = None
     source: str = str(FeedbackSource.WIDGET)
@@ -1815,7 +2048,8 @@ class FeedbackRequest(BaseModel):
 
 class NpsSurveyRequest(BaseModel):
     """An NPS answer (issue #501): the 0-10 score plus the free-text 'why'. Bounds mirror
-    `utilities.surveys.NPS_MIN/NPS_MAX`."""
+    `utilities.surveys.NPS_MIN/NPS_MAX`.
+    """
     session_token: str
     score: int = Field(ge=0, le=10)
     why: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
@@ -1826,7 +2060,8 @@ class NpsSurveyRequest(BaseModel):
 class ReviewSurveyRequest(BaseModel):
     """A review (issue #501): a 1-5 rating, 'what would make this a 10?', an optional public
     testimonial and the consent flag that says we may quote it. Submitting one satisfies the
-    extended-trial gate (issue #499)."""
+    extended-trial gate (issue #499).
+    """
     session_token: str
     rating: int = Field(ge=1, le=5)
     improvement: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
@@ -1845,7 +2080,8 @@ class PostHogSurveyRequest(BaseModel):
     """A PostHog Surveys answer relayed by the SPA (issue #653). `kind` says which of the two LEM
     surveys answered — the score bounds are the KIND's, checked in the handler, because 0-10 and 1-5
     can't both be a field constraint. `survey_id`/`survey_name` are PostHog's own, kept so a
-    `feedback` row can be lined up against the `survey sent` event the browser already emitted."""
+    `feedback` row can be lined up against the `survey sent` event the browser already emitted.
+    """
     session_token: str
     kind: str = Field(min_length=1, max_length=_LEN_FEEDBACK_TYPE_HINT)
     score: int = Field(ge=0, le=10)
@@ -1857,7 +2093,8 @@ class PostHogSurveyRequest(BaseModel):
 
 class ShippedNoticeAckRequest(BaseModel):
     """Acknowledging a "you asked, we shipped" notice (issue #502). `resolved` is the micro-CSAT:
-    True/False answers "did this fix it?", None means the user just dismissed the notice."""
+    True/False answers "did this fix it?", None means the user just dismissed the notice.
+    """
     session_token: str
     notice_id: int = Field(gt=0)
     resolved: Optional[bool] = None
@@ -1876,7 +2113,8 @@ class FutureForwardValues(IntEnum):
 @app.get("/health")
 def health_check():
     """Liveness for the blue/green flip and the Cloudflare tunnel. Deliberately trivial: it gates
-    every deploy, so it must never depend on Redis, MySQL or Celery being reachable."""
+    every deploy, so it must never depend on Redis, MySQL or Celery being reachable.
+    """
     return {"status": "healthy"}
 
 
@@ -1958,7 +2196,7 @@ def health_check_deep():
 @router.get("/app-info")
 def get_app_info() -> ResponseModel:
     """Public: the SPA footer reads the running release version + whether to display it."""
-    from cqc_lem.utilities.env_constants import get_app_version, SHOW_VERSION_FOOTER
+    from cqc_lem.utilities.env_constants import SHOW_VERSION_FOOTER, get_app_version
     return ResponseModel(status_code=200, detail={
         "version": get_app_version(),
         "show_version": SHOW_VERSION_FOOTER,
@@ -1967,7 +2205,8 @@ def get_app_info() -> ResponseModel:
 
 def _bounded_context(context: Optional[Dict[str, Any]]) -> Optional[dict]:
     """Client-supplied context for a feedback/survey row, dropped when a caller tries to write an
-    unbounded JSON blob — the widget and the survey modal only send a handful of fields."""
+    unbounded JSON blob — the widget and the survey modal only send a handful of fields.
+    """
     payload: Dict[str, Any] = dict(context or {})
     if len(json.dumps(payload, default=str)) > _LEN_FEEDBACK_CONTEXT:
         payload = {"truncated": True}
@@ -1978,7 +2217,8 @@ def _bounded_context(context: Optional[Dict[str, Any]]) -> Optional[dict]:
 def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
     """Capture in-app feedback / a bug report (issue #496) — the first capture point of the
     feedback->auto-work loop. A valid session_token attributes the row to that user; without one
-    (logged-out visitor) the row is kept anonymously with a NULL user_id."""
+    (logged-out visitor) the row is kept anonymously with a NULL user_id.
+    """
     user_id = get_session_user_id(request.session_token) if request.session_token else None
     context: Dict[str, Any] = _bounded_context(request.context) or {}
     if request.screenshot:
@@ -1995,7 +2235,8 @@ def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
 @router.post("/survey/nps")
 def submit_nps_endpoint(request: NpsSurveyRequest) -> ResponseModel:
     """Capture an NPS response (issue #501) as a `feedback` row with source='nps'. Promoters get
-    invited to turn that score into a review, which is what unlocks the extended trial (#499)."""
+    invited to turn that score into a review, which is what unlocks the extended trial (#499).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2018,7 +2259,8 @@ def submit_nps_endpoint(request: NpsSurveyRequest) -> ResponseModel:
 @router.post("/survey/review")
 def submit_review_endpoint(request: ReviewSurveyRequest) -> ResponseModel:
     """Capture a review (issue #501) as a `feedback` row with source='review'. That row IS the gate
-    the extended trial checks (issue #499), so the response reports the unlock."""
+    the extended trial checks (issue #499), so the response reports the unlock.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2040,7 +2282,8 @@ def submit_review_endpoint(request: ReviewSurveyRequest) -> ResponseModel:
 @router.post("/survey/dismiss")
 def dismiss_survey_endpoint(request: SurveyDismissRequest) -> ResponseModel:
     """User closed the survey modal without answering — record the ask so neither the modal nor the
-    email brings it back (issue #501)."""
+    email brings it back (issue #501).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2055,7 +2298,8 @@ def submit_posthog_survey_endpoint(request: PostHogSurveyRequest) -> ResponseMod
     """Capture a PostHog Surveys answer (issue #653) as a `feedback` row so it reaches the
     feedback->auto-work loop. The browser has already emitted PostHog's own `survey sent`; this
     handler deliberately does NOT emit the homegrown `survey_response` event, so one answer is
-    counted once."""
+    counted once.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2084,7 +2328,8 @@ def submit_posthog_survey_endpoint(request: PostHogSurveyRequest) -> ResponseMod
 def survey_endpoint(session_token: str) -> ResponseModel:
     """The survey to show in-app right now (day-3 NPS, trial T-3d NPS, or the review that unlocks
     the extended trial), or none (issue #501). With PostHog Surveys on (issue #653) the NPS asks are
-    retired from this snapshot — PostHog is asking them."""
+    retired from this snapshot — PostHog is asking them.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2097,7 +2342,8 @@ def survey_endpoint(session_token: str) -> ResponseModel:
 def shipped_notices_endpoint(session_token: str) -> ResponseModel:
     """The "you asked, we shipped" notices waiting for this user, plus the recent changelog (issue
     #502). A notice only appears once the reporter has had the fix for FEEDBACK_FIX_CSAT_DELAY_HOURS
-    — that delay is what schedules the micro-CSAT it carries."""
+    — that delay is what schedules the micro-CSAT it carries.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2125,7 +2371,8 @@ def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel:
     API and the Celery workers can never disagree about a flag's value.
 
     An invalid or absent session resolves the SAME flags for the `"system"` identity rather than
-    401ing: the landing page is logged out and still needs to know what to render."""
+    401ing: the landing page is logged out and still needs to know what to render.
+    """
     from cqc_lem.utilities.flags import bootstrap_payload
     user_id = get_session_user_id(session_token) if session_token else None
     return ResponseModel(status_code=200, detail=bootstrap_payload(user_id))
@@ -2134,7 +2381,8 @@ def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel:
 @router.get("/faq")
 def faq_endpoint() -> ResponseModel:
     """Public: the front-page FAQ (issue #506). Serves only the published entries, in display
-    order — the SPA falls back to its built-in copy if this is empty or unreachable."""
+    order — the SPA falls back to its built-in copy if this is empty or unreachable.
+    """
     from cqc_lem.utilities.db import get_published_faq_entries
     return ResponseModel(status_code=200, detail={
         "entries": [{"id": e.get("id"), "question": e.get("question"), "answer": e.get("answer"),
@@ -2147,7 +2395,8 @@ def faq_endpoint() -> ResponseModel:
 def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseModel:
     """Acknowledge a shipped-fix notice and, when the user answered "did this fix it?", record the
     micro-CSAT (issue #502). A "not fixed" answer lands as a `feedback` row at status `new`, so it
-    re-enters the auto-work loop instead of stopping at a metric."""
+    re-enters the auto-work loop instead of stopping at a metric.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2250,7 +2499,8 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
     """SendGrid Inbound Parse webhook: the user's email reply carrying their LinkedIn
     6-digit code. The tokenized Reply-To (pin+<token>@parse-domain) attributes it to the
     paused login; we extract the code and hand it to the waiting task. Always 200 so
-    SendGrid doesn't retry-storm on a malformed/unrelated message."""
+    SendGrid doesn't retry-storm on a malformed/unrelated message.
+    """
     try:
         form = await request.form()
     except Exception:
@@ -2291,7 +2541,8 @@ _GMAIL_CODE_FRESH_SECONDS = 7 * 24 * 60 * 60
 def _store_gmail_forward_confirmation(user_id: int, record: "dict", quiet: bool = False) -> bool:
     """Persist forwarding status; True when something was written. Confirmed records are never
     downgraded by a later pending one — evidence that the chain worked does not stop being evidence.
-    Pass quiet=True on per-email paths so one Redis outage can't turn into a warning flood."""
+    Pass quiet=True on per-email paths so one Redis outage can't turn into a warning flood.
+    """
     try:
         from cqc_lem.utilities.linkedin.rate_limit import _redis_client
         client = _redis_client()
@@ -2317,7 +2568,8 @@ def _record_forwarding_confirmed_by_delivery(user_id: int) -> None:
     proof the forwarding chain works — stronger proof than our server-side click of Gmail's verify
     link, which routinely fails from a datacenter IP. Without this, a user who finished Gmail's
     confirmation by hand (the path we explicitly ask them to take when the auto-click fails) stayed
-    at confirmed=False forever and kept being told replies would never fire (issue #813)."""
+    at confirmed=False forever and kept being told replies would never fire (issue #813).
+    """
     if (get_gmail_forward_confirmation(user_id) or {}).get("confirmed"):
         return
     # Only announce a real state change — with Redis down the store is a no-op, and logging per
@@ -2330,9 +2582,12 @@ def _record_forwarding_confirmed_by_delivery(user_id: int) -> None:
 def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str, html: str) -> ResponseModel:
     """Auto-confirm the user's Gmail forwarding to our address: click the verify link server-side
     and stash the numeric code + status so the UI can show it as a fallback if the auto-click didn't
-    take. Always 200."""
+    take. Always 200.
+    """
     from cqc_lem.utilities.linkedin.notification_email import (
-        extract_gmail_confirmation_url, extract_gmail_confirmation_code)
+        extract_gmail_confirmation_code,
+        extract_gmail_confirmation_url,
+    )
     # Prefer the HTML href — the plain-text part wraps the long verify URL across lines and breaks it.
     url = extract_gmail_confirmation_url(html) or extract_gmail_confirmation_url(text)
     code = (extract_gmail_confirmation_code(subject) or extract_gmail_confirmation_code(text)
@@ -2402,7 +2657,8 @@ def get_gmail_forward_confirmation(user_id: int) -> "dict | None":
 def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
     """True the first time we see this user within window_s — collapses a burst of comment
     notifications into ONE reply sweep. Fails OPEN (returns True) if Redis is unavailable so a
-    notification is never silently dropped."""
+    notification is never silently dropped.
+    """
     try:
         from cqc_lem.utilities.linkedin.rate_limit import _redis_client
         client = _redis_client()
@@ -2417,7 +2673,8 @@ def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) ->
     """One log line + one PostHog event per inbound parse email saying what we did with it. The
     webhook ignores most mail BY DESIGN, which made a broken forwarding chain indistinguishable from
     no mail at all — weeks of 100%-silently-dropped traffic looked like "feature never used". The
-    raw (truncated) address fields are included so a token/format mismatch is visible from the log."""
+    raw (truncated) address fields are included so a token/format mismatch is visible from the log.
+    """
     to_field = str(form.get("to") or "")[:160]
     envelope = str(form.get("envelope") or "")[:240]
     from_field = str(form.get("from") or "")[:120]
@@ -2435,11 +2692,15 @@ def _process_reply_inbound(form) -> ResponseModel:
     """Handle inbound mail sent to a reply+<token>@parse-domain address: a Gmail forwarding
     confirmation (auto-click the verify link) or a forwarded LinkedIn comment notification (trigger a
     debounced recent-posts reply sweep). Reactions/unknown tokens are ignored. Always 200. Called
-    from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL."""
-    from cqc_lem.utilities.linkedin.notification_email import (
-        extract_reply_token_from_address, is_comment_notification, is_gmail_forwarding_confirmation,
-        is_linkedin_notification)
+    from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL.
+    """
     from cqc_lem.utilities.db import get_user_id_by_reply_token
+    from cqc_lem.utilities.linkedin.notification_email import (
+        extract_reply_token_from_address,
+        is_comment_notification,
+        is_gmail_forwarding_confirmation,
+        is_linkedin_notification,
+    )
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
     from_field = str(form.get("from") or "")
@@ -2483,7 +2744,8 @@ def _process_reply_inbound(form) -> ResponseModel:
 @router.post("/linkedin/comment-notification/inbound")
 async def linkedin_comment_notification_inbound(request: Request) -> ResponseModel:
     """SendGrid Inbound Parse webhook for reply+<token> mail (kept as an explicit path; SendGrid
-    actually delivers to the shared parse URL, which also routes here via _process_reply_inbound)."""
+    actually delivers to the shared parse URL, which also routes here via _process_reply_inbound).
+    """
     try:
         form = await request.form()
     except Exception:
@@ -2631,7 +2893,8 @@ def create_weekly_content(session_token: Optional[str] = None,
 def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
     """Progress of the caller's weekly content-generation run — queued → in_progress (X of N) →
     done/failed. `detail` is None when no run is being tracked (nothing started, or it aged out).
-    Scoped by session rather than a user_id query param so one user can't poll another's run."""
+    Scoped by session rather than a user_id query param so one user can't poll another's run.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2675,7 +2938,8 @@ def aws_test_get_my_profile(session_token: Optional[str] = None,
 def get_user_id_from_email(session_token: Optional[str] = None,
                            email: Optional[str] = None) -> ResponseModel:
     """The CALLER's own user id. It was an email→id oracle for any bearer holder (issue #914) —
-    which is how an attacker turned a known address into the id the automation routes wanted."""
+    which is how an attacker turned a known address into the id the automation routes wanted.
+    """
     user_id = require_session_user_id(session_token)
     _reject_foreign_email(user_id, email)
     return ResponseModel(status_code=200, detail=user_id)
@@ -2882,7 +3146,8 @@ def _attribution_dict(attribution: Optional[FunnelAttribution]) -> dict:
 def _track_signup_funnel(user_id: int, email: str, attribution: dict, pin_bypassed: bool) -> None:
     """`signup_completed` + `trial_started` for an account that was just created. Both are aliased
     onto the anonymous id `signup_started` used, so the funnel joins end to end in PostHog; the trial
-    starts at the same instant because `add_user_by_email` opens the free trial on insert."""
+    starts at the same instant because `add_user_by_email` opens the free trial on insert.
+    """
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
     anon_id = anonymous_distinct_id(email)
     track_funnel_event(FUNNEL_SIGNUP_COMPLETED, user_id=user_id, attribution=attribution,
@@ -2897,7 +3162,8 @@ def _start_affiliate_membership(user_id: int, attribution: dict) -> None:
 
     Order matters: attribution first, because `enroll_user` extends THIS user's trial and a failure
     there must not cost the referrer their pending referral. Best-effort throughout — the affiliate
-    program is a perk, and no part of it may ever fail a signup."""
+    program is a perk, and no part of it may ever fail a signup.
+    """
     try:
         from cqc_lem.utilities.marketing.affiliate import attribute_referral, enroll_user
         attribute_referral(user_id, attribution)
@@ -3175,7 +3441,8 @@ def get_linkedin_signin_status(session_token: str) -> ResponseModel:
 def get_user_security(session_token: Optional[str] = None) -> ResponseModel:
     """Everything the account page's Security card shows (issue #745, 2b): the devices signed in,
     the recent auth history, and the state of the email attribute. Never returns a token, a token
-    hash or an IP hash."""
+    hash or an IP hash.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3207,7 +3474,8 @@ def get_user_security(session_token: Optional[str] = None) -> ResponseModel:
 @router.post("/user/sessions/revoke")
 def revoke_user_session(request: RevokeSessionRequest, http_request: Request = None) -> ResponseModel:
     """Sign a device out. Revoking the CURRENT session is allowed — it is the same thing as logging
-    out — and the caller's next request simply resolves to no user."""
+    out — and the caller's next request simply resolves to no user.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3247,7 +3515,8 @@ def mint_extension_token(request: ExtensionTokenRequest, http_request: Request =
     Since 2c.1 that row is also NARROW: `scope='extension'` reaches `/user/linkedin-cookie` and
     nothing else (`_EXTENSION_SESSION_SURFACE`). The token lives in extension storage on a machine
     we do not control, so the blast radius of losing one is now "someone can overwrite my li_at",
-    not "someone can read my whole account"."""
+    not "someone can read my whole account".
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3280,7 +3549,8 @@ def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -
 
     The TTL is explicit rather than idle-driven: an agent that runs weekly would find a 24h session
     expired every run. The row is still listed and revocable per-device, so revoking it stops the
-    automation and signs nobody out."""
+    automation and signs nobody out.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3309,7 +3579,8 @@ def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -
 def user_email_change_init(request: EmailChangeInitRequest,
                            http_request: Request = None) -> ResponseModel:
     """Start an email change: PIN goes to the NEW address, so control of it has to be proven before
-    the account moves. The address is an attribute of the account — the identity is `public_uid`."""
+    the account moves. The address is an attribute of the account — the identity is `public_uid`.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3364,7 +3635,8 @@ def user_email_change_verify(request: EmailChangeVerifyRequest,
                              http_request: Request = None) -> ResponseModel:
     """Confirm the new address with the PIN sent to it, then move the account. Every OTHER device is
     revoked: an email change is exactly what an attacker does after stealing a session, and the real
-    owner has to be able to end those sessions by taking their address back."""
+    owner has to be able to end those sessions by taking their address back.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3432,7 +3704,8 @@ def _begin_second_factor(user_id: int, email: str, ip: Optional[str], user_agent
 
     So the budget is counted per ACCOUNT over `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` and carried
     into the new handle. A wrong-code spree costs the attacker the window; a user who mistyped
-    their code waits it out, and a correct code clears the count outright."""
+    their code waits it out, and a correct code clears the count outright.
+    """
     window_start = datetime.now(timezone.utc) - timedelta(
         minutes=SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES)
     spent = count_challenge_attempts(user_id, CHALLENGE_SECOND_FACTOR, window_start)
@@ -3464,7 +3737,8 @@ def _begin_second_factor(user_id: int, email: str, ip: Optional[str], user_agent
 def _step_up_error(user_id: int) -> HTTPException:
     """A step-up refusal is **403, never 401**. The SPA's axios interceptor treats any 401 as a dead
     session — it clears the cookie sentinel and redirects to the landing page — so answering "prove
-    it's you" with a 401 would log the user out instead of asking them anything."""
+    it's you" with a 401 would log the user out instead of asking them anything.
+    """
     return HTTPException(status_code=403, detail={
         "code": "step_up_required",
         "message": "Confirm it's you to change this.",
@@ -3474,7 +3748,8 @@ def _step_up_error(user_id: int) -> HTTPException:
 
 def _agent_scoped() -> bool:
     """Is THIS request being served on an agent token? Read off the ContextVar the resolver stamped,
-    never a fresh lookup — same argument as `_enrollment_held`."""
+    never a fresh lookup — same argument as `_enrollment_held`.
+    """
     return _request_session_scope.get() == SESSION_SCOPE_AGENT
 
 
@@ -3495,7 +3770,8 @@ def _refuse_agent_approval(action: Optional[str]) -> None:
     survives none of those.
 
     This is only HALF the guarantee. `action` is how the five PUT handlers name approval; the create
-    handlers reach the identical state through `status` — see `_refuse_agent_approved_status`."""
+    handlers reach the identical state through `status` — see `_refuse_agent_approved_status`.
+    """
     if action != "approve":
         return
     if not _agent_scoped():
@@ -3511,7 +3787,8 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
     carrying status="approved" lands a row `auto_check_scheduled_dms` then SENDS, with no human in
     the loop and no `action` field for the other guard to inspect. An agent asking for an approved
     row IS an agent approving, so it is refused rather than quietly downgraded — a silent downgrade
-    would let the caller believe it had dispatched something it had not."""
+    would let the caller believe it had dispatched something it had not.
+    """
     if status != "approved":
         return
     if not _agent_scoped():
@@ -3529,7 +3806,8 @@ def _require_step_up(user_id: int, session_token: Optional[str], action: str,
     blanket exemption would let a stolen one change the email address and revoke every device.
 
     The denial carries ip/user_agent because STEP_UP_DENIED is the audit row that most often means
-    "someone else is holding this session" — without the client on it there is nothing to chase."""
+    "someone else is holding this session" — without the client on it there is nothing to chase.
+    """
     if step_up_satisfied(user_id, current_session_token(session_token),
                          extension_scope_ok=extension_scope_ok):
         return
@@ -3547,7 +3825,8 @@ def _require_enrollment_allowed(user_id: int, session_token: Optional[str], acti
     had to prove: a stolen session would add its own passkey and walk into the LinkedIn credentials
     with it. The first factor stays ungated (nothing to prove with) and a recovery-code session
     stays allowed (its owner is the one who legitimately cannot prove one) — see
-    `auth_factors.enrollment_allowed`."""
+    `auth_factors.enrollment_allowed`.
+    """
     if enrollment_allowed(user_id, current_session_token(session_token)):
         return
     record_auth_event(AuthAuditEvent.STEP_UP_DENIED, user_id=user_id, success=False,
@@ -3567,7 +3846,8 @@ def _stamp_enrollment(user_id: int, session_token: Optional[str], kind: str) -> 
     audited one.
 
     Best-effort otherwise: the factor is already stored, so a missed stamp costs one extra prompt,
-    not the enrolment. Only the step-up endpoint itself treats a failed stamp as fatal."""
+    not the enrolment. Only the step-up endpoint itself treats a failed stamp as fatal.
+    """
     token = current_session_token(session_token)
     if session_signed_in_with_recovery_code(token):
         log_debug("Recovery-code session enrolled a factor — not stamping step-up",
@@ -3589,7 +3869,8 @@ def _passkeys_or_503() -> RelyingParty:
 @router.get("/user/auth-factors")
 def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
     """What the Security card renders: enrolled factors, recovery-code counts, whether this
-    deployment can do passkeys at all, and whether the email PIN has been demoted to a bootstrap."""
+    deployment can do passkeys at all, and whether the email PIN has been demoted to a bootstrap.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3623,7 +3904,8 @@ def passkey_register_begin(request: SessionOnlyRequest,
     """Options for `navigator.credentials.create`. The FIRST factor needs only a session; adding
     another one to an account that already has one is step-up gated, because enrolling stamps the
     session as verified. The lockout case §6.8 worries about — someone who lost the factor they
-    had — comes back in on a recovery code, which `enrollment_allowed` lets through by name."""
+    had — comes back in on a recovery code, which `enrollment_allowed` lets through by name.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3646,7 +3928,8 @@ def passkey_register_begin(request: SessionOnlyRequest,
 def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
                               http_request: Request = None) -> ResponseModel:
     """Verify and store a new passkey. The challenge is claimed exactly once, so a replayed
-    registration response finds nothing to verify against."""
+    registration response finds nothing to verify against.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3689,7 +3972,8 @@ def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
 @router.post("/user/totp/enroll/begin")
 def totp_enroll_begin(request: SessionOnlyRequest, http_request: Request = None) -> ResponseModel:
     """Mint an authenticator-app secret. Returned in the clear exactly once — the row stores it as
-    a `lemv1:` envelope bound to this user, so it can never be read back out."""
+    a `lemv1:` envelope bound to this user, so it can never be read back out.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3735,7 +4019,8 @@ def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = Non
 def delete_user_auth_factor(request: AuthFactorDeleteRequest,
                             http_request: Request = None) -> ResponseModel:
     """Remove a factor — step-up gated, because removing the thing that protects the account is
-    exactly what an attacker holding a stolen session would do first."""
+    exactly what an attacker holding a stolen session would do first.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3762,7 +4047,8 @@ def regenerate_recovery_codes(request: SessionOnlyRequest,
                               http_request: Request = None) -> ResponseModel:
     """A fresh sheet of single-use codes, shown ONCE. Step-up gated because a new sheet silently
     invalidates the old one — an attacker could otherwise lock the real owner out of their own
-    recovery path without ever touching a factor."""
+    recovery path without ever touching a factor.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3781,7 +4067,8 @@ def regenerate_recovery_codes(request: SessionOnlyRequest,
 @router.post("/user/step-up/begin")
 def step_up_begin(request: SessionOnlyRequest) -> ResponseModel:
     """Start a step-up passkey ceremony for the signed-in account. Scoped to the user's OWN
-    credentials — a step-up is "prove you are still you", not "log someone in"."""
+    credentials — a step-up is "prove you are still you", not "log someone in".
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3804,7 +4091,8 @@ def step_up_verify(request: StepUpVerifyRequest, http_request: Request = None) -
 
     A recovery code is deliberately NOT accepted here (design §6.8): it gets you back INTO the
     account and lets you enrol a factor, but it must not by itself unlock the LinkedIn credentials —
-    otherwise a stolen recovery sheet is a stolen LinkedIn session."""
+    otherwise a stolen recovery sheet is a stolen LinkedIn session.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3851,7 +4139,8 @@ def _verify_assertion_for_user(credential: Dict[str, Any], challenge: str,
 
     The credential id only SELECTS the row — nothing is trusted until the signature verifies
     against the public key stored for it. `expected_user_id` is what keeps a step-up honest: an
-    assertion from a different account's passkey is a valid assertion, just not for this session."""
+    assertion from a different account's passkey is a valid assertion, just not for this session.
+    """
     credential_id = credential_id_from_response(credential)
     if not credential_id:
         return None
@@ -3873,7 +4162,8 @@ def passkey_login_begin(request: PasskeyLoginBeginRequest,
                         http_request: Request = None) -> ResponseModel:
     """Username-less passkey sign-in. Public, and it takes no email: the browser offers whatever
     discoverable passkey it holds for this origin, so nothing here can be probed for whether an
-    address has an account."""
+    address has an account.
+    """
     _passkeys_or_503()
     # Unauthenticated and it writes a row, so it is bounded per client IP like the PIN paths. The
     # email bucket is skipped by design — there is no address to key on and inventing one would
@@ -3894,7 +4184,8 @@ def passkey_login_complete(request: PasskeyLoginCompleteRequest, http_request: R
                            response: Response = None) -> ResponseModel:
     """Finish a passkey sign-in. This is the ONE login path that is phishing-resistant end to end,
     and the only one that mints a session already stepped up — the user proved a strong factor to
-    get here, so asking them to prove it again to paste a cookie would be theatre."""
+    get here, so asking them to prove it again to paste a cookie would be theatre.
+    """
     _passkeys_or_503()
     ip = _client_ip(http_request)
     user_agent = _user_agent(http_request)
@@ -3938,7 +4229,8 @@ def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: 
     The handle survives a WRONG code and is burned by the SECOND_FACTOR_MAX_ATTEMPTS-th one. The
     alternative — consume on first touch — reads as safer and is not: one mistyped digit would end
     a login whose only way back is the whole email round trip, and the durable attempt counter is a
-    harder bound on guessing than the Redis limiter, which fails open."""
+    harder bound on guessing than the Redis limiter, which fails open.
+    """
     ip = _client_ip(http_request)
     user_agent = _user_agent(http_request)
 
@@ -4016,7 +4308,8 @@ def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
     """The `email` parameter is gone (issue #914). It was already dead — the user comes from the
     `session_token` carried in the OAuth `state` — but it left the last handler in this file whose
     signature named an account it did not use, and it put the address in a URL (browser history,
-    `Referer`) for nothing. An unused actor parameter is the next author's invitation to use it."""
+    `Referer`) for nothing. An unused actor parameter is the next author's invitation to use it.
+    """
     client = AuthClient(LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL)
     # Embed the session_token in state so the callback can find the right user,
     # even when the LinkedIn account email differs from the login email.
@@ -4257,13 +4550,16 @@ def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel:
 
     `attribution` (issue #624) is what that growth can be read against: the owned-asset CTAs that
     actually delivered something in the same window — approval-gated lead-magnet DMs, and posts that
-    carried the subscribe link into their first comment."""
+    carried the subscribe link into their first comment.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    from cqc_lem.utilities.db import (get_newsletter_subscriber_stats,
-                                      get_latest_newsletter_subscriber_count,
-                                      count_artifact_cta_deliveries)
+    from cqc_lem.utilities.db import (
+        count_artifact_cta_deliveries,
+        get_latest_newsletter_subscriber_count,
+        get_newsletter_subscriber_stats,
+    )
     newsletter_url = (get_newsletter_settings(user_id) or {}).get("newsletter_url")
     return ResponseModel(status_code=200, detail={
         "latest": get_latest_newsletter_subscriber_count(user_id),
@@ -4289,9 +4585,13 @@ def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> R
 
 def _compute_next_publish(user_id: int, anchor=None):
     """Next scheduled publish datetime (naive UTC) after `anchor`, or None. When `anchor` is None the
-    user's last_published_at is used, giving the soonest upcoming slot."""
+    user's last_published_at is used, giving the soonest upcoming slot.
+    """
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
     import pytz
-    from datetime import datetime as _dt, timezone as _tz
+
     from cqc_lem.utilities.newsletter import next_publish_datetime
     settings = get_newsletter_settings(user_id)
     try:
@@ -4351,7 +4651,8 @@ def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> Respons
 def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -> ResponseModel:
     """Regenerate a single queued edition. Generation is a slow lem-complex call, so dispatch it to a
     Celery task and let the UI refetch the queue once it lands. Optional free-text `guidance` steers
-    the rewrite; empty guidance lets the AI decide a fresh, distinct take."""
+    the rewrite; empty guidance lets the AI decide a fresh, distinct take.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4367,7 +4668,8 @@ def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -
 
 def _owned_edition(session_token: str, edition_id: int) -> "tuple[int, dict]":
     """Resolve the session and the edition it may touch, or raise. A foreign edition is a 404 (not
-    a 403) so the endpoint never confirms that another user's edition id exists."""
+    a 403) so the endpoint never confirms that another user's edition id exists.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4407,9 +4709,13 @@ async def upload_newsletter_cover_endpoint(
     rather than a broken cover at publish time.
     """
     from cqc_lem.utilities.db import set_edition_cover_image
-    from cqc_lem.utilities.newsletter_cover import (COVER_SOURCE_UPLOAD, COVER_STATUS_APPROVED,
-                                                    CoverRejected, remove_cover_file,
-                                                    save_cover_bytes)
+    from cqc_lem.utilities.newsletter_cover import (
+        COVER_SOURCE_UPLOAD,
+        COVER_STATUS_APPROVED,
+        CoverRejected,
+        remove_cover_file,
+        save_cover_bytes,
+    )
     user_id, edition = _owned_edition(session_token, edition_id)
     data = await file.read()
     try:
@@ -4435,7 +4741,8 @@ async def upload_newsletter_cover_endpoint(
 })
 def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> ResponseModel:
     """Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a
-    Celery task and the result lands 'pending_review' for the author to approve."""
+    Celery task and the result lands 'pending_review' for the author to approve.
+    """
     user_id, _edition = _owned_edition(request.session_token, request.edition_id)
     from cqc_lem.app.run_scheduler import generate_newsletter_cover
     generate_newsletter_cover.apply_async(kwargs={"edition_id": request.edition_id,
@@ -4451,7 +4758,8 @@ def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> Respo
 })
 def decide_newsletter_cover_endpoint(request: NewsletterCoverDecisionRequest) -> ResponseModel:
     """The human half of the cover gate: 'approve' clears a generated cover for publish, 'remove'
-    drops it (file included) so the edition publishes with no cover at all."""
+    drops it (file included) so the edition publishes with no cover at all.
+    """
     from cqc_lem.utilities.db import clear_edition_cover_image, set_edition_cover_status
     from cqc_lem.utilities.newsletter_cover import COVER_STATUS_APPROVED, remove_cover_file
     user_id, edition = _owned_edition(request.session_token, request.edition_id)
@@ -4474,7 +4782,8 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
     """Regenerate a single pending/approved/rejected post. Generation is a slow lem-complex call,
     so dispatch it to a Celery task; the post resets to 'pending' for re-review. Optional free-text
     `guidance` steers the rewrite while the base regeneration honors the user's saved engagement
-    settings. Works for text, carousel, document, and video posts (issue #794)."""
+    settings. Works for text, carousel, document, and video posts (issue #794).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4503,7 +4812,8 @@ def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel:
     'edit & re-score' half of the review flow. Save the edit first, then call this: a draft that now
     clears every gate is promoted PENDING -> APPROVED without a full regenerate, and one that still
     fails comes back with a fresh reason + remediation. Runs inline (one judge call) so the UI can
-    show the verdict immediately."""
+    show the verdict immediately.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4656,7 +4966,8 @@ def remove_post_image_endpoint(request: PostImageRemoveRequest) -> ResponseModel
 @router.post("/schedule_dm")
 def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel:
     """Create a scheduled 1:1 DM (draft or approved). The beat scanner (auto_check_scheduled_dms)
-    sends approved DMs at their scheduled_time via send_scheduled_dm, honoring per-day DM caps."""
+    sends approved DMs at their scheduled_time via send_scheduled_dm, honoring per-day DM caps.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4728,7 +5039,8 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     connection_request_mode governs it — 'auto_approve' (default) queues the target for the daily-capped
     drip immediately, 'pre_review' holds it as a draft awaiting explicit approval. An explicit status
     ('pending'|'approved') overrides that; anything else is rejected. The drip reuses invite_to_connect
-    and honors the rate-limit / kill-switch and the combined daily invite cap. NO volume prospecting."""
+    and honors the rate-limit / kill-switch and the combined daily invite cap. NO volume prospecting.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4811,7 +5123,8 @@ def delete_connection_request_endpoint(request: ConnectionRequestDelete) -> Resp
 def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseModel:
     """Add a prospect to the comment-first outreach funnel (issue #399). The target starts at the
     'comment' stage; every stage is approval-gated — the funnel processor only acts on APPROVED
-    stages and re-drops each fired stage to 'pending', so no step auto-fires at volume."""
+    stages and re-drops each fired stage to 'pending', so no step auto-fires at volume.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4849,7 +5162,8 @@ def list_outreach_targets_endpoint(session_token: str, status_filter: Optional[s
 @router.put("/outreach/target")
 def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> ResponseModel:
     """Edit a funnel target's current-stage draft, or approve/cancel it. 'approve' gates the current
-    stage for the processor; 'cancel' aborts the whole funnel for this target."""
+    stage for the processor; 'cancel' aborts the whole funnel for this target.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4913,7 +5227,8 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
 @router.put("/lead_signal")
 def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel:
     """Edit a lead's draft, dismiss the signal, or APPROVE it — approval is the only thing that
-    dispatches a response, and it sends exactly the text the operator sees."""
+    dispatches a response, and it sends exactly the text the operator sees.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4976,7 +5291,8 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
 @router.put("/lead")
 def update_lead_endpoint(request: LeadUpdate) -> ResponseModel:
     """Operator edits: move a lead's stage by hand, keep a note, or dismiss/restore it. The nightly
-    re-score never overwrites any of these."""
+    re-score never overwrites any of these.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5024,7 +5340,8 @@ def list_catchup_touches_endpoint(session_token: str, status_filter: Optional[st
 @router.put("/catchup/touch")
 def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> ResponseModel:
     """Edit a drafted congratulations, or approve/cancel it. Approving queues it for the daily-capped
-    send drip; nothing is sent until a human approves (unless the account opted into auto-approve)."""
+    send drip; nothing is sent until a human approves (unless the account opted into auto-approve).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5054,7 +5371,8 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
 @router.delete("/catchup/touch")
 def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> ResponseModel:
     """Cancel a drafted catch-up touch (soft — sets status 'canceled' so it won't be sent, and the
-    row stays as the dedup tombstone for that milestone)."""
+    row stays as the dedup tombstone for that milestone).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5107,7 +5425,8 @@ class GroupPostDraftUpdateRequest(BaseModel):
 @router.get("/user/group-post-draft")
 def get_group_post_draft_endpoint(session_token: str) -> ResponseModel:
     """The group post waiting to be published, so the user can read it before it ships (issue #932).
-    `detail` is None when nothing is queued — the SPA hides the card rather than inventing one."""
+    `detail` is None when nothing is queued — the SPA hides the card rather than inventing one.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5117,7 +5436,8 @@ def get_group_post_draft_endpoint(session_token: str) -> ResponseModel:
 @router.put("/user/group-post-draft")
 def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> ResponseModel:
     """Save the user's revision of the queued group post, or skip this week's post entirely.
-    Scoped to the caller's OWN open draft — the id is never taken from the request."""
+    Scoped to the caller's OWN open draft — the id is never taken from the request.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5144,7 +5464,8 @@ def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> Re
 @router.get("/user/post-stats")
 def get_post_stats_endpoint(session_token: str) -> ResponseModel:
     """Personalized best-times-to-post recommendations plus a which-hooks/formats/topics-win
-    ranking, both derived from the user's own post stats."""
+    ranking, both derived from the user's own post stats.
+    """
     from cqc_lem.utilities.post_stats import rank_content_attributes, recommend_post_times
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -5167,7 +5488,8 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     dashboard (issue #395), derived from the user's captured post_stats, plus the 70/20/10
     content-mix compliance ratio for the same window (issue #618), the comment-outcome quality
     score (issue #628) and the content-quality rollup (issue #630). The hook/format leaderboard is
-    served by /user/post-stats (rankings)."""
+    served by /user/post-stats (rankings).
+    """
     from cqc_lem.utilities.ai.content_alignment import content_mix_compliance
     from cqc_lem.utilities.comment_outcomes import comment_quality_report
     from cqc_lem.utilities.content_quality import quality_rollup, rollup_days
@@ -5219,7 +5541,8 @@ def get_posthog_stats_endpoint(session_token: str) -> ResponseModel:
     proxy: the personal API key lives here and never reaches the browser, and every read is scoped
     to THIS user's own distinct_id — PostHog is one project shared by every LEM account. Degrades
     per-panel (`available: false`) rather than failing the whole response when a key is unset, an
-    endpoint isn't provisioned yet, or PostHog is unreachable."""
+    endpoint isn't provisioned yet, or PostHog is unreachable.
+    """
     from cqc_lem.utilities.posthog_endpoints import get_user_stats_panel
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -5231,14 +5554,18 @@ def _suppression_status(user_id: int) -> dict:
     """Current suppression-tripwire picture for one user (issue #629): the standing trip (if any)
     plus a FRESH evaluation of the same signals. Both are returned on purpose — the trip is what
     paused engagement and never self-clears, while the live verdict is how the user can see their
-    reach has recovered and decide to re-enable."""
+    reach has recovered and decide to re-enable.
+    """
     from cqc_lem.utilities.comment_outcomes import comment_quality_report
     from cqc_lem.utilities.linkedin.rate_limit import (
-        automation_pause_reason, automation_pause_remaining, is_suppression_pause,
-        rate_limit_cooldown_remaining, suppression_trip_state)
+        automation_pause_reason,
+        automation_pause_remaining,
+        is_suppression_pause,
+        rate_limit_cooldown_remaining,
+        suppression_trip_state,
+    )
     from cqc_lem.utilities.post_stats import build_engagement_trend
-    from cqc_lem.utilities.suppression import (comment_history_days, evaluate_suppression,
-                                               history_days, tripwire_enabled)
+    from cqc_lem.utilities.suppression import comment_history_days, evaluate_suppression, history_days, tripwire_enabled
 
     window = history_days()
     comment_window = comment_history_days()
@@ -5282,10 +5609,15 @@ def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseMode
     its own, so this endpoint is the only way back: it clears the stored trip and lifts the pause —
     but only when the pause is the tripwire's own trip for THIS user, so re-enabling here can never
     stomp a 429 cooldown, a maintenance window, an admin kill-switch — or another user's standing
-    trip, since `pause_automation` is one global breaker shared by the whole fleet."""
+    trip, since `pause_automation` is one global breaker shared by the whole fleet.
+    """
     from cqc_lem.utilities.linkedin.rate_limit import (
-        automation_pause_reason, automation_pause_remaining, clear_suppression_trip,
-        resume_automation, suppression_pause_reason)
+        automation_pause_reason,
+        automation_pause_remaining,
+        clear_suppression_trip,
+        resume_automation,
+        suppression_pause_reason,
+    )
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5340,7 +5672,8 @@ def get_affiliate_endpoint(session_token: str) -> ResponseModel:
     driven, trial days earned against the cap, and BOTH toggles with their consent record.
 
     Reading this page is also what enrols a user who predates the program — enrollment is
-    default-on, and `enroll_user` is idempotent, so an existing opted-out row is never revived."""
+    default-on, and `enroll_user` is idempotent, so an existing opted-out row is never revived.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5363,7 +5696,8 @@ def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseMo
 
     The date is read back off the user when the flip moved no reward, which is the ORDINARY case now
     that the join bonus is 0: "opt-out is immediate and the user is notified of the resulting trial
-    length" cannot depend on a grant having happened."""
+    length" cannot depend on a grant having happened.
+    """
     from cqc_lem.utilities.db import TRIAL_EXTENDABLE_STATUSES, get_user_subscription_info
     from cqc_lem.utilities.marketing.affiliate import set_status
     user_id = get_session_user_id(request.session_token)
@@ -5396,7 +5730,8 @@ def set_affiliate_promo_consent_endpoint(request: AffiliatePromoConsentRequest) 
     user's OWN LinkedIn account. Default OFF, and it can only be turned on by this call, with
     `consent_acknowledged`, which is what makes the stored timestamp mean something.
 
-    Turning it off needs no acknowledgement: withdrawing consent is never gated."""
+    Turning it off needs no acknowledgement: withdrawing consent is never gated.
+    """
     from cqc_lem.utilities.marketing.affiliate import set_promo_consent
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -5420,7 +5755,8 @@ def set_affiliate_promo_consent_endpoint(request: AffiliatePromoConsentRequest) 
 })
 def acknowledge_affiliate_notice_endpoint(request: AffiliateNoticeRequest) -> ResponseModel:
     """Record that the user has SEEN the enrollment notice. Default enrollment is only fair if the
-    notice was actually delivered, so this timestamp is the evidence it was."""
+    notice was actually delivered, so this timestamp is the evidence it was.
+    """
     from cqc_lem.utilities.db import mark_affiliate_notice_seen
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -5434,9 +5770,9 @@ def get_audience_growth_endpoint(session_token: str, days: int = 90) -> Response
     """Follower/audience telemetry for the analytics dashboard's growth panel (issue #627): the
     daily follower series with 7/30-day deltas, the latest profile-view and search-appearance
     readings, and the user's daily posting/commenting activity to overlay on the same window.
-    Audience growth is the system's primary outcome — post engagement is the leading indicator."""
-    from cqc_lem.utilities.audience_stats import (GROWTH_WINDOWS, build_activity_series,
-                                                  follower_growth)
+    Audience growth is the system's primary outcome — post engagement is the leading indicator.
+    """
+    from cqc_lem.utilities.audience_stats import GROWTH_WINDOWS, build_activity_series, follower_growth
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5603,7 +5939,8 @@ def update_linkedin_password(request: LinkedInPasswordRequest,
 def _scraped_profile_name(user_id: int) -> Optional[str]:
     """The full name on the profile LEM last scraped for this user, at any age — used ONLY to
     pre-fill/suggest the display-name field. Never a silent substitute for the saved value: the
-    reply comparison must run on what the user confirmed, not on a scrape that may be a placeholder."""
+    reply comparison must run on what the user confirmed, not on a scrape that may be a placeholder.
+    """
     try:
         from cqc_lem.utilities.db import get_linked_in_profile_by_user_id
         raw = get_linked_in_profile_by_user_id(user_id, updated_less_than_days_ago=3650)
@@ -5620,7 +5957,8 @@ def get_linkedin_display_name_endpoint(session_token: str) -> ResponseModel:
     """The user's LinkedIn display name (issue #731) plus the name LEM scraped from their profile.
 
     Reply detection compares the last sender in a DM thread against this exact string, so the UI
-    shows the scraped name as a suggestion and the user confirms what LinkedIn actually renders."""
+    shows the scraped name as a suggestion and the user confirms what LinkedIn actually renders.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5633,7 +5971,8 @@ def get_linkedin_display_name_endpoint(session_token: str) -> ResponseModel:
 @router.put("/user/linkedin-display-name")
 def update_linkedin_display_name_endpoint(request: LinkedInDisplayNameRequest) -> ResponseModel:
     """Save the user's LinkedIn display name. Required, and rejected empty: without it every DM
-    reply check is UNKNOWN and the follow-up sequencer skips the person entirely (issue #731)."""
+    reply check is UNKNOWN and the follow-up sequencer skips the person entirely (issue #731).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5711,7 +6050,8 @@ def update_user_location_endpoint(request: LocationRequest) -> ResponseModel:
 def autocapture_user_location_endpoint(request: LocationAutocaptureRequest, http_request: Request) -> ResponseModel:
     """Geolocate the caller's real IP and persist it as their login location.
     The app sits behind a Cloudflare tunnel, so the client IP arrives in
-    CF-Connecting-IP / X-Forwarded-For — never trust the immediate peer."""
+    CF-Connecting-IP / X-Forwarded-For — never trust the immediate peer.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5758,7 +6098,8 @@ def autocapture_user_location_endpoint(request: LocationAutocaptureRequest, http
 def set_user_location_by_city_endpoint(request: LocationByCityRequest) -> ResponseModel:
     """Geocode a user-selected city/state (free OSM Nominatim) and persist it as their login
     location, so the automation browser's emulated geo/timezone matches where they intend to
-    appear. Complementary to /autocapture (IP-based)."""
+    appear. Complementary to /autocapture (IP-based).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5784,7 +6125,8 @@ def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest,
     """Store the user's existing LinkedIn session cookie (li_at) so automation resumes
     an already-trusted session instead of doing a fresh password login — which is what
     triggers LinkedIn's "Check your app" new-device challenge. The user captures li_at
-    once (one-click extension or paste); see docs/LINKEDIN_COOKIE.md."""
+    once (one-click extension or paste); see docs/LINKEDIN_COOKIE.md.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5829,7 +6171,8 @@ def download_linkedin_extension() -> StreamingResponse:
     """Package the 'LEM LinkedIn Connect' browser extension as a zip the user can load
     unpacked in Chrome/Edge (chrome://extensions → Developer mode → Load unpacked). This is
     the one-click session-reconnect path referenced by the account page and reconnect email;
-    until it's on the Chrome Web Store, users side-load this bundle. See docs/LINKEDIN_COOKIE.md."""
+    until it's on the Chrome Web Store, users side-load this bundle. See docs/LINKEDIN_COOKIE.md.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _dirs, files in os.walk(_EXTENSION_DIR):
@@ -5848,7 +6191,8 @@ def download_linkedin_extension() -> StreamingResponse:
 def account_readiness_endpoint(session_token: str) -> ResponseModel:
     """Report whether the account has everything the automation needs (LinkedIn OAuth for
     posting, a session cookie or password for engagement, an active plan; location is
-    recommended). The UI uses this to mark required fields and gate automation pages."""
+    recommended). The UI uses this to mark required fields and gate automation pages.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5903,7 +6247,8 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
 def onboarding_endpoint(session_token: str) -> ResponseModel:
     """The activation checklist (issue #500): each step, when it completed, and the next-best nudge
     to show in-app. Reading it also advances the persisted state, so the PostHog activation funnel
-    records a step the moment the user finishes it — not a day later when the beat task runs."""
+    records a step the moment the user finishes it — not a day later when the beat task runs.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5916,7 +6261,8 @@ def onboarding_endpoint(session_token: str) -> ResponseModel:
 def update_company_page_endpoint(request: LinkedInCompanyPageRequest) -> ResponseModel:
     """Save (or clear) the user's LinkedIn company page URL. The monthly invite
     automation (1st of each month) sends connection invites to this page for active
-    users; users without one are skipped."""
+    users; users without one are skipped.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5947,7 +6293,9 @@ def trial_extend_endpoint(request: TrialExtendRequest) -> ResponseModel:
     failure: the user simply keeps their standard trial.
     """
     from cqc_lem.utilities.env_constants import (
-        EARLY_ADOPTER_TRIAL_ENABLED, EARLY_ADOPTER_TRIAL_DAYS, FREE_TRIAL_DAYS,
+        EARLY_ADOPTER_TRIAL_DAYS,
+        EARLY_ADOPTER_TRIAL_ENABLED,
+        FREE_TRIAL_DAYS,
     )
     if not EARLY_ADOPTER_TRIAL_ENABLED:
         raise HTTPException(status_code=404, detail="Early-adopter extended trial is not available")
@@ -5982,7 +6330,8 @@ def _early_adopter_checkout_extras(user_id: int) -> tuple[Optional[int], Optiona
     Only grant holders are affected — a standard trial converts exactly as it does today.
 
     Best-effort by design: this is a perk lookup, so any failure degrades to a normal checkout
-    rather than blocking the user from paying us."""
+    rather than blocking the user from paying us.
+    """
     from cqc_lem.utilities.env_constants import EARLY_ADOPTER_COUPON_ID
     try:
         grant = get_early_adopter_grant(user_id)
@@ -6069,7 +6418,8 @@ def _track_billing_funnel(event: str, stripe_customer_id: str, **props) -> None:
     """Funnel event for a Stripe lifecycle webhook. The webhook carries no UTMs — PostHog holds them
     on the person from the `$set_once` written at signup — so only the plan facts ride along here.
     The customer→user lookup is guarded: analytics must never fail a billing webhook, because Stripe
-    would retry it and the subscription state is already committed."""
+    would retry it and the subscription state is already committed.
+    """
     try:
         user = get_user_by_stripe_customer_id(stripe_customer_id) or {}
         track_funnel_event(event, user_id=user.get("id"),
@@ -6085,7 +6435,9 @@ async def billing_webhook(request: Request) -> dict:
     sig_header = request.headers.get("Stripe-Signature", "")
 
     from cqc_lem.utilities.stripe_util import (
-        validate_webhook, get_subscription_tier_from_price, stripe_status_to_db,
+        get_subscription_tier_from_price,
+        stripe_status_to_db,
+        validate_webhook,
     )
     event = validate_webhook(payload, sig_header)
     if event is None:
@@ -6346,7 +6698,7 @@ def avatar_credits_checkout(request: AvatarCreditCheckoutRequest) -> ResponseMod
     if not stripe_customer_id:
         raise HTTPException(status_code=400, detail="No Stripe customer record — contact support")
 
-    from cqc_lem.utilities.stripe_util import create_avatar_credits_checkout, AVATAR_CREDIT_PACKAGES
+    from cqc_lem.utilities.stripe_util import AVATAR_CREDIT_PACKAGES, create_avatar_credits_checkout
     if request.package not in AVATAR_CREDIT_PACKAGES:
         raise HTTPException(status_code=400, detail=f"Unknown package '{request.package}'")
 
@@ -6381,7 +6733,7 @@ def video_credits_checkout(request: VideoCreditCheckoutRequest) -> ResponseModel
     stripe_customer_id = subscription.get("stripe_customer_id") if subscription else None
     if not stripe_customer_id:
         raise HTTPException(status_code=400, detail="No Stripe customer record — contact support")
-    from cqc_lem.utilities.stripe_util import create_video_credits_checkout, VIDEO_CREDIT_PACKAGES
+    from cqc_lem.utilities.stripe_util import VIDEO_CREDIT_PACKAGES, create_video_credits_checkout
     if request.package not in VIDEO_CREDIT_PACKAGES:
         raise HTTPException(status_code=400, detail=f"Unknown package '{request.package}'")
     url = create_video_credits_checkout(
@@ -6398,7 +6750,8 @@ def video_credits_checkout(request: VideoCreditCheckoutRequest) -> ResponseModel
 })
 def upgrade_video(request: UpgradeVideoRequest) -> ResponseModel:
     """Upgrade a video post to a premium tier — regenerates the video at premium
-    quality (Veo + audio), charging credits at render time (refunded on failure)."""
+    quality (Veo + audio), charging credits at render time (refunded on failure).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6407,7 +6760,7 @@ def upgrade_video(request: UpgradeVideoRequest) -> ResponseModel:
     if get_post_type(request.post_id) != PostType.VIDEO:
         raise HTTPException(status_code=404, detail="Post not found or not a video post")
 
-    from cqc_lem.utilities.env_constants import PREMIUM_VIDEO_CREDITS, PREMIUM_TOP_VIDEO_CREDITS
+    from cqc_lem.utilities.env_constants import PREMIUM_TOP_VIDEO_CREDITS, PREMIUM_VIDEO_CREDITS
     tier_credits = {"premium": PREMIUM_VIDEO_CREDITS, "premium_top": PREMIUM_TOP_VIDEO_CREDITS}
     if request.tier not in tier_credits:
         raise HTTPException(status_code=400, detail=f"Unknown tier '{request.tier}'")
@@ -6578,7 +6931,8 @@ def get_avatar_samples(avatar_db_id: int, session_token: str) -> ResponseModel:
 })
 def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
     """Re-roll the preview set. Capped by AVATAR_SAMPLE_REGEN_MAX on top of the credit ledger —
-    samples cost inference money but no training credit, so without a cap this is unbounded."""
+    samples cost inference money but no training credit, so without a cap this is unbounded.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6638,7 +6992,8 @@ def update_avatar_attributes_endpoint(avatar_db_id: int,
 })
 def approve_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
     """Approve an avatar for use. Requires samples to exist — approving an avatar nobody has
-    seen is the exact blind activation this gate was added to remove."""
+    seen is the exact blind activation this gate was added to remove.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6661,7 +7016,8 @@ def approve_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> Respons
 })
 def reject_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
     """Reject an avatar. Also deactivates it — leaving a rejected likeness active would keep
-    publishing exactly the media the user just rejected."""
+    publishing exactly the media the user just rejected.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6754,7 +7110,8 @@ def _require_api_and_admin(
     x_admin_secret: Optional[str] = Depends(_admin_secret_scheme),
 ) -> None:
     """Require BOTH the bearer API token and the admin secret. Used by the
-    /admin/test/* endpoints so the docs page presents and enforces both."""
+    /admin/test/* endpoints so the docs page presents and enforces both.
+    """
     token = credentials.credentials if credentials else None
     if _API_ACCESS_TOKEN_SET and token not in _API_ACCESS_TOKEN_SET:
         raise HTTPException(status_code=401, detail="Unauthorized — missing or invalid bearer token")
@@ -6767,7 +7124,8 @@ def _require_api_and_admin(
 def admin_pause_automation(hours: float = 24,
                            x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
     """Kill-switch: pause ALL Selenium automation (comments/replies/DMs/stats/invites) for `hours` so
-    a 429-rate-limited account/IP can recover. Posting (API) is unaffected. Default 24h."""
+    a 429-rate-limited account/IP can recover. Posting (API) is unaffected. Default 24h.
+    """
     _require_admin(x_admin_secret)
     from cqc_lem.utilities.linkedin.rate_limit import pause_automation
     seconds = int(max(0.0, hours) * 3600) or 3600
@@ -6789,8 +7147,7 @@ def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)
 def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
     """Current pause + 429-breaker state (seconds remaining on each)."""
     _require_admin(x_admin_secret)
-    from cqc_lem.utilities.linkedin.rate_limit import (
-        automation_pause_remaining, rate_limit_cooldown_remaining)
+    from cqc_lem.utilities.linkedin.rate_limit import automation_pause_remaining, rate_limit_cooldown_remaining
     pause_s = automation_pause_remaining()
     return ResponseModel(status_code=200, detail={
         "paused": pause_s > 0,
@@ -6824,7 +7181,8 @@ def admin_set_user_location(
     x_admin_secret: Optional[str] = Header(default=None),
 ) -> ResponseModel:
     """Align a user's login location to their purchased proxy's city (admin-only). Geocodes the
-    city/state and persists it so the automation browser's geo matches the proxy IP."""
+    city/state and persists it so the automation browser's geo matches the proxy IP.
+    """
     _require_admin(x_admin_secret)
     if get_user_geo(request.user_id) is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -7010,7 +7368,8 @@ def admin_consolidate_duplicate_comments(
     _: None = Depends(_require_api_and_admin),
 ) -> ResponseModel:
     """Keep one comment per post and delete the extras for posts this user commented on more than once.
-    Defaults to a DRY RUN (report only) — pass dry_run=false to actually delete."""
+    Defaults to a DRY RUN (report only) — pass dry_run=false to actually delete.
+    """
     result = consolidate_duplicate_comments_for_user.apply_async(kwargs={
         "user_id": user_id, "dry_run": dry_run, "hours": hours,
     }, queue="se_engage")
@@ -7056,7 +7415,8 @@ def admin_test_dm_direct(
     _: None = Depends(_require_api_and_admin),
 ) -> ResponseModel:
     """Send ONE direct DM to a specific profile URL — the most deterministic way to
-    watch the messaging flow end-to-end in the VNC."""
+    watch the messaging flow end-to-end in the VNC.
+    """
     result = send_private_dm.apply_async(kwargs={
         "user_id": user_id, "profile_url": profile_url, "message": message,
     }, queue="se_outreach")
@@ -7101,7 +7461,8 @@ _REVIEW_SETTLED_STATUSES = (FeedbackStatus.CLUSTERED, FeedbackStatus.ISSUE_CREAT
 def _require_user_admin(session_token: str) -> int:
     """Validate the session and ensure the user is designated as an admin.
 
-    Returns the user_id on success; raises HTTPException 401/403 otherwise."""
+    Returns the user_id on success; raises HTTPException 401/403 otherwise.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -7232,7 +7593,8 @@ def admin_set_youtube_token(request: YouTubeTokenRequest,
     """Install a re-minted YouTube refresh token WITHOUT a deploy (issue #742): it lands in
     `app_credentials` and takes precedence over `YOUTUBE_REFRESH_TOKEN` in `.env`. Admin-secret
     gated rather than session gated — this request body carries a live credential. The stored token
-    is probed immediately, so the response says whether the new value actually works."""
+    is probed immediately, so the response says whether the new value actually works.
+    """
     _require_admin(x_admin_secret)
     from cqc_lem.utilities.marketing.youtube_auth import probe, store_refresh_token
     token = (request.refresh_token or "").strip()
@@ -7268,13 +7630,19 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     The caller can pass these as carousel_slides when scheduling the post.
     """
     import time as _time
-    from cqc_lem.utilities.env_constants import API_URL_FINAL
-    from cqc_lem.utilities.carousel_creator import (
-        create_carousel_slide_images, CAROUSEL_TEMPLATES, DEFAULT_TEMPLATE,
-        EducationalContentCarousel, CaseStudyCarousel, PersonalStoryCarousel,
-        IndustryInsightsCarousel, ProductDemoCarousel,
-    )
+
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+    from cqc_lem.utilities.carousel_creator import (
+        CAROUSEL_TEMPLATES,
+        DEFAULT_TEMPLATE,
+        CaseStudyCarousel,
+        EducationalContentCarousel,
+        IndustryInsightsCarousel,
+        PersonalStoryCarousel,
+        ProductDemoCarousel,
+        create_carousel_slide_images,
+    )
+    from cqc_lem.utilities.env_constants import API_URL_FINAL
 
     # The module-level resolver, not db's: this route was importing the raw one, so the cookie
     # sentinel the SPA sends never resolved and no session scope reached it (issue #914).
@@ -7345,7 +7713,8 @@ def _walk_routes(routes) -> Iterator[object]:
     """Flatten the route table. FastAPI ≥0.139 keeps an included router as a single
     `_IncludedRouter` node holding the real routes rather than copying them onto `app.routes`, so a
     flat loop over `app.routes` sees the /api tree as ONE opaque entry and silently matches nothing.
-    Descend through both shapes so this keeps working either way."""
+    Descend through both shapes so this keeps working either way.
+    """
     for route in routes:
         included = getattr(route, "original_router", None)
         children = getattr(included, "routes", None) if included is not None \

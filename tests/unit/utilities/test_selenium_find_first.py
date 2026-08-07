@@ -1,7 +1,8 @@
 """Unit tests for the resilient find_first / click_first / find_all_first helpers."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from selenium.common.exceptions import TimeoutException
 
 pytestmark = pytest.mark.unit
@@ -128,7 +129,8 @@ class TestClickFirst:
 
     def test_carries_warn_on_miss_into_find_first(self):
         """click_first is the only way most call sites reach find_first — without the passthrough a
-        caller with a working fallback (issue #873) has no way to keep its miss out of escalation."""
+        caller with a working fallback (issue #873) has no way to keep its miss out of escalation.
+        """
         from cqc_lem.utilities import selenium_util as su
         driver = _driver_with({})
         wait = _FakeWait(driver)
@@ -152,7 +154,8 @@ class TestClickFirst:
     def test_click_miss_also_honours_warn_on_miss(self):
         """A hover-revealed control found-then-un-clickable returns None just like a selector miss,
         so the caller takes the same fallback. Warning here anyway would keep escalating the very
-        recurrence warn_on_miss was added to close (issue #873)."""
+        recurrence warn_on_miss was added to close (issue #873).
+        """
         from cqc_lem.utilities import selenium_util as su
         el = MagicMock(); el.is_displayed.return_value = True
         driver = _driver_with({"btn": [el]})

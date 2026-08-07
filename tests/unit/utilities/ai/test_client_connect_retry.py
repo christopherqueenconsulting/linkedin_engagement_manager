@@ -77,7 +77,8 @@ class TestRidingOutARestartingProxy:
     def test_one_wait_is_capped_so_a_mistyped_budget_cannot_hang_a_worker(self, monkeypatch):
         """Attempts is operator-tunable and every wait doubles. Uncapped, `ATTEMPTS=10` would sleep
         for over an hour inside a Celery task that sets no time limit — the cap keeps the total
-        linear without touching the default 8s/16s schedule."""
+        linear without touching the default 8s/16s schedule.
+        """
         from openai import APIConnectionError
         monkeypatch.setenv("LLM_CONNECT_RETRY_ATTEMPTS", "6")
         transport = _RefusingTransport(refusals=99)
@@ -109,7 +110,8 @@ class TestRidingOutARestartingProxy:
     def test_the_retry_is_debug_not_a_warning(self):
         """A proxy restart happens on every deploy — warning on it would escalate and file a defect
         for working behaviour (the #917 lesson). Only the exhausted budget is an error, and the
-        caller logs that."""
+        caller logs that.
+        """
         transport = _RefusingTransport(refusals=1)
         with patch("cqc_lem.utilities.ai.client.time.sleep"), \
              patch("cqc_lem.utilities.ai.client.log_debug") as debug:
@@ -120,7 +122,8 @@ class TestRidingOutARestartingProxy:
 class TestWhatIsDeliberatelyNotRetried:
     def test_a_timeout_is_not_retried(self):
         """A connect timeout is not a refusal: the SDK reports every timeout as APITimeoutError, and
-        a read timeout may already have been served and billed. Retrying would double the spend."""
+        a read timeout may already have been served and billed. Retrying would double the spend.
+        """
         from openai import APITimeoutError
         transport = _RefusingTransport(refusals=99, timeout=True)
         with patch("cqc_lem.utilities.ai.client.time.sleep") as sleep:
@@ -143,7 +146,8 @@ class TestWhatIsDeliberatelyNotRetried:
 class TestEveryEndpointIsCovered:
     def test_embeddings_ride_it_out_too(self, monkeypatch):
         """Embeddings (comment dedup, feedback clustering) never go through `_call_llm`, so the
-        client is the only place their connection failure can be retried."""
+        client is the only place their connection failure can be retried.
+        """
         from openai import APIConnectionError
         monkeypatch.setenv("LLM_CONNECT_RETRY_ATTEMPTS", "3")
         transport = _RefusingTransport(refusals=99)

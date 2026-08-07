@@ -1,10 +1,12 @@
 """Unit tests for the feedback auto-classifier — issue #497. Covers the deterministic halves (schema
 validation, alias normalization, label mapping, routing) exhaustively, and the single LLM call with
-a mocked client (happy path, off-contract answers, and the fail-safe path)."""
+a mocked client (happy path, off-contract answers, and the fail-safe path).
+"""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

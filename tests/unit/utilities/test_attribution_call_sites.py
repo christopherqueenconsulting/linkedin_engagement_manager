@@ -3,10 +3,12 @@
 The helper's own contract is covered in test_marketing_attribution.py; this file is the other half —
 proof that each SURFACE actually calls it, because an untagged link is invisible in exactly the same
 way a missing one is: the signup it drives reads as `direct` and no dashboard can tell the
-difference."""
+difference.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -139,9 +141,11 @@ class TestTutorialDescription:
     def test_an_over_long_description_never_chops_the_cta_url(self):
         # The cap belongs on the PROSE. Truncating the finished string would cut the trial link
         # mid-URL and publish a broken one, which is strictly worse than publishing no CTA.
-        from cqc_lem.utilities.marketing.video_tutorials import (DESCRIPTION_MAX_CHARS,
-                                                                 TUTORIAL_FLOWS,
-                                                                 description_with_cta)
+        from cqc_lem.utilities.marketing.video_tutorials import (
+            DESCRIPTION_MAX_CHARS,
+            TUTORIAL_FLOWS,
+            description_with_cta,
+        )
         flow = next(iter(TUTORIAL_FLOWS.values()))
         with _Patched(_owned()):
             out = description_with_cta("word " * 2000, flow)

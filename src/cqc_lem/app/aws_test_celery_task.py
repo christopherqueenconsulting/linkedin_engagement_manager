@@ -1,4 +1,5 @@
 import time
+
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.db import get_user_password_pair_by_id, remove_linked_in_profile_by_user_id
 from cqc_lem.utilities.linkedin.helper import get_my_profile

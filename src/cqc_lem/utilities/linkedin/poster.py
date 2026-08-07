@@ -4,16 +4,16 @@ import re
 import shutil
 import tempfile
 import uuid
-from typing import List, Optional, Annotated, Dict
+from typing import Annotated, Dict, List, Optional
 
 import requests
 from linkedin_api.clients.restli.client import RestliClient
 from pydantic import BaseModel, Field
 from pydantic.types import StringConstraints
 
-from cqc_lem.utilities.db import get_user_linked_sub_id, get_user_access_token
+from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.env_constants import LI_API_VERSION
-from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
+from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 
@@ -230,6 +230,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     All images are uploaded individually and included as a multi-image ugcPost.
     """
     import os
+
     from cqc_lem.utilities.carousel_creator import get_pexels_image_path
 
     restli_client = RestliClient()
@@ -537,7 +538,8 @@ _URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):[0-9]+")
 
 def object_urn_from_post_url(post_url: str) -> Optional[str]:
     """Pull the share/ugcPost/activity URN out of a feed permalink like
-    https://www.linkedin.com/feed/update/urn:li:share:123/ — the socialActions path key."""
+    https://www.linkedin.com/feed/update/urn:li:share:123/ — the socialActions path key.
+    """
     if not post_url:
         return None
     m = _URN_RE.search(post_url)
@@ -553,7 +555,8 @@ def _restli() -> RestliClient:
 def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
                              parent_comment_urn: Optional[str] = None) -> Optional[str]:
     """Create a comment (or reply, when parent_comment_urn is given) on object_urn via the
-    socialActions API. Returns the created comment URN, or None on missing creds/failure."""
+    socialActions API. Returns the created comment URN, or None on missing creds/failure.
+    """
     sub_id = get_user_linked_sub_id(user_id)
     access_token = get_user_access_token(user_id)
     if not sub_id or not access_token:

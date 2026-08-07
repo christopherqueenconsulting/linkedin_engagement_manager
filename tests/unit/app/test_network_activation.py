@@ -130,7 +130,8 @@ class TestFailureReasonIsRecorded:
 
 class TestReplyCheckUnblocksNurture:
     """The chain that left scheduled_dms empty since V53: stock DM templates are step-0 only, so
-    enqueue_next_followup found no step 1, queued nothing, and process_user_followups never ran."""
+    enqueue_next_followup found no step 1, queued nothing, and process_user_followups never ran.
+    """
 
     def test_an_appreciation_dm_now_leaves_a_reply_check_behind(self, monkeypatch):
         from cqc_lem.app import run_automation as ra
@@ -333,7 +334,8 @@ class TestOutreachFunnelSourcing:
 
 class TestEmptyFunnelScanIsNotAWarning:
     """Filing nothing is this scan's resting state, so none of its three empty outcomes may warn —
-    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#995)."""
+    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#995).
+    """
 
     @pytest.mark.parametrize("kwargs, marker", [
         ({"open_targets": 25}, "are already waiting for approval"),

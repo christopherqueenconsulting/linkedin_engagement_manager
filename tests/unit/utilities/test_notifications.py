@@ -1,9 +1,9 @@
 """Unit tests for throttled LinkedIn-session notifications."""
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 from cqc_lem.utilities.notifications import notify_linkedin_session
 
@@ -73,6 +73,7 @@ def test_throttle_zero_always_sends(monkeypatch):
 
 def test_newsletter_draft_ready_sends():
     from datetime import datetime
+
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
     with patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
          patch(f"{_MOD}.send_newsletter_draft_ready_email", return_value=True) as snd:

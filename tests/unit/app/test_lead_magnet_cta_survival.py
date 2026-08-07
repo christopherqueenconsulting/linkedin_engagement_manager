@@ -2,10 +2,12 @@
 directive weaves the CTA in, but the downstream LLM rewrites (refinement + hook passes) were
 observed in prod rewording the 'comment KEYWORD' mechanic away (post 30) or dropping it (post 27),
 so the auto-DM keyword listener never fired. create_text_post now runs a deterministic
-verify-and-repair (ensure_lead_magnet_cta) after the pipeline."""
+verify-and-repair (ensure_lead_magnet_cta) after the pipeline.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities.ai.content_alignment import has_lead_magnet_cta_mechanic
 
@@ -29,7 +31,8 @@ _DROPPED = "Six months of testing taught us where acquisition cost hides."
 
 def _run_pipeline(post_id, refined_output, lead_magnet=_LM_ON, prefs=None):
     """Drive create_text_post with the FULL refinement pipeline on, simulating the LLM passes via
-    `refined_output` (what the rewrites turn the generated post into)."""
+    `refined_output` (what the rewrites turn the generated post into).
+    """
     from cqc_lem.app import run_content_plan as rcp
 
     # **kwargs: the generators keep growing aligned kwargs (history_directive, sequence keys, …) —

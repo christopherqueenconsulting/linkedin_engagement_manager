@@ -1,6 +1,7 @@
 """Unit tests for the SHARED content framework core (blueprint menus + variety engine) used by
 newsletters, posts, AND comments. The newsletter-menu tests preserve the exact behavior contracts
-of the pre-unification newsletter blueprint system."""
+of the pre-unification newsletter blueprint system.
+"""
 
 import pytest
 
@@ -270,7 +271,8 @@ class TestDirectivesAndCompact:
 
 class TestPersonalProofSlot:
     """A2: every post/newsletter blueprint carries a mandatory first-person proof slot, and comments
-    (grounded in the target post) are exempt."""
+    (grounded in the target post) are exempt.
+    """
 
     def test_post_directive_carries_proof_slot(self):
         text = fw.blueprint_directive("post", {"format": "contrarian_take", "hook_style": "bold_claim"})
@@ -293,7 +295,8 @@ class TestPersonalProofSlot:
 
 class TestFirstPersonProofDetector:
     """The deterministic gate: a draft with a concrete first-person lived detail passes; a generic,
-    could-be-anyone draft (no such detail) is rejected."""
+    could-be-anyone draft (no such detail) is rejected.
+    """
 
     _WITH_PROOF = ("Three years ago I shipped a feature that tanked our activation rate by 40%.\n\n"
                    "I learned that shipping fast without a rollback plan is how you lose a quarter.")
@@ -340,7 +343,8 @@ class TestFirstPersonProofDetector:
 
 class TestPerformanceWeights:
     """Issue #389 / B4 — outcome aggregates become selection weights that down-weight
-    under-performing shapes while keeping rotation and exploration intact."""
+    under-performing shapes while keeping rotation and exploration intact.
+    """
 
     def _agg(self, samples, reactions=0, comments=0, reposts=0,
              impressions=0, impression_samples=0):
@@ -411,7 +415,8 @@ class TestPerformanceWeights:
 
 class TestPerformanceAwareSelection:
     """The end-to-end acceptance: a seeded under-performing hook is selected less often once
-    enough data exists, and selection is unchanged below the min-sample threshold."""
+    enough data exists, and selection is unchanged below the min-sample threshold.
+    """
 
     def _count_hook(self, hook, performance, n=600, min_samples=5):
         import os

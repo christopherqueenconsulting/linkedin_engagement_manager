@@ -51,7 +51,8 @@ def _default_parse_domain() -> str:
 
 def pin_reply_address(token: str) -> str:
     """Tokenized Reply-To used in the PIN-request email. Host is LINKEDIN_PARSE_DOMAIN if
-    set, else derived from the configured domain (see _default_parse_domain)."""
+    set, else derived from the configured domain (see _default_parse_domain).
+    """
     domain = os.getenv("LINKEDIN_PARSE_DOMAIN") or _default_parse_domain()
     return f"pin+{token}@{domain}"
 
@@ -97,7 +98,8 @@ def extract_pin_from_text(text: str) -> Optional[str]:
 
 def create_pin_request(user_id: int) -> str:
     """Mint a reply token mapping to user_id and store it (TTL). Returns the token even
-    if Redis is down (the caller still emails; attribution just degrades)."""
+    if Redis is down (the caller still emails; attribution just degrades).
+    """
     token = uuid.uuid4().hex[:20]
     client = _redis_client()
     if client is not None:
@@ -110,7 +112,8 @@ def create_pin_request(user_id: int) -> str:
 
 def submit_pin_by_token(token: str, pin: str) -> Optional[int]:
     """Attribute an inbound reply (token + code) to a user and store the PIN. Returns
-    the user_id on success, else None."""
+    the user_id on success, else None.
+    """
     client = _redis_client()
     if client is None or not token or not pin:
         return None

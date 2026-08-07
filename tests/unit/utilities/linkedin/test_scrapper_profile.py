@@ -26,19 +26,19 @@ class TestIsLinkedinErrorPage:
 
 class TestParseProfileHeader:
     def test_rate_limited_page_raises(self):
-        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header, ProfileUnavailableError
+        from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
         page = _soup("<html><body>This page isn't working. HTTP ERROR 429</body></html>")
         with pytest.raises(ProfileUnavailableError):
             parse_profile_header(page, "https://www.linkedin.com/in/x/")
 
     def test_missing_name_raises(self):
-        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header, ProfileUnavailableError
+        from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
         page = _soup("<html><body><div>no header here</div></body></html>")
         with pytest.raises(ProfileUnavailableError):
             parse_profile_header(page, "https://www.linkedin.com/in/x/")
 
     def test_none_source_raises(self):
-        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header, ProfileUnavailableError
+        from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
         with pytest.raises(ProfileUnavailableError):
             parse_profile_header(None, "https://www.linkedin.com/in/x/")
 
@@ -59,7 +59,7 @@ class TestParseProfileHeader:
         assert _name_from_title(page) == "Christopher Queen"
 
     def test_generic_title_not_treated_as_name(self):
-        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header, ProfileUnavailableError
+        from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
         page = _soup("<html><head><title>Feed | LinkedIn</title></head><body><div>x</div></body></html>")
         with pytest.raises(ProfileUnavailableError):
             parse_profile_header(page, "https://www.linkedin.com/in/x/")

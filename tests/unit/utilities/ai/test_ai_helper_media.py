@@ -1,7 +1,8 @@
 """Unit tests for the rewritten image/video prompt + Replicate helpers."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -71,7 +72,8 @@ class TestRunwayMotionPrompt:
 
 class TestAudioDirection:
     """Issue #548: Veo has no language parameter, so an audio-capable render whose prompt carries
-    no audio direction invents a voiceover in a language of its own choosing (posts #34/#36)."""
+    no audio direction invents a voiceover in a language of its own choosing (posts #34/#36).
+    """
 
     def test_only_audio_capable_models_get_a_direction(self):
         from cqc_lem.utilities.ai.ai_helper import _audio_direction
@@ -99,8 +101,7 @@ class TestAudioDirection:
 
     def test_appended_to_the_returned_motion_prompt(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
-            from cqc_lem.utilities.ai.ai_helper import (get_runway_ml_video_prompt_from_ai,
-                                                        _audio_direction)
+            from cqc_lem.utilities.ai.ai_helper import _audio_direction, get_runway_ml_video_prompt_from_ai
             out = get_runway_ml_video_prompt_from_ai("post", "scene", model="veo3.1_fast",
                                                      language="fr-FR")
             assert out.startswith("Mock AI response")
@@ -115,8 +116,11 @@ class TestAudioDirection:
     def test_long_motion_is_trimmed_but_the_direction_survives(self, mock_openai_client):
         mock_openai_client.chat.completions.create.return_value.choices[0].message.content = "x" * 900
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
-            from cqc_lem.utilities.ai.ai_helper import (get_runway_ml_video_prompt_from_ai,
-                                                        _audio_direction, MAX_MOTION_PROMPT_CHARS)
+            from cqc_lem.utilities.ai.ai_helper import (
+                MAX_MOTION_PROMPT_CHARS,
+                _audio_direction,
+                get_runway_ml_video_prompt_from_ai,
+            )
             out = get_runway_ml_video_prompt_from_ai("post", "scene", model="veo3.1")
             # Callers cap the prompt at MAX_MOTION_PROMPT_CHARS — the direction must survive that.
             assert len(out) <= MAX_MOTION_PROMPT_CHARS

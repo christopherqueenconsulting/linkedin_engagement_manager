@@ -1,5 +1,9 @@
-from cqc_lem.utilities import get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, get_runway_ml_video_prompt_from_ai, \
-    create_runway_video
+from cqc_lem.utilities import (
+    create_runway_video,
+    generate_flux1_image_from_prompt,
+    get_flux_image_prompt_from_ai,
+    get_runway_ml_video_prompt_from_ai,
+)
 
 
 def test_create_immage_from_prompt():

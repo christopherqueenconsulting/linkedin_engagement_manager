@@ -85,7 +85,8 @@ def _env_int(name: str, default: int) -> int:
 
 def reply_sweeps() -> int:
     """How many reply sweeps one publish schedules, read at call time so ops can tune
-    GOLDEN_HOUR_REPLY_SWEEPS without a restart."""
+    GOLDEN_HOUR_REPLY_SWEEPS without a restart.
+    """
     return _env_int("GOLDEN_HOUR_REPLY_SWEEPS", GOLDEN_HOUR_REPLY_SWEEPS)
 
 
@@ -100,7 +101,8 @@ def sweep_countdowns(sweeps: int = GOLDEN_HOUR_REPLY_SWEEPS,
     Each slot carries a small RESPONSIVE jitter (issue #626): replying quickly to comments on your
     OWN post is human, so these are exempt from the tens-of-minutes engagement jitter — but landing
     on 20:00/40:00/60:00 after every single publish is a machine signature, so the exact minute
-    still moves. Jitter is additive (never earlier), so the last sweep still covers the window."""
+    still moves. Jitter is additive (never earlier), so the last sweep still covers the window.
+    """
     n = max(1, min(GOLDEN_HOUR_MAX_SWEEPS, int(sweeps)))
     step = (window_minutes * 60) / n
     # Half a step is the hard jitter ceiling: even a misconfigured PACING_RESPONSIVE_JITTER_MAX_SECONDS
@@ -118,7 +120,8 @@ def latency_minutes(age_minutes) -> Optional[float]:
     quietly called it 0.0 would show a perfect golden hour that was never measured. The reading
     itself is computed by the database (`get_post_age_minutes`) against its OWN clock — the app and
     MySQL do not share a timezone, so subtracting `logs.created_at` from a Python UTC `now()` would
-    skew every latency by the `TZ` offset."""
+    skew every latency by the `TZ` offset.
+    """
     if isinstance(age_minutes, bool) or not isinstance(age_minutes, (int, float)):
         return None
     return max(0.0, float(age_minutes))
@@ -129,7 +132,8 @@ def report_horizon_minutes(phase: str = PHASE_REPLY_SWEEP) -> float:
     reply sweep that reaches a post 3 hours after publish was genuinely late, but the same sweep
     walking yesterday's post at hour 14 was never that post's golden-hour sweep at all — it is a
     routine revisit, and grading it would put a permanent stream of out-of-window readings into the
-    denominator of the only question this module exists to answer."""
+    denominator of the only question this module exists to answer.
+    """
     return min(float(GOLDEN_HOUR_REPORT_MAX_MINUTES), phase_window_minutes(phase) * 2.0)
 
 
@@ -137,14 +141,16 @@ def should_report(minutes: Optional[float], phase: str = PHASE_REPLY_SWEEP) -> b
     """Whether a swept post is one the amplifier is answerable for. The sweep deliberately also
     walks older posts (a late comment still deserves an answer), but a report on one of those says
     nothing about the amplifier's timing — see `report_horizon_minutes`. An UNKNOWN latency still
-    reports: not knowing when a post published is itself a finding."""
+    reports: not knowing when a post published is itself a finding.
+    """
     return minutes is None or minutes <= report_horizon_minutes(phase)
 
 
 def phase_window_minutes(phase: str = PHASE_REPLY_SWEEP) -> float:
     """The deadline each phase is graded against. The reply sweeps own the 60–90 min distribution
     window; the second wave is SUPPOSED to land 6–8h out, so grading it against 90 minutes would
-    mark every healthy second wave as late."""
+    mark every healthy second wave as late.
+    """
     if phase == PHASE_SECOND_WAVE:
         low = _env_float("SECOND_WAVE_MIN_HOURS", SECOND_WAVE_MIN_HOURS)
         high = _env_float("SECOND_WAVE_MAX_HOURS", SECOND_WAVE_MAX_HOURS)
@@ -155,7 +161,8 @@ def phase_window_minutes(phase: str = PHASE_REPLY_SWEEP) -> float:
 def within_golden_window(minutes: Optional[float], phase: str = PHASE_REPLY_SWEEP) -> bool:
     """True when an action landed inside the window its phase promises (60–90 min for a reply
     sweep, 6–8h + grace for the second wave). An unknown latency is False — unmeasured is never
-    counted as on-time."""
+    counted as on-time.
+    """
     return minutes is not None and minutes <= phase_window_minutes(phase)
 
 
@@ -166,7 +173,8 @@ def sweep_retry_countdown(minutes_since_publish: Optional[float], attempt: int =
 
     A retry is only scheduled while it would still land INSIDE the window — answering at minute 110
     buys nothing and costs a browser slot — and never more than GOLDEN_HOUR_MAX_RETRIES times, so a
-    sustained 429 decays instead of hammering LinkedIn."""
+    sustained 429 decays instead of hammering LinkedIn.
+    """
     if minutes_since_publish is None or int(attempt) >= GOLDEN_HOUR_MAX_RETRIES:
         return None
     delay_minutes = max(1.0, _env_float("GOLDEN_HOUR_RETRY_MINUTES", GOLDEN_HOUR_RETRY_MINUTES))
@@ -182,7 +190,8 @@ def golden_hour_report(post_id: Optional[int], minutes_since_publish: Optional[f
                        phase: str = PHASE_REPLY_SWEEP) -> dict:
     """One post's golden-hour record: how late we got there, what we found, what we sent. This is
     the shape both the log line and the PostHog event carry, so an analysis never has to reconcile
-    two versions of the same reading."""
+    two versions of the same reading.
+    """
     latency = None if minutes_since_publish is None else round(float(minutes_since_publish), 1)
     return {
         "phase": phase,
@@ -212,14 +221,16 @@ def report_summary(report: dict) -> str:
 
 def second_wave_enabled() -> bool:
     """The second-wave self-comment is ON by default; SECOND_WAVE_COMMENT_ENABLED=false is the
-    kill switch (it publishes to the user's own post, so ops needs one)."""
+    kill switch (it publishes to the user's own post, so ops needs one).
+    """
     return (os.environ.get("SECOND_WAVE_COMMENT_ENABLED") or "true").strip().lower() \
         not in ("0", "false", "no")
 
 
 def second_wave_bounds() -> tuple:
     """The (low, high) hour bounds of the second-wave draw, env-tunable and clamped into (0, 24h];
-    an inverted pair is swapped rather than ignored."""
+    an inverted pair is swapped rather than ignored.
+    """
     low = _env_float("SECOND_WAVE_MIN_HOURS", SECOND_WAVE_MIN_HOURS)
     high = _env_float("SECOND_WAVE_MAX_HOURS", SECOND_WAVE_MAX_HOURS)
     if low > high:
@@ -236,7 +247,8 @@ def second_wave_due_minutes(user_id: Optional[int] = None, post_id: Optional[int
     Seeded on (user, post) rather than drawn fresh, because the task no longer waits in a single
     long countdown (see `second_wave_hop_seconds`): every re-arm — and every broker redelivery —
     has to recompute the SAME target, or the second wave would walk forward every hop and never
-    land. Different posts still get different offsets, which is all the anti-pattern draw needs."""
+    land. Different posts still get different offsets, which is all the anti-pattern draw needs.
+    """
     if rng is None and user_id is not None and post_id is not None:
         rng = random.Random(f"second-wave:{user_id}:{post_id}")
     low, high = second_wave_bounds()
@@ -251,7 +263,8 @@ def second_wave_hop_cap_seconds() -> int:
     for its whole wait. A single 6–8h countdown would therefore be handed to another worker every
     75 minutes and end up posting the self-comment several times over. So the wait is split into
     hops that finish comfortably inside that timeout, and the task re-arms itself until the post is
-    actually due."""
+    actually due.
+    """
     visibility = _env_int("CELERY_VISIBILITY_TIMEOUT",
                           _env_int("CELERY_LONGEST_TASK_SECONDS", 3600) + 15 * 60)
     return max(60, int(max(120, visibility) * 0.6))
@@ -262,7 +275,8 @@ def second_wave_hop_seconds(due_minutes: Optional[float],
     """Seconds to wait before re-checking this post's second wave, or None when it is due NOW.
 
     An unknown post age is treated as due — the task's own guards (URL, cap, quality) are the real
-    gate, and hopping forever on a reading we can't take would be worse than acting once."""
+    gate, and hopping forever on a reading we can't take would be worse than acting once.
+    """
     if due_minutes is None or age_minutes is None:
         return None
     remaining = float(due_minutes) - float(age_minutes)
@@ -274,12 +288,14 @@ def second_wave_hop_seconds(due_minutes: Optional[float],
 def second_wave_first_countdown(user_id: Optional[int] = None,
                                 post_id: Optional[int] = None) -> int:
     """The countdown `post_to_linkedin` hands the first second-wave dispatch — the post's due offset,
-    clipped to one hop so the broker never has to hold an 8-hour message."""
+    clipped to one hop so the broker never has to hold an 8-hour message.
+    """
     return max(60, min(second_wave_hop_cap_seconds(),
                        int(second_wave_due_minutes(user_id, post_id) * 60)))
 
 
 def self_comment_cap() -> int:
     """Total comments WE may leave on one of our own posts (seed + second wave). Clamped to 1–5:
-    zero would silently disable the seed comment, and anything above a handful is thread-stuffing."""
+    zero would silently disable the seed comment, and anything above a handful is thread-stuffing.
+    """
     return max(1, min(5, _env_int("SELF_COMMENT_MAX_PER_POST", SELF_COMMENT_MAX_PER_POST)))

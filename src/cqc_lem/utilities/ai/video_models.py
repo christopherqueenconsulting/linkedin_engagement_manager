@@ -79,7 +79,8 @@ def is_premium(model: str) -> bool:
 
 def supports_audio(model: str) -> bool:
     """True when the model generates native audio — i.e. when the prompt MUST carry an audio
-    direction (issue #548). Unknown models are treated as silent."""
+    direction (issue #548). Unknown models are treated as silent.
+    """
     spec = VIDEO_MODELS.get(model)
     return bool(spec and spec.supports_audio)
 
@@ -109,7 +110,8 @@ def _to_prompt_image(image_path_or_url: str) -> str:
 
 def _create_task(endpoint, create_kwargs: dict):
     """Call endpoint.create, retrying without optional kwargs if the pinned SDK
-    version rejects them (resilience across runwayml versions)."""
+    version rejects them (resilience across runwayml versions).
+    """
     try:
         return endpoint.create(**create_kwargs)
     except TypeError:

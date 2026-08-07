@@ -1,5 +1,6 @@
 """Unit tests for the cadence reset (issue #621 / G6): plan density, the fixed day-type calendar,
-the one-post-per-24h floor, waking-hour bounds and per-post schedule jitter."""
+the one-post-per-24h floor, waking-hour bounds and per-post schedule jitter.
+"""
 
 import datetime as dt
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from cqc_lem.utilities.ai import content_framework as fw
-from cqc_lem.utilities.utils import POST_HOUR_MIN, POST_HOUR_MAX
+from cqc_lem.utilities.utils import POST_HOUR_MAX, POST_HOUR_MIN
 
 pytestmark = pytest.mark.unit
 
@@ -90,7 +91,8 @@ class TestPlanDensity:
 
 class TestPostingDays:
     """The publishing day allow-list (issue #581): the cadence says how many slots, `posting_days`
-    says which weekdays are eligible for them. Best posting TIME still only picks the hour."""
+    says which weekdays are eligible for them. Best posting TIME still only picks the hour.
+    """
 
     def test_default_cadence_never_lands_on_a_weekend(self):
         plan = _plan(posts_per_week=7)  # would have been daily before the allow-list
@@ -223,7 +225,7 @@ class TestOnePostPer24Hours:
 
     def test_holds_even_when_the_peak_hour_drops_across_days(self):
         """Thu 17:00 → Fri 11:00 is only 18h; the floor must push the later slot out."""
-        from cqc_lem.app.run_content_plan import _schedule_slot_utc, MIN_POST_INTERVAL
+        from cqc_lem.app.run_content_plan import MIN_POST_INTERVAL, _schedule_slot_utc
         thursday = dt.datetime(2026, 7, 30, 17, 0)
         with patch(f"{_RCP}.get_user_timezone", return_value="UTC"), \
              patch(f"{_RCP}.get_post_time", return_value=dt.time(11, 0)):

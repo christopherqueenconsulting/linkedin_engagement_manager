@@ -1,8 +1,9 @@
 """Unit tests for the Celery task_failure / task_retry error-tracking handlers (issue #648)."""
 
-import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -89,6 +90,7 @@ class TestTaskRetry:
 class TestSignalsAreConnected:
     def test_failure_and_retry_handlers_are_wired_to_celery(self):
         from celery.signals import task_failure, task_retry
+
         from cqc_lem.app.my_celery import on_task_failure, on_task_retry
 
         # weak=False, so the receiver tuples hold the function itself rather than a weakref.

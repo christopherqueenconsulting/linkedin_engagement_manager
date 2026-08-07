@@ -1,13 +1,13 @@
 """Unit tests for the leads DB helpers (issue #484) — activity aggregation across every existing
 source, ICP fact lookup, the idempotent upsert that preserves operator columns, board listing, the
-hot list, and partial updates."""
+hot list, and partial updates.
+"""
 
 from datetime import datetime
-
-import pytest
 from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -32,7 +32,7 @@ class TestGetLeadActivity:
         cursor.fetchall.side_effect = lambda: [{"person_name": "Jane", "person_profile_url": None,
                                                 "occurred_at": None, "detail": ""}]
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_lead_activity, _LEAD_ACTIVITY_SOURCES
+            from cqc_lem.utilities.db import _LEAD_ACTIVITY_SOURCES, get_lead_activity
             rows = get_lead_activity(4, days=30)
         assert len(rows) == len(_LEAD_ACTIVITY_SOURCES)
         assert {r["kind"] for r in rows} == {str(k) for k, _ in _LEAD_ACTIVITY_SOURCES}
@@ -49,7 +49,7 @@ class TestGetLeadActivity:
         conn, cursor = _mock_conn(fetch_all=[{"person_name": "Jane"}])
         cursor.execute.side_effect = [mysql.connector.Error("no such table")] + [None] * 10
         with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
-            from cqc_lem.utilities.db import get_lead_activity, _LEAD_ACTIVITY_SOURCES
+            from cqc_lem.utilities.db import _LEAD_ACTIVITY_SOURCES, get_lead_activity
             rows = get_lead_activity(1)
         assert len(rows) == len(_LEAD_ACTIVITY_SOURCES) - 1
 
@@ -130,7 +130,7 @@ class TestUpsertLead:
     def test_upserts_on_the_person_key(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import upsert_lead, LeadStage
+            from cqc_lem.utilities.db import LeadStage, upsert_lead
             assert upsert_lead(2, "in:jane", person_name="Jane", score=81,
                                stage=LeadStage.HOT, signals="engaged,intent") is True
         sql, params = cursor.execute.call_args[0]
@@ -266,7 +266,7 @@ class TestGetAndUpdateLead:
     def test_stage_override_and_dismissal(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_lead, LeadStage
+            from cqc_lem.utilities.db import LeadStage, update_lead
             update_lead(9, manual_stage=LeadStage.OPPORTUNITY, dismissed=True)
         params = cursor.execute.call_args[0][1]
         assert params == ("opportunity", 1, 9)

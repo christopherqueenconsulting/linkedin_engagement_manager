@@ -1,7 +1,8 @@
 """Unit tests for the single-flight run lock — issue #474 (feed-commenting concurrency gate)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

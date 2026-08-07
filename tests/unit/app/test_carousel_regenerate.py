@@ -1,7 +1,8 @@
 """Unit tests for carousel regeneration / stale-slide healing."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

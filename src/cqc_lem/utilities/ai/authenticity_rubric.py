@@ -131,7 +131,8 @@ AUTHENTICITY_JUDGE_CRITERIA: str = (
 
 def _weighted_score_raw(dimension_scores: dict) -> float:
     """Unrounded composite score. Gate logic uses this so rounding can't flip a borderline draft
-    across the threshold (e.g. 59.996 -> 60.0)."""
+    across the threshold (e.g. 59.996 -> 60.0).
+    """
     total = 0.0
     for name, spec in AUTHENTICITY_DIMENSIONS.items():
         raw = dimension_scores.get(name, 0)
@@ -156,7 +157,8 @@ def weighted_score(dimension_scores: dict) -> float:
 
 def classify_score(score: float) -> str:
     """Map a composite score to a gate action: 'demote' (< threshold), 'caution' (threshold..
-    ceiling), or 'pass' (>= ceiling)."""
+    ceiling), or 'pass' (>= ceiling).
+    """
     if score < AUTHENTICITY_GATE_THRESHOLD:
         return "demote"
     if score < AUTHENTICITY_CAUTION_CEILING:
@@ -166,7 +168,8 @@ def classify_score(score: float) -> str:
 
 def gate_draft(dimension_scores: dict) -> bool:
     """True when the draft should be demoted (APPROVED -> PENDING) — composite below the gate
-    threshold. The A1 gate calls this so the threshold has exactly one definition."""
+    threshold. The A1 gate calls this so the threshold has exactly one definition.
+    """
     return _weighted_score_raw(dimension_scores) < AUTHENTICITY_GATE_THRESHOLD
 
 

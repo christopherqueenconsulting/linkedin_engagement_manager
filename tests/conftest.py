@@ -1,5 +1,4 @@
-"""
-Pytest configuration and shared fixtures for LinkedIn Engagement Manager tests.
+"""Pytest configuration and shared fixtures for LinkedIn Engagement Manager tests.
 
 This module provides:
 - Mock fixtures for external dependencies (OpenAI, LinkedIn API, Database)
@@ -7,9 +6,10 @@ This module provides:
 - Test configuration and markers
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 import os
+from unittest.mock import MagicMock, patch
+
+import pytest
 from dotenv import load_dotenv
 
 # Load .env at session start so integration tests can see real API keys.
@@ -44,7 +44,8 @@ def _humanize_disabled_by_default(monkeypatch):
     second LLM call after every generator, which perturbs the many unit tests that introspect a single
     _call_llm. Default it OFF for the suite so those tests keep asserting on the generation call
     directly (this is exactly the "HUMANIZE_ENABLED=off restores prior behavior" guarantee). The
-    humanization pass's own tests opt back in with HUMANIZE_ENABLED=on."""
+    humanization pass's own tests opt back in with HUMANIZE_ENABLED=on.
+    """
     monkeypatch.setenv("HUMANIZE_ENABLED", "off")
 
 
@@ -55,7 +56,8 @@ def _human_pacing_disabled_by_default(monkeypatch):
     DATE). Both are poison for a test suite — real sleeps, and a budget that silently becomes 0 on
     whichever calendar day the rest-day draw comes up. Default it OFF so unrelated tests keep the
     pre-#626 behaviour (full cap, no delay, no jitter); the pacing tests turn it back on with
-    HUMAN_PACING_ENABLED=true and pin the day/RNG explicitly."""
+    HUMAN_PACING_ENABLED=true and pin the day/RNG explicitly.
+    """
     monkeypatch.setenv("HUMAN_PACING_ENABLED", "false")
 
 
@@ -65,7 +67,8 @@ def _db_pool_disabled_by_default(monkeypatch):
     The pool opens its connections through mysql-connector's own internal connect(), which the
     mock_database_connection fixture (it patches mysql.connector.connect) does NOT intercept — so a
     pooled unit test would try to open a REAL socket. Default the pool OFF for the suite so tests
-    exercise the mocked direct-connect path; the pooling tests turn it back on explicitly."""
+    exercise the mocked direct-connect path; the pooling tests turn it back on explicitly.
+    """
     from cqc_lem.utilities import db
     monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", False)
 

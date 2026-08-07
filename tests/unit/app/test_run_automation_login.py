@@ -5,8 +5,9 @@ not propagate as an "unexpected" Celery failure — each task must catch the err
 from get_current_profile and return a descriptive string instead.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from selenium.common.exceptions import TimeoutException
 
 pytestmark = pytest.mark.unit

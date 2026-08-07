@@ -1,7 +1,8 @@
 """Unit tests for the email-reply verification-PIN exchange."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -76,7 +77,7 @@ class TestTokenRoundTrip:
         store = {}
         fake_redis.set.side_effect = lambda k, v, ex=None: store.__setitem__(k, v)
         fake_redis.get.side_effect = lambda k: store.get(k)
-        from cqc_lem.utilities.linkedin.verification_pin import create_pin_request, submit_pin_by_token, get_pin
+        from cqc_lem.utilities.linkedin.verification_pin import create_pin_request, get_pin, submit_pin_by_token
         token = create_pin_request(42)
         assert token
         uid = submit_pin_by_token(token, "246810")

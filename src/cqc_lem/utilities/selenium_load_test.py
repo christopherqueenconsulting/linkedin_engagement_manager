@@ -34,7 +34,10 @@ from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
 from cqc_lem.utilities.engagement_window import (
-    STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_TICK_MINUTES, stagger_offset_minutes,
+    STAGGER_APPRECIATION_DM,
+    STAGGER_GOLDEN_HOUR,
+    STAGGER_TICK_MINUTES,
+    stagger_offset_minutes,
 )
 from cqc_lem.utilities.logger import log_info, log_warning
 
@@ -175,7 +178,8 @@ class Topology:
     @property
     def matches_invariant(self) -> bool:
         """The cap == Σ lanes rule from §5a. Below it lanes block on session creation; above it,
-        slots are paid for and idle."""
+        slots are paid for and idle.
+        """
         return self.requested_concurrency == self.session_cap
 
 
@@ -268,7 +272,8 @@ def required_topology(users: int, base: Topology, target_on_time_pct: float = 95
 
 def _post_time(user_index: int, users: int, band: tuple[int, int]) -> float:
     """Spread users' scheduled posts evenly across the peak band. Deterministic by index so a run is
-    reproducible and two topologies can be compared on identical arrivals."""
+    reproducible and two topologies can be compared on identical arrivals.
+    """
     start, end = band
     if users <= 1:
         return float(start)
@@ -504,7 +509,8 @@ def summarize(results: Sequence[JobResult], topology: Topology, users: int,
 def run_scale(users: int, topology: Topology, stagger_hours: Optional[float] = None,
               specs: Sequence[JobSpec] = WORKLOAD, target_on_time_pct: float = 95.0) -> dict:
     """One scale, two answers: what the CURRENT topology delivers, and the smallest topology that
-    would hit the SLO. The gap between them is the decision this harness exists to inform."""
+    would hit the SLO. The gap between them is the decision this harness exists to inform.
+    """
     jobs = build_workload(users, stagger_hours=stagger_hours, specs=specs)
     required = required_topology(users, topology, target_on_time_pct=target_on_time_pct,
                                  stagger_hours=stagger_hours, specs=specs)
@@ -522,7 +528,8 @@ def run_curve(user_counts: Sequence[int], topology: Topology, stagger_hours: Opt
 
 def render_curve(rows: Sequence[Mapping]) -> str:
     """The on-time / resource curve `docs/scaling-plan.md` §5c asks for, as a markdown table that can
-    be pasted straight into the plan."""
+    be pasted straight into the plan.
+    """
     if not rows:
         return "No scales simulated."
     first = rows[0]
@@ -562,7 +569,7 @@ def render_curve(rows: Sequence[Mapping]) -> str:
                      f"p95 delay {stats.get('p95_delay_minutes')} min")
     lines += [
         "",
-        (f"\"Sessions needed\" = the smallest per-lane concurrency (and therefore cap) that starts "
+        ("\"Sessions needed\" = the smallest per-lane concurrency (and therefore cap) that starts "
          + f"{target}% of the day's work inside its window; the lane split is shown beside it. "
          + "\"unreachable (lane)\" means no session count reaches it on that lane — that row's "
          + "resource columns are priced off the SIMULATED PEAK instead, and are not a sizing target."),
@@ -596,7 +603,8 @@ def render_live(measured: Mapping) -> str:
 
 def _sample_environment() -> dict:
     """One capacity + host sample, reusing the monitor's collectors so live numbers and the
-    production alert numbers can never disagree about what "busy" means."""
+    production alert numbers can never disagree about what "busy" means.
+    """
     from cqc_lem.utilities.capacity_alerts import collect_host_headroom, collect_selenium_capacity
     return {"capacity": collect_selenium_capacity(), "host": collect_host_headroom()}
 
@@ -662,7 +670,8 @@ def measure_live_sessions(sessions: int, hold_seconds: float = 30.0,
 def summarize_live(requested: int, outcomes: Sequence[Mapping], baseline: Mapping,
                    samples: Sequence[Mapping]) -> dict:
     """Pure reducer over what `measure_live_sessions` collected — separated so the unit tests can
-    pin the arithmetic without a browser."""
+    pin the arithmetic without a browser.
+    """
     ok = [outcome for outcome in outcomes if not outcome.get("error")]
     waits = [float(outcome["wait_seconds"]) for outcome in ok]
     capacities = [sample.get("capacity") for sample in samples if sample.get("capacity")]
@@ -692,7 +701,8 @@ def summarize_live(requested: int, outcomes: Sequence[Mapping], baseline: Mappin
 
 def parse_lanes(raw: str) -> dict[str, int]:
     """`se_engage=3,se_prepost=2,...` → dict. Explicit so a what-if run can model Phase 2's
-    "concurrency 3–4 per lane" without editing compose."""
+    "concurrency 3–4 per lane" without editing compose.
+    """
     lanes: dict[str, int] = {}
     for part in raw.split(","):
         part = part.strip()

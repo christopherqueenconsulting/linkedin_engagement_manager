@@ -29,10 +29,10 @@ import ast
 import inspect
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
 from starlette.datastructures import Headers
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +45,8 @@ _POST_ID = 4242
 
 class _FakeRequest:
     """Enough of a Starlette `Request` for the header helpers, with Starlette's own case-insensitive
-    `Headers` — a plain dict would let a case bug pass unnoticed."""
+    `Headers` — a plain dict would let a case bug pass unnoticed.
+    """
 
     def __init__(self, authorization: Optional[str] = None, method: str = "POST",
                  client_header: Optional[str] = None) -> None:
@@ -71,6 +72,7 @@ def client() -> Iterator[Any]:
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -83,7 +85,8 @@ def client() -> Iterator[Any]:
 def cookie_session() -> Iterator[None]:
     """A live session on the httpOnly cookie and nothing else — the browser's credential.
 
-    `get_session_user_id` is deliberately NOT patched: it is the thing under test."""
+    `get_session_user_id` is deliberately NOT patched: it is the thing under test.
+    """
     with patch(f"{_M}._db_resolve_session",
                side_effect=lambda t: {"user_id": _UID, "scope": "full"} if t == _COOKIE else None), \
          patch(f"{_M}.user_owns_posts", return_value=True), \
@@ -94,7 +97,8 @@ def cookie_session() -> Iterator[None]:
 @pytest.fixture
 def work() -> Iterator[Dict[str, MagicMock]]:
     """Everything the four routes would set in motion. Each mock doubles as the assertion that a
-    refused request never reached the handler at all."""
+    refused request never reached the handler at all.
+    """
     with patch(f"{_M}.mark_queued") as mark_queued, \
          patch(f"{_M}.clear_generation_status"), \
          patch(f"{_M}.celery_chain") as chain, \
@@ -150,7 +154,8 @@ class TestTheFourQueryParameterWrites:
             self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
         """Scripts, Postman and the admin tooling are not browsers, and an SPA bundle cached from
-        before #950 still sends a bearer and no header — so the rollout breaks nobody."""
+        before #950 still sends a bearer and no header — so the rollout breaks nobody.
+        """
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
             resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer non-browser-token"})
@@ -162,7 +167,8 @@ class TestAGuessedBearerBuysNothing:
     """Split by which layer is doing the refusing, so neither test can pass through a regression in
     the other. Which one answers depends on what else the request carried: since #950 the credential
     gate takes a bearer OR a session credential, so a forged request that brings the victim's cookie
-    is past the edge by definition — which is exactly why this layer has to stand behind it."""
+    is past the edge by definition — which is exactly why this layer has to stand behind it.
+    """
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_the_credential_gate_401s_it_at_the_edge_with_no_session_credential(
@@ -181,7 +187,8 @@ class TestAGuessedBearerBuysNothing:
             path: str, params: Dict[str, Any]) -> None:
         """The CSRF-relevant shape, and the one #950 changed: the gate accepts the session
         credential the browser attached by itself, so a guessed bearer is never what the edge is
-        judging. The exemption is keyed on a bearer that MATCHES, so it stays shut."""
+        judging. The exemption is keyed on a bearer that MATCHES, so it stays shut.
+        """
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
             resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer guessed"})
@@ -196,7 +203,8 @@ class TestAGuessedBearerBuysNothing:
             path: str, params: Dict[str, Any]) -> None:
         """The fail-closed half, end to end: an unconfigured gate lets any `Authorization` header
         past the edge, and the exemption must NOT open for it — a deployment running the credential
-        gate open must not also opt out of the CSRF layer."""
+        gate open must not also opt out of the CSRF layer.
+        """
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", set()):
             resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer guessed"})
@@ -238,7 +246,8 @@ class TestEveryStateChangingMethod:
 
     def test_a_real_put_route_is_covered_too(self, client: Any, cookie_session: None) -> None:
         """The unit assertion above proves the set; this proves the set is actually reached on a
-        method other than POST, through the real routing + resolver path."""
+        method other than POST, through the real routing + resolver path.
+        """
         with patch(f"{_M}.get_scheduled_dm_user_id") as owner, \
              patch(f"{_M}.update_scheduled_dm") as update:
             resp = client.put("/api/dm", json={"dm_id": 1, "action": "cancel",
@@ -268,7 +277,8 @@ class TestTheMultipartWrites:
     produce `multipart/form-data` with no preflight — a plain `<form enctype=…>`, or a `no-cors`
     `fetch` with a `FormData` body — and two mutating routes take exactly that. They are covered
     only because the layer was scoped to EVERY state-changing cookie-authenticated request rather
-    than to the four routes that made the gap visible, so this is where that scoping is proven."""
+    than to the four routes that made the gap visible, so this is where that scoping is proven.
+    """
 
     def test_an_avatar_training_upload_without_the_header_is_refused(
             self, client: Any, cookie_session: None) -> None:
@@ -301,7 +311,8 @@ class TestItRunsBeforeAnythingElse:
         """A scoped-away session that ALSO has no client header must be refused as a forgery, not as
         a scope violation. The scope refusal writes an audited `session_scope_denied` row, so if the
         order flipped a cross-site forgery would leave a trail attributed to the victim — and would
-        have reached a code path that writes. This assertion is the ordering."""
+        have reached a code path that writes. This assertion is the ordering.
+        """
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: ({"user_id": _UID, "scope": "extension"}
                                           if t == _COOKIE else None)), \
@@ -317,7 +328,8 @@ class TestWhatTheLayerDoesNotTouch:
     def test_a_read_is_never_refused(self, client: Any, cookie_session: None) -> None:
         """CSRF is a forged WRITE. With no CORS middleware the attacker cannot read the response, so
         a forged GET buys nothing — and requiring a header on reads would break the browser's own
-        credentialed navigations (a plain `<a href>` download, an `<img>` src)."""
+        credentialed navigations (a plain `<a href>` download, an `<img>` src).
+        """
         with patch(f"{_M}.get_user_email", return_value="user@example.com"), \
              patch(f"{_M}.get_generation_status", return_value=None):
             resp = client.get("/api/content_generation_status/",
@@ -330,7 +342,8 @@ class TestWhatTheLayerDoesNotTouch:
                                                      work: Dict[str, MagicMock]) -> None:
         """The cookie is the only credential a browser attaches by itself. A caller who put a real
         token in the request knew it — it is httpOnly and a cross-site form cannot read it — so
-        there is nothing to forge."""
+        there is nothing to forge.
+        """
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": "full"} if t == "real" else None):
             resp = client.post("/api/aws_test_get_my_profile/", params={"session_token": "real"})
@@ -340,7 +353,8 @@ class TestWhatTheLayerDoesNotTouch:
     def test_an_anonymous_write_is_still_a_401(self, client: Any, work: Dict[str, MagicMock]) -> None:
         """The header is a CSRF layer, not authorisation. No session is still no session — and it
         must not become a 403, which would tell an unauthenticated caller they were merely missing
-        a header."""
+        a header.
+        """
         with patch(f"{_M}._db_resolve_session", return_value=None):
             resp = client.post("/api/create_weekly_content/")
 
@@ -353,7 +367,8 @@ class TestTheHeaderIsNotASecret:
             self, client: Any, cookie_session: None, work: Dict[str, MagicMock], value: str) -> None:
         """Comparing the value would buy nothing — the bundle is public, so an attacker knows it —
         and would invite the next reader to rotate it like a token. What a cross-origin form cannot
-        do is set the header at all."""
+        do is set the header at all.
+        """
         resp = client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
                            headers={"X-LEM-Client": value})
 
@@ -363,7 +378,8 @@ class TestTheHeaderIsNotASecret:
     def test_the_name_is_case_insensitive_like_every_other_header(
             self, client: Any, cookie_session: None, work: Dict[str, MagicMock], name: str) -> None:
         """HTTP header names are case-insensitive and an intermediary may re-case them. Reading it
-        off Starlette's `Headers` gets this for free — this is the assertion that keeps it."""
+        off Starlette's `Headers` gets this for free — this is the assertion that keeps it.
+        """
         resp = client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
                            headers={name: "spa"})
 
@@ -381,7 +397,8 @@ class TestTheHeaderIsNotASecret:
 class TestOutsideARequest:
     def test_no_request_in_scope_is_a_no_op(self) -> None:
         """A Celery beat or a direct call resolves sessions with no HTTP request behind it. There is
-        no cross-site forgery without a cross-site request, so this must not raise."""
+        no cross-site forgery without a cross-site request, so this must not raise.
+        """
         from cqc_lem.api.main import _require_client_header
 
         _require_client_header()
@@ -400,14 +417,17 @@ class TestOutsideARequest:
 
 class TestTheAssumptionsTheLayerRestsOn:
     """Two claims in the design comment that a later change could silently break. Both are cheap to
-    make executable, and neither is a claim a reader can re-verify by eye at review time."""
+    make executable, and neither is a claim a reader can re-verify by eye at review time.
+    """
 
     def test_no_cors_middleware_is_installed(self) -> None:
         """`X-LEM-Client` works because a cross-origin request cannot set it and the preflight it
         would need has nothing to answer it. CORS with credentials would let a real cross-origin
         caller ASK for permission to send this header, reinstating the hole the layer closes — and
-        it would arrive as a one-line `app.add_middleware(...)` in some unrelated PR."""
+        it would arrive as a one-line `app.add_middleware(...)` in some unrelated PR.
+        """
         from starlette.middleware.cors import CORSMiddleware
+
         from cqc_lem.api.main import app
 
         installed = [m.cls for m in app.user_middleware]
@@ -419,7 +439,8 @@ class TestTheAssumptionsTheLayerRestsOn:
     def test_the_request_and_cookie_contextvars_are_set_together(self) -> None:
         """`_require_client_header` no-ops when no request is in scope, which is only safe because a
         live HTTP request can never carry the session cookie WITHOUT the request: one middleware
-        sets both, in the same block. Splitting them would turn the no-op into a silent bypass."""
+        sets both, in the same block. Splitting them would turn the no-op into a silent bypass.
+        """
         from cqc_lem.api import main
 
         body = inspect.getsource(main.session_cookie_middleware)
@@ -435,7 +456,8 @@ class TestTheAssumptionsTheLayerRestsOn:
         Named functions, not a count: since #950 the edge gate reads it too
         (`_has_session_credential`), and that read authenticates nobody — it asks only whether the
         caller brought SOMETHING for the resolver to judge, before routing, with no database. Both
-        readers run ahead of every handler, which is the property that matters."""
+        readers run ahead of every handler, which is the property that matters.
+        """
         from cqc_lem.api import main
 
         tree = ast.parse(Path(main.__file__).read_text(encoding="utf-8"))

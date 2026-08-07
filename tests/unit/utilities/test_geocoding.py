@@ -1,7 +1,8 @@
 """Unit tests for city/state geocoding (Nominatim + timezonefinder)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -45,19 +46,19 @@ class TestGeocodeCity:
         assert geo["timezone"] == "America/New_York"
 
     def test_no_match_raises(self):
-        from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
+        from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
         with patch(f"{_MOD}.requests.get", return_value=_resp([])):
             with pytest.raises(GeocodeError):
                 geocode_city("Nowhereville", "ZZ", "US")
 
     def test_request_failure_raises(self):
-        from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
+        from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
         with patch(f"{_MOD}.requests.get", side_effect=Exception("timeout")):
             with pytest.raises(GeocodeError):
                 geocode_city("Orlando")
 
     def test_empty_city_raises_without_calling_network(self):
-        from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
+        from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
         with patch(f"{_MOD}.requests.get") as get:
             with pytest.raises(GeocodeError):
                 geocode_city("   ")
@@ -72,7 +73,7 @@ class TestGeocodeCity:
         get.assert_called_once()  # second call served from cache
 
     def test_missing_coordinates_raises(self):
-        from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
+        from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
         with patch(f"{_MOD}.requests.get", return_value=_resp([{"address": {"country_code": "us"}}])):
             with pytest.raises(GeocodeError):
                 geocode_city("Orlando", "FL", "US")

@@ -65,7 +65,12 @@ compose/local/database/migrations/  Flyway migrations
 - **Imports:** Absolute imports from `cqc_lem.*` throughout.
 - **Database:** All DB access goes through functions in `utilities/db.py`. No raw SQL elsewhere.
 - **Secrets:** Never hardcode. Use `.env` with `load_dotenv()`. See `.env.example` for required variables.
-- **Comments:** Only add a comment when the WHY is non-obvious. No docstring blocks.
+- **Comments & docstrings:** Only add a comment when the WHY is non-obvious — and that is exactly
+  what a docstring is for. Ruff enforces **Google-convention docstrings** (`D`) alongside `E`/`F`/`I`/
+  `T201` in the blocking **Docstring & Lint Gate**; tests are exempt from the *missing*-docstring
+  rules. Never restate the signature (`Returns: The user id.` under `-> int` is noise) and never
+  invent behaviour to satisfy the linter. A failure routes to the `agent:docfix` lane, not to a
+  human. Standard + examples: **`docs/docstring-standard.md`**.
 
 ## AI Call Pattern
 

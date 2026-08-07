@@ -181,13 +181,31 @@ exclude_lines = [
     "if typing.TYPE_CHECKING:",
 ]
 
+[tool.ruff]
+# The house width. Without this ruff measures against its 88-column default, which reported ~26,900
+# line-too-long errors against code that has always been written to 120 — the flood that made the
+# lint step advisory (`continue-on-error`) and so hid every real defect behind it.
+line-length = 120
+
 [tool.ruff.lint]
 select = [
     "E", # pycodestyle
     "F", # pyflakes
     "I", # isort
     "T201", # print
+    "D", # pydocstyle - Google-style docstrings
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: a test's NAME is its documentation, and this suite already writes a docstring wherever the
+# reason for a test is not obvious. Requiring one on all ~10,700 of them would generate exactly the
+# boilerplate the house rule warns against, so only the FORMAT rules apply here.
+"tests/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
+# Migrations and generated trees carry no API surface.
+"**/migrations/**" = ["D"]
 
 
 [build-system]

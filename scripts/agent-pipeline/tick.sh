@@ -152,7 +152,7 @@ claim_branch() {  # $1=branch -> 0 claimed, 1 busy
 # posthog_capture is fire-and-forget and never breaks a tick.
 TICK_T0="$SECONDS"                       # wall-clock seconds since shell start
 TICK_OUTCOME="unknown"                   # dispatched | skipped | error | nothing_to_do
-TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_revise", "mode_phasefix", "escalate"
+TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_docfix", "mode_revise", "mode_phasefix", "escalate"
 TICK_MODE=""                             # mode name if a Claude run was dispatched
 TICK_ISSUE=""                            # issue number dispatched
 TICK_PR=""                               # PR number processed
@@ -986,6 +986,43 @@ if [ -n "$DEPFIX" ]; then
     WT="$(add_worktree "$DBR" origin/main)"
     export MODE=depfix PR="$DPR" BRANCH="$DBR" WORKTREE="$WT"
     run_claude "$WT" "Read $RUNBOOK and follow MODE=depfix. PR=$DPR BRANCH=$DBR."
+    exit 0
+  fi
+fi
+
+# ---- PRIORITY LANE: Docstring & Lint Gate failures (labeled agent:docfix by the router) ----
+# Runs right after depfix and before roadmap work: a lint failure blocks a PR that is otherwise
+# finished, and it is the class of defect an agent should never need a human for. Same escalation
+# budget as depfix — three Claude attempts, then it becomes a human's problem rather than a loop.
+DOCFIX="$(gh pr list --repo "$SLUG" --state open --label "agent:docfix" \
+  --json number,headRefName,labels \
+  | jq -r 'map(select((.labels|map(.name))|index("needs-human")|not))|.[0]//empty|@json')"
+if [ -n "$DOCFIX" ] && ! pr_admissible "$(echo "$DOCFIX" | jq -r .number)" "agent:docfix"; then
+  DOCFIX=""   # refused by the trust boundary — fall through to the other lanes this tick
+fi
+if [ -n "$DOCFIX" ]; then
+  XPR="$(echo "$DOCFIX" | jq -r .number)"
+  XBR="$(echo "$DOCFIX" | jq -r .headRefName)"
+  CLAUDE_TRIES="$(git -C "$REPO" log "origin/$XBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
+    log "PR #$XPR still failing the lint gate after $CLAUDE_TRIES Claude attempts — escalating."
+    TICK_OUTCOME="escalated"; TICK_REASON="docfix_exhausted"; TICK_PR="$XPR"; TICK_BRANCH="$XBR"
+    if [ "$DRY_RUN" != "1" ]; then
+      gh pr edit "$XPR" --repo "$SLUG" --add-label needs-human --remove-label agent:docfix >/dev/null 2>&1
+      gh issue comment "$XPR" --repo "$SLUG" --body "🚧 Claude couldn't clear the Docstring & Lint Gate after $CLAUDE_TRIES attempts. The standard is \`docs/docstring-standard.md\`; assigning @$ASSIGNEE." >/dev/null 2>&1
+      gh pr edit "$XPR" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+    fi
+    exit 0
+  fi
+  log "PR #$XPR failing the lint gate — invoking docfix (priority lane, try $((CLAUDE_TRIES+1)))."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_docfix"; TICK_MODE="docfix"; TICK_PR="$XPR"; TICK_BRANCH="$XBR"
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=docfix for #$XPR ($XBR)."; exit 0; fi
+  if ! claim_branch "$XBR"; then
+    log "PR #$XPR already claimed by another slot — moving on."
+  else
+    WT="$(add_worktree "$XBR" origin/main)"
+    export MODE=docfix PR="$XPR" BRANCH="$XBR" WORKTREE="$WT"
+    run_claude "$WT" "Read $RUNBOOK and follow MODE=docfix. PR=$XPR BRANCH=$XBR."
     exit 0
   fi
 fi

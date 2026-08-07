@@ -299,7 +299,8 @@ class TestTripRecord:
 class TestMeasurementExemption:
     """Read-only stat capture has to survive OUR pause — it produces the very readings the tripwire
     re-evaluates, so freezing it would leave the trend stuck at the collapsed numbers and make
-    recovery permanently undetectable (and the user's "we keep collecting your analytics" untrue)."""
+    recovery permanently undetectable (and the user's "we keep collecting your analytics" untrue).
+    """
 
     def _paused(self, reason):
         return patch(f"{_RL}.automation_pause_remaining", return_value=600 if reason else 0), \

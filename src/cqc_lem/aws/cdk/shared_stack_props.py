@@ -1,12 +1,24 @@
 import re
 
 from aws_cdk import (
+    Environment,
     StackProps,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_ecs as ecs,
+)
+from aws_cdk import (
     aws_efs as efs,
-    aws_iam as iam,
+)
+from aws_cdk import (
     aws_elasticloadbalancingv2 as elbv2,
-    aws_ec2 as ec2, Environment, )
+)
+from aws_cdk import (
+    aws_iam as iam,
+)
 from aws_cdk.aws_ecr_assets import DockerImageAsset
 from aws_cdk.aws_lambda import IFunction
 from aws_cdk.aws_servicediscovery import INamespace

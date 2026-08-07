@@ -40,7 +40,8 @@ _KIND_LABELS: dict = {
 
 def relevance_min_tokens() -> int:
     """Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can loosen or tighten the
-    match without a restart."""
+    match without a restart.
+    """
     try:
         return max(0, int(os.getenv("STORY_RELEVANCE_MIN_TOKENS",
                                     STORY_RELEVANCE_MIN_TOKENS_DEFAULT)))
@@ -72,7 +73,8 @@ def relevance_score(entry: dict, subject: Optional[str] = None,
 
 def _rotation_key(entry: dict) -> tuple:
     """Least-used, longest-unused first. A never-used entry always outranks a used one, so a freshly
-    seeded bank is drained before anything repeats."""
+    seeded bank is drained before anything repeats.
+    """
     last_used = entry.get("last_used_at")
     if isinstance(last_used, datetime):
         stamp = last_used.timestamp()
@@ -92,7 +94,8 @@ def select_story(entries: Optional[list], subject: Optional[str] = None,
     the same anecdote never anchors three posts in a row. Returns None for an empty/inactive bank
     and for a bank whose entries share nothing with the post's subject or the user's focus topics —
     both cases mean the caller must fall back to a non-story archetype rather than invent
-    experience the user never had."""
+    experience the user never had.
+    """
     usable = [e for e in (entries or []) if isinstance(e, dict) and entry_text(e)
               and e.get("active", True)]
     if not usable:
@@ -121,7 +124,8 @@ def _happened_phrase(entry: dict) -> str:
 
 def story_directive(entry: Optional[dict]) -> str:
     """The writer-side injection: the author's real material, plus the hard rule that it is the ONLY
-    personal specific allowed. Returns the non-story fallback when there is no entry."""
+    personal specific allowed. Returns the non-story fallback when there is no entry.
+    """
     if not entry or not entry_text(entry):
         return no_story_directive()
     kind = str(entry.get("kind") or "anecdote")
@@ -143,7 +147,8 @@ def story_directive(entry: Optional[dict]) -> str:
 def no_story_directive() -> str:
     """Empty-bank / no-relevant-entry fallback: write the observation post, and say NOTHING personal
     that we cannot back with a real entry. Inventing experience is the failure mode this whole
-    module exists to remove, so the fallback closes the door explicitly."""
+    module exists to remove, so the fallback closes the door explicitly.
+    """
     return (
         "\n\nNO STORY BANK ENTRY IS AVAILABLE FOR THIS POST:\n"
         "- Write this as an industry observation or analysis grounded ONLY in the research and "
@@ -177,7 +182,8 @@ def _normalize_digits(raw: str) -> str:
 
 def specific_tokens(text: Optional[str]) -> set:
     """The checkable particulars in a piece of text: numbers (digits or spelled out, normalized to
-    one form) and named months. These are what a reader could look up — and what an LLM invents."""
+    one form) and named months. These are what a reader could look up — and what an LLM invents.
+    """
     out = set()
     low = (text or "").lower()
     for match in _DIGIT_RUN_RE.findall(low):
@@ -195,7 +201,8 @@ def unsourced_specifics(content: Optional[str], sources: Optional[list]) -> list
 
     Scoped to the draft's FIRST-PERSON sentences on purpose: a statistic quoted from the research
     layer ("the market grew 12%") is sourced elsewhere and is not a fabricated personal claim, while
-    "I cut our onboarding from 12 days to 3" is only true if those numbers came from the bank."""
+    "I cut our onboarding from 12 days to 3" is only true if those numbers came from the bank.
+    """
     allowed = set()
     for source in sources or []:
         allowed |= specific_tokens(source)
@@ -214,7 +221,8 @@ def has_unsourced_specifics(content: Optional[str], sources: Optional[list]) -> 
 
 def fabrication_repair_directive(tokens: Optional[list]) -> str:
     """Regeneration steer naming the exact specifics the last draft invented, so the rewrite drops
-    them instead of paraphrasing them."""
+    them instead of paraphrasing them.
+    """
     listed = ", ".join(str(t) for t in (tokens or []) if str(t).strip())
     return (
         "\n\nTHE PREVIOUS DRAFT INVENTED FACTS ABOUT THE AUTHOR — do NOT repeat that:\n"

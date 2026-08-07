@@ -1,7 +1,8 @@
 """Unit tests for the LinkedIn 429 circuit breaker (rate_limit.py)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -122,7 +123,8 @@ class TestMarkRateLimited:
 class TestTripTelemetry:
     """The trip is the only signal that says LinkedIn is throttling us, and the warning it logs
     never reaches PostHog at the default POSTHOG_LOG_LEVEL — so it is emitted as its own event for
-    the Health dashboard's 429 tile and its spike alert (issue #650)."""
+    the Health dashboard's 429 tile and its spike alert (issue #650).
+    """
 
     def test_trip_is_tracked_with_cooldown_and_consecutive_count(self, fake_redis, monkeypatch):
         monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "100")
@@ -242,7 +244,8 @@ class TestAutomationPause:
 
     def test_pause_logs_info_not_warning(self, fake_redis):
         """A stored pause is a state transition, not a degraded path (issue #917). Warning here made
-        the once-per-release deploy pause escalate to ERROR and file a grouped $exception."""
+        the once-per-release deploy pause escalate to ERROR and file a grouped $exception.
+        """
         from cqc_lem.utilities.linkedin.rate_limit import pause_automation
         with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
             assert pause_automation(1800, reason="deploy") is True
@@ -320,7 +323,8 @@ class TestAutomationPauseReason:
 
 class TestCommentingHold:
     """Issue #628: a per-user hold that stops ONLY feed commenting, so a demotion problem never
-    takes posting, replies or DMs down with it. Fails OPEN like the rest of this module."""
+    takes posting, replies or DMs down with it. Fails OPEN like the rest of this module.
+    """
 
     def test_hold_sets_key_with_ttl_and_reason(self, fake_redis):
         from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
@@ -365,22 +369,19 @@ class TestCommentingHold:
 
     def test_remaining_and_is_held(self, fake_redis):
         fake_redis.ttl.return_value = 120
-        from cqc_lem.utilities.linkedin.rate_limit import (commenting_hold_remaining,
-                                                           is_commenting_held)
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_remaining, is_commenting_held
         assert commenting_hold_remaining(7) == 120
         assert is_commenting_held(7) is True
 
     def test_not_held_when_key_absent(self, fake_redis):
         fake_redis.ttl.return_value = -2
-        from cqc_lem.utilities.linkedin.rate_limit import (commenting_hold_remaining,
-                                                           is_commenting_held)
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_remaining, is_commenting_held
         assert commenting_hold_remaining(7) == 0
         assert is_commenting_held(7) is False
 
     def test_not_held_when_no_redis(self):
         with patch(f"{_MOD}._redis_client", return_value=None):
-            from cqc_lem.utilities.linkedin.rate_limit import (commenting_hold_remaining,
-                                                               is_commenting_held)
+            from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_remaining, is_commenting_held
             assert commenting_hold_remaining(7) == 0
             assert is_commenting_held(7) is False
 

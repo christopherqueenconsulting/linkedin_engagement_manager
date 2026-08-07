@@ -1,10 +1,12 @@
 """Unit tests for how the save-optimized archetypes (issue #619 / G4) are wired into the content
 pipeline: the no-fabrication gate holds a draft that invented specifics, the review gate spends its
 one retry on it, and carousels draw their shape from the SAME post menu so a build receipt can land
-as a document post."""
+as a document post.
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -192,8 +194,9 @@ class TestFactAnchorsComeFromTheStoryBank:
     def test_the_writer_may_only_use_the_entry_this_post_was_anchored_to(self):
         # A number from some OTHER bank entry was never in this prompt, so the writer stating one
         # would still be inventing — the writer's allow-list is narrower than the checkers'.
-        from cqc_lem.app import run_content_plan as rcp
         from unittest.mock import MagicMock
+
+        from cqc_lem.app import run_content_plan as rcp
         other = {"id": 9, "kind": "number", "title": "Unrelated",
                  "body": "Booked 88 calls last quarter.", "happened_at": None}
         captured = {}
@@ -220,8 +223,9 @@ class TestFactAnchorsComeFromTheStoryBank:
         assert "88 calls" not in anchors
 
     def test_no_anchor_entry_means_no_verified_facts_for_the_writer(self):
-        from cqc_lem.app import run_content_plan as rcp
         from unittest.mock import MagicMock
+
+        from cqc_lem.app import run_content_plan as rcp
         captured = {}
 
         def gen(user_profile, stage, blueprint=None, **kwargs):

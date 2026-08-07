@@ -2,16 +2,27 @@
 
 import datetime
 from datetime import timedelta
+
 import pytest
 
 from cqc_lem.utilities.date import (
-    convert_datetime_to_local_tz, format_year, get_datetime,
-    get_linkedin_datetime_from_text, is_checkdate_before_date,
-    is_checkdate_after_date, is_date_in_range, filter_dates_in_range,
-    purge_empty_and_invalid_dates, order_dates, get_latest_date,
-    get_earliest_date, weeks_between_dates, convert_datetime_to_end_of_day,
-    convert_datetime_to_start_of_day, convert_date_to_datetime,
+    convert_date_to_datetime,
+    convert_datetime_to_end_of_day,
+    convert_datetime_to_local_tz,
+    convert_datetime_to_start_of_day,
     convert_viewed_on_to_date,
+    filter_dates_in_range,
+    format_year,
+    get_datetime,
+    get_earliest_date,
+    get_latest_date,
+    get_linkedin_datetime_from_text,
+    is_checkdate_after_date,
+    is_checkdate_before_date,
+    is_date_in_range,
+    order_dates,
+    purge_empty_and_invalid_dates,
+    weeks_between_dates,
 )
 
 pytestmark = pytest.mark.unit

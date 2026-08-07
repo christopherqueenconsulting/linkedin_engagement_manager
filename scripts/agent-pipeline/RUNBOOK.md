@@ -228,6 +228,31 @@ do NOT blindly patch the branch:
    ~3 Claude attempts per branch, then escalates automatically.) STOP.
    Once the Dependabot PR is green, the existing `dependabot-auto-merge` workflow enqueues it — you do NOT merge it.
 
+## MODE=docfix  (env: PR, BRANCH, WORKTREE)
+PR #$PR (branch `$BRANCH`) failed the **Docstring & Lint Gate** and was routed to you (label
+`agent:docfix`). The worktree is on the PR's branch. The standard is `docs/docstring-standard.md`;
+the rules live in `pyproject.toml` (`[tool.ruff.lint]`), not in your judgement.
+1. See exactly what failed: `poetry run ruff check src/ tests/ --statistics` then without
+   `--statistics` for the file/line list.
+2. Take the mechanical fixes first: `poetry run ruff check src/ tests/ --fix`.
+   **Never `--unsafe-fixes`** — it deletes imports this repo re-exports on purpose (`ai_helper`
+   aliases `content_alignment` constants for other modules and tests to read), which breaks tests
+   while the lint passes.
+3. Author what is left BY HAND, in the house voice (`docs/docstring-standard.md`):
+   - A docstring says **WHY**, and what a caller can rely on. `Args:`/`Returns:` earn their place
+     when a parameter or return value is non-obvious — a `Returns: The user id.` under
+     `def get_user_id() -> int` is the boilerplate this standard exists to prevent, and reviewers
+     will treat it as noise.
+   - **Never invent behaviour to satisfy a rule.** If you cannot tell what a function guarantees,
+     read its callers and its tests; if it is still unclear, say so in the PR comment rather than
+     writing a confident sentence that is wrong. A wrong docstring is worse than none.
+   - Preserve existing prose. D205 ("blank line after summary") is fixed by splitting the first
+     sentence onto its own line and inserting a blank line — **not** by rewriting the paragraph.
+4. `poetry run pytest tests/unit -q` — the fixes must not change behaviour.
+5. Commit (Claude co-author trailer) + `git push`, then **clear the flag**:
+   `gh pr edit $PR --remove-label agent:docfix`. If the gate fails again the router re-labels it;
+   the runner caps at ~3 attempts per branch, then escalates to a human automatically. STOP.
+
 ## MODE=revise  (env: PR, BRANCH, WORKTREE, OWNER)
 The repo owner (@$OWNER) reviewed PR #$PR and requested changes (label `agent:revise`). Implement **their**
 feedback — this is distinct from Copilot's threads (that's MODE=review). Worktree is on `$BRANCH`.

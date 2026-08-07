@@ -5,8 +5,9 @@ whole path the reporter could not see is exercised: the login flow records a dev
 the sign-in that follows clears it, and the Account page can read back "your approval landed".
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -31,6 +32,7 @@ class _FakeRedis:
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 
@@ -72,8 +74,7 @@ class TestLinkedInSignInStatusEndpoint:
         assert detail["approval_cleared_at"] is None
 
     def test_the_approval_the_user_already_made_shows_as_received(self, client, redis):
-        from cqc_lem.utilities.linkedin.login_status import (mark_approval_pending,
-                                                             mark_signed_in)
+        from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, mark_signed_in
 
         mark_approval_pending(_UID)
         # One login records the sign-in twice — when the approval clears, then at the cookie
@@ -86,9 +87,11 @@ class TestLinkedInSignInStatusEndpoint:
         assert detail["approval_cleared_at"]
 
     def test_timed_out_approval_keeps_the_last_good_sign_in(self, client, redis):
-        from cqc_lem.utilities.linkedin.login_status import (mark_approval_pending,
-                                                             mark_approval_timed_out,
-                                                             mark_signed_in)
+        from cqc_lem.utilities.linkedin.login_status import (
+            mark_approval_pending,
+            mark_approval_timed_out,
+            mark_signed_in,
+        )
 
         mark_signed_in(_UID)
         mark_approval_pending(_UID)

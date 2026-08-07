@@ -85,7 +85,8 @@ def test_long_message_truncated_without_error():
 
 def test_fingerprint_is_stable_across_releases():
     """Regression lock: changing normalization resets every counter and forks every PostHog issue,
-    so it must be a deliberate act, not a side effect."""
+    so it must be a deliberate act, not a side effect.
+    """
     _, key = esc.normalize_message("Selector miss: Feed sort control")
     assert esc.fingerprint("WARNING", "cqc_lem.utilities.selenium_util.find_first", key) == \
         esc.fingerprint("WARNING", "cqc_lem.utilities.selenium_util.find_first", key)
@@ -134,7 +135,8 @@ def test_excluded_prefix_never_escalates():
 
 def test_cost_alert_breaches_never_escalate():
     """A budget breach is a measurement the alerter was asked to report, and it repeats for as many
-    days as the spend does — escalating it filed a code defect for working tooling (#1071)."""
+    days as the spend does — escalating it filed a code defect for working tooling (#1071).
+    """
     from cqc_lem.utilities.cost_alerts import ALERT_LOG_PREFIX
 
     assert ALERT_LOG_PREFIX in esc.BUILTIN_EXCLUDED_PREFIXES
@@ -183,7 +185,8 @@ def test_redis_error_fails_open():
 
 def test_redis_circuit_opens_after_repeated_failures(monkeypatch):
     """A dead Redis costs a 2s connect timeout per call; after N failures we stop calling it, or
-    every one of ~400 warning call sites would stall for 2s while Redis is down."""
+    every one of ~400 warning call sites would stall for 2s while Redis is down.
+    """
     monkeypatch.setenv("LOG_ESCALATE_REDIS_FAILURES", "3")
     monkeypatch.setenv("LOG_ESCALATE_LOCAL_CAP", "1000")
     client = MagicMock()

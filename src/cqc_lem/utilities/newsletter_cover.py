@@ -228,7 +228,8 @@ def classify_avatar_relevance(title: Optional[str], subtitle: Optional[str],
 def _avatar_for_explicit_choice(user_id: int) -> Optional[dict]:
     """The avatar for a per-edition 'With me' click. The explicit choice beats the per-surface
     opt-in (same precedence a post's compose-time toggle has), but NEVER beats ``avatar_disabled``
-    or the preview/approval gate. Fails closed."""
+    or the preview/approval gate. Fails closed.
+    """
     try:
         from cqc_lem.utilities.avatar.guardrails import avatar_is_usable
         from cqc_lem.utilities.db import get_active_avatar, get_avatar_preferences

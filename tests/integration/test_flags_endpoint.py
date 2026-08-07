@@ -5,9 +5,9 @@ payload the browser bootstraps from is provably the SAME evaluation the API and 
 just did — including the fail-open-to-env-var path, which is the whole contract.
 """
 from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities import flags
 
@@ -19,6 +19,7 @@ _M = "cqc_lem.api.main"
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 
@@ -97,8 +98,9 @@ class TestFlagBootstrap:
         """The landing page bootstraps its flags from here and carries no bearer token. If the gate
         covered this path the query would 401 — and the SPA's axios interceptor reads ANY 401 as a
         dead session, clearing lem_session and redirecting, so a signed-in visitor landing on `/`
-        would be logged out by a marketing section."""
-        from cqc_lem.api.main import _api_token_required, _PUBLIC_API_PREFIXES
+        would be logged out by a marketing section.
+        """
+        from cqc_lem.api.main import _PUBLIC_API_PREFIXES, _api_token_required
 
         assert "/api/flags" in _PUBLIC_API_PREFIXES
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"secret"}):

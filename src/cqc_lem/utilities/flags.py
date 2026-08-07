@@ -55,7 +55,8 @@ _OFF_VALUES = ("0", "false", "no", "off", "disabled", "control")
 @dataclass(frozen=True)
 class FlagSpec:
     """One registered toggle. `key` is the PostHog flag key AND this registry's name — one
-    identifier, so a rename can't leave the code and PostHog disagreeing."""
+    identifier, so a rename can't leave the code and PostHog disagreeing.
+    """
     key: str
     env_var: str
     default: bool
@@ -175,7 +176,8 @@ def env_default(key: str) -> bool:
 def local_evaluation_available() -> bool:
     """Whether a PostHog lookup is even worth attempting. A personal API key is what makes LOCAL
     evaluation possible; without it the SDK would fall back to a network call per check, which this
-    module never does."""
+    module never does.
+    """
     if not _bool_env("POSTHOG_FLAGS_ENABLED", True):
         return False
     if not (os.getenv("POSTHOG_API_KEY") or "").strip():
@@ -191,7 +193,8 @@ def _ensure_loaded() -> bool:
     The poller is what makes a flag flip visible to a long-lived Celery worker without a restart:
     definitions refresh every `POSTHOG_FLAG_POLL_SECONDS` and every subsequent lookup reads the
     refreshed set out of memory. The load itself is ONE blocking fetch at the process's first flag
-    check (the SDK caps it at 10s); everything after it is in-memory."""
+    check (the SDK caps it at 10s); everything after it is in-memory.
+    """
     global _loaded, _last_load_attempt
     if _loaded:
         return True
@@ -273,13 +276,15 @@ def flag_enabled(key: str, user_id: Optional[int] = None) -> bool:
 
 def all_flags(user_id: Optional[int] = None) -> Dict[str, bool]:
     """Every registered flag resolved for one identity — the SPA's bootstrap payload, so the browser
-    renders with the SAME values the API and the workers just used instead of flickering."""
+    renders with the SAME values the API and the workers just used instead of flickering.
+    """
     return {key: flag_enabled(key, user_id) for key in FLAGS}
 
 
 def bootstrap_payload(user_id: Optional[int] = None) -> dict:
     """What `GET /api/flags` returns. `local_evaluation` is the honest half: false means every value
-    below is an env default, not a PostHog decision."""
+    below is an env default, not a PostHog decision.
+    """
     resolved = all_flags(user_id)
     return {
         "distinct_id": distinct_id(user_id),
@@ -297,7 +302,8 @@ def registry_rows() -> list:
 
 def reset_flag_state() -> None:
     """Drop the loaded-definitions latch AND the retry cooldown. For tests (and a future admin
-    reload); the SDK's own poller is left alone."""
+    reload); the SDK's own poller is left alone.
+    """
     global _loaded, _last_load_attempt
     with _load_lock:
         _loaded = False

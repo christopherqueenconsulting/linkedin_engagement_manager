@@ -1,0 +1,65 @@
+name: Docstring & Lint Gate
+
+# The one gate that decides whether a change meets the house code standard: ruff's E/F/I/T201 rules
+# plus Google-convention docstrings (`D`), configured in pyproject.toml.
+#
+# It is a SEPARATE workflow from `CI / Unit Tests` on purpose. The lint step inside the test workflow
+# runs with `continue-on-error: true`, so it reports green whatever it finds — that is how ~26,900
+# line-too-long errors (ruff measuring against its 88-column default while the code is written to
+# 120) sat unnoticed and took every real violation down with them. A gate that cannot fail is not a
+# gate; this one can.
+#
+# A failure here is NOT a dead end for an agent-authored PR: `docstring-lint-router.yml` labels the
+# PR `agent:docfix` and the pipeline's priority lane fixes it on-branch (RUNBOOK MODE=docfix), the
+# same shape as the Dependabot `agent:depfix` lane.
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Docstring & Lint Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Poetry and dependencies
+        uses: ./.github/actions/poetry_setup
+        with:
+          python-version: "3.12"
+          install-args: --with lint
+
+      - name: Run ruff (code rules + Google docstrings)
+        id: ruff
+        shell: bash
+        run: |
+          set -o pipefail
+          poetry run ruff check src/ tests/ --output-format=concise | tee /tmp/ruff.txt
+
+      - name: Explain a failure in the job summary
+        if: failure() && steps.ruff.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo "## Docstring & Lint Gate failed"
+            echo
+            echo "Top rules:"
+            echo '```'
+            poetry run ruff check src/ tests/ --statistics | head -20 || true
+            echo '```'
+            echo
+            echo "Fix the mechanical ones locally with:"
+            echo '```sh'
+            echo 'poetry run ruff check src/ tests/ --fix   # never --unsafe-fixes: it deletes'
+            echo '                                          # deliberate re-export imports'
+            echo '```'
+            echo
+            echo "The standard, and what each rule is protecting: \`docs/docstring-standard.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"

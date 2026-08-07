@@ -2,7 +2,7 @@ import functools
 import json
 import os
 import random
-from datetime import time, date
+from datetime import date, time
 from enum import Enum
 from urllib.parse import urlparse
 
@@ -42,7 +42,6 @@ def create_folder_if_not_exists(folder_path):
 
 def are_you_satisfied():
     """Prompts the user to select if they are satisfied or not."""
-
     enum = Satisfactory
 
     print("Are you satisfied?")
@@ -138,7 +137,8 @@ def clamp_to_waking_hours(post_time: time) -> time:
 
 def apply_schedule_jitter(post_time: time, rng: random.Random = None) -> time:
     """`post_time` moved 15-30 minutes earlier or later, kept inside the waking window. The target
-    hour still anchors the slot — this only stops every post in a plan sharing one exact minute."""
+    hour still anchors the slot — this only stops every post in a plan sharing one exact minute.
+    """
     picker = rng or random
     offset = picker.randint(SCHEDULE_JITTER_MIN_MINUTES, SCHEDULE_JITTER_MAX_MINUTES)
     if picker.random() < 0.5:
@@ -153,7 +153,8 @@ def get_post_time(selected_date: date, user_id: int = None):
     storage (docs/timezone-contract.md). Prefers the user's own data-driven best hour for that
     weekday (learned by recommend_post_times, Phase 3) and falls back to the 2026 default model
     until enough data exists. Keeps the default's minutes so times aren't all on the hour, and
-    never returns an hour outside the waking window (issue #621)."""
+    never returns an hour outside the waking window (issue #621).
+    """
     default = clamp_to_waking_hours(get_best_posting_time(selected_date))
     if user_id is None:
         return default
@@ -264,7 +265,8 @@ def purge_post_assets(post_id, video_url=None):
     inside assets_dir) and tolerant of already-missing files. Returns removed paths.
     """
     import shutil
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
     from cqc_lem import assets_dir
     from cqc_lem.utilities.logger import myprint
 

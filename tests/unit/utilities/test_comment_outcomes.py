@@ -1,13 +1,21 @@
 """Unit tests for the comment-outcome scoring core — issue #628. Pure arithmetic: reply/like rates,
-the three-valued 'Most relevant' demotion signal, and the verdict that gates feed commenting."""
+the three-valued 'Most relevant' demotion signal, and the verdict that gates feed commenting.
+"""
 
 import pytest
 
-from cqc_lem.utilities.comment_outcomes import (VERDICT_HOLD, VERDICT_OK, VERDICT_UNKNOWN,
-                                                VERDICT_WATCH, comment_quality_report,
-                                                demotion_hold_rate, hold_seconds,
-                                                min_visibility_sample, quality_verdict,
-                                                summarize_outcomes)
+from cqc_lem.utilities.comment_outcomes import (
+    VERDICT_HOLD,
+    VERDICT_OK,
+    VERDICT_UNKNOWN,
+    VERDICT_WATCH,
+    comment_quality_report,
+    demotion_hold_rate,
+    hold_seconds,
+    min_visibility_sample,
+    quality_verdict,
+    summarize_outcomes,
+)
 
 pytestmark = pytest.mark.unit
 

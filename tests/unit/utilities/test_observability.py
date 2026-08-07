@@ -1,8 +1,9 @@
 """Unit tests for cqc_lem.utilities.observability."""
 
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -546,13 +547,13 @@ class TestFeatureFromTaskName:
 
 class TestLlmAttributionScope:
     def test_scope_is_visible_to_current_attribution(self):
-        from cqc_lem.utilities.observability import llm_attribution, current_llm_attribution
+        from cqc_lem.utilities.observability import current_llm_attribution, llm_attribution
         with llm_attribution(user_id=3, feature="content"):
             assert current_llm_attribution() == (3, "content")
         assert current_llm_attribution() == (None, None)
 
     def test_nested_scope_inherits_and_overrides(self):
-        from cqc_lem.utilities.observability import llm_attribution, current_llm_attribution
+        from cqc_lem.utilities.observability import current_llm_attribution, llm_attribution
         with llm_attribution(user_id=3, feature="content"):
             with llm_attribution(feature="comment"):
                 # user_id inherited from the outer scope, feature narrowed by the inner one
@@ -566,7 +567,7 @@ class TestLlmAttributionScope:
             assert current_llm_attribution() == (11, "comment")
 
     def test_explicit_scope_beats_celery_fallback(self):
-        from cqc_lem.utilities.observability import llm_attribution, current_llm_attribution
+        from cqc_lem.utilities.observability import current_llm_attribution, llm_attribution
         with patch(f"{_MOD}._current_task_context",
                    return_value=("cqc_lem.app.run_automation.automate_commenting", 11)):
             with llm_attribution(user_id=4, feature="dm"):
@@ -607,7 +608,7 @@ class TestLlmAttributionScope:
 class TestLlmTrackedAttribution:
     def test_decorator_emits_ambient_attribution(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
-            from cqc_lem.utilities.observability import llm_tracked, llm_attribution
+            from cqc_lem.utilities.observability import llm_attribution, llm_tracked
 
             @llm_tracked("lem-medium")
             def call():
@@ -832,7 +833,8 @@ class TestTrackCapacityAlert:
 
 class TestTrackRateLimitTrip:
     """Issue #650: the 429 breaker's own event, so the Health dashboard and its spike alert have a
-    signal — the trip's WARNING log never reaches PostHog at the default POSTHOG_LOG_LEVEL."""
+    signal — the trip's WARNING log never reaches PostHog at the default POSTHOG_LOG_LEVEL.
+    """
 
     def test_captures_the_trip_system_scoped(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
@@ -904,7 +906,8 @@ class TestTrackCommentOutcome:
 
 class TestTrackGoldenHourReport:
     """Issue #622: one event per reply sweep and per second wave, so the #401 amplifier's silence
-    is a query instead of a log grep."""
+    is a query instead of a log grep.
+    """
 
     def test_emits_the_reading(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
@@ -1091,7 +1094,8 @@ class TestTrackCatchupRun:
 
     def test_the_unapproved_backlog_reaches_the_event(self):
         """The property dict is an explicit whitelist — a counter the send beat reports but this
-        never lists is dropped silently, which is how a lane looks quiet while a queue piles up."""
+        never lists is dropped silently, which is how a lane looks quiet while a queue piles up.
+        """
         with patch(f"{_MOD}.posthog") as mock_ph:
             from cqc_lem.utilities.observability import track_catchup_run
             track_catchup_run(None, {"phase": "send", "status": "awaiting_approval", "pending": 6})
@@ -1110,7 +1114,8 @@ class TestTrackCatchupRun:
 
 class TestTrackStaleInviteRun:
     """#969: the beat this replaced was a stub that LOOKED operational. A series that only carried
-    withdrawals would reproduce exactly that, so every run emits — `rows_seen` is the tell."""
+    withdrawals would reproduce exactly that, so every run emits — `rows_seen` is the tell.
+    """
 
     def test_a_run_that_withdrew_nothing_still_emits(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
@@ -1152,7 +1157,8 @@ class TestTrackStaleInviteRun:
 
 class TestTrackFeedScan:
     """#817: the sort the scan actually ran against has to reach the event, or a run that ranked
-    LinkedIn's algorithmic feed is indistinguishable from one that ranked a recency-sorted one."""
+    LinkedIn's algorithmic feed is indistinguishable from one that ranked a recency-sorted one.
+    """
 
     def test_the_sort_state_rides_on_the_event(self):
         with patch(f"{_MOD}.posthog") as mock_ph:

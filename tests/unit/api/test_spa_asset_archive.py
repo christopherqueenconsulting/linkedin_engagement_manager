@@ -209,7 +209,8 @@ class TestArchivedStaticFiles:
 
 class TestIndexHeaders:
     """The HTML shell is the one thing that must never be cached — an archived chunk is only
-    useful if the reload that fetches the new shell actually gets the new shell."""
+    useful if the reload that fetches the new shell actually gets the new shell.
+    """
 
     def test_index_is_never_cached(self):
         headers = spa_index_headers()

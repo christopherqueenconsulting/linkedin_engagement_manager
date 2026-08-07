@@ -50,13 +50,15 @@ WALL_CLOCKS = [
 
 def _spa_submits(wall_clock: dt.datetime, tz: str) -> dt.datetime:
     """What the SPA sends: the picked wall clock read in the user's tz, as an aware UTC instant.
-    Mirrors `zonedInputToUtcIso` in ui/src/utils/datetime.ts."""
+    Mirrors `zonedInputToUtcIso` in ui/src/utils/datetime.ts.
+    """
     return wall_clock.replace(tzinfo=ZoneInfo(tz)).astimezone(dt.timezone.utc)
 
 
 def _spa_displays(iso: str, tz: str) -> dt.datetime:
     """What the SPA renders: the served ISO string localized to the user's tz. Mirrors
-    `formatInTimezone` / `toZonedInputValue`, including their defensive naive-means-UTC parse."""
+    `formatInTimezone` / `toZonedInputValue`, including their defensive naive-means-UTC parse.
+    """
     parsed = dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
@@ -119,7 +121,8 @@ class TestRoundTrip:
     @pytest.mark.parametrize("wall_clock", WALL_CLOCKS)
     def test_executed_instant_matches_the_displayed_time(self, tz, wall_clock):
         """The scheduler re-attaches UTC to the naive column and uses that as the Celery eta
-        (run_scheduler.auto_check_scheduled_posts). That instant must be the one the user saw."""
+        (run_scheduler.auto_check_scheduled_posts). That instant must be the one the user saw.
+        """
         from cqc_lem.utilities.db import to_naive_utc
 
         intended = _spa_submits(wall_clock, tz)
@@ -133,7 +136,8 @@ class TestRoundTrip:
     def test_pre_post_engagement_window_tracks_the_same_instant(self, tz):
         """Feed commenting fires at eta - 15min and profile-viewer DMs at eta - 10min. Both are
         derived from the stored instant, so they must land 15/10 minutes before the DISPLAYED
-        time — the whole point of the golden-hour window."""
+        time — the whole point of the golden-hour window.
+        """
         from cqc_lem.utilities.db import to_naive_utc
 
         wall_clock = dt.datetime(2026, 7, 4, 16, 0)
@@ -147,7 +151,8 @@ class TestRoundTrip:
 
     def test_dst_transition_shifts_the_utc_instant_not_the_wall_clock(self):
         """4pm New York is 20:00 UTC in winter and 20:00-1h in summer. The user always sees 4pm;
-        the stored UTC is what moves. A fixed-offset conversion would get one of these wrong."""
+        the stored UTC is what moves. A fixed-offset conversion would get one of these wrong.
+        """
         from cqc_lem.utilities.db import to_naive_utc
 
         winter = to_naive_utc(_spa_submits(dt.datetime(2026, 1, 15, 16, 0), "America/New_York"))
@@ -160,7 +165,8 @@ class TestRoundTrip:
 class TestSchedulingWritesNormalizeToUtc:
     """mysql-connector formats a datetime from its wall-clock fields and DROPS tzinfo, so an aware
     non-UTC value reaches the column shifted by the sender's offset with no error raised. Every
-    scheduling write must therefore convert BEFORE it hands the value to the cursor."""
+    scheduling write must therefore convert BEFORE it hands the value to the cursor.
+    """
 
     # 14:00 in New York on July 4 2026 (EDT, UTC-4) is 18:00 UTC.
     AWARE = dt.datetime(2026, 7, 4, 14, 0, tzinfo=ZoneInfo("America/New_York"))
@@ -218,7 +224,8 @@ class TestSchedulingWritesNormalizeToUtc:
 
 class TestRecommendPostTimesTimezone:
     """recommend_post_times buckets stored UTC times; get_post_time hands the result straight back
-    to the scheduler as a LOCAL time. Bucketing in UTC would shift it by the offset a second time."""
+    to the scheduler as a LOCAL time. Bucketing in UTC would shift it by the offset a second time.
+    """
 
     def _row(self, scheduled, reactions=10):
         return (scheduled, reactions, 0, 0, None, None, None, None, None, None)
@@ -259,7 +266,8 @@ class TestRecommendPostTimesTimezone:
 
     def test_get_post_time_asks_for_the_users_zone(self):
         """The learned hour must come back as a LOCAL time, because plan_content_for_user converts
-        it local->UTC before storing."""
+        it local->UTC before storing.
+        """
         from cqc_lem.utilities.utils import get_post_time
         recs = [{"weekday_num": 5, "hour": 16, "sample": 3}]
         with patch("cqc_lem.utilities.db.get_post_engagement_rows", return_value=[object()]), \

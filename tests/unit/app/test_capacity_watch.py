@@ -1,7 +1,8 @@
 """Unit tests for the capacity-watch beat task and its Selenium instrumentation — issue #552."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

@@ -1,0 +1,63 @@
+name: Docstring Lint Auto-Fix Router
+
+# When the Docstring & Lint Gate fails on an agent-authored PR, route the fix to the Claude pipeline
+# (label `agent:docfix`) rather than parking the PR on a human. The local runner picks agent:docfix
+# PRs up in a priority lane, fixes them on-branch (RUNBOOK MODE=docfix) and clears the label.
+#
+# Same shape as `dependabot-ci-autofix.yml`, with one deliberate difference: this routes ANY upstream
+# PR, not only Dependabot's, because a lint failure is exactly the class of defect an agent should
+# never need a human for. Fork PRs are skipped — the runner only checks out upstream branches, and
+# `pr_is_upstream` in tick.sh refuses them anyway.
+
+on:
+  workflow_run:
+    workflows:
+      - "Docstring & Lint Gate"
+    types:
+      - completed
+
+jobs:
+  route-to-claude:
+    name: Route lint failure to the Claude pipeline
+    runs-on: ubuntu-latest
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Label the failing PR for Claude
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const pulls = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${run.head_repository.owner.login}:${run.head_branch}`,
+              state: 'open',
+            });
+            if (pulls.data.length === 0) return;
+            const pr = pulls.data[0];
+
+            // A fork branch is not checkout-able by the runner, and tick.sh refuses it regardless.
+            if (pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              console.log(`#${pr.number} is from a fork — leaving it to its author.`);
+              return;
+            }
+            // Never fight a human who has already taken the PR back.
+            const labels = pr.labels.map((l) => l.name);
+            if (labels.includes('needs-human') || labels.includes('agent:blocked')) {
+              console.log(`#${pr.number} is parked for a human — not routing.`);
+              return;
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['agent:docfix'],
+            });
+            console.log(`Labeled #${pr.number} agent:docfix — Claude pipeline will fix the lint.`);

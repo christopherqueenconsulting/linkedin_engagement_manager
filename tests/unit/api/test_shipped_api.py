@@ -1,9 +1,9 @@
 """Unit tests for the shipped-notice endpoints (issue #502)."""
 
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -29,6 +29,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -80,7 +81,8 @@ class TestAckEndpoint:
 
     def test_a_notice_still_inside_the_csat_delay_is_not_ackable(self, client):
         """The delay gate is applied on ack too: acking early would consume the notice (and its
-        micro-CSAT) before the user was ever shown it."""
+        micro-CSAT) before the user was ever shown it.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=42), \
              patch(f"{_DB}.get_unseen_shipped_notices", return_value=[]) as unseen, \
              patch(f"{_DB}.mark_shipped_notice_seen") as seen, \

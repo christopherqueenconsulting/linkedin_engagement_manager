@@ -180,7 +180,8 @@ class TestFleet:
 
 class TestMeasurementKeepsRunning:
     """The trip must not blind the tripwire. Stat capture is read-only and is the ONLY source of the
-    readings the next day's check re-evaluates, so it survives OUR pause — and nothing else's."""
+    readings the next day's check re-evaluates, so it survives OUR pause — and nothing else's.
+    """
 
     def _dispatch(self, task_name, pause_reason):
         from cqc_lem.app import run_scheduler as rs

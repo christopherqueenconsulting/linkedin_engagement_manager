@@ -1,6 +1,7 @@
 """Coverage tests for previously untested api/main.py endpoints: automation triggers,
 token status, LinkedIn OAuth, user settings/groups/lead-magnet, avatar/video credits,
-admin tools, and Stripe credit webhooks."""
+admin tools, and Stripe credit webhooks.
+"""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -25,6 +26,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -37,7 +39,9 @@ _TOK = "session-token"
 _UID = 7
 
 from tests.unit.api.conftest import (  # noqa: E402
-    SESSION_EMAIL, SESSION_TOKEN, SESSION_USER_ID,
+    SESSION_EMAIL,
+    SESSION_TOKEN,
+    SESSION_USER_ID,
 )
 
 
@@ -189,7 +193,7 @@ class TestAuthLogoutAndTokenStatus:
 
     def test_token_status_401(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get(f"/api/user/token_status?session_token=bad")
+            resp = client.get("/api/user/token_status?session_token=bad")
         assert resp.status_code == 401
 
     @staticmethod
@@ -508,7 +512,8 @@ class TestEngagementAnalytics:
 
     def test_coverage_reconciles_measured_posts_with_the_account_total(self, client):
         """Issue #809: the panel measures only posts with captured stats, so it must SAY which
-        subset it is looking at — otherwise 'x of 11' next to a 30-post account reads as broken."""
+        subset it is looking at — otherwise 'x of 11' next to a 30-post account reads as broken.
+        """
         from datetime import datetime
         rows = [{"post_id": 9, "scheduled_time": datetime(2026, 7, 20, 14, 0), "reactions": 1,
                  "comments": 0, "reposts": 0, "saves": 0, "impressions": 100, "archetype": None,
@@ -529,7 +534,8 @@ class TestEngagementAnalytics:
 
     def test_coverage_never_reports_a_negative_backlog(self, client):
         """A stat row whose post fell outside the window would otherwise make awaiting_capture go
-        negative — 'waiting on -2 captures' is worse than saying nothing."""
+        negative — 'waiting on -2 captures' is worse than saying nothing.
+        """
         rows = [{"post_id": i, "scheduled_time": None, "reactions": 0, "comments": 0, "reposts": 0,
                  "saves": 0, "impressions": None, "archetype": None, "hook_style": None,
                  "format": None, "topic": None, "buyer_stage": None} for i in range(3)]
@@ -559,7 +565,7 @@ class TestEngagementAnalytics:
 
     def test_401_without_session(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get(f"/api/user/engagement-analytics?session_token=bad")
+            resp = client.get("/api/user/engagement-analytics?session_token=bad")
         assert resp.status_code == 401
 
     def test_comment_quality_block_reports_outcomes_and_hold(self, client):
@@ -661,7 +667,7 @@ class TestPostHogStatsEndpoint:
 
     def test_401_without_session(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get(f"/api/user/posthog-stats?session_token=bad")
+            resp = client.get("/api/user/posthog-stats?session_token=bad")
         assert resp.status_code == 401
 
 

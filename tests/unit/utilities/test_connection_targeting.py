@@ -4,12 +4,19 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from cqc_lem.utilities.connection_targeting import (CONNECT_NOTE_LIMIT, SOURCE_ADJACENT_POST,
-                                                    SOURCE_OWN_POST, CandidateSignal,
-                                                    default_connect_note, first_name,
-                                                    group_signals, rank_candidates,
-                                                    score_candidate, target_terms_from_prefs,
-                                                    warmth_strength)
+from cqc_lem.utilities.connection_targeting import (
+    CONNECT_NOTE_LIMIT,
+    SOURCE_ADJACENT_POST,
+    SOURCE_OWN_POST,
+    CandidateSignal,
+    default_connect_note,
+    first_name,
+    group_signals,
+    rank_candidates,
+    score_candidate,
+    target_terms_from_prefs,
+    warmth_strength,
+)
 
 pytestmark = pytest.mark.unit
 

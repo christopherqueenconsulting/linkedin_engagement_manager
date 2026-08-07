@@ -5,8 +5,9 @@ actually pass a jittered countdown, that the lanes spend the paced budget rather
 and that the governor's accounting is fed by the code paths that really post.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -37,7 +38,8 @@ class TestBeatDispatchJitter:
     def test_the_jitter_never_rides_the_queueonce_commenting_task_itself(self, pacing_on):
         """celery-once locks on apply_async and (unlock_before_run) only releases when the task
         RUNS. A 30–90 min countdown on automate_commenting would hold that user's key for the whole
-        delay and silently swallow the pre-post warm-up dispatch, which shares it."""
+        delay and silently swallow the pre-post warm-up dispatch, which shares it.
+        """
         from cqc_lem.app.run_scheduler import auto_daily_engagement, dispatch_golden_hour_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
@@ -65,7 +67,8 @@ class TestBeatDispatchJitter:
 
     def test_own_post_reply_sweeps_stay_fast(self, pacing_on):
         """G7 exemption: replying to comments on YOUR OWN post is human, so the sweep keeps the
-        RESPONSIVE profile — jittered by seconds, never delayed by an hour."""
+        RESPONSIVE profile — jittered by seconds, never delayed by an hour.
+        """
         from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
         with patch(f"{_RS}.get_users_with_reply_mode", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
@@ -89,8 +92,11 @@ class TestBeatDispatchJitter:
 
 class TestGoldenHourSweepJitter:
     def test_sweeps_are_jittered_but_never_reordered(self, pacing_on):
-        from cqc_lem.app.run_automation import (_golden_hour_sweep_countdowns, _GOLDEN_HOUR_MINUTES,
-                                                _GOLDEN_HOUR_MAX_SWEEPS)
+        from cqc_lem.app.run_automation import (
+            _GOLDEN_HOUR_MAX_SWEEPS,
+            _GOLDEN_HOUR_MINUTES,
+            _golden_hour_sweep_countdowns,
+        )
         for n in (1, 3, 6, _GOLDEN_HOUR_MAX_SWEEPS):
             cds = _golden_hour_sweep_countdowns(n)
             step = _GOLDEN_HOUR_MINUTES * 60 / n
@@ -115,7 +121,8 @@ class TestGoldenHourSweepJitter:
 class TestPacedBudgetsAtTheLanes:
     def test_feed_commenting_stops_when_the_paced_budget_is_spent(self):
         """The cap says 20 and nothing has been spent, but today's DRAW is 0 (rest day) — the run
-        must stop, which the raw-cap check could never do."""
+        must stop, which the raw-cap check could never do.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.count_comments_today", return_value=0), \
              patch(f"{_RA}.remaining_actions", return_value=0) as remaining, \
@@ -173,7 +180,8 @@ class TestPacedBudgetsAtTheLanes:
     def test_invite_jitter_can_never_outlast_the_orphan_recovery_gap(self, pacing_on, monkeypatch):
         """A request is marked 'sending' at dispatch and re-queued once it has sat there for
         _CONNECTION_ORPHAN_LOOKBACK_HOURS. A jitter longer than that gap would have the reaper send
-        a second invite to the same person while the first is still pending."""
+        a second invite to the same person while the first is still pending.
+        """
         from cqc_lem.app import run_scheduler as rs
         monkeypatch.setenv("PACING_JITTER_MIN_MINUTES", "600")
         monkeypatch.setenv("PACING_JITTER_MAX_MINUTES", "900")

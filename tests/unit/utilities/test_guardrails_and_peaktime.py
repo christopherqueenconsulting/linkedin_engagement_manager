@@ -1,8 +1,9 @@
 """Unit tests for P6 — engagement-bait guardrail + peak-time model + data-driven override."""
 
 import datetime as dt
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +37,7 @@ class TestPeakTimeModel:
 
 class TestGetPostTime:
     def test_falls_back_to_default_without_user(self):
-        from cqc_lem.utilities.utils import get_post_time, get_best_posting_time
+        from cqc_lem.utilities.utils import get_best_posting_time, get_post_time
         d = dt.date(2026, 7, 8)  # Wednesday
         assert get_post_time(d) == get_best_posting_time(d)
 
@@ -54,12 +55,12 @@ class TestWakingHourBounds:
     """Sane posting hours (issue #621 / G6) — no 03:00 or 05:00 local slots."""
 
     def test_default_model_is_already_inside_the_window(self):
-        from cqc_lem.utilities.utils import get_best_posting_times, POST_HOUR_MIN, POST_HOUR_MAX
+        from cqc_lem.utilities.utils import POST_HOUR_MAX, POST_HOUR_MIN, get_best_posting_times
         assert all(POST_HOUR_MIN <= t.hour <= POST_HOUR_MAX
                    for t in get_best_posting_times().values())
 
     def test_clamp_pulls_overnight_hours_into_the_window(self):
-        from cqc_lem.utilities.utils import clamp_to_waking_hours, POST_HOUR_MIN, POST_HOUR_MAX
+        from cqc_lem.utilities.utils import POST_HOUR_MAX, POST_HOUR_MIN, clamp_to_waking_hours
         assert clamp_to_waking_hours(dt.time(3, 30)) == dt.time(POST_HOUR_MIN, 30)
         assert clamp_to_waking_hours(dt.time(5, 0)) == dt.time(POST_HOUR_MIN, 0)
         assert clamp_to_waking_hours(dt.time(23, 15)) == dt.time(POST_HOUR_MAX, 15)
@@ -82,8 +83,11 @@ class TestWakingHourBounds:
 
 class TestScheduleJitter:
     def test_offset_is_always_15_to_30_minutes(self):
-        from cqc_lem.utilities.utils import (apply_schedule_jitter, SCHEDULE_JITTER_MIN_MINUTES,
-                                             SCHEDULE_JITTER_MAX_MINUTES)
+        from cqc_lem.utilities.utils import (
+            SCHEDULE_JITTER_MAX_MINUTES,
+            SCHEDULE_JITTER_MIN_MINUTES,
+            apply_schedule_jitter,
+        )
         base = dt.time(16, 0)
         base_minutes = base.hour * 60 + base.minute
         offsets = set()
@@ -97,7 +101,7 @@ class TestScheduleJitter:
         assert len(offsets) > 4
 
     def test_jitter_never_leaves_the_waking_window(self):
-        from cqc_lem.utilities.utils import apply_schedule_jitter, POST_HOUR_MIN, POST_HOUR_MAX
+        from cqc_lem.utilities.utils import POST_HOUR_MAX, POST_HOUR_MIN, apply_schedule_jitter
         for base in (dt.time(POST_HOUR_MIN, 0), dt.time(POST_HOUR_MAX, 59), dt.time(12, 30)):
             for _ in range(100):
                 jittered = apply_schedule_jitter(base)
@@ -105,6 +109,7 @@ class TestScheduleJitter:
 
     def test_accepts_an_injected_rng_for_determinism(self):
         import random
+
         from cqc_lem.utilities.utils import apply_schedule_jitter
         first = apply_schedule_jitter(dt.time(16, 0), rng=random.Random(7))
         second = apply_schedule_jitter(dt.time(16, 0), rng=random.Random(7))

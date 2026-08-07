@@ -1,5 +1,6 @@
 """Unit tests for utilities/posthog_endpoints.py — the runtime client behind the in-SPA "your
-stats" panel (issue #654)."""
+stats" panel (issue #654).
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -80,8 +81,8 @@ class TestGetUserStatsPanel:
                 {"feature": "comment", "spend_usd": 0.25, "calls": 4}]
 
     def test_a_partial_outage_still_reports_the_endpoints_that_answered(self, monkeypatch):
-        from cqc_lem.utilities.posthog_endpoints import ENDPOINT_LLM_COST_BY_FEATURE
         import cqc_lem.utilities.posthog_endpoints as mod
+        from cqc_lem.utilities.posthog_endpoints import ENDPOINT_LLM_COST_BY_FEATURE
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
 
         def fake_run(name, user_id):

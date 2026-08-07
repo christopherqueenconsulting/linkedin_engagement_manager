@@ -13,8 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities.db import (ALREADY_CONNECTED_MESSAGE, INVITE_NOT_SENT_MESSAGE,
-                                  NO_CONNECT_BUTTON_MESSAGE)
+from cqc_lem.utilities.db import ALREADY_CONNECTED_MESSAGE, INVITE_NOT_SENT_MESSAGE, NO_CONNECT_BUTTON_MESSAGE
 
 pytestmark = pytest.mark.unit
 

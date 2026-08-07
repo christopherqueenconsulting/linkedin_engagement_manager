@@ -8,9 +8,9 @@ env var wins when it doesn't, and the value is resolved at CALL time.
 
 from contextlib import contextmanager
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities import flags
 
@@ -54,7 +54,8 @@ class TestCommentResearch:
 
     def test_master_switch_still_wins_over_the_flag(self, monkeypatch):
         """CONTENT_RESEARCH_ENABLED is the kill switch for ALL research and was deliberately not
-        migrated — a flag must never be able to turn research back on against it."""
+        migrated — a flag must never be able to turn research back on against it.
+        """
         from cqc_lem.utilities.ai import content_research as cr
         monkeypatch.setenv("CONTENT_RESEARCH_ENABLED", "false")
         with _posthog_says(True):
@@ -83,7 +84,8 @@ class TestTutorialVideos:
 
     def test_flag_is_read_per_call_not_at_import(self, monkeypatch):
         """The toggle used to be a module constant. If it still were, the second call below would
-        return the first call's answer."""
+        return the first call's answer.
+        """
         from cqc_lem.utilities.marketing import video_tutorials as vt
         monkeypatch.setenv("TUTORIAL_VIDEOS_ENABLED", "false")
         with _posthog_says(False):
@@ -106,7 +108,8 @@ class TestCostRouting:
 
     def test_report_resolves_the_flag_at_call_time(self, monkeypatch):
         """`enabled=None` (the default) must consult the flag NOW — the old default argument froze
-        COST_ROUTING_ENABLED at import, so a flip needed a deploy."""
+        COST_ROUTING_ENABLED at import, so a flip needed a deploy.
+        """
         from cqc_lem.utilities import cost_routing as cr
         monkeypatch.delenv("COST_ROUTING_ENABLED", raising=False)
         with patch.object(cr, "collect_quality_observations", return_value=[]) as observe, \

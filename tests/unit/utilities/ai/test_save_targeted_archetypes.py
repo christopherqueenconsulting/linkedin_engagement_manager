@@ -1,12 +1,12 @@
 """Unit tests for the save-optimized post archetypes (issue #619 / G4): the build receipt and the
 bookmarkable compendium, their number-led hook constraints, and the no-fabrication guard that keeps
-a draft from inventing the specifics those archetypes are made of."""
+a draft from inventing the specifics those archetypes are made of.
+"""
 
 import pytest
 
 from cqc_lem.utilities.ai import content_framework as fw
-from cqc_lem.utilities.quality_gates import (GATE_FACT_GROUNDING, demoting_findings,
-                                             fact_grounding_finding)
+from cqc_lem.utilities.quality_gates import GATE_FACT_GROUNDING, demoting_findings, fact_grounding_finding
 
 pytestmark = pytest.mark.unit
 

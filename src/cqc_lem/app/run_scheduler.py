@@ -1,52 +1,106 @@
 import os
 import shutil
-from datetime import timedelta, datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
 from cqc_lem import assets_dir
 from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
-from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
-    automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
-    automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
-    sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch, \
-    report_catchup_run, CATCHUP_PHASE_SCAN, CATCHUP_PHASE_SEND, CATCHUP_STATUS_THROTTLED, \
-    CATCHUP_STATUS_DISABLED, CATCHUP_STATUS_DISPATCHED, CATCHUP_STATUS_CAPPED, \
-    CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_INACTIVE, CATCHUP_STATUS_AWAITING_APPROVAL
+from cqc_lem.app.run_automation import (
+    CATCHUP_PHASE_SCAN,
+    CATCHUP_PHASE_SEND,
+    CATCHUP_STATUS_AWAITING_APPROVAL,
+    CATCHUP_STATUS_CAPPED,
+    CATCHUP_STATUS_DISABLED,
+    CATCHUP_STATUS_DISPATCHED,
+    CATCHUP_STATUS_INACTIVE,
+    CATCHUP_STATUS_NOTHING_TO_SEND,
+    CATCHUP_STATUS_THROTTLED,
+    automate_appreciation_dms_for_user,
+    automate_commenting,
+    automate_invites_to_company_page_for_user,
+    automate_profile_viewer_engagement,
+    clean_stale_invites,
+    post_to_linkedin,
+    report_catchup_run,
+    send_catchup_touch,
+    send_connection_request,
+    send_scheduled_dm,
+    sweep_comment_followups,
+    sweep_comment_outcomes,
+    sweep_reply_comments,
+    update_stale_profile,
+)
 from cqc_lem.utilities.db import (
-    get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
-    get_active_user_ids, PostStatus, has_linkedin_session, get_company_linked_in_url_for_user,
-    get_users_with_stripe_subscriptions, update_subscription_from_stripe,
-    get_due_scheduled_dms, get_orphaned_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
-    get_approved_connection_requests, get_orphaned_connection_requests,
-    update_connection_request_status, ConnectionRequestStatus, count_invites_sent_today,
-    get_users_with_reply_mode, get_engagement_preferences,
-    get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
-    count_catchup_touches_sent_today, count_pending_catchup_touches, CatchupTouchStatus,
-    max_catchup_touches_allowed,
+    CatchupTouchStatus,
+    ConnectionRequestStatus,
+    PostStatus,
+    ScheduledDmStatus,
+    count_catchup_touches_sent_today,
+    count_invites_sent_today,
+    count_pending_catchup_touches,
+    get_active_user_ids,
+    get_approved_catchup_touches,
+    get_approved_connection_requests,
+    get_company_linked_in_url_for_user,
+    get_due_scheduled_dms,
+    get_engagement_preferences,
+    get_orphaned_catchup_touches,
+    get_orphaned_connection_requests,
+    get_orphaned_scheduled_dms,
+    get_orphaned_scheduled_posts,
+    get_ready_to_post_posts,
     get_user_timezone,
+    get_users_with_reply_mode,
+    get_users_with_stripe_subscriptions,
+    has_linkedin_session,
+    max_catchup_touches_allowed,
+    update_catchup_touch_status,
+    update_connection_request_status,
+    update_db_post_status,
+    update_scheduled_dm_status,
+    update_subscription_from_stripe,
 )
 from cqc_lem.utilities.engagement_window import (
-    plan_pre_post_window, record_pre_post_scheduled, record_pre_post_skipped,
-    PRE_POST_COMMENT_LEAD_MINUTES, PRE_POST_VIEWER_LEAD_MINUTES,
-    PRE_POST_SKIP_PAST_WINDOW, PRE_POST_SKIP_THROTTLED, PRE_POST_SKIP_USER_INACTIVE,
+    PRE_POST_COMMENT_LEAD_MINUTES,
+    PRE_POST_SKIP_PAST_WINDOW,
+    PRE_POST_SKIP_THROTTLED,
+    PRE_POST_SKIP_USER_INACTIVE,
     PRE_POST_TASK_VIEWER,
-    claim_daily_slot, plan_daily_slot, stagger_config,
-    STAGGER_APPRECIATION_DM, STAGGER_COMPANY_INVITE, STAGGER_GOLDEN_HOUR, STAGGER_GROUP_ENGAGEMENT,
+    PRE_POST_VIEWER_LEAD_MINUTES,
+    STAGGER_APPRECIATION_DM,
+    STAGGER_COMPANY_INVITE,
+    STAGGER_GOLDEN_HOUR,
+    STAGGER_GROUP_ENGAGEMENT,
+    claim_daily_slot,
+    plan_daily_slot,
+    plan_pre_post_window,
+    record_pre_post_scheduled,
+    record_pre_post_skipped,
+    stagger_config,
 )
-from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
-    COST_ROUTING_WINDOW_DAYS
+from cqc_lem.utilities.env_constants import (
+    COST_ROUTING_WINDOW_DAYS,
+    CQC_LEM_POST_TIME_DELTA_MINUTES,
+    SELENIUM_KEEP_VIDEOS_X_DAYS,
+)
 from cqc_lem.utilities.human_pacing import (
-    dispatch_jitter_seconds, engagement_caps_from_prefs, remaining_actions,
-    ACTION_INVITE, PACE_RESPONSIVE,
+    ACTION_INVITE,
+    PACE_RESPONSIVE,
+    dispatch_jitter_seconds,
+    engagement_caps_from_prefs,
+    remaining_actions,
 )
-from cqc_lem.utilities.logger import log_info, log_debug, log_warning
-from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
-    rate_limit_cooldown_remaining, is_measurement_paused
+from cqc_lem.utilities.linkedin.rate_limit import (
+    automation_pause_remaining,
+    is_automation_paused,
+    is_measurement_paused,
+    rate_limit_cooldown_remaining,
+)
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.notifications import notify_linkedin_session
-from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT, \
-    FEATURE_NEWSLETTER
+from cqc_lem.utilities.observability import FEATURE_CONTENT, FEATURE_NEWSLETTER, attribute_llm_cost, llm_attribution
 
 
 def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
@@ -59,7 +113,8 @@ def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> 
 
     `measurement_only` lanes (read-only stat capture) skip for every pause EXCEPT the suppression
     tripwire's own, which must keep measuring or the collapse it detected can never be seen to
-    recover (issue #629)."""
+    recover (issue #629).
+    """
     if is_measurement_paused() if measurement_only else is_automation_paused():
         log_info(f"{name} skipped — automation paused (~{automation_pause_remaining()}s left)", **context)
         return True
@@ -78,7 +133,8 @@ def _stagger_due(user_id: int, fanout: Tuple[str, int, int], task_name: str) -> 
     Redis holds the claim, keyed by the slot's local date, which also buys a catch-up: a slot
     missed because the beat (or the 429 breaker) was down fires at the next tick instead of being
     lost for the day, and a claim written that late still can't reach tomorrow's slot. With no
-    Redis the strict one-tick window keeps it to a single dispatch."""
+    Redis the strict one-tick window keeps it to a single dispatch.
+    """
     config = stagger_config(fanout)
     tz_name = get_user_timezone(user_id) if config.local else "UTC"
     slot = plan_daily_slot(user_id, config, tz_name)
@@ -95,7 +151,6 @@ def _stagger_due(user_id: int, fanout: Tuple[str, int, int], task_name: str) -> 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
 def auto_check_scheduled_posts(self):
     """Checks if there are any posts to publish."""
-
     # Get post that should have run between yesterday and in the next 20 minutes
     posts = get_ready_to_post_posts(post_time_delta_minutes=CQC_LEM_POST_TIME_DELTA_MINUTES)
     # Fetch active users only when there are posts (avoids a DB round-trip when idle).
@@ -107,7 +162,7 @@ def auto_check_scheduled_posts(self):
         if scheduled_time.tzinfo is None:
             scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
 
-        log_info(f"Post ready to schedule", post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts")
+        log_info("Post ready to schedule", post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts")
 
         # Update the DB with post status = scheduled so it won't get processed again
         update_db_post_status(post_id, PostStatus.SCHEDULED)
@@ -179,13 +234,13 @@ def auto_check_scheduled_posts(self):
         if scheduled_time.tzinfo is None:
             scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
         log_warning(
-            f"Re-queueing orphaned scheduled post",
+            "Re-queueing orphaned scheduled post",
             post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts",
         )
         post_to_linkedin.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
 
     if len(posts) == 0 and len(orphaned) == 0:
-        return f"No Post to Schedule"
+        return "No Post to Schedule"
     else:
         return f"Started Process for {len(posts)} post(s); re-queued {len(orphaned)} orphaned post(s)"
 
@@ -194,7 +249,8 @@ def auto_check_scheduled_posts(self):
 def auto_check_scheduled_dms(self):
     """Scan for approved scheduled DMs that are due and dispatch the send task at their eta
     (issue #306, mirrors auto_check_scheduled_posts). Only dispatches for active/connected users;
-    the per-day DM cap is enforced at send time in send_scheduled_dm."""
+    the per-day DM cap is enforced at send time in send_scheduled_dm.
+    """
     dms = get_due_scheduled_dms(post_time_delta_minutes=CQC_LEM_POST_TIME_DELTA_MINUTES)
     active_user_ids = set(get_active_user_ids()) if dms else set()
 
@@ -243,7 +299,8 @@ def auto_check_connection_requests(self):
     per-user daily invite cap AT DISPATCH (issue #398). Approval is required upstream (rows only reach
     'approved' via the API), and the whole scan short-circuits while the automation kill-switch / 429
     breaker is open, so a throttled account is never probed. The send task re-checks the cap and the
-    throttle, deferring back to 'approved' if either trips between scan and send."""
+    throttle, deferring back to 'approved' if either trips between scan and send.
+    """
     if _skip_if_throttled("auto_check_connection_requests"):
         return "Automation throttled"
 
@@ -323,7 +380,7 @@ def auto_appreciate_dms():
                                                        })
         dispatched += 1
     if len(users) == 0:
-        return f"No Active Users"
+        return "No Active Users"
     else:
         return f"Started Appreciate DM Process for {dispatched}/{len(users)} user(s)"
 
@@ -339,7 +396,8 @@ def auto_daily_engagement():
     the whole fleet out at one crontab pushed later users hours past the window they were meant
     for. Volume stays safe because this run and the pre-post runs share the per-day comment cap
     (enforced in comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping
-    double-runs for the same user."""
+    double-runs for the same user.
+    """
     if _skip_if_throttled("auto_daily_engagement"):
         return "Automation throttled"
     users = get_active_user_ids()
@@ -372,7 +430,8 @@ def dispatch_golden_hour_engagement(user_id: int, loop_for_duration: int = 60 * 
     on it would therefore hold the user's lock for the whole delay, and every pre-post warm-up
     dispatch for that user in the meantime (same key, `graceful: True`) would be swallowed with no
     error and no log — losing exactly the run that matters most. Carrying the countdown here keeps
-    the jitter while the lock is taken only at the moment the run is really queued."""
+    the jitter while the lock is taken only at the moment the run is really queued.
+    """
     automate_commenting.apply_async(kwargs={'user_id': user_id,
                                             'loop_for_duration': loop_for_duration})
     return f"Golden-hour engagement queued for user {user_id}"
@@ -384,7 +443,8 @@ def dispatch_scheduled_reply_sweeps():
     configured cadence (reply_sweeps_per_day, 2–12). A per-user Redis key with TTL = the cadence
     interval gates it: while the key exists we're within the interval and skip, so running this beat
     every ~30 min naturally yields ~reply_sweeps_per_day sweeps. Fails open on Redis outage (dispatch
-    anyway) — sweep_reply_comments itself is QueueOnce + 429-safe, so an extra run is harmless."""
+    anyway) — sweep_reply_comments itself is QueueOnce + 429-safe, so an extra run is harmless.
+    """
     if _skip_if_throttled("dispatch_scheduled_reply_sweeps"):
         return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
@@ -423,7 +483,8 @@ def dispatch_comment_followups():
     """Beat: revisit posts each user automated a comment on recently and follow up on replies to our
     comment — react, and answer question-replies (issue #478). One sweep per active user with a
     LinkedIn session, per-user interval-gated to ~twice a day; sweep_comment_followups is QueueOnce +
-    429-safe so an extra dispatch is harmless."""
+    429-safe so an extra dispatch is harmless.
+    """
     if _skip_if_throttled("dispatch_comment_followups"):
         return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
@@ -454,7 +515,8 @@ def dispatch_comment_outcome_sweeps():
     """Beat: read back what each user's ~24h-old comments actually earned — author replies, likes,
     and whether they survived in LinkedIn's default 'Most relevant' view (issue #628). One sweep per
     active user with a LinkedIn session, per-user interval-gated to once a day; the work list is
-    already at-most-once per comment, so an extra dispatch just finds nothing to do."""
+    already at-most-once per comment, so an extra dispatch just finds nothing to do.
+    """
     if _skip_if_throttled("dispatch_comment_outcome_sweeps"):
         return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
@@ -486,7 +548,8 @@ def auto_weekly_comment_quality(self, days: int = 7):
     'Most relevant' demotion rate over the last `days` of outcome readings → PostHog, and the G2
     feedback loop — a demotion rate over threshold on a real sample HOLDS that user's feed
     commenting and escalates, because continuing to spend the day's cap on comments nobody can see
-    is the expensive failure this feature exists to catch."""
+    is the expensive failure this feature exists to catch.
+    """
     from cqc_lem.utilities.comment_outcomes import VERDICT_HOLD, comment_quality_report, hold_seconds
     from cqc_lem.utilities.db import get_comment_outcomes
     from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
@@ -527,18 +590,30 @@ def auto_suppression_tripwire(self):
     gated, and the read-only capture lanes opt out of THIS pause (`is_measurement_paused`) so the
     trend keeps updating — otherwise the readings would freeze at the collapsed values and recovery
     could never be seen. The pause deliberately never self-resumes: while the trip stands this task
-    re-arms it, so only a human clearing it in the UI restarts commenting/DMs."""
+    re-arms it, so only a human clearing it in the UI restarts commenting/DMs.
+    """
     from cqc_lem.utilities.comment_outcomes import comment_quality_report
     from cqc_lem.utilities.db import get_comment_outcomes, get_post_performance_rows
     from cqc_lem.utilities.linkedin.rate_limit import (
-        automation_pause_reason, is_suppression_pause, is_automation_paused, pause_automation,
-        record_suppression_trip, suppression_pause_reason, suppression_trip_state)
+        automation_pause_reason,
+        is_automation_paused,
+        is_suppression_pause,
+        pause_automation,
+        record_suppression_trip,
+        suppression_pause_reason,
+        suppression_trip_state,
+    )
     from cqc_lem.utilities.logger import log_critical
     from cqc_lem.utilities.notifications import notify_suppression_tripwire
     from cqc_lem.utilities.observability import track_suppression_check
     from cqc_lem.utilities.post_stats import build_engagement_trend
-    from cqc_lem.utilities.suppression import (comment_history_days, evaluate_suppression,
-                                               history_days, pause_seconds, tripwire_enabled)
+    from cqc_lem.utilities.suppression import (
+        comment_history_days,
+        evaluate_suppression,
+        history_days,
+        pause_seconds,
+        tripwire_enabled,
+    )
 
     if not tripwire_enabled():
         return "Suppression tripwire disabled"
@@ -596,14 +671,28 @@ def auto_nightly_content_quality(self, days: int = None):
     `auto_weekly_content_quality` is what turns the trend into an alert.
 
     Read-only over content that already shipped: it never edits, holds or re-generates anything, and a
-    dimension it cannot measure is recorded as unmeasured rather than as a zero."""
+    dimension it cannot measure is recorded as unmeasured rather than as a zero.
+    """
     from cqc_lem.utilities.ai.content_framework import COMMENT_HISTORY_LIMIT
     from cqc_lem.utilities.content_quality import (
-        SURFACE_COMMENT, SURFACE_POST, content_quality_enabled, detector_daily_max, detector_sampled,
-        detector_score, max_items_per_run, score_item, similarity_reports, window_days)
+        SURFACE_COMMENT,
+        SURFACE_POST,
+        content_quality_enabled,
+        detector_daily_max,
+        detector_sampled,
+        detector_score,
+        max_items_per_run,
+        score_item,
+        similarity_reports,
+        window_days,
+    )
     from cqc_lem.utilities.db import (
-        get_lead_magnet_settings, get_recent_comment_texts, get_recent_post_texts,
-        get_shipped_content_for_quality, record_content_quality_score)
+        get_lead_magnet_settings,
+        get_recent_comment_texts,
+        get_recent_post_texts,
+        get_shipped_content_for_quality,
+        record_content_quality_score,
+    )
     from cqc_lem.utilities.observability import track_content_quality
     from cqc_lem.utilities.post_stats import engagement_rate
 
@@ -682,9 +771,9 @@ def auto_weekly_content_quality(self, days: int = None):
     Alerts ride the EXISTING pipeline: `log_error` forwards to PostHog at the default
     POSTHOG_LOG_LEVEL, so a regression becomes a grouped `$exception` issue without a second alerting
     path. Nothing is paused or held — quality drift is a "go look at the prompts" signal, not an
-    account-safety one (that is #629's job)."""
-    from cqc_lem.utilities.content_quality import (content_quality_enabled, quality_rollup,
-                                                   rollup_days)
+    account-safety one (that is #629's job).
+    """
+    from cqc_lem.utilities.content_quality import content_quality_enabled, quality_rollup, rollup_days
     from cqc_lem.utilities.db import get_content_quality_scores
     from cqc_lem.utilities.logger import log_error
     from cqc_lem.utilities.observability import track_content_quality_rollup
@@ -726,21 +815,31 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
 
     `allow_bootstrap` gates the first-ever draft (empty queue): the daily beat passes True so the very
     first draft still waits for the generate_lead_days window; an explicit user action (e.g. raising
-    the count) passes False to fill the queue ahead immediately."""
+    the count) passes False to fill the queue ahead immediately.
+    """
     import pytz
-    from cqc_lem.utilities.db import (get_newsletter_settings, get_user_timezone,
-                                      count_pending_newsletter_editions,
-                                      get_latest_edition_scheduled_for, create_newsletter_edition,
-                                      get_pending_newsletter_editions, get_recent_newsletter_subjects,
-                                      get_recent_newsletter_blueprint_history,
-                                      get_engagement_preferences)
-    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
-    from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition, plan_newsletter_topics,
-                                                get_or_create_profile_synthesis)
+
+    from cqc_lem.utilities.ai.ai_helper import (
+        generate_newsletter_edition,
+        get_or_create_profile_synthesis,
+        plan_newsletter_topics,
+    )
     from cqc_lem.utilities.ai.content_framework import compact_blueprint
     from cqc_lem.utilities.ai.content_research import research_topic
     from cqc_lem.utilities.blog_source import resolve_blog_source
-    from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
+    from cqc_lem.utilities.db import (
+        count_pending_newsletter_editions,
+        create_newsletter_edition,
+        get_engagement_preferences,
+        get_latest_edition_scheduled_for,
+        get_newsletter_settings,
+        get_pending_newsletter_editions,
+        get_recent_newsletter_blueprint_history,
+        get_recent_newsletter_subjects,
+        get_user_timezone,
+    )
+    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+    from cqc_lem.utilities.newsletter import should_generate_now, upcoming_publish_slots
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
     settings = get_newsletter_settings(user_id)
@@ -850,7 +949,8 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
 def auto_generate_newsletter_drafts():
     """Keep each enabled user's review queue topped up to their max_queued_drafts, so they can plan
     ahead. The first-ever draft waits for the generate_lead_days window; once the queue is rolling it
-    refills to the cap as editions publish/skip."""
+    refills to the cap as editions publish/skip.
+    """
     from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
 
     # Naive UTC on purpose — compared against naive DB datetimes downstream.
@@ -870,7 +970,8 @@ def auto_track_newsletter_subscribers():
     """Fan out per-user newsletter subscriber-growth tracking for every enabled newsletter user
     (issue #400). Each per-user task reads the subscriber count into the growth time-series and,
     when opted in, invites connections within the per-run cap. Selenium-backed, so it respects the
-    global throttle breaker."""
+    global throttle breaker.
+    """
     if _skip_if_throttled("auto_track_newsletter_subscribers"):
         return "Skipped (throttled)"
     from cqc_lem.app.run_automation import track_newsletter_subscribers
@@ -887,7 +988,8 @@ def auto_track_newsletter_subscribers():
 def generate_newsletter_drafts_for_user(user_id: int):
     """Top up a single user's newsletter review queue on demand (e.g. right after they raise their
     max_queued_drafts in settings), so new slots don't wait for the daily beat. Skips the bootstrap
-    lead-window gate: an explicit settings change should fill the queue ahead immediately."""
+    lead-window gate: an explicit settings change should fill the queue ahead immediately.
+    """
     from cqc_lem.utilities.db import get_newsletter_settings
 
     if not get_newsletter_settings(user_id).get("enabled"):
@@ -915,11 +1017,16 @@ def generate_newsletter_cover(edition_id: int, use_avatar: bool = None):
 
     The result lands `pending_review` — never `approved`. A cover is a public brand asset, so the
     author is the gate between a generated image and a published edition; `_approved_cover_path`
-    in the publish flow reads that status and nothing else."""
+    in the publish flow reads that status and nothing else.
+    """
     from cqc_lem.utilities.db import get_newsletter_edition, set_edition_cover_image
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
-    from cqc_lem.utilities.newsletter_cover import (COVER_SOURCE_AI, COVER_STATUS_PENDING,
-                                                    generate_cover_for_edition, remove_cover_file)
+    from cqc_lem.utilities.newsletter_cover import (
+        COVER_SOURCE_AI,
+        COVER_STATUS_PENDING,
+        generate_cover_for_edition,
+        remove_cover_file,
+    )
 
     edition = get_newsletter_edition(edition_id)
     if not edition:
@@ -966,17 +1073,22 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     a fresh, distinct take. Grounded in the author's voice synthesis + the newsletter description, and
     steered AWAY from the OTHER queued editions' subjects (and recent history) so regeneration never
     reintroduces a duplicate. Updates the row (title/subtitle/subject/body) and resets status to
-    'draft'."""
-    from cqc_lem.utilities.db import (get_newsletter_edition, get_newsletter_settings,
-                                      get_pending_newsletter_editions, get_recent_newsletter_subjects,
-                                      get_recent_newsletter_blueprint_history,
-                                      get_engagement_preferences, update_newsletter_edition)
-    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
-    from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition,
-                                                get_or_create_profile_synthesis)
+    'draft'.
+    """
+    from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition, get_or_create_profile_synthesis
     from cqc_lem.utilities.ai.content_framework import compact_blueprint, select_blueprint
     from cqc_lem.utilities.ai.content_research import research_topic
     from cqc_lem.utilities.blog_source import resolve_blog_source
+    from cqc_lem.utilities.db import (
+        get_engagement_preferences,
+        get_newsletter_edition,
+        get_newsletter_settings,
+        get_pending_newsletter_editions,
+        get_recent_newsletter_blueprint_history,
+        get_recent_newsletter_subjects,
+        update_newsletter_edition,
+    )
+    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 
     edition = get_newsletter_edition(edition_id)
     if not edition or edition.get("status") not in ("draft", "approved"):
@@ -1042,12 +1154,13 @@ def _reschedule_pending_editions_forward(user_id: int, editions: list, now: date
     """Re-slot the given pending editions (ordered by scheduled_for) onto the next consecutive cadence
     slots after `now`, preserving their order. Used when slots were missed so a backlog SHIFTS forward
     as an ordered sequence — the user's planned order is kept and nothing is dropped. Returns how many
-    editions actually moved."""
+    editions actually moved.
+    """
     if not editions:
         return 0
     import pytz
-    from cqc_lem.utilities.db import (get_newsletter_settings, get_user_timezone,
-                                      update_newsletter_edition)
+
+    from cqc_lem.utilities.db import get_newsletter_settings, get_user_timezone, update_newsletter_edition
     from cqc_lem.utilities.newsletter import upcoming_publish_slots
     settings = get_newsletter_settings(user_id)
     tz = pytz.timezone(get_user_timezone(user_id))
@@ -1066,7 +1179,8 @@ def _publish_next_due_edition_for_user(user_id: int, now: datetime, dispatch) ->
     (slots were missed and a backlog built up), publish the oldest and SHIFT the remaining pending
     editions forward onto future cadence slots (order preserved) so a subscriber never receives
     several editions at once. `dispatch(edition_id)` queues the actual Selenium publish. Returns 1 if
-    an edition was dispatched, else 0."""
+    an edition was dispatched, else 0.
+    """
     from cqc_lem.utilities.db import get_pending_newsletter_editions
     pending = get_pending_newsletter_editions(user_id)  # ordered by scheduled_for ASC
     due = [e for e in pending
@@ -1089,7 +1203,8 @@ def auto_publish_scheduled_editions():
     """Publish due newsletter editions — at most ONE per user per run. When slots were missed and a
     backlog built up (e.g. after a throttle/pause), publish the oldest due edition and SHIFT the rest
     forward onto future cadence slots, so a subscriber never gets several editions at once and the
-    user's planned order is preserved (nothing is dropped)."""
+    user's planned order is preserved (nothing is dropped).
+    """
     # Newsletter publishing is Selenium-driven, so gate it on the breaker like the other fan-outs.
     # This hourly task was the primary re-tripper of the 429 doom loop: it probed the feed the moment
     # the cooldown lapsed and re-escalated it back to the 6h cap.
@@ -1112,7 +1227,8 @@ def auto_refresh_profile_syntheses():
     """Weekly: (re)generate the cached, DURABLE voice synthesis for each active user whose synthesis is
     missing or stale (>7 days). The synthesis replaces the bloated full profile JSON as the voice
     source in every comment/post prompt; refreshing it on a slow cadence keeps the voice stable while
-    still tracking real profile changes. No Selenium — works off each user's cached profile JSON."""
+    still tracking real profile changes. No Selenium — works off each user's cached profile JSON.
+    """
     from cqc_lem.utilities.ai.ai_helper import synthesize_profile
     from cqc_lem.utilities.db import get_user_ids_needing_profile_synthesis, set_profile_synthesis
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -1152,7 +1268,8 @@ def auto_sync_groups():
 @shared_task.task
 def auto_group_engagement():
     """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap),
-    at that user's staggered slot so the single se_content lane drains evenly (issue #554)."""
+    at that user's staggered slot so the single se_content lane drains evenly (issue #554).
+    """
     if _skip_if_throttled("auto_group_engagement"):
         return "Automation throttled"
     from cqc_lem.app.run_automation import auto_comment_in_groups
@@ -1172,7 +1289,8 @@ def auto_group_post_drafts():
     queue so the user can read and revise it before it ships (issue #932). Which group it is written
     for is the least-recently-tried post-enabled one (issue #769), so the weekly slot still rotates.
     A user who still has an unpublished draft is skipped by the task itself — carrying their edits
-    forward beats replacing them with a generation they never asked for."""
+    forward beats replacing them with a generation they never asked for.
+    """
     from cqc_lem.app.run_automation import auto_draft_group_post
     from cqc_lem.utilities.db import get_next_group_for_post
     users = get_active_user_ids()
@@ -1197,10 +1315,15 @@ def auto_group_posts():
     post. Nothing is generated here: a user with no reviewed draft simply doesn't post this week,
     because an un-previewed group post is exactly what the draft replaced. A draft whose group has
     since been switched off for posting is dropped rather than published into a group the user
-    opted out of."""
+    opted out of.
+    """
     from cqc_lem.app.run_automation import auto_post_to_group
-    from cqc_lem.utilities.db import (get_open_group_post_draft, get_post_enabled_group_ids,
-                                      update_group_post_draft, GroupPostDraftStatus)
+    from cqc_lem.utilities.db import (
+        GroupPostDraftStatus,
+        get_open_group_post_draft,
+        get_post_enabled_group_ids,
+        update_group_post_draft,
+    )
     users = get_active_user_ids()
     n = 0
     for uid in users:
@@ -1248,7 +1371,8 @@ def auto_scrape_stats():
 def auto_capture_follower_stats():
     """Daily: snapshot each active user's follower/connection counts and profile views (issue #627).
     Selenium-backed, so it respects the global throttle breaker, and it only dispatches for users
-    who actually have a LinkedIn session to read the numbers with."""
+    who actually have a LinkedIn session to read the numbers with.
+    """
     if _skip_if_throttled("auto_capture_follower_stats", measurement_only=True):
         return "Automation throttled"
     from cqc_lem.app.run_automation import capture_follower_stats
@@ -1280,7 +1404,8 @@ def auto_send_due_followups():
 def auto_process_outreach_funnel():
     """Dispatch per-user processing of APPROVED comment->connect->DM funnel targets (issue #399).
     Approval-gated: only targets a human has approved advance, and each advance drops the target
-    back to 'pending' for re-approval — nothing auto-fires at volume."""
+    back to 'pending' for re-approval — nothing auto-fires at volume.
+    """
     if _skip_if_throttled("auto_process_outreach_funnel"):
         return "Automation throttled"
     from cqc_lem.app.run_automation import process_outreach_funnel
@@ -1296,7 +1421,8 @@ def auto_scan_connection_candidates():
     """Dispatch per-user sourcing of ICP-fit connection targets from content engagers (issue #486).
     Sourcing may scrape adjacent authors' posts, so it IS gated on the 429 breaker / manual pause.
     The scan only FILES targets into the #398 connection_requests queue — the approval gate and the
-    combined daily invite cap still decide what actually gets sent."""
+    combined daily invite cap still decide what actually gets sent.
+    """
     if _skip_if_throttled("auto_scan_connection_candidates"):
         return "Automation throttled"
     from cqc_lem.app.run_automation import scan_connection_candidates
@@ -1311,7 +1437,8 @@ def auto_scan_outreach_funnel_targets():
     """Dispatch per-user sourcing for the comment-first outreach funnel (issue #623). The funnel
     processor (#399) has always existed; nothing ever fed it, so outreach_funnel_targets had zero
     rows in production. Sourcing scrapes the roster's recent posts, so it IS gated on the 429
-    breaker / manual pause. It only FILES drafts — approval and the daily caps still gate sends."""
+    breaker / manual pause. It only FILES drafts — approval and the daily caps still gate sends.
+    """
     if _skip_if_throttled("auto_scan_outreach_funnel_targets"):
         return "Automation throttled"
     from cqc_lem.app.run_automation import scan_outreach_funnel_targets
@@ -1337,9 +1464,9 @@ def _lead_target_terms(prefs: dict) -> list:
 
 def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS) -> int:
     """Re-score one user's whole pipeline from existing engagement data. The reset runs first (and
-    even when there's no activity at all) so people who went quiet decay out of 'hot'."""
-    from cqc_lem.utilities.db import (get_lead_activity, get_profile_facts, reset_lead_scores,
-                                      upsert_lead)
+    even when there's no activity at all) so people who went quiet decay out of 'hot'.
+    """
+    from cqc_lem.utilities.db import get_lead_activity, get_profile_facts, reset_lead_scores, upsert_lead
     from cqc_lem.utilities.lead_scoring import score_leads
 
     reset_lead_scores(user_id)
@@ -1385,7 +1512,8 @@ def rebuild_lead_scores():
 def auto_scan_catchup_moments():
     """Dispatch the daily per-user LinkedIn Catch-up scan (issue #482). Drafting only — the scan writes
     approval-gated rows to catchup_touches and sends nothing. Users who disabled every milestone type
-    are skipped so we never open a Chrome session for them."""
+    are skipped so we never open a Chrome session for them.
+    """
     task_name = "auto_scan_catchup_moments"
     # The dispatcher reports too (issue #792): a lane that never dispatches because the 429 breaker
     # is open looks exactly like a lane whose per-user scans found nothing, and the difference is the
@@ -1412,7 +1540,8 @@ def auto_check_catchup_touches():
     """Send APPROVED catch-up congratulations on a slow, per-user-capped drip (issue #482). Mirrors
     auto_check_connection_requests: approval happens upstream (rows only reach 'approved' via the API
     or the user's auto_approve mode), the whole scan short-circuits while the kill-switch / 429 breaker
-    is open, and the send task re-checks both caps and the throttle."""
+    is open, and the send task re-checks both caps and the throttle.
+    """
     task_name = "auto_check_catchup_touches"
     if _skip_if_throttled(task_name):
         report_catchup_run(None, {"phase": CATCHUP_PHASE_SEND,
@@ -1500,8 +1629,7 @@ def auto_sync_brand_account():
     env var can leave it dormant, and the only reported failures are an unreadable row and a failed
     write.
     """
-    from cqc_lem.utilities.brand_account import CAP_FIELDS, brand_user_id, current_launch_phase, \
-        sync_brand_preferences
+    from cqc_lem.utilities.brand_account import CAP_FIELDS, brand_user_id, current_launch_phase, sync_brand_preferences
 
     user_id = brand_user_id()
     phase = current_launch_phase()
@@ -1539,7 +1667,8 @@ def auto_sync_brand_account():
 def auto_notify_missing_linkedin_session():
     """Email active users who have no validated LinkedIn session cookie, prompting them
     to connect — automation can't run without one. Throttled per-user inside
-    notify_linkedin_session, so this can run daily without spamming."""
+    notify_linkedin_session, so this can run daily without spamming.
+    """
     users = get_active_user_ids()
     notified = 0
     for user_id in users:
@@ -1562,7 +1691,8 @@ def auto_refresh_linkedin_tokens():
     thing that ever refreshed a token was the SPA hitting /user/token_status — a user who didn't
     open the app simply lapsed, and the in-app warning they eventually saw had no email behind it.
     The email is throttled per-user inside notify_linkedin_token_expiring, so this runs daily
-    without spamming."""
+    without spamming.
+    """
     from cqc_lem.utilities.db import get_linkedin_token_user_ids
     from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
     from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
@@ -1596,10 +1726,10 @@ def auto_onboarding_nudges():
     """Daily: advance every not-yet-activated user's checklist (persisting steps + emitting the
     activation funnel to PostHog) and email the ONE next-best nudge to those who stalled (issue
     #500). Each nudge is one-shot per user and capped at one per NUDGE_COOLDOWN_HOURS, so this can
-    run daily without spamming — same posture as auto_notify_missing_linkedin_session."""
+    run daily without spamming — same posture as auto_notify_missing_linkedin_session.
+    """
     from cqc_lem.utilities.db import get_onboarding_candidate_user_ids
-    from cqc_lem.utilities.onboarding import (sync_onboarding_state, next_nudge_for_user,
-                                              send_onboarding_nudge)
+    from cqc_lem.utilities.onboarding import next_nudge_for_user, send_onboarding_nudge, sync_onboarding_state
 
     users = get_onboarding_candidate_user_ids()
     nudged = 0
@@ -1622,7 +1752,8 @@ def auto_survey_prompts():
     """Daily: email the ONE survey worth asking each subscriber — the day-3 NPS after activation, the
     trial T-3d NPS, or the review that unlocks the extended trial (issue #501). Each survey is
     one-shot per user and capped at one ask per SURVEY_COOLDOWN_HOURS, so this is safe to run daily;
-    a user who already answered (or dismissed the in-app modal) is never emailed about it."""
+    a user who already answered (or dismissed the in-app modal) is never emailed about it.
+    """
     from cqc_lem.utilities.db import get_survey_candidate_user_ids
     from cqc_lem.utilities.surveys import next_survey_for_user, send_survey_prompt
 
@@ -1645,9 +1776,10 @@ def auto_survey_prompts():
 def auto_backfill_missing_assets():
     """Safety net: regenerate missing media for unposted video/carousel posts before they
     publish, so a post never reaches its scheduled time without its asset (e.g. when the
-    original generation failed)."""
+    original generation failed).
+    """
+    from cqc_lem.app.run_content_plan import regenerate_post_carousel_task, regenerate_post_video_task
     from cqc_lem.utilities.db import get_unposted_posts_missing_assets
-    from cqc_lem.app.run_content_plan import regenerate_post_video_task, regenerate_post_carousel_task
 
     posts = get_unposted_posts_missing_assets()
     queued = 0
@@ -1695,7 +1827,6 @@ def auto_encrypt_secrets_at_rest(self):
 @shared_task.task
 def auto_clean_stale_invites():
     """Cleans up stale invites for each active user"""
-
     # Get all active users and loop through them
     users = get_active_user_ids()
 
@@ -1709,7 +1840,7 @@ def auto_clean_stale_invites():
                                             'interval_step': 30
                                         })
     if len(users) == 0:
-        return f"No Active Users"
+        return "No Active Users"
     else:
         return f"Started Process for {len(users)} user(s)"
 
@@ -1717,12 +1848,11 @@ def auto_clean_stale_invites():
 @shared_task.task
 def auto_clean_stale_profiles():
     """Cleans up stale profiles for each active user"""
-
     # Get all active users and loop through them
     users = get_active_user_ids()
 
     for user_id in users:
-        log_info(f"Cleaning stale profiles", user_id=user_id, task_name="auto_clean_stale_profiles")
+        log_info("Cleaning stale profiles", user_id=user_id, task_name="auto_clean_stale_profiles")
 
         # Clean up stale profiles for this user
         # update_stale_profile(user_id)
@@ -1735,7 +1865,7 @@ def auto_clean_stale_profiles():
                                          })
 
     if len(users) == 0:
-        return f"No Active Users"
+        return "No Active Users"
     else:
         return f"Started Process for {len(users)} user(s)"
 
@@ -1750,7 +1880,8 @@ def auto_invite_to_company_pages():
     Now it ticks every STAGGER_TICK_MINUTES like the other fan-outs and dispatches only the users
     whose slot has come up, so the fleet spreads across the window instead of landing on
     `se_outreach` in one minute; the per-run volume is decided inside the task itself
-    (`plan_daily_invites`), which is also what makes a second dispatch today a no-op."""
+    (`plan_daily_invites`), which is also what makes a second dispatch today a no-op.
+    """
     if _skip_if_throttled("auto_invite_to_company_pages"):
         return "Automation throttled"
 
@@ -1770,7 +1901,7 @@ def auto_invite_to_company_pages():
         if not _stagger_due(user_id, STAGGER_COMPANY_INVITE, "auto_invite_to_company_pages"):
             continue
 
-        log_info(f"Starting company page invites", user_id=user_id, task_name="auto_invite_to_company_pages")
+        log_info("Starting company page invites", user_id=user_id, task_name="auto_invite_to_company_pages")
         automate_invites_to_company_page_for_user.apply_async(kwargs={'user_id': user_id},
                                          countdown=dispatch_jitter_seconds(),
                                          retry=True,
@@ -1782,7 +1913,7 @@ def auto_invite_to_company_pages():
         started += 1
 
     if started == 0:
-        return f"No active users with a company page"
+        return "No active users with a company page"
     else:
         return f"Started company-page invites for {started} user(s)"
 
@@ -1791,7 +1922,6 @@ def auto_invite_to_company_pages():
 @shared_task.task
 def auto_clean_old_videos():
     """Cleans up old videos in the selenium folder"""
-
     days_to_keep = SELENIUM_KEEP_VIDEOS_X_DAYS
     log_info(f"Cleaning old videos older than {days_to_keep} days", task_name="auto_clean_old_videos")
     expiration_date = datetime.now() - timedelta(days=days_to_keep)
@@ -1868,7 +1998,9 @@ def sync_stripe_subscriptions(self):
     downtime, URL mismatches, or signature errors.
     """
     from cqc_lem.utilities.stripe_util import (
-        fetch_subscription, get_subscription_tier_from_price, stripe_status_to_db,
+        fetch_subscription,
+        get_subscription_tier_from_price,
+        stripe_status_to_db,
     )
 
     rows = get_users_with_stripe_subscriptions()
@@ -1912,7 +2044,8 @@ def sync_stripe_subscriptions(self):
 def auto_weekly_margin_report(self, days: int = 7):
     """Weekly unit-economics report (issue #491, plan §D.2): joins `cost_ledger` spend to Stripe MRR
     for per-user contribution margin, system gross margin, cohort engagement lift and LTV:CAC, then
-    delivers it to the owner (email + a PostHog `margin_report` scorecard event)."""
+    delivers it to the owner (email + a PostHog `margin_report` scorecard event).
+    """
     from cqc_lem.utilities.margin import collect_margin_report, send_weekly_margin_report
 
     report = collect_margin_report(days=days)
@@ -1929,7 +2062,8 @@ def auto_daily_cost_alerts(self, days: int = 7):
     """Daily budget/anomaly guardrails (issue #493, plan §E.2): per-user cost ceiling, system
     gross-margin floor, spend anomaly (μ+Nσ / absolute budget), LLM cache-hit collapse and
     unattributed spend. Evaluates the last COMPLETE UTC day and delivers only actual breaches
-    (owner email + a PostHog `cost_alert` event each)."""
+    (owner email + a PostHog `cost_alert` event each).
+    """
     from cqc_lem.utilities.cost_alerts import collect_cost_alert_report, send_cost_alerts
 
     report = collect_cost_alert_report(days=days)
@@ -1945,7 +2079,8 @@ def auto_capacity_watch(self):
     """Sample the Chrome pool + Selenium lane depths and judge them over the rolling window (issue
     #552, docs/scaling-plan.md §5e). Every tick samples; only a SUSTAINED breach delivers — and then
     it files/updates one GitHub issue asking for a lane/cap review, because raising them spends real
-    resources on a shared box."""
+    resources on a shared box.
+    """
     from cqc_lem.utilities.capacity_alerts import collect_capacity_report, send_capacity_alerts
 
     report = collect_capacity_report()
@@ -1967,9 +2102,9 @@ def auto_file_feedback_issues(self, limit: int = 25):
 
     The same pass repairs already-filed issues whose labels/assignee/Decision Comment never landed
     (issue #718) — an unlabeled issue is invisible to the agent pipeline, so filing alone is not the
-    job being done."""
-    from cqc_lem.utilities.feedback.issue_service import (
-        process_new_feedback, repair_auto_filed_issues)
+    job being done.
+    """
+    from cqc_lem.utilities.feedback.issue_service import process_new_feedback, repair_auto_filed_issues
 
     result = process_new_feedback(limit=limit)
     repair = repair_auto_filed_issues()
@@ -1982,7 +2117,8 @@ def auto_file_feedback_issues(self, limit: int = 25):
 def auto_recluster_feedback(self, limit: int = 200):
     """Nightly reclustering of the feedback backlog (issue #498, plan §B.3): backfill missing
     embeddings and attach leftover/untriaged reports to the open cluster they now match, bumping that
-    issue's demand. Files nothing — that stays with `auto_file_feedback_issues`."""
+    issue's demand. Files nothing — that stays with `auto_file_feedback_issues`.
+    """
     from cqc_lem.utilities.feedback.issue_service import recluster_feedback
 
     result = recluster_feedback(limit=limit)
@@ -1996,7 +2132,8 @@ def auto_changelog_notify(self, hours: int = None):
     `Closes #<issue>`, generate the changelog line for each issue that came from user feedback, and
     tell every reporter behind that cluster — once — by email + an in-app "you asked, we shipped"
     notice carrying the micro-CSAT ("did this fix it?"). QueueOnce + the recipient ledger mean an
-    overlapping window can never notify the same reporter twice."""
+    overlapping window can never notify the same reporter twice.
+    """
     from cqc_lem.utilities.feedback.shipped import process_shipped_fixes
 
     result = process_shipped_fixes(hours=hours)
@@ -2010,7 +2147,8 @@ def auto_update_faq(self, limit: int = 50):
     support questions the auto-filer left behind, and once the same question recurs, write or revise
     a grounded answer, version it, and reply to everyone who asked. Anything implying a
     product/policy/ToS claim is held for a human instead of published. QueueOnce so two beat ticks
-    can never answer the same cluster twice."""
+    can never answer the same cluster twice.
+    """
     from cqc_lem.utilities.feedback.faq_service import process_faq_feedback
 
     result = process_faq_feedback(limit=limit)
@@ -2020,7 +2158,8 @@ def auto_update_faq(self, limit: int = 50):
 
 def _env_rate(name: str) -> float:
     """A monthly cost rate from the environment. Prices are deployment-specific, so they are never
-    hardcoded — an unset (or malformed) rate is 0 and simply accrues nothing."""
+    hardcoded — an unset (or malformed) rate is 0 and simply accrues nothing.
+    """
     try:
         return float(os.getenv(name, "0") or 0)
     except ValueError:
@@ -2095,7 +2234,8 @@ def auto_accrue_monthly_costs(self):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
 def auto_rollup_llm_costs(self):
     """Daily: collapse yesterday's per-call LLM spend (accumulated in Redis) into cost_ledger —
-    one row per user x feature x tier x day, so the durable table stays small (issue #490)."""
+    one row per user x feature x tier x day, so the durable table stays small (issue #490).
+    """
     from cqc_lem.utilities.observability import flush_llm_cost_rollup
 
     written = flush_llm_cost_rollup()
@@ -2112,7 +2252,8 @@ def auto_weekly_cost_routing(self, days: int = COST_ROUTING_WINDOW_DAYS):
     LiteLLM complexity router reads. While the `cost-routing-enabled` flag is off (its fallback is
     COST_ROUTING_ENABLED) it observes nothing and only republishes the parked policy, so the loop is
     dormant until the flag is turned on — and because that is resolved per run, turning it on takes
-    effect on the next weekly beat rather than the next deploy."""
+    effect on the next weekly beat rather than the next deploy.
+    """
     from cqc_lem.utilities.cost_routing import apply_routing_report, collect_routing_report
 
     report = collect_routing_report(days=days)
@@ -2128,10 +2269,14 @@ def auto_produce_feature_tutorial(self, flow_key: str = None):
     """Weekly: produce ONE automated SPA feature tutorial — headless capture, grounded script, TTS
     voice-over, ffmpeg MP4 + vertical clip, YouTube publish (issue #505). Runs on the se_content
     Selenium lane because it drives a real browser; it never touches LinkedIn, so the 429 breaker
-    does not gate it. Uncovered features come first, then anything whose UI has changed."""
-    from cqc_lem.utilities.marketing.video_tutorials import (TutorialCaptureError,
-                                                            TutorialGuardrailError,
-                                                            TutorialRenderError, produce_tutorial)
+    does not gate it. Uncovered features come first, then anything whose UI has changed.
+    """
+    from cqc_lem.utilities.marketing.video_tutorials import (
+        TutorialCaptureError,
+        TutorialGuardrailError,
+        TutorialRenderError,
+        produce_tutorial,
+    )
 
     try:
         record = produce_tutorial(flow_key=flow_key)
@@ -2151,7 +2296,8 @@ def auto_weekly_youtube_token_check(self):
     """Weekly YouTube OAuth refresh-token health probe (issue #742). One token exchange — no upload,
     no quota — that both proves the grant is alive and IS the keep-alive against Google's 6-month
     disuse expiry, which is why it must keep running while the tutorial feature is off. Alerts the
-    owner only when the grant is provably gone; an unreachable token endpoint stays `unknown`."""
+    owner only when the grant is provably gone; an unreachable token endpoint stays `unknown`.
+    """
     from cqc_lem.utilities.marketing.youtube_auth import run_health_probe
 
     state = run_health_probe()

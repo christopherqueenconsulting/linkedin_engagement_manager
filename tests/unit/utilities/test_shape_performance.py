@@ -1,5 +1,6 @@
 """Unit tests for db.get_shape_performance — the outcomes side of the performance→content
-feedback loop (issue #389 / B4)."""
+feedback loop (issue #389 / B4).
+"""
 
 import mysql.connector
 import pytest

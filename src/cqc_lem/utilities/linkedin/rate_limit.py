@@ -81,7 +81,8 @@ def _redis_client():
 
 def shared_redis_client():
     """Public handle to the same Redis this breaker uses (None when unavailable), so other
-    runtime-state helpers reuse one URL-resolution rule instead of re-deriving it."""
+    runtime-state helpers reuse one URL-resolution rule instead of re-deriving it.
+    """
     return _redis_client()
 
 
@@ -143,7 +144,8 @@ def rate_limit_cooldown_remaining() -> int:
 
 def clear_rate_limit() -> None:
     """Close the breaker AND reset the consecutive-trip counter — called on a successful login, so
-    the next 429 (if any) starts the escalation from the base cooldown again."""
+    the next 429 (if any) starts the escalation from the base cooldown again.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -307,7 +309,8 @@ SUPPRESSION_PAUSE_REASON_PREFIX = "suppression"
 
 def suppression_pause_reason(user_id: int) -> str:
     """The `pause_automation` reason string this tripwire writes, tagged with the user whose signals
-    tripped it so a later run can tell its own pause apart from a manual or maintenance one."""
+    tripped it so a later run can tell its own pause apart from a manual or maintenance one.
+    """
     return f"{SUPPRESSION_PAUSE_REASON_PREFIX}:{int(user_id)}"
 
 
@@ -350,7 +353,8 @@ def record_suppression_trip(user_id: int, reason: str, detail: "dict | None" = N
 
 def clear_suppression_trip(user_id: int) -> bool:
     """Human re-enable: forget the trip. Lifting the automation pause is the caller's separate,
-    explicit step — clearing the record must never be what silently restarts engagement."""
+    explicit step — clearing the record must never be what silently restarts engagement.
+    """
     client = _redis_client()
     if client is None:
         return False
@@ -396,7 +400,8 @@ _LOCK_FAILOPEN = ("no-redis", "lock-error")
 def acquire_run_lock(name: str, ttl_seconds: int = 1800) -> "str | None":
     """Try to take a named single-flight lock. Returns an opaque token to pass to
     release_run_lock() if acquired (or a fail-open sentinel if Redis is down), else None when
-    another holder is active. TTL auto-expires the lock if the holder crashes without releasing."""
+    another holder is active. TTL auto-expires the lock if the holder crashes without releasing.
+    """
     client = _redis_client()
     if client is None:
         return "no-redis"  # fail open — don't block the task when Redis is unavailable
@@ -412,7 +417,8 @@ def acquire_run_lock(name: str, ttl_seconds: int = 1800) -> "str | None":
 
 def release_run_lock(name: str, token: "str | None") -> None:
     """Release a lock only if we still hold the same token (never free another holder's lock, e.g.
-    one that TTL-expired and was reacquired). No-ops for the fail-open sentinels."""
+    one that TTL-expired and was reacquired). No-ops for the fail-open sentinels.
+    """
     if not token or token in _LOCK_FAILOPEN:
         return
     client = _redis_client()

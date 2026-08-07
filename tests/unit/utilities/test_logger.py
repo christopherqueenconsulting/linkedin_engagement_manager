@@ -2,8 +2,7 @@
 
 import logging
 import os
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock, call, patch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -12,6 +11,7 @@ from unittest.mock import MagicMock, patch, call
 def _fresh_logger_module():
     """Re-import logger in isolation so module-level setup reruns cleanly."""
     import importlib
+
     import cqc_lem.utilities.logger as mod
     importlib.reload(mod)
     return mod
@@ -32,6 +32,7 @@ class TestBuildPostHogHandler:
 
     def test_returns_logging_handler_when_key_is_set(self):
         from opentelemetry.sdk._logs import LoggingHandler
+
         from cqc_lem.utilities.logger import _build_posthog_handler
 
         env = {"POSTHOG_API_KEY": "phc_testtoken", "POSTHOG_HOST": "https://us.i.posthog.com"}
@@ -52,6 +53,7 @@ class TestBuildPostHogHandler:
 
     def test_exporter_endpoint_uses_host_env_var(self):
         from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+
         from cqc_lem.utilities.logger import _build_posthog_handler
 
         env = {

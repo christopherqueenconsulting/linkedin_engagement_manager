@@ -41,8 +41,7 @@ def get_video_file_url(video: dict, quality: str = "sd") -> str | None:
 
 
 def download_pexels_video(query: str, dest_dir: str) -> str | None:
-    """
-    Search Pexels for a video matching query and download the first result to dest_dir.
+    """Search Pexels for a video matching query and download the first result to dest_dir.
     Returns the local file path, or None if no video is found or download fails.
     """
     videos = search_videos(query)

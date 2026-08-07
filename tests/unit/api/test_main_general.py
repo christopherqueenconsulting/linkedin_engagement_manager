@@ -1,10 +1,10 @@
 """Unit tests for general FastAPI endpoints in cqc_lem.api.main."""
 
 import time
+from datetime import datetime
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
-from datetime import datetime
 
 pytestmark = pytest.mark.unit
 
@@ -18,7 +18,8 @@ def _auth_hardening_side_effects():
     """Issue #745 (2b): every login now stamps `email_verified_at`, writes an `auth_audit_log` row
     and reads the PIN lockout, and /auth/session resolves the account's public_uid. Those are DB
     calls these tests never mocked — pin them so each test still exercises the flow it was written
-    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py)."""
+    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
+    """
     with patch(f"{_MAIN}.record_auth_event", return_value=True), \
          patch(f"{_MAIN}.mark_email_verified", return_value=True), \
          patch(f"{_MAIN}.get_pin_lockout", return_value=None), \
@@ -40,6 +41,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -324,8 +326,7 @@ class TestGetUserSettings:
         assert detail["subscription"]["tier"] == "starter"
         assert detail["preferences"]["last_login_inactivate_delay"] == 90
         # Buffer knobs fall back to the defaults for a user who never set them (issue #544)
-        from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
-                                          DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        from cqc_lem.utilities.db import DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS
         assert detail["preferences"]["content_buffer_days"] == DEFAULT_CONTENT_BUFFER_DAYS
         assert detail["preferences"]["content_buffer_max_posts"] == DEFAULT_CONTENT_BUFFER_MAX_POSTS
         assert detail["blog_url"] == "https://blog.example.com"
@@ -623,14 +624,15 @@ class TestGmailForwardConfirmationStorage:
 class TestForwardingConfirmedByDelivery:
     """Issue #813: our server-side click of Gmail's verify link often fails, so a user who finished
     the confirmation by hand was stuck at confirmed=False forever. Mail actually ARRIVING on their
-    private reply+<token> address is the real end-to-end proof, so record it."""
+    private reply+<token> address is the real end-to-end proof, so record it.
+    """
     BASE = "/api/linkedin/comment-notification/inbound"
     _RL = "cqc_lem.utilities.linkedin.rate_limit._redis_client"
 
     @staticmethod
     def _redis(existing=None):
-        from unittest.mock import MagicMock
         import json as _json
+        from unittest.mock import MagicMock
         r = MagicMock()
         r.get.return_value = _json.dumps(existing) if existing is not None else None
         return r
@@ -759,7 +761,8 @@ class TestForwardingConfirmedByDelivery:
 
 class TestSharedInboundRouting:
     """SendGrid posts ALL parse-host mail to the PIN URL, so that endpoint must also route
-    reply+<token> mail (Gmail confirmations + comment notifications)."""
+    reply+<token> mail (Gmail confirmations + comment notifications).
+    """
     PIN = "/api/linkedin/verification-pin/inbound"
 
     def test_pin_url_routes_reply_comment_to_sweep(self, client):

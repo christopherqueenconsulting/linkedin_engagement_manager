@@ -114,21 +114,24 @@ class TestNoteIsBestEffort:
 
     def test_a_missing_note_affordance_never_warns(self):
         """#1039: this is the documented quota-spent fallback, and a repeated warning would file a
-        grouped PostHog issue — and a GitHub issue off it — for working behaviour."""
+        grouped PostHog issue — and a GitHub issue off it — for working behaviour.
+        """
         r = _invite(found={_SEND_BARE_XPATH}, message="hi jane")
         r.log_warning.assert_not_called()
         assert any("quota" in message for message in _messages(r.log_debug))
 
     def test_the_quota_reading_is_grounded_in_the_dialogs_own_bare_send_control(self):
         """The absence is only called quota-spent because the dialog is still showing the control
-        that means 'no note on offer here' — never assumed from the missing note button alone."""
+        that means 'no note on offer here' — never assumed from the missing note button alone.
+        """
         r = _invite(found={_SEND_BARE_XPATH}, message="hi jane")
         looked_up = [call.args[3] for call in r.find_first.call_args_list]
         assert looked_up[:2] == ["Add a note button", "Send without a note"]
 
     def test_a_dialog_showing_neither_control_is_still_not_a_warning(self):
         """The lost invite it costs us is what _submit_connect_invite logs as an ERROR; warning here
-        too would file a second grouped issue for the same event (the #1038 fault)."""
+        too would file a second grouped issue for the same event (the #1038 fault).
+        """
         from cqc_lem.utilities.db import INVITE_NOT_SENT_MESSAGE
         r = _invite(found=set(), message="hi jane")
         assert r.sent is False and r.reason == INVITE_NOT_SENT_MESSAGE
@@ -147,7 +150,8 @@ class TestNoteIsBestEffort:
 
     def test_a_failure_after_the_affordance_answered_still_warns_with_the_exception(self):
         """The note button was there and the textarea was not: that is drift or a broken dialog, not
-        the quota fallback, so it keeps the WARNING + `exc=` that makes it greppable."""
+        the quota fallback, so it keeps the WARNING + `exc=` that makes it greppable.
+        """
         r = _invite(found={_NOTE_XPATH, _SEND_BARE_XPATH}, message="hi jane")
         r.log_warning.assert_called_once()
         assert isinstance(r.log_warning.call_args.kwargs.get("exc"), Exception)

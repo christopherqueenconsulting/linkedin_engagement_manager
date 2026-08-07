@@ -1,8 +1,10 @@
 """Unit tests for the golden-hour second wave (issue #622 / G7) — the 6–8h self-comment that adds
-a substantive insight, and the self-comment cap that keeps it from colliding with the #344 seed."""
+a substantive insight, and the self-comment cap that keeps it from colliding with the #344 seed.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -81,7 +83,8 @@ class TestSecondWaveComment:
 
     def test_a_draft_that_fails_the_gate_ships_nothing(self, _happy_path):
         """generate_second_wave_comment returns None when no draft clears the quality contract —
-        an empty second wave beats a filler one."""
+        an empty second wave beats a filler one.
+        """
         from cqc_lem.app.run_automation import auto_second_wave_comment
         with patch(f"{_RA}.generate_second_wave_comment", return_value=None), \
              patch(f"{_RA}.comment_on_linkedin_post") as api, \
@@ -95,7 +98,8 @@ class TestSecondWaveComment:
 
     def test_stands_down_while_automation_is_paused(self, _happy_path):
         """The second wave is discretionary amplification, so the #629 suppression pause stops it —
-        unlike the seed comment, which is part of publishing."""
+        unlike the seed comment, which is part of publishing.
+        """
         from cqc_lem.app.run_automation import auto_second_wave_comment
         with patch(f"{_RA}.is_automation_paused", return_value=True), \
              patch(f"{_RA}.automation_pause_reason", return_value="suppression:user:1"), \
@@ -108,7 +112,8 @@ class TestSecondWaveComment:
 
     def test_re_arms_itself_until_the_post_is_due(self, _happy_path):
         """The 6-8h wait is served in hops: a single long countdown sits unacked past the broker's
-        visibility timeout and gets redelivered — which would post several self-comments."""
+        visibility timeout and gets redelivered — which would post several self-comments.
+        """
         from cqc_lem.app import run_automation as ra
         from cqc_lem.utilities import golden_hour as g
         with patch(f"{_RA}.get_post_age_minutes", return_value=30.0), \
@@ -124,7 +129,8 @@ class TestSecondWaveComment:
 
     def test_a_pause_during_the_wait_does_not_cost_the_second_wave(self, _happy_path):
         """The pause is checked at the DUE time, not on every hop — a pause that lifts in the
-        meantime must not silently cancel the amplification."""
+        meantime must not silently cancel the amplification.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.get_post_age_minutes", return_value=30.0), \
              patch(f"{_RA}.is_automation_paused", return_value=True), \
@@ -221,7 +227,8 @@ class TestSecondWaveDispatch:
     def test_publishing_schedules_the_second_wave_within_one_hop(self):
         """post_to_linkedin dispatches it alongside the seed comment and the golden-hour sweeps —
         but only for one hop: the task re-arms itself the rest of the way to its 6-8h offset, so the
-        broker never holds a message past its visibility timeout (which would redeliver it)."""
+        broker never holds a message past its visibility timeout (which would redeliver it).
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.get_post_content", return_value="body"), \
              patch(f"{_RA}.get_post_status", return_value="approved"), \
@@ -295,7 +302,8 @@ class TestGenerateSecondWaveComment:
 
     def test_filler_draft_is_rejected_rather_than_shipped(self):
         """The second wave runs the SAME quality contract as a feed comment: a 'thanks for reading'
-        one-liner never reaches the post."""
+        one-liner never reaches the post.
+        """
         from cqc_lem.utilities.ai import ai_helper
         with patch(f"{_AI}._call_llm", return_value=self._response("Great post! Thanks for reading.")), \
              patch(f"{_AI}._humanize_text", side_effect=lambda t, **k: t), \
@@ -318,7 +326,8 @@ class TestGenerateSecondWaveComment:
 
     def test_missing_choices_degrades_to_none(self):
         """A malformed LLM response with choices=None must not raise TypeError; it should be treated
-        as a draft that failed the gate (issue #768)."""
+        as a draft that failed the gate (issue #768).
+        """
         from cqc_lem.utilities.ai import ai_helper
         with patch(f"{_AI}._call_llm", return_value=self._response_no_choices()), \
              patch(f"{_AI}.log_warning") as warn:

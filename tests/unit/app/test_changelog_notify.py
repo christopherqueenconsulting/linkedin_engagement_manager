@@ -1,7 +1,8 @@
 """Unit tests for the daily shipped-fix changelog/notify beat task (issue #502)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

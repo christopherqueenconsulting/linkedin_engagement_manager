@@ -46,7 +46,8 @@ def _ollama_models(group: str) -> list:
 def _ollama_deployments() -> list:
     """Every Ollama Cloud deployment — LEM's serving tiers AND the agent-pipeline's `lem-agent-*`
     lane. The agent tiers were exempt until #844, when they carried a `:cloud` tag; ollama.com
-    resolves that as a tag alias, so it never 404'd, which is exactly why nothing caught it."""
+    resolves that as a tag alias, so it never 404'd, which is exactly why nothing caught it.
+    """
     return [d for d in DEPLOYMENTS if d["is_ollama"]]
 
 
@@ -60,7 +61,8 @@ class TestRoster:
 
     def test_the_stale_minimax_family_is_gone_from_the_serving_tiers(self):
         """minimax-m2.7 was not retired, it was a version behind — following it to m3 would move
-        this tier from a MEDIUM to a HIGH usage level, so the tier left the family instead."""
+        this tier from a MEDIUM to a HIGH usage level, so the tier left the family instead.
+        """
         for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
             assert not any(m.startswith("minimax-m2") for m in _ollama_models(group))
 
@@ -71,7 +73,8 @@ class TestRoster:
         ollama.com/v1 API serves, so the comparison is verbatim: no `:cloud`/`-cloud` normalizing.
         `-cloud` is the local `ollama pull` form; `:cloud` is a tag alias the endpoint RESOLVES
         (probed on #844 — it answers 200, only a genuinely unknown tag 404s), which is worse than
-        a typo: it serves, so only this assertion and the two below can see it."""
+        a typo: it serves, so only this assertion and the two below can see it.
+        """
         catalog = SNAPSHOT["models"]
         for deployment in _ollama_deployments():
             bare = deployment["bare"]
@@ -84,7 +87,8 @@ class TestRoster:
         the margin report cannot see. The `lem-agent-*` lane is covered for uniformity and for the
         promotion case (glm-5.2 / minimax-m3 are live candidates for lem-complex), NOT because it
         feeds this path: agent-pipeline traffic never reaches track_llm_call, its cost is LiteLLM's
-        own `$ai_generation` callback (scripts/agent-pipeline/docs/agent-pipeline-routing.md)."""
+        own `$ai_generation` callback (scripts/agent-pipeline/docs/agent-pipeline-routing.md).
+        """
         for deployment in _ollama_deployments():
             key = f"openai/{deployment['bare']}"
             spec = PRICES.get(key)
@@ -93,7 +97,8 @@ class TestRoster:
 
     def test_every_serving_tier_keeps_more_than_one_ollama_deployment(self):
         """A single-deployment tier falls straight onto a paid OpenAI/Anthropic key — or onto
-        nothing — the moment that one model has a bad day."""
+        nothing — the moment that one model has a bad day.
+        """
         for group in ("lem-medium", "lem-complex"):
             assert len(_ollama_models(group)) >= 2
 
@@ -105,7 +110,8 @@ class TestRoster:
 
         Matched by SHAPE, not by model name. scripts/weekly_model_check.sh rewrites `model:` lines
         in place when a configured id is retired — and since #844 that reaches the agent tiers too —
-        so pinning the four current ids would fail CI on the cron's own correct swap."""
+        so pinning the four current ids would fail CI on the cron's own correct swap.
+        """
         for deployment in _ollama_deployments():
             bare = deployment["bare"]
             for tag in (":cloud", "-cloud", ":latest"):
@@ -117,7 +123,8 @@ class TestRoster:
     def test_the_agent_lane_keeps_one_ollama_deployment_per_tier(self):
         """The `lem-agent-*` aliases back the agent-pipeline's Ollama lane (scripts/agent-pipeline),
         which pins a tier per issue and has no serving-tier redundancy to fall back on. Also the
-        guard that keeps the assertions above from passing vacuously on an emptied group."""
+        guard that keeps the assertions above from passing vacuously on an emptied group.
+        """
         for group in ("lem-agent-tier1", "lem-agent-tier2",
                       "lem-agent-tier2-alt", "lem-agent-tier3"):
             assert len(_ollama_models(group)) == 1, f"{group} has no Ollama Cloud deployment"
@@ -126,12 +133,14 @@ class TestRoster:
 class TestWeeklyModelCheck:
     def test_the_family_scan_has_nothing_left_to_file(self):
         """The cron re-files a family-upgrade issue every run while a configured model trails its
-        own family. #717 exists because minimax-m2.7 did; after this roster nothing does."""
+        own family. #717 exists because minimax-m2.7 did; after this roster nothing does.
+        """
         assert mhc.plan_family_upgrades(DEPLOYMENTS, SNAPSHOT["models"]) == []
 
     def test_the_new_names_are_recognized_as_ollama_deployments(self):
         """The cron only probes deployments whose api_base points at Ollama Cloud — a new entry
-        that missed the api_base line would never be checked for retirement at all."""
+        that missed the api_base line would never be checked for retirement at all.
+        """
         new = [d for d in DEPLOYMENTS if d["bare"] in ("deepseek-v4-flash", "gemma4:31b")]
         assert new and all(d["is_ollama"] for d in new)
 
@@ -140,7 +149,8 @@ class TestWeeklyModelCheck:
         docs.ollama.com/cloud retirement table verbatim. An id spelled in a way that table never
         uses (a `:cloud` tag, say) makes that deployment invisible to the advance-retirement
         warning — the one thing this cron exists to give us. That is what the `lem-agent-*` lane
-        was doing before #844."""
+        was doing before #844.
+        """
         announced = [{"model": name, "date": "2026-12-31", "alternative": None}
                      for name in sorted(SNAPSHOT["models"])]
         notices, _ = mhc.plan_retirement_notices(DEPLOYMENTS, announced, {}, today="2026-08-01")
@@ -152,7 +162,8 @@ class TestBenchmarkChampions:
     def test_the_champions_are_still_the_incumbents(self):
         """scripts/benchmark_models.py reads the FIRST Ollama deployment of a tier as the champion
         a candidate must beat. Promoting a new model to the head of its group before the benchmark
-        runs would make it its own baseline."""
+        runs would make it its own baseline.
+        """
         bm = _load("benchmark_models")
         champions = bm.champions_from_config(CONFIG_TEXT,
                                              ["lem-simple", "lem-medium", "lem-complex"])
@@ -163,12 +174,14 @@ class TestBenchmarkChampions:
 class TestOllamaCompatLimits:
     def test_embeddings_never_move_to_ollama(self):
         """Ollama Cloud serves no embedding models — a well-meaning 'consistency' edit here breaks
-        the comment similarity gate, feedback dedup and content-quality scoring at once."""
+        the comment similarity gate, feedback dedup and content-quality scoring at once.
+        """
         assert _ollama_models("lem-embedding") == []
 
     def test_no_call_site_forces_a_tool_call(self):
         """Ollama's OpenAI-compat layer supports response_format but NOT forced tool_choice; a call
-        site that sends it degrades silently on every Ollama deployment."""
+        site that sends it degrades silently on every Ollama deployment.
+        """
         offenders = []
         for tree in ("src", "scripts"):
             for path in (REPO_ROOT / tree).rglob("*.py"):

@@ -13,8 +13,9 @@ PIN still signs the account in, enrolment is reachable, saving recovery codes is
 pulling the rollout back releases the sessions it already held.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +42,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -56,7 +58,8 @@ def _account_without_a_strong_factor():
     That fixture stubs `enrollment_required` / `enrollment_hold_active` off so the other ~40 API
     modules keep their pre-2c.1 behaviour — which is exactly the verdict this module exists to
     exercise. Here the real functions run; only the factor COUNT they read is stubbed, to the state
-    every account is in until it enrols something."""
+    every account is in until it enrols something.
+    """
     with patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=0):
         yield
 
@@ -71,7 +74,8 @@ def _quiet():
 
 def _session(scope: str):
     """The real resolver, answering for one live token with the given scope. `get_session_user_id`
-    is deliberately NOT patched here — it is the thing under test."""
+    is deliberately NOT patched here — it is the thing under test.
+    """
     return patch(f"{_M}._db_resolve_session",
                  side_effect=lambda t: {"user_id": _UID, "scope": scope} if t == _TOKEN else None)
 
@@ -83,7 +87,8 @@ def _deadline(value: str):
 
 class TestSurfaceMatching:
     """The path→surface mapping, on its own. Routes are mounted twice — under `/api` for the SPA
-    and at the root for the redirect targets — so both spellings have to reach one entry."""
+    and at the root for the redirect targets — so both spellings have to reach one entry.
+    """
 
     def test_both_mount_points_map_to_one_surface_entry(self):
         from cqc_lem.api.main import _scope_path
@@ -96,7 +101,8 @@ class TestSurfaceMatching:
 
     def test_an_unknown_path_fails_closed(self):
         """A restricted token that reached a handler by a route the middleware never saw is exactly
-        the case the narrowing exists for."""
+        the case the narrowing exists for.
+        """
         from cqc_lem.api.main import _scope_allows
 
         assert _scope_allows("extension", None) is False
@@ -113,7 +119,8 @@ class TestSurfaceMatching:
     def test_an_unrecognised_scope_fails_closed(self):
         """The table of surfaces must not itself be opt-in. A typo, a hand-edited row, or a scope a
         later phase adds and only half wires up would otherwise be granted EVERYTHING by omission —
-        the same "remembered somewhere else" failure this design exists to remove."""
+        the same "remembered somewhere else" failure this design exists to remove.
+        """
         from cqc_lem.api.main import _scope_allows
 
         for scope in ("some-future-scope", "enrol", "Enroll", "extension "):
@@ -123,14 +130,16 @@ class TestSurfaceMatching:
 
     def test_an_unrecognised_scope_is_refused_at_the_resolver(self, client):
         """End to end, not just the predicate: a row carrying a scope nobody taught the table about
-        gets a 403, not a session."""
+        gets a 403, not a session.
+        """
         with _session("enrol-typo"):
             r = client.get("/api/user/auth-factors", params={"session_token": _TOKEN})
         assert r.status_code == 403
 
     def test_a_prefix_is_not_a_surface_match(self):
         """Without exact matching, '/user/auth-factors' would also unlock a future
-        '/user/auth-factors-admin'."""
+        '/user/auth-factors-admin'.
+        """
         from cqc_lem.api.main import _scope_allows
 
         assert _scope_allows("enroll", "/api/user/auth-factors") is True
@@ -182,7 +191,8 @@ class TestExtensionScope:
 
     def test_the_refusal_is_audited(self, client):
         """The extension calls exactly one path, so this row cannot happen by accident — it is the
-        clearest signal available that someone else is holding that token."""
+        clearest signal available that someone else is holding that token.
+        """
         from cqc_lem.utilities.db import AuthAuditEvent
 
         with _session("extension"), \
@@ -208,7 +218,8 @@ class TestExtensionScope:
 
     def test_a_held_enrolment_session_is_not_audited(self, client):
         """It produces these constantly and harmlessly while the SPA settles — auditing them would
-        bury the one row that means something."""
+        bury the one row that means something.
+        """
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_M}.record_auth_event") as recorded, \
              patch(f"{_M}.list_user_sessions", return_value=[]):
@@ -227,7 +238,8 @@ class TestExtensionScope:
 
     def test_a_legacy_row_with_no_scope_behaves_as_a_full_session(self, client):
         """`scope` was added in 2c and defaults to 'full'; a NULL from an older row must not be
-        read as a restriction that silently signs someone out of their own account."""
+        read as a restriction that silently signs someone out of their own account.
+        """
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": None} if t == _TOKEN else None), \
              patch(f"{_M}.list_user_sessions", return_value=[]), \
@@ -239,7 +251,8 @@ class TestExtensionScope:
 
     def test_a_restricted_token_does_not_fall_through_to_a_full_cookie(self, client):
         """The narrowing has to survive a request that carries BOTH. Serving it on the cookie would
-        be the restriction quietly not happening."""
+        be the restriction quietly not happening.
+        """
         def resolve(token):
             return {"user_id": _UID, "scope": "extension" if token == _TOKEN else "full"}
 
@@ -405,7 +418,8 @@ class TestEnrollmentHold:
 
     def test_pulling_the_rollout_back_releases_a_session_already_held(self, client):
         """Clearing the date must not strand everyone who signed in during the window until their
-        session expires — the hold is re-decided on every read, not baked into the row."""
+        session expires — the hold is re-decided on every read, not baked into the row.
+        """
         with _deadline(""), _session("enroll"), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released, \
              patch(f"{_M}.list_user_sessions", return_value=[]), \
@@ -421,7 +435,8 @@ class TestEnrollmentHold:
         """The hold belongs to the ACCOUNT, not the session row. Deciding it from the row alone is
         a dead end on every other device: the account now HAS a factor, so enrolling again is
         step-up gated — and the step-up ceremony is deliberately outside the enrolment surface, so
-        there would be no way forward but signing out."""
+        there would be no way forward but signing out.
+        """
         with _deadline(_PAST), _session("enroll"), \
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released, \
@@ -435,7 +450,8 @@ class TestEnrollmentHold:
 
     def test_a_promotion_that_cannot_be_written_still_grants_access(self, client):
         """The write is bookkeeping; the verdict is re-derived from the account every request. A DB
-        error here must cost one extra query next time, never access."""
+        error here must cost one extra query next time, never access.
+        """
         with _deadline(_PAST), _session("enroll"), \
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", side_effect=RuntimeError("db down")), \
@@ -449,7 +465,8 @@ class TestEnrollmentHold:
     def test_the_session_check_agrees_with_what_the_server_enforces(self, client):
         """`/auth/session` reports the hold off the SAME read that authenticated the request. A
         second lookup could answer 'not held' to the browser while every request it then made was
-        refused — the app rendering over a wall of 403s."""
+        refused — the app rendering over a wall of 403s.
+        """
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_M}.get_user_email", return_value=_EMAIL), \
              patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
@@ -471,7 +488,8 @@ class TestEnrollmentHold:
 
     def test_an_enrolment_write_is_not_attempted_when_no_rollout_is_configured(self, client):
         """The promotion is an UPDATE. A deployment with no deadline cannot hold a session, so it
-        should not pay a write on every enrolment to discover that."""
+        should not pay a write on every enrolment to discover that.
+        """
         with _deadline(""), _session("full"), \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID), \
              patch(f"{_M}.enrollment_allowed", return_value=True), \
@@ -495,14 +513,16 @@ class TestSurfacesDoNotDrift:
     thing it names moves. Rename a route and the `enroll` surface becomes a LOCKOUT — the gate's
     own fetch 403s and the held user has nowhere to go. Change what the extension POSTs and the
     `extension` surface breaks the one-click reconnect. Neither shows up in any other test, because
-    every other test spells the same literal the source does."""
+    every other test spells the same literal the source does.
+    """
 
     def test_every_surface_path_is_a_real_route(self):
         """Closes the loop against the router itself rather than against another copy of the list.
 
         Read off `router` (the `/api` surface, where every entry in both sets lives) plus `app` (the
         handful mounted at the root), and assert the source is non-trivial first — a guard that
-        silently compares against an empty set is worse than no guard."""
+        silently compares against an empty set is worse than no guard.
+        """
         from cqc_lem.api.main import _SCOPE_SURFACES, _scope_path, app, router
 
         known = {_scope_path(r.path)
@@ -517,11 +537,13 @@ class TestSurfacesDoNotDrift:
         """Read out of `browser_extension/popup.js`, not asserted in prose. A path the extension
         calls that is NOT on the surface is a 403 on the user's reconnect click; the reverse — a
         surface entry the extension never calls — is blast radius handed to a stolen token for
-        nothing, so this is an equality, not a subset."""
+        nothing, so this is an equality, not a subset.
+        """
         import re
         from pathlib import Path
-        from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path
+
         import cqc_lem
+        from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path
 
         popup = (Path(cqc_lem.__file__).parent / "browser_extension" / "popup.js").read_text()
         called = {_scope_path(m) for m in re.findall(r"/api/[A-Za-z0-9\-_/]+", popup)}
@@ -532,7 +554,8 @@ class TestSurfacesDoNotDrift:
         later would hand every extension token — including a stolen one — a READ of the LinkedIn
         cookie it never had, with nothing in the source saying so and no other test noticing. This
         is what says so: the entry the extension POSTs to must stay POST-only, or the surface has to
-        be widened deliberately."""
+        be widened deliberately.
+        """
         from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path, app, router
 
         served: dict = {}
