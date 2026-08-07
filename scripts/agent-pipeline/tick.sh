@@ -41,6 +41,8 @@ DRY_RUN="${DRY_RUN:-0}"
 #                      untracked later phase; 0 = off (see "Phase guard" below)
 #   MERGE_STALE_TICKS  consecutive ticks a requested merge may sit with no live merge-queue entry
 #                      before the lane clears the dangling state and re-enqueues (default 3)
+#   MERGE_QUEUE_STUCK_TICKS  merge requests one head SHA may burn while the queue keeps taking and
+#                      dropping it, before the tick reports itself failed (default 12, ~1h)
 [ -f "$BASE/config.env" ] && . "$BASE/config.env"
 MAX_AGENTS="${MAX_AGENTS:-3}"
 SCALE_PER_ISSUES="${SCALE_PER_ISSUES:-10}"
@@ -663,7 +665,15 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
 # anything else is a stall, counted per PR, and after MERGE_STALE_TICKS the dangling entry is
 # cleared (`--disable-auto`) and a fresh one requested — the manual recovery that worked, automated.
 # The "merging" comment is keyed on the HEAD SHA, so one merge attempt can only ever produce one.
+#
+# A live entry is NOT the end of the question, because #1067's entry was live at every read: the
+# timeline shows 154 added_to_merge_queue / 153 removed_from_merge_queue at exactly tick cadence —
+# a merge-group check failed ~3 min after each enqueue, and the next tick re-enqueued. Read 20s
+# after the request, that PR looked healthily QUEUED 154 times in a row. So the queue gets a
+# BUDGET too: requests are counted per HEAD SHA, and a head the queue has refused
+# MERGE_QUEUE_STUCK_TICKS times is reported as stuck however the entry looks right now.
 MERGE_STALE_TICKS="${MERGE_STALE_TICKS:-3}"     # consecutive stalled ticks before forcing a re-enqueue
+MERGE_QUEUE_STUCK_TICKS="${MERGE_QUEUE_STUCK_TICKS:-12}"  # merge requests one head may burn (~1h at 5-min ticks)
 MERGE_VERIFY_TRIES="${MERGE_VERIFY_TRIES:-5}"   # state reads after asking for the merge
 MERGE_VERIFY_SLEEP="${MERGE_VERIFY_SLEEP:-5}"   # seconds between them
 
@@ -672,6 +682,9 @@ classify_merge_state() {  # $1=PR state $2=merge-queue entry state $3=auto-merge
     MERGED) echo merged; return 0 ;;
     CLOSED) echo closed; return 0 ;;
   esac
+  # UNMERGEABLE is GitHub saying the merge-group run failed — the entry is on its way OUT of the
+  # queue, so counting it as "the queue owns it" is the #1082 mistake in a new costume.
+  [ "$2" = "UNMERGEABLE" ] && { echo unmergeable; return 0; }
   [ -n "$2" ] && { echo queued; return 0; }     # a live queue entry is the only proof of enqueue
   [ "$3" = "1" ] && { echo armed; return 0; }   # auto-merge set but no entry — progress, unproven
   echo unqueued                                 # unreadable state reads as NOT merged, never as merged
@@ -694,6 +707,19 @@ merge_stall_count() {  # $1=pr -> consecutive stalled ticks (0 when unset/garbag
 merge_stall_bump()  { echo "$(( $(merge_stall_count "$1") + 1 ))" > "$BASE/state/mergestall-$1.count"; }
 merge_stall_clear() { rm -f "$BASE/state/mergestall-$1.count"; }
 
+# Queue budget: how many times this lane has asked GitHub to merge THIS head. A new push resets it
+# (the queue deserves a fresh chance at new code); nothing else does except the PR actually landing.
+merge_attempt_count() {  # $1=pr $2=head sha -> requests already made at this head (0 when it moved)
+  local rec sha n
+  rec="$(cat "$BASE/state/mergeattempt-$1" 2>/dev/null)"
+  sha="${rec%% *}"; n="${rec##* }"
+  [ -n "$sha" ] && [ "$sha" = "$2" ] || { echo 0; return 0; }
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  echo "$n"
+}
+merge_attempt_bump()  { printf '%s %s\n' "$2" "$(( $(merge_attempt_count "$1" "$2") + 1 ))" > "$BASE/state/mergeattempt-$1"; }
+merge_attempt_clear() { rm -f "$BASE/state/mergeattempt-$1"; }
+
 merge_comment_once() {  # $1=pr $2=head sha $3=body -> 0 when it commented, 1 when already said
   local P="$1" sha="$2" body="$3" f="$BASE/state/mergecomment-$1.sha"
   [ "$(cat "$f" 2>/dev/null)" = "$sha" ] && return 1
@@ -703,9 +729,8 @@ merge_comment_once() {  # $1=pr $2=head sha $3=body -> 0 when it commented, 1 wh
 }
 
 merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely queued
-  local P="$1" BODY="$2" URL SHA PST QST CLS tries stall
+  local P="$1" BODY="$2" SHA PST QST CLS tries stall asked
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would merge PR #$P."; return 0; fi
-  URL="$(gh pr view "$P" --repo "$SLUG" --json url --jq .url 2>/dev/null)"
   SHA="$(gh pr view "$P" --repo "$SLUG" --json headRefOid --jq .headRefOid 2>/dev/null)"
   # An unreadable head still needs a stable comment key, or "once per attempt" becomes "every tick".
   [ -z "$SHA" ] && SHA="unknown"
@@ -717,7 +742,11 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
     merge_stall_clear "$P"
   fi
 
-  gh pr merge --auto "${URL:-$P}" >/dev/null 2>&1
+  # Always --repo-scoped: $BASE is not a git checkout, so a bare PR number would resolve against
+  # whatever repo the cwd happens to be — the wrong repo, or none at all.
+  gh pr merge --auto "$P" --repo "$SLUG" >/dev/null 2>&1
+  merge_attempt_bump "$P" "$SHA"
+  asked="$(merge_attempt_count "$P" "$SHA")"
 
   tries=0
   while : ; do
@@ -727,7 +756,7 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
     CLS="$(classify_merge_state "${PST%%|*}" "$QST" "${PST##*|}")"
     # `armed` is deliberately NOT terminal: an entry usually appears a beat after the request, and
     # settling on `armed` early would count a healthy enqueue as a stall.
-    case "$CLS" in merged|closed|queued) break ;; esac
+    case "$CLS" in merged|closed|queued|unmergeable) break ;; esac
     tries=$(( tries + 1 ))
     [ "$tries" -ge "$MERGE_VERIFY_TRIES" ] && break
     sleep "$MERGE_VERIFY_SLEEP"
@@ -735,15 +764,30 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
 
   case "$CLS" in
     merged)
-      merge_stall_clear "$P"
+      merge_stall_clear "$P"; merge_attempt_clear "$P"
       log "MERGE: PR #$P is MERGED."
       merge_comment_once "$P" "$SHA" "$BODY"
       return 0 ;;
     queued)
       merge_stall_clear "$P"
-      log "MERGE: PR #$P is WAITING IN THE MERGE QUEUE (entry: ${QST:-unknown}) — the queue owns it now, no further action this tick."
+      # An entry that is live NOW proves this request was taken; it does NOT prove the queue is
+      # making progress. #1067 was re-enqueued and evicted 154 times at this exact cadence, and
+      # every single read looked like this line. Spending the budget is the tell.
+      if [ "$asked" -ge "$MERGE_QUEUE_STUCK_TICKS" ]; then
+        log "MERGE: PR #$P is STUCK IN THE MERGE QUEUE — $asked merge requests at head ${SHA:0:8} and still not merged (entry: ${QST:-unknown}). The queue keeps taking it and dropping it: read the merge_group check runs, this will not clear itself."
+        TICK_OUTCOME="failed"; TICK_REASON="merge_queue_stuck"
+        merge_comment_once "$P" "$SHA" "$BODY"
+        return 1
+      fi
+      log "MERGE: PR #$P is WAITING IN THE MERGE QUEUE (entry: ${QST:-unknown}, request $asked/$MERGE_QUEUE_STUCK_TICKS at this head) — the queue owns it now, no further action this tick."
       merge_comment_once "$P" "$SHA" "$BODY"
       return 0 ;;
+    unmergeable)
+      # GitHub has already judged this head: the merge-group run failed. Re-requesting cannot help.
+      merge_stall_clear "$P"
+      log "MERGE: PR #$P — its merge-queue entry is UNMERGEABLE (request $asked at head ${SHA:0:8}): a merge_group check is failing, so GitHub will evict it. Fix the failing check; the lane will not re-request its way out of this."
+      TICK_OUTCOME="failed"; TICK_REASON="merge_queue_unmergeable"
+      return 1 ;;
     armed)
       # Auto-merge is set but nothing is queued yet. Normal for a few seconds — and also exactly
       # what a dangling entry looks like — so it counts toward the stall budget either way.
@@ -752,7 +796,7 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
       merge_comment_once "$P" "$SHA" "$BODY"
       return 0 ;;
     closed)
-      merge_stall_clear "$P"
+      merge_stall_clear "$P"; merge_attempt_clear "$P"
       log "MERGE: PR #$P is CLOSED without merging — not re-requesting."
       TICK_OUTCOME="skipped"; TICK_REASON="merge_pr_closed"
       return 1 ;;

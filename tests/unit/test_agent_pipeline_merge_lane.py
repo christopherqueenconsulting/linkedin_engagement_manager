@@ -90,6 +90,8 @@ def _comments(tmp_path: Path) -> list[str]:
         ("CLOSED", "", "0", "closed"),
         ("OPEN", "QUEUED", "0", "queued"),
         ("OPEN", "AWAITING_CHECKS", "1", "queued"),
+        ("OPEN", "LOCKED", "1", "queued"),
+        ("OPEN", "UNMERGEABLE", "1", "unmergeable"),
         ("OPEN", "", "1", "armed"),
         ("OPEN", "", "0", "unqueued"),
     ],
@@ -131,6 +133,35 @@ def test_garbage_stall_counter_reads_as_zero(tmp_path):
     assert out.stdout.strip() == "0"
 
 
+# --- queue budget: requests counted per head SHA ------------------------------------------------
+
+def test_attempt_counter_is_per_head_sha(tmp_path):
+    """A new push earns a fresh chance at the queue; nothing else resets the count."""
+    out = _run(
+        tmp_path,
+        """
+        merge_attempt_count 1067 sha-a
+        merge_attempt_bump 1067 sha-a; merge_attempt_bump 1067 sha-a
+        merge_attempt_count 1067 sha-a
+        merge_attempt_count 1067 sha-b
+        merge_attempt_bump 1067 sha-b; merge_attempt_count 1067 sha-b
+        merge_attempt_clear 1067; merge_attempt_count 1067 sha-b
+        """,
+    )
+    assert out.stdout.split() == ["0", "2", "0", "1", "0"]
+
+
+def test_garbage_attempt_counter_reads_as_zero(tmp_path):
+    out = _run(
+        tmp_path,
+        """
+        printf 'junk\\n' > "$BASE/state/mergeattempt-1067"
+        merge_attempt_count 1067 sha-a
+        """,
+    )
+    assert out.stdout.strip() == "0"
+
+
 # --- comment keying: the 561-comment regression -------------------------------------------------
 
 def test_comment_is_posted_once_per_head_sha(tmp_path):
@@ -167,9 +198,86 @@ def test_merge_pr_reports_a_live_queue_entry_distinctly(tmp_path):
         FAKE_QUEUE="AWAITING_CHECKS",
     )
     assert "rc=0" in out.stdout
-    assert "WAITING IN THE MERGE QUEUE (entry: AWAITING_CHECKS)" in out.stdout
+    assert "WAITING IN THE MERGE QUEUE (entry: AWAITING_CHECKS" in out.stdout
     assert len(_comments(tmp_path)) == 1
     assert not (tmp_path / "state" / "mergestall-1067.count").exists()
+
+
+def test_a_queue_that_keeps_taking_and_dropping_the_pr_is_reported_stuck(tmp_path):
+    """The #1067 timeline: 154 enqueues, 153 evictions, a live entry at every read.
+
+    Each tick asked for the merge, GitHub created an entry, a merge_group check failed ~3 min
+    later and the entry was dropped — so a state read 20s after the request saw AWAITING_CHECKS
+    every single time. "There is an entry right now" must therefore NOT be the whole answer, or
+    the lane calls 47h of deadlock healthy.
+    """
+    out = _run(
+        tmp_path,
+        'for _ in 1 2 3 4 5; do merge_pr 1067 "merging." || true; done; '
+        'echo "$TICK_OUTCOME/$TICK_REASON"',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="AWAITING_CHECKS",
+        MERGE_QUEUE_STUCK_TICKS="4",
+    )
+    assert "STUCK IN THE MERGE QUEUE" in out.stdout
+    assert "4 merge requests at head" in out.stdout
+    assert "failed/merge_queue_stuck" in out.stdout
+    # …and it stays one comment, not one per tick.
+    assert len(_comments(tmp_path)) == 1
+
+
+def test_a_healthy_queue_wait_is_never_called_stuck(tmp_path):
+    """A slow merge queue is normal; only a spent budget is a diagnosis."""
+    out = _run(
+        tmp_path,
+        'for _ in 1 2 3; do merge_pr 1067 "merging." || true; done; '
+        'echo "$TICK_OUTCOME/$TICK_REASON"',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="AWAITING_CHECKS",
+        MERGE_QUEUE_STUCK_TICKS="12",
+    )
+    assert "STUCK IN THE MERGE QUEUE" not in out.stdout
+    assert "dispatched/" in out.stdout
+
+
+def test_a_new_push_gives_the_queue_a_fresh_budget(tmp_path):
+    out = _run(
+        tmp_path,
+        """
+        for _ in 1 2 3; do merge_pr 1067 "merging." || true; done
+        FAKE_SHA=beef5678
+        TICK_OUTCOME="dispatched"; TICK_REASON=""   # each tick is its own process
+        merge_pr 1067 "merging." || true
+        echo "$TICK_OUTCOME/$TICK_REASON"
+        """,
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="AWAITING_CHECKS",
+        MERGE_QUEUE_STUCK_TICKS="3",
+    )
+    assert "STUCK IN THE MERGE QUEUE" in out.stdout          # the 3rd request at the old head
+    assert out.stdout.strip().endswith("dispatched/")        # …the push cleared the diagnosis
+    assert (tmp_path / "state" / "mergeattempt-1067").read_text().split() == ["beef5678", "1"]
+
+
+def test_an_unmergeable_entry_is_not_progress(tmp_path):
+    """GitHub has judged the head: the merge_group run failed. Re-requesting cannot fix that."""
+    out = _run(
+        tmp_path,
+        'merge_pr 1067 "merging."; echo "rc=$?"; echo "$TICK_OUTCOME/$TICK_REASON"',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="UNMERGEABLE",
+    )
+    assert "rc=1" in out.stdout
+    assert "failed/merge_queue_unmergeable" in out.stdout
+    assert "a merge_group check is failing" in out.stdout
+    assert _comments(tmp_path) == []  # never claim "merging" over a failing merge-group check
+
+
+def test_the_merge_request_is_always_repo_scoped(tmp_path):
+    """$BASE is not a git checkout — a bare PR number would resolve against the wrong repo."""
+    _run(tmp_path, 'merge_pr 1067 "merging." || true', FAKE_PR_STATE="MERGED|0")
+    asked = [c for c in _calls(tmp_path) if c.startswith("gh pr merge")]
+    assert asked and all("--repo o/n" in c for c in asked)
 
 
 def test_merge_pr_reports_a_merged_pr(tmp_path):
