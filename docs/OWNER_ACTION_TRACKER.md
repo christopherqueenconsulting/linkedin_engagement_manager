@@ -196,7 +196,6 @@ not to act on them if you read them before the fix lands.
 
 | What | Issue | Note |
 |---|---|---|
-| Supervised avatar render | #744 | Declare attributes → regenerate → approve. ~3 min |
 | Degree badge re-check after deploy | #1031 | Phase 3 of #1021 |
 | Supervised first newsletter publish | — | Publish dialog has never been live-validated |
 | Populate `include_authors` roster | — | `docs/engagement-growth-analysis-2026-07.md:30`: *"has never been populated"* |
@@ -246,6 +245,9 @@ the env-var defaults, since `utilities/flags.py` fails open to the env var.
 - **Stripe is in TEST mode.** Worth remembering before the early-adopter program opens —
   `EARLY_ADOPTER_TRIAL_ENABLED` is `False` and `EARLY_ADOPTER_COUPON_ID` is empty, so nothing can
   transact by accident today.
+- **The supervised avatar render is done** — attributes declared first, previews re-rolled, likeness
+  approved. It closed #744 and is off the §7 list; the ordering that made it a real test is written
+  down in `docs/AVATAR_FIDELITY_AND_VIDEO_LANGUAGE.md` §4.
 
 ## 10. Still could not verify
 
