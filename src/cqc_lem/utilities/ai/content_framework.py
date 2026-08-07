@@ -689,6 +689,11 @@ def normalize_key(content_type: str, kind: str, value) -> Optional[str]:
 
 
 def structure_for(content_type: str, format_key) -> list:
+    """The ordered section outline a format is written to, or [] when the format is unknown/absent.
+
+    A fresh list every call — the menu entries are module-level constants, so handing out the stored
+    list would let a caller that edits its outline mutate the archetype for the whole process.
+    """
     meta = _menu(content_type)["formats"].get(normalize_key(content_type, "format", format_key) or "")
     return list(meta["structure"]) if meta else []
 

@@ -240,6 +240,13 @@ def rank_candidates(signals: Iterable[CandidateSignal], now: datetime, facts_by_
 
 
 def first_name(name: str = None) -> str:
+    """First token of a scraped display name, safe to drop straight into a greeting.
+
+    Never empty and never raises on junk: a missing or unscrapable name becomes ``"there"``, so
+    `default_connect_note` writes "Hi there, ..." instead of "Hi , ...". That is the same fallback
+    `run_automation.render_dm_placeholders` fills `{first_name}` with, so a connect note and a DM
+    read the same way when the name is unknown.
+    """
     cleaned = " ".join(str(name or "").split()).strip()
     return cleaned.split(" ")[0] if cleaned else "there"
 

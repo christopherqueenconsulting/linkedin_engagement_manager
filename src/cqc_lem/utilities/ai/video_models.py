@@ -23,6 +23,13 @@ from cqc_lem.utilities.observability import track_media_cost
 
 @dataclass(frozen=True)
 class VideoModelSpec:
+    """Everything about one Runway model that a caller must not hardcode.
+
+    The SDK takes only a model string, so duration validity, audio capability and price are
+    knowledge that would otherwise be scattered across call sites and drift when Runway retires a
+    model (gen3a_turbo, 2026-07-30). Frozen because `VIDEO_MODELS` is module-level shared state.
+    """
+
     sdk_model: str               # value passed to the SDK 'model' kwarg
     cost_per_second: float       # USD (premium values assume audio on)
     credits: int                 # video credits charged (0 = free/standard tier)
@@ -65,15 +72,30 @@ _POLL_SECONDS = 10
 
 
 def resolve_ratio(ratio: str) -> str:
+    """Turn a friendly aspect ratio ("9:16") into the resolution string Runway wants ("720:1280").
+
+    Anything not in `RATIO_ALIASES` passes through untouched, so a caller that already holds a raw
+    Runway resolution — or a new one added before this map catches up — is never rewritten.
+    """
     return RATIO_ALIASES.get(ratio, ratio)
 
 
 def model_credits(model: str) -> int:
+    """Video credits this model charges the user's balance; 0 for the free standard tier.
+
+    An unknown model reads as 0 rather than raising: this is the number `run_content_plan` reserves
+    up front, and refusing to bill for a model we cannot price beats over-charging a guess.
+    """
     spec = VIDEO_MODELS.get(model)
     return spec.credits if spec else 0
 
 
 def is_premium(model: str) -> bool:
+    """Whether rendering this model spends credits — the switch between the Veo and standard paths.
+
+    Cost is what defines the tier, so this is derived from `model_credits` rather than a separate
+    flag that could disagree with the number actually deducted.
+    """
     return model_credits(model) > 0
 
 
@@ -86,6 +108,12 @@ def supports_audio(model: str) -> bool:
 
 
 def resolve_duration(model: str, duration: Optional[int]) -> int:
+    """Coerce a requested duration to one this model's API actually accepts.
+
+    The tiers disagree — Veo takes 4/6/8s, gen4/seedance 5/10 — so a caller carrying one number
+    across both would get a hard API rejection mid-render. A duration outside the model's set is
+    replaced by that model's default rather than rounded, and an unknown model is left alone.
+    """
     spec = VIDEO_MODELS.get(model)
     if not spec:
         return duration or DEFAULT_VIDEO_DURATION
@@ -95,6 +123,12 @@ def resolve_duration(model: str, duration: Optional[int]) -> int:
 
 
 def estimate_video_cost(model: str, duration: int = DEFAULT_VIDEO_DURATION) -> float:
+    """Estimated USD for one render, from this module's own price table — not a provider-billed figure.
+
+    Premium per-second rates assume audio is on, so a silent Veo render is over-estimated rather
+    than under. An unknown model costs 0.0: the media ledger would rather miss a row than invent a
+    price nobody can reconcile.
+    """
     spec = VIDEO_MODELS.get(model)
     return round(spec.cost_per_second * duration, 3) if spec else 0.0
 

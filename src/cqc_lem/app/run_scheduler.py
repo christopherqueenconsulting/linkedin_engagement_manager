@@ -1,3 +1,15 @@
+"""Celery **beat** tasks — the fan-out layer between the schedule and the work itself.
+
+Almost nothing here touches LinkedIn: each `auto_*` task decides WHO is due right now and dispatches
+the real task (mostly `run_automation`) onto the right lane. Two rules run through all of them.
+
+Every Selenium fan-out asks `_skip_if_throttled()` before dispatching, so a manual pause or an open
+429 breaker stops work at the source instead of spending Chrome slots on sessions that would fail —
+POSTING is API-driven and deliberately never gated. And the per-user beats tick every
+STAGGER_TICK_MINUTES and dispatch only the users whose staggered slot has come up (`_stagger_due`,
+issue #554), rather than handing one lane the whole fleet at a single crontab.
+"""
+
 import os
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -352,6 +364,15 @@ def auto_check_connection_requests(self):
 
 @shared_task.task
 def auto_appreciate_dms():
+    """Beat: hand each due user a 5-minute appreciation-DM run on the `se_outreach` lane.
+
+    The session check comes BEFORE the slot claim, so a user with no stored LinkedIn session doesn't
+    spend their one slot for the day on a run that could only fail — connecting later still earns
+    them a run at the next tick.
+
+    Every dispatch carries a jittered countdown (#626), which is what keeps a stable per-user slot
+    from starting at the same clock minute every day.
+    """
     if _skip_if_throttled("auto_appreciate_dms"):
         return "Automation throttled"
     # For each user schedule appreciate DMS — at that user's staggered slot, so the single
@@ -1942,6 +1963,17 @@ def auto_clean_old_videos():
 
 
 def organize_videos_by_name_and_timestamp():
+    """Flatten Selenium's per-run recording folders into one folder per video name.
+
+    The grid drops each session's `.mp4` into its own throwaway folder, so a given session name's
+    history ends up scattered across dozens of them. Each file is re-homed to
+    `<name>/<mtime as %Y_%m_%d_%H_%M_%S>.mp4` and its now-empty source folder deleted. The file's
+    mtime IS its identity in the destination, so two recordings of the same name in the same second
+    collide.
+
+    Folders whose name starts with `CQC_LEM` (the `se:name` prefix set in `selenium_util.py`) are
+    skipped entirely.
+    """
     selenium_folder = os.path.join(assets_dir, 'selenium')
 
     # Keep track of videos moved

@@ -33,11 +33,11 @@ class RedisLike(Protocol):
     the module keeps working, no-opping, when the client is unavailable).
     """
 
-    def get(self, name: str) -> Any: ...  # lgtm[py/ineffectual-statement]
+    def get(self, name: str) -> Any: ...  # lgtm[py/ineffectual-statement]  # noqa: D102 — Redis API, documented by redis-py
 
-    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any: ...  # lgtm[py/ineffectual-statement]
+    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any: ...  # lgtm[py/ineffectual-statement]  # noqa: D102
 
-    def delete(self, *names: str) -> Any: ...  # lgtm[py/ineffectual-statement]
+    def delete(self, *names: str) -> Any: ...  # lgtm[py/ineffectual-statement]  # noqa: D102
 
 
 class ContentGenerationState(StrEnum):

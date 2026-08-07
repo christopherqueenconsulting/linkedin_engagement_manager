@@ -83,6 +83,11 @@ class QualityVerdict:
 
 
 def size_for_ratio(ratio: str) -> str:
+    """The gpt-image `size` for an aspect ratio; anything unrecognised falls back to square.
+
+    Only the three ratios the surfaces render at map to a size the API accepts, so an unknown ratio
+    degrades to 1024x1024 rather than being passed through as a size the request would fail on.
+    """
     return _SIZE_BY_RATIO.get(ratio, "1024x1024")
 
 

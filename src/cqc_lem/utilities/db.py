@@ -1,3 +1,18 @@
+"""Every SQL statement LEM runs. No raw SQL lives outside this module.
+
+Readers here fail SOFT: a `mysql.connector.Error` is logged and turned into the empty answer for that
+shape (None / [] / 0 / False), so a database blip degrades one feature instead of raising through a
+Celery task or an API handler. Where that default would be the dangerous answer the function fails
+the other way and says so — `has_received_lead_magnet` returns True on error so a fault never
+double-DMs, and `user_owns_posts` raises `OwnershipUnprovable` rather than answer an authorisation
+question it could not run (issue #914).
+
+Secrets are sealed and unsealed here and nowhere else (issue #745): `li_at` and the other cookie
+values, the OAuth tokens and the stored password, keyed per user+column off `LEM_SECRET_KEY` with the
+`SECRET_FIELD_*` constants as AAD. Renaming one of those constants orphans every row already written
+under it, and a value that will not decrypt reads as None rather than as ciphertext.
+"""
+
 import hashlib
 import json
 import os
@@ -190,6 +205,11 @@ def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 class PostType(StrEnum):
+    """The `posts.post_type` ENUM, mirrored in Python so post types are never raw strings.
+
+    `posts.post_type` is a MySQL ENUM, so adding a member here is only half the change — the column needs
+    a Flyway migration before anything can be written with the new value.
+    """
     TEXT = 'text'
     CAROUSEL = 'carousel'
     VIDEO = 'video'
@@ -197,6 +217,11 @@ class PostType(StrEnum):
 
 
 class PostStatus(StrEnum):
+    """The `posts.status` ENUM. `error` means generation or posting failed and the row needs a human.
+
+    Same rule as `PostType`: the column is a MySQL ENUM, so a new member lands in a Flyway migration
+    first.
+    """
     PLANNING = 'planning'
     PENDING = 'pending'
     APPROVED = 'approved'
@@ -411,6 +436,13 @@ _ONBOARDING_COLS: tuple = tuple(f"{step.value}_at" for step in ONBOARDING_STEPS)
 
 # Enum for log actions types
 class LogActionType(StrEnum):
+    """The `logs.action_type` ENUM — what an automation run did, one row per attempt.
+
+    These rows are not only history: the per-day caps and the dedup checks are COUNTED off them
+    (`count_comments_today`, `count_invites_sent_today`, `has_engaged_url_with_x_days`), so an action
+    whose log row never landed is budget the account spent and will spend again. Extending this needs a
+    Flyway migration on the ENUM column (V16 and V37 are what that looks like).
+    """
     COMMENT = 'comment'
     DM = 'dm'
     REPLY = 'reply'
@@ -421,6 +453,7 @@ class LogActionType(StrEnum):
 
 # ENum for log result options
 class LogResultType(StrEnum):
+    """The `logs.result` ENUM. Every cap and dedup counter filters on SUCCESS, so a FAILURE row buys no budget."""
     SUCCESS = 'success'
     FAILURE = 'failure'
 
@@ -588,6 +621,15 @@ def prune_superseded_cookies(user_id: int) -> int:
 
 
 def get_cookies(url: str, user_email: str):
+    """Selenium-ready cookie dicts for `url`'s top-level domain, for one user's stored session.
+
+    `user_id` is selected only to unseal the row and is popped before returning — `add_cookie()` rejects
+    any key it does not know. A cookie whose value would not decrypt is DROPPED rather than handed back
+    empty: an empty `li_at` would install a dead session that LEM then reports as signed in.
+
+    Returns None (not []) when the query itself failed, so "nothing stored" and "could not read the
+    cookie table" stay distinguishable.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -713,6 +755,12 @@ def set_linkedin_session_email_sent_at(user_id: int) -> bool:
 
 
 def add_user(email: str, password: str):
+    """Create a user from an email + password, sealing the password against the id the INSERT allocates.
+
+    Two statements on purpose: the ciphertext is bound to `users.id` as AAD, which auto-increment only
+    hands out once the row exists. A duplicate email is logged and swallowed, and nothing is returned
+    either way — the caller learns the outcome by looking the user up.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -737,6 +785,17 @@ def add_user(email: str, password: str):
 def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str, access_token_expires_in: str,
                                refresh_token: str = None,
                                refresh_token_expires_in: str = None):
+    """Upsert a user from a LinkedIn OAuth callback and store the sealed tokens.
+
+    Split into an identity upsert and a token UPDATE because the tokens are sealed against `users.id`,
+    which does not exist yet for a brand-new user. On the ON DUPLICATE KEY branch MySQL does not report
+    the existing row's id in `lastrowid` — it can hand back the auto-increment value the failed insert
+    allocated and burned — so `id = LAST_INSERT_ID(id)` pins it and an email lookup backs that up.
+    Sealing against the wrong id stores a token bound to a row that does not exist, which is
+    indistinguishable from storing no token at all.
+
+    Errors are logged, not raised, and nothing is returned either way.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -796,6 +855,10 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
 
 
 def get_user_linked_sub_id(user_id: int):
+    """The LinkedIn OAuth subject id stored for this user.
+
+    None covers both "no such user" and a failed read.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -814,6 +877,12 @@ def get_user_linked_sub_id(user_id: int):
 
 
 def get_user_access_token(user_id: int):
+    """The user's decrypted LinkedIn access token, or None when it is missing, expired or unreadable.
+
+    Expiry is evaluated in SQL against the database's own NOW(), so a lapsed token reads as ABSENT rather
+    than as a token that will 401 later; a row with no recorded created_at/expires_in is treated as still
+    valid. A token that will not decrypt also comes back None.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -841,6 +910,11 @@ def get_user_access_token(user_id: int):
 
 
 def get_user_id(email: str):
+    """Resolve an email address to a user id.
+
+    None conflates "no such address" with "the lookup failed", so it is never on its own proof that an
+    account does not exist.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -862,6 +936,12 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
                 video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
                 video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
                 use_avatar: Optional[bool] = None, image_url: Optional[str] = None) -> bool:
+    """Insert a fully-formed post for the account behind `email`.
+
+    `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
+    post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
+    email is logged and returns False rather than raising.
+    """
     user_id = get_user_id(email)
 
     success = False
@@ -901,6 +981,11 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
 
 def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostType, buyer_stage: str,
                         content_mix: Optional[str] = None) -> bool:
+    """Insert the SKELETON of a planned post — schedule slot, type, buyer stage and mix class, no content.
+
+    Lands at `PostStatus.PLANNING` with the literal body 'TBD', which is the placeholder the generation
+    pass overwrites later.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -963,6 +1048,13 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
 
 
 def update_db_post_content(post_id: int, content: str) -> bool:
+    """Overwrite a post's body.
+
+    False means the row was not CHANGED, which is three different facts: the write failed, no row
+    matched (this never creates a post), or the row already held this exact content. MySQL reports
+    changed rather than matched rows unless the connection sets `CLIENT.FOUND_ROWS`, and
+    `_get_mysql_config` does not — so re-saving identical content answers False.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -985,6 +1077,10 @@ def update_db_post_content(post_id: int, content: str) -> bool:
 
 
 def update_db_post_video_url(post_id: int, video_url: str) -> bool:
+    """Point a post at its rendered video.
+
+    False when the write failed or no row matched.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -1007,6 +1103,16 @@ def update_db_post_video_url(post_id: int, video_url: str) -> bool:
 
 
 def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
+    """Move a post to `post_status`.
+
+    The MySQL connector cannot bind a StrEnum, so the `.value` is read first — and that read is wrapped:
+    anything without a `.value` (a bare string, say) leaves the fallback in place and the post is written
+    as 'posted'. Pass a real `PostStatus`.
+
+    False means the row was not CHANGED, not that the write failed: setting a post to the status it
+    already holds answers False, because the connection does not set `CLIENT.FOUND_ROWS` and MySQL
+    therefore counts changed rather than matched rows.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -1174,6 +1280,15 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
               sort_by: str = 'scheduled_time',
               start_date: Optional[datetime] = None,
               end_date: Optional[datetime] = None) -> tuple[list, int]:
+    """One page of a user's posts plus the TOTAL number matching, for the Review & Edit list.
+
+    The count runs over the same WHERE clause as the page, so pagination stays honest under filtering.
+    `sort_by` is whitelisted through `_POST_SORT_COLUMNS` (anything unknown falls back to
+    `scheduled_time`) because the column name is interpolated rather than parameterized; `search` becomes
+    a quoted-term / AND-OR clause via `build_content_search_clause`. Date bounds are coerced to naive UTC.
+
+    A read error returns `([], 0)` — an empty page, never a partial one.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1354,6 +1469,10 @@ def set_default_video_quality(user_id: int, quality: str) -> bool:
 
 
 def get_posted_posts(user_id: int):
+    """Every post this user actually published, oldest first.
+
+    None (not []) when the read failed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1380,6 +1499,7 @@ def get_posted_posts(user_id: int):
 
 
 def get_post_content(post_id: int):
+    """A post's body text, or None when the post does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1398,6 +1518,11 @@ def get_post_content(post_id: int):
 
 
 def get_post_user_id(post_id: int):
+    """Who owns a post.
+
+    None conflates "no such post" with a failed read, so this is not by itself an authorisation answer —
+    `user_owns_posts` is the fail-closed one (issue #914).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1460,6 +1585,11 @@ def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
 
 
 def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
+    """Set (or clear, with None) a post's image.
+
+    Returns True whenever the statement ran, including when no row matched — unlike the sibling
+    content/video setters, which report `rowcount`.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -1479,6 +1609,7 @@ def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
 
 
 def get_post_image_url(post_id: int) -> Optional[str]:
+    """A post's stored image path, or None when unset, absent or unreadable."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1496,6 +1627,7 @@ def get_post_image_url(post_id: int) -> Optional[str]:
 
 
 def get_post_video_url(post_id: int):
+    """A post's stored video URL, or None when unset, absent or unreadable."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1514,6 +1646,7 @@ def get_post_video_url(post_id: int):
 
 
 def get_post_buyer_stage(post_id: int) -> Optional[str]:
+    """The buyer-journey stage the content plan assigned this post, or None when unset or unreadable."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -1574,6 +1707,12 @@ def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
 
 
 def get_post_type(post_id: int) -> Optional[PostType]:
+    """A post's `PostType`.
+
+    None covers three different things on purpose: no such post, a failed read, and a stored value that
+    is not a member of this build's enum — the last is what a MySQL ENUM the code has not caught up to
+    looks like from here.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1596,6 +1735,12 @@ def get_post_type(post_id: int) -> Optional[PostType]:
 
 
 def get_carousel_slides(post_id: int) -> list[str]:
+    """A post's carousel slide paths as a list — [] whenever there is nothing usable.
+
+    The column holds JSON; a string is parsed, and anything that is not a list (or will not parse)
+    collapses to []. Empty is always safe to iterate, so a malformed row degrades to "no slides" instead
+    of raising into the poster. `get_post_carousel_slides` hands back the RAW column instead.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1688,6 +1833,11 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
 
 def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None,
                       user_id: Optional[int] = None) -> bool:
+    """Reject posts rather than delete them, so the row and its reason survive for the plan to learn from.
+
+    `user_id` scopes the write to one account's rows — see `bulk_update_posts` for what that argument
+    guarantees (issue #914).
+    """
     return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason,
                              user_id=user_id)
 
@@ -1743,6 +1893,10 @@ def get_post_rejection_reason(post_id: int) -> Optional[str]:
 
 
 def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
+    """Replace a post's carousel slides, stored as JSON.
+
+    False when the write failed or no row matched.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2123,6 +2277,11 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
 
 
 def get_user_password_pair_by_id(user_id: int):
+    """The (email, decrypted password) pair the Selenium login uses.
+
+    Always a two-tuple: a missing row or a failed read is `(None, None)`, never a bare None, so the unpack
+    at every call site holds. A password that will not decrypt comes back None with the email intact.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -2145,6 +2304,11 @@ def get_user_password_pair_by_id(user_id: int):
 
 
 def get_active_user_password_pairs():
+    """`[email, password]` for every active user that has BOTH.
+
+    A user missing either half is skipped silently — there is nothing a browser login could do with half
+    a credential.
+    """
     user_password_pairs = []
 
     active_users = get_active_user_ids()
@@ -2158,6 +2322,11 @@ def get_active_user_password_pairs():
 
 
 def add_linkedin_profile(profile: LinkedInProfile, user_id: Optional[int] = None):
+    """Upsert a scraped LinkedIn profile.
+
+    `user_id` is COALESCEd rather than overwritten, so re-scraping a profile with no account attached
+    never unlinks a row that was already tied to one.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2184,6 +2353,12 @@ def add_linkedin_profile(profile: LinkedInProfile, user_id: Optional[int] = None
 
 
 def get_linked_in_profile_by_url(profile_url: str, updated_less_than_days_ago: int = 1):
+    """The stored profile JSON for a URL, as the one-column row tuple, but only while it is FRESH.
+
+    `updated_less_than_days_ago` is a cache window, not a filter on the person: a row older than that
+    reads as ABSENT so the caller re-scrapes instead of acting on stale headline/about text. Both slash
+    spellings are queried because LinkedIn hands out both.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2206,6 +2381,11 @@ def get_linked_in_profile_by_url(profile_url: str, updated_less_than_days_ago: i
 
 
 def get_linked_in_profile_by_email(profile_email: str, updated_less_than_days_ago: int = 1):
+    """The stored profile JSON for an email, as the one-column row tuple.
+
+    Same freshness window as `get_linked_in_profile_by_url` — a row older than
+    `updated_less_than_days_ago` reads as absent rather than stale.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2224,6 +2404,11 @@ def get_linked_in_profile_by_email(profile_email: str, updated_less_than_days_ag
 
 
 def get_linked_in_profile_by_user_id(user_id: int, updated_less_than_days_ago: int = 1):
+    """The stored profile JSON for a user, as the one-column row tuple.
+
+    Same freshness window as `get_linked_in_profile_by_url` — a row older than
+    `updated_less_than_days_ago` reads as absent rather than stale.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2308,6 +2493,10 @@ def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
 
 
 def remove_linked_in_profile_by_user_id(user_id: int):
+    """Drop this user's cached profile row so the next read re-scrapes.
+
+    True means the DELETE ran, not that a row existed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2325,6 +2514,10 @@ def remove_linked_in_profile_by_user_id(user_id: int):
 
 
 def remove_linked_in_profile_by_url(profile_url: str):
+    """Drop the cached profile row for a URL so the next read re-scrapes.
+
+    True means the DELETE ran, not that a row existed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2342,6 +2535,10 @@ def remove_linked_in_profile_by_url(profile_url: str):
 
 
 def remove_linked_in_profile_by_email(profile_email: str):
+    """Drop the cached profile row for an email so the next read re-scrapes.
+
+    True means the DELETE ran, not that a row existed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2618,6 +2815,12 @@ _ALLOWED_USER_CLAUSES = frozenset({"blog_url = %s", "sitemap_url = %s"})
 
 def update_user(user_id: int, blog_url: Optional[str] = None,
                 sitemap_url: Optional[str] = None) -> bool:
+    """Update the blog and/or sitemap URL on a user row; False when neither was supplied.
+
+    Only fields that were passed become SET clauses, and each generated clause is re-checked against
+    `_ALLOWED_USER_CLAUSES` before it is interpolated — see the note above that set for why `email` is
+    deliberately not reachable from here.
+    """
     if not any([blog_url, sitemap_url]):
         return False
     connection = get_db_connection()
@@ -2728,6 +2931,11 @@ def get_linkedin_token_user_ids() -> list[int]:
 
 
 def get_user_location(user_id: int) -> tuple[float, float] | None:
+    """The user's Login Location as `(latitude, longitude)`, or None when it is not usable.
+
+    A missing row, a failed read and a stored 0 all read as None: 0/0 is a point in the Atlantic, not a
+    place anyone logs in from, so it must never reach the proxy/geo logic as a real coordinate.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -2744,6 +2952,12 @@ def get_user_location(user_id: int) -> tuple[float, float] | None:
 
 def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultType, post_id: int = None,
                    post_url: str = None, message: str = None):
+    """Append one row to `logs`: the durable record that an action was attempted, and its outcome.
+
+    These rows are also the ledger the per-day caps and dedup checks count off, so a failed insert —
+    logged, returns False, never raises — is an action the account has already spent but will not see
+    when it next checks its remaining budget.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2789,6 +3003,11 @@ def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
 
 
 def has_user_commented_on_post_url(user_id: int, post_url: str):
+    """Have we already left a top-level comment on this post URL?
+
+    Replies do not count (see `count_user_comments_on_post_url`). A failed read counts zero, so an
+    unreadable log reads as "not yet" and the post can be commented on again.
+    """
     return count_user_comments_on_post_url(user_id, post_url) > 0
 
 
@@ -2824,6 +3043,12 @@ def get_post_age_minutes(user_id: int, post_id: int):
 
 
 def get_post_url_from_log_for_user(user_id: int, post_id: int) -> Optional[str]:
+    """The permalink LinkedIn gave us for this post, from the most recent successful POST log row.
+
+    `posts` records what we intended to publish; only `logs.post_url` records where it landed, so this is
+    the read that turns a post id into something the browser can open. None when the post never published
+    successfully, or when the read failed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2847,6 +3072,11 @@ def get_post_url_from_log_for_user(user_id: int, post_id: int) -> Optional[str]:
 
 
 def get_post_message_from_log_for_user(user_id: int, post_id: int) -> Optional[str]:
+    """The message body recorded on the most recent successful POST log row for this post.
+
+    The fallback for grounding replies and seed comments in what actually went out when
+    `get_post_content` has nothing (issue #344). None when the post never published, or the read failed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2870,6 +3100,11 @@ def get_post_message_from_log_for_user(user_id: int, post_id: int) -> Optional[s
 
 
 def has_engaged_url_with_x_days(user_id: int, post_url: str, days: int):
+    """Did we record an ENGAGED action against this URL inside the last `days` days?
+
+    The dedup that stops a flow re-touching the same person day after day. A failed read counts zero,
+    i.e. reads as "not engaged" and lets the action through.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2924,6 +3159,10 @@ def get_post_status(post_id: int) -> str | None:
 
 
 def get_company_linked_in_url_for_user(user_id: int):
+    """The user's LinkedIn company page URL.
+
+    None when it was never set or the read failed — the invite drip has no page to open in either case.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2962,6 +3201,10 @@ def update_company_linked_in_url_for_user(user_id: int, company_linked_in_url: O
 
 
 def get_recent_logs(user_id: int, limit: int = 20) -> list:
+    """The newest `limit` activity rows for one account, for the SPA's activity feed.
+
+    [] on a read error, so the feed renders empty rather than erroring.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -3187,6 +3430,11 @@ def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
 
 
 def update_user_settings(user_id: int, blog_url: str = None, sitemap_url: str = None) -> bool:
+    """Write BOTH `blog_url` and `sitemap_url`, including as NULL when an argument is omitted.
+
+    That is what separates it from `update_user`, which only touches the fields it was given: calling
+    this with one URL CLEARS the other.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -3212,6 +3460,12 @@ def update_user_settings(user_id: int, blog_url: str = None, sitemap_url: str = 
 # ---------------------------------------------------------------------------
 
 def create_pin_for_email(email: str, pin_hash: str) -> bool:
+    """Issue a login PIN for an email address, expiring in 10 minutes.
+
+    Any unused PIN for that address is deleted first, so only the newest code can ever be redeemed — a
+    resend invalidates the code in the earlier email instead of leaving two live at once. The caller
+    passes the HASH; the plaintext PIN never reaches this table.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3515,6 +3769,12 @@ def get_session_id(token: str) -> Optional[int]:
 
 
 def delete_session(token: str) -> bool:
+    """Revoke one session by its token.
+
+    `sessions.session_token` stores an unkeyed SHA-256, so the token is hashed before the DELETE. True
+    means the statement ran, NOT that a session existed — a caller cannot use it to probe whether a token
+    was valid.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3911,6 +4171,11 @@ def confirm_totp_factor(factor_id: int, user_id: int) -> bool:
 
 
 def touch_auth_factor(factor_id: int) -> bool:
+    """Stamp `last_used_at` on a factor so the Security card can show when it was last actually used.
+
+    Reports True whenever the UPDATE ran, matched or not: this is bookkeeping alongside a verification
+    that already succeeded, and a vanished factor id must not turn that into a failure.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -4013,6 +4278,12 @@ def replace_recovery_codes(user_id: int, code_hashes: list[str]) -> bool:
 
 
 def get_unused_recovery_codes(user_id: int) -> list[dict]:
+    """The account's unspent recovery codes as `(id, code_hash)` rows — never a usable code.
+
+    Verification hashes the candidate against each row and then spends the winning id through
+    `consume_recovery_code`, which is where the single-use guarantee lives. [] on a read error, which
+    fails closed (no code can be verified).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4351,6 +4622,11 @@ def release_enrollment_scope(token: str) -> bool:
 
 
 def set_session_scope(token: str, scope: str) -> bool:
+    """Set a session's scope outright (issue #905 / #1026).
+
+    Unlike `release_enrollment_scope` this does not check the scope it is replacing, so it can widen a
+    session as easily as narrow one. False when the token does not hash or no row matched.
+    """
     token_hash = hash_session_token(token)
     if not token_hash:
         return False
@@ -4373,6 +4649,13 @@ def set_session_scope(token: str, scope: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def add_user_by_email(email: str) -> Optional[int]:
+    """Create a trial account for an email and return its id, minting the `public_uid` identity up front.
+
+    The trial window is stamped here from `FREE_TRIAL_DAYS`, so the clock starts at signup rather than at
+    first login. Stripe customer creation is best-effort — a Stripe outage must not cost us the account
+    row — and a duplicate email returns the EXISTING user's id, which makes a replayed signup idempotent
+    instead of an error.
+    """
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
     now = datetime.now(timezone.utc)
     trial_ends = now + timedelta(days=FREE_TRIAL_DAYS)
@@ -4438,6 +4721,10 @@ def get_user_public_uid(user_id: int) -> Optional[str]:
 
 
 def get_user_id_by_public_uid(public_uid: str) -> Optional[int]:
+    """Resolve the public identity (`users.public_uid`) back to the internal row id.
+
+    None when it matches nothing or the read failed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4516,6 +4803,7 @@ def change_user_email(user_id: int, new_email: str,
 
 
 def get_user_email(user_id: int) -> Optional[str]:
+    """The account's current email address — an attribute of the account, not its identity (issue #745)."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4565,6 +4853,12 @@ def get_user_analytics_profile(user_id: int) -> dict:
 
 
 def get_user_token_info(user_id: int) -> Optional[dict]:
+    """The LinkedIn OAuth token row with both tokens decrypted, or None.
+
+    Deliberately does NOT filter on expiry the way `get_user_access_token` does: this is the input to the
+    expiry decision (`resolve_token_status`), so an expired token has to come back for the SPA countdown
+    and the renewal beat to be able to see it at all.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -4596,6 +4890,12 @@ def update_user_access_token(
     refresh_token: Optional[str] = None,
     refresh_token_expires_in: Optional[int] = None,
 ) -> bool:
+    """Store a refreshed LinkedIn access token, sealed, and restamp its created_at.
+
+    The refresh token is only written when one was supplied: LinkedIn does not always return a new one,
+    and blanking the stored one would end the renewal chain that is the only way auth outlives LinkedIn's
+    60-day cap. False when no row matched.
+    """
     now = datetime.now(timezone.utc)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -5456,6 +5756,10 @@ def upsert_engagement_targets(user_id: int, targets: list) -> bool:
 
 
 def delete_engagement_target(user_id: int, profile_url: str) -> bool:
+    """Remove a roster author from the user's engagement targets.
+
+    True means the DELETE ran, not that the target existed.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -5800,6 +6104,10 @@ def upsert_story_bank_entries(user_id: int, entries: list) -> bool:
 
 
 def delete_story_bank_entry(user_id: int, entry_id: int) -> bool:
+    """Remove one story-bank entry, scoped to its owner so an id from another account matches nothing.
+
+    True means the DELETE ran, not that a row matched.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -5910,10 +6218,16 @@ def _count_actions_today(user_id: int, action_type: "LogActionType") -> int:
 
 
 def count_comments_today(user_id: int) -> int:
+    """Comments logged as SUCCESS since the database's own midnight — what the per-day cap is checked against.
+
+    Counted from `logs` rather than from anything a task remembers, so a retry or a second worker cannot
+    spend the same budget twice. A read error counts 0, which fails OPEN: the cap stops nothing.
+    """
     return _count_actions_today(user_id, LogActionType.COMMENT)
 
 
 def count_dms_sent_today(user_id: int) -> int:
+    """DMs logged as SUCCESS since the database's own midnight — the counterpart cap to `count_comments_today`."""
     return _count_actions_today(user_id, LogActionType.DM)
 
 
@@ -5939,6 +6253,12 @@ def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
                         scheduled_time: datetime, recipient_name: str = None,
                         status: "ScheduledDmStatus" = ScheduledDmStatus.PENDING,
                         source: str = None) -> Optional[int]:
+    """Queue a DM draft and return its id; None when the insert failed.
+
+    Nothing is sent from here — the default status is PENDING, which is an approval gate. `source` names
+    the mechanic that drafted it ('nurture', 'artifact'; NULL means a person wrote it by hand), and that
+    is what lets each mechanic carry its own daily draft cap while sharing the one-open-draft rule.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6010,6 +6330,7 @@ def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
 
 
 def get_scheduled_dm(dm_id: int) -> Optional[dict]:
+    """One scheduled-DM row, or None when it does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6024,6 +6345,11 @@ def get_scheduled_dm(dm_id: int) -> Optional[dict]:
 
 
 def get_scheduled_dm_user_id(dm_id: int) -> Optional[int]:
+    """Who owns a scheduled DM, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row: callers compare it against the session user, so either way the
+    request is denied rather than allowed.
+    """
     row = get_scheduled_dm(dm_id)
     return row["user_id"] if row else None
 
@@ -6112,6 +6438,10 @@ def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
 
 
 def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
+    """Move a queued DM's status.
+
+    True whenever the UPDATE ran — a status write against an id that no longer exists is not reported.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6129,6 +6459,11 @@ def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
 def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient_name: str = None,
                         message: str = None, scheduled_time: datetime = None,
                         status: "ScheduledDmStatus" = None) -> bool:
+    """Patch only the fields that were supplied; False when none were.
+
+    Omitted arguments are left alone rather than nulled, so the editor can save one field without
+    blanking the rest. True means the UPDATE ran, not that a row matched.
+    """
     fields, params = [], []
     for col, val in (("recipient_profile_url", recipient_profile_url), ("recipient_name", recipient_name),
                      ("message", message), ("scheduled_time", to_naive_utc(scheduled_time))):
@@ -6246,6 +6581,11 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
                               status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
                               source: str = None, icp_score: int = None, reasons: str = None
                               ) -> Optional[int]:
+    """Queue an approval-gated connection request and return its id; None when the insert failed.
+
+    Nothing is sent from here — the default status is PENDING. `source` / `icp_score` / `reasons` carry
+    the targeting provenance (issue #486) so the person approving can see WHY the row exists.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6265,6 +6605,7 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
 
 
 def get_connection_request(request_id: int) -> Optional[dict]:
+    """One connection-request row, or None when it does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6280,6 +6621,10 @@ def get_connection_request(request_id: int) -> Optional[dict]:
 
 
 def get_connection_request_user_id(request_id: int) -> Optional[int]:
+    """Who owns a connection request, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row, which denies rather than allows.
+    """
     row = get_connection_request(request_id)
     return row["user_id"] if row else None
 
@@ -6383,6 +6728,11 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
                               status: "ConnectionRequestStatus" = None) -> bool:
+    """Patch only the fields that were supplied; False when none were.
+
+    Reports `rowcount > 0`, unlike the scheduled-DM updater — so False here also means "no such row", or
+    that every supplied value was already what the row held.
+    """
     fields, params = [], []
     for col, val in (("recipient_profile_url", recipient_profile_url),
                      ("recipient_name", recipient_name), ("message", message)):
@@ -6491,6 +6841,11 @@ def insert_outreach_target(user_id: int, target_profile_url: str, target_name: s
                            context_url: str = None, draft_text: str = None,
                            stage: "OutreachStage" = OutreachStage.COMMENT,
                            status: "OutreachStatus" = OutreachStatus.PENDING) -> Optional[int]:
+    """Enter a person into the comment-first outreach funnel and return the row id.
+
+    Starts at the COMMENT stage, PENDING: the funnel is approval-gated end to end, so this only queues.
+    None when the insert failed — including when the (user, profile) pair is already in the funnel.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6509,6 +6864,7 @@ def insert_outreach_target(user_id: int, target_profile_url: str, target_name: s
 
 
 def get_outreach_target(target_id: int) -> Optional[dict]:
+    """One outreach-funnel row, or None when it does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6524,11 +6880,20 @@ def get_outreach_target(target_id: int) -> Optional[dict]:
 
 
 def get_outreach_target_user_id(target_id: int) -> Optional[int]:
+    """Who owns an outreach target, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row, which denies rather than allows.
+    """
     row = get_outreach_target(target_id)
     return row["user_id"] if row else None
 
 
 def get_outreach_target_by_url(user_id: int, target_profile_url: str) -> Optional[dict]:
+    """This user's funnel row for a target profile, or None.
+
+    The dedup lookup: `(user_id, target_profile_url)` is UNIQUE, so one person is only ever in the funnel
+    once and this is how a sourcing pass finds out.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6639,6 +7004,10 @@ def get_users_with_approved_outreach() -> list:
 
 
 def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> bool:
+    """Move an outreach target's status.
+
+    True whenever the UPDATE ran, matched or not.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6657,6 +7026,11 @@ def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> b
 def update_outreach_target(target_id: int, target_profile_url: str = None, target_name: str = None,
                            context_url: str = None, draft_text: str = None, notes: str = None,
                            stage: "OutreachStage" = None, status: "OutreachStatus" = None) -> bool:
+    """Patch only the fields that were supplied; False when none were.
+
+    Stage and status are stringified from their enums; omitted arguments are left alone rather than
+    nulled. True means the UPDATE ran, not that a row matched.
+    """
     fields, params = [], []
     for col, val in (("target_profile_url", target_profile_url), ("target_name", target_name),
                      ("context_url", context_url), ("draft_text", draft_text), ("notes", notes)):
@@ -6717,6 +7091,7 @@ def insert_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEve
 
 
 def get_catchup_touch(touch_id: int) -> Optional[dict]:
+    """One catch-up touch row, or None when it does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -6732,6 +7107,10 @@ def get_catchup_touch(touch_id: int) -> Optional[dict]:
 
 
 def get_catchup_touch_user_id(touch_id: int) -> Optional[int]:
+    """Who owns a catch-up touch, for the API's target-authorisation check (issue #914).
+
+    None for a missing OR unreadable row, which denies rather than allows.
+    """
     row = get_catchup_touch(touch_id)
     return row["user_id"] if row else None
 
@@ -6872,6 +7251,10 @@ def count_catchup_touches_sent_today(user_id: int) -> int:
 
 
 def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> bool:
+    """Move a catch-up touch's status.
+
+    True whenever the UPDATE ran, matched or not.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6889,6 +7272,11 @@ def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> 
 
 def update_catchup_touch(touch_id: int, message: str = None, person_name: str = None,
                          status: "CatchupTouchStatus" = None) -> bool:
+    """Patch only the fields that were supplied; False when none were.
+
+    Omitted arguments are left alone rather than nulled. True means the UPDATE ran, not that a row
+    matched.
+    """
     fields, params = [], []
     for col, val in (("message", message), ("person_name", person_name)):
         if val is not None:
@@ -7590,6 +7978,11 @@ def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bo
 
 
 def get_user_groups(user_id: int) -> list:
+    """The user's LinkedIn groups for the Account UI, JSON-safe (flags as bools, timestamps as ISO strings).
+
+    `enabled` and `post_enabled` are independent switches on purpose — being in a group is not permission
+    to publish into it. [] on a read error.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7613,6 +8006,11 @@ def get_user_groups(user_id: int) -> list:
 
 
 def get_enabled_group_ids(user_id: int) -> list:
+    """Group ids the user has enabled for engagement.
+
+    Swallows the error without logging and returns [], so a database blip reads as "no groups" and skips
+    the group pass instead of failing the run.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7803,6 +8201,7 @@ def get_open_group_post_draft(user_id: int) -> Optional[dict]:
 
 
 def get_group_post_draft(draft_id: int) -> Optional[dict]:
+    """One group-post draft by id, normalised for the API, or None when missing or unreadable."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -7854,6 +8253,13 @@ def update_group_post_draft(draft_id: int, content: str = None,
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
                       reposts: Optional[int] = 0, impressions: Optional[int] = None,
                       saves: Optional[int] = 0) -> bool:
+    """Append one engagement snapshot for a post, with the post's SHAPE copied in beside the numbers.
+
+    archetype / hook_style / format / topic / buyer_stage are snapshotted from `posts` at capture time so
+    the feedback loop (issue #386) still knows which shape earned these numbers after the post is edited.
+    That SELECT is scoped to `(post_id, user_id)`; when it matches nothing the stats row is still written,
+    with those columns NULL.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -7904,6 +8310,11 @@ def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
 
 
 def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
+    """Ids of posts published in the last `days`, FRESHEST first.
+
+    The ordering is the budget policy, not a display choice — see the note in the body. [] on a read
+    error, silently.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8179,6 +8590,11 @@ _LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": Non
 
 
 def get_lead_magnet_settings(user_id: int) -> dict:
+    """The user's lead-magnet keyword settings, always as a complete dict.
+
+    A missing row AND a failed read both return a copy of `_LEAD_MAGNET_DEFAULTS` (disabled), so the
+    "is this mechanic on?" check fails CLOSED and no caller needs a None branch.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -8197,6 +8613,10 @@ def get_lead_magnet_settings(user_id: int) -> dict:
 
 
 def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
+    """Upsert the lead-magnet settings for a user.
+
+    True whenever the statement ran.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8215,6 +8635,11 @@ def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
 
 
 def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
+    """Has this person already been sent this user's lead magnet?
+
+    Fails CLOSED, and that is the whole point: a read error returns True, so a database blip skips the
+    send rather than DMing someone the same asset a second time.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8229,6 +8654,10 @@ def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
 
 
 def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int = None) -> bool:
+    """Write the claim that this person received the lead magnet — the row `has_received_lead_magnet` reads.
+
+    INSERT IGNORE, so a repeat is a no-op rather than an error; True only means the statement ran.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -8302,6 +8731,7 @@ def has_lead_signal(user_id: int, thread_key: str) -> bool:
 
 
 def get_lead_signal(signal_id: int) -> Optional[dict]:
+    """One inbound lead-signal row, or None when it does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -8571,6 +9001,7 @@ def upsert_lead(user_id: int, person_key: str, person_name: str = None,
 
 
 def get_lead(lead_id: int) -> Optional[dict]:
+    """One lead row from the pipeline board, or None when it does not exist or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -8762,6 +9193,11 @@ def update_newsletter_settings(user_id: int, settings: dict) -> bool:
 
 
 def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
+    """Stamp the newsletter as published now, and record its URL when we managed to read one.
+
+    `newsletter_url` is only written when supplied: a publish run that could not scrape the edition's
+    link must not blank the link we already had. True whenever the statement ran.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9404,6 +9840,11 @@ def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[di
 
 
 def get_dm_templates(user_id: int) -> list:
+    """Every DM template the user has, ordered by event type then step, with `is_active` as a real bool.
+
+    [] on a read error, which reads as "no custom templates" — the defaults in `_DM_DEFAULT_TEMPLATES`
+    are what a step-0 lookup falls back to.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9535,6 +9976,10 @@ def get_due_followups(now) -> list:
 
 
 def mark_followup(followup_id: int, status: str) -> bool:
+    """Move one follow-up row to `status`.
+
+    True whenever the UPDATE ran, matched or not.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -9780,6 +10225,12 @@ def get_avatar_credit_ledger_entry_by_session(stripe_session_id: str) -> Optiona
 
 
 def get_avatar_credit_balance(user_id: int) -> int:
+    """Avatar credits on hand, as `SUM(delta)` over the append-only ledger.
+
+    There is no balance column by design: every grant, spend and refund is its own row, so a double-spend
+    stays visible instead of disappearing into an overwritten total. A read error returns 0, which blocks
+    spending rather than granting it.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9803,6 +10254,11 @@ def add_avatar_credits(
     reason: str,
     stripe_session_id: Optional[str] = None,
 ) -> bool:
+    """Append a positive ledger entry — a purchase or a grant.
+
+    Nothing here deduplicates: `stripe_session_id` is only recorded, so the idempotency check against a
+    replayed webhook is `get_avatar_credit_ledger_entry_by_session`, and it has to run first.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9822,6 +10278,10 @@ def add_avatar_credits(
 
 
 def deduct_avatar_credit(user_id: int, training_id: str) -> bool:
+    """Spend one credit on a training run, as a -1 ledger row tagged with the training id.
+
+    The training id is what lets `refund_avatar_credit` reverse exactly this spend later.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9841,6 +10301,12 @@ def deduct_avatar_credit(user_id: int, training_id: str) -> bool:
 
 
 def refund_avatar_credit(user_id: int, training_id: str) -> bool:
+    """Give the credit a training spent back, as a +1 row tagged with the same training id.
+
+    Written automatically when a training lands in 'failed' or 'canceled' (see
+    `update_avatar_training_status`). Nothing checks whether a refund was already recorded — two calls
+    write two +1 rows.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9864,6 +10330,11 @@ def refund_avatar_credit(user_id: int, training_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def get_video_credit_balance(user_id: int) -> int:
+    """Premium-video credits on hand, as `SUM(delta)` over the append-only ledger.
+
+    Same shape as the avatar ledger: no balance column, and a read error returns 0 so a fault blocks
+    spending rather than granting it.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9901,6 +10372,11 @@ def get_video_credit_ledger_entry_by_session(stripe_session_id: str) -> Optional
 
 def add_video_credits(user_id: int, amount: int, reason: str,
                       stripe_session_id: Optional[str] = None) -> bool:
+    """Append a positive video-credit ledger entry.
+
+    Nothing here deduplicates — `get_video_credit_ledger_entry_by_session` is the replay check, and it
+    has to run first.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9921,6 +10397,11 @@ def add_video_credits(user_id: int, amount: int, reason: str,
 
 def deduct_video_credits(user_id: int, amount: int, post_id: Optional[int] = None,
                          reason: str = "premium_video") -> bool:
+    """Spend video credits, as a negative ledger row optionally tagged with the post that spent them.
+
+    The amount is written as `-abs(amount)`, so passing it already-negative cannot accidentally GRANT
+    credits.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9941,6 +10422,10 @@ def deduct_video_credits(user_id: int, amount: int, post_id: Optional[int] = Non
 
 def refund_video_credits(user_id: int, amount: int, post_id: Optional[int] = None,
                          reason: str = "premium_video_refund") -> bool:
+    """Give video credits back, as a positive ledger row (`+abs(amount)`).
+
+    Nothing checks whether the same spend was already refunded.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9960,6 +10445,11 @@ def refund_video_credits(user_id: int, amount: int, post_id: Optional[int] = Non
 
 
 def get_post_video_quality(post_id: int) -> str:
+    """A post's video-quality tier.
+
+    Every unknown answer — column unset, no such post, failed read — is 'standard': the tier that costs
+    credits is never something we assume.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9975,6 +10465,10 @@ def get_post_video_quality(post_id: int) -> str:
 
 
 def update_post_video_quality(post_id: int, quality: str) -> bool:
+    """Set a post's video-quality tier.
+
+    False when no row matched or the value stored was already this one.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -9990,6 +10484,11 @@ def update_post_video_quality(post_id: int, quality: str) -> bool:
 
 
 def get_post_carousel_slides(post_id: int):
+    """The RAW `carousel_slides` column for a post — the stored JSON, not a list.
+
+    `get_carousel_slides` is the parsed reader; this one hands back whatever the column holds (or None),
+    so a caller that iterates it will walk a JSON string character by character.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10055,6 +10554,7 @@ AVATAR_APPROVAL_REJECTED = "rejected"
 
 
 def insert_avatar_training(user_id: int, training_id: str, trigger_word: str) -> Optional[int]:
+    """Record a started avatar training and return its row id; None when the insert failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10078,6 +10578,12 @@ def update_avatar_training_status(
     status: str,
     model_ref: Optional[str] = None,
 ) -> bool:
+    """Move a training to `status`, optionally recording the trained model reference.
+
+    `model_ref` is only written when supplied, so a status-only update cannot blank a model that is
+    already trained. A 'failed' or 'canceled' status ALSO refunds the credit the training spent, and that
+    refund is not deduplicated — calling this twice with the same terminal status pays out twice.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10115,6 +10621,12 @@ def update_avatar_training_status(
 
 
 def set_active_avatar(user_id: int, avatar_id: int) -> bool:
+    """Make one avatar the account's active likeness.
+
+    The target is validated BEFORE anything is deactivated, so an unknown id or an unapproved avatar
+    leaves the current active one exactly as it was — an account is never stranded with no active avatar
+    by a failed switch. Activation requires `approval_status == approved` (issue #744).
+    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10189,6 +10701,7 @@ def _avatar_row_to_dict(row: dict) -> dict:
 
 
 def get_avatar_trainings(user_id: int) -> list[dict]:
+    """Every avatar this user has trained, newest first, normalised for the API. [] on a read error."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10231,6 +10744,7 @@ def get_avatar_training(user_id: int, avatar_id: int) -> Optional[dict]:
 
 
 def get_active_avatar(user_id: int) -> Optional[dict]:
+    """The account's active avatar row, or None when nothing is active or the read failed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10539,6 +11053,11 @@ def mark_post_avatar_media(post_id: Optional[int]) -> bool:
 
 
 def post_used_avatar_media(post_id: Optional[int]) -> bool:
+    """Did any generated media on this post come out of the avatar path (issue #744)?
+
+    What the AI-disclosure line is applied on. Fail-soft in both directions: a falsy post_id and a read
+    error both return False, so an unreadable flag costs a disclosure rather than the post.
+    """
     if not post_id:
         return False
     connection = get_db_connection()

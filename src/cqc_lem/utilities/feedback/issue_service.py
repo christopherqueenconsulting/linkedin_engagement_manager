@@ -287,20 +287,44 @@ _RECOMMENDATION_WHY: dict[str, str] = {
 # --- Env readers (read at call time, the live-env pattern used across the codebase) --------------
 
 def github_repo() -> str:
+    """`owner/name` every filing call is addressed to, defaulting to this repo.
+
+    An empty or whitespace-only override falls back to the default rather than producing a URL with
+    a hole in it, so a blank line in `.env` can never point the filer at nothing.
+    """
     return (os.environ.get("FEEDBACK_GITHUB_REPO") or "").strip() or DEFAULT_REPO
 
 
 def github_token() -> Optional[str]:
+    """The credential used to file, comment and label, or None when neither variable is set.
+
+    `FEEDBACK_GITHUB_TOKEN` wins over the ambient `GITHUB_TOKEN` so a narrowly-scoped feedback
+    credential can be installed without disturbing whatever else reads the generic one.
+
+    Returns:
+        None — never `""` — because None is the sentinel every caller branches on to mean "file
+        NOTHING this beat". Filing is best-effort: an unconfigured token skips the write and leaves
+        the feedback row untouched for a later run, it never fails the beat.
+    """
     token = ((os.environ.get("FEEDBACK_GITHUB_TOKEN") or "").strip()
              or (os.environ.get("GITHUB_TOKEN") or "").strip())
     return token or None
 
 
 def issue_assignee() -> str:
+    """Who a HELD issue is assigned to — the human who answers a Decision Comment.
+
+    Only risky / low-confidence filings carry an assignee; an `agent:ready` issue is left unassigned
+    so the pipeline picks it up instead of a person.
+    """
     return (os.environ.get("FEEDBACK_ISSUE_ASSIGNEE") or "").strip() or DEFAULT_ASSIGNEE
 
 
 def embedding_model() -> str:
+    """Tier alias used to embed a report for dedup. An unusable embedding is not fatal — similarity
+    falls back to deterministic token overlap, so dedup degrades in accuracy but never to
+    "everything is new".
+    """
     return (os.environ.get("FEEDBACK_EMBEDDING_MODEL") or "").strip() or DEFAULT_EMBEDDING_MODEL
 
 
@@ -323,14 +347,33 @@ def _env_int(key: str, default: int, low: int, high: int) -> int:
 
 
 def duplicate_similarity_min() -> float:
+    """Similarity at or above which a new report joins an existing cluster instead of opening its
+    own issue.
+
+    Clamped to 0.0-1.0 and an unparseable value falls back to the default, because both ends of this
+    dial are damaging out of range: too low collapses unrelated reports onto one issue, too high
+    spams the backlog with the same problem over and over.
+    """
     return _env_float("FEEDBACK_DUPLICATE_SIMILARITY", DUPLICATE_SIMILARITY_DEFAULT, 0.0, 1.0)
 
 
 def feature_demand_min() -> int:
+    """Distinct reporters a FEATURE cluster needs before it may be built unattended.
+
+    Bugs carry no such bar — a feature is the higher-risk build, so one person's wish is held for
+    proof of demand rather than shipped. Clamped to at least 1 so the gate can never be configured
+    into "build every feature request".
+    """
     return _env_int("FEEDBACK_FEATURE_DEMAND_MIN", FEATURE_DEMAND_MIN_DEFAULT, 1, 100)
 
 
 def max_issues_per_user_per_day() -> int:
+    """Abuse guard: issues ONE reporter may cause to be filed in a day.
+
+    `POST /api/feedback` is unauthenticated, so this is what stops a single source from filling the
+    backlog. Hitting it holds the row for a later beat — the feedback is never dropped. Clamped to
+    at least 1, so a misconfigured value cannot silently switch filing off altogether.
+    """
     return _env_int("FEEDBACK_MAX_ISSUES_PER_USER_PER_DAY",
                     MAX_ISSUES_PER_USER_PER_DAY_DEFAULT, 1, 100)
 

@@ -1,3 +1,14 @@
+"""The Replicate side of an avatar: training a FLUX.1 LoRA, polling it, and running inference on it.
+
+Each of the three steps fails a different way on purpose, and callers depend on which:
+`start_avatar_training` RAISES, so a failed upload surfaces instead of quietly costing the user a
+credit; `poll_training_status` returns ``processing`` on any error, so a Replicate outage never
+declares a training failed; `generate_image_with_avatar` falls back to the base model and reports
+``used_avatar=False`` rather than returning nothing — that image is a stranger, and it is only safe
+while nothing labels it the user's likeness.
+
+No image is written here — file saving stays in `ai_helper.get_flux_image_via_replicate`.
+"""
 import io
 import re
 from typing import Optional

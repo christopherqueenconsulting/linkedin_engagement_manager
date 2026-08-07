@@ -211,19 +211,39 @@ def check_severity(check: str) -> str:
 
 
 def lexicon_max() -> int:
+    """Distinct tier-1 tells tolerated before the lexicon check fires (`SLOP_LINT_LEXICON_MAX`).
+
+    The comparison is strictly greater-than, so the value is the last COUNT that still passes.
+    Re-read on every call, so ops can retune a check without a restart.
+    """
     return int(_env_number("SLOP_LINT_LEXICON_MAX", LEXICON_MAX_DEFAULT, int, low=0))
 
 
 def em_dash_per_sentence_max() -> float:
+    """Ceiling on em-dash DENSITY, not count (`SLOP_LINT_EM_DASH_PER_SENTENCE`).
+
+    A density, so the same two dashes pass in a long draft and fire in a three-sentence comment.
+    Re-read on every call.
+    """
     return float(_env_number("SLOP_LINT_EM_DASH_PER_SENTENCE", EM_DASH_PER_SENTENCE_DEFAULT,
                              float, low=0.0))
 
 
 def burstiness_min() -> float:
+    """A FLOOR, unlike its neighbours here — sentence-length spread below it fires the check.
+
+    `SLOP_LINT_BURSTINESS_MIN`, re-read on every call. Raising it makes the check stricter, which is
+    the opposite of the `*_max` knobs.
+    """
     return float(_env_number("SLOP_LINT_BURSTINESS_MIN", BURSTINESS_MIN_DEFAULT, float, low=0.0))
 
 
 def emoji_bullet_max() -> int:
+    """Emoji-LED lines tolerated before a draft reads as a listicle (`SLOP_LINT_EMOJI_BULLET_MAX`).
+
+    Counts lines that START with an emoji, not emoji anywhere in the text — an emoji mid-sentence is
+    never what this check is about. Re-read on every call.
+    """
     return int(_env_number("SLOP_LINT_EMOJI_BULLET_MAX", EMOJI_BULLET_MAX_DEFAULT, int, low=0))
 
 

@@ -1,3 +1,15 @@
+"""The two outside-world research fetchers the content pipeline grounds itself on.
+
+`search_with_perplexity` is `content_research`'s DIRECT fallback for when the proxy's
+`lem-research-preferred` route is unavailable; `search_recent_news` is the free GoogleNews path
+`get_industry_trend_analysis_based_on_user_profile` drops to when research is disabled or came back
+empty. Both are SOURCES, never gates — every caller already treats "nothing found" as "write from
+the profile and topic alone", so raising here costs freshness, never the post.
+
+`google_news_tool` and the `chat_*` helpers below are a worked OpenAI tool-calling example. Nothing
+in the app calls them.
+"""
+
 import os
 from typing import Dict
 
@@ -134,6 +146,12 @@ def google_news_tool(parameters: Dict) -> Dict:
 
 
 def get_openai_google_news_tool():
+    """The GoogleNews tool declaration, with its Python implementation bound under `"function"`.
+
+    Byte-for-byte the module-level `news_tool` below, and unlike that constant it has no callers at
+    all — the two `chat_*` demos read `news_tool` directly. Kept as the worked example of how the
+    tool would be handed to a completion.
+    """
     # Define the tool as an iterable object for ChatCompletion
     return {
         "name": "google_news_tool",

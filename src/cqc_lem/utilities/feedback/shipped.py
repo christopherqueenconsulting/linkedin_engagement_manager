@@ -82,6 +82,14 @@ class ShipAction:
 
 
 def lookback_hours() -> int:
+    """How far back one pass scans merged PRs (`FEEDBACK_SHIPPED_LOOKBACK_HOURS`, default 48).
+
+    The beat runs daily, so the default window OVERLAPS the previous pass on purpose — a PR merged
+    while a pass was running is still caught by the next one, and `shipped_notice_recipients` is what
+    keeps that overlap from re-emailing anyone. Clamped to 1..720 hours, and anything unparseable
+    falls back to the default, so a fat-fingered env var can't turn one beat into a scan of the
+    repo's whole history.
+    """
     raw = (os.environ.get("FEEDBACK_SHIPPED_LOOKBACK_HOURS") or "").strip()
     try:
         return max(1, min(720, int(float(raw)))) if raw else LOOKBACK_HOURS_DEFAULT

@@ -179,6 +179,14 @@ def is_encrypted(value: Optional[str]) -> bool:
 
 
 def envelope_key_version(value: Optional[str]) -> Optional[int]:
+    """Which master key sealed this envelope, or None when that cannot be read — never a guess.
+
+    None covers all three unreadable shapes: legacy plaintext, a truncated envelope, and a
+    non-integer version field. `needs_reencrypt` compares this against the current version, so None
+    sends the row through the backfill rather than passing it as up to date — the safe direction,
+    because re-sealing a good row costs one write while skipping a stale one makes it permanently
+    undecryptable the moment `LEM_SECRET_KEY_PREVIOUS` is dropped.
+    """
     if not is_encrypted(value):
         return None
     parts = value.split(":", 3)

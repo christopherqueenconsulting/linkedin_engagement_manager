@@ -1,3 +1,17 @@
+"""Browser session creation and the resilient element helpers every Selenium lane shares.
+
+`get_docker_driver` is the ONE way a session is opened. It waits for the standalone-chrome container
+to report ready, applies the user's proxy / timezone / locale / geolocation and the stealth init
+script, and times the acquisition so a saturated session pool is measured rather than guessed.
+Nothing may instantiate `webdriver.Chrome()` directly: a session created outside this module
+egresses from the host's datacenter IP with a location that contradicts it, which is the
+configuration behind the sustained LinkedIn /feed 429s.
+
+Also owned here: the in-memory MV3 proxy-auth extension (`_build_proxy_auth_extension_b64`), because
+Chrome cannot take proxy credentials on the command line and MV2 background pages are gone; and the
+ordered-fallback locators (`find_first` / `click_first` / `find_all_first`) that LinkedIn's churning
+SDUI markup requires.
+"""
 import base64
 import io
 import json
@@ -38,6 +52,12 @@ _DEFAULT_LONGITUDE = -81.6556
 
 
 def quit_gracefully(driver: WebDriver):
+    """Close a session, swallowing whatever the quit itself raises.
+
+    Teardown runs on paths that are already finishing or already failing — most often on a session a
+    deploy recreated the container out from under (`is_session_lost`) — so it must never become the
+    error the caller reports.
+    """
     try:
         driver.quit()
         myprint("Driver session closed.")
@@ -72,6 +92,13 @@ def is_session_lost(exc: BaseException) -> bool:
 
 
 def get_available_session_driver_id(wait_for_available=True, wait_time=60, retry=3):
+    """The id of the Grid's first slot, or of the session already occupying it.
+
+    Both branches of the walk break on the FIRST slot of the FIRST node, so what comes back is "a
+    slot the Grid knows about", not necessarily a free one. TimeoutError only when the Grid reports
+    no nodes or slots at all — after `retry` waits of `wait_time` seconds if `wait_for_available`.
+    No caller in the tree today; sessions are acquired by asking for one via `get_docker_driver`.
+    """
     # Query the Selenium Grid for available sessions
     url = f"http://{SELENIUM_HUB_HOST}:{SELENIUM_HUB_PORT}/status"
     response = requests.get(url)
@@ -140,6 +167,22 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = 60) -> None:
 def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", coordinates: dict = None,
                       user_id: int = None, lat: float = None, lng: float = None,
                       debug: bool = None) -> webdriver.Remote:
+    """Open a Chrome session on the standalone-chrome container — the ONE way a driver is created.
+
+    Everything that makes a session look like the user rather than a datacenter bot is applied here:
+    their resolved proxy, timezone, locale and Login Location coordinates, plus the stealth init
+    script. Passing `user_id` is what unlocks all of it — without one the session egresses from the
+    host IP with fallback coordinates that may contradict it, so that case warns rather than passing
+    silently. Every one of those steps is best-effort: a CDP override that fails is logged, not
+    raised, so a session is still returned.
+
+    Blocks here while the fixed session pool is full, and records that wait either way
+    (`_record_session_wait`) — a request that gives up waiting is the loudest capacity signal there
+    is, so it must not unwind unmeasured.
+
+    `debug` (default: env `SELENIUM_DEBUG_NODE`) asks for the watchable Grid node and falls back to
+    the normal pool when it is busy or absent, so debugging never queues behind itself.
+    """
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
 
@@ -390,6 +433,12 @@ def apply_proxy(options: Options, proxy_url: str) -> None:
 
 
 def add_headless_options(options: Options) -> Options:
+    """Add the headless flags, and the window/stealth arguments that have to go with them.
+
+    Mutates and returns the SAME object it was given, so reassigning the result is a convenience and
+    not a copy. `--enable-automation` is deliberately absent: it sets navigator.webdriver, the exact
+    tell the rest of this module works to suppress.
+    """
     # options.add_argument("--headless=new") # <--- DOES NOT WORK
     # options.add_argument("--headless=chrome")  # <--- WORKING
     options.add_argument("--headless")  # <--- ???
@@ -418,6 +467,12 @@ def add_headless_options(options: Options) -> Options:
 
 
 def getBaseOptions(base_download_directory: str = None):
+    """The Chrome options every LEM session starts from: download prefs, container-safe flags, stealth.
+
+    Downloads land in `<base_download_directory>/downloads` (default: the process CWD) and PDFs are
+    saved rather than opened in the viewer, which is what makes a downloaded file appear on disk at
+    all. No user-agent is pinned — the long comment below records why an invented UA is a liability.
+    """
     options = Options()
     # options.add_argument("--incognito") # May cause issues with tabs
     if base_download_directory is None:
@@ -467,6 +522,16 @@ def click_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_val
                              parent_element: WebElement = None,
                              use_action_chain=False,
                              element_always_expected=True) -> WebElement:
+    """Wait for an element, wait for it to be clickable, then click it — riding out DOM timing churn.
+
+    An ElementNotInteractableException is retried up to `max_retry` times, 5s apart; a stale or
+    timed-out element is not retried here (`get_element_wait_retry` already did that for the lookup).
+    `element_always_expected=False` turns every one of those failures into a None return instead of a
+    raise, for a control that legitimately may not be on the page.
+
+    The interactable retry recurses WITHOUT `use_action_chain` or `element_always_expected`, so a
+    retried click always goes through a plain `element.click()` and always re-raises on failure.
+    """
     # element = False
     try:
         # Wait for element
@@ -518,6 +583,13 @@ def get_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_value
                            max_try: int = MAX_WAIT_RETRY,
                            parent_element: WebElement = None,
                            element_always_expected=True) -> WebElement:
+    """Wait for ONE element by a single locator, retrying stale/timeout `max_try` times, 5s apart.
+
+    Scoped to `parent_element` when one is given, otherwise to the whole document.
+    `element_always_expected=False` returns None on the final miss instead of re-raising — the same
+    fail-soft switch `click_element_wait_retry` carries, and the reason both return a falsy value a
+    caller can branch on.
+    """
     # element = False
     try:
         # Wait for element
@@ -698,6 +770,12 @@ def find_all_first(driver: WebDriver, locators: list[tuple[str, str]]) -> list[W
 
 def get_elements_as_list_wait_stale(wait: WebDriverWait, find_by_value: str, wait_text: str,
                                     find_by: str = By.XPATH, max_retry=3) -> list[WebElement]:
+    """Wait for ALL elements matching one locator, retrying stale/timeout `max_retry` times.
+
+    `wait.until` treats an empty list as "not ready yet", so ZERO matches is a timeout here, not an
+    empty return: after the retries are spent the TimeoutException is re-raised. A caller that wants
+    "the page had none" as an answer wants `find_all_first`, which returns `[]`.
+    """
     elements = []
 
     try:
@@ -716,6 +794,12 @@ def get_elements_as_list_wait_stale(wait: WebDriverWait, find_by_value: str, wai
 
 
 def wait_for_ajax(driver):
+    """Best-effort wait for jQuery to go idle and then for document.readyState to reach 'complete'.
+
+    Everything is swallowed, including the JavascriptException a page WITHOUT jQuery raises on the
+    very first check — on such a page this returns immediately and the readyState wait never runs at
+    all, so it must never be relied on as a settle barrier.
+    """
     wait = get_driver_wait(driver)
     try:
         wait.until(lambda d: d.execute_script('return jQuery.active') == 0)
@@ -750,6 +834,10 @@ def getText(curElement: WebElement):
 
 
 def window_scroll(driver: WebDriver, scroll_times: int = 0, wait_on_ajax=False):
+    """Jump to the bottom of the page `scroll_times` times, to pull in lazily-loaded content.
+
+    The default of 0 scrolls NOTHING — a caller that omits the count gets a no-op, not one scroll.
+    """
     # Force bottom page scroll by scroll_times
     for _ in range(scroll_times):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -759,6 +847,12 @@ def window_scroll(driver: WebDriver, scroll_times: int = 0, wait_on_ajax=False):
 
 
 def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
+    """Close the current tab, falling back to WAITING for the window count to drop.
+
+    A close that raises is never retried by closing again — it is retried by waiting for one fewer
+    handle than `handles`, so a tab the browser has already closed resolves instead of erroring.
+    Gives up silently once `max_retry` is spent: the caller is expected to be tearing down anyway.
+    """
     if handles is None:
         handles = driver.window_handles
 
@@ -780,6 +874,11 @@ def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
 
 
 def get_driver_wait(driver, wait_time: int = None):
+    """Build the WebDriverWait every helper here shares (default timeout `WAIT_DEFAULT_TIMEOUT`).
+
+    NoSuchElement and StaleElementReference are on its ignore list because the retry helpers in this
+    module handle both themselves — a wait that raised them would pre-empt that retry.
+    """
     if wait_time is None:
         wait_time = WAIT_DEFAULT_TIMEOUT
 
@@ -793,6 +892,14 @@ def get_driver_wait(driver, wait_time: int = None):
 
 def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_retry=3, coordinates: dict = None,
                          user_id: int = None, debug: bool = None):
+    """Create a driver and its matching wait, retrying session creation with exponential backoff.
+
+    ONLY SessionNotCreatedException is retried: a full pool clears on its own, while any other
+    failure is not a capacity problem and must surface immediately. Backoff is `30 * 2**attempt`
+    seconds, but the LAST attempt re-raises before sleeping — so at the default `max_retry=3` the
+    waits are 30s and 60s and the run gives up after two, never three. Returns once the browser
+    reports at least one window handle, so the caller never gets a half-started session.
+    """
     # Create the driver. Passing user_id applies that user's geo/timezone/locale spoofing.
     for attempt in range(max_retry):
         try:
@@ -821,6 +928,11 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
 
 
 def clear_sessions():
+    """DELETE every live session on the Grid — LEM's own included.
+
+    A blunt recovery for a wedged pool: it walks the Grid status and deletes each occupied slot, so
+    any task holding a browser at that moment loses it mid-run. Nothing in `src/` calls it.
+    """
     # base_url = f"http://{SELENIUM_HUB_HOST}:4444"
     base_url = f"http://{SELENIUM_HUB_HOST}:{SELENIUM_HUB_PORT}"
     response = requests.get(f"{base_url}/status")
@@ -835,6 +947,13 @@ def clear_sessions():
 
 
 def load_cookies(driver: WebDriver, cookies: list[dict]):
+    """Restore stored cookies into the current session, skipping any that Chrome refuses.
+
+    A missing or unparseable expiry becomes 30 days out, so a restored cookie is persistent rather
+    than session-scoped. A rejected cookie is skipped and the rest still load, which means a PARTIAL
+    restore is a normal outcome — the caller must verify it is actually signed in, never assume it
+    from this returning.
+    """
     for cookie in cookies:
         expiry = cookie['expiry']
         if expiry is not None:
@@ -861,7 +980,15 @@ def load_cookies(driver: WebDriver, cookies: list[dict]):
 
 
 class RetryableWebDriver:
+    """A driver proxy that retries EVERY forwarded call on WebDriverException / stale element.
+
+    Attribute access passes through to the wrapped driver, and anything callable comes back wrapped
+    in exponential backoff. Nothing in the app uses it — the lanes go through `get_docker_driver` and
+    the explicit `*_wait_retry` helpers, which retry a named step instead of every call blindly.
+    """
+
     def __init__(self, original_driver, max_retries=3, base_delay=1):
+        """Wrap `original_driver`; the delay doubles from `base_delay`, so the defaults wait ~3s total."""
         self.driver = original_driver
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -894,6 +1021,11 @@ class RetryableWebDriver:
 
     # Explicitly handle quit to ensure proper cleanup
     def quit(self):
+        """Close the wrapped session, swallowing failures.
+
+        Defined explicitly so `quit` bypasses `__getattr__` and its retry wrapper: a session that is
+        already gone would otherwise be re-quit through the full backoff on the way out.
+        """
         try:
             self.driver.quit()
         except Exception as e:
@@ -902,18 +1034,34 @@ class RetryableWebDriver:
 
 # Example usage with your existing code structure:
 def create_retryable_driver(original_driver, max_retries=3):
+    """Wrap an existing driver in `RetryableWebDriver`.
+
+    Used by `setup_driver` and `WebDriverManager.__enter__` below; nothing outside this module
+    calls it, and neither of those two is on the Celery path — `get_docker_driver` is.
+    """
     return RetryableWebDriver(original_driver, max_retries)
 
 
 # Usage example 1 - Basic setup
 def setup_driver():
+    """Illustrative example only: a LOCAL `webdriver.Chrome()` wrapped for retries.
+
+    Never copy this into LEM code. Sessions come from `get_docker_driver`, which is what applies the
+    proxy, geolocation and stealth profile; a driver built here has none of them.
+    """
     driver = webdriver.Chrome()  # Your original driver setup
     return create_retryable_driver(driver)
 
 
 # Usage example 2 - With context manager
 class WebDriverManager:
+    """Illustrative example only: a context manager yielding a retry-wrapped LOCAL Chrome.
+
+    Same caveat as `setup_driver` — it opens `webdriver.Chrome()` directly, which no LEM lane may do.
+    """
+
     def __init__(self, max_retries=3):
+        """Hold the retry budget until `__enter__` builds the driver with it."""
         self.max_retries = max_retries
         self.driver = None
 
@@ -929,6 +1077,7 @@ class WebDriverManager:
 
 # Example of how to use it in your existing code:
 def example_automation():
+    """Illustrative example only: the two ways to hold a retry-wrapped driver (direct, or managed)."""
     # Option 1: Direct usage
     driver = setup_driver()
     try:
@@ -949,6 +1098,7 @@ def example_automation():
 
 # Example with more complex scenarios
 def complex_automation_example():
+    """Illustrative example only: a longer flow, showing that chained calls retry individually too."""
     with WebDriverManager(max_retries=5) as driver:
         try:
             # All these operations will automatically retry on failure
@@ -972,6 +1122,7 @@ def complex_automation_example():
 
 # Example with custom retry logic for specific operations
 def custom_retry_example():
+    """Illustrative example only: a locally-defined action whose every driver call carries the retry."""
     with WebDriverManager() as driver:
         def custom_action():
             elements = driver.find_elements(By.CLASS_NAME, "dynamic-content")

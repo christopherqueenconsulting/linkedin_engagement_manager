@@ -55,6 +55,15 @@ class WebAuthnUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class RelyingParty:
+    """The identity every passkey in this deployment is bound to, resolved from the environment.
+
+    `rp_id` is the single hostname the credential is scoped to — change it and every enrolled
+    passkey stops working, which is why `relying_party()` derives it from `PUBLIC_BASE_URL` instead
+    of taking it as a separate setting. `origins` is a list because one relying party can be reached
+    from more than one URL (`WEBAUTHN_EXTRA_ORIGINS`) and the library accepts a set of expected
+    origins; `PUBLIC_BASE_URL`'s origin leads it when there is one.
+    """
+
     rp_id: str
     rp_name: str
     origins: list[str]
@@ -178,6 +187,14 @@ def build_authentication_options(credential_ids: Optional[list[str]] = None) -> 
 
 @dataclass(frozen=True)
 class RegistrationResult:
+    """A passkey that VERIFIED, in the shape the credential row stores it.
+
+    `credential_id` and `public_key` are base64url text rather than bytes because that is the form
+    that round-trips through the database and back into `_descriptors`. `sign_count` is the opening
+    value of the clone-detection counter — it only detects anything if the caller keeps persisting
+    the counter `verify_assertion` hands back, so storing this one is where that starts.
+    """
+
     credential_id: str
     public_key: str
     sign_count: int

@@ -92,6 +92,13 @@ class TutorialRenderError(RuntimeError):
 
 @dataclass(frozen=True)
 class TutorialStep:
+    """One captured beat of a tutorial: a route, proof it rendered, and how long to hold the frame.
+
+    `wait_for` is where fail-closed lives — `capture_flow` raises `TutorialCaptureError` when the
+    declared anchor is gone, so a moved UI stops the run before any token is spent instead of
+    being narrated over a screen nobody verified.
+    """
+
     caption: str                      # on-screen caption AND what this beat of the script covers
     path: str                         # SPA route, relative to the tutorial base URL
     wait_for: Optional[str] = None    # CSS selector that MUST exist, or the flow is stale
@@ -101,6 +108,15 @@ class TutorialStep:
 
 @dataclass(frozen=True)
 class TutorialFlow:
+    """One feature's declarative tutorial — the entire input to a production run.
+
+    `feature` is the only feature claim the script is allowed to make: it goes into the grounding
+    corpus (`grounding_text`) alongside the text actually read off the captured screens, and
+    anything the model asserts outside that corpus is an ungrounded claim that aborts the run
+    before TTS spend. A `requires_auth` flow is skipped entirely with no demo session token
+    configured (`_flow_available`), rather than filmed against a login modal.
+    """
+
     key: str
     title: str
     feature: str                      # grounded one-liner: the only feature claim the script may make
@@ -163,16 +179,29 @@ TUTORIAL_FLOWS: dict[str, TutorialFlow] = {
 # source, so shipping this feature needs no schema change.
 
 def tutorials_dir() -> str:
+    """Root under the SHARED assets volume where every tutorial's frames, audio and MP4 live.
+
+    Created on demand. It is a volume rather than image content, so the catalogue and the rendered
+    files survive a deploy — which is why this feature needed no schema change to ship.
+    """
     path = os.path.join(assets_dir, "videos", "tutorials")
     create_folder_if_not_exists(path)
     return path
 
 
 def manifest_path() -> str:
+    """Path of `manifest.json` — the produced-tutorial catalogue the SPA embeds from."""
     return os.path.join(tutorials_dir(), "manifest.json")
 
 
 def load_manifest() -> dict:
+    """The tutorial catalogue, or an empty `{"videos": {}}` when there is no usable one.
+
+    Fails open on every failure mode — no file, unreadable file, or JSON that parses to the wrong
+    shape — because a beat that cannot read the catalogue should re-film rather than crash. That
+    is not free: a caller who saves over an empty read loses the RECORDS of previously produced
+    videos, though the rendered files themselves stay on disk.
+    """
     try:
         with open(manifest_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -184,6 +213,11 @@ def load_manifest() -> dict:
 
 
 def save_manifest(manifest: dict) -> None:
+    """Write the catalogue back, sorted and indented so a change to it reads as a sane diff.
+
+    A whole-file overwrite with no merge, so callers must start from `load_manifest` and add to
+    what it returned.
+    """
     with open(manifest_path(), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, sort_keys=True)
 
@@ -194,6 +228,11 @@ def asset_url(relative_path: str) -> str:
 
 
 def spa_base_url() -> str:
+    """Origin the headless capture browser drives — `TUTORIAL_SPA_BASE_URL`, else the API's own URL.
+
+    Kept separate from `API_URL_FINAL` because the SPA being filmed and the API serving the
+    `asset_url` embeds do not have to be the same origin.
+    """
     return (TUTORIAL_SPA_BASE_URL or API_URL_FINAL).rstrip("/")
 
 
@@ -364,6 +403,13 @@ def _script_prompt(flow: TutorialFlow, capture: dict) -> str:
 
 
 def grounding_text(flow: TutorialFlow, capture: dict) -> str:
+    """Everything the narration is allowed to be traceable to, as one blob.
+
+    The flow's title, feature one-liner, step captions and routes, plus the text actually read off
+    each captured screen. `ungrounded_claims` checks the script's numbers against this and nothing
+    else, which is what turns "we never narrate a specific the product did not show" into
+    something checkable before any TTS is bought.
+    """
     parts = [flow.title, flow.feature] + [s.caption for s in flow.steps] + [s.path for s in flow.steps]
     parts += [str(m) for m in (capture.get("markers") or [])]
     return "\n".join(parts)
@@ -506,6 +552,12 @@ def _coerce_script(raw: str, step_count: int) -> Optional[dict]:
 # --- voice-over ------------------------------------------------------------------------------
 
 def tts_cost_usd(chars: int, provider: Optional[str] = None) -> float:
+    """Estimated USD for synthesizing `chars` of speech, at the configured per-1K-character rate.
+
+    An app-side estimate off a constant, never a figure the provider returned — it is what gets
+    attributed via `track_media_cost`. `provider` defaults to the configured one, and anything
+    that is not `elevenlabs` is priced at the OpenAI rate.
+    """
     provider = (provider or TUTORIAL_TTS_PROVIDER or "openai").lower()
     rate = ELEVENLABS_COST_PER_1K_CHARS if provider == "elevenlabs" else TUTORIAL_TTS_COST_PER_1K_CHARS
     return round(rate * max(0, int(chars or 0)) / 1000.0, 6)
@@ -569,6 +621,17 @@ def _run(cmd: list) -> str:
 
 
 def audio_duration(path: str) -> float:
+    """Length of an audio file in seconds, read with ffprobe.
+
+    Returns:
+        0.0 when the output cannot be parsed as a number. That zero is load-bearing rather than an
+        error: caption timings and frame holds are both built from these durations, and
+        `assemble_video` floors a hold at 0.5s — so an unreadable duration shortens one beat
+        instead of failing a render that has already been paid for in tokens and TTS.
+
+    Raises:
+        TutorialRenderError: ffprobe is not installed, or exited non-zero.
+    """
     out = _run([_ffmpeg_bin("ffprobe"), "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", path])
     try:
@@ -632,6 +695,16 @@ def write_captions(segments: list, out_path: str) -> str:
 
 
 def concat_audio(paths: list, out_path: str) -> str:
+    """Join the per-segment narration files into one voice-over track, in the order given.
+
+    Stream copy through ffmpeg's concat demuxer (`-c copy`) — no re-encode, so it neither costs
+    render time nor degrades the audio, but it requires every input to share a codec and format.
+    That holds because they all come from `synthesize_segment`. The list file written beside
+    `out_path` is left on disk.
+
+    Raises:
+        TutorialRenderError: ffmpeg is not installed, or exited non-zero.
+    """
     list_file = f"{out_path}.txt"
     with open(list_file, "w", encoding="utf-8") as f:
         for path in paths:

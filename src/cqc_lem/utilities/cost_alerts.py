@@ -531,6 +531,16 @@ def send_cost_alerts(report: Optional[Mapping] = None,
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point — evaluate one day's checks and print the report to stdout.
+
+    Read-only unless ``--email`` is passed: collecting the report neither emails nor emits a
+    PostHog event, so running this by hand on prod cannot page anyone. The daily beat
+    (`run_scheduler.auto_daily_cost_alerts`) is the delivering caller.
+
+    Returns a shell exit code, not a count: **2** when at least one threshold breached, 0 otherwise,
+    so a cron or CI caller can branch on it without parsing the output. The printed report IS the
+    product of this function — the `print` here is deliberate and must not be swapped for a log.
+    """
     parser = argparse.ArgumentParser(description="LEM cost budget alerts / anomaly detection")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--email", action="store_true", help="deliver breaches (email + PostHog)")

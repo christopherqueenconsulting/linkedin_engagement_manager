@@ -1,3 +1,18 @@
+"""Reading a LinkedIn member profile out of a live Selenium session into plain dicts.
+
+What comes out of here is not display data: it is dumped whole into the voice-synthesis prompt and
+therefore grounds every comment and DM written for that user. A wrong read is not inert, which is why
+`parse_profile_header` RAISES `ProfileUnavailableError` on a rate-limited / auth-walled / challenged
+page instead of returning a thin profile — an empty section and an unavailable page must never look
+the same to a caller.
+
+Two parser generations live side by side. Experience (#970) was rebuilt on TEXT shapes — a date range
+anchors an entity, and no shape means None rather than a guess. Education, certifications, awards and
+skills still branch on `start_identifier_map`: the count of leading blank lines in an `<li>`, a
+positional fingerprint of a pre-SDUI DOM that any added wrapper shifts. Prefer the #970 approach for
+anything new here; see the long note above `_EXPERIENCE_ENTITY_SELECTORS`.
+"""
+
 import random
 import re
 from typing import List, Optional
@@ -33,10 +48,25 @@ start_identifier_map = {
 
 
 def source_as_row(s: PageElement) -> List[str]:
+    """An element's text split on newlines, blank entries included.
+
+    The blanks are the payload, not noise: `get_start_identifier` counts them to fingerprint which
+    kind of row this is. Legacy — everything the #970 rebuild touched reads `visible_lines` instead,
+    which returns what a reader actually sees.
+    """
     return s.getText().split('\n')
 
 
 def get_start_identifier(list_text: List[str]) -> int:
+    """One less than the number of leading blank lines — the legacy row fingerprint.
+
+    A row starting with content scores -1; two leading blanks score 1. Only exactly `''` and `' '`
+    count as blank. The section parsers compare this against `start_identifier_map` to decide what a
+    row IS, so the number is a positional accident of the markup: any wrapper LinkedIn adds or drops
+    shifts it and the row is silently skipped or misread. That is what #970 replaced for experience,
+    and why the live probe still reports this value — a run that shows no expected identifier is the
+    evidence the legacy path is dead rather than the profile being empty.
+    """
     startIdentifier = -1
     for e in list_text:
         if e == '' or e == ' ':
@@ -80,6 +110,12 @@ def _is_linkedin_error_page(page_text: str) -> bool:
 
 
 def get_page_source(driver, url, scroll_times=0):
+    """Soup of the page at `url`, navigating and settling it first.
+
+    Navigation is skipped when the driver is already on `url`, so callers can chain reads of the same
+    page without re-fetching it. `scroll_times` exists because LinkedIn lazy-loads: a details page
+    read without scrolling returns only the entries that were above the fold.
+    """
     if url != driver.current_url:
         # Open the profile URL
         driver.get(url)
@@ -147,6 +183,19 @@ def parse_profile_header(source, profile_url, company_name=None) -> dict:
 
 # returns LinkedIn profile information
 def returnProfileInfo(driver: webdriver, profile_url, company_name=None, is_main_user=False):
+    """Scrape one profile whole — header plus every details section — as a dict.
+
+    The header is not optional: an unavailable page raises `ProfileUnavailableError` out of here
+    before any section is visited, so a rate-limited scrape can never be mistaken for a sparse
+    profile. Each SECTION, by contrast, is caught individually — one details page that fails to load
+    leaves its key absent and the rest of the profile still returns.
+
+    Sections are visited in a shuffled order on purpose: a fixed sequence of details-page hits is a
+    bot fingerprint. `is_main_user` skips mutual connections, which are meaningless against oneself.
+
+    Raises:
+        ProfileUnavailableError: the page was an error/auth-wall page, or the name could not be read.
+    """
     url = profile_url
     source = get_page_source(driver, url, 0)
 
@@ -214,6 +263,13 @@ def returnProfileInfo(driver: webdriver, profile_url, company_name=None, is_main
 
 
 def go_to_base_employee_link(driver, employee_link):
+    """Land on the member's base profile URL, navigating only if we are not already there.
+
+    Every `get_profile_*` below starts with this and then builds its details URL from
+    `driver.current_url` rather than from `employee_link` — LinkedIn redirects vanity and legacy URLs
+    to the canonical one, and appending "/details/experience/" to the pre-redirect URL yields a page
+    that does not exist.
+    """
     if employee_link != driver.current_url:
         # Open the profile URL
         driver.get(employee_link)
@@ -222,6 +278,12 @@ def go_to_base_employee_link(driver, employee_link):
 
 
 def get_mutual_connections(driver, employee_link):
+    """Names of the connections shared with this member, as shown on their facetNetwork search page.
+
+    Both steps run with `max_retry=0`, so a missing link or an empty result RAISES rather than
+    retrying — `returnProfileInfo` catches that per section and simply omits the key. Names come back
+    exactly as rendered; the caller decides whether they need `clean_person_name`.
+    """
     go_to_base_employee_link(driver, employee_link)
 
     wait = get_driver_wait(driver)
@@ -241,6 +303,13 @@ def get_mutual_connections(driver, employee_link):
 
 
 def get_profile_education(driver, employee_link):
+    """Schools listed on the main profile page, as a list of strings.
+
+    Deliberately narrow, and legacy on both counts: a row only qualifies if its blank-line
+    fingerprint matches `start_identifier_map['education']` AND the first half of the line contains
+    "university", "college" or "ba" as a word. Anything else — a bootcamp, a school named neither —
+    is dropped silently, so an empty list here does NOT mean the member listed no education.
+    """
     source = get_page_source(driver, employee_link)
     profile_education = []
     education = source.find_all('li')
@@ -263,6 +332,16 @@ def get_profile_education(driver, employee_link):
 
 
 def get_profile_recent_activity(driver, employee_link):
+    """Recent posts/comments as `{'text', 'link', 'posted'}` dicts, newest first as LinkedIn orders.
+
+    `posted` is derived from the card's relative caption ("2d") and floored to the start of that day,
+    so it is a DAY, never a moment — the recency filters downstream are day-granular for that reason.
+
+    Text, links and dates come from three independent document-wide queries zipped by POSITION: they
+    must return the same cards in the same order, and a surface that renders one of them for a card
+    but not the others shifts every pairing after it. Zip also truncates to the shortest, so the
+    count returned is the count of whichever query read fewest.
+    """
     go_to_base_employee_link(driver, employee_link)
     url = driver.current_url.rstrip('/') + '/recent-activity/all/'
     driver.get(url)
@@ -735,6 +814,14 @@ def parse_profile_experiences(source) -> List[dict]:
 
 
 def get_profile_experiences(driver, employee_link) -> List[dict]:
+    """Open `/details/experience/` and parse it — the Selenium half of the #970 rebuild.
+
+    An empty result is ambiguous on its own, so this is where the two cases are told apart: a page
+    with no date ranges anywhere is a profile with no experience (DEBUG), while a page that plainly
+    renders dated entries and still parses to nothing is selector rot and WARNS. The cross-check
+    reads the page through `_rendered_lines`, the same way the parser does, because a date range
+    split across inline spans would otherwise make rot look like an empty profile.
+    """
     go_to_base_employee_link(driver, employee_link)  # Link may need to redirect so we do this first
     url = driver.current_url.rstrip('/') + '/details/experience/'
     driver.get(url)
@@ -758,6 +845,14 @@ def get_profile_experiences(driver, employee_link) -> List[dict]:
 
 
 def get_profile_certifications(driver, employee_link):
+    """Certifications from `/details/certifications/` as dicts; only `name` is ever guaranteed.
+
+    Legacy positional parser: every field is read at a FIXED index of the row (`start_identifier_map`
+    `cert_by` / `cert_on` / `cert_skills` / `cert_credential`) and halved to undo LinkedIn's doubled
+    a11y text. Both assumptions are markup-shaped — a shifted index yields the wrong field rather
+    than no field, which is the failure mode #970 rebuilt experience to escape. Read a live probe
+    before trusting a change here.
+    """
     go_to_base_employee_link(driver, employee_link)  # May need to redirect first
 
     url = driver.current_url.rstrip('/') + '/details/certifications/'
@@ -820,6 +915,13 @@ def get_profile_certifications(driver, employee_link):
 
 
 def get_profile_skills(driver, employee_link):
+    """Skills from `/details/skills/` as `{'name'}` dicts, plus `endorsements` where a count showed.
+
+    The name is halved because LinkedIn renders it twice inside the one anchor we match (the visible
+    node and its `visually-hidden` twin). Endorsements are looked up per skill against a deliberately
+    short wait: most skills have none, and the absence is expected, not a failure — the count key is
+    simply left off.
+    """
     go_to_base_employee_link(driver, employee_link)  # May need to redirect first
 
     # Skills
@@ -867,6 +969,11 @@ def get_profile_skills(driver, employee_link):
 
 
 def get_profile_awards(driver, employee_link):
+    """Honours from `/details/honors/` as `{'name'}` dicts — names only, nothing else is read.
+
+    Incomplete by admission (it borrows the certifications fingerprint, `cert_name`, having none of
+    its own) and it says so on an empty result. Treat `[]` as "not read", not as "no awards".
+    """
     go_to_base_employee_link(driver, employee_link)  # May need to redirect first
 
     url = driver.current_url.rstrip('/') + '/details/honors/'
@@ -891,6 +998,13 @@ def get_profile_awards(driver, employee_link):
 
 
 def get_profile_interests(driver, employee_link):
+    """Interests from `/details/interests/` as `{'type', 'name'}` dicts.
+
+    `type` is LinkedIn's own tab name (top voices, companies, groups, newsletters) off
+    `data-member-interests-type`, or "unknown" on the class-name fallback path — that page carries
+    several lists and the tab is the only thing separating them. Like awards, this section is
+    incomplete and says so on an empty result, so `[]` is not evidence of no interests.
+    """
     go_to_base_employee_link(driver, employee_link)  # May need to redirect first
 
     url = driver.current_url.rstrip('/') + '/details/interests/'
@@ -920,6 +1034,16 @@ def get_profile_interests(driver, employee_link):
 
 
 def record_search_word_frequency(row, si, search_words, search_word_frequency=None):
+    """Tally where known words land in a row, keyed `'si:<start identifier>fi:<field index>'`.
+
+    The instrument that produces `start_identifier_map`: run it over many rows with words you expect
+    ("Issued", "Credential ID", …) and the keys that recur name the fingerprint and offset to hard
+    code. Nothing in the runtime path calls it — it exists to re-derive those constants when a DOM
+    change makes them wrong.
+
+    Pass `search_word_frequency` back in to accumulate across rows; omitting it starts a fresh tally.
+    Only the FIRST index matching a word is counted, so a word repeated in one row scores once.
+    """
     if search_word_frequency is None:
         search_word_frequency = {}
 

@@ -1,3 +1,15 @@
+"""The Celery app itself: broker wiring, the whole beat schedule, and per-task telemetry.
+
+Every recurring behaviour in LEM is scheduled from `app.conf.beat_schedule` below, so this file is
+the one place that answers "what runs, and when". The signal handlers are the other half of that:
+Celery swallows a failed task's traceback into its own logger, so `on_task_failure` / `on_task_retry`
+are what turn a crashed task into a grouped PostHog issue (issue #648) instead of a log line nobody
+counts, and the prerun/postrun pair is what gives every task a duration.
+
+The broker is Redis locally and SQS on AWS; the result backend must stay Redis either way, because
+SQS is fire-and-forget and the API layer queries task state.
+"""
+
 import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -400,7 +412,12 @@ def restore_all_unacknowledged_messages(*args, **kwargs):
 
 def get_queue_metric(name_space: str = 'cqc-lem/celery_queue/celery', metric_name: str = 'QueueLength',
                      period: int = 60, time_delta_minutes: int = 1, statistics: str = "Maximum") -> int:
+    """The most recent CloudWatch datapoint for a queue metric, or 0 when there is nothing to read.
 
+    0 stands for every non-answer — no `AWS_REGION` (the Docker Compose deployment, which has no
+    CloudWatch at all), an empty window, or a failed API call. Nothing propagates: this is
+    instrumentation, and reading a metric must never be the reason the caller fails.
+    """
     if not AWS_REGION:
         return 0
 
@@ -432,6 +449,7 @@ _task_start_times: dict = {}
 
 @worker_process_init.connect(weak=False)
 def configure_posthog_for_worker(**kwargs) -> None:
+    """Put PostHog into sync mode in each forked worker, or everything it captures is lost."""
     # Celery forks worker processes; the PostHog background Consumer thread does not
     # survive fork. Sync mode sends each capture immediately instead of queuing.
     import posthog as _posthog
@@ -440,11 +458,22 @@ def configure_posthog_for_worker(**kwargs) -> None:
 
 @task_prerun.connect(weak=False)
 def on_task_prerun(task_id: str = None, task=None, **kwargs) -> None:
+    """Stamp a task's start so `on_task_postrun` can report how long it actually took.
+
+    Keyed by `task_id` because a worker runs several tasks at once; the postrun handler POPS the
+    entry, which is the only thing keeping this dict from growing for the life of the process.
+    """
     _task_start_times[task_id] = _time.time()
 
 
 @task_postrun.connect(weak=False)
 def on_task_postrun(task_id: str = None, task=None, state: str = None, **kwargs) -> None:
+    """Emit the `celery_task` event for every task that ran, however it ended.
+
+    `success` is strictly `state == "SUCCESS"`, so a RETRY or a REVOKED task is never counted as a
+    win. A task whose prerun never fired has no start to pop and reports ~0ms rather than dropping
+    the event — an unmeasured run still has to appear in the count.
+    """
     start = _task_start_times.pop(task_id, _time.time())
     track_task(
         task_name=task.name,

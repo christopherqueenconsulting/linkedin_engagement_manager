@@ -1,3 +1,16 @@
+"""The ONE OpenAI client LEM makes LLM calls through, and the hooks that make each call accountable.
+
+`AttributedOpenAI` (and the module-level `client` it builds) is the only client anything should
+import. Attribution and trace ids are stamped inside `_build_request` rather than at the ~10 call
+sites because both failures are SILENT: a call that skipped attribution is invisible to cost routing
+and lands on an anonymous PostHog person, and a step that skipped the trace just drops out of its
+pipeline with nothing to say so.
+
+The other thing this module owns is riding out a proxy that is not accepting connections (issue
+#986). ONLY a connection that was never established is retried — nothing was sent, so there is no
+provider spend to duplicate. A timeout, a 4xx or a 5xx is the proxy answering, and fails as before.
+"""
+
 import os
 import time
 from collections.abc import Callable, Mapping

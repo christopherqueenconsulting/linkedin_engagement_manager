@@ -1,3 +1,16 @@
+"""Per-content-type generation — every post archetype, newsletter, carousel, video and image LEM ships.
+
+This module is where the MODEL-TIER assignment lives — which alias (`lem-simple` / `lem-medium` /
+`lem-complex`) a given piece of content is worth. What to SAY is owned elsewhere and imported:
+blueprints from `content_framework`, grounding from `content_research`, voice + prefs + promo policy
+from `content_alignment` (aliased under `_` names to keep this module's long-standing internal API
+stable). Never add a parallel per-content-type prompt helper — add to the shared core instead.
+
+Every generation goes through `_call_llm` rather than the client directly. That is what puts a user
+and a feature on the call for cost attribution, and prices it by the model LiteLLM actually served
+instead of the tier that was asked for.
+"""
+
 import os
 import random
 import time
@@ -192,6 +205,11 @@ def _call_llm(**kwargs):
 
 
 def generate_ai_response_test():
+    """Fixed demo call that proves the completion round-trip works — no pipeline calls it.
+
+    Prompt, persona and post are all hardcoded, and it names `gpt-4o-mini` directly instead of a
+    tier alias, so nothing here is a pattern to copy into real content generation.
+    """
     post_content = "Today was a good day to go outside"
     post_img_url = None,
     expertise = "dog that speaks to humans"
@@ -1276,6 +1294,12 @@ def post_is_relevant(post_content: str, include_topics: list) -> bool:
 
 
 def get_ai_description_of_profile(linked_in_profile: LinkedInProfile):
+    """Summarize what a profile suggests about the person's interests, in ~500 characters.
+
+    Feeds the WHOLE profile dump to the model, `recent_activities` included — the one field the
+    durable voice synthesis deliberately excludes (see `_SYNTHESIS_EXCLUDE_FIELDS`). So this reads
+    as what someone is into THIS week, and is not a voice reference. No production path calls it.
+    """
     # Use json to output to string
     linked_in_profile_json = linked_in_profile.model_dump_json()
     prompt = f"""Please tell me what appears to be this person's personal interest based on their current job, skills, and recent activities.
@@ -1407,6 +1431,18 @@ def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, indust
 @llm_step("refine")
 def get_ai_linked_post_refinement(original_message: str, character_limit: int = 3000,
                                   prefs: dict = None, preserve_cta_keyword: str = None):
+    """Final editorial pass over a finished draft — capitalization, clarity, readability.
+
+    Pref-aware on purpose. The formatting rules used to be hardcoded, instructing emoji bullets and
+    a trailing hashtag block on EVERY refinement, which undid the emoji/hashtag/tone settings the
+    generator had just honoured; they are now derived from `prefs`, and a configured tone is
+    explicitly protected from being flattened into generic corporate voice.
+
+    A `character_limit` of 0 or less drops the length instruction entirely rather than meaning zero
+    characters. `preserve_cta_keyword` is the exact comment keyword a lead-magnet post pays out on —
+    the DM automation matches it literally, so a rewrite that paraphrases it breaks delivery
+    silently.
+    """
     character_limit_string = (f"""\nThe refined LinkedIn Post needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand.
                                Ideally, Posts between 1,300 and 2,000 characters tend to perform well by providing enough detail while maintaining readability.\n\n""") if character_limit > 0 else ""
 
@@ -1717,6 +1753,14 @@ def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage:
 
 
 def summarize_recent_activity(recent_activity_profile: LinkedInProfile, main_profile: LinkedInProfile):
+    """Draft an opener referencing the MOST relevant of the other person's recent activities.
+
+    Returns None when that person has no recent activity at all — the caller must read that as
+    "nothing personal to say here", never as a message to send.
+
+    `main_profile` is deep-copied with its OWN `recent_activities` emptied before it reaches the
+    prompt, so the model cannot mix up whose activity it is supposed to be reacting to.
+    """
     # If recent_activity_profile.recent_activities is None or length is 0, return None
     if not recent_activity_profile.recent_activities or len(recent_activity_profile.recent_activities) == 0:
         return None
@@ -1945,6 +1989,24 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
 def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedInProfile, limit_to=None,
                                                       randomize=True, prefs: dict = None,
                                                       sequence_index: int = None):
+    """Choose an industry angle for a post and produce the trend material behind it.
+
+    The subject is ANCHORED to the intersection of a (randomly chosen) inferred industry and ONE of
+    the user's focus topics. Trends used to come from the industry alone, so a post's SUBJECT was
+    already off the user's declared focus by the time the alignment directive got to steer its
+    angle. `sequence_index` (the post id) rotates which focus topic wins, deterministically, so
+    anchoring never collapses onto a single topic.
+
+    Two different sources can answer, and the caller can tell which did: the shared research core
+    returns findings WITH `sources`, while the free GoogleNews fallback summarizes articles and
+    always returns an empty `sources` list. `limit_to` and `randomize` shape only that fallback —
+    they do nothing when research answers.
+
+    Returns:
+        `{industry, analysis, sources, focus_topic}`. `focus_topic` is None when the user declared
+        no focus topics AND no on-niche anchor could be derived from the profile, which is the case
+        where the subject falls back to industry-only.
+    """
     my_industries = get_industries_of_profile_from_ai(linked_in_profile, 3)
     myprint(f"Likely Industries: {my_industries}")
 
@@ -2739,6 +2801,17 @@ def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfil
 
 def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
                                  aspect_ratio: str = "1:1"):
+    """Render a prompt on a Replicate FLUX model and keep the result under `assets/images/`.
+
+    Returns the LOCAL file path, never the Replicate URL — that URL expires, so anything that needs
+    the image later has to use what this hands back.
+
+    `ref` decides the request shape: `flux-1.1-pro` takes a smaller input schema than `flux-dev` and
+    returns a single output object where flux-dev returns a list. An avatar LoRA arrives here as a
+    ref too, which is why the cost ledger records the model with its `:<digest>` suffix stripped —
+    the untrimmed ~100-char value overflows `cost_ledger.model_tier` and lost every avatar render's
+    cost row.
+    """
     if "1.1-pro" in ref:
         # flux-1.1-pro uses a different (smaller) input schema than flux-dev.
         input_params = {

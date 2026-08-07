@@ -1,3 +1,22 @@
+"""Every engagement action LEM takes AS the user, as Celery tasks on the Selenium lanes.
+
+Feed commenting and replies, the self-comments (seed + second wave), DMs and their follow-up
+ladders, the outreach and roster funnels, invites, group posts and the read-only outcome sweeps all
+dispatch from here; the reusable Selenium mechanics they share live in `utilities/linkedin/*`. The
+per-beat posture — what each one guarantees and why — is `docs/engagement-automation.md`.
+
+Two rules cut across everything in this file.
+
+**Pacing is not a safety gate.** `utilities/human_pacing.py` (issue #626) decides only how slowly we
+act and fails OPEN; the hard stops are separate and checked in their own right — the 429 breaker in
+`linkedin/rate_limit.py`, the suppression tripwire's engagement pause (#629), and the comment-quality
+hold (#628, gated inside `automate_commenting` so every caller inherits it).
+
+**Success is the OUTCOME being present, never a click having landed** (#1013, `docs/sdui-selenium-notes.md`).
+A comment typed but not verifiably posted is a FAILURE row; a DM is sent only once it is visible in
+the thread. The cost of getting this wrong is not a bad metric — it is the account.
+"""
+
 import hashlib
 import inspect
 import json
@@ -322,6 +341,14 @@ time_remaining_seconds = 0
 
 
 def countdown_timer(seconds):
+    """Legacy in-process countdown from the pre-Celery script era; nothing in the task graph calls it.
+
+    Counts down on stdout with a carriage return, then SETS the module-global `stop_all_thread` —
+    the flag the old threaded runner used to stop its workers. Unconditionally, on every exit path:
+    a call that returns early because the flag was ALREADY set still sets it again. It is a global,
+    so a second call cannot run independently of the first, and once the flag is set it stays set
+    for the life of the process.
+    """
     global stop_all_thread
     global time_remaining_seconds
     time_remaining_seconds = seconds
@@ -339,15 +366,29 @@ def countdown_timer(seconds):
 
 
 def get_time_remaining_seconds():
+    """Whatever `countdown_timer` last wrote to the process-global counter — 0 if it never ran.
+
+    Not a clock: nothing decrements this except a running `countdown_timer`, so in a Celery worker
+    (where that timer is never started) it reads 0 forever.
+    """
     global time_remaining_seconds
     return time_remaining_seconds
 
 
 def get_time_remaining_minutes():
+    """`get_time_remaining_seconds()` floored to whole minutes — under 60 seconds left reads as 0."""
     return get_time_remaining_seconds() // 60
 
 
 def navigate_to_feed(driver, wait):
+    """Put the session on the home feed and ask `_switch_feed_to_recent` to sort it.
+
+    Skips the navigation when the current URL already looks like a feed, so a walk that comes back
+    here between passes does not pay for a reload. The sort is best-effort — a control that is gone
+    or stale warns rather than paging anyone — but it is never SILENT: `_switch_feed_to_recent`
+    records the sort state it actually achieved onto the run's funnel (#817), because an unsorted
+    scan must not read as recency-sorted.
+    """
     # Check to see if driver url is not already on feed
     if "feed" not in driver.current_url:
         # Navigate to LinkedIn home feed
@@ -361,6 +402,12 @@ def navigate_to_feed(driver, wait):
 
 
 def get_feed_posts(driver, wait, num_posts=10):
+    """Legacy feed reader: scroll until `num_posts` cards are present, return `{'link': ...}` dicts.
+
+    Superseded by the SDUI card walk in `comment_on_feed_inline` and no longer on any live path — it
+    still keys off `data-id="urn:li:activity"`, and the scroll loop gives up as soon as a scroll adds
+    no cards, so it can return FEWER than `num_posts` (or none at all) without saying so.
+    """
     posts = []
 
     # Find the posts in the feed
@@ -404,6 +451,11 @@ def get_feed_posts(driver, wait, num_posts=10):
 
 
 def simulate_writing_time(content):
+    """Seconds a human would take to type `content` at ~5 chars/sec — an estimate, it does not sleep.
+
+    Superseded on every live path by `utilities/human_pacing.py` (issue #626), which is the ONE
+    cadence engine and, unlike this, is seeded per (user, action, date) so a retry never re-rolls.
+    """
     # Simulate a human writing time (around 5 characters per second)
     char_count = len(content)
     writing_time = char_count / 5
@@ -416,6 +468,12 @@ def emoji_to_ue_string(emoji):
 
 
 def clear_text_from_element(element: WebElement):
+    """Empty a composer with select-all + Delete rather than `element.clear()`.
+
+    LinkedIn's composers are contenteditable nodes, not form inputs, so the keystroke path is the one
+    that reliably empties them — and it leaves the same input events behind that a person's typing
+    would. `simulate_typing` uses this to recover a field after a JS emoji substitution fails.
+    """
     # Select All
     element.send_keys(Keys.CONTROL + "a")
     # Delete what is selected
@@ -423,6 +481,17 @@ def clear_text_from_element(element: WebElement):
 
 
 def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow_pauses: bool = True):
+    """Type `text` into a composer one character at a time, with human-ish pauses between keys.
+
+    Non-BMP characters (emoji) are the reason this is not a single `send_keys`: ChromeDriver throws
+    on them, so each one is typed as a `|_n_|` placeholder and swapped back in afterwards with
+    JavaScript. If that JS swap fails the field is rewritten WITHOUT the character rather than left
+    holding a visible placeholder — losing an emoji is survivable, posting `|_1_|` is not.
+
+    `allow_pauses=False` types at machine speed; use it only where nobody is watching the field.
+    A key that will not send is warned about and skipped, so this can return having typed LESS than
+    `text` — never assume the composer holds exactly what was passed in.
+    """
     # Simulate typing the comment
     myprint("Typing Text...")
     type_speed_reducer = .5
@@ -1824,6 +1893,14 @@ return controls(document) || ['unknown', null];
 # vocabulary rather than four magic strings — a typo in the budget comparison would un-bound the
 # clicking.
 class FollowOutcome(StrEnum):
+    """What ONE auto-follow attempt did — the closed vocabulary the follow budget is spent against.
+
+    The distinctions are the whole point: `ALREADY_FOLLOWING` is read off the card with no click at
+    all, while `FAILED` means a click was attempted and the control never verifiably flipped — the
+    one state that never self-corrects on its own, so it is recorded rather than retried blindly.
+    A `str` enum, so a value can be logged or compared as text without conversion.
+    """
+
     NONE = ""                    # nothing was attempted (held, no control, no URL)
     FOLLOWED = "followed"        # clicked AND the control confirmed the flip
     ALREADY_FOLLOWING = "already_following"   # the card already said so — recorded without a click
@@ -6533,6 +6610,18 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
+    """Thank whoever just did something for this account: accepted an invite, recommended, collaborated.
+
+    ONE shared budget spans all three sources (issue #968). The two standing-list sources can each
+    hand back a month of people at once, so the first pass after the flag is switched on would
+    otherwise go out as a burst LinkedIn reads as a campaign; when the budget is spent the source
+    scans are skipped entirely rather than scraped and discarded.
+
+    `loop_for_duration` makes the task re-queue ITSELF `future_forward` seconds out with the
+    remaining time, until that runs out — so one dispatch covers a window rather than an instant.
+    Every failure is caught and returned as a message string: this beat never fails the worker, and
+    `appreciation_touches` is what stops the ~60s re-queue thanking the same person twice.
+    """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Appreciation DMs', user_id=user_id)
@@ -6609,6 +6698,18 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
 def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfile,
                               profile_synthesis: str = None) -> bool:
+    """Write a comment for the post at `post_link` and QUEUE it — this function does not post.
+
+    The text is generated here and handed to the `comment_on_post` task, which opens its own session
+    and submits it (issue #966), so a True return means a comment was queued, NOT that one landed on
+    LinkedIn. The caller (profile-viewer engagement) uses it only to decide it has engaged with this
+    person and can stop walking their activity.
+
+    Returns False for every ordinary reason to skip — already commented, no readable post text, or
+    nothing cleared the #617 quality contract — so a False is not an error and is never logged as
+    one. Missing engagement preferences or comment history degrade the generation rather than
+    stopping it: the account still comments, just without the voice settings or similarity gate.
+    """
     if post_link != driver.current_url:
         # Switch to post url
         driver.get(post_link)
@@ -6894,6 +6995,17 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'viewer_url']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
+    """Engage ONE person who viewed the user's profile, branching on whether we are already connected.
+
+    A 1st-degree viewer gets a comment on ONE recent activity (at most one, then the walk stops) and
+    a templated DM; anyone else gets a personalised connection request instead — you cannot DM a
+    stranger, so the two branches are different actions, not the same action at different depths.
+
+    Bounded to once per viewer per day by `has_engaged_url_with_x_days`, because the analytics page
+    lists the same viewer on consecutive runs. Once the attempt actually starts, an ENGAGED row is
+    written in `finally` whichever way it goes — a failed engagement is a recorded attempt, with
+    SUCCESS/FAILURE saying which, never a gap in the record.
+    """
     myprint("Starting Profile Viewer Engagement")
 
     result = "Profile Viewer Engagement Started"
@@ -8934,6 +9046,12 @@ def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
 
 
 def final_method(drivers: List[WebDriver]):
+    """Legacy shutdown from the pre-Celery script era: stop the threads, quit every driver, EXIT.
+
+    It ends with `sys.exit(0)`, so it never returns to its caller — which is why nothing on the
+    Celery path calls it, and why nothing should: killing the interpreter inside a worker takes
+    every other task in that process with it. Tasks quit their own driver in a `finally` instead.
+    """
     global stop_all_thread
     stop_all_thread.set()  # Set the flag to stop other threads
     for driver in drivers: quit_gracefully(driver)  # Quit all the drivers
@@ -8944,6 +9062,15 @@ def final_method(drivers: List[WebDriver]):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='1/m', queue='se_outreach')
 def update_stale_profile(self, user_id: int):
+    """Re-scrape the user's OWN LinkedIn profile and refresh the voice synthesis distilled from it.
+
+    The scrape is a side effect of `get_current_profile`; the session is closed immediately because
+    nothing else here needs a browser, and a Selenium slot held past its use is one an engagement
+    lane wanted. A login failure returns a message string rather than raising, so one user's broken
+    session shows up in that task's result instead of as a worker exception.
+
+    The synthesis refresh is best-effort and never fails a scrape that already succeeded.
+    """
     myprint(f"Updating Stale Profile. User ID: {user_id}")
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Update Stale Profile")

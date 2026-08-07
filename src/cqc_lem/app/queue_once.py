@@ -1,3 +1,10 @@
+"""LEM's `QueueOnce` base — the only one tasks should inherit (issue #989).
+
+Import this instead of `celery_once.QueueOnce` anywhere `base=` is set. Upstream builds its dedup
+key from bound arguments only, so a task enqueued without one of its own defaulted `once['keys']`
+raised `KeyError` inside `apply_async` — a 500 on the caller, before any message was sent. The
+subclass below fills those defaults; see its docstring for why the fix is scoped to named keys.
+"""
 from inspect import Parameter
 from typing import Optional, Sequence
 

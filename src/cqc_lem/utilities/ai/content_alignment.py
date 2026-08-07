@@ -88,6 +88,11 @@ _ENGAGEMENT_PURPOSE = {
 
 
 def engagement_purpose(content_type: str) -> str:
+    """The purpose line for a content type, phrased as the prompt fragment above.
+
+    An unrecognised type falls back to the `post` phrasing rather than an empty string, so a
+    generator can never end up with a prompt that states no purpose at all.
+    """
     return _ENGAGEMENT_PURPOSE.get(content_type, _ENGAGEMENT_PURPOSE["post"])
 
 
@@ -109,6 +114,13 @@ def promo_policy(content_type: str) -> str:
 # mix-compliance ratio on the analytics dashboard. Defined HERE (not db.py) because it is the
 # structural half of the promo policy above — db.py just stores the string, as it does buyer_stage.
 class ContentMix(StrEnum):
+    """The mix class every planned post carries, persisted as the `posts.content_mix` string.
+
+    A StrEnum because it crosses the DB boundary as text — compare against `.value` when reading a
+    row back. `PROMO` is the only member that may sell at all, and only inside the cadence the
+    constants below pin.
+    """
+
     VALUE = "value"
     AUTHORITY = "authority"
     PROMO = "promo"

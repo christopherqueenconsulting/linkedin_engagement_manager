@@ -1,3 +1,11 @@
+"""Cross-cutting helpers: the default posting-time model, small file/URL utilities, AWS client factories.
+
+The posting-time half is the load-bearing one. `get_post_time` is the entry point schedulers should
+use — it is the only one that applies the per-user learned model AND the waking-hour clamp (issue
+#621), so an hour that leaves it is never overnight. `get_best_posting_time` is the raw default
+model underneath it and is NOT clamped.
+"""
+
 import functools
 import json
 import os
@@ -14,6 +22,13 @@ DEBUG_LEVEL = 3
 
 
 def debug_function(func):
+    """Trace a call against the module-level `DEBUG_LEVEL`, read at CALL time not at decoration time.
+
+    That timing is what lets a test patch `utils.DEBUG_LEVEL` and change functions already decorated.
+
+    `DEBUG_LEVEL == 2` is a dry run, not a louder one: the wrapped function is never invoked and the
+    wrapper returns None. Any other level runs it normally; 0 runs it silently.
+    """
     global DEBUG_LEVEL
 
     @functools.wraps(func)
@@ -33,6 +48,11 @@ def debug_function(func):
 
 
 def create_folder_if_not_exists(folder_path):
+    """Create `folder_path` and any missing parents, doing nothing if it is already there.
+
+    Not atomic — the existence check and `os.makedirs` are separate calls, so two workers creating
+    the same assets subtree at the same moment can still raise `FileExistsError`.
+    """
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
         # myprint(f"Folder '{folder_path}' created.")
@@ -62,16 +82,30 @@ def are_you_satisfied():
 
 
 class Satisfactory(Enum):
+    """The two answers `are_you_satisfied()` accepts; the values ARE the numbers typed at its prompt."""
+
     YES = 1
     NO = 0
 
 
 def get_top_level_domain(url: str) -> str:
+    """The registrable domain of `url` — subdomains dropped, multi-part public suffixes kept whole.
+
+    `blog.linkedin.com` is `linkedin.com`, and `www.bbc.co.uk` is `bbc.co.uk`, never `co.uk`.
+    `db.get_cookies` matches stored cookie domains with `LIKE %tld%`, so a suffix trimmed one label
+    too far would match every unrelated site under it.
+    """
     extracted = tldextract.extract(url)
     return f"{extracted.domain}.{extracted.suffix}"
 
 
 def get_best_posting_times():
+    """The default weekday -> local posting time model, keyed by `date.weekday()` (0 = Monday).
+
+    Read fresh on every call so `DEFAULT_POSTING_HOURS` can be retuned without a restart; a malformed
+    or short override is ignored (with a warning) rather than partially applied, because a half-read
+    override would silently move some weekdays and not others.
+    """
     # 2026 peak-engagement windows shifted to afternoons, strongest Tue–Thu (Wed ~4pm is the peak);
     # weekends taper. Times are user-local (the scheduler converts to UTC). Superseded per-user by
     # the data-driven recommend_post_times once enough post-stats data exists (see get_post_time).
@@ -103,6 +137,11 @@ def get_best_posting_times():
 
 
 def get_best_posting_time(selected_date: date):
+    """The default model's local time for `selected_date`'s weekday — the raw model only.
+
+    No per-user learning and NO waking-hour clamp: schedulers want `get_post_time`, which layers
+    both on top. Only the date's weekday is used, so the calendar date itself is irrelevant.
+    """
     best_times = get_best_posting_times()
 
     # Get the best time for the selected date
@@ -173,12 +212,26 @@ def get_post_time(selected_date: date, user_id: int = None):
 
 
 def get_12h_format_best_time(best_time: time):
+    """`best_time` as a zero-padded 12-hour display string ("02:00 PM"), for UI copy only.
+
+    Never parse this back — it carries no date, no timezone and no seconds.
+    """
     # Format the best time to 12-hour format
     best_time_12hr = best_time.strftime("%I:%M %p")
     return best_time_12hr
 
 
 def save_video_url_to_dir(video_url: str, dir_path):
+    """Download a generated asset into `dir_path` under the URL path's own basename; returns that path.
+
+    Despite the name this is the SHARED download helper — images go through it too (`image_gen`,
+    `ai_helper.generate_post_image`), not just Runway video.
+
+    `dir_path` must already exist; callers pair this with `create_folder_if_not_exists`. A non-2xx
+    response raises rather than writing, so a failed render never leaves a truncated file that later
+    stages would treat as media. The query string is dropped, so two URLs whose paths end in the same
+    file name overwrite each other in one directory.
+    """
     # Extract the original file name from the URL
     parsed_url = urlparse(video_url)
     file_name = os.path.basename(parsed_url.path)
@@ -196,6 +249,12 @@ def save_video_url_to_dir(video_url: str, dir_path):
 
 
 def get_file_extension_from_filepath(file_path: str, remove_leading_dot: bool = False) -> str:
+    """Lower-cased extension of `file_path`, INCLUDING the leading dot unless `remove_leading_dot`.
+
+    Returns:
+        `".mp4"` (or `"mp4"`), and `""` — never None — for a name carrying no extension, which
+        callers concatenate or MIME-look-up directly.
+    """
     basename = os.path.basename(file_path)
     file_name, file_extension = os.path.splitext(basename)
     if remove_leading_dot and file_extension.startswith("."):
@@ -211,10 +270,19 @@ def get_file_extension_from_filepath(file_path: str, remove_leading_dot: bool = 
 
 
 def get_aws_session():
+    """A fresh boto3 session carrying NO explicit credentials.
+
+    They resolve from the environment or the instance role, so no AWS secret is ever hardcoded or
+    threaded through this module.
+
+    A new session per call, deliberately: boto3 sessions and their clients are not thread-safe, and
+    these helpers are called from Celery workers.
+    """
     return boto3.session.Session()
 
 
 def get_aws_client(service_name: str, region_name: str):
+    """The ONE place an AWS client is built, so credential resolution stays in `get_aws_session`."""
     session = get_aws_session()
     return session.client(
         service_name=service_name,
@@ -223,6 +291,12 @@ def get_aws_client(service_name: str, region_name: str):
 
 
 def get_cloudwatch_client(region: str = 'us-east-1'):
+    """CloudWatch client for the queue-depth metrics `my_celery` publishes and reads.
+
+    The `us-east-1` default is a fallback for callers that have no region configured — `my_celery`
+    always passes `AWS_REGION` explicitly, and metrics written to the wrong region are invisible
+    rather than an error.
+    """
     return get_aws_client('cloudwatch', region)
 
 
@@ -248,6 +322,13 @@ def get_aws_ssm_secret(secret_name, region_name):
 
 def get_aws_device_farm_url(deviceFarmProjectArn: str, testGridProjectArn: str, expiresInSeconds: int = 600,
                             region_name: str = "us-west-2"):
+    """A short-lived signed WebDriver endpoint for an AWS Device Farm test grid.
+
+    Both arguments are ARN *segments*, not ARNs: `deviceFarmProjectArn` fills the account-id slot and
+    `testGridProjectArn` the project id, and the full `arn:aws:devicefarm:...:testgrid-project:...`
+    is assembled here. The URL expires after `expiresInSeconds` (10 minutes by default), so it is
+    fetched per session by `get_docker_driver` and must never be cached across runs.
+    """
     devicefarm_client = get_aws_client(service_name="devicefarm", region_name=region_name)
     response = devicefarm_client.create_test_grid_url(
         projectArn=f"arn:aws:devicefarm:{region_name}:{deviceFarmProjectArn}:testgrid-project:{testGridProjectArn}",

@@ -1,3 +1,16 @@
+"""Every outbound email LEM sends, and the login PIN's generate/hash pair.
+
+`_dispatch_email` is the ONE send path: SendGrid first, SMTP as the fallback, and it returns a bool
+rather than raising — an email is a notification, never a reason a task dies. It always ships BOTH a
+text/plain and a text/html part, because a missing plaintext alternative is a strong spam signal and
+most of what leaves here is transactional mail (sign-in codes, "your session died") that has to
+arrive.
+
+No provider configured is a real state, not an error: `send_pin_email` reports it as a BYPASS so the
+caller can skip PIN verification entirely rather than locking everyone out of a stack that was never
+given SMTP credentials.
+"""
+
 import hashlib
 import re
 import secrets
@@ -23,10 +36,22 @@ from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 
 def generate_pin() -> str:
+    """A 6-digit login PIN, zero-padded so "000042" is as likely as any other value.
+
+    `secrets`, not `random`: this is a credential, and the padding matters — trimming leading zeros
+    would quietly shrink the space and make short PINs a tell.
+    """
     return str(secrets.randbelow(1_000_000)).zfill(6)
 
 
 def hash_pin(pin: str, email: str) -> str:
+    """Hash a PIN bound to the address it was issued for — only this value is ever stored.
+
+    The address is the salt, so the same six digits issued to two accounts hash differently and a
+    row captured for one address cannot be replayed against another. Deterministic on purpose:
+    verification recomputes the hash and compares (`verify_pin_for_email`), so there is no
+    per-attempt salt to carry.
+    """
     return hashlib.sha256(f"{pin}{email}".encode()).hexdigest()
 
 

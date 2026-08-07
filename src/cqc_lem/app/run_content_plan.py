@@ -1,3 +1,22 @@
+"""Content planning and generation — the Celery lane that books a user's calendar, then writes it.
+
+Two beats, deliberately separate. `auto_generate_content` PLANS: per active user it walks the
+day-type calendar to the end of the month and inserts empty `planning` rows at fixed UTC instants,
+balanced across `PLANNED_POST_TYPES` and classed by the 70/20/10 mix governor.
+`auto_create_weekly_content` WRITES: it fills only the `planning` rows due inside that user's
+rolling buffer with text, carousels, documents and video, so forward LLM and Runway spend stays
+bounded by the buffer rather than by the size of the plan. The `regenerate_*` tasks redo one asset
+or one post without disturbing the plan around it.
+
+Cadence is the invariant that bites (issue #621): the plan is NOT one post a day. It fills only
+the slots the fixed day-type calendar owns, `posting_days` bounds which weekdays may carry one at
+all, and `MIN_POST_INTERVAL` is enforced on the stored UTC instants rather than on dates —
+Thu 17:00 and Fri 11:00 are different days and still only 18 hours apart.
+
+Everything from `get_main_blog_url_content` downwards is the source-material half: fetching a
+user's own blog or sitemap so a post can be written from something they actually published.
+"""
+
 import calendar
 import json
 import os
@@ -175,6 +194,11 @@ MIN_POST_INTERVAL = timedelta(hours=24)
 
 @shared_task.task
 def auto_generate_content():
+    """Beat entry point for planning: queue one `plan_content_for_user` task per active user.
+
+    Does no planning itself. Each user's month is planned as its own task, so a user whose plan
+    fails or runs long neither blocks nor half-plans anybody else's.
+    """
     # Get active users from DB
     active_users = get_active_user_ids()
     # For each user generate content for the next 30 days
@@ -422,11 +446,21 @@ def _take_planned_post_type(post_types: list, content_mix: str = None) -> str:
 
 # Function to find the key with the highest value in a dictionary
 def get_max_key(d):
+    """Key with the highest value — the over-represented post type a slot is taken away from.
+
+    Used by `plan_content_for_user`'s distribution loop. Ties go to whichever key `max` reaches
+    first, which is fine here: the loop runs until the totals match, so an arbitrary tie-break
+    only decides WHICH equally-represented type moves.
+    """
     return max(d, key=d.get)
 
 
 # Function to find the key with the lowest value in a dictionary
 def get_min_key(d):
+    """Key with the lowest value — the under-represented post type a slot is given to.
+
+    The other half of `plan_content_for_user`'s distribution loop; see `get_max_key`.
+    """
     return min(d, key=d.get)
 
 
@@ -945,6 +979,14 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
 
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple[str, str | None]:
+    """Write a video post: the text first, then a video generated to match it.
+
+    Returns:
+        `(text_content, video_url)`. The URL is None when BOTH the generator and the Pexels stock
+        fallback came back empty — `_generate_video_src` never raises and refunds any video
+        credits it spent, so this returns usable text with no asset rather than failing.
+        `_post_missing_required_asset` is what turns that into a flagged post downstream.
+    """
     # Get Text Content
     text_content = create_text_post(user_id, stage, post_id=post_id)
     # Load profile once so the image prompt is brand/role-aligned
@@ -2263,6 +2305,18 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
 
 
 def get_session_for_response() -> Tuple[requests.Session, dict]:
+    """A retrying `requests` Session, plus the browser-shaped headers to send with it.
+
+    A user's own marketing site is the flakiest dependency in this pipeline and often refuses a
+    default `python-requests` UA outright, hence the desktop-Chrome header set and five backed-off
+    retries covering 403 and 429 as well as 5xx. Retries are restricted to HEAD/GET so nothing
+    replayable is ever a write.
+
+    Returns:
+        `(session, headers)` — the headers are deliberately NOT mounted on the session, so a
+        caller that forgets to pass them through to `session.get` sends the default UA and gets
+        blocked by exactly the sites this exists for.
+    """
     # Set up headers to simulate a browser request
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.91 Safari/537.36',
@@ -2290,6 +2344,18 @@ def get_session_for_response() -> Tuple[requests.Session, dict]:
 
 # Function to make a request and return parsed HTML content
 def fetch_content(url):
+    """Fetch a URL's raw bytes for the blog/sitemap scrapers.
+
+    Every `requests` failure — HTTP status, connection, timeout, anything else — is logged and
+    swallowed. Source material is an ENRICHMENT for a post, so an unreachable site is meant to
+    degrade the content rather than fail a generation task.
+
+    Returns:
+        `response.content` (bytes), or **None** when the fetch failed. None is not a benign empty
+        string: callers hand this straight to BeautifulSoup / `ElementTree.fromstring`, both of
+        which raise `TypeError` on None, and their own `except` clauses only cover
+        `requests.RequestException` / `ParseError`.
+    """
     session, headers = get_session_for_response()
 
     content = None
@@ -2713,6 +2779,12 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
 
 
 def is_blog_post(url):
+    """Cheap offline guess from the URL shape alone: an article, or a section/landing page?
+
+    True on a digit-bearing path segment (a date or a post id) or on more than one segment. Costs
+    nothing, which is why `is_blog_post_combined` asks it first and only pays for a page fetch on
+    the URLs it rejects.
+    """
     parsed = urlparse(url)
     path = parsed.path.strip('/')
 
@@ -2723,6 +2795,12 @@ def is_blog_post(url):
 
 
 def is_blog_post_by_metadata(url):
+    """Second opinion for a URL whose shape said nothing: does the page declare a `meta` author?
+
+    Costs a full page fetch, so it runs only after `is_blog_post` has said no. Any fetch or parse
+    failure reads as False — an unreadable page is not evidence of an article, and the cost of
+    that false negative is one candidate URL dropped from the source material.
+    """
     try:
         content = fetch_content(url)
         # myprint(f"Fetched URL: {url}: Content: {content}")
@@ -2738,6 +2816,12 @@ def is_blog_post_by_metadata(url):
 
 
 def is_blog_post_combined(url):
+    """Is this URL worth scraping for post source material? Shape first, metadata only if needed.
+
+    `filter_relevant_urls` runs this over every URL in a user's sitemap, so the ordering is the
+    point: the free URL test settles most candidates and only what it rejects is paid for with a
+    fetch.
+    """
     if is_blog_post(url):
         return True
     if is_blog_post_by_metadata(url):

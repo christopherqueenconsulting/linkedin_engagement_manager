@@ -175,35 +175,72 @@ _SYSTEM_PROMPT = (
 # --- Config -------------------------------------------------------------------------------------
 
 def faq_model() -> str:
+    """Model alias the one answer call runs on — `FAQ_MODEL`, else `lem-medium`."""
     return (os.environ.get("FAQ_MODEL") or "").strip() or DEFAULT_MODEL
 
 
 def recurrence_min() -> int:
+    """How many times the SAME question must be asked before any answer is generated.
+
+    This is the cost gate the module's "cost is gated on recurrence, not volume" property rests on:
+    below it a cluster returns PENDING and waits, spending nothing. Clamped to 1..100.
+    """
     return _env_int("FAQ_RECURRENCE_MIN", RECURRENCE_MIN_DEFAULT, 1, 100)
 
 
 def cluster_similarity_min() -> float:
+    """Score at which two INCOMING questions are treated as the same question.
+
+    Raising it splits clusters, so fewer ever reach `recurrence_min` and more questions go
+    unanswered; lowering it merges unrelated questions into one published answer.
+    """
     return _env_float("FAQ_CLUSTER_SIMILARITY", CLUSTER_SIMILARITY_DEFAULT, 0.0, 1.0)
 
 
 def entry_similarity_min() -> float:
+    """Score at which an incoming question counts as ALREADY covered by an existing FAQ entry.
+
+    Not comparable to `cluster_similarity_min` despite the lower default: `match_entry` is lexical
+    token overlap (entries carry no stored embedding), while clustering is embedding cosine.
+    """
     return _env_float("FAQ_ENTRY_SIMILARITY", ENTRY_SIMILARITY_DEFAULT, 0.0, 1.0)
 
 
 def max_answers_per_pass() -> int:
+    """Answer generations one pass may spend (0..50) — the per-run ceiling on LLM cost.
+
+    A HELD cluster spends budget too: both hold paths run only AFTER the generation call, so the
+    money is already gone whether or not anything was published.
+    """
     return _env_int("FAQ_MAX_ANSWERS_PER_PASS", MAX_ANSWERS_PER_PASS_DEFAULT, 0, 50)
 
 
 def auto_publish() -> bool:
+    """Whether a NEW auto-written entry goes live at once instead of landing `draft`.
+
+    Off by default, per issue #506's contract that an auto-generated answer is reviewed before it
+    is public. It has no say over a REVISION — refreshing an already-published entry keeps its
+    existing status either way.
+    """
     return (os.environ.get("FAQ_AUTO_PUBLISH") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def auto_reply_enabled() -> bool:
+    """Whether askers are emailed the answer to what they asked. ON unless explicitly turned off.
+
+    The one toggle here that defaults on: the reply is direct support to the person who asked, and
+    it is only ever sent for an answer that already cleared the publish guardrails.
+    """
     return (os.environ.get("FAQ_AUTO_REPLY") or "true").strip().lower() not in (
         "0", "false", "no", "off")
 
 
 def grounding_docs() -> list:
+    """Repo-relative docs that, with the published FAQ, make up the closed grounding corpus.
+
+    Adding a doc here is the only way to make a new fact answerable — nothing outside this corpus
+    may reach an answer, so an unlisted fact holds the question for a human instead.
+    """
     raw = (os.environ.get("FAQ_GROUNDING_DOCS") or "").strip() or DEFAULT_GROUNDING_DOCS
     return [part.strip() for part in raw.split(",") if part.strip()]
 
@@ -224,6 +261,12 @@ def redact_pii(text: Optional[str]) -> str:
 
 
 def contains_profanity(text: Optional[str]) -> list:
+    """The disallowed words present in `text`, sorted — empty when it is clean.
+
+    Whole-token only: the text is split on whitespace and each token stripped of surrounding
+    punctuation, so an innocent word that merely CONTAINS one of these never matches. A non-empty
+    result is a hard hold in `check_answer` — this is public copy.
+    """
     words = {w.lower().strip(".,!?;:\"'()") for w in str(text or "").split()}
     return sorted(words & _PROFANITY)
 

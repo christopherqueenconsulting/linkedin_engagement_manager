@@ -157,6 +157,13 @@ WORKLOAD: tuple[JobSpec, ...] = (
 
 @dataclass(frozen=True)
 class Job:
+    """One `JobSpec` occurrence resolved onto one user's day — what the simulator actually queues.
+
+    `ready_at` is minutes from UTC midnight, already carrying that user's stagger offset or post
+    anchor, so the simulator never re-derives arrival times. `tolerance` is copied off the spec
+    because "on time" is a property of the JOB, not of the topology being tested.
+    """
+
     user_id: int
     name: str
     lane: str
@@ -167,12 +174,20 @@ class Job:
 
 @dataclass(frozen=True)
 class Topology:
+    """The two numbers that decide throughput: per-lane Celery concurrency and the global Chrome cap.
+
+    They are separate on purpose — §5a's invariant is that they should be EQUAL, and a Topology that
+    breaks it is a legal thing to model (that is how the harness shows what breaking it costs), which
+    is why `matches_invariant` is a question you ask rather than a constructor check.
+    """
+
     lanes: Mapping[str, int]
     session_cap: int
     label: str = "standalone"
 
     @property
     def requested_concurrency(self) -> int:
+        """Browsers the lanes would open at once if nothing throttled them — what `session_cap` must match."""
         return sum(self.lanes.values())
 
     @property
@@ -185,6 +200,13 @@ class Topology:
 
 @dataclass(frozen=True)
 class JobResult:
+    """One simulated job's outcome, carrying the two waits SEPARATELY so the constraint is nameable.
+
+    `queue_delay` says the work was late; `session_wait` says the browser cap — rather than the lane
+    concurrency — is why. Collapsing them into one number would answer "is it slow" but not "what do
+    I buy", which is the only question this harness exists to answer.
+    """
+
     job: Job
     started_at: float
     # When a lane slot first came free for this job. Everything after it was spent waiting on a
@@ -193,20 +215,28 @@ class JobResult:
 
     @property
     def queue_delay(self) -> float:
+        """Minutes between the task hitting its queue and actually starting — lane wait AND session wait."""
         return self.started_at - self.job.ready_at
 
     @property
     def session_wait(self) -> float:
+        """The share of `queue_delay` spent with a free lane slot but no browser — 0 whenever §5a holds."""
         return self.started_at - self.lane_ready_at
 
     @property
     def on_time(self) -> bool:
+        """Started inside this job's OWN tolerance; the boundary counts as on time, not late."""
         return self.queue_delay <= self.job.tolerance
 
 
 def default_topology(session_cap: int = DEFAULT_SESSION_CAP,
                      lanes: Optional[Mapping[str, int]] = None,
                      label: str = "standalone") -> Topology:
+    """Today's shipped standalone topology, or a what-if built off it.
+
+    Defaults mirror docker-compose.yml, so calling this with no arguments models PRODUCTION — pass
+    `lanes`/`session_cap` only when the point of the run is to model something we do not run.
+    """
     return Topology(lanes=dict(lanes or DEFAULT_LANES), session_cap=session_cap, label=label)
 
 
@@ -520,6 +550,11 @@ def run_scale(users: int, topology: Topology, stagger_hours: Optional[float] = N
 
 def run_curve(user_counts: Sequence[int], topology: Topology, stagger_hours: Optional[float] = None,
               specs: Sequence[JobSpec] = WORKLOAD, target_on_time_pct: float = 95.0) -> list[dict]:
+    """`run_scale` across every user count, in the order given — the §5c curve, one row per scale.
+
+    Each scale is independent (no state carries between them), so the rows are comparable and the
+    same `user_counts` always produce the same table.
+    """
     return [run_scale(users, topology, stagger_hours=stagger_hours, specs=specs,
                       target_on_time_pct=target_on_time_pct) for users in user_counts]
 
@@ -585,6 +620,12 @@ def render_curve(rows: Sequence[Mapping]) -> str:
 
 
 def render_live(measured: Mapping) -> str:
+    """The `--live` measurement as console text, every field read with `.get()`.
+
+    A live run that half-failed is exactly when someone needs the numbers, so a missing key renders
+    as `None` rather than raising. Only the first five errors are shown — N failing sessions usually
+    fail the same way, and the full list is in the `--json` output.
+    """
     lines = [f"Live Selenium load test — {measured.get('requested')} requested session(s), "
              f"{measured.get('acquired')} acquired, {measured.get('failed')} failed",
              f"  session wait: p50 {measured.get('wait_p50_seconds')}s, "
@@ -718,6 +759,16 @@ def parse_lanes(raw: str) -> dict[str, int]:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point: simulate the curve, optionally measure live, print it.
+
+    The printed table IS the product here, which is why this module keeps its `print()` calls (see
+    `docs/docstring-standard.md` on never running ruff `--unsafe-fixes` over it).
+
+    Returns:
+        A process exit code — 2 when ANY simulated scale comes back `exceeds one VPS`, so a CI or
+        cron caller can gate a cohort onboarding on the exit status without parsing the table; 0
+        otherwise. A live-only failure does not change it: `--live` measures, it does not judge.
+    """
     parser = argparse.ArgumentParser(description="LEM Selenium concurrency / scale load test")
     parser.add_argument("--users", default="10,50,100",
                         help="comma-separated active-user counts to simulate (default 10,50,100)")

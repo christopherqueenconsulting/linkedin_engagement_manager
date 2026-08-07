@@ -164,6 +164,12 @@ def _poll_interval() -> int:
 
 
 def distinct_id(user_id: Optional[int] = None) -> str:
+    """The PostHog person a flag is evaluated against — `str(user_id)`, or the `"system"` sentinel.
+
+    Same convention `observability.py` uses for events, deliberately: a %-rollout or a per-user
+    condition then targets the SAME person the user's browser and Celery events land on, instead of
+    a second identity no cohort matches.
+    """
     return str(user_id) if user_id is not None else SYSTEM_DISTINCT_ID
 
 

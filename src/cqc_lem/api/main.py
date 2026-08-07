@@ -1,3 +1,16 @@
+"""The FastAPI application: every `/api` route, the edge credential gate, and session resolution.
+
+The invariant this file exists to hold (issue #914): **every `/api` route resolves its caller
+through `get_session_user_id()`** — `require_session_user_id()` is that plus a 401. An `email`,
+`user_id` or `post_id` arriving in a request is a TARGET to authorise (403 +
+`foreign_target_denied`), never the actor. `tests/unit/api/test_api_route_identity.py` walks the
+route table and fails the build on a gated route that resolves nobody, so the rule is checked
+rather than remembered.
+
+The bearer gate in `api_token_middleware` is an edge filter and NOT authorisation — see the long
+comment above `_API_ACCESS_TOKEN_SET`. Authorisation happens in the handler, which fails closed.
+"""
+
 import io
 import json
 import math
@@ -380,6 +393,13 @@ router = APIRouter(prefix="/api")
 
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
+    """Time and count every request, and file an `$exception` for the ones nothing else caught.
+
+    Only UNHANDLED exceptions reach the `except` here: FastAPI turns a route's own `HTTPException`
+    into a response before it ever unwinds this far, which is what keeps a 4xx from filing an
+    error-tracking issue (`docs/error-tracking.md`). `track_api_call` runs in `finally` so a
+    request that blew up is still counted — as the 500 it was.
+    """
     start = time.time()
     status_code = 500
     try:
@@ -502,6 +522,13 @@ def _has_session_credential(request: Request) -> bool:
 @app.middleware("http")
 async def api_token_middleware(request: Request,
                                call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    """The edge credential filter described above: did the caller bring A credential at all?
+
+    Inactive when `API_ACCESS_TOKENS` is unset (local/dev and the unit suite run open) and on every
+    path outside `/api/` or inside `_PUBLIC_API_PREFIXES`. It is deliberately weak — one arbitrary
+    cookie byte clears it — because it is NOT authorisation; `require_session_user_id()` in the
+    handler is, and it fails closed.
+    """
     if _api_token_required(request.url.path):
         token = _bearer_token(request.headers.get("Authorization"))
         if token not in _API_ACCESS_TOKEN_SET and not _has_session_credential(request):
@@ -535,6 +562,12 @@ _request_session_scope: ContextVar[Optional[str]] = ContextVar("lem_session_scop
 
 @app.middleware("http")
 async def session_cookie_middleware(request: Request, call_next):
+    """Publish the session cookie, the path and the Request on ContextVars for this request only.
+
+    This is what lets ~150 handlers that never took a `Request` still authenticate on the httpOnly
+    cookie. Every var is reset in `finally` — leaking one into the next request on a reused worker
+    would hand that caller someone else's session.
+    """
     cookie_reset = _request_session_cookie.set(request.cookies.get(SESSION_COOKIE_NAME))
     # The request rides alongside for the SAME reason the cookie does: the scope check below belongs
     # to the one resolver every handler already calls, and most handlers never took a Request. The
@@ -1106,6 +1139,13 @@ error_responses = {
 
 
 class ResponseModel(BaseModel):
+    """The envelope almost every route in this file returns.
+
+    `detail` is deliberately `Any`: a payload dict/list on success, a message string on failure —
+    the same shape FastAPI gives an `HTTPException`, so the SPA reads success and error responses
+    through one code path.
+    """
+
     status_code: int
     detail: Any
 
@@ -1174,6 +1214,12 @@ SessionTokenField = Annotated[Optional[str], Field(default=None, repr=False)]
 
 
 class PostRequest(BaseModel):
+    """Body of both `POST /schedule_post/` and `PUT /update_post/{post_id}` — compose and edit.
+
+    `email` is a TARGET the handler authorises against the session, never the caller's identity
+    (issue #914).
+    """
+
     session_token: SessionTokenField = None
     content: str
     video_url: Optional[str] = None
@@ -1193,6 +1239,11 @@ class PostRequest(BaseModel):
 
 
 class AvatarCreditCheckoutRequest(BaseModel):
+    """Body of `POST /avatar/credits/checkout`.
+
+    `package` is validated against `stripe_util.AVATAR_CREDIT_PACKAGES` in the handler (400), not here.
+    """
+
     session_token: str
     package: str
     success_url: str
@@ -1200,6 +1251,11 @@ class AvatarCreditCheckoutRequest(BaseModel):
 
 
 class VideoCreditCheckoutRequest(BaseModel):
+    """Body of `POST /video/credits/checkout`.
+
+    `package` is validated against `stripe_util.VIDEO_CREDIT_PACKAGES` in the handler (400), not here.
+    """
+
     session_token: str
     package: str        # "small" | "medium" | "large" | "max"
     success_url: str
@@ -1207,12 +1263,24 @@ class VideoCreditCheckoutRequest(BaseModel):
 
 
 class UpgradeVideoRequest(BaseModel):
+    """Body of `POST /video/upgrade`.
+
+    `post_id` is a target the handler authorises (403 if it is not the session user's post) and the tier decides how
+    many video credits the render will cost.
+    """
+
     session_token: str
     post_id: int
     tier: str = "premium"  # "premium" (1 credit) or "premium_top" (3 credits)
 
 
 class AvatarActivateRequest(BaseModel):
+    """The session-only body shared by every per-avatar action.
+
+    Regenerate samples, approve, reject, activate — the avatar itself is named by the path, and
+    authorised there.
+    """
+
     session_token: str
 
 
@@ -1236,6 +1304,12 @@ class AvatarPreferencesRequest(BaseModel):
 
 
 class BulkUpdateRequest(BaseModel):
+    """Body of `POST /posts/bulk_update/`.
+
+    Every id in `post_ids` is a target the handler proves the session owns (`_require_own_posts`, fails closed)
+    before any of them is touched.
+    """
+
     session_token: SessionTokenField = None
     post_ids: List[int]
     status: Optional[PostStatus] = None
@@ -1243,12 +1317,20 @@ class BulkUpdateRequest(BaseModel):
 
 
 class BulkDeleteRequest(BaseModel):
+    """Body of `DELETE /posts/` — a SOFT delete.
+
+    `rejection_reason` is the author's own words on why the draft was no good, and is fed back in when the post is
+    later regenerated (issue #713).
+    """
+
     session_token: SessionTokenField = None
     post_ids: List[int]
     rejection_reason: Optional[str] = Field(default=None, max_length=1000)
 
 
 class UserSettingsRequest(BaseModel):
+    """Body of `PUT /user/` — the blog/sitemap URLs, and nothing account-critical."""
+
     session_token: SessionTokenField = None
     # The caller's OWN address, and only ever as a target to check (issue #914).
     email: Optional[str] = None
@@ -1281,17 +1363,35 @@ class FunnelAttribution(BaseModel):
 
 
 class AuthInitRequest(BaseModel):
+    """Body of `POST /auth/email/init` — ask for a sign-in PIN. Unauthenticated by definition.
+
+    `attribution` only ever matters when this address is NEW: a known email re-authenticating is a
+    login, not a signup, and never enters the funnel.
+    """
+
     email: str
     attribution: Optional[FunnelAttribution] = None
 
 
 class AuthVerifyRequest(BaseModel):
+    """Body of `POST /auth/email/verify`.
+
+    The PIN is a BOOTSTRAP, not a key (issue #745, 2c): on an account holding a strong factor it proves the address
+    and then hands over to the second-factor stage rather than opening a session.
+    """
+
     email: str
     pin: str
     attribution: Optional[FunnelAttribution] = None
 
 
 class LogoutRequest(BaseModel):
+    """Body of `POST /auth/logout`.
+
+    The token is optional because the cookie is usually the whole credential — the handler clears the cookie
+    regardless of whether a row was found to delete.
+    """
+
     session_token: SessionTokenField = None
 
 
@@ -1305,6 +1405,12 @@ class RevokeSessionRequest(BaseModel):
 
 
 class ExtensionTokenRequest(BaseModel):
+    """Body of `POST /user/extension-token`.
+
+    Carries only the CURRENT session, because the token it mints is a narrow `extension`-scoped one and the ceremony
+    authorising it happens in the SPA.
+    """
+
     session_token: SessionTokenField = None
 
 
@@ -1318,11 +1424,23 @@ class AgentTokenRequest(BaseModel):
 
 
 class EmailChangeInitRequest(BaseModel):
+    """Body of `POST /user/email/change/init`.
+
+    The PIN goes to `new_email`, never to the current address — proving control of the destination is the whole
+    point of the flow.
+    """
+
     session_token: SessionTokenField = None
     new_email: str
 
 
 class EmailChangeVerifyRequest(BaseModel):
+    """Body of `POST /user/email/change/verify`.
+
+    `new_email` is repeated because the PIN was hashed against that address; it has to match the one `/init` mailed
+    for the code to verify at all.
+    """
+
     session_token: SessionTokenField = None
     new_email: str
     pin: str
@@ -1331,10 +1449,21 @@ class EmailChangeVerifyRequest(BaseModel):
 # --- Strong authentication (issue #745, 2c) ------------------------------------------------
 
 class SessionOnlyRequest(BaseModel):
+    """The bare body shared by the ceremonies that need nothing but "who is asking".
+
+    Passkey register/begin, TOTP enroll/begin, recovery-code regeneration and step-up/begin.
+    """
+
     session_token: SessionTokenField = None
 
 
 class PasskeyRegisterCompleteRequest(BaseModel):
+    """Body of `POST /user/passkeys/register/complete`.
+
+    `handle` names the pending challenge, which is claimed exactly once — a replayed registration response finds
+    nothing to verify against.
+    """
+
     session_token: SessionTokenField = None
     handle: str
     credential: Dict[str, Any]
@@ -1352,16 +1481,33 @@ class PasskeyLoginBeginRequest(BaseModel):
 
 
 class PasskeyLoginCompleteRequest(BaseModel):
+    """Body of `POST /auth/passkey/login/complete`.
+
+    No session and no email: the assertion names the credential and the credential names the account, which is what
+    keeps the ceremony username-less.
+    """
+
     handle: str
     credential: Dict[str, Any]
 
 
 class TotpConfirmRequest(BaseModel):
+    """Body of `POST /user/totp/enroll/confirm`.
+
+    The six digits that turn a pending authenticator secret into a confirmed factor.
+    """
+
     session_token: SessionTokenField = None
     code: str
 
 
 class AuthFactorDeleteRequest(BaseModel):
+    """Body of `POST /user/auth-factors/delete`.
+
+    `factor_id` is a target: the delete is scoped to the session's own user, so another account's factor id reads as
+    "not found", never a removal.
+    """
+
     session_token: SessionTokenField = None
     factor_id: int
 
@@ -1376,6 +1522,13 @@ class SecondFactorVerifyRequest(BaseModel):
 
 
 class StepUpVerifyRequest(BaseModel):
+    """Body of `POST /user/step-up/verify`.
+
+    `method` decides which of the optional fields is read: `code` for TOTP, `handle` + `credential` for a passkey. A
+    recovery code is not an accepted method here (design §6.8) — it restores access, it does not unlock the LinkedIn
+    credentials.
+    """
+
     session_token: SessionTokenField = None
     method: str
     code: Optional[str] = None
@@ -1384,6 +1537,11 @@ class StepUpVerifyRequest(BaseModel):
 
 
 class CheckoutSessionRequest(BaseModel):
+    """Body of `POST /billing/create-checkout-session` — the Stripe hand-off for a subscription `tier`.
+
+    The URLs are where Stripe returns the browser afterwards.
+    """
+
     session_token: str
     tier: str
     success_url: str
@@ -1391,6 +1549,8 @@ class CheckoutSessionRequest(BaseModel):
 
 
 class PortalSessionRequest(BaseModel):
+    """Body of `POST /billing/create-portal-session` — a link into Stripe's own billing portal."""
+
     session_token: str
     return_url: str
 
@@ -1401,6 +1561,12 @@ class TrialExtendRequest(BaseModel):
 
 
 class UserPreferencesRequest(BaseModel):
+    """Body of `PUT /user/settings` — the account-level knobs, none of them credentials.
+
+    The `Optional[...] = None` fields follow one rule: omitted means UNCHANGED, so a client that
+    predates a knob can never reset it by not sending it.
+    """
+
     session_token: str
     last_login_inactivate_delay: Optional[int] = 90
     auto_schedule_posts: bool = False
@@ -1450,6 +1616,14 @@ _LEN_FEEDBACK_CONTEXT = 8000  # serialized auto-attached context, screenshot exc
 
 
 class NewsletterSettingsRequest(BaseModel):
+    """Body of `PUT /user/newsletter-settings` — the whole settings row, not a patch.
+
+    Every field is dumped straight into `update_newsletter_settings`, so an omitted field takes its
+    DEFAULT here rather than keeping the stored value. The `_clamp_*` validators bound the three
+    fields that decide spend (queue depth, lead time, invites per run) so a bad client cannot ask
+    for an unbounded amount of generation.
+    """
+
     session_token: str
     enabled: bool = False
     title: Optional[str] = Field(default=None, max_length=_LEN_NL_TITLE)
@@ -1483,6 +1657,12 @@ class NewsletterSettingsRequest(BaseModel):
 
 
 class NewsletterDraftRequest(BaseModel):
+    """Body of `PUT /user/newsletter-draft`.
+
+    `action` is `save` (fields only), `approve` or `skip`; anything else maps to no status change, so an unknown
+    action saves rather than publishing.
+    """
+
     session_token: str
     edition_id: int
     title: Optional[str] = None
@@ -1493,12 +1673,20 @@ class NewsletterDraftRequest(BaseModel):
 
 
 class NewsletterRegenerateRequest(BaseModel):
+    """Body of `POST /user/newsletter-draft/regenerate` — rewrite one queued edition."""
+
     session_token: str
     edition_id: int
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => AI decides a fresh take
 
 
 class NewsletterCoverRequest(BaseModel):
+    """Body of the cover-generation route (issue #893).
+
+    A generated cover always lands `pending_review` — it is a public brand asset — so this request never publishes
+    anything.
+    """
+
     session_token: str
     edition_id: int
     # Per-edition avatar override: None = Auto (guardrails opt-in + relevance classifier both
@@ -1508,16 +1696,25 @@ class NewsletterCoverRequest(BaseModel):
 
 
 class NewsletterCoverDecisionRequest(NewsletterCoverRequest):
+    """The human review verdict on a generated cover — the ONE thing that lets one reach LinkedIn."""
+
     action: str = "approve"  # 'approve' publishes it with the edition; 'remove' drops it entirely
 
 
 class PostRegenerateRequest(BaseModel):
+    """Body of the post-regeneration route. `post_id` is a target the handler authorises."""
+
     session_token: str
     post_id: int
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => fresh take honoring settings
 
 
 class PostRescoreRequest(BaseModel):
+    """Body of `POST /user/post/rescore` — re-judge an edited draft without regenerating it.
+
+    The edit must already be SAVED (issue #421); this request carries no text of its own.
+    """
+
     session_token: str
     post_id: int
 
@@ -1532,11 +1729,20 @@ class PostImageGenerateRequest(BaseModel):
 
 
 class PostImageRemoveRequest(BaseModel):
+    """Body of `POST /user/post/image/remove` — take the image off a post AND delete the file."""
+
     session_token: SessionTokenField = None
     post_id: int
 
 
 class ScheduleDmRequest(BaseModel):
+    """Body of `POST /schedule_dm`.
+
+    `status` is the approval gate: `pending` is a draft a human still has to release, `approved` queues it for
+    `auto_check_scheduled_dms` to actually send — and an `agent`-scoped session is refused the `approved` value
+    outright.
+    """
+
     session_token: str
     recipient_profile_url: str = Field(max_length=_LEN_DM_RECIPIENT_URL)
     recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
@@ -1546,6 +1752,12 @@ class ScheduleDmRequest(BaseModel):
 
 
 class UpdateDmRequest(BaseModel):
+    """Body of `PUT /dm`.
+
+    `action` is separate from the editable fields on purpose: `approve` is what releases the DM to be sent, and it
+    is refused for an `agent`-scoped session.
+    """
+
     session_token: str
     dm_id: int
     recipient_profile_url: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_URL)
@@ -1556,11 +1768,23 @@ class UpdateDmRequest(BaseModel):
 
 
 class DmDeleteRequest(BaseModel):
+    """Body of `DELETE /dm`.
+
+    The delete is SOFT — the row moves to `canceled` so it is never sent, and the history of what was drafted
+    survives.
+    """
+
     session_token: str
     dm_id: int
 
 
 class ConnectionRequestCreate(BaseModel):
+    """Body of `POST /connection_request` (issue #398) — add ONE proactive connect target.
+
+    The invite itself rides the existing rate-limited drip and the shared daily invite cap; this
+    only queues a row. Volume prospecting is not what this is for.
+    """
+
     session_token: str
     recipient_profile_url: str = Field(max_length=_LEN_DM_RECIPIENT_URL)
     recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
@@ -1571,6 +1795,12 @@ class ConnectionRequestCreate(BaseModel):
 
 
 class ConnectionRequestUpdate(BaseModel):
+    """Body of `PUT /connection_request`.
+
+    `approve` is the release-to-send action and is refused for an `agent`-scoped session; an unrecognised action is
+    a 422 rather than a silent field-only save.
+    """
+
     session_token: str
     request_id: int
     recipient_profile_url: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_URL)
@@ -1580,6 +1810,11 @@ class ConnectionRequestUpdate(BaseModel):
 
 
 class ConnectionRequestDelete(BaseModel):
+    """Body of `DELETE /connection_request` — a SOFT cancel to `canceled`.
+
+    Nothing is sent, and the record of what was queued survives.
+    """
+
     session_token: str
     request_id: int
 
@@ -1591,6 +1826,12 @@ _LEN_OUTREACH_DRAFT = 3000  # outreach_funnel_targets.draft_text (TEXT; app cap)
 
 
 class OutreachTargetRequest(BaseModel):
+    """Body of `POST /outreach/target` — add ONE prospect to the comment-first funnel (issue #399).
+
+    A target enters at the `comment` stage. `approved` releases only that stage: the processor
+    re-drops each fired stage to `pending`, so approving once never lets the whole funnel run away.
+    """
+
     session_token: str
     target_profile_url: str = Field(max_length=_LEN_OUTREACH_URL)
     target_name: Optional[str] = Field(default=None, max_length=_LEN_OUTREACH_NAME)
@@ -1600,6 +1841,12 @@ class OutreachTargetRequest(BaseModel):
 
 
 class UpdateOutreachTargetRequest(BaseModel):
+    """Body of `PUT /outreach/target`.
+
+    The two actions are asymmetric: `approve` gates the CURRENT stage only, while `cancel` aborts the whole funnel
+    for this target.
+    """
+
     session_token: str
     target_id: int
     target_name: Optional[str] = Field(default=None, max_length=_LEN_OUTREACH_NAME)
@@ -1609,6 +1856,11 @@ class UpdateOutreachTargetRequest(BaseModel):
 
 
 class OutreachTargetDeleteRequest(BaseModel):
+    """Body of `DELETE /outreach/target` — a SOFT cancel to `canceled`.
+
+    No further stage fires for this target afterwards.
+    """
+
     session_token: str
     target_id: int
 
@@ -1619,6 +1871,12 @@ _LEN_CATCHUP_MESSAGE = 1000  # catchup_touches.message (TEXT; app cap — a DM i
 
 
 class UpdateCatchupTouchRequest(BaseModel):
+    """Body of `PUT /catchup/touch` (issue #482).
+
+    `approve` queues the congratulations for the daily-capped drip, and the handler refuses to approve a touch with
+    no message — an empty one would be turned into a permanent SKIPPED by the sender.
+    """
+
     session_token: str
     touch_id: int
     person_name: Optional[str] = Field(default=None, max_length=_LEN_CATCHUP_NAME)
@@ -1627,11 +1885,27 @@ class UpdateCatchupTouchRequest(BaseModel):
 
 
 class CatchupTouchDeleteRequest(BaseModel):
+    """Body of `DELETE /catchup/touch`.
+
+    Soft: the row stays as the dedup tombstone for that milestone, so cancelling a touch does not invite it to be
+    re-drafted tomorrow.
+    """
+
     session_token: str
     touch_id: int
 
 
 class EngagementPreferencesRequest(BaseModel):
+    """Body of `PUT /user/engagement-preferences` — targeting, voice and the per-day caps.
+
+    Two rules run through the whole model. The `max_length=` bounds are kept in lockstep with the
+    DB column widths so an over-long value is a clean 422 instead of a MySQL 1406 that silently
+    rolls back the whole upsert. And the `_coerce_*` validators never reject an unknown enum value,
+    they fall back to the safe default — an SPA build that predates a mode must not 422 a settings
+    save. `Optional[...] = None` on a cap (e.g. `max_follows_per_day`) means "leave what is
+    stored", NOT the code default, so an older client cannot resurrect a lane the user switched off.
+    """
+
     session_token: str
     tone: Optional[str] = Field(default=None, max_length=_LEN_TONE)
     comment_length: str = "medium"
@@ -1819,6 +2093,12 @@ class EngagementPreferencesRequest(BaseModel):
 
 
 class DmTemplateItem(BaseModel):
+    """One row of a DM template ladder.
+
+    `step` 0 is the first touch and higher steps are the follow-ups, each fired `delay_hours` after the one before
+    it.
+    """
+
     event_type: str
     step: int = 0
     delay_hours: int = 0
@@ -1827,11 +2107,19 @@ class DmTemplateItem(BaseModel):
 
 
 class DmTemplatesRequest(BaseModel):
+    """Body of `PUT /user/dm-templates` — the user's WHOLE template set, replaced wholesale."""
+
     session_token: str
     templates: List[DmTemplateItem] = []
 
 
 class EngagementTargetItem(BaseModel):
+    """One person on the engagement roster.
+
+    Every validator here coerces rather than rejects: a roster save is one PUT of the whole list, so one bad row
+    must not 422 away the entire edit.
+    """
+
     profile_url: str = Field(max_length=_LEN_TARGET_PROFILE_URL)
     name: Optional[str] = Field(default=None, max_length=_LEN_TARGET_NAME)
     category: str = "peer"
@@ -1858,11 +2146,19 @@ class EngagementTargetItem(BaseModel):
 
 
 class EngagementTargetsRequest(BaseModel):
+    """Body of `PUT /user/engagement-targets` — the WHOLE roster, replaced in one write."""
+
     session_token: str
     targets: List[EngagementTargetItem] = []
 
 
 class EngagementTargetDeleteRequest(BaseModel):
+    """Body of `DELETE /user/engagement-targets`.
+
+    The target is named by profile URL, not by id — that is the roster's natural key, and it is what the SPA is
+    holding.
+    """
+
     session_token: str
     profile_url: str = Field(max_length=_LEN_TARGET_PROFILE_URL)
 
@@ -1885,31 +2181,59 @@ class StoryBankItem(BaseModel):
 
 
 class StoryBankRequest(BaseModel):
+    """Body of `PUT /user/story-bank` (issue #620) — upsert a batch of the user's own raw material.
+
+    An entry carrying an `id` updates that row; one without adds a new entry.
+    """
+
     session_token: str
     entries: List[StoryBankItem] = []
 
 
 class StoryBankDeleteRequest(BaseModel):
+    """Body of `DELETE /user/story-bank`."""
+
     session_token: str
     entry_id: int
 
 
 class LinkedInPasswordRequest(BaseModel):
+    """Body of the store-my-LinkedIn-password route.
+
+    The value is written as an AES-256-GCM envelope by `db.py` and is never readable back through the API — see
+    `docs/secrets-at-rest.md`.
+    """
+
     session_token: str
     linkedin_password: str
 
 
 class LinkedInDisplayNameRequest(BaseModel):
+    """The user's own name as LinkedIn renders it.
+
+    It is a SETTING and never scraped (issue #731), because it is how `ThreadState` decides which messages in a
+    thread are ours.
+    """
+
     session_token: str
     linkedin_display_name: str
 
 
 class TimezoneRequest(BaseModel):
+    """Body of `PUT /user/timezone` — an IANA zone name; it decides when scheduled posts fire."""
+
     session_token: str
     timezone: str
 
 
 class LocationRequest(BaseModel):
+    """Body of `PUT /user/location` — the Login Location the Selenium session emulates.
+
+    Stored verbatim, so this is the MANUAL path: coordinates are required (and range-checked),
+    everything else is optional labelling. `/user/location/autocapture` and `/user/location/by-city`
+    are the two routes that derive these values instead of being handed them.
+    """
+
     session_token: str
     latitude: float
     longitude: float
@@ -1920,10 +2244,21 @@ class LocationRequest(BaseModel):
 
 
 class LocationAutocaptureRequest(BaseModel):
+    """Body of `POST /user/location/autocapture` — nothing but the session.
+
+    The location is derived from the caller's real IP, read off the Cloudflare tunnel headers
+    rather than the immediate peer.
+    """
+
     session_token: str
 
 
 class LocationByCityRequest(BaseModel):
+    """Body of `POST /user/location/by-city` — geocode a city the user picked, rather than guessing from their IP.
+
+    `country` is an ISO-3166 alpha-2 code.
+    """
+
     session_token: str
     city: str
     state: Optional[str] = None
@@ -1931,6 +2266,12 @@ class LocationByCityRequest(BaseModel):
 
 
 class AdminLocationByCityRequest(BaseModel):
+    """The admin twin of `LocationByCityRequest`.
+
+    `user_id` is the account being edited, so this body carries no session at all — the admin
+    credential is what authorises the route.
+    """
+
     user_id: int
     city: str
     state: Optional[str] = None
@@ -1938,6 +2279,12 @@ class AdminLocationByCityRequest(BaseModel):
 
 
 class LinkedInCookieRequest(BaseModel):
+    """Body of `POST /user/linkedin-cookie` — the crown jewel (design §2, T1).
+
+    Storing a `li_at` IS handing over a live LinkedIn session, so the route is step-up gated and is
+    the ONE place an `extension`-scoped token may reach.
+    """
+
     session_token: str
     li_at: str
     jsessionid: Optional[str] = None
@@ -1948,6 +2295,11 @@ class LinkedInCookieRequest(BaseModel):
 
 
 class FeedbackReviewAction(StrEnum):
+    """The two verdicts an admin can hand a feedback row (issue #793).
+
+    `approve` runs the classifier/filer with a human watching; `dismiss` settles the row and files nothing.
+    """
+
     APPROVE = 'approve'
     DISMISS = 'dismiss'
 
@@ -1959,28 +2311,54 @@ class FeedbackReviewRequest(BaseModel):
 
 
 class LinkedInCompanyPageRequest(BaseModel):
+    """Body of `PUT /user/company-page`.
+
+    An empty/absent URL CLEARS the page, which is how a user opts out of the company-page invite drip — an account
+    with no page is simply skipped.
+    """
+
     session_token: str
     company_linked_in_url: Optional[str] = None
 
 
 class AdminFixVideoUrlsRequest(BaseModel):
+    """Body of `POST /admin/fix-video-urls` — rewrite a stale asset host across stored video URLs.
+
+    Admin-authorised by the `X-Admin-Secret` header, so no session rides in the body. `user_id`
+    absent means EVERY user's rows are rewritten.
+    """
+
     old_base: str
     new_base: str
     user_id: Optional[int] = None
 
 
 class AdminRegenerateCarouselRequest(BaseModel):
+    """Body of `POST /admin/regenerate-carousel`.
+
+    `user_id` is whose voice/profile the new slides are written in — it is not an ownership check, so it need not
+    match the post's author.
+    """
+
     post_id: int
     user_id: int
     template: Optional[str] = None  # e.g. "bold_listicle", "minimal_dark"; None = auto-pick by stage
 
 
 class AdminRegenerateVideoRequest(BaseModel):
+    """Body of `POST /admin/regenerate-video` — re-render ONLY the video asset, keeping the text."""
+
     post_id: int
     user_id: int
 
 
 class VariantCombo(BaseModel):
+    """One point in the media-variant comparison matrix.
+
+    `seed` is what makes a run repeatable; `include_video=False` renders the still only, which is the cheap half of
+    a comparison.
+    """
+
     image_model: str = DEFAULT_IMAGE_MODEL
     video_model: str = DEFAULT_VIDEO_MODEL
     ratio: str = DEFAULT_VIDEO_RATIO
@@ -1990,6 +2368,13 @@ class VariantCombo(BaseModel):
 
 
 class GenerateMediaVariantsRequest(BaseModel):
+    """Body of `POST /admin/generate-media-variants` — render candidates for review, mutating no post.
+
+    `_require_source` is the guard that matters: with neither a `post_id` nor `text`/`topic` there
+    is nothing to render, and this endpoint SPENDS money per variant, so an empty request is a 422
+    rather than a bill.
+    """
+
     post_id: Optional[int] = None
     text: Optional[str] = None
     topic: Optional[str] = None
@@ -2004,6 +2389,12 @@ class GenerateMediaVariantsRequest(BaseModel):
 
 
 class GenerateCarouselPreviewRequest(BaseModel):
+    """Body of `POST /generate-carousel` — render slide images for a caller to attach to a post.
+
+    A preview only: the slides come back as URLs for `carousel_slides`, and nothing is scheduled
+    or stored against a post here.
+    """
+
     session_token: str
     stage: str = "awareness"  # awareness | consideration | decision | personal
     template: Optional[str] = None  # None = auto-pick by stage
@@ -2023,6 +2414,11 @@ class FeedbackRequest(BaseModel):
     @field_validator("body")
     @classmethod
     def body_not_blank(cls, v: str) -> str:
+        """Reject whitespace-only feedback.
+
+        `min_length=1` alone lets a lone space through, and a blank row costs a human a triage decision that has
+        nothing in it to decide.
+        """
         if not v.strip():
             raise ValueError("Feedback body cannot be empty")
         return v.strip()
@@ -2030,6 +2426,11 @@ class FeedbackRequest(BaseModel):
     @field_validator("source")
     @classmethod
     def known_source(cls, v: str) -> str:
+        """Reject an unknown source rather than coercing it.
+
+        `feedback.source` is a MySQL ENUM, so a value invented by a caller would be a write failure deeper in —
+        and `/api/feedback` is unauthenticated, which makes this field an untrusted string.
+        """
         valid = {str(s) for s in FeedbackSource}
         if v not in valid:
             raise ValueError(f"Unknown source '{v}' — expected one of {sorted(valid)}")
@@ -2062,6 +2463,12 @@ class ReviewSurveyRequest(BaseModel):
 
 
 class SurveyDismissRequest(BaseModel):
+    """Body of `POST /survey/dismiss` — the user closed the modal without answering.
+
+    Recording the ask is what stops BOTH the modal and the email bringing it back (issue #501); a
+    dismissal is a real answer to "should we ask again", just not to the survey.
+    """
+
     session_token: str
     survey_key: str = Field(min_length=1, max_length=_LEN_FEEDBACK_TYPE_HINT)
 
@@ -2092,6 +2499,13 @@ class ShippedNoticeAckRequest(BaseModel):
 
 
 class FutureForwardValues(IntEnum):
+    """An INDEX into `automate_reply_commenting`'s backoff ladder, not a number of seconds.
+
+    The task maps 0-5 onto `[0, 5m, 10m, 15m, 30m, 60m]` and steps the index up itself on each
+    re-queue, so a caller passing 5 starts the sweep at the widest spacing. Constrained to an enum
+    because an out-of-range value would index past that list.
+    """
+
     Zero = 0
     ONE = 1
     TWO = 2
@@ -2420,6 +2834,10 @@ def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseMod
 })
 def get_dashboard_stats(session_token: Optional[str] = None,
                         email: Optional[str] = None) -> ResponseModel:
+    """The dashboard's headline counters.
+
+    `email` is a target checked against the session, not an identity — passing someone else's is a 403.
+    """
     user_id = require_session_user_id(session_token)
     _reject_foreign_email(user_id, email)
 
@@ -2443,6 +2861,11 @@ def get_dashboard_stats(session_token: Optional[str] = None,
 def get_planned_tasks_endpoint(session_token: Optional[str] = None,
                                email: Optional[str] = None,
                                limit: int = Query(default=10, ge=1, le=50)) -> ResponseModel:
+    """What LEM is about to do next for this user — the forward half of the dashboard.
+
+    Spans every queue, with `kind` saying which. Times go out as explicit-UTC ISO so the browser
+    localizes them instead of reading a naive value as local.
+    """
     user_id = require_session_user_id(session_token)
     _reject_foreign_email(user_id, email)
 
@@ -2465,6 +2888,12 @@ def get_planned_tasks_endpoint(session_token: Optional[str] = None,
 })
 def get_activity(session_token: Optional[str] = None, email: Optional[str] = None,
                  limit: int = 20) -> ResponseModel:
+    """The activity feed — what LEM already did, newest first.
+
+    `post_url` goes through `_public_post_url`, so a home-feed comment (which has no LinkedIn
+    permalink and is logged under a synthetic `feedpost://` dedup key) reports None rather than
+    leaking that internal string into the UI.
+    """
     user_id = require_session_user_id(session_token)
     _reject_foreign_email(user_id, email)
 
@@ -2748,6 +3177,11 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]}
 })
 def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel:
+    """Save the blog/sitemap URLs.
+
+    Sending `new_email` is a 400, LOUDLY: this endpoint used to move the account address on the strength of knowing
+    the current one, and a silent 200 is how somebody believes their address changed when it did not (issue #914).
+    """
     user_id = require_session_user_id(settings.session_token)
     _reject_foreign_email(user_id, settings.email)
 
@@ -2781,6 +3215,11 @@ def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[
                                               description="Forward index (0-5) to use for future calls",
                                               examples=[0, 1, 2, 3, 4, 5]
                                           )) -> ResponseModel:
+    """Queue a reply-commenting sweep over one of the caller's OWN posts.
+
+    `post_id` is a target, not an identity: it used to name the account the Selenium session ran as,
+    which let any bearer holder point one at somebody else's post (issue #914).
+    """
     # The post used to name the account this ran as, so any bearer holder could point a Selenium
     # session at somebody else's post (issue #914). It names a target now.
     user_id = require_session_user_id(session_token)
@@ -2805,6 +3244,12 @@ def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[
     **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
 })
 def schedule_post(post: PostRequest) -> ResponseModel:
+    """Create a post row from the composer — draft (`pending`) or queued (`approved`).
+
+    Two things the body does NOT get to decide: the row is written against the SESSION's address
+    read back from the account, and a compose-time `image_url` is kept only when it is a preview WE
+    issued to this account (issue #1030) — anything else is dropped, never stored.
+    """
     user_id = require_session_user_id(post.session_token)
     _reject_foreign_email(user_id, post.email)
     # The row is written against the SESSION's address, never the body's — a target that passed the
@@ -2847,6 +3292,15 @@ def schedule_post(post: PostRequest) -> ResponseModel:
 })
 def create_weekly_content(session_token: Optional[str] = None,
                           user_id: Optional[int] = None) -> ResponseModel:
+    """Kick off a plan-then-generate chain for the CALLER.
+
+    A `queued` progress record is published up front so the SPA has something to poll immediately.
+
+    `user_id` is a target to authorise, never the account the work runs as: it used to BE the
+    authorisation, so a bearer holder could spend somebody else's LLM budget (issue #914). If
+    dispatch fails the `queued` record is cleared, because a SPA polling a run that will never
+    start looks identical to one that is merely slow.
+    """
     # `user_id` used to BE the authorisation — a bearer holder could spend another account's LLM
     # budget and fill their calendar with drafts (issue #914). It is a target now, and the work runs
     # as `caller_id`. Two names for one account is how this endpoint got here, so the parameter is
@@ -2897,6 +3351,12 @@ def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
 })
 def invite_to_li_company_page(session_token: Optional[str] = None,
                               user_id: Optional[int] = None) -> ResponseModel:
+    """Run the company-page invite drip for the CALLER now instead of waiting for the beat.
+
+    The endpoint only dispatches — `plan_daily_invites` still decides the allowance from the
+    smallest of the three ceilings before Chrome opens, so calling this repeatedly cannot exceed
+    the day's budget.
+    """
     caller_id = require_session_user_id(session_token)
     _reject_foreign_user_id(caller_id, user_id)
 
@@ -2913,6 +3373,11 @@ def invite_to_li_company_page(session_token: Optional[str] = None,
 })
 def aws_test_get_my_profile(session_token: Optional[str] = None,
                             user_id: Optional[int] = None) -> ResponseModel:
+    """Smoke-test the AWS Celery path end to end by fetching the caller's own LinkedIn profile.
+
+    Diagnostic only — it proves a task reached a worker and came back. `user_id` is a target to
+    authorise; the task always runs as the caller.
+    """
     caller_id = require_session_user_id(session_token)
     _reject_foreign_user_id(caller_id, user_id)
 
@@ -2952,6 +3417,11 @@ def get_posts_for_email(
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
 ) -> ResponseModel:
+    """The Content Studio's paged post list, always scoped to the session's own rows.
+
+    `email` is a target checked against the session, never the account queried — the query itself
+    is scoped by `user_id`, so forgetting the check would still not return a stranger's drafts.
+    """
     user_id = require_session_user_id(session_token)
     _reject_foreign_email(user_id, email)
 
@@ -2997,6 +3467,11 @@ def get_posts_for_email(
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
 })
 def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
+    """Restatus and/or reschedule a batch of the caller's posts, all-or-nothing.
+
+    Ownership is proved for EVERY id before anything is written, and the update is additionally
+    scoped by `user_id=` — the check is the gate, the scope is what makes forgetting it harmless.
+    """
     user_id = require_session_user_id(request.session_token)
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
@@ -3018,6 +3493,11 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
 })
 def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
+    """Soft-delete a batch of the caller's posts, keeping the author's stated reason.
+
+    The reason is not bookkeeping: `regenerate_post_endpoint` feeds it back to the model as
+    guidance, so a rejected draft's replacement knows what was wrong with it (issue #713).
+    """
     user_id = require_session_user_id(request.session_token)
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
@@ -3036,6 +3516,12 @@ def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
 })
 def get_post_url(post_id: int, session_token: Optional[str] = None,
                  email: Optional[str] = None) -> ResponseModel:
+    """The published LinkedIn permalink for one of the caller's posts, read off the POST log.
+
+    `post_url` is None when the post has not been published yet AND when the id belongs to somebody
+    else — the lookup is scoped to the user, so an unknown id can never answer with a stranger's
+    permalink.
+    """
     user_id = require_session_user_id(session_token)
     _reject_foreign_email(user_id, email)
     # The lookup is already scoped to the user, so a foreign post_id reads as "no URL" rather than
@@ -3049,6 +3535,11 @@ def get_post_url(post_id: int, session_token: Optional[str] = None,
     **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
 })
 def update_post(post_id: int, post: PostRequest) -> ResponseModel:
+    """Edit one of the caller's posts in place.
+
+    `use_avatar` is three-valued (issue #744) and is written ONLY when the body states it: omitting
+    the field means "leave my choice alone", never "clear it".
+    """
     user_id = require_session_user_id(post.session_token)
     _reject_foreign_email(user_id, post.email)
     _require_own_posts(user_id, [post_id])
@@ -3107,6 +3598,15 @@ def _find_asset_file(root: str, rel_path: str) -> str | None:
 })
 def get_assets(file_name: str, content_type: Optional[str] = None,
                request: Optional[Any] = None) -> Union[ResponseModel, FileResponse, StreamingResponse]:
+    """Serve generated post media.
+
+    PUBLIC by design — LinkedIn fetches these URLs unauthenticated when publishing — which is why it is GET-only and
+    why `_find_asset_file` resolves the name against real directory entries instead of building a path out of caller
+    input (CWE-22).
+
+    A `request` turns the reply into a range-capable stream, which is what lets a browser scrub a
+    generated video; without one the whole file is sent.
+    """
     if not file_name:
         raise HTTPException(status_code=400, detail="A File Name is required")
 
@@ -3166,6 +3666,15 @@ def _start_affiliate_membership(user_id: int, attribution: dict) -> None:
 @router.post("/auth/email/init")
 def auth_email_init(request: AuthInitRequest, http_request: Request = None,
                     response: Response = None) -> ResponseModel:
+    """Step one of email sign-in: mail a PIN, or take the no-mail-provider bypass.
+
+    The reply is deliberately the same shape whether or not the address has an account — `bypass`
+    and `user_exists` are the only signal, and the PIN itself is what proves anything.
+
+    The bypass branch (no mail provider configured) is the WEAKEST way in, so it still hands an
+    account holding a strong factor to the second-factor stage, and it does NOT stamp
+    `email_verified_at` or clear the auth limiters: nothing was proved on that path.
+    """
     email = request.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
@@ -3250,6 +3759,15 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
 @router.post("/auth/email/verify")
 def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
                       response: Response = None) -> ResponseModel:
+    """Step two: spend the PIN. It creates the account on first successful verify.
+
+    Three outcomes, and which one you get is the account's shape, not the request's. A correct PIN
+    always stamps `email_verified_at` — the mailbox received it, so control was proved. On an
+    account holding a strong factor it then hands over to the second-factor stage instead of
+    minting a session. Otherwise a session is minted, possibly HELD to the enrolment surface if
+    this account is past `REQUIRE_STRONG_FACTOR_AFTER` with no factor (`enrollment_required`) — a
+    hold is never a lockout.
+    """
     email = request.email.strip().lower()
     pin = request.pin.strip()
     if not email or not pin:
@@ -3330,6 +3848,12 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
 @router.post("/auth/logout")
 def auth_logout(request: LogoutRequest, http_request: Request = None,
                 response: Response = None) -> ResponseModel:
+    """Sign out: delete the session row and clear the cookie. Never 500s.
+
+    Order and error handling exist for one reason — whatever happens to the audit trail, the row
+    and the cookie must still go. A logout that raises leaves the user signed in while telling them
+    they are not.
+    """
     token = current_session_token(request.session_token)
     # Best effort, and in this order: whatever happens to the audit trail, the session row and the
     # cookie must still go. A logout that 500s leaves the user signed in.
@@ -3355,6 +3879,17 @@ def auth_logout(request: LogoutRequest, http_request: Request = None,
 
 @router.get("/auth/session")
 def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
+    """Who am I — the boot call every authenticated page makes.
+
+    Because it is on every page, several other facts ride along here rather than costing their own
+    round trip.
+
+    It carries the PostHog person properties for `$identify`, the two facts Surveys target on, and
+    both enrolment states. Those two are different questions: `enrollment_required` is HARD (this
+    session is held to the enrolment surface and the SPA must render the gate instead of the app),
+    `strong_factor_prompt` is the soft pre-deadline nudge. Neither is a "dismissed" flag —
+    dismissal is the browser's business; enrolling is what makes them go away.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3394,6 +3929,12 @@ def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
 
 @router.get("/user/token_status")
 def get_user_token_status(session_token: str) -> ResponseModel:
+    """The LinkedIn OAuth token's state for the SPA's reconnect countdown.
+
+    `resolve_token_status` is the ONE decision core, shared with the daily renewal beat (issue
+    #600), so what the user sees and what triggers the reconnect email can never disagree.
+    `days_remaining` is None — never 0 — when it cannot be read.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3987,6 +4528,13 @@ def totp_enroll_begin(request: SessionOnlyRequest, http_request: Request = None)
 
 @router.post("/user/totp/enroll/confirm")
 def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = None) -> ResponseModel:
+    """Turn a pending authenticator secret into a confirmed factor by proving one code.
+
+    Gated on BOTH halves of the ceremony like the passkey path: a secret minted before a factor
+    existed must not still be confirmable once one does. Confirming stamps this session as verified
+    and releases an enrolment hold, and `recovery_codes_needed` tells the SPA to make the user save
+    a sheet BEFORE they close the page — from here an email PIN alone will not sign them in.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4314,6 +4862,16 @@ def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
 # LinkedIn OAuth callback lives outside /api since LinkedIn redirects here
 @app.get("/auth/linkedin/callback", response_model=None)
 def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, RedirectResponse]:
+    """LinkedIn's OAuth redirect target. Lives OUTSIDE `/api` because LinkedIn sends the browser here.
+
+    `state` is `"<salt>:<session_token>"`, and the session it carries is what identifies the user —
+    the LinkedIn account's email is often not the LEM login email, so matching on address would
+    attach the token to the wrong row. A mismatched salt is a 400; with no session at all the token
+    is upserted by the LinkedIn email, and no email means there is nothing to attach it to.
+
+    Every failure path REDIRECTS to /account with an `li_error` rather than rendering an error: the
+    caller is a browser mid-flow, and an API error page strands the user outside the app.
+    """
     from urllib.parse import urlencode
 
     def _account_redirect(params: dict) -> RedirectResponse:
@@ -4397,6 +4955,12 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
 
 @router.get("/user/settings")
 def get_user_settings(session_token: str) -> ResponseModel:
+    """The Account page's snapshot: subscription, preferences, blog/sitemap and company page.
+
+    `content_language` and `effective_content_language` are BOTH returned on purpose (issue #548) —
+    the explicit setting (None = follow Login Location) and what generation will actually use — so
+    the UI can show the inherited default without re-implementing the precedence rules.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4438,6 +5002,11 @@ def get_user_settings(session_token: str) -> ResponseModel:
 
 @router.put("/user/settings")
 def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseModel:
+    """Save the account-level preferences.
+
+    Only the fields on `UserPreferencesRequest` are touched — engagement targeting/voice/caps are a separate row and
+    a separate endpoint.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4457,6 +5026,16 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
 
 @router.get("/user/engagement-preferences")
 def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
+    """The saved engagement preferences, plus the read-only context the Settings hub renders.
+
+    That context is the gate defaults, the plan's catch-up ceiling, the forwarding address, and the
+    last feed scan's reach funnel.
+
+    Every one of those extras is wrapped so it cannot fail the page. `has_saved_preferences`
+    defaults to True when unreadable in particular: it decides whether a brand-new account is
+    started on the Balanced preset, and a hiccup must never make a returning user look brand new
+    and get their saved values overwritten (issue #558).
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4500,6 +5079,14 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/engagement-preferences")
 def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest) -> ResponseModel:
+    """Save targeting, voice and the per-day caps — and refuse an `agent`-scoped token outright.
+
+    Scope surfaces match on PATH, so granting the agent the read granted this write with it. This
+    is the one write that re-opens everything else: it sets `connection_request_mode` /
+    `catchup_touch_mode` (either one flipped to `auto_approve` restores the passive approval
+    bypass) and the caps bounding every outbound lane. A token that cannot approve ONE item must
+    not be able to configure the account into approving all of them (issue #1026).
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4527,6 +5114,7 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
 
 @router.get("/user/newsletter-settings")
 def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel:
+    """The caller's newsletter settings row, defaults filled in by `get_newsletter_settings`."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4560,6 +5148,12 @@ def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/newsletter-settings")
 def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> ResponseModel:
+    """Save the newsletter settings and, when the feature is on, top the draft queue up NOW.
+
+    The top-up is what makes a raised `max_queued_drafts` visible immediately instead of at the
+    next daily beat. Idempotent — an already-full queue generates nothing — so a repeated save
+    cannot run up generation spend.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4597,6 +5191,14 @@ def _compute_next_publish(user_id: int, anchor=None):
 
 @router.get("/user/newsletter-draft")
 def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
+    """The newsletter review queue.
+
+    `next_publish` is the slot AFTER the last edition already queued, so it answers "when would a NEW draft go out",
+    not "when is the next send".
+
+    A cover leaves here as a URL and its filesystem path is popped — the SPA must never be handed
+    a server path for an asset it only ever renders.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4622,6 +5224,12 @@ def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/newsletter-draft")
 def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> ResponseModel:
+    """Edit a queued edition, and optionally approve or skip it.
+
+    An unrecognised `action` maps to no status change, so it saves the fields rather than
+    publishing on a typo. Ownership is checked against the edition's own `user_id` — a foreign
+    edition id is a 404, never an edit.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4974,6 +5582,11 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel:
 def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str] = None,
                                 page: int = 1, page_size: int = 25,
                                 sort_order: str = "asc") -> ResponseModel:
+    """The scheduled-DM review queue, paged and scoped to the caller.
+
+    Every datetime is rewritten as explicit-UTC ISO on the way out so the browser does not read a naive value as
+    local time.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -4988,6 +5601,11 @@ def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str]
 
 @router.put("/dm")
 def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel:
+    """Edit a queued DM, or approve/cancel it.
+
+    `approve` is what releases it to be sent, so it is refused for an `agent` session; an empty request (no fields,
+    no action) is a 422 rather than a 200 that changed nothing.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5062,6 +5680,7 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
 def list_connection_requests_endpoint(session_token: str, status_filter: Optional[str] = None,
                                       page: int = 1, page_size: int = 25,
                                       sort_order: str = "desc") -> ResponseModel:
+    """The connection-request queue, paged and scoped to the caller."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5073,6 +5692,11 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
 
 @router.put("/connection_request")
 def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> ResponseModel:
+    """Edit a queued connection request, or approve/cancel it.
+
+    `approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,
+    never a silent save.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5140,6 +5764,11 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
 def list_outreach_targets_endpoint(session_token: str, status_filter: Optional[str] = None,
                                    stage_filter: Optional[str] = None, page: int = 1,
                                    page_size: int = 25, sort_order: str = "asc") -> ResponseModel:
+    """The outreach funnel board.
+
+    `stage_filter` and `status_filter` are different questions — which STEP a target is on, versus whether that step
+    is approved to fire.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5193,6 +5822,12 @@ _LEN_LEAD_DRAFT = 3000  # lead_signals.draft_response (TEXT; app cap)
 
 
 class LeadSignalUpdate(BaseModel):
+    """Body of `PUT /lead_signal` (issue #483).
+
+    `approve` is the ONLY thing that dispatches a response, and it sends exactly the text the operator sees — so an
+    approval with an empty draft is refused rather than sending nothing to a real prospect.
+    """
+
     session_token: str
     signal_id: int
     draft_response: Optional[str] = Field(default=None, max_length=_LEN_LEAD_DRAFT)
@@ -5250,6 +5885,13 @@ _LEAD_STAGES = tuple(str(s) for s in LeadStage)
 
 
 class LeadUpdate(BaseModel):
+    """Body of `PUT /lead` — the operator's manual corrections to a scored lead (issue #484).
+
+    Everything here SURVIVES the nightly re-score, which is the point: `stage` is a manual override
+    (empty string clears it back to the computed stage) and `dismiss` keeps someone off the board
+    without deleting the history the score is built from.
+    """
+
     session_token: str
     lead_id: int
     notes: Optional[str] = Field(default=None, max_length=_LEN_LEAD_NOTES)
@@ -5258,6 +5900,11 @@ class LeadUpdate(BaseModel):
 
 
 class LeadRefreshRequest(BaseModel):
+    """Body of `POST /leads/refresh` — session only.
+
+    The caller's own pipeline is the only thing that can be re-scored, so there is nothing else to name.
+    """
+
     session_token: str
 
 
@@ -5373,6 +6020,12 @@ def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> Respons
 
 
 class GroupTogglesRequest(BaseModel):
+    """Body of `PUT /user/groups`.
+
+    `groups` accepts BOTH shapes for compatibility (issue #769) — a bare bool is the old commenting toggle; the dict
+    form also carries `post_enabled`.
+    """
+
     session_token: str
     # {group_id: enabled} or {group_id: {"enabled": bool, "post_enabled": bool}} (issue #769)
     groups: dict = {}
@@ -5380,6 +6033,12 @@ class GroupTogglesRequest(BaseModel):
 
 @router.get("/user/groups")
 def get_user_groups_endpoint(session_token: str) -> ResponseModel:
+    """The user's LinkedIn groups and their per-group toggles.
+
+    Which group the next weekly group post lands in is marked ON the row (`is_next_post`) rather
+    than returned beside the list, so an SPA bundle still open from before a deploy keeps reading
+    `detail` as the plain array it expects (issue #743).
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5395,6 +6054,7 @@ def get_user_groups_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/groups")
 def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
+    """Save the per-group commenting/posting toggles."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5404,6 +6064,12 @@ def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
 
 
 class GroupPostDraftUpdateRequest(BaseModel):
+    """Body of `PUT /user/group-post-draft` (issue #932).
+
+    It names no draft id: the handler always edits the caller's OWN open draft, so there is no id a client could
+    point somewhere else.
+    """
+
     session_token: str
     # The user's revision of the drafted text. None = leave it as it is.
     content: Optional[str] = Field(default=None, max_length=_LEN_GROUP_POST)
@@ -5589,6 +6255,12 @@ def get_automation_status_endpoint(session_token: str) -> ResponseModel:
 
 
 class AutomationResumeRequest(BaseModel):
+    """Body of `POST /user/automation-resume`.
+
+    Session only — recovery from a suppression trip is deliberately a HUMAN act on their own account (issue #629),
+    so there is nobody else to name.
+    """
+
     session_token: str
 
 
@@ -5624,6 +6296,8 @@ def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseMode
 # --- Affiliate / ambassador program (issue #737) ---------------------------------------------------
 
 class AffiliateStatusRequest(BaseModel):
+    """Body of the affiliate enrol/opt-out toggle (issue #737, program A)."""
+
     session_token: str
     # (A) affiliate status. One field, because opting out has to be ONE click — a confirm-then-submit
     # dance is the dark pattern the issue explicitly rules out.
@@ -5631,6 +6305,12 @@ class AffiliateStatusRequest(BaseModel):
 
 
 class AffiliatePromoConsentRequest(BaseModel):
+    """Body of the promo-consent toggle (issue #737, program B).
+
+    It governs publishing LEM promotion from the user's OWN LinkedIn account, which is why
+    enabling needs evidenced consent and disabling does not.
+    """
+
     session_token: str
     # (B) — publishing LEM promotion from the user's OWN LinkedIn account.
     enabled: bool
@@ -5641,6 +6321,12 @@ class AffiliatePromoConsentRequest(BaseModel):
 
 
 class AffiliateNoticeRequest(BaseModel):
+    """Body of `POST /user/affiliate/notice` — session only.
+
+    The timestamp it records is the EVIDENCE that the enrolment notice was delivered, which is what makes default-on
+    enrolment fair.
+    """
+
     session_token: str
 
 
@@ -5783,6 +6469,13 @@ def _window_start(days: int) -> str:
 
 
 class LeadMagnetRequest(BaseModel):
+    """Body of `PUT /user/lead-magnet` — the comment-keyword mechanic that pays out a DM (#624).
+
+    `keyword` is the trigger word a reader comments to receive `message`, so the handler refuses
+    one that collides with the engagement-bait filter — the filter would strip it from generated
+    posts and the mechanic would silently never fire.
+    """
+
     session_token: str
     enabled: bool = False
     keyword: Optional[str] = Field(default=None, max_length=_LEN_LM_KEYWORD)
@@ -5791,6 +6484,7 @@ class LeadMagnetRequest(BaseModel):
 
 @router.get("/user/lead-magnet")
 def get_lead_magnet_endpoint(session_token: str) -> ResponseModel:
+    """The caller's lead-magnet settings: the trigger keyword and the DM it pays out."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5799,6 +6493,11 @@ def get_lead_magnet_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/lead-magnet")
 def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
+    """Save the lead-magnet settings, refusing a bait-colliding keyword.
+
+    The 422 names a workable alternative, because a mechanic that silently never fires is worse
+    than one that would not save.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5818,6 +6517,7 @@ def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
 
 @router.get("/user/dm-templates")
 def get_dm_templates_endpoint(session_token: str) -> ResponseModel:
+    """The caller's DM template ladders — every event type, every follow-up step."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5826,6 +6526,7 @@ def get_dm_templates_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/dm-templates")
 def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel:
+    """Replace the caller's DM templates with the posted set — a whole-set upsert, not a patch."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5848,6 +6549,7 @@ def get_engagement_targets_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/engagement-targets")
 def update_engagement_targets_endpoint(request: EngagementTargetsRequest) -> ResponseModel:
+    """Replace the caller's engagement roster with the posted list."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5858,6 +6560,7 @@ def update_engagement_targets_endpoint(request: EngagementTargetsRequest) -> Res
 
 @router.delete("/user/engagement-targets")
 def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) -> ResponseModel:
+    """Drop one person off the caller's roster, matched by profile URL and scoped to their own rows."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5882,6 +6585,7 @@ def get_story_bank_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/story-bank")
 def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel:
+    """Upsert story-bank entries — the FACT half the content core draws on (issue #620)."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5892,6 +6596,7 @@ def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel:
 
 @router.delete("/user/story-bank")
 def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel:
+    """Remove one story-bank entry, scoped to the caller's own rows."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5978,6 +6683,7 @@ def update_linkedin_display_name_endpoint(request: LinkedInDisplayNameRequest) -
 
 @router.get("/user/timezone")
 def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
+    """The caller's IANA timezone — the one scheduling reads, so the SPA shows the same clock."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5986,6 +6692,7 @@ def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
 
 @router.get("/user/linkedin-profile")
 def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
+    """The caller's connected LinkedIn profile URL. None when no LinkedIn account is attached yet."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -5996,6 +6703,12 @@ def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/timezone")
 def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel:
+    """Save the caller's timezone, validated against the live tz database.
+
+    Rejected rather than coerced: this zone is what turns a scheduled wall-clock time into a real
+    publish moment, so an unrecognised name silently falling back to UTC would post at the wrong
+    hour with nothing to show for it.
+    """
     from zoneinfo import available_timezones
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -6010,6 +6723,7 @@ def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel:
 
 @router.get("/user/location")
 def get_user_location_endpoint(session_token: str) -> ResponseModel:
+    """The caller's stored Login Location. An empty dict means none is set — not an error."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6018,6 +6732,12 @@ def get_user_location_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/location")
 def update_user_location_endpoint(request: LocationRequest) -> ResponseModel:
+    """Save a manually chosen Login Location (`source='manual'`), stored as given.
+
+    The two bounds checks are the only validation: coordinates outside the real ranges and a
+    `country` that is not an ISO-3166 alpha-2 code would both reach the automation browser's geo
+    emulation as nonsense.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6347,6 +7067,13 @@ def _early_adopter_checkout_extras(user_id: int) -> tuple[Optional[int], Optiona
 
 @router.post("/billing/create-checkout-session")
 def billing_create_checkout_session(request: CheckoutSessionRequest) -> ResponseModel:
+    """Start a Stripe purchase — or, on an already-subscribed account, change the plan in place.
+
+    The in-place branch matters: sending an active subscriber through Checkout registers a SECOND
+    subscription and bills them twice. It answers `checkout_url: None, upgraded: True` because
+    there is nowhere to send the browser — Stripe's `subscription.updated` webhook syncs the DB.
+    A failed in-place upgrade falls back to Checkout rather than erroring.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6387,6 +7114,11 @@ def billing_create_checkout_session(request: CheckoutSessionRequest) -> Response
 
 @router.post("/billing/create-portal-session")
 def billing_create_portal_session(request: PortalSessionRequest) -> ResponseModel:
+    """A one-time link into Stripe's billing portal, where payment methods and cancellation live.
+
+    An account with no Stripe customer record is a 400, not an empty portal — there is nothing for
+    the user to manage and a dead link would look like a broken page.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6420,6 +7152,16 @@ def _track_billing_funnel(event: str, stripe_customer_id: str, **props) -> None:
 
 @router.post("/billing/webhook")
 async def billing_webhook(request: Request) -> dict:
+    """Stripe's lifecycle webhook — public, because Stripe holds no session.
+
+    The SIGNATURE is the credential, and an invalid one is a 400 before anything is read.
+
+    It answers `{"received": True}` for everything it decided not to act on, deliberately: Stripe
+    retries a non-2xx, so an unrecognised event, a missing customer or an already-granted purchase
+    must ACK rather than error. Credit grants are idempotent on the checkout session id for the
+    same reason. A refund only deducts on a FULL refund — a partial one does not map onto whole
+    credits.
+    """
     payload = await request.body()
     sig_header = request.headers.get("Stripe-Signature", "")
 
@@ -6665,6 +7407,10 @@ async def billing_webhook(request: Request) -> dict:
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
 def get_avatar_credits_endpoint(session_token: str) -> ResponseModel:
+    """Avatar credit balance plus the currently active avatar.
+
+    The SPA needs both together to decide whether to offer training or a render.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6678,6 +7424,11 @@ def get_avatar_credits_endpoint(session_token: str) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [400, 401]}
 })
 def avatar_credits_checkout(request: AvatarCreditCheckoutRequest) -> ResponseModel:
+    """Stripe hand-off for an avatar-credit package.
+
+    The credits are NOT granted here — the `checkout.session.completed` webhook does that, idempotently on the
+    session id.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6704,6 +7455,7 @@ def avatar_credits_checkout(request: AvatarCreditCheckoutRequest) -> ResponseMod
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
 def get_video_credits_endpoint(session_token: str) -> ResponseModel:
+    """The caller's video credit balance — what premium video renders are charged against."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6715,6 +7467,10 @@ def get_video_credits_endpoint(session_token: str) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [400, 401]}
 })
 def video_credits_checkout(request: VideoCreditCheckoutRequest) -> ResponseModel:
+    """Stripe hand-off for a video-credit package.
+
+    Like the avatar twin, the grant happens in the webhook, not here.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6777,6 +7533,12 @@ async def start_avatar_training_endpoint(
     trigger_word: str = Form(...),
     photos: UploadFile = File(...),
 ) -> ResponseModel:
+    """Train a LoRA avatar from an uploaded photo ZIP. Costs one avatar credit.
+
+    Both size limits guard a zip bomb, which is why the UNCOMPRESSED total is checked as well as
+    the upload: 50 MB compressed can expand to gigabytes. The credit is deducted only AFTER
+    Replicate accepted the job, so a failed start never charges.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6819,6 +7581,7 @@ async def start_avatar_training_endpoint(
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
 def list_avatar_trainings(session_token: str) -> ResponseModel:
+    """Every avatar training this user has started, in whatever state it reached."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -6831,6 +7594,12 @@ def list_avatar_trainings(session_token: str) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [401, 404]}
 })
 def sync_avatar_training_status(avatar_db_id: int, session_token: str) -> ResponseModel:
+    """Poll Replicate for a training's state and write it back — the SPA's progress call.
+
+    A training already in a terminal state is NOT re-polled, and the sample renders it may trigger
+    on first reaching `succeeded` are claimed, so repeated polling cannot spend inference money
+    over and over. The row is looked up within the caller's own trainings, so a foreign id is a 404.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -7022,6 +7791,11 @@ def reject_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> Response
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
 def get_avatar_preferences_endpoint(session_token: str) -> ResponseModel:
+    """The per-user avatar guardrails.
+
+    The opt-ins `resolve_avatar_for` reads before any likeness renders, plus the master
+    `avatar_disabled` switch.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -7033,6 +7807,11 @@ def get_avatar_preferences_endpoint(session_token: str) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [400, 401, 500]}
 })
 def update_avatar_preferences_endpoint(request: AvatarPreferencesRequest) -> ResponseModel:
+    """PATCH one or more avatar guardrails.
+
+    `exclude_none` is what makes it a patch, so the SPA can send a single toggle without resetting
+    the rest. An all-None body is a 400, not a no-op 200.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -7050,6 +7829,11 @@ def update_avatar_preferences_endpoint(request: AvatarPreferencesRequest) -> Res
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404]}
 })
 def activate_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+    """Make a trained avatar the one that renders.
+
+    Both gates are hard: the training must have SUCCEEDED, and the user must have reviewed and APPROVED its preview
+    samples first — activating an unreviewed likeness is how a bad one reaches LinkedIn as the author's face.
+    """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -7153,6 +7937,11 @@ def admin_fix_video_urls(
     request: AdminFixVideoUrlsRequest,
     x_admin_secret: Optional[str] = Header(default=None),
 ) -> ResponseModel:
+    """Rewrite a stale asset host across stored video URLs — the repair for an asset base that moved.
+
+    Blind string replacement across rows, so `user_id` is the blast-radius control: omitting it
+    rewrites EVERY user's videos.
+    """
     _require_admin(x_admin_secret)
     updated = replace_video_url_base(request.old_base, request.new_base, request.user_id)
     myprint(f"admin/fix-video-urls: replaced {updated} row(s) — {request.old_base!r} → {request.new_base!r}")
@@ -7199,6 +7988,11 @@ def admin_regenerate_carousel(
     request: AdminRegenerateCarouselRequest,
     x_admin_secret: Optional[str] = Header(default=None),
 ) -> ResponseModel:
+    """Re-render a carousel's slides and overwrite the post's content.
+
+    DOCUMENT posts are accepted too — a document post is a carousel published as a native PDF, so
+    it runs the same slide-regeneration path. Anything else is a 404.
+    """
     _require_admin(x_admin_secret)
 
     post_type = get_post_type(request.post_id)
@@ -7553,6 +8347,12 @@ def admin_feedback_review(
 
 
 class YouTubeTokenRequest(BaseModel):
+    """Body of `POST /admin/youtube-token` — install a Google refresh token WITHOUT a deploy (#742).
+
+    Write-only: the token lands in `app_credentials` and no route ever returns it. Admin-authorised
+    by the route, so this body carries only the secret it is delivering.
+    """
+
     refresh_token: str
 
 
@@ -7761,6 +8561,11 @@ for _legacy_path, _new_path in _DOCS_REDIRECTS.items():
 # Must be registered before the SPA StaticFiles mount so it takes priority.
 @app.get("/assets", include_in_schema=False)
 async def assets_compat_redirect(request: Request, file_name: Optional[str] = None):
+    """301 the pre-`/api` asset URL to its current home, query string intact.
+
+    Registered BEFORE the SPA StaticFiles mount so it wins the path; without a `file_name` this is
+    the SPA's own `/assets` bundle directory, so it 404s here and lets the mount answer.
+    """
     if file_name:
         return RedirectResponse(url=f"/api/assets?{request.url.query}", status_code=301)
     raise HTTPException(status_code=404)
@@ -7781,6 +8586,11 @@ if os.path.isdir(_ui_dist):
 
     @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
     def serve_spa(full_path: str):
+        """The SPA catch-all — any path no route above claimed gets index.html.
+
+        That is what makes client-side routing survive a hard refresh, and it is why this is
+        registered LAST, after include_router.
+        """
         with open(_spa_index) as fh:
             # spa_index_headers() owns the no-store contract — see the note there.
             return HTMLResponse(content=fh.read(), headers=spa_index_headers())
@@ -7789,6 +8599,11 @@ if os.path.isdir(_ui_dist):
 def send_bytes_range_requests(
         file_path: str, start: int, end: int, chunk_size: int = 10_000
 ):
+    """Yield `file_path` from byte `start` to `end` INCLUSIVE, in `chunk_size` pieces.
+
+    Inclusive because that is what an HTTP `Range` header means; an exclusive read here would drop
+    the last byte of every ranged response.
+    """
     with open(file_path, "rb") as f:
         f.seek(start)
         while (pos := f.tell()) <= end:
@@ -7818,6 +8633,13 @@ def _get_range_header(range_header: str, file_size: int) -> tuple[int, int]:
 def range_requests_response(
         request: Request, file_path: str, content_type: str
 ) -> StreamingResponse:
+    """Serve a file as a stream, honouring an HTTP `Range` header (206) or sending it whole (200).
+
+    This is what makes a generated video scrubbable in a browser. An unsatisfiable range is a 416,
+    not a clamped read — silently serving different bytes than were asked for corrupts the player's
+    buffer. `content-encoding: identity` is stated so a proxy cannot compress a byte-range reply
+    out of alignment with the offsets the client asked for.
+    """
     file_size = os.stat(file_path).st_size
     range_header = request.headers.get("range")
 
