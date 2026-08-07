@@ -215,6 +215,12 @@ def stale_after_days() -> int:
 
 
 def withdrawals_per_day_cap() -> int:
+    """The lane's own per-day ceiling, before pacing.
+
+    A ceiling, not the allowance: `plan_withdrawals` takes this through the #626 engine (variable
+    draw, weekends, rest days) and bounds it by the shared account envelope, so a run's budget is
+    normally lower than this and never higher.
+    """
     return _env_int("STALE_INVITE_WITHDRAWALS_PER_DAY",
                     STALE_INVITE_WITHDRAWALS_PER_DAY_DEFAULT)
 
