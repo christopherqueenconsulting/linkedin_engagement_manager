@@ -277,6 +277,23 @@ and a comment explains why, rather than cycling forever on whatever keeps killin
   `STALE_CLAIM_MINUTES`. To force it now: `STALE_CLAIM_MINUTES=1 /home/lem/agent-pipeline/tick.sh`.
   If an issue keeps coming back, look for `REAPER: … parking for a human` and read the failing run
   in `logs/`.
+- **A green PR never merges (and the log keeps saying "Merging")** → `main` merges through a GitHub
+  merge queue, so `gh pr merge --auto` only *enqueues*, and it exits 0 even when the PR holds a
+  queue entry GitHub already evicted (#1082 — #1067 sat 47h that way). The lane now reads the state
+  back: look for `MERGE: PR #N is WAITING IN THE MERGE QUEUE` (fine) vs
+  `NEITHER merged NOR in the merge queue (stall k/N)` (stuck). After `MERGE_STALE_TICKS` (default 3)
+  it clears the dangling entry with `--disable-auto` and re-enqueues; to force that now, run one
+  tick with `MERGE_STALE_TICKS=0`. The "merging" comment is keyed on the head SHA in
+  `state/mergecomment-<pr>.sha`, so a stuck PR can never accumulate more than one per push.
+- **The log says "WAITING IN THE MERGE QUEUE" every tick and the PR still never merges** → the
+  queue is *taking* the PR and then *dropping* it: a `merge_group` check is failing, so GitHub
+  evicts the entry a few minutes after each enqueue and the next tick re-enqueues (#1067 did this
+  154 times). A read 20s after the request always shows a healthy live entry, so the lane also
+  counts requests per head SHA in `state/mergeattempt-<pr>`: at `MERGE_QUEUE_STUCK_TICKS`
+  (default 12, ~1h) it logs `STUCK IN THE MERGE QUEUE — N merge requests at head …` and the tick
+  reports `failed`/`merge_queue_stuck`. `merge_queue_unmergeable` is the same story caught earlier,
+  straight from the entry's own state. **Neither clears itself** — open the PR's `merge_group`
+  check runs and fix what is failing there; a new push resets the budget.
 - **Ollama lane never used** → check `state/ollama.state` (including `alias_ok` / `alias_ok_ts`),
   the gauge, and `OLLAMA_LANE_ENABLED`.
   `OLLAMA_PROBE=1` adds a real completion probe (more accurate). Pin `OLLAMA_CAPACITY_PCT=80` to
