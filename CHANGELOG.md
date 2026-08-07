@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.133.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.133.0...v0.133.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **automation:** log the commenter-read guard at DEBUG instead of passing silently ([#1086](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1086)) ([8c2cd16](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c2cd162f2f7d278a92be86a8f336e900f9709ed))
+* **errors:** only warn on feed dedup keys when NO post yields a URN (closes [#1064](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1064)) ([#1067](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1067)) ([e444ed0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e444ed0ec9ce27b8b32516b1ea7ace153fc75033))
+* **observability:** stop cost-alert breaches escalating into code defects (closes [#1071](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1071)) ([#1080](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1080)) ([4ef74de](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ef74deacdc3288a83b9f061fe3c2de7cf5eceb8))
+* **pipeline:** verify the merge outcome instead of gh's exit code (closes [#1082](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1082)) ([#1089](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1089)) ([b7c01dc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b7c01dc7c1b33f8fb7469b54cd88f0d4bad103a0))
+* **scraper:** rebuild get_profile_experiences off the SDUI DOM, not line positions (closes [#970](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/970)) ([#984](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/984)) ([48c7ee2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/48c7ee27e70e9b9b460c8f10afd346bd37f29d28))
+
+
+### Documentation
+
+* add LinkedIn re-index playbook (profile + config alignment plan) ([822808f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/822808f3ec8e680bee7dc0a33f7567bc8780ab4d))
+* LinkedIn re-index playbook — video items → LEM roadmap + profile/config alignment ([#1077](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1077)) ([822808f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/822808f3ec8e680bee7dc0a33f7567bc8780ab4d))
+
 ## [0.133.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.6...v0.133.0) (2026-08-05)
 
 
