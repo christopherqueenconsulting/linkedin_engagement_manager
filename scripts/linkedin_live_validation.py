@@ -1169,12 +1169,16 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                 break
             if attempt + 1 < attempts:
                 sleep(2)
+        # Production never thanks the account itself, so a block that resolved around one of the
+        # page's OWN /in/ links is not a person the probe may report as thankable either.
+        own_norm = _normalize_profile_url(own)
         rows = []
         for row in reading["rows"]:
             text = row.get("text") or ""
             age_days = _parse_recommendation_date(text)
             person_url = _normalize_profile_url(row.get("href") or "")
             rows.append({"profile_url": person_url,
+                         "is_self": bool(own_norm) and person_url == own_norm,
                          "name": clean_person_name(row.get("name") or ""),
                          "age_days": None if age_days is None else round(age_days, 2),
                          "in_window": age_days is not None and age_days <= lookback,
@@ -1188,7 +1192,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                "profile_anchors": reading["anchors"], "page_dated": reading["page_dated"],
                "read_source": read_source,
                "people": [r for r in rows if r["in_window"] and r["profile_url"]
-                          and not r["already_thanked"]],
+                          and not r["already_thanked"] and not r["is_self"]],
                "rows": rows[:10]}
         out["verdict"] = appreciation_verdict(out)
         return out

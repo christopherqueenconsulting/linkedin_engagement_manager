@@ -607,6 +607,28 @@ class TestAppreciationSourcesProbe:
         assert [r["name"] for r in rec["rows"]] == ["Uday Shankar", "Jeremiah A. Myers"]
         assert rec["read_source"] == "image"
 
+    def test_a_block_resolved_around_the_users_own_link_is_never_a_thankable_person(self):
+        """The page is full of the account's OWN /in/ links (nav, the Received/Given/Pending tabs).
+        Production drops a row whose href is the user themselves; a probe that reports it as someone
+        production would thank is grounding a person who can never be messaged."""
+        from unittest.mock import patch
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        driver.execute_script.return_value = {
+            "rows": [{"href": "https://www.linkedin.com/in/me/?trk=nav", "name": "Me",
+                      "text": "Me\nJuly 24, 2026, someone was my client"},
+                     {"href": "https://www.linkedin.com/in/jane", "name": "Jane Doe",
+                      "text": "Jane Doe\nJuly 24, 2026, Jane was my client"}],
+            "anchors": 24, "page_dated": True}
+        with patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        rec = report["recommendations_received"]
+        assert [r["is_self"] for r in rec["rows"]] == [True, False]
+        assert [p["profile_url"] for p in rec["people"]] == ["https://www.linkedin.com/in/jane"]
+
     def test_an_image_that_predates_the_rebuild_still_grounds_both_surfaces(self, monkeypatch):
         """The pre-merge run the owner asked for: the deployed image has no `_recommendation_reading`
         to import, so a hard import would kill the whole probe — mentions half included — instead of

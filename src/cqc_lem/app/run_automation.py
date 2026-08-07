@@ -5200,17 +5200,27 @@ def get_recent_recommendations(driver, wait, user_id: int = None,
 
     lookback = appreciation_lookback_days()
     recommenders: dict[str, str] = {}
+    dated = 0
     for row in reading["rows"]:
         # Every row already carried a date-shaped line, but the parser is still the authority:
         # "February 30, 2026" matches the shape and is not a date.
         age_days = _parse_recommendation_date(row.get("text") or "")
-        if age_days is None or age_days > lookback:
+        if age_days is None:
+            continue
+        dated += 1
+        if age_days > lookback:
             continue
         url = _normalize_profile_url(row.get("href") or "")
         if not url or url == own_url:
             continue
         recommenders.setdefault(url, clean_person_name(row.get("name") or ""))
 
+    if not dated:
+        # `page_dated` only catches the page-vs-reader split; this is the reader-vs-parser one.
+        # Blocks resolved, every one carried a date-SHAPED line, and not one parsed — that is
+        # format drift, and without this it reads as "no recent recommendations" forever.
+        log_warning("Recommendation cards carried no readable date", user_id=user_id,
+                    action_type="scrape", url=f"{own_url}/details/recommendations/")
     log_info(f"Found {len(recommenders)} recommendation(s) received in the last {lookback} day(s)",
              user_id=user_id, action_type="dm")
     return recommenders

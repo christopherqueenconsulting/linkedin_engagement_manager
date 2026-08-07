@@ -137,9 +137,22 @@ class TestRecommendations:
 
     def test_a_date_shaped_line_that_is_not_a_date_is_skipped(self):
         """The JS only proves the SHAPE; `_parse_recommendation_date` is still the authority."""
-        got, _, warn = self._run([_rec_row("February 30, 2026, Jane was my client")])
+        got, _, warn = self._run([_rec_row("February 30, 2026, Jane was my client"),
+                                  _rec_row("March 2, 2019, John was my client",
+                                           href="https://www.linkedin.com/in/john", name="John")])
         assert got == {}
         warn.assert_not_called()
+
+    def test_blocks_that_all_fail_the_date_parser_still_warn(self):
+        """The reader-vs-parser half of the tripwire: every block carried a date-SHAPED line and not
+        one parsed. `page_dated` cannot see this — the page and the JS agree, the PARSER is what
+        drifted — and without a warning it reads as 'no recent recommendations' forever."""
+        got, _, warn = self._run([_rec_row("February 30, 2026, Jane was my client"),
+                                  _rec_row("September 31, 2026, John was my client",
+                                           href="https://www.linkedin.com/in/john", name="John")])
+        assert got == {}
+        warn.assert_called_once()
+        assert "no readable date" in warn.call_args[0][0]
 
     def test_dated_cards_do_not_warn_even_when_all_are_old(self):
         got, _, warn = self._run([_rec_row("March 2, 2019, Jane was my client")])

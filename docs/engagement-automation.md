@@ -337,7 +337,10 @@ empty-dict stubs, so only new connections ever produced a DM and the
   `_parse_recommendation_date` / `_parse_relative_age_days` return `None` and the card is dropped.
   Only what falls inside `APPRECIATION_LOOKBACK_DAYS` (default 30) is a moment worth reacting to.
   Cards that render but NONE of which date is the one thing that warns: that is format drift, and
-  it reads in production as "no recent recommendations" forever — a silently dead trigger.
+  it reads in production as "no recent recommendations" forever — a silently dead trigger. That
+  tripwire survives the #1007 rebuild: the JS proves only the date SHAPE, so blocks that all resolve
+  and none of which `_parse_recommendation_date` can read is the reader and the parser drifting
+  apart, and it still warns.
 - **A recommendation card is a DATE-CARRYING BLOCK around a `/in/` anchor, not a list item (#1007).**
   The 2026-08-03 grounding run found `/details/recommendations/` renders no `<li>`, no `<time>`, no
   `[data-view-name]` and nothing with `role='tab'`, so every rung of the original ladder was
@@ -352,7 +355,8 @@ empty-dict stubs, so only new connections ever produced a DM and the
 - **`page_dated` is the recommendations tripwire.** Zero cards on a page whose text plainly carries
   "Month D, YYYY" is drift and warns; zero cards on a page with no date is an account nobody has
   recommended and stays a DEBUG no-op. Without that split the two readings are the same number,
-  which is precisely how the dead ladder survived a merge.
+  which is precisely how the dead ladder survived a merge. It is the page-vs-reader half only —
+  the reader-vs-parser half is the undated-cards warning above, and both are needed.
 - **`appreciation_touches` is the claim, and it is what makes this safe.** The beat re-queues
   itself every ~60s inside its window, so a standing list without a durable claim is a DM a minute.
   One row per (user, person, event_type); the unique key is the guarantee. `_dispatch_appreciation_dms`
