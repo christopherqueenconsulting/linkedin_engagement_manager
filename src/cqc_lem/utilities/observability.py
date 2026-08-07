@@ -1136,6 +1136,11 @@ def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None
             "rows_seen": int(report.get("rows_seen") or 0),
             "stale_seen": int(report.get("stale_seen") or 0),
             "unreadable": int(report.get("unreadable") or 0),
+            # Rows refused because the Withdraw control named somebody the row does not (#1006). A
+            # PARTIAL mismatch is the label drifting by a row — the #1012 hazard — and without this
+            # it is invisible: those rows are dropped before `stale_seen`, so the run reports
+            # "nothing old enough" and looks identical to a healthy account.
+            "entity_mismatch": int(report.get("entity_mismatch") or 0),
             "expansions": int(report.get("expansions") or 0),
             **extra,
         },
