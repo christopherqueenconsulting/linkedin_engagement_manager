@@ -70,6 +70,36 @@ Zero rows against a non-zero "N Profile viewers" headline stat is selector drift
 zero rows with no stat is a quiet no-op. Re-ground with
 `scripts/linkedin_live_validation.py --profile-views`.
 
+## Recommendations Received has no list item, no `<time>` and no `role=tab` (#1007)
+
+Live-grounded 2026-08-03 (`/in/<self>/details/recommendations/`, user 1): hit-counts on the live
+page were `main li` **0**, `main time` **0**, `[data-view-name]` **0**, `[role='tab']` **0**,
+`div[role='listitem']` 3, `main div[role=list]` 1, `main a[href*='/in/']` 24. So every rung of the
+original card ladder and all three `_RECOMMENDATION_TAB_LOCATORS` were unmatchable —
+the recommendations half of #968 read 0 cards forever while the mentions half worked. The one
+`main div[role=list]` is the **footer help-links list** ("Questions? / Visit our Help Center"), the
+same junk trio the catch-up grounding hit; never anchor on it.
+
+What the page does render is one `/in/` anchor per card carrying `name · degree · headline` in its
+own innerText, inside a block that also carries the card's date line
+(`April 25, 2012, Uday was Christopher's client`). `_RECOMMENDATION_ROWS_JS` reads it in ONE
+`execute_script` pass: climb from each anchor to the outermost ancestor still about that ONE
+profile slug — stop as soon as a second slug joins, which also keeps a card whose avatar and name
+are two anchors to the same person intact — and keep the block only when its text matches the
+date regex. The "Who your viewers also viewed" rail drops out because its rows carry no date.
+Zero cards on a page whose text DOES carry a date is drift and warns (`page_dated`); zero with no
+date is a quiet no-op. Tab mapping: the bare URL defaults to **Received**, so the tab click is
+only ever a correction; `?detailScreenTabIndex=2` is **Pending**, whose rows read
+"Requested"/"Sent" and are recommendation *requests*, never thank-worthy. Re-ground with
+`scripts/linkedin_live_validation.py --appreciation-sources`.
+
+The probe is piped into a worker running the DEPLOYED image, so a read rebuilt on a branch is not
+there to import — and a reader that can only be grounded AFTER it merges is exactly how this ladder
+shipped dead. As with the feed-sort chain, the probe drives `_recommendation_reading` when the
+running image has it and an identical carried copy when it does not, and the reading names which
+(`read_source: image | script`; a `script` reading has grounded THIS BRANCH, not what is deployed).
+`TestRecommendationReadCopy` fails the build if the copy drifts from the shipped read.
+
 ## The Connect invite is a URL, and unscoped "Invite …" buttons are a WRONG-PERSON hazard
 
 Live-grounded 2026-08-03 (3rd-degree profile, user 1, Sales-Nav overlay): the profile top card

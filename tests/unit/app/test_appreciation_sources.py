@@ -101,54 +101,128 @@ class TestDateParsers:
         assert _parse_relative_age_days("3d") == 3.0
 
 
+def _rec_row(text: str, href: str = "https://www.linkedin.com/in/jane?trk=x",
+             name: str = "Jane Doe\n· 1st\nHead of Ops") -> dict:
+    """One row as `_RECOMMENDATION_ROWS_JS` returns it: the card block's text plus the `/in/`
+    anchor it was resolved from."""
+    return {"href": href, "name": name.split("\n")[0], "text": text}
+
+
 class TestRecommendations:
-    def _run(self, cards, own="https://www.linkedin.com/in/me"):
+    """#1007: the card read is a single JS pass over `/in/` anchors, not a locator ladder — the
+    ladder was unmatchable on the live SDUI DOM and read zero cards forever."""
+
+    def _run(self, rows, own="https://www.linkedin.com/in/me", page_dated=None):
         from cqc_lem.app.run_automation import get_recent_recommendations
         driver = MagicMock()
-        with patch(f"{_RA}.find_all_first", return_value=cards), \
-             patch(f"{_RA}.click_first"), \
+        driver.execute_script.return_value = {
+            "rows": rows, "anchors": len(rows) or 3,
+            "page_dated": bool(rows) if page_dated is None else page_dated}
+        with patch(f"{_RA}.click_first"), \
              patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.log_warning") as warn, \
-             patch(f"{_RA}.getText", side_effect=lambda el: el.text):
+             patch(f"{_RA}.log_warning") as warn:
             got = get_recent_recommendations(driver, MagicMock(), 1, own)
         return got, driver, warn
 
     def test_reads_the_received_tab_of_the_users_own_profile(self):
-        got, driver, _ = self._run([_card("July 24, 2026, Jane was my client")])
+        got, driver, _ = self._run([_rec_row("Jane Doe\n· 1st\n"
+                                             "July 24, 2026, Jane was Chris's client\nGreat work.")])
         assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
         assert driver.get.call_args[0][0] == ("https://www.linkedin.com/in/me"
                                               "/details/recommendations/")
 
     def test_recommendation_older_than_the_window_is_not_thanked(self):
-        got, _, _ = self._run([_card("March 2, 2019, Jane was my client")])
+        got, _, _ = self._run([_rec_row("March 2, 2019, Jane was my client")])
         assert got == {}
 
-    def test_undated_card_is_skipped_and_drift_warns_once(self):
-        """Cards that render but never date = the trigger is silently dead. That IS a defect."""
-        got, _, warn = self._run([_card("Jane was my client"), _card("John was my client")])
+    def test_a_date_shaped_line_that_is_not_a_date_is_skipped(self):
+        """The JS only proves the SHAPE; `_parse_recommendation_date` is still the authority."""
+        got, _, warn = self._run([_rec_row("February 30, 2026, Jane was my client"),
+                                  _rec_row("March 2, 2019, John was my client",
+                                           href="https://www.linkedin.com/in/john", name="John")])
+        assert got == {}
+        warn.assert_not_called()
+
+    def test_blocks_that_all_fail_the_date_parser_still_warn(self):
+        """The reader-vs-parser half of the tripwire: every block carried a date-SHAPED line and not
+        one parsed. `page_dated` cannot see this — the page and the JS agree, the PARSER is what
+        drifted — and without a warning it reads as 'no recent recommendations' forever."""
+        got, _, warn = self._run([_rec_row("February 30, 2026, Jane was my client"),
+                                  _rec_row("September 31, 2026, John was my client",
+                                           href="https://www.linkedin.com/in/john", name="John")])
         assert got == {}
         warn.assert_called_once()
+        assert "no readable date" in warn.call_args[0][0]
 
     def test_dated_cards_do_not_warn_even_when_all_are_old(self):
-        got, _, warn = self._run([_card("March 2, 2019, Jane was my client")])
+        got, _, warn = self._run([_rec_row("March 2, 2019, Jane was my client")])
         assert got == {}
         warn.assert_not_called()
 
     def test_empty_section_is_quiet(self):
-        got, _, warn = self._run([])
+        got, _, warn = self._run([], page_dated=False)
         assert got == {}
         warn.assert_not_called()
 
-    def test_own_profile_link_is_never_a_recommender(self):
-        card = _card("July 24, 2026", href="https://www.linkedin.com/in/me/?trk=y", name="Me")
-        got, _, _ = self._run([card])
+    def test_zero_cards_on_a_dated_page_is_drift_and_warns(self):
+        """The failure this issue exists for: the page plainly shows dated recommendations and the
+        read resolves none. Silently returning {} is how the dead ladder survived a merge."""
+        got, _, warn = self._run([], page_dated=True)
         assert got == {}
+        warn.assert_called_once()
+
+    def test_an_unreadable_page_is_not_a_recommendation(self):
+        from selenium.common.exceptions import WebDriverException
+        from cqc_lem.app.run_automation import get_recent_recommendations
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("no such execution context")
+        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.log_warning") as warn:
+            assert get_recent_recommendations(driver, MagicMock(), 1,
+                                              "https://www.linkedin.com/in/me") == {}
+        assert warn.called
+
+    def test_a_non_dict_script_result_is_not_a_crash(self):
+        """An `undefined`/None answer from `execute_script` must read as 'nothing', not blow up the
+        appreciation pass that called it."""
+        from cqc_lem.app.run_automation import get_recent_recommendations
+        driver = MagicMock()
+        driver.execute_script.return_value = None
+        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.log_warning") as warn:
+            assert get_recent_recommendations(driver, MagicMock(), 1,
+                                              "https://www.linkedin.com/in/me") == {}
+        warn.assert_not_called()
+
+    def test_own_profile_link_is_never_a_recommender(self):
+        row = _rec_row("July 24, 2026", href="https://www.linkedin.com/in/me/?trk=y", name="Me")
+        got, _, _ = self._run([row])
+        assert got == {}
+
+    def test_the_render_poll_retries_an_empty_first_paint(self):
+        """The SDUI page paints asynchronously — an immediate zero is not evidence of an empty
+        section, so an empty read is re-tried before it is believed."""
+        from cqc_lem.app.run_automation import (_RECOMMENDATION_RENDER_ATTEMPTS,
+                                                get_recent_recommendations)
+        driver = MagicMock()
+        empty = {"rows": [], "anchors": 4, "page_dated": False}
+        painted = {"rows": [_rec_row("July 24, 2026, Jane was my client")], "anchors": 4,
+                   "page_dated": True}
+        driver.execute_script.side_effect = [empty, empty, painted]
+        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.log_warning") as warn:
+            got = get_recent_recommendations(driver, MagicMock(), 1,
+                                             "https://www.linkedin.com/in/me")
+        assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
+        assert driver.execute_script.call_count == 3
+        assert _RECOMMENDATION_RENDER_ATTEMPTS >= 3
+        warn.assert_not_called()
 
     def test_falls_back_to_the_stored_profile_url(self):
         from cqc_lem.app.run_automation import get_recent_recommendations
         driver = MagicMock()
-        with patch(f"{_RA}.find_all_first", return_value=[]), \
-             patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
+        driver.execute_script.return_value = {"rows": [], "anchors": 0, "page_dated": False}
+        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
              patch(f"{_RA}.get_linkedin_profile_url_by_user_id",
                    return_value="https://www.linkedin.com/in/stored/"):
             get_recent_recommendations(driver, MagicMock(), 1, "")
