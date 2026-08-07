@@ -1150,8 +1150,10 @@ class TestGroupComposerProbe:
 
 
 def _group_driver(page_text: str, scripts: list):
-    """A driver whose page says `page_text` and whose execute_script answers the probe's JS reads
-    in order: the directory read, then the group-header read."""
+    """A driver whose page says `page_text` and whose execute_script answers the probe's JS reads.
+
+    The answers come in order: the directory read, then the group-header read.
+    """
     driver = MagicMock()
     element = MagicMock()
     element.text = page_text
@@ -1161,8 +1163,10 @@ def _group_driver(page_text: str, scripts: list):
 
 
 def _stubbed_group_modules(share_box):
-    """The two cqc_lem imports the group-page half makes, stubbed so the unit lane never drags in
-    Celery. `find_first` answers with the share box (or None)."""
+    """The two cqc_lem imports the group-page half makes, stubbed so the unit lane never drags in Celery.
+
+    `find_first` answers with the share box (or None).
+    """
     package = types.ModuleType("cqc_lem")
     app = types.ModuleType("cqc_lem.app")
     utilities = types.ModuleType("cqc_lem.utilities")
@@ -1191,8 +1195,10 @@ class TestGroupMembershipProbe:
         assert llv.group_membership_answer(["Withdraw request"]) == "pending"
 
     def test_a_header_that_says_neither_is_unknown_even_with_a_join_elsewhere(self):
-        """The #1012 hazard: the groups-you-may-like rail renders a Join per card, and none of them
-        name THIS group. Only the header decides."""
+        """The #1012 hazard: the groups-you-may-like rail renders a Join per card.
+
+        None of them name THIS group, so only the header decides.
+        """
         assert llv.group_membership_answer([]) == "unknown"
         assert llv.group_membership_answer(["Sort by", "Show more"]) == "unknown"
 
@@ -1227,8 +1233,10 @@ class TestGroupMembershipProbe:
         assert llv.group_membership_state(reading) == llv.STATE_UNKNOWN
 
     def test_the_probe_reports_groups_the_db_still_comments_in(self):
-        """The reporter's symptom as a set difference — enabled in the DB, absent from the live
-        directory."""
+        """The reporter's symptom as a set difference.
+
+        Enabled in the DB, absent from the live directory.
+        """
         driver = _group_driver("Groups you manage", [
             {"headings": ["Your groups"], "anchors": [{"id": "111", "text": "A", "section": "Your groups"}]},
             {"h1": "A", "levels": 2, "header_controls": ["Leave"], "all_controls": ["Leave"]},
@@ -1270,12 +1278,16 @@ class TestGroupMembershipProbe:
 @pytest.mark.unit
 class TestGroupMembershipLiveGrounding:
     """What the 2026-08-07 live run (`--group-membership`, user 1) said the probe was getting wrong.
-    Each case is a reading that run actually produced."""
+
+    Each case is a reading that run actually produced.
+    """
 
     def test_a_member_page_with_no_membership_control_names_the_share_box_as_its_source(self):
-        """Live: header controls were ['Dismiss', 'Public group', …, 'More options for …'] — no
-        Leave anywhere — and the answer `member` came entirely from the share box. Reporting only
-        the word sends the fix hunting for a control this surface does not render."""
+        """Live: header controls were ['Dismiss', 'Public group', …, 'More options for …'] — no Leave anywhere.
+
+        The answer `member` came entirely from the share box, and reporting only the word sends the
+        fix hunting for a control this surface does not render.
+        """
         controls = ["Dismiss", "Public group", "Open about group", "Share", "Manage notifications"]
         assert llv.group_membership_signal(controls, share_box_present=True) == "share_box"
         assert llv.group_membership_answer(controls, share_box_present=True) == "member"
@@ -1299,9 +1311,11 @@ class TestGroupMembershipLiveGrounding:
         assert "`leave_control`" in llv.group_membership_verdict(reading)
 
     def test_an_enumerated_id_under_a_recommendation_heading_is_drift(self):
-        """The sync takes every `/groups/<id>` anchor as a join, and the live directory renders
-        'Groups you might be interested in' on the same page — an id from that section becomes a
-        membership the user never had, and LEM comments in it."""
+        """The sync takes every `/groups/<id>` anchor as a join.
+
+        The live directory renders 'Groups you might be interested in' on the same page, so an id
+        from that section becomes a membership the user never had, and LEM comments in it.
+        """
         directory = {"page_text": "Groups listing",
                      "enumerated": [["1", "Joined"], ["2", "Offered"]],
                      "anchors": [{"id": "1", "section": "Your groups"},
@@ -1315,8 +1329,10 @@ class TestGroupMembershipLiveGrounding:
         assert "never joined" in llv.group_membership_verdict(reading)
 
     def test_sections_no_anchor_could_be_attributed_to_are_reported_as_unanswered(self):
-        """Live: all 40 anchors came back with `section: ''`. Silence there is not 'no
-        recommendations', it is the discriminating reading having failed."""
+        """Live: all 40 anchors came back with `section: ''`.
+
+        Silence there is not 'no recommendations', it is the discriminating reading having failed.
+        """
         directory = {"page_text": "Groups listing", "enumerated": [["1", "A"], ["2", "B"]],
                      "anchors": [{"id": "1", "section": ""}, {"id": "2", "section": ""}]}
         findings = llv.group_enumeration_findings(directory)
@@ -1328,8 +1344,10 @@ class TestGroupMembershipLiveGrounding:
         assert "UNANSWERED" in verdict
 
     def test_a_truncated_anchor_list_is_never_read_as_ids_the_sync_invented(self):
-        """Live: 55 enumerated against an anchor list the probe itself capped at 40, which read as
-        15 invented ids. Truncation is the probe's own ceiling, not a finding."""
+        """Live: 55 enumerated against an anchor list the probe itself capped at 40, which read as 15 invented ids.
+
+        Truncation is the probe's own ceiling, not a finding.
+        """
         directory = {"page_text": "Groups listing",
                      "enumerated": [["1", "A"], ["2", "B"], ["3", "C"]],
                      "anchors": [{"id": "1", "section": "Your groups"}], "anchor_total": 3}
