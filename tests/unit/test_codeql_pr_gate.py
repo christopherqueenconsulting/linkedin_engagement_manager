@@ -321,3 +321,96 @@ class TestFindNewAlerts:
         base = self._alerts([_raw_alert(0, "src/a.py", 10)])
         head = self._alerts([_raw_alert(0, "src/b.py", 99)])
         assert len(gate.find_new_alerts(head, base)) == 1
+
+
+class TestCompareAlerts:
+    """Matching by number is the only way this gate can over-match, so the count is reported."""
+
+    def _alerts(self, raws):
+        return [a for a in (gate._alert_from_raw(r) for r in raws) if a]
+
+    def test_a_line_shifted_alert_is_counted_as_shift_matched(self):
+        base = self._alerts([_raw_alert(2623, "src/a.py", 4240)])
+        head = self._alerts([_raw_alert(2623, "src/a.py", 4253)])
+        comparison = gate.compare_alerts(head, base)
+        assert (comparison.shift_matched, comparison.exact_matched) == (1, 0)
+        assert comparison.new_alerts == []
+
+    def test_an_unmoved_alert_is_an_exact_match_not_a_shift(self):
+        base = self._alerts([_raw_alert(2623, "src/a.py", 10)])
+        head = self._alerts([_raw_alert(2623, "src/a.py", 10)])
+        comparison = gate.compare_alerts(head, base)
+        assert (comparison.shift_matched, comparison.exact_matched) == (0, 1)
+
+    def test_a_new_alert_is_matched_by_neither_pass(self):
+        base = self._alerts([_raw_alert(2623, "src/a.py", 4240)])
+        head = self._alerts([_raw_alert(2623, "src/a.py", 4253),
+                             _raw_alert(9001, "src/b.py", 12)])
+        comparison = gate.compare_alerts(head, base)
+        assert (comparison.shift_matched, comparison.exact_matched) == (1, 0)
+        assert [a.number for a in comparison.new_alerts] == [9001]
+
+
+class TestComparedAlertsLog:
+    """Acceptance for #1087: the shift-tolerant pass must never be silent."""
+
+    def _run(self, head_raws, base_raws, monkeypatch, tmp_path):
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "outputs.txt"))
+        client = MagicMock()
+        client.list_analyses.return_value = [_analysis(NEW_SHA, PY)]
+        alerts = {
+            "refs/pull/1067/merge": [a for a in (gate._alert_from_raw(r) for r in head_raws) if a],
+            "refs/heads/main": [a for a in (gate._alert_from_raw(r) for r in base_raws) if a],
+        }
+        client.fetch_alerts.side_effect = lambda ref: alerts[ref]
+        with patch.object(gate, "GitHubClient", return_value=client), \
+                patch.object(gate, "log_info") as log_info:
+            code = gate.main([
+                "--repo", "o/r",
+                "--head-ref", "refs/pull/1067/merge",
+                "--head-sha", NEW_SHA,
+                "--base-ref", "refs/heads/main",
+                "--wait-timeout", "0",
+                "--wait-interval", "0",
+            ])
+        compared = [c for c in log_info.call_args_list if c.args and c.args[0] == "Compared alerts"]
+        assert len(compared) == 1
+        return code, compared[0].kwargs, (tmp_path / "outputs.txt").read_text()
+
+    def test_the_shift_matched_count_is_reported(self, monkeypatch, tmp_path):
+        # PR #1067's real shape: 13 lines added above a pre-existing alert, nothing new.
+        code, kwargs, outputs = self._run(
+            [_raw_alert(2623, "src/a.py", 4253)],
+            [_raw_alert(2623, "src/a.py", 4240)],
+            monkeypatch,
+            tmp_path,
+        )
+        assert code == 0
+        assert kwargs["new_count"] == 0
+        assert kwargs["shift_matched"] == 1
+        assert kwargs["exact_matched"] == 0
+        assert "shift_matched_count=1" in outputs
+
+    def test_a_run_with_nothing_shifted_reports_zero(self, monkeypatch, tmp_path):
+        code, kwargs, outputs = self._run(
+            [_raw_alert(2623, "src/a.py", 10)],
+            [_raw_alert(2623, "src/a.py", 10)],
+            monkeypatch,
+            tmp_path,
+        )
+        assert code == 0
+        assert kwargs["shift_matched"] == 0
+        assert kwargs["exact_matched"] == 1
+        assert "shift_matched_count=0" in outputs
+
+    def test_a_genuinely_new_alert_still_fails_the_gate(self, monkeypatch, tmp_path):
+        code, kwargs, _ = self._run(
+            [_raw_alert(2623, "src/a.py", 4253), _raw_alert(9001, "src/b.py", 12)],
+            [_raw_alert(2623, "src/a.py", 4240)],
+            monkeypatch,
+            tmp_path,
+        )
+        assert code == 1
+        assert kwargs["new_count"] == 1
+        assert kwargs["shift_matched"] == 1

@@ -413,10 +413,26 @@ def wait_for_analysis(
     return False
 
 
-def find_new_alerts(
+@dataclass
+class AlertComparison:
+    """The head-vs-base diff, and HOW each head alert the gate dismissed was matched.
+
+    `shift_matched` is the number the gate must never keep to itself: those head alerts were
+    dismissed only because the base ref carries the same alert NUMBER somewhere else in the
+    file, not because anything about their location agreed. That is the line-shift case this
+    tolerance exists for, and it is also the only way the comparison can over-match — so it is
+    reported on every run rather than inferred from a gate that went quiet.
+    """
+
+    new_alerts: list[Alert]
+    exact_matched: int
+    shift_matched: int
+
+
+def compare_alerts(
     head_alerts: list[Alert], base_alerts: list[Alert]
-) -> list[Alert]:
-    """Alerts present on the head ref that the base ref does not already carry.
+) -> AlertComparison:
+    """Diff head against base, tolerating alerts whose line moved.
 
     Matched two ways, and the second one is load-bearing. `Alert.key` includes the LINE, so a
     pre-existing alert whose line moved because the PR added code ABOVE it reads as new — which
@@ -430,13 +446,31 @@ def find_new_alerts(
     base_keys = {a.key for a in base_alerts}
     base_numbers = {a.number for a in base_alerts if a.number}
     new_by_key: dict[tuple, Alert] = {}
+    exact_matched = 0
+    shift_matched = 0
     for alert in head_alerts:
         if alert.key in base_keys:
+            exact_matched += 1
             continue
         if alert.number and alert.number in base_numbers:
+            shift_matched += 1
             continue
         new_by_key[alert.key] = alert
-    return list(new_by_key.values())
+    return AlertComparison(
+        new_alerts=list(new_by_key.values()),
+        exact_matched=exact_matched,
+        shift_matched=shift_matched,
+    )
+
+
+def find_new_alerts(
+    head_alerts: list[Alert], base_alerts: list[Alert]
+) -> list[Alert]:
+    """Alerts present on the head ref that the base ref does not already carry.
+
+    The verdict half of `compare_alerts`, for callers that do not need the match counts.
+    """
+    return compare_alerts(head_alerts, base_alerts).new_alerts
 
 
 def classify_alerts(
@@ -886,7 +920,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         log_warning("Could not fetch alerts; failing open")
         return 0
 
-    new_alerts = find_new_alerts(head_alerts, base_alerts)
+    comparison = compare_alerts(head_alerts, base_alerts)
+    new_alerts = comparison.new_alerts
     security, mechanical, judgment = classify_alerts(new_alerts)
 
     log_info(
@@ -894,6 +929,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         head_count=len(head_alerts),
         base_count=len(base_alerts),
         new_count=len(new_alerts),
+        # How the dismissals split. shift_matched is the tolerance doing its job (#1087);
+        # a run where it is large is a run to look at, and it can only be looked at if the
+        # gate says the number out loud.
+        exact_matched=comparison.exact_matched,
+        shift_matched=comparison.shift_matched,
         security=len(security),
         mechanical=len(mechanical),
         judgment=len(judgment),
@@ -925,6 +965,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "security_count": str(len(security)),
             "judgment_count": str(len(judgment)),
             "fixed_count": str(fixed_count),
+            "shift_matched_count": str(comparison.shift_matched),
             "failed_open": str(failed_open).lower(),
             "conclusion": "success"
             if not (
