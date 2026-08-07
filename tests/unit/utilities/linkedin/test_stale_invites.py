@@ -353,42 +353,64 @@ class TestHardGates:
 class TestListExpansion:
     """The sent list renders newest-first, so the invites this lane exists for are at the BOTTOM. A
     run that never expands can only see rows it must not touch — which looks exactly like 'nothing is
-    stale'."""
+    stale'.
 
-    def _driver(self, buttons):
+    The page has NO pager (grounded 2026-08-07, #1006): every control matching "show more" is a
+    "… show more" headline expander INSIDE a row. Rows arrive on SCROLL, and the ROW COUNT is the
+    only honest stop condition."""
+
+    def _driver(self, counts):
+        """A page whose row count follows `counts` as the list is scrolled."""
         driver = MagicMock()
-        found = list(buttons)
+        seq = list(counts)
 
         def script(source, *args):
-            if "show more" in source:
-                return found.pop(0) if found else None
+            if "scrollIntoView" in source:
+                return seq.pop(0) if seq else (counts[-1] if counts else 0)
             return None
 
         driver.execute_script.side_effect = script
         return driver
 
-    def test_it_expands_until_the_control_stops_appearing(self):
+    def test_it_scrolls_until_the_list_stops_growing(self):
         from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows
-        driver = self._driver([MagicMock(), MagicMock(), None])
-        assert _load_more_rows(driver, sleep=lambda *_: None) == 2
+        # 10 → 20 → 30 → 30 → 30: two quiet rounds end it.
+        driver = self._driver([10, 20, 30, 30, 30])
+        assert _load_more_rows(driver, sleep=lambda *_: None) == 5
+
+    def test_one_quiet_round_is_not_enough_to_stop(self):
+        """An infinite-scroll list often needs a beat to fetch; stopping on the first unchanged
+        count would leave the oldest invites — the only ones this lane wants — unloaded."""
+        from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows
+        driver = self._driver([10, 10, 20, 20, 20])
+        assert _load_more_rows(driver, sleep=lambda *_: None) == 5
+
+    def test_it_never_clicks_anything(self):
+        """The only "show more" controls on the page expand profile headlines inside the rows.
+        Clicking them mutates the cards this lane is about to read and loads no invites."""
+        from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows
+        driver = self._driver([5, 5, 5])
+        _load_more_rows(driver, sleep=lambda *_: None)
+        sources = [c.args[0] for c in driver.execute_script.call_args_list]
+        assert not any("arguments[0].click()" in s for s in sources)
 
     def test_the_walk_is_bounded(self):
         from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows, show_more_max_clicks
         cap = show_more_max_clicks()
-        driver = self._driver([MagicMock()] * (cap + 5))
+        driver = self._driver(list(range(1, cap + 10)))  # always growing: only the cap stops it
         assert _load_more_rows(driver, sleep=lambda *_: None) == cap
 
     def test_the_bound_is_tunable_without_a_deploy(self, monkeypatch):
         """The first grounding run hit the old cap of 5 exactly — the one reading that cannot be
-        told apart from the control running out. Expanding is read-only, so the bound is config
-        rather than code, and a run can say which of the two it hit."""
+        told apart from the list running out. Scrolling is read-only, so the bound is config rather
+        than code, and a run can say which of the two it hit."""
         from cqc_lem.utilities.linkedin.stale_invites import (_load_more_rows,
                                                               show_more_max_clicks,
                                                               SHOW_MORE_MAX_CLICKS_DEFAULT)
         assert SHOW_MORE_MAX_CLICKS_DEFAULT >= 20
         monkeypatch.setenv("STALE_INVITE_SHOW_MORE_MAX_CLICKS", "3")
         assert show_more_max_clicks() == 3
-        driver = self._driver([MagicMock()] * 10)
+        driver = self._driver(list(range(1, 20)))
         assert _load_more_rows(driver, sleep=lambda *_: None) == 3
 
     def test_a_js_failure_keeps_what_it_already_expanded(self):
@@ -400,24 +422,18 @@ class TestListExpansion:
             calls["n"] += 1
             if calls["n"] > 3:
                 raise RuntimeError("detached frame")
-            return MagicMock() if "show more" in source else None
+            return calls["n"] * 10
 
         driver.execute_script.side_effect = script
-        assert _load_more_rows(driver, sleep=lambda *_: None) == 1
+        assert _load_more_rows(driver, sleep=lambda *_: None) == 3
 
-    def test_a_click_that_fails_stops_the_expansion_rather_than_looping(self):
+    def test_a_non_numeric_count_is_not_mistaken_for_growth(self):
+        """A page-side pass that returns nothing must read as zero rows — not raise, and not scroll
+        to the cap. Three rounds: one to take the baseline, two quiet ones to end it."""
         from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows
         driver = MagicMock()
-
-        def script(source, *args):
-            if "show more" in source:
-                return MagicMock()
-            if "arguments[0].click()" in source:
-                raise RuntimeError("not clickable")
-            return None
-
-        driver.execute_script.side_effect = script
-        assert _load_more_rows(driver, sleep=lambda *_: None) == 0
+        driver.execute_script.side_effect = lambda source, *a: None
+        assert _load_more_rows(driver, sleep=lambda *_: None) == 3
 
 
 class TestConfirmationDialog:

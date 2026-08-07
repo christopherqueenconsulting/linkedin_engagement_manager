@@ -294,39 +294,55 @@ def show_more_max_clicks() -> int:
     return _env_int("STALE_INVITE_SHOW_MORE_MAX_CLICKS", SHOW_MORE_MAX_CLICKS_DEFAULT)
 
 
+# Scroll the last row into view and let the list load the next page under it, then hand back how
+# many rows are now rendered. Returning the COUNT is what makes the loop's stop condition an
+# observation ("the list stopped growing") rather than a guess ("the control disappeared").
+_SCROLL_LIST_JS = r"""
+const LABELLED = /^withdraw invitation\b/i;
+const rows = Array.from(document.querySelectorAll('[aria-label]'))
+    .filter((el) => LABELLED.test(el.getAttribute('aria-label') || ''));
+if (rows.length) {
+  // The list scrolls inside its own container, not the document — `document.body.scrollHeight`
+  // stays put while rows load. Asking the LAST row to bring itself into view moves whichever
+  // element actually scrolls, without having to identify it.
+  rows[rows.length - 1].scrollIntoView({block: 'end'});
+}
+window.scrollTo(0, document.body.scrollHeight);
+return rows.length;
+"""
+
+
 def _load_more_rows(driver: WebDriver, sleep: Callable[[float], None] = time.sleep) -> int:
-    """Click "Show more" until it stops appearing, up to `show_more_max_clicks()` times.
+    """Scroll the sent list until it stops growing, up to `show_more_max_clicks()` rounds.
 
     The sent list renders newest-first, so the invites this lane exists for are at the BOTTOM. A run
     that never loads past the first page can only ever see rows it must not touch — which would look
-    exactly like "nothing is stale". Returns how many times it expanded, so the report can say the
-    walk ran out of road rather than out of stale invites."""
-    clicks = 0
+    exactly like "nothing is stale". Returns how many rounds it scrolled, so the report can say the
+    walk ran out of road rather than out of stale invites.
+
+    It does NOT click anything. The page has no pager: the only controls matching "show more" are
+    the "… show more" headline expanders INSIDE the invite rows (grounded 2026-08-07, #1006), so the
+    previous implementation spent its whole budget expanding profile headlines and reported that as
+    depth. Rows arrive on SCROLL, and the row count is what says whether they did."""
+    rounds = 0
+    last_count = -1
+    stalled = 0
     for _ in range(show_more_max_clicks()):
         try:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            button = driver.execute_script(
-                "const shown = (el) => { const r = el.getBoundingClientRect();"
-                " return !!(r.width && r.height); };"
-                "for (const b of document.querySelectorAll(\"button, [role='button']\")) {"
-                "  const t = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || ''));"
-                "  if (shown(b) && /show more|see more results|load more/i.test(t)) return b;"
-                "} return null;")
+            count = int(driver.execute_script(_SCROLL_LIST_JS) or 0)
         except Exception as e:
             log_debug(f"Sent-invite list expansion failed ({type(e).__name__}: {e})",
                       action_type="invite", task_name="_load_more_rows")
-            return clicks
-        if button is None:
-            return clicks
-        try:
-            driver.execute_script("arguments[0].click();", button)
-        except Exception as e:
-            log_debug(f"Sent-invite 'Show more' click failed ({type(e).__name__}: {e})",
-                      action_type="invite", task_name="_load_more_rows")
-            return clicks
-        clicks += 1
+            return rounds
+        rounds += 1
+        # Two quiet rounds, not one: an infinite-scroll list often needs a beat to fetch, and
+        # stopping on the first unchanged count would leave the oldest invites unloaded.
+        stalled = stalled + 1 if count <= last_count else 0
+        last_count = count
+        if stalled >= 2:
+            return rounds
         sleep(2.0)
-    return clicks
+    return rounds
 
 
 def control_names_row(label_name: str, row_text: str) -> bool:
