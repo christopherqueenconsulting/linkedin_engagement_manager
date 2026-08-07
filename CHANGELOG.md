@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.134.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.133.1...v0.134.0) (2026-08-07)
+
+
+### Features
+
+* **ci:** Google-docstring standard behind a lint gate that can actually fail ([#1100](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1100)) ([5819693](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/58196937423d8c61d8507667d3176899366a16a7))
+* **live-validation:** read-only group-membership probe to ground [#1052](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1052) ([#1060](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1060)) ([bb1fb26](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bb1fb26673d2228798fdf4daff167750dd832792))
+
+
+### Bug Fixes
+
+* **dm:** recommendations-received card read rebuilt on the live SDUI DOM (closes [#1007](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1007)) ([#1019](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1019)) ([d5f9c5d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d5f9c5deefdca1df5743915a73ebdf6218ff9480))
+* **invites:** rebuild the sent-invite row anchors on the live control shape (refs [#1006](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1006)) ([#1097](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1097)) ([9c94196](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9c941960c377be9e953269b8470052b3c5371ee7))
+* **selenium:** zero-walk tripwires for the last three SDUI surfaces (closes [#1021](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1021)) ([#1025](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1025)) ([e1de9d6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e1de9d656b86cd41a2e1defb05ac9aaee6a312d0))
+
+
+### Documentation
+
+* record the [#965](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/965) token rotation and make the grid buy trigger-driven ([#974](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/974)) ([#1098](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1098)) ([3b568a3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b568a32fab8fbe2b2df9cb8aaa04db2d4fae88c))
+* record the token rotation and make the grid buy trigger-driven ([3b568a3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b568a32fab8fbe2b2df9cb8aaa04db2d4fae88c))
+
 ## [0.133.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.133.0...v0.133.1) (2026-08-07)
 
 
