@@ -12,7 +12,7 @@ Two problems, one fix.
 `continue-on-error: true`, so "Run Linting" reported green no matter what. It had to: `pyproject.toml`
 carried no `[tool.ruff] line-length`, so ruff measured against its **88-column default** while this
 code has always been written to **120** — **24,584** phantom `line-too-long` errors, with every real
-violation buried inside them. Setting `line-length = 120` drops those to 293.
+violation buried inside them. Setting `line-length = 120` drops the same measurement to 330.
 
 **Docstrings were unowned.** `CLAUDE.md` said "no docstring blocks", which was read as "docstrings are
 optional" — but the modules that carry this system's hardest invariants (`stale_invites.py`,

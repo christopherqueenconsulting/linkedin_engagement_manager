@@ -229,6 +229,11 @@ TRUSTED_ASSOCIATIONS="${TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
 # Who may mint `agent:ready`. Deliberately NOT every bot: only automations whose input is not
 # attacker-controlled. The feedback loop is absent on purpose (it files `needs-human` now).
 AGENT_LABEL_TRUSTED_ACTORS="${AGENT_LABEL_TRUSTED_ACTORS:-$ASSIGNEE}"
+# Who may apply the CI-ROUTED auto-fix labels (`agent:depfix`, `agent:docfix`) — our own workflows,
+# which act as `github-actions[bot]`. Kept apart from the human allowlist above on purpose: these
+# two labels report a CI failure on an existing PR and grant no work, while `agent:ready` and
+# `release:now` remain human-only. See `label_actor_trusted`.
+AGENT_CI_LABEL_ACTORS="${AGENT_CI_LABEL_ACTORS:-github-actions[bot]}"
 
 agent_token_scopes() {
   # Classic OAuth tokens advertise their scopes in a response header. Fine-grained PATs carry
@@ -290,6 +295,24 @@ label_actor_trusted() {
                     | .actor.login] | last // empty" 2>/dev/null)"
   [ -n "$actor" ] || { log "TRUST: #$n — no readable '$label' labeler; refusing."; return 1; }
   case " $AGENT_LABEL_TRUSTED_ACTORS " in *" $actor "*) return 0 ;; esac
+  # CI-ROUTED labels are the one place our own workflows are the legitimate applier. A router runs
+  # `actions/github-script` with the default GITHUB_TOKEN, so the timeline actor is
+  # `github-actions[bot]` — never a human, and never in the human allowlist. Refusing it made BOTH
+  # auto-fix lanes dead on arrival: `agent:depfix` has been shipped since the Dependabot router
+  # landed and has dispatched exactly ZERO times.
+  #
+  # This is deliberately narrow, and it is not the hole the allowlist exists to close. These two
+  # labels grant nothing: they say "this EXISTING pull request has failing CI", not "build this".
+  # `author_trusted` and `pr_is_upstream` are still enforced by `pr_admissible`, so the work still
+  # only ever lands on a trusted author's branch inside this repo. The labels that DO grant
+  # privilege — `agent:ready`, `release:now` — stay human-only.
+  case " $label " in
+    " agent:depfix "|" agent:docfix ")
+      case " $AGENT_CI_LABEL_ACTORS " in
+        *" $actor "*) return 0 ;;
+      esac
+      ;;
+  esac
   log "TRUST: #$n — '$label' applied by '$actor', not in AGENT_LABEL_TRUSTED_ACTORS."
   return 1
 }
@@ -966,7 +989,10 @@ fi
 if [ -n "$DEPFIX" ]; then
   DPR="$(echo "$DEPFIX" | jq -r .number)"
   DBR="$(echo "$DEPFIX" | jq -r .headRefName)"
-  CLAUDE_TRIES="$(git -C "$REPO" log "origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  # RANGE, not a branch tip: `git log <branch>` walks the WHOLE ancestry, so a branch cut from
+  # main inherits every Claude commit ever merged (measured: 677) and reads as exhausted on its
+  # first tick, before it has attempted anything. `origin/main..` counts only this branch's own.
+  CLAUDE_TRIES="$(git -C "$REPO" log "origin/main..origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
   if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
     log "Dependabot PR #$DPR still failing after $CLAUDE_TRIES Claude attempts — escalating."
     TICK_OUTCOME="escalated"; TICK_REASON="depfix_exhausted"; TICK_PR="$DPR"; TICK_BRANCH="$DBR"
@@ -1003,7 +1029,10 @@ fi
 if [ -n "$DOCFIX" ]; then
   XPR="$(echo "$DOCFIX" | jq -r .number)"
   XBR="$(echo "$DOCFIX" | jq -r .headRefName)"
-  CLAUDE_TRIES="$(git -C "$REPO" log "origin/$XBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  # RANGE, not a branch tip: `git log <branch>` walks the WHOLE ancestry, so a branch cut from
+  # main inherits every Claude commit ever merged (measured: 677) and reads as exhausted on its
+  # first tick, before it has attempted anything. `origin/main..` counts only this branch's own.
+  CLAUDE_TRIES="$(git -C "$REPO" log "origin/main..origin/$XBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
   if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
     log "PR #$XPR still failing the lint gate after $CLAUDE_TRIES Claude attempts — escalating."
     TICK_OUTCOME="escalated"; TICK_REASON="docfix_exhausted"; TICK_PR="$XPR"; TICK_BRANCH="$XBR"

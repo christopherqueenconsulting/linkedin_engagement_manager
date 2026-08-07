@@ -50,9 +50,30 @@ jobs:
           BASELINE="$(tr -cd '0-9' < .ruff-baseline)"
           : "${BASELINE:=0}"
 
-          poetry run ruff check src/ tests/ --output-format=concise > /tmp/ruff.txt 2>&1 || true
+          # Ruff exits 0 (clean) or 1 (violations found). ANYTHING else — a bad config, a failed
+          # install, a panic — is the tool not answering, and must not be read as "no violations".
+          # Counting matched lines alone would do exactly that: stderr matches nothing, COUNT lands
+          # on 0, `0 -gt 3455` is false, and a broken run reports green. That is the fail-open this
+          # gate exists to end, so it is checked rather than assumed.
+          set +e
+          poetry run ruff check src/ tests/ --output-format=concise > /tmp/ruff.txt 2>&1
+          RUFF_RC=$?
+          set -e
+          if [ "$RUFF_RC" -gt 1 ]; then
+            echo "::error::ruff exited $RUFF_RC — the gate could not measure this tree."
+            sed -n '1,40p' /tmp/ruff.txt
+            exit 1
+          fi
           COUNT="$(grep -cE '^[^ ].*:[0-9]+:[0-9]+: ' /tmp/ruff.txt || true)"
           : "${COUNT:=0}"
+          # A clean exit must mean zero findings, and a dirty exit must mean at least one. If the
+          # two disagree, the output shape changed under us and the count is not trustworthy.
+          if { [ "$RUFF_RC" -eq 0 ] && [ "$COUNT" -ne 0 ]; } ||
+             { [ "$RUFF_RC" -eq 1 ] && [ "$COUNT" -eq 0 ]; }; then
+            echo "::error::ruff exit $RUFF_RC disagrees with $COUNT parsed finding(s) — refusing to grade."
+            sed -n '1,40p' /tmp/ruff.txt
+            exit 1
+          fi
 
           echo "baseline=$BASELINE  current=$COUNT"
           {

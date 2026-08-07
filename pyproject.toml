@@ -182,7 +182,7 @@ exclude_lines = [
 ]
 
 [tool.ruff]
-# The house width. Without this ruff measures against its 88-column default, which reported ~26,900
+# The house width. Without this ruff measures against its 88-column default, which reported 24,584
 # line-too-long errors against code that has always been written to 120 — the flood that made the
 # lint step advisory (`continue-on-error`) and so hid every real defect behind it.
 line-length = 120

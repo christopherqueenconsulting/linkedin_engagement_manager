@@ -98,9 +98,7 @@ class SeleniumStack(Stack):
                              memory_limit: int = 1024,
                              cpu: int = 512
                              ) -> ecs.FargateService:
-        """Create Selenium Hub resources including service, autoscaling, and load balancer configuration
-
-        """
+        """Create the Selenium Hub service, its autoscaling and its load balancer."""
         # Create the ECS Service
         selenium_hub_service = self.create_service(
             identifier=identifier,
@@ -410,8 +408,7 @@ class SeleniumStack(Stack):
             cpu: int = 256
 
     ) -> ecs.FargateService:
-        """Create a Fargate service with the specified configuration.
-        """
+        """Create a Fargate service with the specified configuration."""
         # Task and container definition
         task_definition = ecs.FargateTaskDefinition(
             self,
