@@ -225,6 +225,33 @@ per-card `log_warning` it replaced escalated to ERROR and filed a defect for a p
 design. It polls `_COMPOSER_MOUNT_POLLS` times rather than burning
 `WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1)` (~35s) on a card that never opened one.
 
+### The group feed is the surface this was widened FOR, and it is the one nothing had grounded (#928)
+
+The DEBUG downgrade above is right and it is also why the group lane went quiet either way: with the
+warning gone, "the widening works" and "the widening still misses every post" print the same
+nothing. The three days before #916 examined **2,515** group posts and landed **one** comment.
+
+`scripts/linkedin_live_validation.py --group-feed-composer [<group-id>]` is what answers it. It
+walks a group feed with the SHIPPED chain (`_FEED_POST_TEXT_SEL` → `_card_for_textbox` →
+`_COMMENT_ACTION_LOCATORS` → `_post_composer_for_card`), clicks each sampled card's own Comment
+button so the box mounts, Escapes without typing, and reports per card:
+
+- **per-locator hit counts** for `_COMMENT_ACTION_LOCATORS` (the `live count:` rows beside that
+  chain were taken on the HOME feed in #816 and have never been re-taken on a group one),
+- `composer_source` — `in_card`, `widened_scope` (the box existed only inside `_single_post_scope`,
+  i.e. #916's widening is what found it) or `none`,
+- `textboxes_in_card` / `textboxes_in_scope` / `page_textboxes_after_click`.
+
+The **home feed runs as a control in the same session**, because "no composer in the group" is only
+a statement about groups next to a feed where the same chain does resolve one. The three zero-shapes
+are graded apart, since they need opposite fixes: no Comment action on any card (re-ground the
+chain), a composer mounted on the page that no card claimed (re-ground the resolver / widening), and
+nothing mounting anywhere (the surface has no inline composer at all, so the lane must stop
+generating an `lem-medium` comment per post it can never post — #1084).
+
+**Live counts: not yet taken.** The run is `risk:live-linkedin` and belongs to the owner (see the
+**linkedin-live-validation** skill); its per-locator numbers land here, replacing this line.
+
 ## A post PERMALINK runs the same engine as the feed — and is not a one-post page
 
 `comment_on_post` is the live comment task behind profile-viewer engagement and the outreach
