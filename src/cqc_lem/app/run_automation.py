@@ -4238,7 +4238,10 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                 _queue_artifact_delivery(user_id, _eprofile, _ename, comment_text, lead_magnet,
                                          prefs, post_id=post_id, blog_url=lead_magnet_blog_url)
         except Exception:
-            pass
+            # A card without a readable /in/ link is routine SDUI variance; only the
+            # reciprocity/lead capture is skipped — the reply flow below still proceeds.
+            log_debug("Commenter read failed; skipping engager/lead capture",
+                      user_id=user_id, post_id=post_id, comment_text=short_comment_text)
         # Already replied if our own profile link already appears in this comment's replies.
         # Use exact slug matching rather than a raw substring so a short slug does not match every
         # longer slug that contains it.

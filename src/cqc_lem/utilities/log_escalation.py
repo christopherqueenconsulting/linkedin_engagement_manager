@@ -117,16 +117,14 @@ def fingerprint(level: str, origin: str, key_text: str) -> str:
 # socket_connect_timeout on EVERY warning across ~400 call sites. After a few consecutive failures
 # this process stops calling Redis at all until the cooldown passes.
 _lock = threading.Lock()
-_redis_failures = 0
-_redis_disabled_until = 0.0
+_redis_circuit = {"failures": 0, "disabled_until": 0.0}
 _local_counts: dict = {}
 _state = threading.local()
 
 
 def _redis():
-    global _redis_failures, _redis_disabled_until
     with _lock:
-        if time.monotonic() < _redis_disabled_until:
+        if time.monotonic() < _redis_circuit["disabled_until"]:
             return None
     try:
         from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
@@ -136,19 +134,18 @@ def _redis():
 
 
 def _record_redis_failure() -> None:
-    global _redis_failures, _redis_disabled_until
     with _lock:
-        _redis_failures += 1
-        if _redis_failures >= _int_env("LOG_ESCALATE_REDIS_FAILURES", 3):
-            _redis_disabled_until = time.monotonic() + _int_env(
+        failures = _redis_circuit["failures"] + 1
+        if failures >= _int_env("LOG_ESCALATE_REDIS_FAILURES", 3):
+            _redis_circuit["disabled_until"] = time.monotonic() + _int_env(
                 "LOG_ESCALATE_REDIS_COOLDOWN_SECONDS", 300)
-            _redis_failures = 0
+            failures = 0
+        _redis_circuit["failures"] = failures
 
 
 def _record_redis_success() -> None:
-    global _redis_failures
     with _lock:
-        _redis_failures = 0
+        _redis_circuit["failures"] = 0
 
 
 def _should_escalate(count: int) -> bool:
@@ -250,9 +247,8 @@ def escalate(result: dict, context: Optional[dict] = None, exc: Optional[BaseExc
 
 def reset_state() -> None:
     """Test hook — clears the process-local counters and the Redis circuit."""
-    global _redis_failures, _redis_disabled_until
     with _lock:
         _local_counts.clear()
-        _redis_failures = 0
-        _redis_disabled_until = 0.0
+        _redis_circuit["failures"] = 0
+        _redis_circuit["disabled_until"] = 0.0
     _state.escalating = False
