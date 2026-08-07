@@ -22,14 +22,32 @@ def _box(text):
     return b
 
 
+def _messages(mock, needle):
+    """Log messages recorded on a patched logger call that mention `needle`. Matched on the bare
+    word 'hash' rather than either message's own phrasing, so the #1064 guard still fires if the
+    warning comes back worded the way it was before ('unstable content-hash key')."""
+    return [c.args[0] for c in mock.call_args_list if c.args and needle in c.args[0]]
+
+
+def _card_for(box):
+    """A card mock that remembers which post text it was resolved from, so a test can answer the
+    URN scan per post rather than once for the whole run."""
+    card = MagicMock()
+    card.box_text = box.text
+    return card
+
+
 def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
               author="Jane Author", is_me=False, react_returns=True, post_returns=True,
-              prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None):
+              prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None,
+              urn_by_text=None):
     """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
     the key mocks so assertions can inspect calls.
 
     `find_elements` overrides the driver's element lookup wholesale, so a test can answer the post-
-    text selector and the zero-walk cross-check selector differently (issue #1013)."""
+    text selector and the zero-walk cross-check selector differently (issue #1013).
+    `urn_by_text` maps a post's text to the URN its card carries, so one scan can mix cards that
+    resolve a URN with cards that fall back to the content hash."""
     from cqc_lem.app import run_automation as ra
 
     driver = MagicMock()
@@ -64,9 +82,12 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("get_recent_comment_texts", return_value=[])
         p("count_comments_today", return_value=0)
         p("_switch_feed_to_recent")
-        p("_card_for_textbox", side_effect=lambda d, b: MagicMock())
+        p("_card_for_textbox", side_effect=lambda d, b: _card_for(b))
         p("_post_author_from_card", return_value=author)
         p("_post_permalink_from_card", return_value=None)
+        if urn_by_text is not None:
+            p("_feed_post_urn_from_card",
+              side_effect=lambda card, driver=None: urn_by_text.get(getattr(card, "box_text", None)))
         if not real_key:
             p("_feed_post_key", side_effect=_key)
         p("_author_is_me", return_value=is_me)
@@ -90,14 +111,15 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("mark_post_commented", new=mark)
         p("mark_post_reacted", new=mark_reacted)
         p("release_post_claim", new=release)
-        p("log_warning")
+        warn = p("log_warning")
+        debug = p("log_debug")
         p("insert_new_log")
         p("pace_read", return_value=0.0)
         posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts)
 
     return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
             "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen,
-            "funnel": funnel_holder}
+            "funnel": funnel_holder, "warn": warn, "debug": debug}
 
 
 class TestFeedDedup:
@@ -143,6 +165,38 @@ class TestFeedDedup:
         assert r["posted"] == 1
         assert r["funnel"]["commented_key_sources"] == {"hash": 1}
         assert r["funnel"]["key_sources"] == {"hash": 1}
+
+    def test_one_urnless_card_among_readable_ones_is_debug_not_a_warning(self):
+        # #1064: a single URN-less card is designed degradation — the content fingerprints hold it
+        # inside the scan and reconcile_recent_comment_urns upgrades the row later. Warning on it
+        # escalated working behaviour into a filed PostHog issue.
+        r = _run_feed([_box("A feed post whose card carries its activity urn."),
+                       _box("A feed post with no activity urn anywhere on it.")],
+                      real_key=True,
+                      urn_by_text={"A feed post whose card carries its activity urn.":
+                                   "urn:li:activity:7486221543367397377"})
+        assert r["posted"] == 2
+        assert r["funnel"]["commented_key_sources"] == {"card": 1, "hash": 1}
+        assert not _messages(r["warn"], "hash")
+        assert _messages(r["debug"], "content-hash")
+
+    def test_no_urn_anywhere_in_the_scan_still_warns(self):
+        # The #580 signature: the resolver read nothing on any post examined, so every comment
+        # keyed on the volatile hash. That is drift, and it must keep escalating.
+        r = _run_feed([_box("A feed post with no activity urn anywhere on the card.")],
+                      real_key=True, urn_by_text={})
+        assert r["posted"] == 1
+        assert r["funnel"]["key_sources"] == {"hash": 1}
+        assert _messages(r["warn"], "URN resolver drift")
+        assert not _messages(r["debug"], "content-hash")   # the two branches are exclusive
+
+    def test_all_urn_keyed_scan_says_nothing_about_hashes(self):
+        r = _run_feed([_box("A feed post whose card carries its activity urn.")], real_key=True,
+                      urn_by_text={"A feed post whose card carries its activity urn.":
+                                   "urn:li:activity:7486221543367397377"})
+        assert r["funnel"]["commented_key_sources"] == {"card": 1}
+        assert not _messages(r["warn"], "hash")
+        assert not _messages(r["debug"], "content-hash")
 
     def test_lost_claim_race_is_noop(self):
         # claim returns False (another run/worker already holds it) => no LLM, no comment.

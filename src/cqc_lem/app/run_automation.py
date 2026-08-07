@@ -2750,10 +2750,23 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
              f"roster followed {roster_stats.get('followed', 0)}, fallback={fallback_used}, "
              f"sort {feed_sort}, key sources {examined_key_sources}", user_id=user_id,
              action_type="comment", task_name="comment_on_feed_inline")
-    if posted_key_sources.get("hash"):
-        log_warning(f"{posted_key_sources['hash']} of {posted} feed comments used an unstable "
-                    f"content-hash key — no activity URN on those cards (duplicate risk, #580)",
-                    user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
+    hash_commented = posted_key_sources.get("hash", 0)
+    if hash_commented:
+        # One URN-less card is a designed, self-healing degradation, not a defect: the per-run
+        # content fingerprints stop a re-render re-keying it inside the scan, and
+        # reconcile_recent_comment_urns upgrades the ledger row to feedurn:// afterwards. What #580
+        # actually was looks different — the URN resolver finding NOTHING anywhere, so not one post
+        # in the whole scan yields a URN. Only that shape warns (and escalates); the occasional
+        # URN-less card is DEBUG so it never files an issue for working behaviour.
+        urn_examined = examined_key_sources.get("permalink", 0) + examined_key_sources.get("card", 0)
+        if urn_examined:
+            log_debug(f"{hash_commented} of {posted} feed comments fell back to the content-hash "
+                      f"key; the URN resolver still read {urn_examined} of the posts examined",
+                      user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
+        else:
+            log_warning("No activity URN on ANY feed post examined this scan — every comment "
+                        "keyed on the unstable content hash (URN resolver drift, #580)",
+                        user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
     return posted
 
 
