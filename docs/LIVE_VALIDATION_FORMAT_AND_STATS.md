@@ -228,7 +228,10 @@ It emits one JSON report:
    every ladder rung (plus `main`, `[data-view-name]`, `div[role='list']`) — that is what says
    *which* rung won and what it beat, so a drifted run is diagnosable without a second hand-written
    DOM pass (the 2026-08-03 run needed one: `data-view-name` was absent and the winning rung was
-   matching the page footer).
+   matching the page footer). It grades itself off the PAGE's own dated lines
+   (`page_dated_lines`), not off the ladder that may have missed them: dated lines the parser reads
+   nothing from are `drift`; no dated line anywhere is `unknown` (never rendered, or a profile with
+   no experience) and is never filed. It runs in the weekly sweep against the user's own profile.
 
 ```bash
 sudo docker exec -i celery_worker_selenium python - --user-id 1 --article-editor-url \

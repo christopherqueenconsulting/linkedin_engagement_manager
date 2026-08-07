@@ -88,6 +88,7 @@ menu. The dialog's own controls are UNCHANGED: `Add a note` / `Send without a no
 `textarea#custom-message` (0/300), and `Send` (aria `Send invitation`, disabled until input, plus
 a new `Write with AI` button). Success is the dialog's controls being present — never a click
 having landed.
+
 ## Profile experience rows: the a11y twin, not a line index (#970)
 
 `/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a

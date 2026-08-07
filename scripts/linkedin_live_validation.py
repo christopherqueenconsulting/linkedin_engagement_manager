@@ -142,6 +142,9 @@ SURFACES = (
     {"key": "profile_scrape", "surface": "Profile header scrape (name / headline / degree badge)",
      "code": "scrapper.parse_profile_header + run_automation._profile_is_first_degree",
      "flag": "--profile-scrape", "arg": "<profile-url>", "sweep": True},
+    {"key": "profile_experiences", "surface": "Profile experience rows (/details/experience/)",
+     "code": "scrapper.parse_profile_experiences", "flag": "--profile-experiences",
+     "arg": "<profile-url>", "sweep": True},
     {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
      "code": "run_automation._open_connect_invite_dialog", "flag": "--connect-dialog",
      "arg": "<profile-url>", "sweep": False},
@@ -2172,19 +2175,39 @@ def profile_experiences_verdict(reading: dict) -> str:
     reading = dict(reading or {})
     parsed = reading.get("experiences") or []
     dated = reading.get("entities_with_dates") or 0
+    page_dated = reading.get("page_dated_lines") or 0
     if not reading.get("entity_count"):
-        return ("no entity nodes resolved at all — the page did not render (auth-wall / rate limit) "
-                "or every selector in the ladder is gone; production returns []")
+        return (f"no entity nodes resolved at all while the page itself renders {page_dated} dated "
+                "lines — every selector in the ladder is gone; production returns []" if page_dated
+                else "no entity nodes resolved at all and the page renders no dated line either — "
+                     "it did not load (auth-wall / rate limit) or lists no experience")
     if not dated:
-        return (f"{reading['entity_count']} entity nodes, none carrying a date range — either this "
-                "profile lists no experience, or the entities that hold it were not reached; "
-                "`selector_counts` says which rungs matched at all")
+        return (f"{reading['entity_count']} entity nodes, none carrying a date range, while the "
+                f"page itself renders {page_dated} dated lines — the rung that won is not the one "
+                "holding the experience; `selector_counts` says which rungs matched at all"
+                if page_dated else
+                f"{reading['entity_count']} entity nodes, none carrying a date range, and no dated "
+                "line anywhere on the page — this profile lists no experience, or it never rendered")
     if not parsed:
         return (f"{dated} dated entities and ZERO parsed — selector rot: production would return [] "
                 "and warn. The `entities` sample below is what the next parser pass rewrites from")
     positions = sum(len(e.get("positions") or []) for e in parsed)
     return (f"{len(parsed)} experiences / {positions} positions parsed from {dated} dated entities "
             "— compare company/title/dates against the profile as rendered before trusting it")
+
+
+def profile_experiences_state(reading: dict) -> str:
+    """Grade one /details/experience/ reading (#1013's three states).
+
+    The page's OWN dated lines are the discriminator, not the entity ladder: a page that plainly
+    renders `Mar 2019 - Present · 7 yrs` lines while the parser reads no experience is drift —
+    that is exactly the 2026-08-03 footer-rung failure, and it graded itself as "no experience
+    here" for as long as nobody looked. A page with no dated line anywhere never rendered the
+    section (auth wall) or the profile genuinely lists no experience: `unknown`, never filed."""
+    reading = dict(reading or {})
+    if reading.get("experiences"):
+        return STATE_OK
+    return STATE_DRIFT if (reading.get("page_dated_lines") or 0) else STATE_UNKNOWN
 
 
 def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
@@ -2204,6 +2227,14 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                                                      get_start_identifier, parse_experience_entity,
                                                      parse_profile_experiences, source_as_row,
                                                      visible_lines)
+
+    if not (profile_url or "").strip():
+        # The sweep resolves its own target; when it cannot, probing a relative URL would grade the
+        # surface off a page nobody asked for.
+        return graded({"profile_url": "", "entity_count": 0, "entities": [], "experiences": []},
+                      STATE_UNKNOWN,
+                      "no profile URL to probe — the user's own profile URL did not resolve, so "
+                      "nothing was navigated and nothing is graded")
 
     url = profile_url.rstrip("/") + "/details/experience/"
     driver.get(url)
@@ -2230,17 +2261,23 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                              "legacy_start_identifier": get_start_identifier(source_as_row(node)),
                              "parsed": parse_experience_entity(lines) is not None})
 
+    # What the PAGE itself shows, independent of the entity ladder — the only way to tell "this
+    # profile lists no experience" from "the rung that won cannot see the experience it lists".
+    page_dated = sum(1 for line in visible_lines(source.find("main") or source)
+                     if _DATE_RANGE_RE.match(line))
+
     reading = {"profile_url": profile_url,
                "experience_url": url,
                "url": getattr(driver, "current_url", url),
                "entity_selector": selector,
                "entity_count": len(nodes),
                "entities_with_dates": dated,
+               "page_dated_lines": page_dated,
                "selector_counts": counts,
                "entities": entities,
                "experiences": parse_profile_experiences(source)}
-    reading["verdict"] = profile_experiences_verdict(reading)
-    return reading
+    return graded(reading, profile_experiences_state(reading),
+                  profile_experiences_verdict(reading))
 
 
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
@@ -2359,6 +2396,8 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "composer": lambda: probe_composer(driver),
         "profile_views": lambda: probe_profile_viewers(driver),
         "profile_scrape": lambda: probe_profile_scrape(
+            driver, profile_url or _sweep_own_profile(driver, user_id)),
+        "profile_experiences": lambda: probe_profile_experiences(
             driver, profile_url or _sweep_own_profile(driver, user_id)),
         "catchup_cards": lambda: probe_catchup_cards(driver),
         "company_invite": lambda: probe_company_invite(driver, user_id),
