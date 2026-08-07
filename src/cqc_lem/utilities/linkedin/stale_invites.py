@@ -96,6 +96,10 @@ _AGE_RE = re.compile(r"(?<!\w)(\d+|a|an)\s+(second|minute|hour|day|week|month|ye
 _UNIT_DAYS = {"second": 0.0, "minute": 0.0, "hour": 0.0, "day": 1.0,
               "week": 7.0, "month": 30.0, "year": 365.0}
 
+# "Ann Lee · 1st" — the connection badge SDUI appends to a name line. Stripped before the name is
+# compared, so a badge never turns a matching control into a refusal.
+_DEGREE_SUFFIX_RE = re.compile(r"\s*[·•|]\s*\d*(st|nd|rd|th)?\+?\s*$", re.IGNORECASE)
+
 # Resolve the pending-invite rows in ONE pass in the page, the same way the #962 follow control is
 # resolved: LinkedIn ships hashed class names that churn, so the anchors are the person's /in/ link,
 # the button's own accessible label, and visible TEXT — never a class.
@@ -166,10 +170,14 @@ return rows;
 _CONFIRM_WITHDRAW_JS = r"""
 const label = (el) => ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '')).trim();
 const shown = (el) => { const r = el.getBoundingClientRect(); return !!(r.width && r.height); };
-// The row's own control turned out to be an ANCHOR carrying no button role (#1006), so this one is
-// matched on clickable TAG rather than on role alone. Anchors/buttons only — never a bare span or
-// div, three of which carry the same word inside one control and none of which own the handler.
-for (const dialog of document.querySelectorAll("[role='dialog'], [role='alertdialog']")) {
+// The confirmation is a NATIVE <dialog data-testid="dialog"> carrying no role attribute (grounded
+// 2026-08-07, #1006) — `[role='dialog']` alone matched nothing, so a real withdrawal clicked the
+// row control and then found no confirm button, leaving the invite pending and the run "unverified".
+// The row's own control is likewise an ANCHOR with no button role, so controls are matched on
+// clickable TAG rather than on role alone — never a bare span or div, three of which carry the same
+// word inside one control and none of which own the handler.
+for (const dialog of document.querySelectorAll(
+    "dialog, [role='dialog'], [role='alertdialog'], [data-testid='dialog']")) {
   if (!shown(dialog)) continue;
   const controls = Array.from(dialog.querySelectorAll("a, button, [role='button']"))
       .filter((b) => shown(b) && /(^|\b)withdraw(\b|$)/i.test(label(b)));
@@ -226,9 +234,15 @@ def parse_sent_age_days(text: str) -> Optional[float]:
     ("shipping since 10 years ago"). If LinkedIn ever stops writing "Sent", every row reads
     unreadable and this lane withdraws NOTHING, which is the direction a one-way action has to fail;
     the run report's `unreadable` count is what makes that visible instead of silent.
+
+    The stamp line must START with "Sent" — the live rows write exactly "Sent 4 days ago". Merely
+    CONTAINING "sent" also matches the headlines "Sales Representative", "Sentiment analysis" and
+    "Presenting at ...", and each of those pairs with its own "12 years ago" to date a three-hour-old
+    invite at 4380 days. Since `stale` sorts oldest-first, such a row would be withdrawn FIRST, and
+    the withdrawal cannot be undone.
     """
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
-    stamped = [line for line in lines if "sent" in line.lower()]
+    stamped = [line for line in lines if line.lower().startswith("sent")]
     for line in stamped:
         match = _AGE_RE.search(line)
         if match:
@@ -360,7 +374,17 @@ def control_names_row(label_name: str, row_text: str) -> bool:
     name = " ".join(str(label_name or "").split()).casefold()
     if not name:
         return True
-    return name in " ".join(str(row_text or "").split()).casefold()
+    # The name must BE one of the card's lines — the row writes the person's name on its own line,
+    # above the headline and the "Sent ..." stamp. Matching it anywhere in the card, or merely as a
+    # line PREFIX, would let a mutual-connection blurb ("Ann Lee and 3 others are connections")
+    # vouch for a control that names Ann Lee while sitting beside somebody else's row — which is
+    # exactly the drift this check exists to catch. A trailing degree badge is the one decoration
+    # the name line is allowed to carry.
+    for line in str(row_text or "").splitlines():
+        candidate = " ".join(line.split()).casefold()
+        if candidate == name or _DEGREE_SUFFIX_RE.sub("", candidate).strip() == name:
+            return True
+    return False
 
 
 def read_pending_invites(driver: WebDriver) -> list[dict]:
@@ -423,12 +447,19 @@ def _invite_still_pending(driver: WebDriver, profile_url: str,
 
     The list re-renders rather than relabelling the row, so a single immediate re-read races that
     render. An invite we cannot prove is gone is reported as unverified, never as withdrawn — and a
-    row that carried no profile link is unverifiable by definition, so it stays 'pending' here."""
+    row that carried no profile link is unverifiable by definition, so it stays 'pending' here.
+
+    A read that comes back EMPTY proves nothing and must not be read as absence. `read_pending_invites`
+    answers `[]` for a JS failure, a navigation away, an auth wall and a page still loading, so
+    "the row is not in this list" would otherwise be satisfied by never having read a list at all —
+    and the withdrawal would be recorded as a verified success on the strength of a page we could not
+    see. Absence only counts against a list that rendered SOMETHING."""
     if not profile_url:
         return True
     for _ in range(WITHDRAW_CONFIRM_ATTEMPTS):
         sleep(WITHDRAW_CONFIRM_WAIT_SECONDS)
-        if not any(row.get("profile_url") == profile_url for row in read_pending_invites(driver)):
+        rows = read_pending_invites(driver)
+        if rows and not any(row.get("profile_url") == profile_url for row in rows):
             return False
     return True
 
@@ -473,7 +504,7 @@ def _record_withdrawal(user_id: int, invite: dict, verified: bool) -> None:
 def _report(status: str, **fields) -> dict:
     report = {"status": status, "withdrawn": 0, "unverified": 0, "budget": 0, "cap": 0,
               "withdrawn_today": 0, "threshold_days": 0, "rows_seen": 0, "stale_seen": 0,
-              "unreadable": 0, "expansions": 0}
+              "unreadable": 0, "entity_mismatch": 0, "expansions": 0}
     report.update(fields)
     return report
 
@@ -536,9 +567,16 @@ def withdraw_stale_invites(driver: WebDriver, wait: WebDriverWait, user_id: int,
                     task_name="withdraw_stale_invites")
         return _report(WITHDRAW_STATUS_NONE_STALE, **base)
 
-    stale = [i for i in invites
-             if i["age_days"] is not None and i["age_days"] >= threshold
-             and i.get("entity_ok", True)]
+    old_enough = [i for i in invites if i["age_days"] is not None and i["age_days"] >= threshold]
+    stale = [i for i in old_enough if i.get("entity_ok", True)]
+    refused = len(old_enough) - len(stale)
+    if refused:
+        # These rows ARE old enough and were refused for a different reason. Without saying so the
+        # run reports "no invites older than N days", which is false and reads exactly like a
+        # healthy account — the #1012 drift shape hiding as good news.
+        log_warning(f"{refused} invite(s) past the {threshold:.0f}-day threshold were refused "
+                    f"because the Withdraw control named a different person", user_id=user_id,
+                    action_type="invite", task_name="withdraw_stale_invites")
     base["stale_seen"] = len(stale)
     if not stale:
         log_info(f"No pending invites older than {threshold:.0f} days "
