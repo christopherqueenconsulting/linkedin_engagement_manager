@@ -67,7 +67,14 @@ STALE_INVITE_WITHDRAWALS_PER_DAY_DEFAULT = 10
 # How much of the list one run is willing to walk. The page loads newest-first, so the invites we
 # want are at the BOTTOM — without a bounded loader a run would only ever see the ones it must not
 # touch. Both bounds are reported, so a run that ran out of road is visible rather than inferred.
-SHOW_MORE_MAX_CLICKS = 5
+#
+# The first grounding run (#1006, 2026-08-07) hit the old cap of 5 EXACTLY, which is the one reading
+# that cannot be told apart from running out of road. Raising it answered that: the control stops
+# appearing on its own at 6, and 20 rows render against the page's own "People (44)" — so the
+# remaining 24 are NOT behind this bound, and what holds them is still unexplained. Expanding is
+# read-only, so the bound stays generous and tunable, and `expansions` keeps saying which of the two
+# a given run hit.
+SHOW_MORE_MAX_CLICKS_DEFAULT = 20
 MAX_ROWS_SCANNED = 200
 
 # A withdrawal is one click, a confirm, and a re-render. Give the row time to go away before calling
@@ -94,15 +101,41 @@ _UNIT_DAYS = {"second": 0.0, "minute": 0.0, "hour": 0.0, "day": 1.0,
 # the button's own accessible label, and visible TEXT — never a class.
 _SENT_INVITE_ROWS_JS = r"""
 const MAX = arguments[0];
-const label = (el) => ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '')).trim();
+const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+const aria = (el) => norm(el.getAttribute('aria-label') || '');
 const shown = (el) => { const r = el.getBoundingClientRect(); return !!(r.width && r.height); };
-const isWithdraw = (el) => /(^|\b)withdraw(\b|$)/i.test(label(el));
+
+// Live shape (grounded 2026-08-07, issue #1006): the control is an ANCHOR whose accessible label
+// NAMES the invitee — "Withdraw invitation sent to <Name>" — and carries no button role at all.
+// Matching `button, [role='button']` found zero of 80 Withdraw nodes on a page of 44 pending
+// invites. Matching the bare word instead is worse than useless: it renders three nested
+// presentational nodes per row, so every row would multiply by four. Anchor on the LABEL, which is
+// also the only reading that says WHO a click would act on.
+const LABELLED = /^withdraw invitation\b/i;
+const BARE = /(^|\b)withdraw(\b|$)/i;
+const bareLabel = (el) => norm(aria(el) + ' ' + (el.innerText || ''));
+const invitee = (el) => {
+  const m = aria(el).match(/^withdraw invitation(?:\s+sent)?\s+to\s+(.+)$/i);
+  return m ? norm(m[1]) : '';
+};
+
+// Prefer the labelled control; keep the bare button as a fallback for when the shape changes back.
+let controls = Array.from(document.querySelectorAll('[aria-label]'))
+    .filter((el) => shown(el) && LABELLED.test(aria(el)));
+const labelled = controls.length > 0;
+if (!labelled) {
+  controls = Array.from(document.querySelectorAll("button, [role='button']"))
+      .filter((el) => shown(el) && BARE.test(bareLabel(el)));
+}
+const controlsInside = (root) => Array.from(labelled
+      ? root.querySelectorAll('[aria-label]')
+      : root.querySelectorAll("button, [role='button']"))
+    .filter((x) => shown(x) && (labelled ? LABELLED.test(aria(x)) : BARE.test(bareLabel(x)))).length;
 
 const rows = [];
 const seen = new Set();
-for (const b of document.querySelectorAll("button, [role='button']")) {
+for (const b of controls) {
   if (rows.length >= MAX) break;
-  if (!shown(b) || !isWithdraw(b)) continue;
   // Walk up until the ancestor also carries the invitee's profile link — that container IS the row,
   // and its text is where the "Sent ... ago" stamp lives. Bounded so a page-wide ancestor (which
   // would hand back every invite's text at once) is never accepted as a row.
@@ -118,11 +151,12 @@ for (const b of document.querySelectorAll("button, [role='button']")) {
   // date the whole page — paired with whichever person's link happened to come first. Skip it: the
   // row count drops to zero, which reads as drift on the report, instead of one mis-aged row that a
   // one-way action then acts on.
-  if (Array.from(row.querySelectorAll("button, [role='button']"))
-        .filter((x) => shown(x) && isWithdraw(x)).length > 1) continue;
+  if (controlsInside(row) > 1) continue;
   seen.add(row);
+  // Row text keeps its LINE BREAKS — `parse_sent_age_days` reads the row's own "Sent ..." line, and
+  // flattening the card would let a headline's "... 10 years ago" date the invite.
   rows.push([anchor.getAttribute('href') || '', (anchor.innerText || '').trim(),
-             (row.innerText || '').trim(), b]);
+             (row.innerText || '').trim(), b, invitee(b)]);
 }
 return rows;
 """
@@ -132,11 +166,17 @@ return rows;
 _CONFIRM_WITHDRAW_JS = r"""
 const label = (el) => ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '')).trim();
 const shown = (el) => { const r = el.getBoundingClientRect(); return !!(r.width && r.height); };
+// The row's own control turned out to be an ANCHOR carrying no button role (#1006), so this one is
+// matched on clickable TAG rather than on role alone. Anchors/buttons only — never a bare span or
+// div, three of which carry the same word inside one control and none of which own the handler.
 for (const dialog of document.querySelectorAll("[role='dialog'], [role='alertdialog']")) {
   if (!shown(dialog)) continue;
-  for (const b of dialog.querySelectorAll("button, [role='button']")) {
-    if (shown(b) && /(^|\b)withdraw(\b|$)/i.test(label(b))) return b;
-  }
+  const controls = Array.from(dialog.querySelectorAll("a, button, [role='button']"))
+      .filter((b) => shown(b) && /(^|\b)withdraw(\b|$)/i.test(label(b)));
+  if (!controls.length) continue;
+  // Prefer one that says so in its own accessible label — the row's control does, and a labelled
+  // control is the only one that states what it acts on.
+  return controls.find((b) => /withdraw/i.test(b.getAttribute('aria-label') || '')) || controls[0];
 }
 return null;
 """
@@ -248,15 +288,21 @@ def _hold_reason(user_id: int) -> str:
     return ""
 
 
+def show_more_max_clicks() -> int:
+    """How many times one run may expand the sent list. Reading is read-only, so this bounds page
+    load rather than risk."""
+    return _env_int("STALE_INVITE_SHOW_MORE_MAX_CLICKS", SHOW_MORE_MAX_CLICKS_DEFAULT)
+
+
 def _load_more_rows(driver: WebDriver, sleep: Callable[[float], None] = time.sleep) -> int:
-    """Click "Show more" until it stops appearing, up to `SHOW_MORE_MAX_CLICKS` times.
+    """Click "Show more" until it stops appearing, up to `show_more_max_clicks()` times.
 
     The sent list renders newest-first, so the invites this lane exists for are at the BOTTOM. A run
     that never loads past the first page can only ever see rows it must not touch — which would look
     exactly like "nothing is stale". Returns how many times it expanded, so the report can say the
     walk ran out of road rather than out of stale invites."""
     clicks = 0
-    for _ in range(SHOW_MORE_MAX_CLICKS):
+    for _ in range(show_more_max_clicks()):
         try:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             button = driver.execute_script(
@@ -283,12 +329,31 @@ def _load_more_rows(driver: WebDriver, sleep: Callable[[float], None] = time.sle
     return clicks
 
 
+def control_names_row(label_name: str, row_text: str) -> bool:
+    """Does the Withdraw control's own label name the person this row is about?
+
+    The live control's label is "Withdraw invitation sent to <Name>" — so unlike almost every other
+    surface, this one states WHO the click acts on, and that reading is checked rather than assumed.
+    A withdrawal is one-way (LinkedIn blocks re-inviting for weeks), and #1012 cost ~20 invites by
+    clicking a control whose label named someone other than the target.
+
+    An empty `label_name` is the unlabelled fallback shape, which carries no name to contradict —
+    that reads True, exactly as before this check existed. A name that is NOT in the row's text
+    reads False, and the caller refuses the row: a missed withdrawal is recoverable, a wrong one is
+    not."""
+    name = " ".join(str(label_name or "").split()).casefold()
+    if not name:
+        return True
+    return name in " ".join(str(row_text or "").split()).casefold()
+
+
 def read_pending_invites(driver: WebDriver) -> list[dict]:
     """Every pending sent invite currently rendered, as
-    `{'profile_url', 'name', 'text', 'age_days', 'control'}`.
+    `{'profile_url', 'name', 'text', 'age_days', 'control', 'label_name', 'entity_ok'}`.
 
     `age_days` is `None` when the row's "Sent ... ago" stamp could not be read — the caller skips
-    those. An empty list means the page rendered nothing we recognise, which is NOT the same as "no
+    those. `entity_ok` is False when the control's label names someone the row does not — also a
+    skip. An empty list means the page rendered nothing we recognise, which is NOT the same as "no
     pending invites"; only the caller knows which of those it is looking at."""
     try:
         rows = driver.execute_script(_SENT_INVITE_ROWS_JS, MAX_ROWS_SCANNED)
@@ -298,12 +363,18 @@ def read_pending_invites(driver: WebDriver) -> list[dict]:
         return []
     invites: list[dict] = []
     for row in rows or []:
-        if not isinstance(row, (list, tuple)) or len(row) != 4:
+        if not isinstance(row, (list, tuple)) or len(row) not in (4, 5):
             continue
-        href, name, text, control = row
-        invites.append({"profile_url": str(href or ""), "name": str(name or "").strip(),
-                        "text": str(text or ""), "age_days": parse_sent_age_days(text),
-                        "control": control})
+        href, name, text, control = row[0], row[1], row[2], row[3]
+        label_name = str(row[4] or "").strip() if len(row) == 5 else ""
+        text = str(text or "")
+        # The live profile links carry no visible text, so the control's own label is what names the
+        # person in the withdrawal ledger. Without this the audit trail records blanks.
+        name = str(name or "").strip() or label_name
+        invites.append({"profile_url": str(href or ""), "name": name,
+                        "text": text, "age_days": parse_sent_age_days(text),
+                        "control": control, "label_name": label_name,
+                        "entity_ok": control_names_row(label_name, text)})
     return invites
 
 
@@ -363,7 +434,9 @@ def _resolve_control(driver: WebDriver, invite: dict):
         return None
     for row in read_pending_invites(driver):
         if row.get("profile_url") == profile_url:
-            return row.get("control")
+            # Re-resolved rows go through the same naming check as the first pass — the re-render is
+            # exactly when a control could end up beside the wrong person's link.
+            return row.get("control") if row.get("entity_ok", True) else None
     return None
 
 
@@ -419,6 +492,7 @@ def withdraw_stale_invites(driver: WebDriver, wait: WebDriverWait, user_id: int,
     base["expansions"] = expansions
     base["rows_seen"] = len(invites)
     base["unreadable"] = sum(1 for i in invites if i["age_days"] is None)
+    base["entity_mismatch"] = sum(1 for i in invites if not i.get("entity_ok", True))
     if not invites:
         # DEBUG, not a warning: an account with nothing outstanding renders exactly this, and it is
         # the common case for a healthy account. `rows_seen: 0` on the run report is what makes
@@ -436,7 +510,19 @@ def withdraw_stale_invites(driver: WebDriver, wait: WebDriverWait, user_id: int,
                     action_type="invite", task_name="withdraw_stale_invites")
         return _report(WITHDRAW_STATUS_NONE_STALE, **base)
 
-    stale = [i for i in invites if i["age_days"] is not None and i["age_days"] >= threshold]
+    if base["entity_mismatch"] == len(invites):
+        # Every control on the page names someone its own row does not. That is the label wording
+        # having moved, not 44 mislabelled rows — and since nothing can be attributed, nothing is
+        # withdrawn. One warning at the run level, mirroring the unreadable-date case above.
+        log_warning(f"Every pending invite row ({len(invites)}) carries a Withdraw control whose "
+                    f"label names a different person — nothing can be attributed, so nothing is "
+                    f"withdrawn", user_id=user_id, action_type="invite",
+                    task_name="withdraw_stale_invites")
+        return _report(WITHDRAW_STATUS_NONE_STALE, **base)
+
+    stale = [i for i in invites
+             if i["age_days"] is not None and i["age_days"] >= threshold
+             and i.get("entity_ok", True)]
     base["stale_seen"] = len(stale)
     if not stale:
         log_info(f"No pending invites older than {threshold:.0f} days "

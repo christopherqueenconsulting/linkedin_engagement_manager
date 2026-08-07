@@ -1524,9 +1524,17 @@ def sent_invites_verdict(reading: dict) -> str:
         return (f"{rows} row(s) resolved but NOT ONE carried a readable 'Sent ... ago' stamp — "
                 f"production ages nothing and withdraws nothing. `sample_text` is what the next "
                 f"parser pass should be written from")
+    mismatch = int(reading.get("entity_mismatch") or 0)
+    if mismatch >= rows:
+        return (f"{rows} row(s) resolved but EVERY Withdraw control names a person its own row does "
+                f"not — production refuses all of them, so nothing is withdrawn. The label wording "
+                f"moved; re-ground it from `rows[].label_name` before enabling the lane")
     stale = int(reading.get("stale_at_threshold") or 0)
+    suffix = (f"; {mismatch} row(s) refused because the control named someone else"
+              if mismatch else "")
     return (f"{rows} row(s) resolved, {dated} dated, {stale} at/over the {reading.get('threshold_days')}"
-            f"-day threshold — production would attempt that many (bounded by the daily budget)")
+            f"-day threshold — production would attempt that many (bounded by the daily budget)"
+            f"{suffix}")
 
 
 def sent_invites_state(reading: Optional[dict]) -> str:
@@ -1537,7 +1545,11 @@ def sent_invites_state(reading: Optional[dict]) -> str:
     reading = dict(reading or {})
     rows = int(reading.get("rows_seen") or 0)
     if rows:
-        return STATE_OK if int(reading.get("dated") or 0) else STATE_DRIFT
+        if not int(reading.get("dated") or 0):
+            return STATE_DRIFT
+        # Rows that resolve and date but whose control names the wrong person are refused by
+        # production — the lane withdraws nothing, which is drift, not a healthy read.
+        return STATE_DRIFT if int(reading.get("entity_mismatch") or 0) >= rows else STATE_OK
     if reading.get("empty_state"):
         return STATE_OK
     if not str(reading.get("page_text") or "").strip():
@@ -1575,10 +1587,17 @@ def probe_sent_invites(driver, threshold_days: Optional[int] = None,
                "unreadable": len(invites) - len(dated),
                "stale_at_threshold": len([i for i in dated if i["age_days"] >= threshold]),
                "oldest_days": max((i["age_days"] for i in dated), default=None),
+               # A control whose label names someone its own row does not is refused by production
+               # (#1006). Reported because it is the one reading that says the LABEL moved rather
+               # than the row anchor — the two look identical from a row count alone.
+               "entity_mismatch": sum(1 for i in invites if not i.get("entity_ok", True)),
+               "labelled_controls": sum(1 for i in invites if i.get("label_name")),
                # The rows as production read them, plus the raw card text a re-grounding pass would
                # rewrite the parser from. A bare "not found" is not re-groundable.
                "rows": [{"name": i["name"], "profile_url": i["profile_url"],
                          "age_days": i["age_days"],
+                         "label_name": i.get("label_name", ""),
+                         "entity_ok": i.get("entity_ok", True),
                          "control": element_evidence(i["control"]) if i["control"] is not None
                          else None}
                         for i in invites[:10]],

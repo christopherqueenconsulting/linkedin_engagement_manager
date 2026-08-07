@@ -15,8 +15,11 @@ pytestmark = pytest.mark.unit
 _SI = "cqc_lem.utilities.linkedin.stale_invites"
 
 
-def _row(name: str, text: str, href: str = "/in/someone/", control=None) -> list:
-    return [href, name, text, control if control is not None else MagicMock()]
+def _row(name: str, text: str, href: str = "/in/someone/", control=None,
+         label_name: str = "") -> list:
+    """One row as the page-side pass hands it back: href, link text, card text, control, and the
+    person the control's own label names (empty on the unlabelled fallback shape)."""
+    return [href, name, text, control if control is not None else MagicMock(), label_name]
 
 
 class TestParseSentAge:
@@ -370,10 +373,23 @@ class TestListExpansion:
         assert _load_more_rows(driver, sleep=lambda *_: None) == 2
 
     def test_the_walk_is_bounded(self):
+        from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows, show_more_max_clicks
+        cap = show_more_max_clicks()
+        driver = self._driver([MagicMock()] * (cap + 5))
+        assert _load_more_rows(driver, sleep=lambda *_: None) == cap
+
+    def test_the_bound_is_tunable_without_a_deploy(self, monkeypatch):
+        """The first grounding run hit the old cap of 5 exactly — the one reading that cannot be
+        told apart from the control running out. Expanding is read-only, so the bound is config
+        rather than code, and a run can say which of the two it hit."""
         from cqc_lem.utilities.linkedin.stale_invites import (_load_more_rows,
-                                                              SHOW_MORE_MAX_CLICKS)
-        driver = self._driver([MagicMock()] * (SHOW_MORE_MAX_CLICKS + 5))
-        assert _load_more_rows(driver, sleep=lambda *_: None) == SHOW_MORE_MAX_CLICKS
+                                                              show_more_max_clicks,
+                                                              SHOW_MORE_MAX_CLICKS_DEFAULT)
+        assert SHOW_MORE_MAX_CLICKS_DEFAULT >= 20
+        monkeypatch.setenv("STALE_INVITE_SHOW_MORE_MAX_CLICKS", "3")
+        assert show_more_max_clicks() == 3
+        driver = self._driver([MagicMock()] * 10)
+        assert _load_more_rows(driver, sleep=lambda *_: None) == 3
 
     def test_a_js_failure_keeps_what_it_already_expanded(self):
         from cqc_lem.utilities.linkedin.stale_invites import _load_more_rows
@@ -558,8 +574,8 @@ class TestRowResolution:
         assert read_pending_invites(driver) == []
 
     def test_a_malformed_row_is_dropped_rather_than_half_read(self):
-        """The JS hands back fixed 4-tuples; anything else means the page-side pass changed shape,
-        and a half-read row must not become a withdrawal target."""
+        """The JS hands back fixed 4- or 5-tuples; anything else means the page-side pass changed
+        shape, and a half-read row must not become a withdrawal target."""
         from cqc_lem.utilities.linkedin.stale_invites import read_pending_invites
         driver = MagicMock()
         driver.execute_script.return_value = [
@@ -567,6 +583,108 @@ class TestRowResolution:
             _row("Ann Lee", "Sent 4 weeks ago", "/in/ann/")]
         invites = read_pending_invites(driver)
         assert [i["name"] for i in invites] == ["Ann Lee"]
+
+    def test_the_unlabelled_fallback_row_still_reads(self):
+        """The pre-#1006 shape is a 4-tuple with no label. It carries no name to contradict, so it
+        stays actionable — the fallback must not become a silent no-op."""
+        from cqc_lem.utilities.linkedin.stale_invites import read_pending_invites
+        driver = MagicMock()
+        driver.execute_script.return_value = [
+            ["/in/ann/", "Ann Lee", "Ann Lee\nSent 4 weeks ago\nWithdraw", MagicMock()]]
+        invites = read_pending_invites(driver)
+        assert invites[0]["entity_ok"] is True
+        assert invites[0]["label_name"] == ""
+
+
+class TestControlNamesRow:
+    """#1006: the live control's label is "Withdraw invitation sent to <Name>" — the one surface
+    that says WHO a click acts on. #1012 cost ~20 invites by trusting a control that named someone
+    else, and a withdrawal cannot be taken back."""
+
+    def test_a_control_naming_this_rows_person_is_actionable(self):
+        from cqc_lem.utilities.linkedin.stale_invites import control_names_row
+        assert control_names_row(
+            "Christa Brutus, PMP, MM, LSSGB, ASCP(C)",
+            "Christa Brutus, PMP, MM, LSSGB, ASCP(C)\nAI Consultant\nSent 1 hour ago\nWithdraw")
+
+    def test_a_control_naming_someone_else_is_refused(self):
+        from cqc_lem.utilities.linkedin.stale_invites import control_names_row
+        assert not control_names_row("Ann Lee", "Bob Stone\nCEO\nSent 9 weeks ago\nWithdraw")
+
+    def test_no_label_carries_no_contradiction(self):
+        from cqc_lem.utilities.linkedin.stale_invites import control_names_row
+        assert control_names_row("", "Bob Stone\nSent 9 weeks ago\nWithdraw")
+
+    def test_whitespace_and_case_do_not_decide_a_one_way_action(self):
+        from cqc_lem.utilities.linkedin.stale_invites import control_names_row
+        assert control_names_row("ann   lee", "Ann Lee\nCEO\nSent 4 weeks ago")
+
+    def test_a_mismatched_row_is_never_withdrawn(self):
+        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
+                                                              WITHDRAW_STATUS_NONE_STALE)
+        control = MagicMock()
+        invites = [{"profile_url": "/in/ann/", "name": "Ann Lee", "text": "Sent 9 weeks ago",
+                    "age_days": 63.0, "control": control, "label_name": "Bob Stone",
+                    "entity_ok": False}]
+        driver = MagicMock()
+        with patch(f"{_SI}._hold_reason", return_value=""), \
+                patch(f"{_SI}._load_more_rows", return_value=0), \
+                patch(f"{_SI}.read_pending_invites", return_value=invites), \
+                patch(f"{_SI}._confirm_withdrawal", return_value=True), \
+                patch(f"{_SI}._record_withdrawal") as record:
+            report = withdraw_stale_invites(driver, MagicMock(), 1, plan=_plan(),
+                                            sleep=lambda *_: None)
+        assert report["status"] == WITHDRAW_STATUS_NONE_STALE
+        assert report["withdrawn"] == 0
+        assert report["entity_mismatch"] == 1
+        record.assert_not_called()
+        assert control not in [c.args[1] for c in driver.execute_script.call_args_list
+                               if len(c.args) > 1]
+
+    def test_a_mismatch_never_blocks_the_rows_that_do_match(self):
+        from cqc_lem.utilities.linkedin.stale_invites import withdraw_stale_invites
+        good, bad = MagicMock(), MagicMock()
+        invites = [{"profile_url": "/in/bad/", "name": "Bad", "text": "Sent 9 weeks ago",
+                    "age_days": 63.0, "control": bad, "label_name": "Someone Else",
+                    "entity_ok": False},
+                   {"profile_url": "/in/good/", "name": "Good", "text": "Sent 8 weeks ago",
+                    "age_days": 56.0, "control": good, "label_name": "Good",
+                    "entity_ok": True}]
+        driver = MagicMock()
+        with patch(f"{_SI}._hold_reason", return_value=""), \
+                patch(f"{_SI}._load_more_rows", return_value=0), \
+                patch(f"{_SI}.read_pending_invites", side_effect=[invites, [], []]), \
+                patch(f"{_SI}._confirm_withdrawal", return_value=True), \
+                patch(f"{_SI}._record_withdrawal"):
+            report = withdraw_stale_invites(driver, MagicMock(), 1, plan=_plan(),
+                                            sleep=lambda *_: None)
+        clicked = [c.args[1] for c in driver.execute_script.call_args_list if len(c.args) > 1]
+        assert report["withdrawn"] == 1
+        assert good in clicked and bad not in clicked
+
+    def test_a_re_resolved_control_that_names_someone_else_is_dropped(self):
+        """The re-render is exactly when a control can end up beside the wrong person's link."""
+        from cqc_lem.utilities.linkedin.stale_invites import _resolve_control
+        driver = MagicMock()
+        rows = [{"profile_url": "/in/ann/", "control": MagicMock(), "entity_ok": False}]
+        with patch(f"{_SI}.read_pending_invites", return_value=rows):
+            assert _resolve_control(driver, {"profile_url": "/in/ann/"}) is None
+
+    def test_every_row_mismatching_warns_once_at_the_run_level(self):
+        """Total mismatch is the label wording having moved, not 44 mislabelled rows — one warning,
+        never one per row, and nothing is withdrawn."""
+        from cqc_lem.utilities.linkedin.stale_invites import withdraw_stale_invites
+        invites = [{"profile_url": f"/in/p{i}/", "name": f"P{i}", "text": "Sent 9 weeks ago",
+                    "age_days": 63.0, "control": MagicMock(), "label_name": "Nobody Here",
+                    "entity_ok": False} for i in range(3)]
+        with patch(f"{_SI}._hold_reason", return_value=""), \
+                patch(f"{_SI}._load_more_rows", return_value=0), \
+                patch(f"{_SI}.read_pending_invites", return_value=invites), \
+                patch(f"{_SI}.log_warning") as warn:
+            report = withdraw_stale_invites(MagicMock(), MagicMock(), 1, plan=_plan(),
+                                            sleep=lambda *_: None)
+        assert report["withdrawn"] == 0
+        assert warn.call_count == 1
 
 
 class TestDailySpendLedger:
