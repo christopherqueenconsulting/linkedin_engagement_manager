@@ -63,7 +63,6 @@ def quit_gracefully(driver: WebDriver):
         myprint("Driver session closed.")
     except Exception as e:
         myprint(f"Error while quitting driver: {e}")
-        pass
 
 
 # What the Grid says when the session a call names is gone. The exception type covers the normal
@@ -870,8 +869,7 @@ def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
             myprint(te)
             if (max_retry > 0):
                 close_tab(driver, handles, max_retry - 1)
-                pass
-
+        
 
 def get_driver_wait(driver, wait_time: int = None):
     """Build the WebDriverWait every helper here shares (default timeout `WAIT_DEFAULT_TIMEOUT`).
@@ -976,8 +974,7 @@ def load_cookies(driver: WebDriver, cookies: list[dict]):
         except selenium.common.exceptions.InvalidArgumentException as e:
             myprint(f"Error loading cookie: {cookie}")
             myprint(f"Exception: {e}")
-            pass
-
+    
 
 class RetryableWebDriver:
     """A driver proxy that retries EVERY forwarded call on WebDriverException / stale element.

@@ -39,7 +39,6 @@ class RedisLike(Protocol):
         May hand back `bytes` or `str` — `json.loads` takes either, and a client that returns
         something else entirely is treated as "no status" rather than an error.
         """
-        ...  # lgtm[py/ineffectual-statement]
 
     def set(self, name: str, value: str, ex: Optional[int] = None) -> Any:
         """Store a status blob with `ex` as its TTL in SECONDS.
@@ -47,7 +46,6 @@ class RedisLike(Protocol):
         Every write in this module passes one: progress is disposable runtime state, so a run that
         dies mid-way must age out on its own rather than leave the SPA polling forever.
         """
-        ...  # lgtm[py/ineffectual-statement]
 
     def delete(self, *names: str) -> Any:
         """Drop a status key outright.
@@ -55,7 +53,6 @@ class RedisLike(Protocol):
         Used when a run will never start, so the SPA stops polling immediately instead of waiting
         out the TTL.
         """
-        ...  # lgtm[py/ineffectual-statement]
 
 
 class ContentGenerationState(StrEnum):

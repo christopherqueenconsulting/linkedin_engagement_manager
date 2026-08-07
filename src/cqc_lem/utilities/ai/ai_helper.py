@@ -18,6 +18,11 @@ from datetime import datetime
 from typing import Any, Optional
 
 import openai
+# Imported for its NAME, not its use: `get_flux_image_via_replicate` reaches Replicate through
+# `image_gen.run_replicate_bounded`, and the tests patch `ai_helper.replicate.run`, so this module
+# must expose the attribute. `noqa` rather than `lgtm` because the CI auto-fixer is ruff, which
+# honours only the former — it deleted this line once and took two test files down with it.
+import replicate  # noqa: F401
 from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
@@ -28,6 +33,8 @@ from cqc_lem.utilities.ai.client import attribution_metadata, client
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
 # (and the tests that import it) stable while the definitions live in exactly one place.
 from cqc_lem.utilities.ai.content_alignment import (
+    COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,  # noqa: F401
+    DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,  # noqa: F401
     NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
     NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
     alignment_directive as _alignment_directive,
