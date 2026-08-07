@@ -2196,6 +2196,11 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
 _GROUP_JOIN_MARKERS = ("join", "request to join")
 _GROUP_PENDING_MARKERS = ("requested", "pending", "withdraw")
 _GROUP_MEMBER_MARKERS = ("leave",)
+# Headings under which a group anchor is an OFFER, not a membership. The 2026-08-07 live directory
+# rendered "Groups you might be interested in" on the same page as the joined list, and the sync
+# reads both.
+_GROUP_RECOMMENDATION_MARKERS = ("might be interested", "may like", "you might like", "recommend",
+                                 "suggested", "discover")
 
 # Controls scoped to the group's OWN header, plus every control on the page for comparison.
 # The scoping is the point: LinkedIn renders a "Join" button per card in the groups-you-may-like
@@ -2233,12 +2238,24 @@ return out;
 # Every /groups/<id> anchor on the directory with the heading it sits under. `_enumerate_joined_groups`
 # takes every one of these as a JOINED group, so the headings are the evidence for whether that is
 # true — a "Groups you may like" anchor is a recommendation, not a membership.
+#
+# The section is the NEAREST PRECEDING heading in document order, not a heading found by walking the
+# anchor's ancestors: the 2026-08-07 live run attributed a section to none of its 40 anchors because
+# the directory's own section headings ("Your groups", "Requested") are neither h1–h3 nor ancestors
+# of the cards beneath them. A probe whose one discriminating reading comes back empty everywhere is
+# not reporting "no recommendations", it is reporting nothing.
+#
+# The anchor cap matches `_enumerate_joined_groups`' own `slice(0,60)` for the same reason: that run
+# capped anchors at 40 against 55 enumerated ids, which reads as 15 ids the sync invented when it is
+# only the probe's own ceiling. `anchor_total` keeps the truncation visible either way.
 _GROUP_DIRECTORY_JS = """
-const out = {headings: [], anchors: []};
-for (const h of document.querySelectorAll('h1,h2,h3')) {
+const out = {headings: [], anchors: [], anchor_total: 0};
+const headingNodes = [];
+for (const h of document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')) {
   const t = (h.innerText || '').trim();
-  if (t) out.headings.push(t.slice(0, 80));
-  if (out.headings.length >= 12) break;
+  if (!t) continue;
+  headingNodes.push([h, t.slice(0, 80)]);
+  if (out.headings.length < 12) out.headings.push(t.slice(0, 80));
 }
 const seen = new Set();
 for (const a of document.querySelectorAll("a[href*='/groups/']")) {
@@ -2247,19 +2264,26 @@ for (const a of document.querySelectorAll("a[href*='/groups/']")) {
   const id = m[1];
   if (seen.has(id)) continue;
   seen.add(id);
+  out.anchor_total += 1;
+  if (out.anchors.length >= 60) continue;
   let section = '';
-  let node = a;
-  for (let i = 0; i < 8 && node.parentElement; i++) {
-    node = node.parentElement;
-    const h = node.querySelector('h1,h2,h3');
-    if (h) { section = (h.innerText || '').trim().slice(0, 80); break; }
+  for (const [node, text] of headingNodes) {
+    if (node.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) section = text;
+    else break;
   }
   out.anchors.push({id: id, text: (a.innerText || '').trim().split('\\n')[0].slice(0, 80),
                     section: section});
-  if (out.anchors.length >= 40) break;
 }
 return out;
 """
+
+
+def _first_few(values: Optional[list], limit: int = 5) -> str:
+    """A verdict lists evidence, so a list it cut short has to say so — the 2026-08-07 run's verdict
+    named 5 of 6 stale ids and read like the whole set."""
+    values = [str(v) for v in (values or [])]
+    shown = ", ".join(values[:limit])
+    return f"{shown}, +{len(values) - limit} more" if len(values) > limit else shown
 
 
 def _labels_matching(labels: Optional[list], markers: tuple) -> list:
@@ -2272,19 +2296,60 @@ def _labels_matching(labels: Optional[list], markers: tuple) -> list:
     return out
 
 
+def group_membership_signal(header_controls: Optional[list], share_box_present: bool = False) -> str:
+    """WHICH reading decided the answer — the fix is written against the signal, not the word.
+
+    The 2026-08-07 live run answered `member` for a group whose header carried no membership control
+    at all: every marker missed and the share box carried it. Reporting only the word made that read
+    as "the header says member", which would have sent the fix looking for a Leave button that this
+    surface does not render."""
+    if _labels_matching(header_controls, _GROUP_PENDING_MARKERS):
+        return "pending_control"
+    if _labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
+        return "leave_control"
+    if _labels_matching(header_controls, _GROUP_JOIN_MARKERS):
+        return "join_control"
+    return "share_box" if share_box_present else "none"
+
+
+_MEMBERSHIP_BY_SIGNAL = {"pending_control": "pending", "leave_control": "member",
+                         "join_control": "not_member", "share_box": "member", "none": "unknown"}
+
+
 def group_membership_answer(header_controls: Optional[list], share_box_present: bool = False) -> str:
     """The three-valued answer a membership check would key on, read from the group HEADER only.
 
     `unknown` is a real answer and the one that must never be actioned: a page that will not say
     whether we belong is not evidence that we left, so a fix reading `unknown` has to leave the
     stored membership exactly as it was."""
-    if _labels_matching(header_controls, _GROUP_PENDING_MARKERS):
-        return "pending"
-    if _labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
-        return "member"
-    if _labels_matching(header_controls, _GROUP_JOIN_MARKERS):
-        return "not_member"
-    return "member" if share_box_present else "unknown"
+    return _MEMBERSHIP_BY_SIGNAL[group_membership_signal(header_controls, share_box_present)]
+
+
+def group_enumeration_findings(directory: Optional[dict]) -> dict:
+    """What the directory read says about `_enumerate_joined_groups` ITSELF, rather than about any
+    one membership.
+
+    The sync takes every `/groups/<id>` anchor on the page as a joined group, so an id it returned
+    that sits under "Groups you might be interested in" is a membership the DB will invent — and
+    LEM will then comment in a group the user never joined, which is #1052 pointing the other way.
+    `sections_readable` is what keeps that honest: no attributed section means the question was not
+    answered, never that the answer was no."""
+    directory = dict(directory or {})
+    anchors = [dict(a or {}) for a in (directory.get("anchors") or [])]
+    enumerated = [str(row[0]) for row in (directory.get("enumerated") or []) if row]
+    by_id = {str(a.get("id")): str(a.get("section") or "") for a in anchors}
+    anchor_total = directory.get("anchor_total")
+    anchor_total = len(anchors) if anchor_total in (None, "") else int(anchor_total)
+    recommended = [gid for gid in enumerated
+                   if _labels_matching([by_id.get(gid)], _GROUP_RECOMMENDATION_MARKERS)]
+    return {"anchor_total": anchor_total,
+            "anchors_truncated": anchor_total > len(anchors),
+            "sections_readable": any(by_id.values()),
+            "enumerated_under_recommendation": recommended,
+            # Only meaningful when the anchor list was not cut short — otherwise every id past the
+            # cap looks invented.
+            "enumerated_not_anchored": ([gid for gid in enumerated if gid not in by_id]
+                                        if anchor_total <= len(anchors) else [])}
 
 
 def group_membership_state(reading: Optional[dict]) -> str:
@@ -2294,10 +2359,12 @@ def group_membership_state(reading: Optional[dict]) -> str:
     reading = dict(reading or {})
     group = dict(reading.get("group_page") or {})
     directory = dict(reading.get("directory") or {})
+    findings = group_enumeration_findings(directory)
     states = []
     if str(directory.get("page_text") or "").strip():
-        states.append(STATE_DRIFT if (directory.get("anchors") and not directory.get("enumerated"))
-                      else STATE_OK)
+        blind = directory.get("anchors") and not directory.get("enumerated")
+        states.append(STATE_DRIFT if (blind or findings["enumerated_under_recommendation"]
+                                      or findings["enumerated_not_anchored"]) else STATE_OK)
     else:
         states.append(STATE_UNKNOWN)
     if not group.get("group_id"):
@@ -2313,7 +2380,8 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
     reading = dict(reading or {})
     group = dict(reading.get("group_page") or {})
     directory = dict(reading.get("directory") or {})
-    stale = reading.get("stored_not_live") or []
+    stale = [str(g) for g in (reading.get("stored_not_live") or [])]
+    findings = group_enumeration_findings(directory)
     parts = []
     if not str(directory.get("page_text") or "").strip():
         parts.append("the groups directory did not render — re-run")
@@ -2322,8 +2390,19 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
                      "none of — the sync is blind and every stored membership is unverifiable")
     else:
         parts.append(f"the directory enumerated {len(directory.get('enumerated') or [])} group(s) "
-                     f"from {len(directory.get('anchors') or [])} anchor(s); read `anchors[].section` "
-                     f"to see whether any of them are recommendations rather than memberships")
+                     f"from {findings['anchor_total']} anchor(s)")
+        if findings["enumerated_under_recommendation"]:
+            parts.append(f"{len(findings['enumerated_under_recommendation'])} enumerated id(s) sit "
+                         f"under a recommendation heading "
+                         f"({_first_few(findings['enumerated_under_recommendation'])}) — the sync "
+                         f"stores groups the user never joined")
+        elif not findings["sections_readable"]:
+            parts.append("no anchor could be attributed to a section heading, so whether the sync "
+                         "counts recommendation cards as joins is UNANSWERED — re-ground "
+                         "`_GROUP_DIRECTORY_JS`'s heading walk before trusting the enumeration")
+        if findings["enumerated_not_anchored"]:
+            parts.append(f"{len(findings['enumerated_not_anchored'])} enumerated id(s) are on no "
+                         f"anchor the probe read ({_first_few(findings['enumerated_not_anchored'])})")
     if not group.get("group_id"):
         parts.append("no group to probe — pass a group id")
     elif not str(group.get("page_text") or "").strip():
@@ -2332,12 +2411,16 @@ def group_membership_verdict(reading: Optional[dict]) -> str:
         parts.append("the group page rendered but its header carried no join/leave control — "
                      "membership is unreadable, so a membership check would have nothing to key on "
                      "and must change nothing; re-ground from `header_controls`")
+    elif group.get("membership_signal") == "share_box":
+        parts.append("the group header carried NO membership control — `member` comes only from the "
+                     f"share box resolving, next to {group.get('header_controls') or []}; a fix must "
+                     "read presence-of-share-box + absence-of-Join, not a Leave button")
     else:
-        parts.append(f"the group header reads `{group.get('membership')}` "
-                     f"from {group.get('header_controls') or []}")
+        parts.append(f"the group header reads `{group.get('membership')}` from "
+                     f"`{group.get('membership_signal')}` in {group.get('header_controls') or []}")
     if stale:
         parts.append(f"{len(stale)} group(s) enabled in the DB were not enumerated live "
-                     f"({', '.join(str(g) for g in stale[:5])}) — the #1052 symptom")
+                     f"({_first_few(stale)}) — the #1052 symptom")
     return "; ".join(parts)
 
 
@@ -2371,7 +2454,9 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
                  "page_text": page_text_sample(driver),
                  "enumerated": [list(row) for row in enumerated],
                  "headings": list(directory.get("headings") or []),
-                 "anchors": list(directory.get("anchors") or [])}
+                 "anchors": list(directory.get("anchors") or []),
+                 "anchor_total": directory.get("anchor_total")}
+    directory.update(group_enumeration_findings(directory))
 
     live_ids = {gid for gid, _ in enumerated}
     reading = {"user_id": user_id,
@@ -2412,6 +2497,8 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
                                                                  _GROUP_JOIN_MARKERS)
         group_page["join_controls_on_page"] = _labels_matching(group_page["page_controls"],
                                                                _GROUP_JOIN_MARKERS)
+        group_page["membership_signal"] = group_membership_signal(group_page["header_controls"],
+                                                                   group_page["share_box_present"])
         group_page["membership"] = group_membership_answer(group_page["header_controls"],
                                                            group_page["share_box_present"])
     reading["group_page"] = group_page
