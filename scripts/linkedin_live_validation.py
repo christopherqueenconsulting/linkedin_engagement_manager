@@ -153,6 +153,9 @@ SURFACES = (
     {"key": "group_composer", "surface": "Group share box / post editor",
      "code": "run_automation.auto_post_to_group", "flag": "--group-composer",
      "arg": "<group-id>", "sweep": False},
+    {"key": "group_membership", "surface": "Groups directory + a group page's membership controls",
+     "code": "run_automation._enumerate_joined_groups / auto_comment_in_groups",
+     "flag": "--group-membership", "sweep": True},
     {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
      "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
      "sweep": True},
@@ -2186,6 +2189,384 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
     return graded(reading, group_composer_state(reading), group_composer_verdict(reading))
 
 
+# ──────────────────────────── group membership (issue #1052) ─────────────────────────────────
+# The page's OWN words for whether we are in this group. Text and aria-label only, never class
+# names. This is the reading the reporter's bug is about: production walked onto a group feed that
+# was offering to let it JOIN and commented anyway, because nothing ever asked the page.
+_GROUP_JOIN_MARKERS = ("join", "request to join")
+_GROUP_PENDING_MARKERS = ("requested", "pending", "withdraw")
+_GROUP_MEMBER_MARKERS = ("leave",)
+# Headings under which a group anchor is an OFFER, not a membership. The 2026-08-07 live directory
+# rendered "Groups you might be interested in" on the same page as the joined list, and the sync
+# reads both.
+_GROUP_RECOMMENDATION_MARKERS = ("might be interested", "may like", "you might like", "recommend",
+                                 "suggested", "discover")
+
+# Controls scoped to the group's OWN header, plus every control on the page for comparison.
+# The scoping is the point: LinkedIn renders a "Join" button per card in the groups-you-may-like
+# rail, so keying membership off any Join on the page is exactly the #1012 hazard — a control whose
+# label names a different entity than the target. The probe reports both so the live run says
+# whether the scope is doing any work.
+_GROUP_HEADER_JS = """
+const out = {h1: '', levels: 0, header_controls: [], all_controls: []};
+const label = (b) => ((b.getAttribute('aria-label') || b.innerText || '').trim()).slice(0, 80);
+const seen = new Set();
+for (const b of document.querySelectorAll('button')) {
+  const l = label(b);
+  if (l && !seen.has(l)) { seen.add(l); out.all_controls.push(l); }
+  if (out.all_controls.length >= 40) break;
+}
+const h1 = document.querySelector('main h1') || document.querySelector('h1');
+if (h1) {
+  out.h1 = (h1.innerText || '').trim().slice(0, 120);
+  let node = h1;
+  for (let i = 0; i < 6 && node.parentElement; i++) {
+    node = node.parentElement;
+    out.levels = i + 1;
+    if (node.querySelectorAll('button').length) break;
+  }
+  const hseen = new Set();
+  for (const b of node.querySelectorAll('button')) {
+    const l = label(b);
+    if (l && !hseen.has(l)) { hseen.add(l); out.header_controls.push(l); }
+    if (out.header_controls.length >= 20) break;
+  }
+}
+return out;
+"""
+
+# Every /groups/<id> anchor on the directory with the heading it sits under. `_enumerate_joined_groups`
+# takes every one of these as a JOINED group, so the headings are the evidence for whether that is
+# true — a "Groups you may like" anchor is a recommendation, not a membership.
+#
+# The section is the NEAREST PRECEDING heading in document order, not a heading found by walking the
+# anchor's ancestors: the 2026-08-07 live run attributed a section to none of its 40 anchors because
+# the directory's own section headings ("Your groups", "Requested") are neither h1–h3 nor ancestors
+# of the cards beneath them. A probe whose one discriminating reading comes back empty everywhere is
+# not reporting "no recommendations", it is reporting nothing.
+#
+# The anchor cap matches `_enumerate_joined_groups`' own `slice(0,60)` for the same reason: that run
+# capped anchors at 40 against 55 enumerated ids, which reads as 15 ids the sync invented when it is
+# only the probe's own ceiling. `anchor_total` keeps the truncation visible either way.
+_GROUP_DIRECTORY_JS = """
+const out = {headings: [], anchors: [], anchor_total: 0};
+const headingNodes = [];
+for (const h of document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')) {
+  const t = (h.innerText || '').trim();
+  if (!t) continue;
+  headingNodes.push([h, t.slice(0, 80)]);
+  if (out.headings.length < 12) out.headings.push(t.slice(0, 80));
+}
+const seen = new Set();
+for (const a of document.querySelectorAll("a[href*='/groups/']")) {
+  const m = (a.getAttribute('href') || '').match(/\\/groups\\/(\\d+)/);
+  if (!m) continue;
+  const id = m[1];
+  if (seen.has(id)) continue;
+  seen.add(id);
+  out.anchor_total += 1;
+  if (out.anchors.length >= 60) continue;
+  let section = '';
+  for (const [node, text] of headingNodes) {
+    if (node.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) section = text;
+    else break;
+  }
+  out.anchors.push({id: id, text: (a.innerText || '').trim().split('\\n')[0].slice(0, 80),
+                    section: section});
+}
+return out;
+"""
+
+
+def _first_few(values: Optional[list], limit: int = 5) -> str:
+    """A verdict lists evidence, so a list it cut short has to say so — the 2026-08-07 run's verdict
+    named 5 of 6 stale ids and read like the whole set."""
+    values = [str(v) for v in (values or [])]
+    shown = ", ".join(values[:limit])
+    return f"{shown}, +{len(values) - limit} more" if len(values) > limit else shown
+
+
+def _labels_matching(labels: Optional[list], markers: tuple) -> list:
+    """Every label whose own text carries one of these markers, kept verbatim as evidence."""
+    out = []
+    for label in labels or []:
+        text = str(label or "")
+        if any(marker in text.lower() for marker in markers):
+            out.append(text[:80])
+    return out
+
+
+def _control_labels_matching(labels: Optional[list], markers: tuple) -> list:
+    """Controls whose label LEADS with one of these action words, not merely contains it.
+
+    A control label often carries the group's own NAME — the 2026-08-07 header rendered
+    `More options for <group>` — so a substring match makes the membership answer depend on what the
+    group is called: a group named "Join the Data Guild" would read `not_member` while its share box
+    was sitting right there. That is the #1012 hazard one layer down, in the reading rather than the
+    click, and it flips the answer to the one direction that must never be wrong. LinkedIn's real
+    membership controls all lead with the verb ("Join", "Request to join", "Leave", "Requested",
+    "Withdraw request"), so anchoring at the start keeps every live reading and fails to `unknown`
+    (re-ground it) instead of to a confident wrong answer."""
+    out = []
+    for label in labels or []:
+        text = str(label or "")
+        stripped = text.strip().lower()
+        if any(stripped.startswith(marker) for marker in markers):
+            out.append(text[:80])
+    return out
+
+
+def group_membership_signal(header_controls: Optional[list], share_box_present: bool = False) -> str:
+    """WHICH reading decided the answer — the fix is written against the signal, not the word.
+
+    The 2026-08-07 live run answered `member` for a group whose header carried no membership control
+    at all: every marker missed and the share box carried it. Reporting only the word made that read
+    as "the header says member", which would have sent the fix looking for a Leave button that this
+    surface does not render."""
+    if _control_labels_matching(header_controls, _GROUP_PENDING_MARKERS):
+        return "pending_control"
+    if _control_labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
+        return "leave_control"
+    if _control_labels_matching(header_controls, _GROUP_JOIN_MARKERS):
+        return "join_control"
+    return "share_box" if share_box_present else "none"
+
+
+_MEMBERSHIP_BY_SIGNAL = {"pending_control": "pending", "leave_control": "member",
+                         "join_control": "not_member", "share_box": "member", "none": "unknown"}
+
+
+def group_membership_answer(header_controls: Optional[list], share_box_present: bool = False) -> str:
+    """The three-valued answer a membership check would key on, read from the group HEADER only.
+
+    `unknown` is a real answer and the one that must never be actioned: a page that will not say
+    whether we belong is not evidence that we left, so a fix reading `unknown` has to leave the
+    stored membership exactly as it was."""
+    return _MEMBERSHIP_BY_SIGNAL[group_membership_signal(header_controls, share_box_present)]
+
+
+def group_enumeration_findings(directory: Optional[dict]) -> dict:
+    """What the directory read says about `_enumerate_joined_groups` ITSELF, rather than about any
+    one membership.
+
+    The sync takes every `/groups/<id>` anchor on the page as a joined group, so an id it returned
+    that sits under "Groups you might be interested in" is a membership the DB will invent — and
+    LEM will then comment in a group the user never joined, which is #1052 pointing the other way.
+    `sections_readable` is what keeps that honest: no attributed section means the question was not
+    answered, never that the answer was no."""
+    directory = dict(directory or {})
+    anchors = [dict(a or {}) for a in (directory.get("anchors") or [])]
+    enumerated = [str(row[0]) for row in (directory.get("enumerated") or []) if row]
+    by_id = {str(a.get("id")): str(a.get("section") or "") for a in anchors}
+    anchor_total = directory.get("anchor_total")
+    anchor_total = len(anchors) if anchor_total in (None, "") else int(anchor_total)
+    recommended = [gid for gid in enumerated
+                   if _labels_matching([by_id.get(gid)], _GROUP_RECOMMENDATION_MARKERS)]
+    return {"anchor_total": anchor_total,
+            "anchors_truncated": anchor_total > len(anchors),
+            "sections_readable": any(by_id.values()),
+            "enumerated_under_recommendation": recommended,
+            # Only meaningful when the anchor list was not cut short — otherwise every id past the
+            # cap looks invented.
+            "enumerated_not_anchored": ([gid for gid in enumerated if gid not in by_id]
+                                        if anchor_total <= len(anchors) else [])}
+
+
+def stale_set_grounded(reading: Optional[dict]) -> bool:
+    """Whether `stored_not_live` is evidence of anything at all.
+
+    It is a set difference, so it inherits the enumeration's blind spots: if the sync matched none of
+    the page's anchors, EVERY enabled group lands in it and the list says the probe couldn't see the
+    directory, not that the user left six groups. Same when the DB list was unreadable — an empty
+    enabled set makes an empty difference, which would otherwise read as a clean bill of health."""
+    reading = dict(reading or {})
+    directory = dict(reading.get("directory") or {})
+    if not reading.get("enabled_ids_readable", True):
+        return False
+    if not str(directory.get("page_text") or "").strip():
+        return False
+    return not (directory.get("anchors") and not directory.get("enumerated"))
+
+
+def group_membership_state(reading: Optional[dict]) -> str:
+    """`drift` is reserved for the finding that blocks the fix: the group page RENDERED and still
+    said nothing either way. `not_member` is not drift — it is the probe working, and it is the
+    reporter's own symptom showing up in the report.
+
+    A directory whose anchors could be attributed to NO section is drift for the same reason: this
+    surface is swept weekly, and the sweep only ever looks at `drift`, so grading an unanswerable
+    reading `ok` is how the enumeration question stays open forever with a green report over it."""
+    reading = dict(reading or {})
+    group = dict(reading.get("group_page") or {})
+    directory = dict(reading.get("directory") or {})
+    findings = group_enumeration_findings(directory)
+    states = []
+    if str(directory.get("page_text") or "").strip():
+        blind = directory.get("anchors") and not directory.get("enumerated")
+        unattributed = directory.get("anchors") and not findings["sections_readable"]
+        states.append(STATE_DRIFT if (blind or unattributed
+                                      or findings["enumerated_under_recommendation"]
+                                      or findings["enumerated_not_anchored"]) else STATE_OK)
+    else:
+        states.append(STATE_UNKNOWN)
+    if not group.get("group_id"):
+        states.append(STATE_UNKNOWN)
+    elif not str(group.get("page_text") or "").strip():
+        states.append(STATE_UNKNOWN)
+    else:
+        states.append(STATE_OK if group.get("membership") != "unknown" else STATE_DRIFT)
+    return worst_state(states)
+
+
+def group_membership_verdict(reading: Optional[dict]) -> str:
+    """The prose half of the grade: what each half of the read established, and what it did NOT."""
+    reading = dict(reading or {})
+    group = dict(reading.get("group_page") or {})
+    directory = dict(reading.get("directory") or {})
+    stale = [str(g) for g in (reading.get("stored_not_live") or [])]
+    findings = group_enumeration_findings(directory)
+    parts = []
+    if not str(directory.get("page_text") or "").strip():
+        parts.append("the groups directory did not render — re-run")
+    elif directory.get("anchors") and not directory.get("enumerated"):
+        parts.append("the directory rendered group anchors that `_enumerate_joined_groups` matched "
+                     "none of — the sync is blind and every stored membership is unverifiable")
+    else:
+        parts.append(f"the directory enumerated {len(directory.get('enumerated') or [])} group(s) "
+                     f"from {findings['anchor_total']} anchor(s)")
+        if findings["enumerated_under_recommendation"]:
+            parts.append(f"{len(findings['enumerated_under_recommendation'])} enumerated id(s) sit "
+                         f"under a recommendation heading "
+                         f"({_first_few(findings['enumerated_under_recommendation'])}) — the sync "
+                         f"stores groups the user never joined")
+        elif not findings["sections_readable"]:
+            parts.append("no anchor could be attributed to a section heading, so whether the sync "
+                         "counts recommendation cards as joins is UNANSWERED — re-ground "
+                         "`_GROUP_DIRECTORY_JS`'s heading walk before trusting the enumeration")
+        if findings["enumerated_not_anchored"]:
+            parts.append(f"{len(findings['enumerated_not_anchored'])} enumerated id(s) are on no "
+                         f"anchor the probe read ({_first_few(findings['enumerated_not_anchored'])})")
+    if not group.get("group_id"):
+        parts.append("no group to probe — pass a group id")
+    elif not str(group.get("page_text") or "").strip():
+        parts.append("the group page did not render — re-run")
+    elif group.get("membership") == "unknown":
+        parts.append("the group page rendered but its header carried no join/leave control — "
+                     "membership is unreadable, so a membership check would have nothing to key on "
+                     "and must change nothing; re-ground from `header_controls`")
+    elif group.get("membership_signal") == "share_box":
+        parts.append("the group header carried NO membership control — `member` comes only from the "
+                     f"share box resolving, next to {group.get('header_controls') or []}; a fix must "
+                     "read presence-of-share-box + absence-of-Join, not a Leave button")
+    else:
+        parts.append(f"the group header reads `{group.get('membership')}` from "
+                     f"`{group.get('membership_signal')}` in {group.get('header_controls') or []}")
+    if group.get("group_id") and reading.get("target_source") == "directory":
+        parts.append("that group came from the live directory, NOT from the DB — its membership is "
+                     "not the #1052 symptom whatever it says")
+    if not reading.get("enabled_ids_readable", True):
+        parts.append("the enabled-group list could not be read from the DB, so nothing here says "
+                     "which groups production actually comments in")
+    elif stale and stale_set_grounded(reading):
+        parts.append(f"{len(stale)} group(s) enabled in the DB were not enumerated live "
+                     f"({_first_few(stale)}) — the #1052 symptom")
+    elif stale:
+        parts.append(f"the {len(stale)} enabled group(s) the directory did not list "
+                     f"({_first_few(stale)}) are UNVERIFIABLE, not stale — the enumeration this set "
+                     f"is differenced against saw nothing")
+    return "; ".join(parts)
+
+
+def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = None,
+                           enabled_ids: Optional[list] = None,
+                           enumerate_groups: Optional[Callable] = None,
+                           sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#1052: report whether LinkedIn will tell us that a user has LEFT a group we still comment in.
+
+    Two reads, because the bug has two halves. The directory read runs the SHIPPED
+    `_enumerate_joined_groups` against `/groups/` and puts its output next to the page's own anchors
+    and section headings — that is what says whether the weekly sync can see a membership ending, or
+    is picking up recommendation cards as joins. The group read opens ONE group the DB has enabled
+    and reports what its header says about us.
+
+    STRICTLY read-only: it navigates and reads. No control is clicked, so nothing is joined, left or
+    posted, and no stored membership is changed."""
+    if enumerate_groups is None:
+        from cqc_lem.app.run_automation import _enumerate_joined_groups as enumerate_groups
+    # An unreadable DB list is not an empty one: it makes `stored_not_live` empty, which is the exact
+    # shape of "nothing is stale". Say which happened.
+    enabled_ids_readable = True
+    enabled_ids_error = ""
+    if enabled_ids is None:
+        try:
+            from cqc_lem.utilities.db import get_enabled_group_ids
+            enabled_ids = [str(g) for g in (get_enabled_group_ids(user_id) or [])]
+        except Exception as e:
+            enabled_ids, enabled_ids_readable = [], False
+            enabled_ids_error = f"{type(e).__name__}: {e}"[:200]
+    enabled_ids = [str(g) for g in (enabled_ids or [])]
+
+    enumerated = [(str(gid), name) for gid, name in (enumerate_groups(driver) or [])]
+    directory = driver.execute_script(_GROUP_DIRECTORY_JS) or {}
+    directory = {"url": "https://www.linkedin.com/groups/",
+                 "page_text": page_text_sample(driver),
+                 "enumerated": [list(row) for row in enumerated],
+                 "headings": list(directory.get("headings") or []),
+                 "anchors": list(directory.get("anchors") or []),
+                 "anchor_total": directory.get("anchor_total")}
+    directory.update(group_enumeration_findings(directory))
+
+    live_ids = {gid for gid, _ in enumerated}
+    reading = {"user_id": user_id,
+               "enabled_group_ids": enabled_ids,
+               "enabled_ids_readable": enabled_ids_readable,
+               # The reporter's symptom, as a set difference: production comments in these, the
+               # directory does not list them.
+               "stored_not_live": [gid for gid in enabled_ids if gid not in live_ids],
+               "directory": directory}
+    if enabled_ids_error:
+        reading["enabled_ids_error"] = enabled_ids_error
+    reading["stored_not_live_grounded"] = stale_set_grounded(reading)
+
+    target = str(group_id) if group_id else (enabled_ids[0] if enabled_ids
+                                             else (sorted(live_ids)[0] if live_ids else ""))
+    reading["target_source"] = ("argument" if group_id else
+                                "db_enabled" if enabled_ids else
+                                "directory" if live_ids else "none")
+    group_page = {"group_id": target}
+    if target:
+        from cqc_lem.app.run_automation import _GROUP_SHARE_BOX_LOCATORS
+        from cqc_lem.utilities.selenium_util import find_first
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        url = f"https://www.linkedin.com/groups/{target}/"
+        driver.get(url)
+        sleep(6)
+        header = driver.execute_script(_GROUP_HEADER_JS) or {}
+        share_box = find_first(driver, WebDriverWait(driver, 10), _GROUP_SHARE_BOX_LOCATORS,
+                               "Group share box", required=False, warn_on_miss=False, max_try=1,
+                               visible_only=True)
+        group_page.update({
+            "url": getattr(driver, "current_url", url),
+            "page_text": page_text_sample(driver),
+            "group_name": str(header.get("h1") or ""),
+            "header_scope_levels": header.get("levels") or 0,
+            "header_controls": list(header.get("header_controls") or []),
+            "page_controls": list(header.get("all_controls") or []),
+            "share_box_present": share_box is not None,
+        })
+        group_page["join_controls_in_header"] = _control_labels_matching(
+            group_page["header_controls"], _GROUP_JOIN_MARKERS)
+        group_page["join_controls_on_page"] = _control_labels_matching(
+            group_page["page_controls"], _GROUP_JOIN_MARKERS)
+        group_page["membership_signal"] = group_membership_signal(group_page["header_controls"],
+                                                                   group_page["share_box_present"])
+        group_page["membership"] = group_membership_answer(group_page["header_controls"],
+                                                           group_page["share_box_present"])
+    reading["group_page"] = group_page
+    return graded(reading, group_membership_state(reading), group_membership_verdict(reading))
+
+
 # ─────────────────────────── company-page invite modal (#732) ────────────────────────────────
 _CREDITS_TEXT_RE = re.compile(r"credits? available", re.IGNORECASE)
 
@@ -2555,6 +2936,7 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "profile_experiences": lambda: probe_profile_experiences(
             driver, profile_url or _sweep_own_profile(driver, user_id)),
         "catchup_cards": lambda: probe_catchup_cards(driver),
+        "group_membership": lambda: probe_group_membership(driver, user_id),
         "company_invite": lambda: probe_company_invite(driver, user_id),
         "sent_invites": lambda: probe_sent_invites(driver),
         "appreciation_sources": lambda: probe_appreciation_sources(driver, user_id),
@@ -2682,6 +3064,12 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--group-composer", metavar="GROUP_ID",
                         help="open this group's share box and report whether the editor and Post "
                              "button resolve (#932). Types nothing and NEVER clicks Post.")
+    parser.add_argument("--group-membership", metavar="GROUP_ID", nargs="?", const="", default=None,
+                        help="report whether LinkedIn says this user is still IN the groups LEM "
+                             "comments in (#1052): the groups directory as the shipped sync reads "
+                             "it, plus one group page's own join/leave controls. Defaults to the "
+                             "first group enabled in the DB. Read-only: nothing is clicked, no "
+                             "group is joined or left.")
     parser.add_argument("--company-invite", action="store_true",
                         help="open the company page's invite panel and report the credit counter, "
                              "invitee rows and checkboxes the invite lane reads (#732). Ticks no "
@@ -2715,13 +3103,15 @@ def main(argv: Optional[list] = None) -> int:
             or args.roster_follow or args.roster_connect or args.appreciation_sources
             or args.sent_invites or args.profile_views or args.connect_dialog
             or args.profile_scrape or args.profile_experiences or args.catchup_cards
-            or args.group_composer or args.company_invite or args.permalink_comment
+            or args.group_composer or args.group_membership is not None
+            or args.company_invite or args.permalink_comment
             or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --profile-experiences, "
                      "--connect-dialog, --catchup-cards, "
-                     "--group-composer, --company-invite, --reaction-probe, --roster-follow, "
+                     "--group-composer, --group-membership, --company-invite, --reaction-probe, "
+                     "--roster-follow, "
                      "--roster-connect, --appreciation-sources, --sent-invites, "
                      "--permalink-comment and/or "
                      "--probe-composer")
@@ -2778,6 +3168,9 @@ def main(argv: Optional[list] = None) -> int:
             report["catchup_cards"] = probe_catchup_cards(driver)
         if args.group_composer:
             report["group_composer"] = probe_group_composer(driver, args.group_composer)
+        if args.group_membership is not None:
+            report["group_membership"] = probe_group_membership(
+                driver, args.user_id, group_id=args.group_membership or None)
         if args.company_invite:
             report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
         if args.permalink_comment:
