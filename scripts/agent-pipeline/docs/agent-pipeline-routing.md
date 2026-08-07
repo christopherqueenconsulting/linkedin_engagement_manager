@@ -277,6 +277,14 @@ and a comment explains why, rather than cycling forever on whatever keeps killin
   `STALE_CLAIM_MINUTES`. To force it now: `STALE_CLAIM_MINUTES=1 /home/lem/agent-pipeline/tick.sh`.
   If an issue keeps coming back, look for `REAPER: … parking for a human` and read the failing run
   in `logs/`.
+- **A green PR never merges (and the log keeps saying "Merging")** → `main` merges through a GitHub
+  merge queue, so `gh pr merge --auto` only *enqueues*, and it exits 0 even when the PR holds a
+  queue entry GitHub already evicted (#1082 — #1067 sat 47h that way). The lane now reads the state
+  back: look for `MERGE: PR #N is WAITING IN THE MERGE QUEUE` (fine) vs
+  `NEITHER merged NOR in the merge queue (stall k/N)` (stuck). After `MERGE_STALE_TICKS` (default 3)
+  it clears the dangling entry with `--disable-auto` and re-enqueues; to force that now, run one
+  tick with `MERGE_STALE_TICKS=0`. The "merging" comment is keyed on the head SHA in
+  `state/mergecomment-<pr>.sha`, so a stuck PR can never accumulate more than one per push.
 - **Ollama lane never used** → check `state/ollama.state` (including `alias_ok` / `alias_ok_ts`),
   the gauge, and `OLLAMA_LANE_ENABLED`.
   `OLLAMA_PROBE=1` adds a real completion probe (more accurate). Pin `OLLAMA_CAPACITY_PCT=80` to

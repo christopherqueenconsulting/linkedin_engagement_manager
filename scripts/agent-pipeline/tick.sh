@@ -39,6 +39,8 @@ DRY_RUN="${DRY_RUN:-0}"
 #   USAGE_PAUSE_MINUTES how long to self-pause when a run hits a usage/rate limit
 #   PHASE_GUARD        1 (default) = hold a merge that would close an issue with a declared,
 #                      untracked later phase; 0 = off (see "Phase guard" below)
+#   MERGE_STALE_TICKS  consecutive ticks a requested merge may sit with no live merge-queue entry
+#                      before the lane clears the dangling state and re-enqueues (default 3)
 [ -f "$BASE/config.env" ] && . "$BASE/config.env"
 MAX_AGENTS="${MAX_AGENTS:-3}"
 SCALE_PER_ISSUES="${SCALE_PER_ISSUES:-10}"
@@ -650,6 +652,121 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
   return 1
 }
 
+# ---- MERGE EXECUTION: verify the OUTCOME, never the exit code (#1082) --------------------------
+# `main` merges through a GitHub **merge queue**, so `gh pr merge --auto` means ENQUEUE — and it
+# exits 0 for three very different outcomes: the PR entered the queue, the PR was already in it, or
+# the PR holds a queue entry GitHub already evicted. Only the third is a deadlock, and it is silent:
+# #1067 sat green-and-unmerged for 47h while every tick logged "Merging." and posted the same
+# comment (561 of them), starving the single concurrency slot. The exit code proved nothing.
+#
+# So: ask for the merge, then read the STATE back. Merged or a live queue entry is progress;
+# anything else is a stall, counted per PR, and after MERGE_STALE_TICKS the dangling entry is
+# cleared (`--disable-auto`) and a fresh one requested — the manual recovery that worked, automated.
+# The "merging" comment is keyed on the HEAD SHA, so one merge attempt can only ever produce one.
+MERGE_STALE_TICKS="${MERGE_STALE_TICKS:-3}"     # consecutive stalled ticks before forcing a re-enqueue
+MERGE_VERIFY_TRIES="${MERGE_VERIFY_TRIES:-5}"   # state reads after asking for the merge
+MERGE_VERIFY_SLEEP="${MERGE_VERIFY_SLEEP:-5}"   # seconds between them
+
+classify_merge_state() {  # $1=PR state $2=merge-queue entry state $3=auto-merge armed (1/0)
+  case "$1" in
+    MERGED) echo merged; return 0 ;;
+    CLOSED) echo closed; return 0 ;;
+  esac
+  [ -n "$2" ] && { echo queued; return 0; }     # a live queue entry is the only proof of enqueue
+  [ "$3" = "1" ] && { echo armed; return 0; }   # auto-merge set but no entry — progress, unproven
+  echo unqueued                                 # unreadable state reads as NOT merged, never as merged
+}
+
+merge_queue_entry_state() {  # $1=pr -> the queue entry's state, empty when there is no live entry
+  gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){
+    pullRequest(number:$p){mergeQueueEntry{state}}}}' \
+    -f o="$OWNER" -f n="$NAME" -F p="$1" \
+    --jq '.data.repository.pullRequest.mergeQueueEntry.state // ""' 2>/dev/null
+}
+
+# Stall budget: ONE counter per PR, bumped on every tick whose merge request left the PR neither
+# merged nor queued, cleared the moment either becomes true.
+merge_stall_count() {  # $1=pr -> consecutive stalled ticks (0 when unset/garbage)
+  local c; c="$(cat "$BASE/state/mergestall-$1.count" 2>/dev/null || echo 0)"
+  case "$c" in ''|*[!0-9]*) c=0 ;; esac
+  echo "$c"
+}
+merge_stall_bump()  { echo "$(( $(merge_stall_count "$1") + 1 ))" > "$BASE/state/mergestall-$1.count"; }
+merge_stall_clear() { rm -f "$BASE/state/mergestall-$1.count"; }
+
+merge_comment_once() {  # $1=pr $2=head sha $3=body -> 0 when it commented, 1 when already said
+  local P="$1" sha="$2" body="$3" f="$BASE/state/mergecomment-$1.sha"
+  [ "$(cat "$f" 2>/dev/null)" = "$sha" ] && return 1
+  printf '%s\n' "$sha" > "$f"
+  [ "$DRY_RUN" = "1" ] || gh pr comment "$P" --repo "$SLUG" --body "$body" >/dev/null 2>&1
+  return 0
+}
+
+merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely queued
+  local P="$1" BODY="$2" URL SHA PST QST CLS tries stall
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would merge PR #$P."; return 0; fi
+  URL="$(gh pr view "$P" --repo "$SLUG" --json url --jq .url 2>/dev/null)"
+  SHA="$(gh pr view "$P" --repo "$SLUG" --json headRefOid --jq .headRefOid 2>/dev/null)"
+  # An unreadable head still needs a stable comment key, or "once per attempt" becomes "every tick".
+  [ -z "$SHA" ] && SHA="unknown"
+
+  stall="$(merge_stall_count "$P")"
+  if [ "$stall" -ge "$MERGE_STALE_TICKS" ]; then
+    log "MERGE: PR #$P — stalled for $stall consecutive tick(s) with no live merge-queue entry; clearing the dangling auto-merge/queue state (--disable-auto) before re-enqueueing."
+    gh pr merge "$P" --repo "$SLUG" --disable-auto >/dev/null 2>&1
+    merge_stall_clear "$P"
+  fi
+
+  gh pr merge --auto "${URL:-$P}" >/dev/null 2>&1
+
+  tries=0
+  while : ; do
+    PST="$(gh pr view "$P" --repo "$SLUG" --json state,autoMergeRequest \
+             --jq '.state + "|" + (if .autoMergeRequest then "1" else "0" end)' 2>/dev/null)"
+    QST="$(merge_queue_entry_state "$P")"
+    CLS="$(classify_merge_state "${PST%%|*}" "$QST" "${PST##*|}")"
+    # `armed` is deliberately NOT terminal: an entry usually appears a beat after the request, and
+    # settling on `armed` early would count a healthy enqueue as a stall.
+    case "$CLS" in merged|closed|queued) break ;; esac
+    tries=$(( tries + 1 ))
+    [ "$tries" -ge "$MERGE_VERIFY_TRIES" ] && break
+    sleep "$MERGE_VERIFY_SLEEP"
+  done
+
+  case "$CLS" in
+    merged)
+      merge_stall_clear "$P"
+      log "MERGE: PR #$P is MERGED."
+      merge_comment_once "$P" "$SHA" "$BODY"
+      return 0 ;;
+    queued)
+      merge_stall_clear "$P"
+      log "MERGE: PR #$P is WAITING IN THE MERGE QUEUE (entry: ${QST:-unknown}) — the queue owns it now, no further action this tick."
+      merge_comment_once "$P" "$SHA" "$BODY"
+      return 0 ;;
+    armed)
+      # Auto-merge is set but nothing is queued yet. Normal for a few seconds — and also exactly
+      # what a dangling entry looks like — so it counts toward the stall budget either way.
+      merge_stall_bump "$P"
+      log "MERGE: PR #$P — merge REQUESTED (auto-merge armed), but no merge-queue entry yet (stall $(merge_stall_count "$P")/$MERGE_STALE_TICKS)."
+      merge_comment_once "$P" "$SHA" "$BODY"
+      return 0 ;;
+    closed)
+      merge_stall_clear "$P"
+      log "MERGE: PR #$P is CLOSED without merging — not re-requesting."
+      TICK_OUTCOME="skipped"; TICK_REASON="merge_pr_closed"
+      return 1 ;;
+    *)
+      # The #1082 state. Report it as a FAILED tick, not a dispatched one: "why nobody noticed" was
+      # half the incident, and a tick that asked for a merge and got nothing has not advanced.
+      merge_stall_bump "$P"
+      log "MERGE: PR #$P — merge requested but the PR is NEITHER merged NOR in the merge queue (stall $(merge_stall_count "$P")/$MERGE_STALE_TICKS); forcing a re-enqueue once the budget is reached."
+      TICK_OUTCOME="failed"; TICK_REASON="merge_not_taken"
+      return 1 ;;
+  esac
+}
+# ---- end merge execution ----------------------------------------------------------------------
+
 add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   local branch="$1" base="$2" wt="$WORKROOT/$1"
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
@@ -938,8 +1055,7 @@ for MPR in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
   log "MERGE-READY FAST PATH: PR #$MPR fully passes the gate — merging ahead of revise/fix work."
   TICK_OUTCOME="dispatched"; TICK_REASON="mode_merge_fastpath"; TICK_MODE="merge"; TICK_PR="$MPR"
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would fast-path merge #$MPR."; exit 0; fi
-  gh pr merge --auto "$(gh pr view "$MPR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
-    && gh pr comment "$MPR" --repo "$SLUG" --body "✅ CI green, review satisfied & all threads resolved — merging (fast path)." >/dev/null 2>&1
+  merge_pr "$MPR" "✅ CI green, review satisfied & all threads resolved — merging (fast path)."
   exit 0
 done
 
@@ -1142,10 +1258,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
         merge)
           phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; exit 0; }
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=merge — merging with warning."
-          if [ "$DRY_RUN" != "1" ]; then
-            gh pr merge --auto "$(gh pr view "$PR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
-              && gh pr comment "$PR" --repo "$SLUG" --body "⚠️ Merging with CI green but WITHOUT a review — Copilot never delivered and REVIEW_FALLBACK=merge." >/dev/null 2>&1
-          fi
+          merge_pr "$PR" "⚠️ Merging with CI green but WITHOUT a review — Copilot never delivered and REVIEW_FALLBACK=merge."
           exit 0 ;;
       esac
       # REVIEW_FALLBACK=claude falls through to the adversarial review below.
@@ -1169,12 +1282,9 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   # 5) Green + fresh review (Copilot or Claude marker) + all threads resolved -> merge.
   # Same last gate as the fast path: never close an issue that still declares a declared later phase.
   phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"; exit 0; }
-  log "PR #$PR — merge gate satisfied. Merging."
+  log "PR #$PR — merge gate satisfied. Requesting merge."
   TICK_OUTCOME="dispatched"; TICK_REASON="mode_merge"; TICK_MODE="merge"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
-  if [ "$DRY_RUN" != "1" ]; then
-    gh pr merge --auto "$(gh pr view "$PR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
-      && gh pr comment "$PR" --repo "$SLUG" --body "✅ CI green, review satisfied & all threads resolved — merging." >/dev/null 2>&1
-  fi
+  merge_pr "$PR" "✅ CI green, review satisfied & all threads resolved — merging."
   exit 0
 done
 
