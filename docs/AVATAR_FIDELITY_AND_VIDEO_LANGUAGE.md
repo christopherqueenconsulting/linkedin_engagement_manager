@@ -156,12 +156,12 @@ wrong-gender avatar can be caught before publication.
 **Language source of truth.** The codebase has no user language field. The nearest existing signal is
 `geocoding._locale_for(country_code)` surfaced through `db.get_user_geo(user_id)` (used today to make
 the browser locale match the proxy IP). That is a reasonable *default* but is location-derived, not a
-stated preference — a US-based user whose content is in Spanish would be mis-served. Phase 2 should
-add an explicit setting defaulted from that locale.
+stated preference — a US-based user whose content is in Spanish would be mis-served. *(Shipped —
+§4 item 1 added `users.content_language`, defaulted from that locale and overridable in the SPA.)*
 
 ---
 
-## 4. Proposed Phase 2 implementation plan
+## 4. Phase 2 implementation — all four items as built
 
 Ordered by risk-reduction per unit of work. Items 1–2 are the reported production defects.
 
