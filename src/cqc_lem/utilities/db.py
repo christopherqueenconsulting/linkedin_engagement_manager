@@ -5190,6 +5190,16 @@ CATCHUP_TOUCHES_MAX_STANDARD = 5
 CATCHUP_TOUCHES_MAX_PREMIUM = 10
 # Absolute ceiling accepted at the API boundary — the per-user allowance is applied on top of it.
 CATCHUP_TOUCHES_MAX = CATCHUP_TOUCHES_MAX_PREMIUM
+# Per-contact cooldown across ALL catch-up event types (issue #1078). A new congratulations to the
+# same person is held until at least this many days have passed since the last one.
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT = 7
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN = 0
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX = 365
+# Per-contact rolling cap in the same window (issue #1078). At most this many catch-up messages may
+# be sent to the same person within `min_catchup_contact_interval_days`. 0 means no cap.
+CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT = 2
+CATCHUP_MAX_PER_CONTACT_DAYS_MIN = 0
+CATCHUP_MAX_PER_CONTACT_DAYS_MAX = 365
 # Paid plans that unlock the premium catch-up allowance (see stripe_util.TIER_PRICE_MAP).
 PREMIUM_SUBSCRIPTION_TIERS = ("professional", "enterprise")
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trial")
@@ -5299,6 +5309,12 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "max_catchup_touches_per_day": CATCHUP_TOUCHES_MAX_STANDARD, "catchup_touch_mode": "pre_review",
     "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
     "catchup_message_source": "linkedin",
+    # Per-contact catch-up frequency guard (issue #1078). A new congratulations to the same person is
+    # held until `min_catchup_contact_interval_days` have passed since the last one, and at most
+    # `max_catchup_touches_per_contact_days` may land in that window. Both default to small, safe
+    # values that rarely block normal usage but stop a burst across multiple milestone types.
+    "min_catchup_contact_interval_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+    "max_catchup_touches_per_contact_days": CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
     "posts_per_week": DEFAULT_POSTS_PER_WEEK,
     "posting_days": list(DEFAULT_POSTING_DAYS),
     # AI image on generated TEXT posts (image-generation overhaul). ON by default — a bare text
@@ -5334,7 +5350,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
-                    "catchup_message_source", "posts_per_week", "posting_days",
+                    "catchup_message_source", "min_catchup_contact_interval_days",
+                    "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect")
 
@@ -5563,6 +5580,24 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     # Drop unknown milestone types before they hit the ENUM-validated ledger.
     merged["catchup_event_types"] = [t for t in (merged.get("catchup_event_types") or [])
                                      if t in tuple(CatchupEventType)]
+    # Per-contact catch-up frequency guard (issue #1078). 0 disables the guard; otherwise clamp to
+    # a sensible band so a malformed value can't lock the lane for a year or make it negative.
+    _interval = merged.get("min_catchup_contact_interval_days")
+    try:
+        merged["min_catchup_contact_interval_days"] = (
+            min(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+                max(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN, int(_interval)))
+            if _interval is not None else CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        merged["min_catchup_contact_interval_days"] = CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+    _per_contact = merged.get("max_catchup_touches_per_contact_days")
+    try:
+        merged["max_catchup_touches_per_contact_days"] = (
+            min(CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+                max(CATCHUP_MAX_PER_CONTACT_DAYS_MIN, int(_per_contact)))
+            if _per_contact is not None else CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_catchup_touches_per_contact_days"] = CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
 
     def _val(col):
         v = merged[col]
@@ -7253,13 +7288,19 @@ def count_catchup_touches_sent_today(user_id: int) -> int:
 def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> bool:
     """Move a catch-up touch's status.
 
-    True whenever the UPDATE ran, matched or not.
+    When the new status is `sent`, `last_sent_at` is stamped as well so the per-contact cooldown
+    guard can see real delivery history. True whenever the UPDATE ran, matched or not.
     """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE catchup_touches SET status = %s WHERE id = %s",
-                       (str(status), touch_id))
+        if str(status) == str(CatchupTouchStatus.SENT):
+            cursor.execute(
+                "UPDATE catchup_touches SET status = %s, last_sent_at = NOW() WHERE id = %s",
+                (str(status), touch_id))
+        else:
+            cursor.execute("UPDATE catchup_touches SET status = %s WHERE id = %s",
+                           (str(status), touch_id))
         connection.commit()
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:
@@ -7274,8 +7315,9 @@ def update_catchup_touch(touch_id: int, message: str = None, person_name: str = 
                          status: "CatchupTouchStatus" = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
 
-    Omitted arguments are left alone rather than nulled. True means the UPDATE ran, not that a row
-    matched.
+    Omitted arguments are left alone rather than nulled. An explicit `status='sent'` also stamps
+    `last_sent_at` so the per-contact cooldown sees the real delivery time. True means the UPDATE ran,
+    not that a row matched.
     """
     fields, params = [], []
     for col, val in (("message", message), ("person_name", person_name)):
@@ -7285,6 +7327,8 @@ def update_catchup_touch(touch_id: int, message: str = None, person_name: str = 
     if status is not None:
         fields.append("status = %s")
         params.append(str(status))
+        if str(status) == str(CatchupTouchStatus.SENT):
+            fields.append("last_sent_at = NOW()")
     if not fields:
         return False
     params.append(touch_id)
@@ -7297,6 +7341,53 @@ def update_catchup_touch(touch_id: int, message: str = None, person_name: str = 
     except mysql.connector.Error as err:
         myprint(f"Could not update catchup touch {touch_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def last_catchup_sent_at(user_id: int, profile_url: str) -> Optional[datetime]:
+    """The most recent `last_sent_at` for this contact, or None when no catch-up has been sent.
+
+    Returns None on DB error so a broken read can't block the lane.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT MAX(last_sent_at) FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
+            "AND status = 'sent'", (user_id, profile_url))
+        r = cursor.fetchone()
+        return r[0] if r and r[0] else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not read last catch-up sent at for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_catchup_touches_for_contact_in_window(user_id: int, profile_url: str,
+                                                days: int) -> int:
+    """How many catch-up DMs this user has sent to this contact in the last `days` days.
+
+    A non-positive `days` returns 0; a DB error returns 0 so it never caps by itself.
+    """
+    days = max(0, int(days or 0))
+    if days <= 0:
+        return 0
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
+            "AND status = 'sent' AND last_sent_at >= DATE_SUB(NOW(), INTERVAL %s DAY)",
+            (user_id, profile_url, days))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count catch-up touches for contact (user_id {user_id}) | Error: {err}")
+        return 0
     finally:
         cursor.close()
         connection.close()
@@ -9912,6 +10003,58 @@ def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
         return cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not claim appreciation touch for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_existing_double_sent_catchups() -> int:
+    """Count how many (user, profile_url, event_type, event_period) milestone buckets have more than
+    one `sent` row in `catchup_touches`. Used once at deploy time to report the historical duplicate-
+    send surface to the issue (issue #1078).
+
+    Returns 0 when nothing is double-sent or the read fails.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT user_id, profile_url, event_type, event_period "
+            "FROM catchup_touches WHERE status = 'sent' "
+            "GROUP BY user_id, profile_url, event_type, event_period HAVING COUNT(*) > 1"
+            ") dupes")
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count existing double-sent catch-ups | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def claim_catchup_send_attempt(touch_id: int, user_id: int, profile_url: str,
+                             event_type: "CatchupEventType", event_period: str) -> bool:
+    """Claim the right to send ONE catch-up DM for this milestone (issue #1078).
+
+    True only when THIS call inserted the `catchup_send_attempts` row. The unique key is on the
+    milestone identity (user, profile_url, event_type, event_period), so a retry, a worker restart,
+    or a lost status update can never produce a second send. A failed claim means either the touch was
+    already sent or the ledger is unreadable — either way, do not send.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO catchup_send_attempts (touch_id, user_id, profile_url, event_type, "
+            "event_period) VALUES (%s,%s,%s,%s,%s)",
+            (touch_id, user_id, profile_url, str(event_type), event_period))
+        connection.commit()
+        return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not claim catch-up send attempt for touch_id {touch_id} | Error: {err}")
         return False
     finally:
         cursor.close()

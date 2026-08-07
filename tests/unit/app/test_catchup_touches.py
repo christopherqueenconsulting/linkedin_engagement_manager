@@ -2,6 +2,7 @@
 approval gating, the capped send drip and the reply->funnel routing.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -570,13 +571,17 @@ class TestSendCatchupTouch:
             "send": patch(f"{_RA}.send_dm_now", return_value=sent),
             "upd": patch(f"{_RA}.update_catchup_touch_status"),
             "enq": patch(f"{_RA}._schedule_catchup_followup"),
+            "claim": patch(f"{_RA}.claim_catchup_send_attempt", return_value=True),
+            "last": patch(f"{_RA}.last_catchup_sent_at", return_value=None),
+            "window": patch(f"{_RA}.count_catchup_touches_for_contact_in_window", return_value=0),
         }
 
     def test_sends_and_marks_sent(self):
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch())
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"] as enq:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"] as upd, p["enq"] as enq:
             out = send_catchup_touch.run(touch_id=3)
         # The stored name rides along so the send path can seed the messaging-search fallback.
         send.assert_called_once_with(1, "https://www.linkedin.com/in/jane", "Congrats Jane!",
@@ -589,7 +594,8 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), sent=False)
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"], p["upd"] as upd, p["enq"] as enq:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"], p["upd"] as upd, p["enq"] as enq:
             out = send_catchup_touch.run(touch_id=3)
         upd.assert_called_once_with(3, CatchupTouchStatus.FAILED)
         enq.assert_not_called()
@@ -599,7 +605,8 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), catchup_today=5)
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
@@ -609,7 +616,8 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), dms_today=20)
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
@@ -620,7 +628,7 @@ class TestSendCatchupTouch:
         from cqc_lem.utilities.db import CatchupTouchStatus
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         p = self._patches(self._touch())
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], \
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
              patch(f"{_RA}.send_dm_now", side_effect=LinkedInRateLimited("429")), \
              p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
@@ -630,7 +638,8 @@ class TestSendCatchupTouch:
     def test_unapproved_touch_is_never_sent(self):
         from cqc_lem.app.run_automation import send_catchup_touch
         p = self._patches(self._touch(status="pending"))
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"], p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         assert "not sendable" in out
@@ -638,7 +647,8 @@ class TestSendCatchupTouch:
     def test_missing_touch_is_handled(self):
         from cqc_lem.app.run_automation import send_catchup_touch
         p = self._patches(None)
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"], p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         assert "missing" in out
@@ -649,7 +659,8 @@ class TestSendCatchupTouch:
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), catchup_today=5, allowance=5,
                           prefs=_prefs(max_catchup_touches_per_day=10))
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
@@ -659,7 +670,8 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         p = self._patches(self._touch(), catchup_today=5, allowance=10,
                           prefs=_prefs(max_catchup_touches_per_day=10))
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_called_once()
         assert "sent" in out
@@ -668,11 +680,53 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(message="   "))
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.SKIPPED)
         assert "no message" in out
+
+    def test_contact_cooldown_defers_back_to_approved(self):
+        from cqc_lem.app.run_automation import send_catchup_touch
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        p = self._patches(self._touch(), prefs=_prefs(min_catchup_contact_interval_days=7))
+        with patch(f"{_RA}.last_catchup_sent_at",
+                   return_value=datetime.now(timezone.utc) - timedelta(days=1)):
+            with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+                 p["send"] as send, p["upd"] as upd, p["enq"]:
+                out = send_catchup_touch.run(touch_id=3)
+        send.assert_not_called()
+        upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
+        assert "per-contact cooldown" in out
+
+    def test_contact_cap_defers_back_to_approved(self):
+        from cqc_lem.app.run_automation import send_catchup_touch
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        p = self._patches(self._touch(), prefs=_prefs(min_catchup_contact_interval_days=7,
+                                                       max_catchup_touches_per_contact_days=2))
+        with patch(f"{_RA}.last_catchup_sent_at", return_value=None), \
+             patch(f"{_RA}.count_catchup_touches_for_contact_in_window", return_value=2):
+            with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+                 p["send"] as send, p["upd"] as upd, p["enq"]:
+                out = send_catchup_touch.run(touch_id=3)
+        send.assert_not_called()
+        upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
+        assert "per-contact cap" in out
+
+    def test_durable_claim_prevents_duplicate_send(self):
+        from cqc_lem.app.run_automation import send_catchup_touch
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        p = self._patches(self._touch())
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], \
+             patch(f"{_RA}.claim_catchup_send_attempt", return_value=False) as claim, \
+             p["send"] as send, p["upd"] as upd, p["enq"]:
+            out = send_catchup_touch.run(touch_id=3)
+        send.assert_not_called()
+        upd.assert_called_once_with(3, CatchupTouchStatus.SENT)
+        claim.assert_called_once_with(3, 1, "https://www.linkedin.com/in/jane", "job_change",
+                                      "2026-08")
+        assert "already sent" in out
 
 
 class TestScheduleCatchupFollowup:
@@ -1150,8 +1204,8 @@ class TestCatchupDeliveryReport:
         for key, value in overrides.items():
             if key not in ("sent", "catchup_today", "dms_today"):
                 p[key] = value
-        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"], p["upd"], p["enq"], \
-             patch(f"{_RA}.track_catchup_run") as track:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
+             p["send"], p["upd"], p["enq"], patch(f"{_RA}.track_catchup_run") as track:
             send_catchup_touch.run(touch_id=3)
         track.assert_called_once()
         return track.call_args.args[1]

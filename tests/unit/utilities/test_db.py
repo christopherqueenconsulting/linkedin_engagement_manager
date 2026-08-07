@@ -1293,3 +1293,158 @@ class TestGetOrphanedScheduledPosts:
             result = get_orphaned_scheduled_posts()
 
         assert result == []
+
+
+@pytest.mark.unit
+class TestCatchupContactFrequency:
+    """Per-contact cooldown/cap reads and the durable send claim (issue #1078)."""
+
+    def test_last_catchup_sent_at_reads_max_timestamp(self, mock_database_connection):
+        from cqc_lem.utilities.db import last_catchup_sent_at
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            sent = datetime(2026, 8, 7, 12, 0, 0)
+            mock_database_connection["cursor"].fetchone.return_value = (sent,)
+            result = last_catchup_sent_at(1, "https://www.linkedin.com/in/jane")
+        assert result == sent
+
+    def test_last_catchup_sent_at_returns_none_when_no_history(self, mock_database_connection):
+        from cqc_lem.utilities.db import last_catchup_sent_at
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (None,)
+            assert last_catchup_sent_at(1, "https://www.linkedin.com/in/jane") is None
+
+    def test_last_catchup_sent_at_returns_none_on_db_error(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import last_catchup_sent_at
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+            assert last_catchup_sent_at(1, "https://www.linkedin.com/in/jane") is None
+
+    def test_count_catchup_touches_for_contact_in_window_counts_sent_rows(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_catchup_touches_for_contact_in_window
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (3,)
+            result = count_catchup_touches_for_contact_in_window(1, "https://www.linkedin.com/in/jane", 7)
+        assert result == 3
+
+    def test_count_catchup_touches_zero_when_days_non_positive(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_catchup_touches_for_contact_in_window
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            result = count_catchup_touches_for_contact_in_window(1, "https://www.linkedin.com/in/jane", 0)
+        assert result == 0
+        mock_database_connection["cursor"].execute.assert_not_called()
+
+    def test_count_catchup_touches_zero_on_db_error(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import count_catchup_touches_for_contact_in_window
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+            result = count_catchup_touches_for_contact_in_window(1, "https://www.linkedin.com/in/jane", 7)
+        assert result == 0
+
+    def test_claim_catchup_send_attempt_true_on_insert(self, mock_database_connection):
+        from cqc_lem.utilities.db import claim_catchup_send_attempt
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert claim_catchup_send_attempt(3, 1, "https://www.linkedin.com/in/jane", "job_change", "2026-08") is True
+
+    def test_claim_catchup_send_attempt_false_on_duplicate(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import claim_catchup_send_attempt
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.IntegrityError("dup")
+            assert claim_catchup_send_attempt(3, 1, "https://www.linkedin.com/in/jane", "job_change", "2026-08") is False
+
+    def test_count_existing_double_sent_catchups_counts_buckets(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_existing_double_sent_catchups
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (42,)
+            assert count_existing_double_sent_catchups() == 42
+
+
+@pytest.mark.unit
+class TestEngagementPreferencesDefaults1078:
+    """Issue #1078: per-contact catch-up frequency defaults and validation."""
+
+    def _row(self, **overrides):
+        base = {col: None for col in (
+            "tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
+            "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
+            "include_authors", "exclude_authors", "post_types", "focus_topics",
+            "business_goals", "personal_goals", "authenticity_score_min",
+            "post_similarity_max_pct", "min_reactions", "max_post_age_hours",
+            "reply_to_own_comments", "max_comments_per_day", "max_dms_per_day",
+            "max_invites_per_day", "max_company_page_invites_per_day",
+            "connection_request_mode", "connection_targeting_mode", "connection_target_authors",
+            "min_connection_icp_score", "default_buyer_stage", "default_video_quality",
+            "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
+            "feed_fallback_when_empty", "link_in_first_comment", "max_catchup_touches_per_day",
+            "catchup_touch_mode", "catchup_event_types", "catchup_message_source",
+            "min_catchup_contact_interval_days", "max_catchup_touches_per_contact_days",
+            "posts_per_week", "posting_days", "text_post_images", "roster_auto_follow",
+            "max_follows_per_day", "roster_auto_connect")}
+        base.update(overrides)
+        return base
+
+    def test_defaults_are_applied_when_row_missing(self, mock_database_connection):
+        from cqc_lem.utilities.db import (
+            CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
+            CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+            update_engagement_preferences,
+        )
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            mock_database_connection["cursor"].rowcount = 1
+            update_engagement_preferences(1, {})
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        params = mock_database_connection["cursor"].execute.call_args[0][1]
+        assert "min_catchup_contact_interval_days" in sql
+        assert "max_catchup_touches_per_contact_days" in sql
+        # The two catch-up defaults are the last numeric columns before posts_per_week.
+        assert params[40] == CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+        assert params[41] == CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
+
+    def test_out_of_range_values_are_clamped(self, mock_database_connection):
+        from cqc_lem.utilities.db import (
+            CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+            CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+            update_engagement_preferences,
+        )
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            mock_database_connection["cursor"].rowcount = 1
+            update_engagement_preferences(1, {
+                "min_catchup_contact_interval_days": 9999,
+                "max_catchup_touches_per_contact_days": 9999,
+            })
+        params = mock_database_connection["cursor"].execute.call_args[0][1]
+        assert params[40] == CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX
+        assert params[41] == CATCHUP_MAX_PER_CONTACT_DAYS_MAX
+
+    def test_negative_values_are_clamped_to_zero(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_engagement_preferences
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            mock_database_connection["cursor"].rowcount = 1
+            update_engagement_preferences(1, {
+                "min_catchup_contact_interval_days": -5,
+                "max_catchup_touches_per_contact_days": -1,
+            })
+        params = mock_database_connection["cursor"].execute.call_args[0][1]
+        assert params[40] == 0
+        assert params[41] == 0
