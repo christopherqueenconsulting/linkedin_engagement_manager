@@ -94,6 +94,16 @@ class TestVisibleLines:
 
         assert visible_lines(node) == ["Engineer"]
 
+    def test_an_html_comment_is_never_read_as_visible_text(self):
+        from cqc_lem.utilities.linkedin.scrapper import visible_lines
+
+        # bs4 hands a comment back as a nameless NavigableString, so str() returns its TEXT.
+        # Reading it is the same fault as reading the visually-hidden a11y twin.
+        node = _soup('<div><!-- Jan 1999 - Dec 2001 archived role -->'
+                     '<div>Senior Engineer</div><!DOCTYPE html></div>').find("div")
+
+        assert visible_lines(node) == ["Senior Engineer"]
+
 
 class TestParseExperienceEntity:
     def test_single_role_reads_title_company_dates_details_and_skills(self):
@@ -176,6 +186,28 @@ class TestParseExperienceEntity:
         from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity
 
         assert parse_experience_entity(["Jan 2020 - Present · 5 yrs 2 mos"]) is None
+
+    def test_a_date_range_is_never_emitted_as_a_title(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity
+
+        # The second role carries only a qualifier above its dates, so the walk back for its title
+        # lands on the FIRST role's date line. A blank title is the honest read; the date range
+        # is the confidently-wrong one.
+        parsed = parse_experience_entity(
+            ["Acme Corp", "Senior Engineer", "Jan 2020 - Jan 2022", "Full-time",
+             "Jan 2018 - Jan 2020"], grouped=True)
+
+        titles = [p.get("title", "") for p in parsed["positions"]]
+        assert "Jan 2020 - Jan 2022" not in titles
+        assert titles[0] == "Senior Engineer"
+
+    def test_a_leading_date_range_is_never_read_as_the_company(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity
+
+        parsed = parse_experience_entity(
+            ["Jan 2020 - Jan 2022", "Engineering Manager", "Feb 2018 - Dec 2019"], grouped=True)
+
+        assert parsed["company_name"] == ""
 
 
 class TestParseProfileExperiences:

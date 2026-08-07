@@ -2,7 +2,8 @@ import random
 import re
 from typing import List, Optional
 
-from bs4 import BeautifulSoup, PageElement
+from bs4 import BeautifulSoup, CData, Comment, Declaration, Doctype, PageElement, \
+    ProcessingInstruction
 from cqc_lem.utilities.date import convert_datetime_to_start_of_day
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.logger import log_debug, log_warning, myprint
@@ -359,6 +360,10 @@ _INLINE_TAGS = frozenset({"a", "abbr", "b", "bdi", "bdo", "cite", "code", "data"
                           "font", "i", "ins", "kbd", "label", "mark", "q", "s", "samp", "small",
                           "span", "strong", "sub", "sup", "time", "u", "var"})
 _UNRENDERED_TAGS = frozenset({"head", "noscript", "script", "style", "svg", "template"})
+# Markup with no tag name that a reader never sees. bs4 hands these back as NavigableString
+# subclasses, so `str(child)` returns a comment's TEXT — and LinkedIn's SDUI pages are full of
+# them. Reading one is the same fault as reading the visually-hidden a11y twin.
+_UNRENDERED_STRINGS = (CData, Comment, Declaration, Doctype, ProcessingInstruction)
 # The visible half of the doubled a11y markup is ~50% of the node's text. Decorative
 # `aria-hidden` icons are a rounding error — below this share the attribute is not the
 # doubling and the whole text is the better read.
@@ -412,7 +417,8 @@ def _rendered_lines(node: PageElement) -> List[str]:
         for child in getattr(element, "children", []):
             name = getattr(child, "name", None)
             if name is None:
-                add(str(child))
+                if not isinstance(child, _UNRENDERED_STRINGS):
+                    add(str(child))
                 continue
             name = name.lower()
             if name in _UNRENDERED_TAGS:
@@ -457,8 +463,12 @@ def visible_lines(node: PageElement) -> List[str]:
     return _clean_lines(raw)
 
 
+def _is_date_line(line: str) -> bool:
+    return bool(_DATE_RANGE_RE.match(line))
+
+
 def _has_date_range(lines: List[str]) -> bool:
-    return any(_DATE_RANGE_RE.match(line) for line in lines)
+    return any(_is_date_line(line) for line in lines)
 
 
 def experience_entity_nodes(source) -> tuple:
@@ -611,7 +621,8 @@ def parse_experience_entity(lines: List[str], grouped: bool = False) -> Optional
         positions = [_position(title, lines[date_index], lines[date_index + 1:])]
     else:
         # Grouped company: company first, then one title/date block per role held there.
-        company = _company_from_subtitle(lines[0])
+        # A date range is never a name — if it leads the entity there is no company header here.
+        company = "" if _is_date_line(lines[0]) else _company_from_subtitle(lines[0])
         title_indexes = []
         for k, date_index in enumerate(date_indexes):
             floor = 0 if k == 0 else date_indexes[k - 1]
@@ -620,7 +631,11 @@ def parse_experience_entity(lines: List[str], grouped: bool = False) -> Optional
         for k, date_index in enumerate(date_indexes):
             end = title_indexes[k + 1] if k + 1 < len(title_indexes) else len(lines)
             title_index = title_indexes[k]
-            title = lines[title_index] if title_index > 0 else ""
+            # The walk back stops at the previous role's date line when a role carries nothing but
+            # qualifiers above its own dates. Emitting that line would put "Jan 2020 - Jan 2022"
+            # in the title — a confidently-wrong row, which is the failure #970 exists to kill.
+            title = ("" if title_index <= 0 or _is_date_line(lines[title_index])
+                     else lines[title_index])
             positions.append(_position(title, lines[date_index], lines[date_index + 1:end]))
 
     positions = [p for p in positions if p.get("title") or p["details"] or p["skills"]]
