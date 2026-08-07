@@ -167,8 +167,15 @@ def _degree_from_source(source) -> str:
     below the top card inside it. A badge that names a different entity must never decide THIS
     profile's degree — #1012's rule read backwards — and the top card is the first one in document
     order.
+
+    No <main> means no scope, so it reads NO degree rather than falling back to the whole document:
+    the name still resolves off the <title> there, so a rail badge would have decided the degree of
+    a profile whose own card never rendered. Empty routes to the invite branch, which is the
+    documented fail-open — a wrong '1st' routes to the DM/comment branch, which is not.
     """
-    root = source.find('main') or source
+    root = source.find('main')
+    if root is None:
+        return ""
     for element in root.find_all(['span', 'div', 'li', 'p']):
         if element.find(True) is not None:
             continue

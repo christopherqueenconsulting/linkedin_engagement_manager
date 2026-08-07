@@ -166,6 +166,21 @@ class TestTheBadgeMustBelongToThisProfile:
                                       "https://www.linkedin.com/in/jane-doe")
         assert "connection" not in parsed
 
+    def test_a_page_that_rendered_no_main_reads_no_degree_rather_than_the_rail(self):
+        """The name still resolves off the <title> when the top card never rendered.
+
+        So a whole-document fallback would hand this profile the RAIL's badge — the misroute the
+        <main> scope exists to stop, on the one page shape where it is most likely to happen.
+        """
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
+        html = ('<html><head><title>Jane Doe | LinkedIn</title></head><body>'
+                '<aside><ul><li><a href="/in/bob/">Bob</a><span>1st</span></li></ul></aside>'
+                '</body></html>')
+        parsed = parse_profile_header(BeautifulSoup(html, "html.parser"),
+                                      "https://www.linkedin.com/in/jane-doe")
+        assert parsed["full_name"] == "Jane Doe"
+        assert "connection" not in parsed
+
     def test_a_mutuals_badge_below_the_top_card_never_wins_in_the_parser(self):
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         from cqc_lem.utilities.linkedin.scrapper import parse_profile_header

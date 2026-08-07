@@ -1908,16 +1908,19 @@ def _page_owner_name(driver) -> str:
 _DEGREE_TEXT_RE = re.compile(r"\b(1st|2nd|3rd)\b", re.IGNORECASE)
 
 # Candidate re-grounding anchors: leaf nodes under <main> whose whole text IS a degree badge.
-# The leading separator is optional because the SDUI top card writes the badge as "· 2nd" — and
-# `_DEGREE_LEAF_XPATH` (#1021) matches that form, so an anchor dump that could not report it would
-# be blind to exactly the shape the shipped chain leads with.
+# The dump must be able to report EVERY shape the shipped chain leads with, or a re-grounding run
+# comes back empty on exactly the profile it was pointed at: the separator is optional because the
+# SDUI top card writes the badge as "· 2nd", and the `+` is matched on its own because a 3rd-degree
+# badge renders as the bare token "3rd+" (`_DEGREE_TOKENS`). Keeping `+` inside the `degree` group
+# made a 3rd-degree profile — one of the two this probe is meant to be run against — dump nothing.
+# `tests/unit/test_linkedin_live_validation.py` holds this pattern against `_DEGREE_TOKENS`.
 _DEGREE_ANCHOR_JS = """
 const out = [];
 const root = document.querySelector('main') || document.body;
 for (const el of root.querySelectorAll('span,div,p,li')) {
   if (el.children.length) { continue; }
   const t = (el.textContent || '').trim();
-  if (/^[·•]?\\s*(1st|2nd|3rd)(\\s*\\+?\\s*degree.*)?$/i.test(t)) {
+  if (/^[·•]?\\s*(1st|2nd|3rd)\\s*\\+?(\\s*degree.*)?$/i.test(t)) {
     out.push({tag: el.tagName.toLowerCase(), cls: el.getAttribute('class') || '',
               testid: el.getAttribute('data-testid') || '',
               aria: el.getAttribute('aria-label') || '', text: t});

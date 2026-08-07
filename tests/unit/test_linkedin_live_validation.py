@@ -1089,6 +1089,25 @@ class TestProfileScrapeProbe:
         assert llv.profile_scrape_state(reading) == llv.STATE_DRIFT
         assert "blind" in llv.profile_scrape_verdict(reading)
 
+    def test_the_anchor_dump_reports_every_shape_the_shipped_chain_leads_with(self):
+        """`degree_anchors` is what a re-grounding PR is written from (#1021 → #1031).
+
+        A shape the shipped chain matches but the dump cannot report makes the probe come back
+        empty on exactly the profile it was pointed at — a 3rd-degree badge renders as the bare
+        token "3rd+", and the issue asks for a run against a 2nd/3rd-degree profile.
+        """
+        import re
+
+        from cqc_lem.app.run_automation import _DEGREE_TOKENS
+        pattern = re.search(r"/(\^.*\$)/i\.test", llv._DEGREE_ANCHOR_JS).group(1)
+        badge = re.compile(pattern, re.IGNORECASE)
+        for token in _DEGREE_TOKENS:
+            assert badge.match(token), token
+            assert badge.match(f"· {token}"), token
+            assert badge.match(f"{token} degree connection"), token
+        # Still a WHOLE-badge dump: a headline that merely contains a degree token is not an anchor.
+        assert not badge.match("1st place, 2026 Acme awards")
+
 
 @pytest.mark.unit
 class TestCatchupProbe:
