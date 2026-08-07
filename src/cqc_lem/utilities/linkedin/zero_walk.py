@@ -23,8 +23,10 @@ UNKNOWN = "unknown"
 
 
 def page_native_count(driver, selector: str) -> "int | None":
-    """How many of `selector` the page renders, or None when the read itself failed. None is
-    load-bearing: "we could not ask the page" must never be recorded as "the page said zero"."""
+    """How many of `selector` the page renders, or None when the read itself failed.
+
+    None is load-bearing: "we could not ask the page" must never be recorded as "the page said zero".
+    """
     try:
         return len(driver.find_elements(By.CSS_SELECTOR, selector))
     except WebDriverException:
@@ -36,19 +38,20 @@ def zero_walk_verdict(page_native: "int | None") -> str:
 
     'drift'   — the page renders items the walk could not see. A real defect.
     'empty'   — the page renders none either. An ordinary quiet day, and a no-op.
-    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect."""
+    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect.
+    """
     if page_native is None:
         return UNKNOWN
     return DRIFT if page_native > 0 else EMPTY
 
 
 def grade_zero_walk(page_native: "int | None", what: str, **context) -> str:
-    """Grade a zero-item walk against an already-taken page-native count, and log at the level the
-    answer deserves.
+    """Grade a zero-item walk against an already-taken page-native count, and log at the level the answer deserves.
 
     Drift is a WARNING on purpose — once is a warning, repeatedly is a defect, and repeated selector
     rot is exactly the defect that should file itself. An empty page and an unreadable cross-check
-    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md)."""
+    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md).
+    """
     verdict = zero_walk_verdict(page_native)
     if verdict == DRIFT:
         log_warning(f"{what} matched nothing while the page still renders cards — selector drift",

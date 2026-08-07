@@ -105,7 +105,7 @@ class TestDegreeBadgeIsReadFromWhatThePageWrites:
         assert ra._profile_is_first_degree(driver) is True
 
     def test_a_headline_containing_a_degree_token_is_not_a_badge(self):
-        """`\\b1st\\b` over the page text would fire here forever — the badge is a WHOLE line."""
+        r"""`\b1st\b` over the page text would fire here forever — the badge is a WHOLE line."""
         from cqc_lem.app import run_automation as ra
         html = TOP_CARD_HTML.format(degree="Winner, 1st place in the 2026 Acme awards")
         driver = _DomDriver(html)
@@ -153,8 +153,10 @@ class TestTheBadgeMustBelongToThisProfile:
         assert ra._profile_is_first_degree(driver) is True
 
     def test_the_rail_outside_main_never_reaches_the_profile_header_parser(self):
-        """`parse_profile_header` reads the WHOLE page source, so the "People also viewed" rail is
-        in scope unless the badge read is scoped to <main>."""
+        """`parse_profile_header` reads the WHOLE page source.
+
+        So the "People also viewed" rail is in scope unless the badge read is scoped to <main>.
+        """
         from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
         html = ('<html><head><title>Jane Doe | LinkedIn</title></head><body>'
                 '<main><h1>Jane Doe</h1></main>'
@@ -222,8 +224,11 @@ class TestDegreeBadgeZeroWalk:
 
 
 class TestProfileHeaderDegree:
-    """`parse_profile_header` feeds `LinkedInProfile.connection`, which is what routes every profile
-    viewer down the 1st-vs-other branch — the same dead class anchor, one layer up."""
+    """`parse_profile_header` feeds `LinkedInProfile.connection`.
+
+    That is what routes every profile viewer down the 1st-vs-other branch — the same dead class
+    anchor, one layer up.
+    """
 
     def _parse(self, html):
         from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
@@ -417,8 +422,10 @@ class TestPostStatsZeroWalk:
         rec.assert_called_once()
 
     def test_a_label_with_no_number_beside_it_is_not_a_finding(self):
-        """Button rows ("Like / Comment / Repost") and a label whose value moved away from it both
-        read as `empty` — the fail-safe direction for a tripwire that files defects."""
+        """Button rows ("Like / Comment / Repost") and a label whose value moved away from it.
+
+        Both read as `empty` — the fail-safe direction for a tripwire that files defects.
+        """
         from cqc_lem.app import run_automation as ra
         assert ra._rendered_count_signals("Like\nComment\nRepost\nSend") == 0
         assert ra._rendered_count_signals("Impressions\n\nsome prose\n412") == 0

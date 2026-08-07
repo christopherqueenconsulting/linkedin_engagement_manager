@@ -1170,7 +1170,8 @@ def _rendered_count_signals(text: str) -> int:
     """How many engagement counts the PAGE renders as a non-zero number beside its own label.
 
     Shares the parser's adjacency assumption but not its label map: a layout that moves a value away
-    from its label counts 0 here, which grades `empty` — the fail-safe direction for a tripwire."""
+    from its label counts 0 here, which grades `empty` — the fail-safe direction for a tripwire.
+    """
     lines = [line.strip() for line in (text or "").splitlines()]
     lines = [line for line in lines if line]
     found = 0
@@ -7526,7 +7527,8 @@ def _degree_badge_texts(driver) -> "list[str] | None":
     when the read itself failed. None and [] are different answers: an unreadable page grounds
     nothing, an empty chain on a readable page is the zero worth cross-checking. A matched node with
     no text counts as neither — a locator that resolves to an empty element is as blind as one that
-    resolves to nothing."""
+    resolves to nothing.
+    """
     texts: "list[str]" = []
     try:
         for by, selector in _PROFILE_DEGREE_LOCATORS:
@@ -7550,7 +7552,8 @@ def _profile_is_first_degree(driver) -> bool:
     <main>, and every badge below it — a mutual-connection highlight, a "More profiles for you"
     card — belongs to somebody else. Reading those would abort the invite to a 2nd-degree target
     just because one of their mutuals is a 1st, which is #1012's mistake in a read instead of a
-    click."""
+    click.
+    """
     texts = _degree_badge_texts(driver)
     if texts is None:
         return False
