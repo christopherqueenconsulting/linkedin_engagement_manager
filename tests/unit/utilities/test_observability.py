@@ -1146,6 +1146,25 @@ class TestTrackStaleInviteRun:
         assert props["expansions"] == 3
         assert props["trigger"] == "beat"
 
+    def test_rows_refused_for_naming_the_wrong_person_reach_posthog(self):
+        """#1006: a PARTIAL entity mismatch is the Withdraw label drifting by a row — the #1012
+        hazard. Those rows are dropped before `stale_seen`, so without this property the run reports
+        'nothing old enough' and is indistinguishable from a healthy account."""
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_stale_invite_run
+            track_stale_invite_run(7, {"status": "none_stale", "rows_seen": 20, "stale_seen": 0,
+                                       "entity_mismatch": 8})
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["entity_mismatch"] == 8
+
+    def test_a_report_without_the_counter_reads_zero_not_missing(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_stale_invite_run
+            track_stale_invite_run(7, {"status": "no_rows"})
+
+        assert mock_ph.capture.call_args.kwargs["properties"]["entity_mismatch"] == 0
+
     def test_an_empty_report_still_emits(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
             from cqc_lem.utilities.observability import track_stale_invite_run
