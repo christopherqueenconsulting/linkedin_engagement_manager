@@ -131,6 +131,7 @@ class LinkedInProfile(BaseModel):
     interests: Optional[List[str]] = Field(default_factory=list)
 
     @field_validator('full_name')
+    @classmethod
     def validate_name(cls, value):
         """Reject an empty name, which the bare `str` annotation would accept.
 
@@ -143,6 +144,7 @@ class LinkedInProfile(BaseModel):
         return value
 
     @field_validator('profile_url')
+    @classmethod
     def validate_profile_url(cls, value):
         """Only a `linkedin.com/in/` member URL is accepted; None still passes.
 

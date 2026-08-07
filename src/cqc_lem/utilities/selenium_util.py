@@ -804,6 +804,9 @@ def wait_for_ajax(driver):
         wait.until(lambda d: d.execute_script('return jQuery.active') == 0)
         wait.until(lambda d: d.execute_script('return document.readyState') == 'complete')
     except Exception:
+        # Best-effort settle. A page without jQuery, or one still streaming when the wait expires,
+        # is ordinary — the caller's own locator wait is the real gate, so a miss here must not
+        # become the error it reports.
         pass
 
 
@@ -1012,6 +1015,10 @@ class RetryableWebDriver:
                         delay = self.base_delay * (2 ** attempt)  # exponential backoff
                         time.sleep(delay)
                     continue
+            if last_exception is None:
+                # Reached only when the loop never ran, i.e. max_retries <= 0. `raise None` is a
+                # TypeError that hides the real configuration mistake behind a confusing traceback.
+                raise ValueError(f"max_retries must be >= 1, got {self.max_retries}")
             raise last_exception
 
         return wrapper
