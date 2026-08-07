@@ -65,10 +65,24 @@ def _local_cap() -> int:
     return max(1, _int_env("LOG_ESCALATE_LOCAL_CAP", 200))
 
 
+# Prefixes that never escalate, whatever the environment says. `LOG_ESCALATE_EXCLUDE` ADDS to this
+# tuple instead of replacing it — the first entry breaks the one real feedback loop
+# (capture_exception's own failure handler calls log_warning), and an env override that dropped it
+# would reintroduce that loop silently.
+BUILTIN_EXCLUDED_PREFIXES = (
+    "Could not capture exception in PostHog",
+    # `cost_alerts.send_cost_alerts`' per-breach digest line (`cost_alerts.ALERT_LOG_PREFIX`). A
+    # budget breach is a MEASUREMENT this alerter was asked to report — already delivered as a
+    # `cost_alert` event and an owner email — and it recurs for as many days as the cost does, so
+    # repetition carries no new information. Escalating it filed a code defect (#1071) against
+    # tooling that was working exactly as designed.
+    "Cost alert [",
+)
+
+
 def _excluded_prefixes() -> tuple:
-    # capture_exception's own failure handler calls log_warning; escalating that would be a loop.
-    raw = os.getenv("LOG_ESCALATE_EXCLUDE", "") or "Could not capture exception in PostHog"
-    return tuple(p.strip() for p in raw.split(",") if p.strip())
+    raw = os.getenv("LOG_ESCALATE_EXCLUDE", "") or ""
+    return BUILTIN_EXCLUDED_PREFIXES + tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
 # ── Message normalization ─────────────────────────────────────────────────────

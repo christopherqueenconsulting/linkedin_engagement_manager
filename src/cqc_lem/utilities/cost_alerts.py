@@ -55,6 +55,12 @@ STATUS_SKIPPED = "skipped"
 SEVERITY_WARNING = "warning"
 SEVERITY_CRITICAL = "critical"
 
+# Prefix of the per-breach log line `send_cost_alerts` emits. `log_escalation.
+# BUILTIN_EXCLUDED_PREFIXES` pins this exact string so a breach never escalates into a grouped
+# $exception: a threshold breach is a measurement, not a code fault, and it repeats daily for as
+# long as the spend does (#1071).
+ALERT_LOG_PREFIX = "Cost alert ["
+
 # Trailing days the anomaly baseline is drawn from, and the minimum number of them that must carry
 # ledger rows before μ/σ mean anything.
 ANOMALY_WINDOW_DAYS = 7
@@ -460,7 +466,12 @@ def send_cost_alerts(report: Optional[Mapping] = None,
     actually fired — a daily "all clear" would train the owner to ignore it), one PostHog
     `cost_alert` event per alert, and a structured log line per alert (`log_error` for critical,
     which the logger forwards to PostHog on its own). Delivery failures are logged, never raised, so
-    a beat run isn't lost over an email hiccup."""
+    a beat run isn't lost over an email hiccup.
+
+    The per-alert line is deliberately kept out of recurrence escalation (`ALERT_LOG_PREFIX`): a
+    breach is what this function was asked to REPORT, and it fires again every day the spend stays
+    over the ceiling — filing it as a recurring code defect describes nothing anyone can fix here.
+    A failure to DELIVER an alert is a different thing and still warns normally."""
     from cqc_lem.utilities.email import _dispatch_email
     from cqc_lem.utilities.observability import track_cost_alert
 
@@ -469,7 +480,7 @@ def send_cost_alerts(report: Optional[Mapping] = None,
     day = report.get("date")
 
     for alert in alerts:
-        message = f"Cost alert [{alert.get('check')}]: {alert.get('title')}"
+        message = f"{ALERT_LOG_PREFIX}{alert.get('check')}]: {alert.get('title')}"
         context = {"user_id": alert.get("user_id"), "task_name": "auto_daily_cost_alerts"}
         if alert.get("severity") == SEVERITY_CRITICAL:
             log_error(message, **context)
