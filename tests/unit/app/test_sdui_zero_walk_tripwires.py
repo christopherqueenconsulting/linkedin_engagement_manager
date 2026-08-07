@@ -115,6 +115,65 @@ class TestDegreeBadgeIsReadFromWhatThePageWrites:
         debug.assert_called_once()
 
 
+# A 2nd-degree profile as `<main>` actually renders it: the top card's badge first, then the
+# mutual-connection highlight — which carries SOMEBODY ELSE's `1st`. Reading "any badge under
+# main" makes this profile look already-connected and cancels the invite (#1012's mistake in a
+# read instead of a click).
+MUTUALS_HTML = """
+<html><head><title>Jane Doe | LinkedIn</title></head><body>
+<main>
+  <div class="ph5 pb5"><h1>Jane Doe</h1><span class="GhIjKl">{degree}</span></div>
+  <section>
+    <div><a href="/in/bob-smith/">Bob Smith</a><span>1st</span></div>
+    <p>You both know Bob Smith</p>
+  </section>
+</main></body></html>
+"""
+
+
+class TestTheBadgeMustBelongToThisProfile:
+    """Document order is what attributes a badge to the profile — the top card is first."""
+
+    def test_a_mutual_connections_badge_does_not_cancel_the_invite(self):
+        from cqc_lem.app import run_automation as ra
+        driver = _DomDriver(MUTUALS_HTML.format(degree="· 2nd"))
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()
+
+    def test_the_spelled_out_top_card_badge_still_outranks_a_later_bare_one(self):
+        """Both text shapes are ONE union locator, so document order decides — not list order."""
+        from cqc_lem.app import run_automation as ra
+        driver = _DomDriver(MUTUALS_HTML.format(degree="2nd degree connection"))
+        assert ra._profile_is_first_degree(driver) is False
+
+    def test_a_genuine_first_degree_top_card_is_unaffected(self):
+        from cqc_lem.app import run_automation as ra
+        driver = _DomDriver(MUTUALS_HTML.format(degree="1st"))
+        assert ra._profile_is_first_degree(driver) is True
+
+    def test_the_rail_outside_main_never_reaches_the_profile_header_parser(self):
+        """`parse_profile_header` reads the WHOLE page source, so the "People also viewed" rail is
+        in scope unless the badge read is scoped to <main>."""
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
+        html = ('<html><head><title>Jane Doe | LinkedIn</title></head><body>'
+                '<main><h1>Jane Doe</h1></main>'
+                '<aside><ul><li><a href="/in/bob/">Bob</a><span>1st</span></li></ul></aside>'
+                '</body></html>')
+        parsed = parse_profile_header(BeautifulSoup(html, "html.parser"),
+                                      "https://www.linkedin.com/in/jane-doe")
+        assert "connection" not in parsed
+
+    def test_a_mutuals_badge_below_the_top_card_never_wins_in_the_parser(self):
+        from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
+        parsed = parse_profile_header(
+            BeautifulSoup(MUTUALS_HTML.format(degree="· 2nd"), "html.parser"),
+            "https://www.linkedin.com/in/jane-doe")
+        assert parsed["connection"] == "· 2nd"
+        assert LinkedInProfile(**parsed).is_1st_connection is False
+
+
 class TestDegreeBadgeZeroWalk:
     def _blind(self, page_text):
         """A driver whose locator chain matches nothing, rendering `page_text` under <main>."""

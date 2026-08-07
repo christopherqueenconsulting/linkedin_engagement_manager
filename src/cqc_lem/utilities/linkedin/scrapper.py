@@ -158,8 +158,15 @@ _PROFILE_SHELL_SELECTOR = "main a[href*='/in/'], a[href*='/recent-activity/']"
 
 def _degree_from_source(source) -> str:
     """The degree badge from the page's own words. Leaf nodes only — an ancestor's text would sweep
-    up the whole top card and match on any headline containing '1st'."""
-    for element in source.find_all(['span', 'div', 'li', 'p']):
+    up the whole top card and match on any headline containing '1st'.
+
+    Scoped to <main> and first-match-only, because a profile page renders OTHER people's badges as
+    well: the "People also viewed" rail sits outside <main>, and mutual-connection highlights sit
+    below the top card inside it. A badge that names a different entity must never decide THIS
+    profile's degree — #1012's rule read backwards — and the top card is the first one in document
+    order."""
+    root = source.find('main') or source
+    for element in root.find_all(['span', 'div', 'li', 'p']):
         if element.find(True) is not None:
             continue
         text = element.get_text(" ", strip=True)

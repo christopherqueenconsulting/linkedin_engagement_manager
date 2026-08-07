@@ -182,6 +182,16 @@ against the page's own degree LINE (whole-line, never `\b1st\b`, which would fir
 "1st place, 2026 awards"); re-ground with `scripts/linkedin_live_validation.py --profile-scrape`
 against a 2nd/3rd-degree profile and read `degree_anchors` in the report.
 
+**The FIRST badge is the profile's; every later one names somebody else.** A text anchor is far
+broader than the class anchor it replaced, and a profile page is full of other people's badges —
+the "People also viewed" rail outside `<main>`, mutual-connection highlights inside it. So both
+reads take the first match in DOCUMENT order and nothing else: `_PROFILE_DEGREE_LOCATORS` leads
+with a single **union** XPath (a union returns nodes in document order, two locators would not) and
+`_profile_is_first_degree` judges `texts[0]`, while `_degree_from_source` is scoped to `<main>` and
+returns on the first hit. Reading "any badge on the page" is the #1012 rail hazard in a read
+instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
+1st.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

@@ -7485,14 +7485,21 @@ def _send_lead_response(signal_id: int) -> str:
 # profile-viewer 1st-vs-other branch) blind. The chain now leads with what the page still WRITES:
 # the badge is its own leaf node whose entire text is the degree. Class anchors stay last, as a
 # legacy tail that costs nothing if a pre-SDUI layout is ever served (issues #623, #1021).
+#
+# The two text shapes are ONE union expression, not two locators, because a union comes back in
+# DOCUMENT order — and document order is the only thing that attributes a badge to THIS profile.
+# `<main>` carries other people's badges too (mutual-connection highlights, "More profiles for
+# you"), so the top card's badge is the FIRST one and every later one names a different entity —
+# the #1012 rule read backwards. Two separate locators would let a highlight's bare "1st" outrank
+# the top card's "2nd degree connection" purely because its locator came first in the list.
 _DEGREE_TOKENS = ("1st", "2nd", "3rd", "3rd+")
 _DEGREE_LEAF_XPATH = (
     "//main//*[self::span or self::div or self::li or self::p][not(*)]["
     + " or ".join(f"normalize-space()='{t}' or normalize-space()='· {t}'" for t in _DEGREE_TOKENS)
-    + "]")
+    + "]"
+    " | //main//*[not(*)][contains(normalize-space(),'degree connection')]")
 _PROFILE_DEGREE_LOCATORS = [
     (By.XPATH, _DEGREE_LEAF_XPATH),
-    (By.XPATH, "//main//*[not(*)][contains(normalize-space(),'degree connection')]"),
     (By.CSS_SELECTOR, "main span.dist-value"),
     (By.CSS_SELECTOR, "main span.distance-badge"),
     (By.XPATH, "//main//span[contains(@class,'distance-badge')]"),
@@ -7515,10 +7522,11 @@ def _degree_lines_on_page(driver) -> "int | None":
 
 
 def _degree_badge_texts(driver) -> "list[str] | None":
-    """Every degree-badge text the locator chain can READ, or None when the read itself failed.
-    None and [] are different answers: an unreadable page grounds nothing, an empty chain on a
-    readable page is the zero worth cross-checking. A matched node with no text counts as neither —
-    a locator that resolves to an empty element is as blind as one that resolves to nothing."""
+    """Every degree-badge text the locator chain can READ, in chain-then-document order, or None
+    when the read itself failed. None and [] are different answers: an unreadable page grounds
+    nothing, an empty chain on a readable page is the zero worth cross-checking. A matched node with
+    no text counts as neither — a locator that resolves to an empty element is as blind as one that
+    resolves to nothing."""
     texts: "list[str]" = []
     try:
         for by, selector in _PROFILE_DEGREE_LOCATORS:
@@ -7533,18 +7541,23 @@ def _degree_badge_texts(driver) -> "list[str] | None":
 
 
 def _profile_is_first_degree(driver) -> bool:
-    """True only when the profile page SAYS 1st degree. Fails open (False) on any read problem —
-    a missed badge just means we try the invite, which is the old behaviour. A chain that matched
-    NO badge at all is cross-checked against the page's own degree line first, so the blind read
-    that #1012 paid for cannot recur silently (issue #1021)."""
+    """True only when THIS profile's own badge says 1st degree. Fails open (False) on any read
+    problem — a missed badge just means we try the invite, which is the old behaviour. A chain that
+    matched NO badge at all is cross-checked against the page's own degree line first, so the blind
+    read that #1012 paid for cannot recur silently (issue #1021).
+
+    Only the FIRST badge is judged, never "any of them": the top card is the first thing under
+    <main>, and every badge below it — a mutual-connection highlight, a "More profiles for you"
+    card — belongs to somebody else. Reading those would abort the invite to a 2nd-degree target
+    just because one of their mutuals is a 1st, which is #1012's mistake in a read instead of a
+    click."""
     texts = _degree_badge_texts(driver)
     if texts is None:
         return False
-    if any(is_first_degree(text) for text in texts):
-        return True
-    if not texts:
-        _grade_zero_walk(_degree_lines_on_page(driver), "Profile degree-badge chain",
-                         action_type="invite_connect")
+    if texts:
+        return is_first_degree(texts[0])
+    _grade_zero_walk(_degree_lines_on_page(driver), "Profile degree-badge chain",
+                     action_type="invite_connect")
     return False
 
 
