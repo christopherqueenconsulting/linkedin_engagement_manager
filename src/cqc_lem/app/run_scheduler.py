@@ -54,7 +54,6 @@ from cqc_lem.utilities.db import (
     count_pending_catchup_touches,
     get_active_user_ids,
     get_approved_catchup_touches,
-    get_catchup_touch,
     get_approved_connection_requests,
     get_company_linked_in_url_for_user,
     get_due_scheduled_dms,

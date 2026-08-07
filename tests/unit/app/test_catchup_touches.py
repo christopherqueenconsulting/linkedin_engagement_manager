@@ -671,7 +671,7 @@ class TestSendCatchupTouch:
         p = self._patches(self._touch(), catchup_today=5, allowance=10,
                           prefs=_prefs(max_catchup_touches_per_day=10))
         with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["claim"], \
-             p["send"] as send, p["upd"] as upd, p["enq"]:
+             p["send"] as send, p["upd"], p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_called_once()
         assert "sent" in out

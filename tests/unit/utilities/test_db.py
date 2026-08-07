@@ -1364,7 +1364,9 @@ class TestCatchupContactFrequency:
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.IntegrityError("dup")
-            assert claim_catchup_send_attempt(3, 1, "https://www.linkedin.com/in/jane", "job_change", "2026-08") is False
+            assert claim_catchup_send_attempt(
+                3, 1, "https://www.linkedin.com/in/jane", "job_change", "2026-08"
+            ) is False
 
     def test_count_existing_double_sent_catchups_counts_buckets(self, mock_database_connection):
         from cqc_lem.utilities.db import count_existing_double_sent_catchups

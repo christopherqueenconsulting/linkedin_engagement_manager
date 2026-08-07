@@ -10010,9 +10010,11 @@ def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
 
 
 def count_existing_double_sent_catchups() -> int:
-    """Count how many (user, profile_url, event_type, event_period) milestone buckets have more than
-    one `sent` row in `catchup_touches`. Used once at deploy time to report the historical duplicate-
-    send surface to the issue (issue #1078).
+    """Count milestone buckets that were sent more than once.
+
+    A bucket is (user, profile_url, event_type, event_period); more than one `sent` row in
+    `catchup_touches` means the same contact was messaged twice for the same milestone. Used once at
+    deploy time to report the historical duplicate-send surface to the issue (issue #1078).
 
     Returns 0 when nothing is double-sent or the read fails.
     """
