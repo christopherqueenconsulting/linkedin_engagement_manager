@@ -187,7 +187,8 @@ So the SPA ships none, and the token's contract is now written down rather than 
   For the twelve non-`_require_api_and_admin` routes this is a layer removed. It costs nothing
   *today* — every bearer value is public, so a caller who has `ADMIN_SECRET` has one too — but it
   stops being free the moment **#965** rotates them, and that is exactly the kind of book-keeping
-  this section exists to keep honest. `X-Admin-Secret` is a custom header, so none of the three
+  this section exists to keep honest. It stopped being free on 2026-08-07, when #965 rotated them.
+  `X-Admin-Secret` is a custom header, so none of the three
   gates is reachable by a cross-site form. `tests/unit/api/test_api_route_identity.py` pins the
   invariant that survives: every `/api/admin/*` route reaches one of the three.
 
@@ -200,7 +201,14 @@ the leaked secret: post-merge those values still clear the edge filter, and stil
 tab open across the release — hours, not days; see `docs/spa-deploy-freshness.md`) does not 401. So
 the rotation is the second half of the fix, not a nice-to-have: rotate `API_ACCESS_TOKENS` in
 `/opt/lem/.env` once that window has passed, and delete the now-unread `UI_API_TOKEN` repo secret.
-Tracked on **#965**.
+
+**Done 2026-08-07 (#965, closed).** `API_ACCESS_TOKENS` was rotated in `/opt/lem/.env`, every app
+service recreated (standby and workers first, the active color last), and the `UI_API_TOKEN` repo
+secret deleted. Verified at the edge: an old value now answers **401**, a new one clears the filter.
+So every token value that shipped in a bundle before that date is dead, and the layer described
+above is load-bearing rather than book-keeping. Nothing else needed changing — the one script that
+uses a token reads it out of the env file at runtime, and the Postman environment stores
+placeholders, not real values.
 
 Every non-browser caller of `/api`, and what it authenticates on:
 

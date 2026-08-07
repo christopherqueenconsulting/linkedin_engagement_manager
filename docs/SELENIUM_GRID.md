@@ -310,10 +310,14 @@ afternoon. Five things fall out of the re-run:
 
 ## 5. The decision point: 16 vCPU / 64 GB, a second box — or someone else's grid
 
-**Status: decided — self-managed, hardware not yet bought (#633, 2026-07-27).** The "someone else's
-grid" third option in this section's title is **closed**: LEM stays self-managed and no hosted
-vendor is pursued. Nothing is bought until the capacity monitor (§5e in `docs/scaling-plan.md`)
-says the cap is the operating point.
+**Status: decided — self-managed, and the buy is trigger-driven, not scheduled (#633 2026-07-27;
+execution closed on #974, 2026-08-07).** The "someone else's grid" third option in this section's
+title is **closed**: LEM stays self-managed and no hosted vendor is pursued. Nothing is bought until
+the capacity monitor (§5e in `docs/scaling-plan.md`) says the cap is the operating point — that
+trigger is **shipped and running**, not a plan: `auto_capacity_watch` (`app/run_scheduler.py`) is on
+the beat and `utilities/capacity_alerts.py` files its own GitHub issue on a `session_saturation` or
+`lane_backlog` breach. §6 below is the checklist that breach hands you. So there is no standing
+hardware task — the absence of a filed breach IS the answer.
 
 #633 widened the option set and priced hosted/cloud grids (AWS Fargate/EC2 nodes, Device Farm,
 BrowserStack, Sauce Labs, LambdaTest, TestingBot, Browserless, Browserbase, Steel) against the two
