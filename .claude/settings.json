@@ -1,0 +1,32 @@
+{
+  "$comment": [
+    "PROJECT settings — checked in, shared by everyone (and by every agent-pipeline worktree).",
+    "Personal permission grants belong in .claude/settings.local.json, which is gitignored.",
+    "",
+    "The two config blocks below MUST live here rather than in the local file: the pipeline runs",
+    "each agent in a `git worktree` checkout, and a gitignored file does not exist in a fresh",
+    "worktree — so a worktree would silently lose its symlinks and its MCP servers.",
+    "",
+    "permissions.allow here is deliberately read-only and narrow. Anything that mutates state, and",
+    "anything that can execute arbitrary code (interpreters, `docker exec`, `gh api` wildcards), is",
+    "left out on purpose: this file pre-approves those actions for ANY checkout of the repo."
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(poetry run pytest *)",
+      "Bash(poetry run ruff check *)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "selenium-lem",
+    "playwright"
+  ],
+  "worktree": {
+    "symlinkDirectories": [
+      ".venv",
+      "src/cqc_lem/assets",
+      "src/cqc_lem/ui/node_modules",
+      "src/cqc_lem/ui/dist"
+    ]
+  }
+}
