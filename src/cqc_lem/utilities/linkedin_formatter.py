@@ -1,3 +1,22 @@
+"""The last deterministic pass over text that is about to be PUBLIC on LinkedIn.
+
+Everything here is post-processing of model output, and each piece is paired with a prompt directive
+that tries to prevent the problem upstream — `PLAIN_PUNCTUATION_DIRECTIVE` before
+`normalize_public_text`, `linkedin_post_format_directive` before `enforce_post_readability`. The
+directive is the prevention, the function is the safety net; a model that ignores the directive is
+the normal case, not the exception, which is why neither half is optional.
+
+Two things the safety net is deliberately careful NOT to touch: URLs are masked out of every
+markdown transform in `sanitize_for_linkedin` and come back byte-identical, and intentional glyphs
+(bullets, emoji, accented letters) survive normalization — LinkedIn renders markdown literally, but
+mangling a link or an emoji is a worse failure than a stray asterisk.
+
+`_BAIT_RE` is the ONE engagement-bait vocabulary: detection (`contains_engagement_bait`), removal
+(`strip_engagement_bait`) and lead-magnet keyword rejection (`is_bait_keyword`) all read that same
+list, so a pattern added there takes effect on every surface at once and cannot disagree with itself
+about what counts as bait.
+"""
+
 import re
 import unicodedata
 from typing import Optional

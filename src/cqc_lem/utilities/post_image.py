@@ -62,6 +62,14 @@ class PostImageVerdict:
 
     @property
     def extension(self) -> str:
+        """Extension to store this image under, taken from the DECODED format, never the upload's name.
+
+        An uploaded filename is untrusted — a `.png` that is really a JPEG is an ordinary browser
+        upload — and `determine_media_type` reads the STORED extension at publish to pick LinkedIn's
+        share category, so getting it from the name would fail there rather than here. The `.png`
+        fallback is only reachable on a rejected verdict: every `ok` verdict carries a format that
+        was matched against `_EXT_BY_FORMAT`.
+        """
         return _EXT_BY_FORMAT.get(self.image_format or "", ".png")
 
 

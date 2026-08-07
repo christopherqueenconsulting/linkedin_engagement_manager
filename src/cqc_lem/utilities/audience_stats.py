@@ -84,31 +84,38 @@ def _to_number(raw: str, suffix: str) -> Optional[int]:
 
 
 def parse_follower_count(text: Optional[str]) -> Optional[int]:
-    """Followers out of the profile page's own text. None when the label is absent or unreadable —
-    the caller persists that as NULL ("not measured"), which a growth delta skips instead of
-    charting as a total audience loss.
+    """Followers, read out of the profile page's own text.
+
+    None when the label is absent or unreadable — the caller persists that as NULL ("not measured"),
+    which a growth delta skips instead of charting as a total audience loss.
     """
     return parse_labeled_count(text, FOLLOWER_LABEL)
 
 
 def parse_connection_count(text: Optional[str]) -> Optional[int]:
-    """Connections out of the profile page's own text. "500+" reads as 500, LinkedIn's own ceiling
-    for the display — not a failure. None when unreadable, never 0.
+    """Connections, read out of the profile page's own text.
+
+    "500+" reads as 500 — LinkedIn's own display ceiling, not a failure. None when unreadable,
+    never 0.
     """
     return parse_labeled_count(text, CONNECTION_LABEL)
 
 
 def parse_profile_views(text: Optional[str]) -> Optional[int]:
-    """Profile views off the analytics surface, where the number sits stacked ABOVE its caption and
-    next to the search-appearances card — `parse_labeled_count` is what keeps one card's number from
-    binding to the other's label. None when unreadable, never 0.
+    """Profile views, read off the analytics surface.
+
+    The number is stacked ABOVE its caption next to the search-appearances card, so
+    `parse_labeled_count` is what keeps one card's number from binding to the other's label. None
+    when unreadable, never 0.
     """
     return parse_labeled_count(text, PROFILE_VIEW_LABEL)
 
 
 def parse_search_appearances(text: Optional[str]) -> Optional[int]:
-    """Search appearances off the analytics surface. None when unreadable, never 0 — and the caller
-    treats that None as a cue to retry on the dedicated search-appearances page before giving up.
+    """Search appearances, read off the analytics surface.
+
+    None when unreadable, never 0 — and the caller treats that None as its cue to retry on the
+    dedicated search-appearances page before giving up.
     """
     return parse_labeled_count(text, SEARCH_APPEARANCE_LABEL)
 

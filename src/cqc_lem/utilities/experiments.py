@@ -80,6 +80,11 @@ class ExperimentSpec:
 
     @property
     def control(self) -> str:
+        """The arm that is also the safe answer.
+
+        Every unresolvable path in this module returns it, and because it is `variants[0]` by
+        construction it is always the behaviour that shipped before the experiment existed.
+        """
         return self.variants[0]
 
 
@@ -160,6 +165,13 @@ _OFF_VALUES = ("0", "false", "no", "off", "disabled")
 
 
 def spec(key: str) -> ExperimentSpec:
+    """The registered experiment, or a loud failure.
+
+    Raises:
+        KeyError: the key is not in `EXPERIMENTS`. Deliberately fatal rather than control-by-default:
+            an unregistered key is a typo or a deleted experiment, and silently reading control would
+            hide it inside a Celery task where nobody would see the arm never moved.
+    """
     found = EXPERIMENTS.get(key)
     if found is None:
         raise KeyError(f"Unregistered experiment '{key}' — add an ExperimentSpec to "

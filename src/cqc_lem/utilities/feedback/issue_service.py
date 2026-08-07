@@ -321,9 +321,10 @@ def issue_assignee() -> str:
 
 
 def embedding_model() -> str:
-    """Tier alias used to embed a report for dedup. An unusable embedding is not fatal — similarity
-    falls back to deterministic token overlap, so dedup degrades in accuracy but never to
-    "everything is new".
+    """Tier alias used to embed a report for dedup.
+
+    An unusable embedding is not fatal — similarity falls back to deterministic token overlap, so
+    dedup degrades in accuracy but never to "everything is new".
     """
     return (os.environ.get("FEEDBACK_EMBEDDING_MODEL") or "").strip() or DEFAULT_EMBEDDING_MODEL
 
@@ -347,8 +348,7 @@ def _env_int(key: str, default: int, low: int, high: int) -> int:
 
 
 def duplicate_similarity_min() -> float:
-    """Similarity at or above which a new report joins an existing cluster instead of opening its
-    own issue.
+    """Similarity at or above which a report joins an existing cluster instead of opening an issue.
 
     Clamped to 0.0-1.0 and an unparseable value falls back to the default, because both ends of this
     dial are damaging out of range: too low collapses unrelated reports onto one issue, too high

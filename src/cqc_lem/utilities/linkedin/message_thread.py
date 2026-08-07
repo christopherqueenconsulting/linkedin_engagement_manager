@@ -325,6 +325,12 @@ class ComposerOpen:
 
     @property
     def addressed(self) -> bool:
+        """The only reading a sender may act on: the composer is open AND names somebody.
+
+        `__bool__` delegates here, so `if open_addressed_composer(...)` is already the send gate —
+        an open-but-unaddressed composer is falsy, because typing into it sends to whoever a
+        typeahead resolves, or to nobody (issue #1030).
+        """
         return self.opened and bool(self.recipient)
 
     def __bool__(self) -> bool:

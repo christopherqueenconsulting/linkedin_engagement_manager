@@ -33,11 +33,29 @@ class RedisLike(Protocol):
     the module keeps working, no-opping, when the client is unavailable).
     """
 
-    def get(self, name: str) -> Any: ...  # lgtm[py/ineffectual-statement]  # noqa: D102 — Redis API, documented by redis-py
+    def get(self, name: str) -> Any:
+        """Read one status blob back.
 
-    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any: ...  # lgtm[py/ineffectual-statement]  # noqa: D102
+        May hand back `bytes` or `str` — `json.loads` takes either, and a client that returns
+        something else entirely is treated as "no status" rather than an error.
+        """
+        ...  # lgtm[py/ineffectual-statement]
 
-    def delete(self, *names: str) -> Any: ...  # lgtm[py/ineffectual-statement]  # noqa: D102
+    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any:
+        """Store a status blob with `ex` as its TTL in SECONDS.
+
+        Every write in this module passes one: progress is disposable runtime state, so a run that
+        dies mid-way must age out on its own rather than leave the SPA polling forever.
+        """
+        ...  # lgtm[py/ineffectual-statement]
+
+    def delete(self, *names: str) -> Any:
+        """Drop a status key outright.
+
+        Used when a run will never start, so the SPA stops polling immediately instead of waiting
+        out the TTL.
+        """
+        ...  # lgtm[py/ineffectual-statement]
 
 
 class ContentGenerationState(StrEnum):
@@ -286,6 +304,13 @@ def get_generation_status(user_id: int) -> Optional[dict]:
 
 
 def clear_generation_status(user_id: int) -> None:
+    """Forget this user's run entirely, so the SPA polls its way back to "nothing running".
+
+    Called when a dispatch FAILED — the record says `queued` for a chain that will never execute,
+    and without this it would sit there misreporting progress until the TTL expired. Like every
+    write here it fails open: no Redis, or a delete that raises, is a DEBUG no-op, never an error
+    the caller has to handle.
+    """
     client = _redis_client()
     if client is None:
         return

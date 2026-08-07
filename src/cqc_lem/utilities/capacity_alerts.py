@@ -510,10 +510,21 @@ def _load_json_list(key: str, limit: int) -> Optional[list]:
 
 
 def load_samples(limit: int = CAPACITY_WINDOW_SAMPLES) -> Optional[list]:
+    """Recent capacity samples, NEWEST first — the order `build_capacity_report` reads `host` in.
+
+    None means Redis could not be read; `[]` means nothing has been sampled yet. Both end as a
+    `skipped` check with a reason rather than a passing one, so missing history is never reported
+    as an all-clear.
+    """
     return _load_json_list(SAMPLES_KEY, limit)
 
 
 def load_waits(limit: int = WAIT_WINDOW_SAMPLES) -> Optional[list]:
+    """Recorded Chrome-session acquisition waits in SECONDS, newest first, None when unreadable.
+
+    A row with no `seconds` is dropped rather than read as zero: a malformed sample pulling the p95
+    down would hide exactly the queueing this check exists to expose.
+    """
     rows = _load_json_list(WAITS_KEY, limit)
     return None if rows is None else [row.get("seconds") for row in rows
                                       if row.get("seconds") is not None]
@@ -675,6 +686,13 @@ def send_capacity_alerts(report: Optional[Mapping] = None) -> dict:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point for the capacity monitor — exit 2 on a breach, 0 when clean.
+
+    The exit code is the machine-readable half, so a cron or CI caller can act without parsing
+    stdout; the rendered text (or `--json`) IS this command's product. Sampling and delivery are
+    both opt-in flags: run bare, it only READS the window, so an operator can look without writing
+    a sample or filing an issue.
+    """
     parser = argparse.ArgumentParser(description="LEM Selenium/lane capacity monitor")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--sample", action="store_true",

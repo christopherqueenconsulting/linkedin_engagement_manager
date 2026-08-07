@@ -392,6 +392,14 @@ def arms_summary(arms: Optional[Mapping]) -> dict:
 
 def new_bucket(feature: str, from_tier: str, today: date, cohort_pct: float,
                generation: int = 1) -> dict:
+    """A freshly opened experiment record for one (feature, tier) pair, at the bottom of the ramp.
+
+    `generation` is what keeps a re-opened bucket from inheriting the last one's verdict: the id
+    carries it (`feature:tier#2`), so a bucket that rolled back and later cleared its cooldown reads
+    as a NEW experiment in every downstream readout rather than a continuation of the failed one.
+    Always opened at `STATE_EXPERIMENT` with no cooldown — the ramp and the rollback are decided by
+    the evaluator, never here.
+    """
     to_tier = cheaper_tier(from_tier)
     return {
         "id": f"{bucket_key(feature, from_tier)}#{generation}",
@@ -578,6 +586,12 @@ def render_routing_text(report: Mapping) -> str:
 
 
 def render_routing_html(report: Mapping) -> str:
+    """The email body, which is deliberately just the TEXT report escaped into a `<pre>`.
+
+    One renderer means the HTML and plain-text parts of the same email can never disagree about what
+    the loop decided, and escaping after rendering (never before) keeps a feature or reason string
+    from injecting markup into the owner's inbox.
+    """
     body = (render_routing_text(report)
             .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     return ("<h2>LEM cost-aware routing</h2><pre style=\"font-family:ui-monospace,monospace;"
@@ -804,6 +818,12 @@ def apply_routing_report(report: Optional[Mapping] = None, publish: bool = True,
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point. Read-only unless `--apply` is passed, and `--dry-run` overrides it.
+
+    Returns the process exit code: **2 when any bucket rolled back**, so a cron or CI caller can act
+    on a quality breach without parsing the output; 0 otherwise. The report is always printed, even
+    with `--apply` — for a CLI the printed report IS the product, so it is never suppressed.
+    """
     parser = argparse.ArgumentParser(description="LEM cost-aware routing optimizer")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--dry-run", action="store_true",

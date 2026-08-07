@@ -1,3 +1,22 @@
+"""The ONE logger: level helpers, structured context, handlers, and the OTLP hop into PostHog Logs.
+
+`print()` is never used in this codebase; `myprint` is the shim that predates these helpers. Context
+travels as keyword args (`user_id`, `post_id`, `task_name`, …) and is coerced to primitives before it
+leaves, because an exception or a WebElement passed as context would otherwise be dropped by the
+backend rather than logged.
+
+**Once is a warning, repeatedly is a defect.** `log_warning` runs every message through
+`log_escalation`: past the threshold the SAME warning is re-emitted at ERROR and filed as one grouped
+`$exception`, which is what alerts and what the daily cron turns into a GitHub issue. So an expected
+no-op must be logged at DEBUG — warning about it files a defect against working behaviour. The
+escalation import, the capture hop and the escalation call are each guarded independently: a
+telemetry failure must never turn a logged error into a raised one, and a partial deploy must degrade
+to the pre-escalation behaviour rather than break every log call in the app.
+
+A log line and a PostHog `$exception` are different products. Only `exc=` on `log_error` /
+`log_critical` (or an escalated warning) files the second one.
+"""
+
 import datetime as DT
 import logging
 import os

@@ -389,6 +389,13 @@ def is_low_score(kind: str, score: int) -> bool:
 
 
 def posthog_response_sentiment(kind: str, score: int) -> str:
+    """Band a PostHog answer with the SAME vocabulary the homegrown asks already store.
+
+    The two scales are not interchangeable — NPS is 0-10 and reads promoter/passive/detractor, CSAT
+    is 1-5 and reads positive/neutral/negative — so the kind picks the scale here rather than at each
+    call site. Keeping the words identical is what lets a feedback row be read without caring which
+    survey engine produced it. Anything that is not NPS is treated as CSAT.
+    """
     return nps_bucket(int(score)) if kind == POSTHOG_KIND_NPS else review_sentiment(int(score))
 
 

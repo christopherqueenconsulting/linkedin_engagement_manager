@@ -492,6 +492,17 @@ def send_weekly_margin_report(report: Optional[Mapping] = None,
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point (`python -m cqc_lem.utilities.margin`) for both consumers named at the top.
+
+    `--daily-json` prints ONE JSON object on stdout and nothing else, because `scripts/perf_snapshot.sh`
+    reads the last line of this command's output straight into `metrics.jsonl` — any extra printing
+    on that path corrupts the snapshot. The printed output IS the product here, which is why `T201`
+    must never be "fixed" in this function.
+
+    Returns:
+        A process exit code: 0 when a report was produced, 1 when no mode was selected (help is
+        printed instead), so a mistyped cron line fails loudly rather than logging a silent success.
+    """
     parser = argparse.ArgumentParser(description="LEM cost/margin reporting")
     parser.add_argument("--daily-json", action="store_true",
                         help="print today's cost/margin block as one JSON object (snapshot.sh)")

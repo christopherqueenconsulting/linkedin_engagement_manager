@@ -181,6 +181,13 @@ def stale_after_days() -> int:
 
 
 def withdrawals_per_day_cap() -> int:
+    """Ceiling on withdrawals dispatched in one day, before pacing narrows it further.
+
+    A cap of 0 turns the lane off outright (`WITHDRAW_STATUS_DISABLED`) without a Chrome slot being
+    spent — the second kill switch alongside `withdrawal_lane_enabled`, and the one an operator can
+    reach mid-incident. Negative values clamp to 0 for the same reason: this action is one-way, so
+    every unreadable configuration lands on doing nothing.
+    """
     return _env_int("STALE_INVITE_WITHDRAWALS_PER_DAY",
                     STALE_INVITE_WITHDRAWALS_PER_DAY_DEFAULT)
 

@@ -42,6 +42,11 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 def enabled() -> bool:
+    """The kill switch for the whole mechanism — ON unless `LOG_ESCALATION_ENABLED` says otherwise.
+
+    Read per call, not at import, so a run of noisy escalations can be stopped on a live box without
+    a deploy. Off means a repeated warning stays a WARNING: nothing else about logging changes.
+    """
     return _bool_env("LOG_ESCALATION_ENABLED", True)
 
 

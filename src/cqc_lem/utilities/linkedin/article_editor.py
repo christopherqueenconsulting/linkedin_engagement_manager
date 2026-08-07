@@ -177,6 +177,14 @@ _COVER_TRIGGER_LOCATORS: list[tuple[str, list[tuple[str, str]]]] = [
 
 
 class StepVerdict(str, Enum):
+    """How one step of the ladder read — three-valued on purpose (#804).
+
+    `MISSING` means every route failed on a screen that was supposed to carry the control, which is
+    selector rot and worth acting on. `UNKNOWN` means the control does not belong on the screen that
+    was read — Publish before Next has been clicked — which is a page behaving correctly and must
+    never be graded as drift.
+    """
+
     OK = "OK"
     MISSING = "MISSING"
     UNKNOWN = "UNKNOWN"
@@ -201,15 +209,31 @@ class ResolvedElement:
 
     @property
     def ok(self) -> bool:
+        """Found is not enough: a step counts only when a route resolved an ACTIONABLE element.
+
+        A Publish button that renders disabled resolves an element and still reads False here, so
+        the flow reports the step rather than clicking something that will do nothing.
+        """
         return self.element is not None and self.enabled
 
     @property
     def verdict(self) -> StepVerdict:
+        """Grade this step, downgrading a failure to UNKNOWN when the control was never expected.
+
+        Not having looked is not evidence of a missing selector — that is the whole #804 rule, and
+        `expected_on_screen` is the only thing that separates the two.
+        """
         if self.ok:
             return StepVerdict.OK
         return StepVerdict.MISSING if self.expected_on_screen else StepVerdict.UNKNOWN
 
     def to_dict(self) -> dict:
+        """JSON-safe view of this step for logs and the live-validation report.
+
+        The resolved `element` is deliberately left out (a WebElement does not serialise). `tried`
+        ships even on an OK, because the routes that were walked and lost are what shows LinkedIn
+        rotating an anchor BEFORE the last surviving route fails too.
+        """
         return {
             "step": self.step,
             "verdict": self.verdict,
@@ -299,12 +323,25 @@ def resolve_article_editor_step(
 
 @dataclass
 class ArticleEditorMap:
+    """All four steps resolved in one pass — a whole-flow view, never a pre-flight gate on its own.
+
+    `publish_button` being unresolved is the NORMAL reading on `/article/new/`, since that control
+    only exists in the dialog Next opens. Callers about to type must therefore ask
+    `first_missing(EDITOR_SCREEN_STEPS)`; treating the full map as the gate is what aborted every
+    publish before a character was typed (#804).
+    """
+
     title: ResolvedElement
     body: ResolvedElement
     next_button: ResolvedElement
     publish_button: ResolvedElement
 
     def steps(self) -> "tuple[ResolvedElement, ...]":
+        """The four steps in FLOW order (title, body, Next, Publish).
+
+        The order is load-bearing: `first_missing` walks this and reports the earliest unresolved
+        step, so a caller is told where the flow stops rather than which step failed last.
+        """
         return (self.title, self.body, self.next_button, self.publish_button)
 
     def first_missing(self, steps: "tuple[str, ...] | None" = None) -> Optional[str]:
@@ -320,6 +357,12 @@ class ArticleEditorMap:
         return None
 
     def to_dict(self) -> dict:
+        """JSON-safe view of the whole map, keyed `title` / `body` / `next` / `publish`.
+
+        This is what `article_editor_verdict` builds its report on top of and what a failed step
+        logs as `routes=`, so the keys are read by the live-validation probe rather than by the
+        publish flow itself.
+        """
         return {
             "title": self.title.to_dict(),
             "body": self.body.to_dict(),

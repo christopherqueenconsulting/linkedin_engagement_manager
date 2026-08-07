@@ -141,14 +141,30 @@ def parse_referrer_id(ref: Optional[str]) -> Optional[int]:
 # is never clawed back.
 
 def enrollment_bonus_days() -> int:
+    """Trial days granted purely for HOLDING status — the half revoked when status ends.
+
+    0 (the default) means enrolment buys a link and nothing else, which is the configuration a
+    deployment should keep until the referral side is proven to pay for itself.
+    """
     return max(0, int(AFFILIATE_ENROLLMENT_BONUS_DAYS))
 
 
 def referral_bonus_days() -> int:
+    """Trial days EARNED per real activation.
+
+    Never clawed back, whatever happens to the referrer's status afterwards — the work was already
+    done, and reclaiming it is what would make opt-out a punishment.
+    """
     return max(0, int(AFFILIATE_REFERRAL_BONUS_DAYS))
 
 
 def max_reward_days() -> int:
+    """Lifetime ceiling on granted trial days for ONE user.
+
+    The only bound on program COGS: a trial day is real LLM + proxy spend against zero MRR, so
+    without this a single prolific referrer could earn free service indefinitely. Negative
+    configuration clamps to 0 — no rewards — rather than inverting the cap.
+    """
     return max(0, int(AFFILIATE_MAX_REWARD_DAYS))
 
 
@@ -165,6 +181,13 @@ def grantable_days(already_granted: int, requested: int) -> int:
 # --- (B) promotional content ---------------------------------------------------------------------
 
 def promo_consent_version() -> str:
+    """Which wording of the promo-content consent the user agreed to, stamped on the row at opt-in.
+
+    Consent is to a specific ask, so the version travels with it: change the terms of what LEM may
+    post from someone's own account and the stored version says who agreed to the OLD ones. Falls
+    back to "v1" rather than an empty string, because a consent record with no version is
+    indistinguishable from one that was never versioned at all.
+    """
     return str(AFFILIATE_PROMO_CONSENT_VERSION or "v1")
 
 

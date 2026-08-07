@@ -120,6 +120,13 @@ def prompt_text(messages: Any) -> str:
 
 
 def complexity_score(prompt: str) -> int:
+    """Net signal count for a lowercased prompt: complex phrases found MINUS simple ones.
+
+    Signed on purpose — a prompt that says both "framework" and "summarize briefly" is asking for a
+    short answer about a complex thing, and cancelling the two is what stops a stray keyword pushing
+    a one-line refinement onto the expensive tier. `complexity_tier` owns the thresholds; this only
+    counts.
+    """
     return (sum(1 for signal in COMPLEX_SIGNALS if signal in prompt)
             - sum(1 for signal in SIMPLE_SIGNALS if signal in prompt))
 

@@ -149,6 +149,13 @@ def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
 
 
 def get_available_credits(driver, wait):
+    """Read the page's live "<current>/<total> credits available" counter — ceiling number 3.
+
+    Returns `(0, 0)` when that element never resolves, which is the fail-CLOSED reading the caller
+    depends on: it treats 0 as `credits_exhausted` and sends nothing. An unreadable counter and a
+    genuinely empty pool therefore both stop the run, because spending an invite we cannot account
+    for is the one outcome worse than skipping a day.
+    """
     # myprint("Entering get_available_credits function.")
     current_credits = 0
     total_credits = 0
@@ -166,6 +173,15 @@ def get_available_credits(driver, wait):
 
 
 def get_initial_selected_count(driver, wait):
+    """The invitee picker's own "N selected" counter, read BEFORE this run ticks anything.
+
+    The dialog can open with boxes already ticked, so counting only our own clicks would let a run
+    send more invites than the day's budget. Starting the count from what the page says is what keeps
+    the budget the number of invites actually dispatched.
+
+    Raises rather than defaulting to 0: an unreadable counter means the ceiling is unknown, and
+    guessing low is how a paced drip turns back into a blast.
+    """
     # myprint("Entering get_initial_selected_count function.")
     selected_text_element = get_element_wait_retry(driver, wait, '//span[text()[contains(.,"selected")]]',
                                                    "Finding Selected Text Element")
@@ -176,6 +192,13 @@ def get_initial_selected_count(driver, wait):
 
 
 def scroll_invitee_list(driver, wait):
+    """Scroll the invitee picker once to make its next lazy-loaded page of connections render.
+
+    Goes through mouse-wheel ActionChains against a sentinel div below the list rather than setting
+    `scrollTop` — the picker's infinite scroller does not fire on a scripted scroll position, so the
+    JS route silently loads nothing. Waits for the AJAX round-trip before returning, but does NOT
+    promise the list grew: the caller decides whether it did and stops when it stops growing.
+    """
     invitee_list_element = get_element_wait_retry(driver, wait,
                                                   "//div[contains(@class,'scaffold-finite-scroll__content')]",
                                                   "Finding Invitee List Element", max_try=0)
@@ -213,6 +236,18 @@ def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
 
 
 def select_connection_checkboxes(driver, wait, limit):
+    """Tick invitees until the picker's own selected count reaches `limit`, and return that count.
+
+    `limit` is the run's whole budget — the smallest of the paced allowance, the credit spread and
+    the live credit count — so this is where that number becomes clicks. The count starts from
+    `get_initial_selected_count`, not from zero, so pre-ticked boxes spend the budget too.
+
+    Scrolling continues only while a pass loads new invitees AND new checkboxes AND the checkbox
+    count is still under the limit — so it stops as soon as EITHER counter stalls, and a page with
+    fewer candidates than budget returns short instead of looping. Selections are spaced by
+    `_pause_between_selections`; N machine-timed clicks in a row is the velocity signal #732 exists
+    to remove.
+    """
     # myprint("Entering select_connection_checkboxes function.")
 
     # Get the list of connections and scroll until there are as many available as the limit we need or end if there are now new connections
@@ -264,6 +299,15 @@ def select_connection_checkboxes(driver, wait, limit):
 
 
 def invite_selected_connections(driver, wait):
+    """Click the invite dialog's primary button and report whether that click landed.
+
+    False means the button never resolved — the run is a `failed` report and a FAILURE log row, and
+    crucially no `invites_sent` count is recorded, so tomorrow's drip is not shortened by a batch
+    that never went out.
+
+    True is the weaker claim: the control was found and clicked. Nothing here re-reads the page to
+    confirm LinkedIn accepted the batch, so a True is "we asked", not "they landed".
+    """
     # myprint("Entering invite_selected_connections function.")
     xpath = "//div[contains(@class,'modal')]//button[contains(@class,'artdeco-button--primary')]"
     invite_button = click_element_wait_retry(driver, wait, xpath, "Finding Invite Button",
@@ -278,6 +322,12 @@ def invite_selected_connections(driver, wait):
 
 
 def dismiss_prompt(driver, wait):
+    """Clear the "boost this post?" nudge LinkedIn may raise after a batch of invites goes out.
+
+    Cosmetic housekeeping, and False is the ordinary case — the nudge usually is not shown at all.
+    It runs AFTER the invites are logged and recorded precisely so that a missing (or moved) dismiss
+    control can never cost the run its record of what it sent.
+    """
     # myprint("Entering dismiss_prompt function.")
     dismiss_button = click_element_wait_retry(driver, wait,
                                               "//button[@data-test-org-post-nudge-dismiss-cta]",

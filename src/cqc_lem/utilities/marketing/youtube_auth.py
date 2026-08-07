@@ -66,6 +66,13 @@ REAUTH_STEPS = (
 
 
 def alert_email() -> str:
+    """Where a `needs_reauth` verdict is sent, or `''` when nobody is reachable.
+
+    `YOUTUBE_ALERT_EMAIL` is the override; the margin report's recipient is the fallback so the
+    alert still lands on the owner without a second variable being configured. Empty is a real
+    outcome the caller must handle — the probe has proved the grant is gone and there is no address
+    to tell, which `_alert_owner` warns about rather than silently dropping.
+    """
     return (YOUTUBE_ALERT_EMAIL or MARGIN_REPORT_EMAIL or "").strip()
 
 

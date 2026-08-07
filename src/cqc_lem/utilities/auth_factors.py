@@ -88,6 +88,12 @@ _hasher = PasswordHasher()
 
 
 def strong_auth_enabled() -> bool:
+    """The 2c master switch.
+
+    Off, every question in this module answers as it did under 2b — no account holds a strong
+    factor, no login is offered one, and the step-up gate lets everything through — WITHOUT touching
+    an enrolled factor, so flipping it back restores the same state.
+    """
     return bool(STRONG_AUTH_ENABLED)
 
 
@@ -218,6 +224,15 @@ def strong_factor_prompt_due(user_id: int) -> bool:
 
 @dataclass(frozen=True)
 class FactorSummary:
+    """What the Security card is allowed to know about an account's factors.
+
+    Only non-secret metadata: an id, kind, label and timestamps per factor — never a public key,
+    never a TOTP secret, never a recovery code, which are counted (`recovery_unused` of
+    `recovery_total`) rather than listed. `has_strong_factor` and `pin_is_bootstrap_only` are the
+    same answer under two names because they mean two different things to a reader: what the account
+    HOLDS, and what that did to the way they sign in.
+    """
+
     factors: list[dict]
     recovery_unused: int
     recovery_total: int

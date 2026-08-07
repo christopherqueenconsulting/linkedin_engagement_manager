@@ -233,17 +233,39 @@ class FeedbackClassification:
 
     @property
     def route(self) -> FeedbackRoute:
+        """Where this item goes — recomputed on every read, never frozen at classification time.
+
+        `route_for` reads `min_confidence()` from the environment on each call, so a retuned
+        threshold applies to a classification already in hand: the confidence is the stored fact,
+        the verdict is derived from it.
+        """
         return route_for(self.category, self.confidence)
 
     @property
     def labels(self) -> list[str]:
+        """Repo labels this item should carry — EMPTY for a dropped item, which is correct, not a miss.
+
+        A question also comes back with only its category label, because it never becomes a
+        prioritized work item.
+        """
         return labels_for(self.category, self.severity, self.risk, self.route)
 
     @property
     def needs_human(self) -> bool:
+        """Does a person have to look at this before anything is done with it?
+
+        True on every unsure verdict, INCLUDING the fail-safe path where the call errored or the
+        answer would not parse — a classifier hiccup routes to a human, never to a drop.
+        """
         return self.route == FeedbackRoute.NEEDS_HUMAN
 
     def to_dict(self) -> dict:
+        """Serialisable view for storage and logs, with the enums flattened to their string values.
+
+        Carries the DERIVED `route` and `labels` so a stored record shows what was decided as well
+        as what was classified. `errors` is deliberately left out: it is this run's parse/validation
+        trail, and its effect on the outcome is already in `confidence`.
+        """
         return {
             "category": str(self.category),
             "severity": str(self.severity),
@@ -271,6 +293,11 @@ def min_confidence() -> float:
 
 
 def classifier_model() -> str:
+    """Model alias for the one classification call, read at call time like `min_confidence()`.
+
+    A blank value falls back to `lem-medium` exactly like an unset one, so a stray
+    `FEEDBACK_CLASSIFIER_MODEL=` in an env file cannot send an empty model name to the proxy.
+    """
     return (os.environ.get("FEEDBACK_CLASSIFIER_MODEL") or "").strip() or DEFAULT_MODEL
 
 

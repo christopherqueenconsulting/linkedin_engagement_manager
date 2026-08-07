@@ -129,9 +129,11 @@ def content_quality_enabled() -> bool:
 
 
 def rollup_days() -> int:
-    """Length of ONE reporting period — the window a rollup averages over, and the same width the
-    prior period is measured across when `evaluate_alerts` looks for a regression. Callers wanting
-    both periods read `rollup_days() * 2` of scores.
+    """Length of ONE reporting period.
+
+    The window a rollup averages over, and the same width the prior period is measured across when
+    `evaluate_alerts` looks for a regression — callers wanting both periods read
+    `rollup_days() * 2` of scores.
     """
     return max(1, _env_int("CONTENT_QUALITY_ROLLUP_DAYS", DEFAULT_ROLLUP_DAYS))
 
@@ -142,16 +144,19 @@ def window_days() -> int:
 
 
 def max_items_per_run() -> int:
-    """Ceiling on items scored per user per nightly run — a cap, not a filter: what it drops is
-    reported rather than silently skipped, and the next run's overlapping window picks it up.
+    """Ceiling on items scored per user per nightly run.
+
+    A cap, not a filter: what it drops is reported rather than silently skipped, and the next run's
+    overlapping window picks it up.
     """
     return max(1, _env_int("CONTENT_QUALITY_MAX_ITEMS", DEFAULT_MAX_ITEMS))
 
 
 def slop_regression_delta() -> float:
-    """How far the mean weighted slop score may RISE against the account's own prior period before
-    `ALERT_SLOP_REGRESSION` fires. Never negative, so a mistyped threshold cannot make every period
-    look like a regression.
+    """How far the mean weighted slop score may RISE against the account's own prior period.
+
+    `ALERT_SLOP_REGRESSION` fires AT this delta, not past it — the comparison is `>=`. Never
+    negative, so a mistyped threshold cannot make every period look like a regression.
     """
     return max(0.0, _env_float("CONTENT_QUALITY_SLOP_REGRESSION_DELTA",
                                DEFAULT_SLOP_REGRESSION_DELTA))
@@ -166,8 +171,9 @@ def engagement_floor() -> float:
 
 
 def similarity_regression_delta() -> float:
-    """Rise in mean self-similarity that reads as the writer settling into one template
-    (`ALERT_SIMILARITY_CREEP`). Compared only between periods graded on the SAME measure — the
+    """Rise in mean self-similarity that reads as the writer settling into one template.
+
+    Fires `ALERT_SIMILARITY_CREEP`, and only between periods graded on the SAME measure — the
     embedding and lexical scales are not interchangeable.
     """
     return max(0.0, _env_float("CONTENT_QUALITY_SIMILARITY_DELTA",
@@ -175,9 +181,10 @@ def similarity_regression_delta() -> float:
 
 
 def min_alert_sample() -> int:
-    """Scored PIECES (posts + comments + editions) required on BOTH sides of a comparison before a
-    regression alert may fire. A false alert nobody can act on trains the owner to ignore the next
-    one, so a thin period reports its numbers and raises nothing.
+    """Scored PIECES required on BOTH sides of a comparison before a regression alert may fire.
+
+    Counts posts + comments + editions together. A false alert nobody can act on trains the owner to
+    ignore the next one, so a thin period reports its numbers and raises nothing.
     """
     return max(1, _env_int("CONTENT_QUALITY_MIN_SAMPLE", DEFAULT_MIN_ALERT_SAMPLE))
 
@@ -204,16 +211,19 @@ def detector_enabled() -> bool:
 
 
 def detector_provider() -> str:
-    """Name recorded alongside a detector reading so a score can be attributed to the service that
-    produced it — swapping providers must not look like a quality move. Clamped to 32 chars to match
-    the `content_quality_scores.detector_provider` column, and never empty.
+    """Name recorded alongside a detector reading, so a score is attributable to what produced it.
+
+    Swapping detector services must not read as a quality move. Clamped to 32 chars to match the
+    `content_quality_scores.detector_provider` column, and never empty.
     """
     return (os.environ.get("AI_DETECTOR_PROVIDER") or "generic").strip()[:32] or "generic"
 
 
 def detector_sample_rate() -> float:
-    """Share of items (0-1) that get a paid external detector reading. Clamped into that range, so a
-    misconfigured `10` (meaning percent) cannot bill for every piece of content.
+    """Share of items (0-1) that get a paid external detector reading.
+
+    Clamped into that range, so a misconfigured `10` (meaning percent) cannot bill for every piece
+    of content.
     """
     return min(1.0, max(0.0, _env_float("AI_DETECTOR_SAMPLE_RATE", DEFAULT_DETECTOR_SAMPLE_RATE)))
 

@@ -87,6 +87,16 @@ def shared_redis_client():
 
 
 def mark_rate_limited(reason: str = "") -> None:
+    """Trip the breaker — one task's 429 stops the Selenium lanes for everyone on this egress IP.
+
+    The cooldown DOUBLES per consecutive trip (up to the cap) rather than staying fixed, because a
+    fixed window is what produced the doom loop: it expired, some task probed LinkedIn, drew a fresh
+    429 and re-tripped it every 30 minutes for days. `reason` is stored as the breaker's value purely
+    for whoever is reading Redis later.
+
+    Fails open and silently: with Redis unavailable this is a no-op, so a caller may never treat a
+    return from here as proof the breaker is open.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -226,6 +236,12 @@ def automation_pause_reason() -> "str | None":
 
 
 def is_automation_paused() -> bool:
+    """Whether the manual/deploy/suppression kill-switch is standing right now.
+
+    Only that switch — the 429 breaker is a separate, independent gate
+    (`rate_limit_cooldown_remaining`), so neither answer implies the other. Fails open: no Redis
+    reads as NOT paused, because a Redis outage must not be able to freeze every Selenium lane.
+    """
     return automation_pause_remaining() > 0
 
 
@@ -293,6 +309,11 @@ def commenting_hold_reason(user_id: int) -> "str | None":
 
 
 def is_commenting_held(user_id: int) -> bool:
+    """Whether THIS user's feed commenting is held on comment quality (issue #628).
+
+    Narrower than the global pause on purpose: their posting, replies and DMs keep running, because
+    the measured problem is the comments and not the account. Fails open (no Redis -> not held).
+    """
     return commenting_hold_remaining(user_id) > 0
 
 
@@ -315,6 +336,12 @@ def suppression_pause_reason(user_id: int) -> str:
 
 
 def is_suppression_pause(reason: "str | None") -> bool:
+    """Was this pause set by the suppression tripwire, rather than by a human or a deploy?
+
+    A PREFIX match, so it holds for the per-user form `suppression:<id>` that
+    `suppression_pause_reason` writes. Missing or empty reads False: an unattributed pause is treated
+    as somebody else's, which is the safe direction — the tripwire only ever lifts its OWN pause.
+    """
     return bool(reason) and str(reason).startswith(SUPPRESSION_PAUSE_REASON_PREFIX)
 
 
@@ -385,6 +412,12 @@ def suppression_trip_state(user_id: int) -> "dict | None":
 
 
 def is_suppression_tripped(user_id: int) -> bool:
+    """Whether the tripwire has fired for this user and no human has cleared it.
+
+    Separate question from whether automation is currently paused: the trip record carries NO TTL, so
+    it outlives the pause it caused and only `clear_suppression_trip` ends it. Fails open (no Redis ->
+    not tripped), so an outage can never manufacture a standing trip.
+    """
     return suppression_trip_state(user_id) is not None
 
 

@@ -1,3 +1,21 @@
+"""The ONE place LEM emits an analytics event — every server-side `posthog.capture` lives in here.
+
+Callers hand over a measurement (`track_llm_call`, `track_task`, `track_api_call`,
+`track_funnel_event`, `capture_exception`, and the per-surface `track_*` reporters); this module
+owns the event names, the property shapes, and the `distinct_id` rule that makes browser, Celery and
+proxy activity read as ONE person — `str(user_id)`, falling back to a shared `"system"` /
+`"anonymous"` rather than dropping the row, because an unattributed run still has to appear in the
+count. A capture written anywhere else is invisible to the dashboards those events feed
+(`docs/observability-map.md`).
+
+Two money signals live here and are NEVER summed: `llm_call` carries LEM's OWN token-price estimate
+(`estimate_llm_cost_usd`), `$ai_generation` carries the provider's price for the same call. They
+answer different questions, and adding them double-counts every request.
+
+With no `POSTHOG_API_KEY` the SDK is disabled at import, so every function here is a no-op in local
+dev and under test — a call site should never guard itself on the key.
+"""
+
 import contextvars
 import hashlib
 import inspect
@@ -1794,6 +1812,13 @@ def track_task(
     user_id: Optional[int] = None,
     **extra,
 ) -> None:
+    """Emit `celery_task` — one row per task run, however it ended.
+
+    Its only caller is `my_celery.on_task_postrun`, which is what makes this event a complete census
+    of the queue rather than a sample: capturing it from inside a task as well would double-count
+    that task. A task with no user (the scheduler beats) lands on the shared `"system"` person
+    instead of being dropped, since an unattributed run still has to show up in the count.
+    """
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="celery_task",
@@ -1822,6 +1847,13 @@ def track_api_call(
     latency_ms: int,
     user_id: Optional[int] = None,
 ) -> None:
+    """Emit `api_call` — one row per HTTP request, from the middleware's `finally`.
+
+    `status_code` is what the caller actually received, INCLUDING the 500 an unhandled exception
+    became, so this counts failures rather than only the requests that survived. Callers with no
+    session land on the shared `"anonymous"` person, which is the only way public-surface traffic
+    is visible at all.
+    """
     posthog.capture(
         distinct_id=str(user_id or "anonymous"),
         event="api_call",

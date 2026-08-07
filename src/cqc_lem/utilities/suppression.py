@@ -73,6 +73,12 @@ def _env_int(name: str, default: int) -> int:
 
 
 def tripwire_enabled() -> bool:
+    """Is the daily check armed? Defaults ON, and only an explicitly falsy env value turns it off.
+
+    On by default because the asymmetry runs the other way from most opt-in features here: a missed
+    real penalty costs 60-90 days of suppressed reach, a false trip costs a day of engagement that a
+    human can hand back. Every other knob in this module exists to make the false trip unlikely.
+    """
     return (os.environ.get("SUPPRESSION_TRIPWIRE_ENABLED") or "true").strip().lower() not in (
         "0", "false", "no", "off")
 
@@ -85,18 +91,40 @@ def drop_ratio() -> float:
 
 
 def consecutive_days() -> int:
+    """How many POSTING days in a row must all be collapsed before this counts as suppression.
+
+    Floored at 1: `_reach_signal` slices the recent run as `series[-run_days:]`, and 0 there selects
+    the WHOLE history rather than nothing, which would compare the account against itself.
+    """
     return max(1, _env_int("SUPPRESSION_CONSECUTIVE_DAYS", DEFAULT_CONSECUTIVE_DAYS))
 
 
 def baseline_days() -> int:
+    """Width of the trailing window the recent run is measured against, in CALENDAR days (floor 1).
+
+    Calendar rather than posting days on purpose: the window is cut back from the first day of the
+    recent run, so a sparse poster's baseline stays recent instead of reaching back months and
+    comparing today against a different era of the account.
+    """
     return max(1, _env_int("SUPPRESSION_BASELINE_DAYS", DEFAULT_BASELINE_DAYS))
 
 
 def min_baseline_posts() -> int:
+    """Posts the trailing window must contain before its median may be called a baseline (floor 1).
+
+    Below this the reach signal stays `unknown` — not `ok` — so a thin-history account is reported
+    as unmeasured rather than quietly graded healthy on a sample of one.
+    """
     return max(1, _env_int("SUPPRESSION_MIN_BASELINE_POSTS", DEFAULT_MIN_BASELINE_POSTS))
 
 
 def pause_seconds() -> int:
+    """How long a trip pauses engagement, floored at 60s so a bad override cannot make it a no-op.
+
+    The TTL is a backstop against a dead scheduler, not an expiry: the daily beat re-arms the pause
+    while the trip still stands, and recovery is a human clearing it (`POST /user/automation-resume`)
+    — never the clock running out.
+    """
     return max(60, _env_int("SUPPRESSION_PAUSE_SECONDS", DEFAULT_PAUSE_SECONDS))
 
 

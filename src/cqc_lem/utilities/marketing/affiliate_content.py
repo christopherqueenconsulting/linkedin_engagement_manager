@@ -108,10 +108,21 @@ def promo_slot_cadence() -> int:
 
 
 def max_promo_per_day() -> int:
+    """Affiliate posts one author may publish in a day — the ceiling #626 pacing draws against.
+
+    0 is a full stop for the writer — the third way to switch it off, alongside `generator_enabled`
+    and the user's own consent — because on someone's professional identity, "how often" is as much
+    of a consent question as "whether".
+    """
     return max(0, int(AFFILIATE_PROMO_MAX_PER_DAY or 0))
 
 
 def product_name() -> str:
+    """What the post calls the tool — configurable for a white-labelled deployment, never empty.
+
+    An unset value falls back to the product's own name rather than letting the prompt ask the model
+    to write about a nameless tool, which is exactly when it invents one.
+    """
     return str(AFFILIATE_PROMO_PRODUCT_NAME or "").strip() or "LinkedIn Engagement Manager"
 
 

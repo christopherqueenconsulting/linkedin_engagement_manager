@@ -64,6 +64,12 @@ class CoverVerdict:
 
     @property
     def extension(self) -> str:
+        """Suffix for the stored file, taken from the format Pillow actually DECODED.
+
+        Never from whatever the uploader named the file — a mislabelled ``.png`` that is really a
+        JPEG would otherwise be served under a type it is not. ``.png`` when the format is unknown,
+        which only happens on a verdict that already failed the gate and is never written.
+        """
         return _EXT_BY_FORMAT.get(self.image_format or "", ".png")
 
 

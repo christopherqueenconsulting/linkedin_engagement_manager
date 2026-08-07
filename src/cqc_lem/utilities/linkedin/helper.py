@@ -1,3 +1,18 @@
+"""The LinkedIn session: getting a Selenium driver signed in, and the cached profile behind it.
+
+`login_to_linkedin` is the ONE door every Selenium task goes through, which is why the safety gates
+live at the top of it rather than at each call site: the manual/deploy/suppression pause and the
+shared 429 breaker both refuse here, before a single navigation, because probing LinkedIn while
+throttled is what prolongs the throttle. Cookies are the preferred credential (`li_at` since #745)
+and a password login is the fallback; `_persist_session_cookies` is where both paths meet, so it is
+also where a sign-in gets recorded (issue #933).
+
+The rest of the module is the scraped-text hygiene that keeps bad data out of the DB — a body that
+says "HTTP ERROR 429" or "redirected you too many times" still sits on a `/feed` URL, so being
+logged in is never decided from the URL alone, and `clean_person_name` strips the badge text SDUI
+renders inside the same anchor as a person's name (issue #623) before it can reach a connection note.
+"""
+
 import os
 import random
 import re
@@ -402,6 +417,26 @@ def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
 
 def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, user_password: str,
                       measurement_only: bool = False):
+    """Sign `driver` in — stored cookies first, a credential login only if they no longer authenticate.
+
+    The central gate for all Selenium work. Both back-off checks run BEFORE any navigation, because
+    the whole point of the 429 breaker is not to touch LinkedIn while throttled. `measurement_only`
+    marks the read-only lanes (post stats, follower capture): they still stop for every pause EXCEPT
+    the suppression tripwire's own, since freezing the very scrape that would show a recovery makes
+    the tripwire self-perpetuating (issue #629).
+
+    Being signed in is never decided from the URL alone. A 429 body, a Chrome transport error and a
+    cookie/egress-IP redirect loop all sit on `/feed`, and only the first is a real throttle — the
+    other two drop the cookies (or raise transiently) rather than tripping the breaker on a network
+    blip. A 429 WITH stored cookies is treated as a stale-cookie mismatch and re-authenticated fresh;
+    only a 429 with nothing left to drop trips the breaker.
+
+    Raises:
+        LinkedInRateLimited: automation paused, breaker open, a genuine 429, or a transient
+            proxy/network failure that must NOT trip the breaker.
+        RuntimeError: a challenge that neither the CAPTCHA solver, the email PIN flow nor a manual
+            mobile approval could clear.
+    """
     linked_url = "https://www.linkedin.com"
     feed_url = "https://www.linkedin.com/feed/"
     login_url = "https://www.linkedin.com/login"
@@ -714,6 +749,17 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
 
 def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None) -> LinkedInProfile:
+    """The signed-in user's OWN profile, from the DB cache when it is there and by scraping when it is
+    not.
+
+    Only the cache-miss path touches Chrome (it logs in and follows `/in/` to whatever URL LinkedIn
+    redirects to), so a warm cache costs no browser time. A row older than the getter's freshness
+    window reads as absent, so this re-scrapes roughly daily. `user_id` is the preferred cache key;
+    email is the backward-compatible fallback.
+
+    Returns None, despite the annotation, when the scrape yields nothing; every caller must handle
+    that, because a DOM change makes it the normal failure.
+    """
     profile = None
 
     # Prefer user_id-based cache key; fall back to email for backward compat.
@@ -779,6 +825,21 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
 
 
 def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False, force_save=False):
+    """Anyone's profile as a plain dict — DB cache first, scrape (plus an AI industry guess) on a miss.
+
+    A dict rather than a `LinkedInProfile` because that is what `get_my_profile` and the viewer
+    outreach walk feed onward. LinkedIn rewrites vanity URLs, so a navigation that lands somewhere
+    else re-enters this function on the URL it actually got — the cache is keyed on the resolved URL,
+    not the one asked for.
+
+    The two branches do not return quite the same thing: a fresh scrape returns the SCRAPED fields
+    only, so the AI-derived `industry` reaches the DB but is missing from the dict until a later
+    cached read. `force_save` is currently accepted and not read.
+
+    Raises:
+        ProfileUnavailableError: from the scraper, and deliberately not caught here — an auth-wall or
+            rate-limited page must never be cached or read as a sparse profile.
+    """
     # Get the profile from the DB if it exists
     profile_json = get_linked_in_profile_by_url(profile_url)
 
