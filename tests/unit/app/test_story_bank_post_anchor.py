@@ -1,10 +1,12 @@
 """Unit tests for the story-bank wiring in the post pipeline (issue #620): the selected entry
 reaches the writer prompt, an empty bank ships the no-fabrication fallback instead of an invented
 anecdote, the entry's use is only counted when a post actually came out, and a draft that states a
-specific we never supplied is regenerated once."""
+specific we never supplied is regenerated once.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

@@ -1,7 +1,8 @@
 """Unit tests for newsletter publish task + dispatcher."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -152,6 +153,7 @@ def _run_generate(*, settings, pending, latest=None, gen_now=True,
                   user_ids=None, tz_side_effect=None, blog_side_effect=None, gen_spy=None):
     """Drive auto_generate_newsletter_drafts with the new pure-count collaborators mocked out."""
     from contextlib import ExitStack
+
     from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
     if edition is None:
         edition = {"title": "T", "subtitle": "S", "body": "B"}
@@ -280,8 +282,10 @@ class TestGenerateNewsletterDrafts:
 def _run_generate_for_user(*, settings, pending, latest=None, gen_now=True, edition=None,
                            create_ret=1):
     """Drive generate_newsletter_drafts_for_user (the on-demand per-user top-up) with collaborators
-    mocked out."""
+    mocked out.
+    """
     from contextlib import ExitStack
+
     from cqc_lem.app.run_scheduler import generate_newsletter_drafts_for_user
     if edition is None:
         edition = {"title": "T", "subtitle": "S", "body": "B"}
@@ -340,6 +344,7 @@ class TestTopupPlansDistinctSubjects:
     def _drive(self, planned, pending=0, existing_subjects=None, recent=None,
                shape_history=None, research=None, gen_captures=None):
         from contextlib import ExitStack
+
         from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
 
         def _gen(profile, topic=None, prefs=None, blog_content=None, subject=None,
@@ -464,6 +469,7 @@ class TestTopupPlansDistinctSubjects:
 def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=None,
                     shape_history=None, research=None, settings=None, blog_content=None):
     from contextlib import ExitStack
+
     from cqc_lem.app.run_scheduler import regenerate_newsletter_edition
     if new_ed is None:
         new_ed = {"title": "New T", "subtitle": "New S", "subject": "New Subject", "body": "New B"}
@@ -574,6 +580,7 @@ class TestPublishScheduledEditions:
     def test_dispatches_due_editions(self):
         # Two DIFFERENT users each with one due edition -> one dispatch each (<=1 per user per run).
         from datetime import datetime
+
         from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
         with patch("cqc_lem.utilities.db.get_editions_due_to_publish",
                    return_value=[{"id": 3, "user_id": 1}, {"id": 8, "user_id": 2}]), \

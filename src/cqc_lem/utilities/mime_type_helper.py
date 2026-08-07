@@ -1,3 +1,12 @@
+"""Extension -> MIME type, from a table baked into this file rather than the host's `mimetypes` DB.
+
+The answer decides which LinkedIn upload recipe a file goes through, so it
+has to be identical on a developer laptop and in the slim app container — the stdlib `mimetypes`
+module reads `/etc/mime.types`, which differs between the two and is often absent in an image.
+
+One extension legitimately maps to several types here; `choose_preferred_mime` is the tie-break, and
+an extension the table does not know is `application/octet-stream`.
+"""
 mime_types_str = """
 .3dm	x-world/x-3dmf
 .3dmf	x-world/x-3dmf
@@ -671,6 +680,13 @@ mime_types_str = """
 
 
 def choose_preferred_mime(mime_list):
+    """Pick ONE type for an extension the table lists several times, deterministically.
+
+    Only the generic container types are ranked; for everything else the table's first entry wins,
+    which keeps the choice stable as new rows are appended rather than shifting with dict ordering.
+    Assumes a non-empty list — the only caller builds it from a table row, so an empty one is a
+    corrupted table, not an input to handle.
+    """
     # Define a priority order for MIME types
     priority_order = [
         "application/octet-stream",
@@ -687,6 +703,13 @@ def choose_preferred_mime(mime_list):
 
 
 def get_file_mime_type(file_extension: str):
+    """MIME type for a file extension, with or without the leading dot.
+
+    An unknown extension is `application/octet-stream`, never an exception. Classification is a
+    separate decision made from the EXTENSION, not from this string: `poster.determine_media_type`
+    RAISES ValueError on an extension that is neither image nor video, so an unrecognised file stops
+    the upload there rather than being mislabelled here.
+    """
     # Check if file_extension is prefixed with "." if not add it first
     if not file_extension.startswith("."):
         file_extension = "." + file_extension

@@ -6,9 +6,9 @@ fake cursor rather than asserting on SQL strings — the invariant under test is
 `users.trial_ends_at` and `affiliate_rewards`, not the query that got it there.
 """
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -195,9 +195,9 @@ class TestRevokeAffiliateEnrollmentBonus:
 
     def test_opt_out_then_back_in_cannot_mint_days(self):
         """The cap is measured on the ledger SUM, revocations included — so a round trip is free,
-        not profitable."""
-        from cqc_lem.utilities.db import (grant_affiliate_trial_days,
-                                          revoke_affiliate_enrollment_bonus)
+        not profitable.
+        """
+        from cqc_lem.utilities.db import grant_affiliate_trial_days, revoke_affiliate_enrollment_bonus
         store = _Store(rewards=[{"kind": "enrollment", "trial_days": 7, "referral_id": None}])
         _run(store, revoke_affiliate_enrollment_bonus, 1)
         _run(store, grant_affiliate_trial_days, 1, 7, "enrollment")

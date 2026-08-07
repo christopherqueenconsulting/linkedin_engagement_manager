@@ -1,10 +1,13 @@
 from aws_cdk import (
     Duration,
+    RemovalPolicy,
+    Stack,
+    aws_applicationautoscaling as applicationautoscaling,
+    aws_cloudwatch as cloudwatch,
+    aws_ec2 as ec2,
     aws_ecs as ecs,
     aws_logs as logs,
-    aws_cloudwatch as cloudwatch,
-    aws_applicationautoscaling as applicationautoscaling,
-    aws_ec2 as ec2, Stack, RemovalPolicy, )
+)
 from constructs import Construct
 
 from cqc_lem.aws.cdk.shared_stack_props import SharedStackProps
@@ -143,7 +146,7 @@ class CeleryWorkerStack(Stack):
 
         # Create the scalable target
         target = applicationautoscaling.ScalableTarget(
-            self, f'celery-worker-scalable-target',
+            self, 'celery-worker-scalable-target',
             service_namespace=applicationautoscaling.ServiceNamespace.ECS,
             min_capacity=1,
             max_capacity=50,  # TODO: Find a good number for max celery workers capacity
@@ -183,9 +186,9 @@ class CeleryWorkerStack(Stack):
         )
         '''
 
-        scaling_policy = applicationautoscaling.TargetTrackingScalingPolicy(
-            self, f"celery_worker-target-cpu-scaling-policy",
-            policy_name=f"celery-worker-scalable-target-cpu-scaling",
+        applicationautoscaling.TargetTrackingScalingPolicy(
+            self, "celery_worker-target-cpu-scaling-policy",
+            policy_name="celery-worker-scalable-target-cpu-scaling",
             scaling_target=target,
             target_value=40.0,  # 40% CPU utilization target
             scale_in_cooldown=Duration.seconds(300),  # 5 minutes

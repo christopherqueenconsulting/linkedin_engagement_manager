@@ -1,10 +1,17 @@
 """Issue #624 — the CTA -> owned-asset map: an artifact CTA is only worth writing if something
 actually arrives, so every CTA must resolve to a real asset, a real channel, and an honest
-'deliverable' flag."""
+'deliverable' flag.
+"""
 from cqc_lem.utilities.ai.content_alignment import (
-    ARTIFACT_CHANNEL_DM, ARTIFACT_CHANNEL_LINK, ARTIFACT_KIND_LEAD_MAGNET,
-    ARTIFACT_KIND_NEWSLETTER, ARTIFACT_KIND_NONE, artifact_cta_line, resolve_artifact_delivery,
-    split_link_for_first_comment)
+    ARTIFACT_CHANNEL_DM,
+    ARTIFACT_CHANNEL_LINK,
+    ARTIFACT_KIND_LEAD_MAGNET,
+    ARTIFACT_KIND_NEWSLETTER,
+    ARTIFACT_KIND_NONE,
+    artifact_cta_line,
+    resolve_artifact_delivery,
+    split_link_for_first_comment,
+)
 
 _LM = {"enabled": True, "keyword": "AUDIT", "message": "the 12-point pipeline checklist"}
 _NEWS = {"enabled": True, "title": "The Build Log", "newsletter_url": "https://li/newsletter/build"}
@@ -77,7 +84,8 @@ class TestArtifactCtaLine:
 
 class TestNewsletterLinkRidesTheFirstComment:
     """Issue #624 scope: verify the edit-in-later pattern (#392) covers ARTIFACT links too — an
-    in-body link costs 19-60% reach, and the newsletter CTA is the one artifact that ships a URL."""
+    in-body link costs 19-60% reach, and the newsletter CTA is the one artifact that ships a URL.
+    """
 
     def test_subscribe_url_is_split_out_of_the_body(self):
         body = "Here is the thing I learned.\n\n" + artifact_cta_line(newsletter=_NEWS, post_id=2)

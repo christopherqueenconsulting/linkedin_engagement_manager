@@ -1,9 +1,9 @@
 """Unit tests for the persistent per-post comment-claim ledger (commented_posts)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -108,7 +108,8 @@ class TestGetDuplicateCommentPosts:
 
 class TestStaleClaimTakeover:
     """A worker SIGKILLed by a deploy leaves a 'claimed' row it can never release; the re-queued
-    task (task_acks_late) must be able to take it over or the comment is lost (issue #549)."""
+    task (task_acks_late) must be able to take it over or the comment is lost (issue #549).
+    """
 
     def _dup_then(self, update_rowcount):
         conn = MagicMock()

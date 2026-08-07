@@ -326,18 +326,18 @@ class TestEngageCardWiring:
 
     def _engage(self, comment_text, recent):
         from cqc_lem.app import run_automation as ra
-        with patch(f"cqc_lem.app.run_automation.claim_post_for_comment", return_value=True), \
-             patch(f"cqc_lem.app.run_automation.generate_ai_response",
+        with patch("cqc_lem.app.run_automation.claim_post_for_comment", return_value=True), \
+             patch("cqc_lem.app.run_automation.generate_ai_response",
                    return_value=comment_text) as gen, \
-             patch(f"cqc_lem.app.run_automation.release_post_claim") as release, \
-             patch(f"cqc_lem.app.run_automation.post_comment_inline", return_value=True), \
-             patch(f"cqc_lem.app.run_automation.react_to_post_inline", return_value=True), \
-             patch(f"cqc_lem.app.run_automation.mark_post_commented"), \
-             patch(f"cqc_lem.app.run_automation.mark_post_reacted"), \
-             patch(f"cqc_lem.app.run_automation.insert_new_log"), \
-             patch(f"cqc_lem.app.run_automation._author_is_me", return_value=False), \
-             patch(f"cqc_lem.app.run_automation.pace_read", return_value=0.0), \
-             patch(f"cqc_lem.app.run_automation.time.sleep"):
+             patch("cqc_lem.app.run_automation.release_post_claim") as release, \
+             patch("cqc_lem.app.run_automation.post_comment_inline", return_value=True), \
+             patch("cqc_lem.app.run_automation.react_to_post_inline", return_value=True), \
+             patch("cqc_lem.app.run_automation.mark_post_commented"), \
+             patch("cqc_lem.app.run_automation.mark_post_reacted"), \
+             patch("cqc_lem.app.run_automation.insert_new_log"), \
+             patch("cqc_lem.app.run_automation._author_is_me", return_value=False), \
+             patch("cqc_lem.app.run_automation.pace_read", return_value=0.0), \
+             patch("cqc_lem.app.run_automation.time.sleep"):
             ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
                                  "feedurn://x", _POST, "Jane", {}, "synthesis", [], recent)
         return ok, gen, release
@@ -364,16 +364,16 @@ class TestPermalinkCommentPathSkips:
         from cqc_lem.app import run_automation as ra
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
-        with patch(f"cqc_lem.app.run_automation.get_user_id", return_value=1), \
-             patch(f"cqc_lem.app.run_automation.check_commented", return_value=False), \
-             patch(f"cqc_lem.app.run_automation.get_element_wait_retry", return_value=MagicMock()), \
-             patch(f"cqc_lem.app.run_automation.getText", return_value=_POST), \
-             patch(f"cqc_lem.app.run_automation.get_engagement_preferences", return_value={}), \
-             patch(f"cqc_lem.app.run_automation.get_recent_comment_texts",
+        with patch("cqc_lem.app.run_automation.get_user_id", return_value=1), \
+             patch("cqc_lem.app.run_automation.check_commented", return_value=False), \
+             patch("cqc_lem.app.run_automation.get_element_wait_retry", return_value=MagicMock()), \
+             patch("cqc_lem.app.run_automation.getText", return_value=_POST), \
+             patch("cqc_lem.app.run_automation.get_engagement_preferences", return_value={}), \
+             patch("cqc_lem.app.run_automation.get_recent_comment_texts",
                    return_value=["an older comment"]) as history, \
-             patch(f"cqc_lem.app.run_automation.pace_read", return_value=0.0), \
-             patch(f"cqc_lem.app.run_automation.time.sleep"), \
-             patch(f"cqc_lem.app.run_automation.generate_ai_response", return_value=None) as gen, \
+             patch("cqc_lem.app.run_automation.pace_read", return_value=0.0), \
+             patch("cqc_lem.app.run_automation.time.sleep"), \
+             patch("cqc_lem.app.run_automation.generate_ai_response", return_value=None) as gen, \
              patch.object(ra.comment_on_post, "apply_async") as queued:
             ok = ra.generate_and_post_comment(driver, MagicMock(), driver.current_url, MagicMock())
         assert ok is False
@@ -385,7 +385,7 @@ class TestPermalinkCommentPathSkips:
 class TestRecentCommentHistoryQuery:
     def test_reads_successful_comment_bodies_newest_first(self):
         from cqc_lem.utilities import db
-        from cqc_lem.utilities.db import get_recent_comment_texts, LogActionType, LogResultType
+        from cqc_lem.utilities.db import LogActionType, LogResultType, get_recent_comment_texts
         conn = MagicMock()
         cursor = conn.cursor.return_value
         cursor.fetchall.return_value = [("newest comment",), ("older comment",)]
@@ -400,7 +400,8 @@ class TestRecentCommentHistoryQuery:
 class TestPromptExperiment:
     """The pilot LLM prompt experiment (issue #652): the contract's closing ask is the variable, and
     the six graded rules are deliberately NOT — an arm that loosened one would change what "passes
-    the gate" means and the two arms would stop being comparable."""
+    the gate" means and the two arms would stop being comparable.
+    """
 
     _RULE = "END ON A QUESTION ONLY THIS AUTHOR COULD ANSWER"
 
@@ -439,7 +440,8 @@ class TestPromptExperiment:
 
     def test_replying_to_a_comment_is_not_part_of_the_experiment(self):
         """A reply has its own acknowledge-and-answer contract, and the #628 sweep never measures it,
-        so enrolling it would only add exposures the metric can't cover."""
+        so enrolling it would only add exposures the metric can't cover.
+        """
         from cqc_lem.utilities.ai import ai_helper
         with patch(f"{_AI}._call_llm", return_value=_resp("Sure — here is the number.")), \
              patch("cqc_lem.utilities.experiments.resolve_variant") as resolve:

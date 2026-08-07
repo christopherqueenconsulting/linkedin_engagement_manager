@@ -42,10 +42,21 @@ NO_STORE_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 
 
 def spa_index_headers() -> Dict[str, str]:
+    """The response headers every serving of the HTML shell must carry.
+
+    One place, because a shell served from cache is the failure this whole module exists to
+    contain — see the note on NO_STORE_CACHE_CONTROL for why. `Pragma` is there for the
+    intermediaries that still only honour HTTP/1.0.
+    """
     return {"Cache-Control": NO_STORE_CACHE_CONTROL, "Pragma": "no-cache"}
 
 
 def archive_dir() -> Optional[str]:
+    """The archive root, or None when retention is off.
+
+    None is the whole feature's OFF switch (dev and CI), so every entry point checks it first
+    rather than assuming a directory exists. A blank or whitespace-only value counts as unset.
+    """
     return (os.getenv(ARCHIVE_DIR_ENV, "") or "").strip() or None
 
 
@@ -70,7 +81,8 @@ def _relative_files(root: str) -> List[str]:
 
 def _build_id(rel_files: List[str]) -> str:
     """Identify a build by its own file list — available with or without an IMAGE_TAG, and
-    identical across a re-deploy of the same image, which is what makes the sync idempotent."""
+    identical across a re-deploy of the same image, which is what makes the sync idempotent.
+    """
     digest = hashlib.sha256()
     for rel in rel_files:
         digest.update(rel.encode("utf-8"))
@@ -96,7 +108,8 @@ def _read_manifest(archive: str) -> Dict[str, Any]:
 
 def _write_manifest(archive: str, manifest: Dict[str, Any]) -> None:
     """Atomic replace: a half-written manifest read by the other color would look like an empty
-    archive and prune every retained build."""
+    archive and prune every retained build.
+    """
     fd, tmp = tempfile.mkstemp(dir=archive, prefix=".manifest-", suffix=".json")
     try:
         with os.fdopen(fd, "w") as fh:
@@ -192,7 +205,8 @@ def sync_build_to_archive(dist_assets_dir: str) -> Optional[Dict[str, Any]]:
 
 def archived_asset_path(rel_path: str) -> Optional[str]:
     """Resolve an asset name against the archive, or None. Path-traversal safe (CWE-22): the
-    resolved path must stay inside the archive root and be a regular file."""
+    resolved path must stay inside the archive root and be a regular file.
+    """
     archive = archive_dir()
     if not archive or not rel_path:
         return None
@@ -210,9 +224,17 @@ def archived_asset_path(rel_path: str) -> Optional[str]:
 
 class ArchivedStaticFiles(StaticFiles):
     """The SPA asset mount: content-hashed files cached forever, with a miss falling back to a
-    previously-deployed build so a tab that predates the current release still resolves its chunks."""
+    previously-deployed build so a tab that predates the current release still resolves its chunks.
+    """
 
     async def get_response(self, path: str, scope: Scope) -> Response:
+        """Serve from the live bundle, falling back to the archive only on a 404.
+
+        Any other HTTPException (405, a permission problem) is re-raised untouched: the archive
+        answers "this hash is from an older build", not "this request was wrong". The immutable
+        cache header is stamped on BOTH paths, so an archived chunk is as cacheable as a live one —
+        content-hashed names make that safe.
+        """
         try:
             response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:

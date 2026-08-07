@@ -1,7 +1,8 @@
 """Unit tests for the link-in-first-comment DB layer (issue #392 — C3)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

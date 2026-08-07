@@ -29,7 +29,8 @@ class TestCreateCarouselPdf:
 
     def test_defaults_to_post_assets_dir(self, tmp_path, monkeypatch):
         """The default path is derived from the module's __file__ — redirect that so the
-        assets tree is created under tmp_path instead of in the repo working copy."""
+        assets tree is created under tmp_path instead of in the repo working copy.
+        """
         from cqc_lem.utilities import carousel_creator
         from cqc_lem.utilities.carousel_creator import create_carousel_pdf
 

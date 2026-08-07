@@ -1,7 +1,8 @@
 """Unit tests for the comment-notification email helpers (event-driven reply feature)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -16,7 +17,9 @@ class TestAddress:
 
     def test_token_round_trip(self):
         from cqc_lem.utilities.linkedin.notification_email import (
-            reply_inbound_address, extract_reply_token_from_address)
+            extract_reply_token_from_address,
+            reply_inbound_address,
+        )
         with patch.dict("os.environ", {"LINKEDIN_PARSE_DOMAIN": "parse.example.com"}):
             addr = reply_inbound_address("abc987")
         assert extract_reply_token_from_address(addr) == "abc987"
@@ -63,7 +66,8 @@ class TestIsCommentNotification:
 
 class TestIsLinkedInNotification:
     """The evidence test for issue #813 — broader than is_comment_notification (a forwarded
-    reaction email proves the forwarding chain too) but not blanket."""
+    reaction email proves the forwarding chain too) but not blanket.
+    """
 
     def test_true_for_linkedin_sender(self):
         from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
@@ -124,6 +128,8 @@ class TestGmailForwardingConfirmation:
 
     def test_no_url_or_code(self):
         from cqc_lem.utilities.linkedin.notification_email import (
-            extract_gmail_confirmation_url, extract_gmail_confirmation_code)
+            extract_gmail_confirmation_code,
+            extract_gmail_confirmation_url,
+        )
         assert extract_gmail_confirmation_url("nothing here") is None
         assert extract_gmail_confirmation_code("nothing here") is None

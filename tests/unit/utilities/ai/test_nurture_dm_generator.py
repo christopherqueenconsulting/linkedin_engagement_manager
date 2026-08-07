@@ -1,8 +1,10 @@
 """Unit tests for the DM auto-nurture draft generator (issue #485) — the approval-gated next
-message written against what a lead actually replied."""
+message written against what a lead actually replied.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

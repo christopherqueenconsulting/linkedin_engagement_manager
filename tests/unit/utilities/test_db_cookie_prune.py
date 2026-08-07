@@ -1,8 +1,9 @@
 """Unit tests for cookie auto-pruning (keep newest per user_id+name)."""
 
+from unittest.mock import patch
+
 import mysql.connector
 import pytest
-from unittest.mock import patch
 
 from cqc_lem.utilities.db import prune_superseded_cookies, store_cookies
 

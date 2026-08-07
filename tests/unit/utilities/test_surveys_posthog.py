@@ -3,7 +3,8 @@
 Two things are load-bearing and both are asserted here: a PostHog answer becomes a `feedback` row
 (so it reaches the auto-work loop) WITHOUT emitting the homegrown `survey_response` event (so one
 answer is counted once), and the homegrown NPS scheduler stands down when PostHog owns NPS (so
-nobody is prompted twice)."""
+nobody is prompted twice).
+"""
 
 from datetime import datetime, timedelta
 from unittest.mock import patch

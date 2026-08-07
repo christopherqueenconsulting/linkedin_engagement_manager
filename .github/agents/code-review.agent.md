@@ -30,7 +30,10 @@ LEM automates LinkedIn engagement: Selenium scraping, AI content generation via 
 - [ ] Status fields use enums: `PostStatus`, `PostType`, `LogActionType` from `db.py`
 - [ ] All imports are absolute (`from cqc_lem.utilities.db import ...`)
 - [ ] No raw SQL outside `utilities/db.py`
-- [ ] Comments only when WHY is non-obvious — no docstring blocks, no "what" comments
+- [ ] Comments and docstrings say WHY, never "what". Google-convention docstrings are REQUIRED and
+      machine-checked (ruff `D`, `docs/docstring-standard.md`) — do not ask for one to be removed.
+      Do request changes for a docstring that restates the signature (`Returns: The user id.` under
+      `-> int`) or asserts behaviour the code does not have
 
 ### Architecture (Request changes if violated)
 - [ ] LLM calls go through LiteLLM client in `utilities/ai/client.py` — no direct OpenAI SDK outside that module

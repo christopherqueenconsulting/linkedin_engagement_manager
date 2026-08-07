@@ -42,7 +42,8 @@ def _suite(tier="lem-simple", cases=None, thresholds=None):
 def _card(tier="lem-simple", model="m", role="candidate", det=1.0, judged=5, judge_rate=1.0,
           errors=None, contract=None):
     """A scorecard. `contract` defaults to `det` so a test that only cares about one rate reads the
-    same either way; the two are set apart wherever the split (#910) is what's under test."""
+    same either way; the two are set apart wherever the split (#910) is what's under test.
+    """
     contract = det if contract is None else contract
     return {"tier": tier, "model": model, "role": role, "cases": 10,
             "deterministic_pass_rate": det, "deterministic_passed": int(round(det * 10)),
@@ -82,7 +83,8 @@ class TestShippedSuites:
 
     def test_canned_outputs_satisfy_their_own_assertions(self):
         """The dry run is only a proof if the committed canned answers actually pass. A fixture
-        that drifted from its assertions would make every dry run look broken."""
+        that drifted from its assertions would make every dry run look broken.
+        """
         for tier, suite in bm.load_suites(str(SUITE_DIR)).items():
             outputs = {c["id"]: (c.get("canned") or {}).get("output") for c in suite["cases"]}
             for result in bm.score_suite(suite, outputs):
@@ -295,7 +297,8 @@ class TestProductionClass:
 
     def test_the_shipped_long_form_suites_hold_linkedins_hard_limit_as_a_contract_check(self):
         """A craft cap under 3000 chars is a target production redrafts toward; 3000 is LinkedIn's
-        own limit and nothing repairs a post that exceeds it."""
+        own limit and nothing repairs a post that exceeds it.
+        """
         suite = bm.load_suites(str(SUITE_DIR), ["lem-complex"])["lem-complex"]
         for case in suite["cases"]:
             caps = [a for a in case["assertions"] if a["type"] == "max_chars"]
@@ -310,7 +313,8 @@ class TestProductionClass:
 
     def test_every_production_budget_case_is_a_short_one(self):
         """The exemption exists for budgets that MIRROR a call site (`max_tokens` 3/5/8). Marking a
-        long-form case would quietly re-disable the reasoning-headroom retry the #842 run needed."""
+        long-form case would quietly re-disable the reasoning-headroom retry the #842 run needed.
+        """
         for tier, suite in bm.load_suites(str(SUITE_DIR)).items():
             for case in suite["cases"]:
                 if case.get("budget_mirrors_production"):
@@ -456,7 +460,8 @@ class TestGate:
 
     def test_the_first_draft_rate_is_advisory_not_a_floor(self):
         """The #910 finding: every model measured, champions included, sat at 40–80% first-draft
-        against a 90% floor. A floor the incumbent fails is a gate that can never open."""
+        against a 90% floor. A floor the incumbent fails is a gate that can never open.
+        """
         gate = bm.gate_decision(_card(det=0.4, contract=1.0),
                                 _card(role="champion", det=0.4, contract=1.0),
                                 {"contract_pass_rate": 0.9, "deterministic_pass_rate": 0.9})
@@ -584,7 +589,8 @@ class TestBm842Replay:
 
     def test_the_old_absolute_floor_could_not_have_opened_for_anyone(self):
         """Why the calibration changed: not one model in that roster — champions included — was
-        within reach of the 90% floor on the first-draft rate."""
+        within reach of the 90% floor on the first-draft rate.
+        """
         for card in _replay_cards():
             assert card["deterministic_pass_rate"] < 0.9, card["model"]
 
@@ -673,7 +679,8 @@ class TestProvenance:
 def _measured_card(tier="lem-simple", model="m", role="candidate", cases=("a", "b"),
                    errors=None, error="No module named 'openai'", run_id="bm-1"):
     """A real scorecard built through the real merge, so the guard is exercised against the shape
-    `run_benchmark` actually produces. `errors` names the cases whose provider call failed."""
+    `run_benchmark` actually produces. `errors` names the cases whose provider call failed.
+    """
     failed = set(cases) if errors is None else set(errors)
     results = []
     for case_id in cases:
@@ -699,7 +706,8 @@ class TestHarnessOutage:
 
     `ProviderClient.complete` turns any exception into a case result, so a broken venv or a revoked
     key produced a complete, plausible report: six rows, `reject` everywhere, champions at 0%, off a
-    run that never made an HTTP request. Nothing measured => nothing published."""
+    run that never made an HTTP request. Nothing measured => nothing published.
+    """
 
     def test_every_case_of_every_model_erroring_is_an_outage(self):
         run = _outage_run([_measured_card(model="champ", role="champion"),
@@ -734,7 +742,8 @@ class TestHarnessOutage:
 
     def test_one_model_failing_every_case_is_still_a_measurement(self):
         """The honest half: a candidate that 500s on everything beside a champion that answered is
-        a real result and must render exactly as it does today."""
+        a real result and must render exactly as it does today.
+        """
         run = _outage_run([_measured_card(model="champ", role="champion", errors=()),
                            _measured_card(model="cand", error="410 model retired")])
         assert bm.harness_outage(run) is None
@@ -801,7 +810,8 @@ class TestHarnessOutage:
 
     def test_a_run_that_measured_no_champion_is_refused_on_the_same_condition(self):
         """The champion is the TELL, not a precondition. A tier with no configured incumbent still
-        measured nothing, and requiring a champion card would let exactly that run publish zeros."""
+        measured nothing, and requiring a champion card would let exactly that run publish zeros.
+        """
         run = _outage_run([_measured_card(model="cand")])
         outage = bm.harness_outage(run)
         assert outage["champions"] == [] and "plumbing and not the roster" not in outage["detail"]
@@ -822,7 +832,8 @@ class TestUnmeasuredHeader:
 
     def test_a_model_silent_across_every_tier_is_named_once(self):
         """The weekly run scores one candidate against 3–4 tiers. Naming it per tier reads as four
-        dead models instead of one."""
+        dead models instead of one.
+        """
         run = _outage_run([_measured_card(tier="lem-simple", model="champ", role="champion",
                                           errors=()),
                            _measured_card(tier="lem-medium", model="champ", role="champion",
@@ -891,7 +902,8 @@ class TestRendering:
         """`no output` IS a contract failure — the call site got nothing — but production never
         SHIPPED it, and since #910 turns an empty completion into no output this is the common
         path. Rendering it under "production would ship this" is the misreading the two rates
-        exist to prevent."""
+        exist to prevent.
+        """
         card = bm.merge_scorecard("lem-complex", "minimax-m3", "candidate", [bm.evaluate_case(
             {"id": "complex-thought-leadership", "assertions": [{"type": "min_chars", "value": 700},
                                                                 {"type": "slop_lint"}]},
@@ -954,7 +966,8 @@ class TestRendering:
 
     def test_repeated_renders_never_grow_the_table_with_its_own_header(self):
         """The header and divider are pipe-delimited rows of the right width. Reading them back as
-        DATA appended two junk rows per run and evicted real history at the row cap."""
+        DATA appended two junk rows per run and evicted real history at the row cap.
+        """
         def table_rows(doc: str) -> list:
             inner = doc.split(bm.LEADERBOARD_BEGIN)[1].split(bm.LEADERBOARD_END)[0]
             return [line for line in inner.splitlines() if line.strip().startswith("|")]
@@ -978,7 +991,8 @@ class TestRendering:
 
     def test_pre_910_rows_survive_the_new_contract_column(self):
         """Adding a column must not evict the history already committed: a legacy row is re-emitted
-        at the new width with `n/a` where nobody measured a contract rate."""
+        at the new width with `n/a` where nobody measured a contract rate.
+        """
         legacy = ("| 2026-08-02 | `bm-old` | lem-medium | `gpt-oss:120b` | champion | 60% | 50% | "
                   "1635 ms | baseline |")
         doc = f"{bm.LEADERBOARD_BEGIN}\n{bm.LEADERBOARD_HEADER}\n{bm.LEADERBOARD_DIVIDER}\n" \
@@ -1598,7 +1612,8 @@ class TestUsageLevels:
 
 class TestQuotaPolicy:
     """The owner's standing call: a usage-level increase is adoptable only on `lem-complex`, and
-    only on a STRICT judge-rate win. Encoded so an unattended run states the decision itself."""
+    only on a STRICT judge-rate win. Encoded so an unattended run states the decision itself.
+    """
 
     def test_no_increase_is_adoptable_on_the_quality_gate_alone(self):
         for direction in (bm.USAGE_FLAT, bm.USAGE_DOWN):
@@ -1812,7 +1827,8 @@ class TestRunBenchmark:
 
     def test_a_partial_posthog_read_keeps_the_unscored_cases_as_timeouts(self):
         """Rebuilding a card from the returned rows alone used to DROP the cases PostHog never
-        scored, rendering 1-of-3 verdicts as a 100% judge pass on full evidence."""
+        scored, rendering 1-of-3 verdicts as a 100% judge pass on full evidence.
+        """
         suites = {"lem-simple": _suite("lem-simple", cases=[
             _case(cid, assertions=[{"type": "max_chars", "value": 50}]) for cid in ("a", "b", "c")],
             thresholds={"min_judged": 1})}
@@ -1837,7 +1853,8 @@ class TestRunBenchmark:
     def test_a_posthog_run_that_scores_nothing_falls_back_to_the_in_runner_judge(self):
         """PostHog's judge needs a provider key of its own (it cannot judge via Ollama Cloud). With
         none configured the evaluations exist but score nothing, so the run degrades rather than
-        reporting evidence the gate can only read as absent."""
+        reporting evidence the gate can only read as absent.
+        """
         provider = MagicMock()
         provider.complete.return_value = {"text": "short answer", "error": None,
                                           "latency_ms": 5.0, "usage": {}}
@@ -1995,7 +2012,8 @@ class TestCLI:
     def test_render_of_a_run_that_measured_nothing_exits_1_and_writes_nothing(self, tmp_path,
                                                                              capsys):
         """#923: the unattended path. A harness-wide failure must not become a PR asserting that
-        every model LEM runs scores zero — the cron reads any rc outside {0, 2} as a real failure."""
+        every model LEM runs scores zero — the cron reads any rc outside {0, 2} as a real failure.
+        """
         results = tmp_path / "outage.json"
         results.write_text(json.dumps(_outage_run([
             _measured_card(model="champ", role="champion"), _measured_card(model="cand")])))

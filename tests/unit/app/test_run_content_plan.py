@@ -1,12 +1,16 @@
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import ANY, MagicMock, patch
+
+import importlib
 
 import pytest
 from freezegun import freeze_time
 
-import pydantic.v1.types  # noqa: F401
+# Imported for the side effect ONLY, and via importlib so it reads as one: `pydantic.v1.types` must
+# be loaded before freezegun freezes the clock, or its `ConstrainedNumberMeta` metaclass conflicts.
+# A bare `import` here looks unused to every linter and gets deleted by an auto-fixer.
+importlib.import_module("pydantic.v1.types")
 
 from cqc_lem.utilities.db import PostType
-
 
 # Wall-clock MUST be frozen mid-month here: the plan window derives its length from
 # `days_left_in_month`, and on the last 1-2 days of any month a `last_planned_date = now + 1`
@@ -259,8 +263,7 @@ class TestBufferTopUpIsSingleFlight:
 class TestContentBufferSettings:
     def test_defaults_when_prefs_missing(self):
         from cqc_lem.app.run_content_plan import _content_buffer_settings
-        from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
-                                          DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        from cqc_lem.utilities.db import DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS
         assert _content_buffer_settings({}) == (DEFAULT_CONTENT_BUFFER_DAYS,
                                                 DEFAULT_CONTENT_BUFFER_MAX_POSTS)
         assert _content_buffer_settings(None) == (DEFAULT_CONTENT_BUFFER_DAYS,
@@ -268,8 +271,7 @@ class TestContentBufferSettings:
 
     def test_zero_or_null_falls_back_to_defaults(self):
         from cqc_lem.app.run_content_plan import _content_buffer_settings
-        from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
-                                          DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        from cqc_lem.utilities.db import DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS
         assert _content_buffer_settings({"content_buffer_days": 0,
                                          "content_buffer_max_posts": None}) == (
             DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS)
@@ -425,8 +427,9 @@ class TestProcessSelectedPost:
 class TestSaveContentPlan:
     @patch("cqc_lem.app.run_content_plan.insert_planned_post", return_value=True)
     def test_inserts_each_plan_entry(self, mock_insert):
-        from cqc_lem.app.run_content_plan import save_content_plan
         from datetime import datetime
+
+        from cqc_lem.app.run_content_plan import save_content_plan
         daily_plan = [
             {"scheduled_datetime": datetime(2024, 6, 1, 9, 0), "post_type": "text", "stage": "awareness"},
             {"scheduled_datetime": datetime(2024, 6, 2, 9, 0), "post_type": "carousel", "stage": "consideration"},
@@ -443,9 +446,10 @@ class TestSaveContentPlan:
 
     @patch("cqc_lem.app.run_content_plan.insert_planned_post", return_value=True)
     def test_correct_post_type_conversion(self, mock_insert):
+        from datetime import datetime
+
         from cqc_lem.app.run_content_plan import save_content_plan
         from cqc_lem.utilities.db import PostType
-        from datetime import datetime
         daily_plan = [
             {"scheduled_datetime": datetime(2024, 6, 1, 9, 0), "post_type": "carousel", "stage": "awareness"},
         ]
@@ -563,8 +567,9 @@ class TestPlanContentForUser:
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 3, "text": 5, "video": 2})
     def test_skips_when_last_planned_date_beyond_30_days(self, mock_counts, mock_last, mock_time, mock_save):
         """Should early-return if the start date is >30 days out."""
-        from cqc_lem.app.run_content_plan import plan_content_for_user
         from datetime import datetime, timedelta
+
+        from cqc_lem.app.run_content_plan import plan_content_for_user
         future_date = datetime.now() + timedelta(days=40)
         mock_last.return_value = future_date
         plan_content_for_user.run(user_id=1)
@@ -577,8 +582,9 @@ class TestPlanContentForUser:
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 3, "text": 5, "video": 2})
     def test_uses_last_planned_date_when_recent(self, mock_counts, mock_last, mock_time, mock_save):
         """When last_planned_date is tomorrow, start_date is the day after that."""
-        from cqc_lem.app.run_content_plan import plan_content_for_user
         from datetime import datetime, timedelta
+
+        from cqc_lem.app.run_content_plan import plan_content_for_user
         tomorrow = datetime.now() + timedelta(days=1)
         mock_last.return_value = tomorrow
         plan_content_for_user.run(user_id=1)
@@ -621,8 +627,9 @@ class TestPlanContentForUser:
 class TestGetMainBlogUrlContent:
     @patch("cqc_lem.app.run_content_plan.get_session_for_response")
     def test_returns_none_none_on_connection_error(self, mock_session_fn):
-        from cqc_lem.app.run_content_plan import get_main_blog_url_content
         import requests
+
+        from cqc_lem.app.run_content_plan import get_main_blog_url_content
         mock_session = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
         mock_session.get.side_effect = requests.exceptions.ConnectionError("down")
         mock_session_fn.return_value = (mock_session, {})
@@ -632,8 +639,9 @@ class TestGetMainBlogUrlContent:
 
     @patch("cqc_lem.app.run_content_plan.get_session_for_response")
     def test_returns_none_none_on_timeout(self, mock_session_fn):
-        from cqc_lem.app.run_content_plan import get_main_blog_url_content
         import requests
+
+        from cqc_lem.app.run_content_plan import get_main_blog_url_content
         mock_session = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
         mock_session.get.side_effect = requests.exceptions.Timeout("timeout")
         mock_session_fn.return_value = (mock_session, {})
@@ -659,8 +667,9 @@ class TestGetMainBlogUrlContent:
     @patch("cqc_lem.app.run_content_plan.scrape_recent_posts", return_value=[])
     @patch("cqc_lem.app.run_content_plan.get_session_for_response")
     def test_falls_back_to_scraping_on_http_error(self, mock_session_fn, mock_scrape):
-        from cqc_lem.app.run_content_plan import get_main_blog_url_content
         import requests
+
+        from cqc_lem.app.run_content_plan import get_main_blog_url_content
         mock_session = MagicMock()
         mock_resp = MagicMock()
         mock_resp.raise_for_status.side_effect = requests.exceptions.HTTPError("404")
@@ -764,7 +773,8 @@ class TestRegeneratePostAllTypes:
     @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="consideration")
     def test_carousel_post_regenerates_with_guidance(self, mock_stage, mock_type, mock_carousel, base_patches):
         """The guidance reaches the DECK's generation — a caption-only rewrite would leave the
-        user's suggestions off the slides, which on a carousel ARE the post (issue #794)."""
+        user's suggestions off the slides, which on a carousel ARE the post (issue #794).
+        """
         from cqc_lem.app.run_content_plan import regenerate_post
         from cqc_lem.utilities.db import PostStatus
         with patch(f"{_RCP}.apply_post_guidance") as mock_guidance:
@@ -779,7 +789,8 @@ class TestRegeneratePostAllTypes:
     @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.CAROUSEL)
     def test_carousel_keeps_error_status_when_slides_fail(self, mock_type, mock_carousel, base_patches):
         """create_carousel_content flags a failed slide render 'error'; clearing that to PENDING
-        would present a deck still carrying the PREVIOUS draft's slides as ready to review."""
+        would present a deck still carrying the PREVIOUS draft's slides as ready to review.
+        """
         from cqc_lem.app.run_content_plan import regenerate_post
         with patch(f"{_RCP}._post_is_flagged_error", return_value=True):
             result = regenerate_post(8)
@@ -826,7 +837,8 @@ class TestRegeneratePostAllTypes:
     def test_regenerated_ai_video_is_disclosed(self, mock_video_src, mock_type, mock_mix,
                                                mock_text, base_patches):
         """Regeneration replaces the whole caption, so the old draft's AI-visuals disclosure went
-        with it — the new caption must carry it or the post ships undisclosed (issue #744)."""
+        with it — the new caption must carry it or the post ships undisclosed (issue #744).
+        """
         from cqc_lem.app.run_content_plan import regenerate_post
         with patch(f"{_RCP}.create_folder_if_not_exists"), \
              patch(f"{_RCP}.save_video_url_to_dir", return_value="/fake/path/xyz.mp4"), \
@@ -846,7 +858,8 @@ class TestRegeneratePostAllTypes:
     def test_video_asset_download_failure_still_persists_caption(self, mock_video_src, mock_type,
                                                                  mock_mix, mock_text, base_patches):
         """A failed download must not take the regenerated caption down with it — the post is
-        persisted and held by the missing-asset gate, exactly as a failed render is."""
+        persisted and held by the missing-asset gate, exactly as a failed render is.
+        """
         from cqc_lem.app.run_content_plan import regenerate_post
         from cqc_lem.utilities.db import PostStatus
         with patch(f"{_RCP}._store_video_asset", side_effect=OSError("disk full")), \

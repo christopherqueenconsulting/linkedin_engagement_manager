@@ -93,7 +93,8 @@ def _llm_says_lead(text: str) -> bool:
     flood the operator's leads inbox with noise; a genuine lead usually carries a strong keyword.
 
     Routed through `_call_llm` so this high-volume classifier's tokens/latency land in PostHog with
-    every other LLM call."""
+    every other LLM call.
+    """
     from cqc_lem.utilities.ai.ai_helper import _call_llm
     try:
         response = _call_llm(

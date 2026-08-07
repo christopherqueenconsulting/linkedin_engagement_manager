@@ -138,7 +138,8 @@ class TestThreadReading:
 
 class TestWaitThreadOpen:
     """A bare composer must not end the wait: LinkedIn paints the compose form before the message
-    list, and a thread reported with zero events is UNKNOWN — which parks that person's follow-up."""
+    list, and a thread reported with zero events is UNKNOWN — which parks that person's follow-up.
+    """
 
     def test_events_that_arrive_after_the_composer_are_still_read(self, monkeypatch):
         readings = [{"events": 0, "composer": True, "surface": "page"},
@@ -162,7 +163,8 @@ class TestWaitThreadOpen:
 
 class TestNameMatches:
     """Whole-word, both directions of harm: a loose match opens a stranger's thread, and a loose
-    SELF match reads their reply as our own message and sends the follow-up anyway."""
+    SELF match reads their reply as our own message and sends the follow-up anyway.
+    """
 
     def test_a_full_name_matches_inside_a_label(self):
         assert mt.name_matches("Jane Doe", "Jane Doe\nthanks!")
@@ -391,7 +393,8 @@ class TestReaders:
 class TestResolveSelfName:
     """The name reply detection compares the last sender against (issue #731). The SAVED settings
     value is the user's own declaration of what LinkedIn renders; the scraped profile is only the
-    fallback, and '' means UNKNOWN — never 'they replied'."""
+    fallback, and '' means UNKNOWN — never 'they replied'.
+    """
 
     def _saved(self, value):
         return patch("cqc_lem.utilities.db.get_user_linkedin_display_name", return_value=value)
@@ -430,7 +433,8 @@ class TestResolveSelfName:
 
 class TestComposeUrl:
     """LinkedIn's own top-card link carries profileUrn AND recipient — the 2026-08-04 grounding run
-    found that dropping the second one opens a composer addressed to nobody."""
+    found that dropping the second one opens a composer addressed to nobody.
+    """
 
     def test_the_url_addresses_the_person_not_just_the_thread(self):
         url = mt.compose_url_for(URN)

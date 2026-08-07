@@ -3,8 +3,12 @@
 import pytest
 
 from cqc_lem.utilities.ai.content_alignment import (
-    FIRST_COMMENT_LINK_MENU, append_link_to_comment, extract_external_links,
-    first_comment_link_text, is_external_link, split_link_for_first_comment,
+    FIRST_COMMENT_LINK_MENU,
+    append_link_to_comment,
+    extract_external_links,
+    first_comment_link_text,
+    is_external_link,
+    split_link_for_first_comment,
 )
 
 pytestmark = pytest.mark.unit
@@ -77,7 +81,8 @@ class TestSplitLinkForFirstComment:
 
     def test_over_budget_links_stay_in_the_body(self):
         """A link that will not be carried must NOT be stripped — losing it entirely is worse
-        than paying the body-link penalty for it."""
+        than paying the body-link penalty for it.
+        """
         content = "a https://example.com/1 b https://example.com/2 c https://example.com/3 d https://example.com/4"
         body, links = split_link_for_first_comment(content, max_links=2)
         assert links == ["https://example.com/1", "https://example.com/2"]

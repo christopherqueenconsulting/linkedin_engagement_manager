@@ -7,10 +7,10 @@ after enough wrong guesses, and moving an email is recorded rather than silently
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -50,7 +50,7 @@ class TestTokenHashing:
 
     def test_hash_does_not_depend_on_the_master_key(self, monkeypatch):
         """A rotated or missing LEM_SECRET_KEY must not log every user out."""
-        from cqc_lem.utilities.crypto import hash_session_token, generate_master_key
+        from cqc_lem.utilities.crypto import generate_master_key, hash_session_token
 
         monkeypatch.delenv("LEM_SECRET_KEY", raising=False)
         without = hash_session_token("tok")
@@ -340,7 +340,8 @@ class TestAuthAudit:
 
 class TestSessionScopeResolution:
     """`resolve_session` is what lets the API refuse a scoped session on the SAME query that
-    authenticates it — reading the scope separately would double a query every request makes."""
+    authenticates it — reading the scope separately would double a query every request makes.
+    """
 
     def test_resolve_returns_the_user_and_the_scope(self):
         from cqc_lem.utilities.db import resolve_session
@@ -382,7 +383,8 @@ class TestSessionScopeResolution:
 class TestEnrollmentScopeRelease:
     def test_release_is_conditional_on_the_current_scope(self):
         """A full, recovery or extension session enrolling a factor must not be widened by this —
-        which is why the check is inside the UPDATE and not a read-then-write."""
+        which is why the check is inside the UPDATE and not a read-then-write.
+        """
         from cqc_lem.utilities.db import release_enrollment_scope
 
         conn, cursor = _conn_cursor()

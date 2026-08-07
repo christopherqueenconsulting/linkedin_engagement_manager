@@ -1,10 +1,10 @@
 """get_user_analytics_profile — the person facts the SPA identifies with (issue #646)."""
 
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 

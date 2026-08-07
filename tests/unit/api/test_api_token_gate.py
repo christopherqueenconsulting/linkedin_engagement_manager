@@ -253,7 +253,8 @@ class TestSessionCookieAttributes:
 
     def test_the_four_query_param_mutating_routes_are_post_only(self, main_mod):
         """`Lax` still sends the cookie on a top-level GET navigation, so a state-changing route
-        reachable by GET would be CSRF-able by a bare link. These four are not."""
+        reachable by GET would be CSRF-able by a bare link. These four are not.
+        """
         wanted = {p.rstrip("/") for p, _ in TestQueryParamMutatingRoutesStillRefuseAnonymous.ROUTES}
         seen = set()
         for route in main_mod.router.routes:

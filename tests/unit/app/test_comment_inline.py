@@ -1,7 +1,8 @@
 """Unit tests for the SDUI inline comment submit + verification fixes."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
 
@@ -86,8 +87,9 @@ class TestFocusComposer:
     def test_second_interception_raises(self):
         # A real overlay must NOT be papered over with a JS click — let it raise so the caller can
         # name the step and the fault stays visible.
-        from cqc_lem.app import run_automation as ra
         from selenium.common import ElementClickInterceptedException
+
+        from cqc_lem.app import run_automation as ra
         composer = MagicMock(); composer.click.side_effect = _intercepted()
         with pytest.raises(ElementClickInterceptedException):
             ra._focus_composer(MagicMock(), composer)
@@ -177,7 +179,8 @@ def _holder(*boxes, y: int = 100, height: int = 300):
 
 def _driver(scope=None):
     """A driver whose only scripted answer is the single-post scope widening; everything else
-    (scrollIntoView, the submit button, the submitted check) succeeds."""
+    (scrollIntoView, the submit button, the submitted check) succeeds.
+    """
     d = MagicMock()
     d.execute_script.side_effect = lambda script, *a: scope if "MARKERS" in script else True
     return d
@@ -191,7 +194,8 @@ class TestComposerIsScopedToItsOwnPost:
     run: it would have typed this post's comment into the previous post.
 
     #916 widens the search from the card to the scope that still holds exactly ONE post, which is
-    the invariant that actually matters — it must stay impossible to borrow a neighbour's box."""
+    the invariant that actually matters — it must stay impossible to borrow a neighbour's box.
+    """
 
     def test_types_into_this_cards_composer_not_an_earlier_posts(self):
         from cqc_lem.app import run_automation as ra
@@ -238,7 +242,8 @@ class TestComposerIsScopedToItsOwnPost:
         "Comment" (`_SUBMIT_NEAR_COMPOSER_JS` clicks exactly that, skipping the disabled/hidden ones
         it expects to exist). Counting comment actions therefore sees TWO on the first ancestor that
         holds the card AND the sibling comment section — the walk would break before it ever widened,
-        in exactly the render this was written for, and the DEBUG downgrade would hide that forever."""
+        in exactly the render this was written for, and the DEBUG downgrade would hide that forever.
+        """
         from cqc_lem.app import run_automation as ra
         assert "isCommentAction" not in ra._SINGLE_POST_SCOPE_JS
         assert "const base = counts(scope)" in ra._SINGLE_POST_SCOPE_JS  # baseline, never a hard 1
@@ -248,7 +253,8 @@ class TestPostComposerResolution:
     """Issue #916. `_card_for_textbox` returns the NEAREST ancestor carrying the comment action, and
     where LinkedIn renders the comment section beside that node instead of inside it the card-scoped
     lookup missed on every post — 408 misses in 18h, every one on a group feed, each one a
-    `log_warning` that escalated to ERROR and filed a defect for a post we simply skip."""
+    `log_warning` that escalated to ERROR and filed a defect for a post we simply skip.
+    """
 
     def test_a_composer_nested_in_the_card_still_wins(self):
         from cqc_lem.app import run_automation as ra
@@ -277,7 +283,8 @@ class TestPostComposerResolution:
 
     def test_a_miss_is_debug_not_a_warning(self):
         """The whole point of the issue: no composer means skip the post — an expected no-op the
-        caller already handles by releasing the claim. Warning it per card filed a defect."""
+        caller already handles by releasing the claim. Warning it per card filed a defect.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
             assert ra._post_composer_for_card(_driver(scope=None), _holder(y=100), user_id=1) is None
@@ -297,7 +304,8 @@ class TestPostComposerResolution:
 
     def test_a_slow_render_is_polled_for_not_waited_out(self):
         """The old chain spent WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1) — ~35s — on every card
-        that never opened one. A composer that mounts late is still caught."""
+        that never opened one. A composer that mounts late is still caught.
+        """
         from cqc_lem.app import run_automation as ra
         late = _box(420, aria="Text editor for creating comment")
         card = MagicMock()
@@ -322,7 +330,8 @@ class TestPostComposerResolution:
 
 class TestPostCommentInlineStepNaming:
     """One `try` over the whole sequence reported every failure mode as the same warning, so the
-    escalated issue never said which step broke — and unrelated faults collapsed into one."""
+    escalated issue never said which step broke — and unrelated faults collapsed into one.
+    """
 
     def _run(self, composer, driver=None):
         from cqc_lem.app import run_automation as ra
@@ -408,7 +417,8 @@ class TestReactToPostInline:
     def test_missing_menu_is_not_a_warning_when_a_fallback_toggle_exists(self):
         """The fly-out opener is optional — with a React toggle in hand its absence just takes the
         default-Like fallback, which is working behaviour. Warning per card escalated it to ERROR
-        and filed a PostHog defect (issue #873)."""
+        and filed a PostHog defect (issue #873).
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -424,7 +434,8 @@ class TestReactToPostInline:
         It warns WHERE IT IS DETECTED (the trigger chain), not at the opener. Pre-#816 the signal
         rode on the opener's `warn_on_miss=trigger is None`; the opener no longer exists on the
         live SDUI (count: 0), so hanging the one real signal off a control that is always absent
-        would either warn on every card or never warn at all."""
+        would either warn on every card or never warn at all.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -442,7 +453,8 @@ class TestReactToPostInline:
     def test_the_obsolete_opener_never_warns(self):
         """'Open reactions menu' matched ZERO elements on the live feed — hovering the trigger is
         what opens the fly-out now. Its absence is the documented happy path, and warning on the
-        happy path is exactly the expected-no-op the recurrence rule turns into a filed defect."""
+        happy path is exactly the expected-no-op the recurrence rule turns into a filed defect.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -455,7 +467,8 @@ class TestReactToPostInline:
 
     def test_there_is_no_second_toggle_lookup(self):
         """One chain now serves state AND toggle (the state button's text is literally 'Like'), so
-        the separate 'React toggle' lookup is gone — one control, one lookup, one possible warning."""
+        the separate 'React toggle' lookup is gone — one control, one lookup, one possible warning.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -466,7 +479,8 @@ class TestReactToPostInline:
 
     def test_react_toggle_is_not_looked_up_when_the_state_button_is_the_trigger(self):
         """A readable 'no reaction' state button IS the trigger, so the toggle chain never runs and
-        can't miss — the warning this issue is about only ever fires on state-less cards."""
+        can't miss — the warning this issue is about only ever fires on state-less cards.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -480,7 +494,8 @@ class TestReactToPostInline:
     def test_post_click_confirm_is_not_a_warning_when_the_card_never_had_the_toggle(self):
         """With no Reaction-state button before the click there is nothing to re-read after it, so
         the miss is the documented trust-the-click fallback. Warning per card escalated it to ERROR
-        and filed a PostHog defect for working behaviour (issue #875)."""
+        and filed a PostHog defect for working behaviour (issue #875).
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -539,7 +554,8 @@ class TestReactToPostInline:
     def test_a_click_that_never_registered_warns_exactly_once(self):
         """Readable controls, a click that didn't take: the one reaction failure none of the
         selector misses stand for. It warns HERE, where it's detected, so the caller doesn't have
-        to warn blindly for every False (issue #878)."""
+        to warn blindly for every False (issue #878).
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -554,7 +570,8 @@ class TestReactToPostInline:
 
     def test_an_unreadable_card_adds_no_warning_of_its_own(self):
         """No Reaction-state button and no React toggle: the fly-out opener's miss already warns for
-        that condition (issue #873), so nothing in this function may warn a second time."""
+        that condition (issue #873), so nothing in this function may warn a second time.
+        """
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -569,7 +586,8 @@ class TestReactToPostInline:
 class TestEngageCardReactionLogging:
     """`_engage_card`'s reaction outcome must never be the thing that files a defect: a reaction is
     best-effort and never blocks the comment, and every real failure already warned inside
-    `react_to_post_inline` (issue #878)."""
+    `react_to_post_inline` (issue #878).
+    """
 
     @staticmethod
     def _engage(reaction_outcome, warn, debug):

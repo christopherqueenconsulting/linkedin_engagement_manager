@@ -1,7 +1,8 @@
 """Unit tests for the per-post pre-post engagement marker in automate_commenting (issue #547)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +40,8 @@ class TestPrePostEngagementMarker:
 
     def test_post_id_rides_the_self_requeue(self, commenting_env):
         """The window is walked by a self-requeueing loop, so post_id must survive each hop or
-        only the first pass would be recorded."""
+        only the first pass would be recorded.
+        """
         from cqc_lem.app.run_automation import automate_commenting
 
         with patch.object(automate_commenting, "apply_async") as requeue:

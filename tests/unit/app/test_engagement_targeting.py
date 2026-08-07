@@ -1,7 +1,8 @@
 """Unit tests for post_matches_preferences (engagement targeting)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

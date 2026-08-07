@@ -1,7 +1,8 @@
 """Unit tests for lead-magnet DB helpers."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

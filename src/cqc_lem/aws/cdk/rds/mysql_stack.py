@@ -1,7 +1,11 @@
 from aws_cdk import (
+    CfnOutput,
+    Duration,
+    NestedStack,
+    RemovalPolicy,
+    aws_ec2 as ec2,
     aws_rds as rds,
-    aws_ecs as ecs,
-    aws_ec2 as ec2, RemovalPolicy, CfnOutput, NestedStack, Duration, )
+)
 from constructs import Construct
 
 

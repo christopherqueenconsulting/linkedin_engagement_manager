@@ -8,9 +8,10 @@ so it could only time out and fall through to a bare Keys.ENTER that logged its 
 comment order, and the fact that a comment which does not land is never recorded as one.
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -80,8 +81,9 @@ class TestPermalinkPostCard:
         urn_scan.assert_not_called()  # nothing to match against, so no URN scan is paid for
 
     def test_stale_box_is_skipped_not_fatal(self):
-        from cqc_lem.app import run_automation as ra
         from selenium.common import StaleElementReferenceException
+
+        from cqc_lem.app import run_automation as ra
         driver = _driver_with_boxes(2)
         good = MagicMock(name="good")
         outcomes = [StaleElementReferenceException("gone"), good]
@@ -176,8 +178,8 @@ class TestCommentOnPost:
         assert COMMENT_NOT_POSTED_MESSAGE in result
 
     def test_no_commentable_card_never_opens_a_composer(self):
-        from cqc_lem.utilities.db import LogResultType
         from cqc_lem.app.run_automation import NO_COMMENTABLE_CARD_MESSAGE
+        from cqc_lem.utilities.db import LogResultType
         result, m = _run_comment_on_post(card=None)
         assert result == NO_COMMENTABLE_CARD_MESSAGE
         m["post_inline"].assert_not_called()
@@ -234,6 +236,7 @@ class TestNoPreSduiAnchorsRemain:
         # merely names them (this file's own docstrings, the history in run_automation's) is fine —
         # the check is for a class-keyed selector, which is what `@class` marks.
         from pathlib import Path
+
         import cqc_lem.app.run_automation as ra
         dead = ("comments-comment-texteditor", "comments-comment-box__submit-button",
                 "comments-comment-list__container")
@@ -271,8 +274,9 @@ class TestThreadCarriesOurComment:
         reader.assert_not_called()
 
     def test_driver_fault_is_false_not_fatal(self):
-        from cqc_lem.app import run_automation as ra
         from selenium.common import WebDriverException
+
+        from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}._comment_items", side_effect=WebDriverException("gone")):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
 

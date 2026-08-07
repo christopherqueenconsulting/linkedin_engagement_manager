@@ -1,5 +1,6 @@
 """Unit tests for the shared alignment core: the ONE place the self-promo policy, LEM engagement
-purpose, and per-type style rules are expressed for newsletters, posts, and comments."""
+purpose, and per-type style rules are expressed for newsletters, posts, and comments.
+"""
 
 import pytest
 
@@ -148,7 +149,8 @@ class TestLeadMagnetCTA:
 class TestCtaMechanicDetector:
     """The detector decides whether a FUNCTIONING comment-keyword ask survived the LLM refinement
     passes. A false positive here ships a post with a broken auto-DM mechanic, so precision matters
-    more than recall (a miss just appends one soft-ask line)."""
+    more than recall (a miss just appends one soft-ask line).
+    """
 
     @pytest.mark.parametrize("content", [
         "Comment AUDIT below and I'll DM you the checklist.",

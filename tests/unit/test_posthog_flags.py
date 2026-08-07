@@ -3,7 +3,8 @@
 The property under test is the one that can break production: a flag must be created at the rollout
 that reproduces what it resolves to TODAY. `flag_enabled()` currently falls back to `env_default()`
 everywhere, so a flag created at the wrong percentage changes behaviour the instant it appears — no
-deploy, no log line, no error."""
+deploy, no log line, no error.
+"""
 
 import importlib.util
 import pathlib
@@ -46,7 +47,8 @@ class TestRolloutMatchesTodaysValue:
 
     def test_a_default_true_flag_is_provisioned_at_100(self):
         """The live example. Creating this one at the 'obvious' 0% would silently flip the fleet
-        engagement default for every user with no saved preferences row."""
+        engagement default for every user with no saved preferences row.
+        """
         specs = {s["key"]: s for s in phf.registry_specs()}
         fallback = specs["feed-fallback-when-empty-default"]
         assert fallback["resolved"] is True
@@ -69,7 +71,8 @@ class TestRolloutMatchesTodaysValue:
 class TestPayload:
     def test_conditions_are_property_free(self):
         """flags.py evaluates locally; a person-property condition silently falls back to env in
-        every Celery worker, which looks exactly like the flag working."""
+        every Celery worker, which looks exactly like the flag working.
+        """
         payload = phf.flag_payload(_spec("k", 100, True))
         groups = payload["filters"]["groups"]
         assert len(groups) == 1

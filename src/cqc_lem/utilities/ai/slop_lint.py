@@ -189,7 +189,8 @@ def _env_number(name: str, default: float, cast=float, low: float = None, high: 
 def slop_lint_enabled(content_type: Optional[str] = None) -> bool:
     """Master + per-surface toggle, mirroring `humanize_enabled`. SLOP_LINT_ENABLED (default ON)
     gates everything; SLOP_LINT_<TYPE>_ENABLED (e.g. SLOP_LINT_COMMENT_ENABLED) turns one surface
-    off without touching the others. SLOP_LINT_ENABLED=off restores the exact prior behavior."""
+    off without touching the others. SLOP_LINT_ENABLED=off restores the exact prior behavior.
+    """
     if not _env_flag("SLOP_LINT_ENABLED", True):
         return False
     if content_type:
@@ -201,7 +202,8 @@ def slop_lint_enabled(content_type: Optional[str] = None) -> bool:
 
 def check_severity(check: str) -> str:
     """This check's severity: 'hard' (regenerate, then block), 'warn' (report only), or 'off'.
-    SLOP_LINT_SEVERITY_<CHECK> overrides the default, e.g. SLOP_LINT_SEVERITY_BURSTINESS=hard."""
+    SLOP_LINT_SEVERITY_<CHECK> overrides the default, e.g. SLOP_LINT_SEVERITY_BURSTINESS=hard.
+    """
     raw = (os.environ.get(f"SLOP_LINT_SEVERITY_{check.upper()}") or "").strip().lower()
     if raw in (SEVERITY_HARD, SEVERITY_WARN, SEVERITY_OFF):
         return raw
@@ -209,19 +211,39 @@ def check_severity(check: str) -> str:
 
 
 def lexicon_max() -> int:
+    """Distinct tier-1 tells tolerated before the lexicon check fires (`SLOP_LINT_LEXICON_MAX`).
+
+    The comparison is strictly greater-than, so the value is the last COUNT that still passes.
+    Re-read on every call, so ops can retune a check without a restart.
+    """
     return int(_env_number("SLOP_LINT_LEXICON_MAX", LEXICON_MAX_DEFAULT, int, low=0))
 
 
 def em_dash_per_sentence_max() -> float:
+    """Ceiling on em-dash DENSITY, not count (`SLOP_LINT_EM_DASH_PER_SENTENCE`).
+
+    A density, so the same two dashes pass in a long draft and fire in a three-sentence comment.
+    Re-read on every call.
+    """
     return float(_env_number("SLOP_LINT_EM_DASH_PER_SENTENCE", EM_DASH_PER_SENTENCE_DEFAULT,
                              float, low=0.0))
 
 
 def burstiness_min() -> float:
+    """A FLOOR, unlike its neighbours here — sentence-length spread below it fires the check.
+
+    `SLOP_LINT_BURSTINESS_MIN`, re-read on every call. Raising it makes the check stricter, which is
+    the opposite of the `*_max` knobs.
+    """
     return float(_env_number("SLOP_LINT_BURSTINESS_MIN", BURSTINESS_MIN_DEFAULT, float, low=0.0))
 
 
 def emoji_bullet_max() -> int:
+    """Emoji-LED lines tolerated before a draft reads as a listicle (`SLOP_LINT_EMOJI_BULLET_MAX`).
+
+    Counts lines that START with an emoji, not emoji anywhere in the text — an emoji mid-sentence is
+    never what this check is about. Re-read on every call.
+    """
     return int(_env_number("SLOP_LINT_EMOJI_BULLET_MAX", EMOJI_BULLET_MAX_DEFAULT, int, low=0))
 
 
@@ -233,7 +255,8 @@ def slop_max_attempts() -> int:
 def banned_words() -> frozenset:
     """The tier-1 wordbank, extended by SLOP_LINT_EXTRA_WORDS and reduced by SLOP_LINT_ALLOW_WORDS
     (both comma-separated). The allow-list exists because a word that is slop in general prose can
-    be a term of art in one author's niche ("optimize" for a performance engineer)."""
+    be a term of art in one author's niche ("optimize" for a performance engineer).
+    """
     extra = {w.strip().lower() for w in (os.environ.get("SLOP_LINT_EXTRA_WORDS") or "").split(",")}
     allow = {w.strip().lower() for w in (os.environ.get("SLOP_LINT_ALLOW_WORDS") or "").split(",")}
     return frozenset((set(AI_TELL_WORDS) | {w for w in extra if w}) - {w for w in allow if w})
@@ -255,7 +278,8 @@ def _plain(text: Optional[str]) -> str:
 
 def sentences(text: Optional[str]) -> list:
     """The draft split into sentences — shared by the density and burstiness checks so they always
-    grade the same units."""
+    grade the same units.
+    """
     return [s.strip() for s in _SENTENCE_SPLIT_RE.split(text or "") if s.strip()]
 
 
@@ -315,7 +339,8 @@ def _check_tada(text: str, sents: list, ctx: dict) -> Optional[dict]:
 
 def closing_reflex_ask(text: Optional[str]) -> Optional[str]:
     """The reflex closer this draft ends on ("Thoughts?", "Agree?"), or None. Only the LAST
-    sentence counts — the same question mid-post is a rhetorical beat, not a bait close."""
+    sentence counts — the same question mid-post is a rhetorical beat, not a bait close.
+    """
     sents = sentences(text)
     if not sents:
         return None
@@ -327,7 +352,8 @@ def bait_lines(text: Optional[str], exempt_keyword: Optional[str] = None) -> lis
     """The engagement-bait lines in `text`, using the SAME line-level exemption
     `linkedin_formatter.strip_engagement_bait` applies: a line carrying the user's configured
     lead-magnet trigger word is a sanctioned "comment KEYWORD" CTA, not bait — even when that word
-    ("YES") collides with the bait regex."""
+    ("YES") collides with the bait regex.
+    """
     kw = str(exempt_keyword or "").strip()
     kw_re = re.compile(rf"(?<!\w){re.escape(kw)}(?!\w)", re.IGNORECASE) if kw else None
     return [ln for ln in str(text or "").splitlines()
@@ -382,7 +408,8 @@ def _check_em_dash(text: str, sents: list, ctx: dict) -> Optional[dict]:
 
 def find_rule_of_three(text: Optional[str]) -> list:
     """Rhythm-built triads ("faster, smarter, better"). Only flags triads whose three items share an
-    adjective/adverb/gerund ending, so an ordinary list of three nouns is left alone."""
+    adjective/adverb/gerund ending, so an ordinary list of three nouns is left alone.
+    """
     hits = []
     for m in _TRIAD_RE.finditer(text or ""):
         items = [g.lower() for g in m.groups()]
@@ -490,14 +517,16 @@ def passes_slop_lint(text: Optional[str], content_type: str = "post",
 
 def violation_reasons(violations: Optional[list]) -> list:
     """Plain-English reason strings for a list of violations — what the review UI and the logs
-    show."""
+    show.
+    """
     return [f"{v.get('check')}: {v.get('detail')}" for v in (violations or [])
             if isinstance(v, dict) and v.get("detail")]
 
 
 def slop_retry_directive(violations: Optional[list]) -> str:
     """The regeneration steer after a draft fails the lint: name each pattern that fired and what
-    to do instead, so the retry fixes the actual construction rather than paraphrasing around it."""
+    to do instead, so the retry fixes the actual construction rather than paraphrasing around it.
+    """
     reasons = [v for v in (violations or []) if isinstance(v, dict) and v.get("detail")]
     if not reasons:
         return ""

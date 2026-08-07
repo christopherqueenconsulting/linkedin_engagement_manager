@@ -1,7 +1,8 @@
 """Unit tests for the post-fix micro-CSAT and the shipped-fix notification (issue #502)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

@@ -1,7 +1,8 @@
 """Unit tests for the auto seed-comment-on-own-post feature."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -18,7 +19,8 @@ def _no_sleep():
 @pytest.fixture(autouse=True)
 def _no_db_reads():
     """Neutral defaults for the seed task's DB lookups (dupe guard + held-back link) so tests that
-    aren't about them don't need a live MySQL. Individual tests patch over these."""
+    aren't about them don't need a live MySQL. Individual tests patch over these.
+    """
     with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
          patch(f"{_RA}.get_post_first_comment_link", return_value=None):
         yield
@@ -59,7 +61,8 @@ class TestAutoSeedCommentOnPost:
 
     def test_grounds_on_post_content_not_log_status_string(self):
         """Regression: seed comment must be grounded in the canonical post body from the posts
-        table, not the POST log message (which historically held a status string)."""
+        table, not the POST log message (which historically held a status string).
+        """
         from cqc_lem.app.run_automation import auto_seed_comment_on_post
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
              patch(f"{_RA}.get_post_content", return_value="The REAL post body") as gpc, \
@@ -78,7 +81,8 @@ class TestAutoSeedCommentOnPost:
 
     def test_no_selenium_login_in_seed_path(self):
         """The API seed path must never open a browser / call get_current_profile — that is what
-        exposed seeding to the 429 rate limit."""
+        exposed seeding to the 429 rate limit.
+        """
         from cqc_lem.app.run_automation import auto_seed_comment_on_post
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
              patch(f"{_RA}.get_post_content", return_value="body"), \

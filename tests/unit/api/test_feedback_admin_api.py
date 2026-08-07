@@ -1,8 +1,9 @@
 """Unit tests for the feedback admin triage panel endpoints (issue #793)."""
 
 import json
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -12,7 +13,8 @@ def _auth_hardening_side_effects():
     """Issue #745 (2b): every login now stamps `email_verified_at`, writes an `auth_audit_log` row
     and reads the PIN lockout, and /auth/session resolves the account's public_uid. Those are DB
     calls these tests never mocked — pin them so each test still exercises the flow it was written
-    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py)."""
+    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
+    """
     with patch("cqc_lem.api.main.record_auth_event", return_value=True), \
          patch("cqc_lem.api.main.mark_email_verified", return_value=True), \
          patch("cqc_lem.api.main.get_pin_lockout", return_value=None), \
@@ -33,6 +35,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -132,7 +135,8 @@ class TestReviewFeedback:
 
     def test_approve_that_reached_no_issue_says_so(self, client):
         """The 200 only means the review was recorded. A GitHub failure changes NOTHING else, so
-        without `filed` the panel cannot tell it apart from a successful approve (issue #1036)."""
+        without `filed` the panel cannot tell it apart from a successful approve (issue #1036).
+        """
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 12}), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
@@ -147,7 +151,8 @@ class TestReviewFeedback:
 
     def test_already_filed_row_cannot_be_re_approved(self, client):
         """A filed row IS its own open cluster, so re-running the filer would match it to itself
-        and post a false "+1 another report" on the issue it created."""
+        and post a false "+1 another report" on the issue it created.
+        """
         row = {"id": 9, "status": "issue_created", "github_issue_number": 404}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \

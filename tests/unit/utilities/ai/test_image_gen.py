@@ -6,9 +6,13 @@ from unittest.mock import patch
 import pytest
 
 from cqc_lem.utilities.ai import image_gen
-from cqc_lem.utilities.ai.image_gen import (QualityVerdict, render_image_from_prompt,
-                                            render_image_gated, run_replicate_bounded,
-                                            size_for_ratio)
+from cqc_lem.utilities.ai.image_gen import (
+    QualityVerdict,
+    render_image_from_prompt,
+    render_image_gated,
+    run_replicate_bounded,
+    size_for_ratio,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -123,7 +127,8 @@ class TestVisionGate:
 
 class TestAvatarRenderIsGatedToo:
     """Regression: the avatar branch was the ONE render path with no quality check, so a post
-    about LLM routing costs came back as a plain headshot and nothing questioned it."""
+    about LLM routing costs came back as a plain headshot and nothing questioned it.
+    """
 
     _AVATAR = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
                "gender_presentation": "man", "age_band": "40s"}
@@ -163,7 +168,8 @@ class TestAvatarRenderIsGatedToo:
 
 class TestNoBrandMarksConstraint:
     """Regression: gpt-image-2 inserted a LinkedIn logo into business scenes on its own, and
-    both generated covers reached review carrying someone else's trademark."""
+    both generated covers reached review carrying someone else's trademark.
+    """
 
     def test_every_render_prompt_carries_the_constraint(self):
         with patch.object(image_gen, "_render_via_gpt_image", return_value="/tmp/g.png") as gpt:
@@ -173,7 +179,8 @@ class TestNoBrandMarksConstraint:
 
     def test_flux_fallback_gets_the_positive_phrasing(self):
         """FLUX ignores negation — naming 'logos' can summon one — so the FLUX path carries
-        the constraint phrased positively, never as a prohibition."""
+        the constraint phrased positively, never as a prohibition.
+        """
         with patch.object(image_gen, "_render_via_gpt_image", side_effect=RuntimeError("down")), \
              patch.object(image_gen, "_render_via_flux", return_value="/tmp/f.webp") as flux:
             image_gen.render_image_from_prompt("a founder at a desk", user_id=3)

@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities import cost_routing as cr
-from cqc_lem.utilities import routing_policy as rp
+from cqc_lem.utilities import cost_routing as cr, routing_policy as rp
 
 pytestmark = pytest.mark.unit
 
@@ -74,7 +73,8 @@ def test_compare_arms_flags_a_real_engagement_drop():
 
 def test_compare_arms_is_inconclusive_when_the_interval_is_too_wide():
     """Noisy arms whose means match must NOT pass as "indistinguishable" — the CI has to clear the
-    equivalence margin, which is what stops an underpowered experiment auto-adopting."""
+    equivalence margin, which is what stops an underpowered experiment auto-adopting.
+    """
     noisy = [{**row, "reactions": 100 if i % 2 else 1} for i, row in enumerate(_rows(30, 10))]
     control = [{**row, "reactions": 100 if i % 2 else 1}
                for i, row in enumerate(_rows(30, 10, user_offset=100))]
@@ -121,7 +121,8 @@ def test_configured_initial_cohort_cannot_exceed_the_adopted_ceiling():
 
 def test_the_ramp_never_reaches_full_traffic():
     """A bucket at 100% has no control arm left, so nothing could ever detect a regression — the
-    top of the ramp keeps a permanent holdout on the incumbent tier."""
+    top of the ramp keeps a permanent holdout on the incumbent tier.
+    """
     assert cr.ADOPTED_COHORT_PCT < 1.0
     assert max(cr.cohort_ramp(0.1)) < 1.0
 
@@ -224,7 +225,8 @@ def test_build_routing_policy_respects_the_experiment_cap():
 
 def test_build_routing_policy_rolls_a_degraded_bucket_back_end_to_end():
     """The whole gate, from raw posts to a published policy: the treatment cohort engages half as
-    well, so the bucket must come back to the incumbent tier on its own."""
+    well, so the bucket must come back to the incumbent tier on its own.
+    """
     bucket = _bucket(cohort_pct=0.5, started_on="2026-07-01")
     previous = {"version": 1, "enabled": True, "buckets": {"content:lem-complex": bucket}}
     observations = []
@@ -325,7 +327,8 @@ def test_collect_routing_report_observes_nothing_while_the_flag_is_off():
 
 def test_dormant_run_holds_an_existing_bucket_instead_of_moving_it():
     """A bucket left over from an earlier run is judged on no data, so it can only HOLD — flipping the
-    flag back on resumes the experiment where it stopped."""
+    flag back on resumes the experiment where it stopped.
+    """
     bucket = _bucket(cohort_pct=0.5)
     policy = {"version": rp.POLICY_VERSION, "enabled": True,
               "buckets": {rp.bucket_key("content", rp.TIER_COMPLEX): bucket}}
@@ -407,7 +410,8 @@ def test_main_exits_2_on_a_rollback():
 
 def test_normalize_arms_stringifies_ids_and_drops_unusable_values():
     """The document is JSON in Redis, so `flag_arm` compares STRING keys — an int key written here
-    would survive the round-trip as a string and match nothing on the way back."""
+    would survive the round-trip as a string and match nothing on the way back.
+    """
     assert cr.normalize_arms({7: rp.ARM_TREATMENT, "8": rp.ARM_CONTROL}) == {
         "7": rp.ARM_TREATMENT, "8": rp.ARM_CONTROL}
     assert cr.normalize_arms({7: "TREATMENT", 8: None, None: rp.ARM_TREATMENT,
@@ -441,7 +445,8 @@ def test_apply_arms_clears_a_stale_map_when_posthog_answered_for_nobody():
 def test_apply_arms_carries_the_cohort_forward_when_posthog_could_not_be_asked():
     """`None` is "we could not ask", not "nobody is enrolled" — wiping the map would send a live
     cohort back to the hash for a week, which is the mid-experiment arm flip assign_arm exists to
-    prevent."""
+    prevent.
+    """
     kept = cr.apply_arms(_bucket(arms={"7": rp.ARM_TREATMENT}), None)
     assert kept["arms"] == {"7": rp.ARM_TREATMENT}
     assert kept["assignment"] == rp.ASSIGNMENT_FLAG
@@ -481,7 +486,8 @@ def test_build_routing_policy_writes_the_cohort_into_every_live_bucket():
 
 def test_build_routing_policy_judges_the_window_on_the_arms_that_were_in_force():
     """The observed posts were routed under the PREVIOUS document's arms. Applying the fresh cohort
-    before evaluating would grade a post in the arm it is about to be in."""
+    before evaluating would grade a post in the arm it is about to be in.
+    """
     previous_arms = {str(u): rp.ARM_TREATMENT for u in range(5)}
     previous = {"version": 1, "enabled": True,
                 "buckets": {"content:lem-complex": _bucket(cohort_pct=0.5,
@@ -498,7 +504,8 @@ def test_build_routing_policy_judges_the_window_on_the_arms_that_were_in_force()
 
 def test_a_posthog_outage_moves_nobody_between_arms():
     """The whole point of the hash fallback: an unreachable PostHog must leave the cohort exactly
-    where it was, not re-split it under the hash for a week."""
+    where it was, not re-split it under the hash for a week.
+    """
     enrolled = {str(u): rp.ARM_TREATMENT for u in range(5)}
     previous = {"version": 1, "enabled": True,
                 "buckets": {"content:lem-complex": _bucket(cohort_pct=0.1,

@@ -33,7 +33,11 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from cqc_lem.utilities.ai import slop_lint
 from cqc_lem.utilities.ai.content_framework import (
-    COMMENT_HISTORY_LIMIT, MOBILE_HOOK_MAX_CHARS, cosine_similarity, embed_comments, hook_report,
+    COMMENT_HISTORY_LIMIT,
+    MOBILE_HOOK_MAX_CHARS,
+    cosine_similarity,
+    embed_comments,
+    hook_report,
     text_similarity,
 )
 
@@ -119,11 +123,18 @@ def _env_int(name: str, default: int) -> int:
 
 def content_quality_enabled() -> bool:
     """CONTENT_QUALITY_TELEMETRY_ENABLED=false restores the exact pre-#630 behaviour (no scoring, no
-    events, no rows)."""
+    events, no rows).
+    """
     return _env_flag("CONTENT_QUALITY_TELEMETRY_ENABLED", True)
 
 
 def rollup_days() -> int:
+    """Length of ONE reporting period.
+
+    The window a rollup averages over, and the same width the prior period is measured across when
+    `evaluate_alerts` looks for a regression — callers wanting both periods read
+    `rollup_days() * 2` of scores.
+    """
     return max(1, _env_int("CONTENT_QUALITY_ROLLUP_DAYS", DEFAULT_ROLLUP_DAYS))
 
 
@@ -133,27 +144,48 @@ def window_days() -> int:
 
 
 def max_items_per_run() -> int:
+    """Ceiling on items scored per user per nightly run.
+
+    A cap, not a filter: what it drops is reported rather than silently skipped, and the next run's
+    overlapping window picks it up.
+    """
     return max(1, _env_int("CONTENT_QUALITY_MAX_ITEMS", DEFAULT_MAX_ITEMS))
 
 
 def slop_regression_delta() -> float:
+    """How far the mean weighted slop score may RISE against the account's own prior period.
+
+    `ALERT_SLOP_REGRESSION` fires AT this delta, not past it — the comparison is `>=`. Never
+    negative, so a mistyped threshold cannot make every period look like a regression.
+    """
     return max(0.0, _env_float("CONTENT_QUALITY_SLOP_REGRESSION_DELTA",
                                DEFAULT_SLOP_REGRESSION_DELTA))
 
 
 def engagement_floor() -> float:
     """The configurable ER-per-impression floor. Clamped to a real 0-1 share so a misconfigured `2`
-    (meaning percent) can't make every account look collapsed."""
+    (meaning percent) can't make every account look collapsed.
+    """
     return min(1.0, max(0.0, _env_float("CONTENT_QUALITY_ENGAGEMENT_FLOOR",
                                         DEFAULT_ENGAGEMENT_FLOOR)))
 
 
 def similarity_regression_delta() -> float:
+    """Rise in mean self-similarity that reads as the writer settling into one template.
+
+    Fires `ALERT_SIMILARITY_CREEP`, and only between periods graded on the SAME measure — the
+    embedding and lexical scales are not interchangeable.
+    """
     return max(0.0, _env_float("CONTENT_QUALITY_SIMILARITY_DELTA",
                                DEFAULT_SIMILARITY_REGRESSION_DELTA))
 
 
 def min_alert_sample() -> int:
+    """Scored PIECES required on BOTH sides of a comparison before a regression alert may fire.
+
+    Counts posts + comments + editions together. A false alert nobody can act on trains the owner to
+    ignore the next one, so a thin period reports its numbers and raises nothing.
+    """
     return max(1, _env_int("CONTENT_QUALITY_MIN_SAMPLE", DEFAULT_MIN_ALERT_SAMPLE))
 
 
@@ -161,7 +193,8 @@ def min_engagement_sample() -> int:
     """Minimum posts-with-impressions before the ER floor may fire. Defaults to the weekly posting
     cadence rather than to `min_alert_sample()`, which counts every scored PIECE (posts + comments +
     editions) and is therefore unreachable for a dimension only posts can contribute to. Never
-    higher than the general minimum, so lowering `CONTENT_QUALITY_MIN_SAMPLE` still lowers this."""
+    higher than the general minimum, so lowering `CONTENT_QUALITY_MIN_SAMPLE` still lowers this.
+    """
     raw = (os.environ.get("CONTENT_QUALITY_MIN_ER_SAMPLE") or "").strip()
     if raw:
         return max(1, _env_int("CONTENT_QUALITY_MIN_ER_SAMPLE", DEFAULT_MIN_ENGAGEMENT_SAMPLE))
@@ -171,16 +204,27 @@ def min_engagement_sample() -> int:
 def detector_enabled() -> bool:
     """The external AI-detector pass is OFF unless BOTH the flag and an API key are set. A missing key
     is a silent no-op, never a warning loop — this is an optional regression signal, so its absence is
-    the normal state."""
+    the normal state.
+    """
     return _env_flag("AI_DETECTOR_ENABLED", False) and bool(
         (os.environ.get("AI_DETECTOR_API_KEY") or "").strip())
 
 
 def detector_provider() -> str:
+    """Name recorded alongside a detector reading, so a score is attributable to what produced it.
+
+    Swapping detector services must not read as a quality move. Clamped to 32 chars to match the
+    `content_quality_scores.detector_provider` column, and never empty.
+    """
     return (os.environ.get("AI_DETECTOR_PROVIDER") or "generic").strip()[:32] or "generic"
 
 
 def detector_sample_rate() -> float:
+    """Share of items (0-1) that get a paid external detector reading.
+
+    Clamped into that range, so a misconfigured `10` (meaning percent) cannot bill for every piece
+    of content.
+    """
     return min(1.0, max(0.0, _env_float("AI_DETECTOR_SAMPLE_RATE", DEFAULT_DETECTOR_SAMPLE_RATE)))
 
 
@@ -196,7 +240,8 @@ def detector_daily_max() -> int:
 def slop_severity_score(report: Optional[Mapping[str, Any]]) -> Optional[float]:
     """One weighted number for a lint report: HARD violations count triple. None when the lint did not
     run for this surface (`checked` False) — a disabled lint has no score, and recording 0.0 would
-    read as a clean week."""
+    read as a clean week.
+    """
     report = dict(report or {})
     if not report.get("checked"):
         return None
@@ -268,14 +313,16 @@ def similarity_reports(texts: Sequence[str], history: Optional[Iterable[str]] = 
 
 def stable_fraction(key: str) -> float:
     """A stable 0-1 draw for a string key. Used for detector sampling so a retried nightly run picks
-    the SAME items and never re-bills for a second reading of the same piece of content."""
+    the SAME items and never re-bills for a second reading of the same piece of content.
+    """
     digest = hashlib.sha1(str(key or "").encode("utf-8")).hexdigest()[:8]
     return int(digest, 16) / float(0xFFFFFFFF)
 
 
 def detector_sampled(surface: str, ref_id: Any) -> bool:
     """Whether this item is in the detector sample. False whenever the pass is off, so callers need no
-    second guard."""
+    second guard.
+    """
     if not detector_enabled() or detector_daily_max() <= 0:
         return False
     rate = detector_sample_rate()
@@ -511,7 +558,8 @@ def split_periods(rows: Optional[Iterable[Mapping[str, Any]]], days: int,
                   today: Optional[date] = None) -> tuple:
     """Split scored rows into (current, prior) windows of `days` each, ending today. Rows outside both
     windows — or with an unreadable `shipped_on` — are dropped rather than folded into the nearest
-    period, so a stale row can never move a regression verdict."""
+    period, so a stale row can never move a regression verdict.
+    """
     days = max(1, int(days))
     today = today or date.today()
     current_start = today - timedelta(days=days - 1)
@@ -529,8 +577,9 @@ def split_periods(rows: Optional[Iterable[Mapping[str, Any]]], days: int,
 
 
 def _delta(current: Optional[float], prior: Optional[float], digits: int = 4) -> Optional[float]:
-    """current - prior, or None when either side was never measured. None is load-bearing: 'we have
-    no baseline' must not read as 'no change'."""
+    """Current - prior, or None when either side was never measured. None is load-bearing: 'we have
+    no baseline' must not read as 'no change'.
+    """
     if current is None or prior is None:
         return None
     return round(float(current) - float(prior), digits)
@@ -617,7 +666,8 @@ def evaluate_alerts(current: Mapping[str, Any], prior: Mapping[str, Any]) -> lis
 def quality_rollup(rows: Optional[Iterable[Mapping[str, Any]]], days: Optional[int] = None,
                    today: Optional[date] = None) -> dict:
     """The ONE shape shared by the weekly PostHog event, the analytics endpoint and the dashboard
-    panel — so the number the user reads and the number that raised the alert can never diverge."""
+    panel — so the number the user reads and the number that raised the alert can never diverge.
+    """
     days = rollup_days() if days is None else max(1, int(days))
     current_rows, prior_rows = split_periods(rows, days, today=today)
     current = summarize_scores(current_rows)

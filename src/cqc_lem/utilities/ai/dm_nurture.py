@@ -91,7 +91,8 @@ def _llm_intent(text: str) -> "ReplyIntent | None":
     caller then treats the reply as NEUTRAL, which keeps the thread warm without ever inventing a
     'disinterest' (the one verdict that would silently kill a live conversation).
 
-    Routed through `_call_llm` so its tokens/latency land in PostHog with every other LLM call."""
+    Routed through `_call_llm` so its tokens/latency land in PostHog with every other LLM call.
+    """
     from cqc_lem.utilities.ai.ai_helper import _call_llm
     try:
         response = _call_llm(
@@ -175,7 +176,8 @@ _NURTURE_DELAY_HOURS: "dict[str, int]" = {
 
 def nurture_guidance(intent: str) -> str:
     """Prompt guidance for drafting the next message in this thread. Unknown intents fall back to
-    the neutral 'keep it human' brief rather than to a pitch."""
+    the neutral 'keep it human' brief rather than to a pitch.
+    """
     return _NURTURE_GUIDANCE.get(str(intent), _NURTURE_GUIDANCE[str(ReplyIntent.NEUTRAL)])
 
 

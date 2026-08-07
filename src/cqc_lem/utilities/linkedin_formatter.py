@@ -1,3 +1,22 @@
+"""The last deterministic pass over text that is about to be PUBLIC on LinkedIn.
+
+Everything here is post-processing of model output, and each piece is paired with a prompt directive
+that tries to prevent the problem upstream — `PLAIN_PUNCTUATION_DIRECTIVE` before
+`normalize_public_text`, `linkedin_post_format_directive` before `enforce_post_readability`. The
+directive is the prevention, the function is the safety net; a model that ignores the directive is
+the normal case, not the exception, which is why neither half is optional.
+
+Two things the safety net is deliberately careful NOT to touch: URLs are masked out of every
+markdown transform in `sanitize_for_linkedin` and come back byte-identical, and intentional glyphs
+(bullets, emoji, accented letters) survive normalization — LinkedIn renders markdown literally, but
+mangling a link or an emoji is a worse failure than a stray asterisk.
+
+`_BAIT_RE` is the ONE engagement-bait vocabulary: detection (`contains_engagement_bait`), removal
+(`strip_engagement_bait`) and lead-magnet keyword rejection (`is_bait_keyword`) all read that same
+list, so a pattern added there takes effect on every surface at once and cannot disagree with itself
+about what counts as bait.
+"""
+
 import re
 import unicodedata
 from typing import Optional
@@ -29,7 +48,8 @@ _EM_DASH_RE = re.compile(r"[ \t]*—[ \t]*")
 def normalize_public_text(text: str) -> str:
     """Normalize AI-generated, public-facing text to plain ASCII punctuation so no rogue non-standard
     characters (em dashes, smart quotes, ellipsis, exotic spaces, zero-width/control chars) leak out.
-    Em dashes become a spaced hyphen; emojis, accented letters and intentional bullets are preserved."""
+    Em dashes become a spaced hyphen; emojis, accented letters and intentional bullets are preserved.
+    """
     if not text:
         return text
     text = _EM_DASH_RE.sub(" - ", text)
@@ -57,7 +77,8 @@ def linkedin_post_format_directive(max_chars: int = 2200) -> str:
     """Shared LinkedIn post-formatting best practices for AI system prompts (the QA rules we
     researched): hook first line, short scannable paragraphs separated by BLANK LINES, a hard length
     cap, and no markdown. This is the PREVENTION side; enforce_post_readability() is the safety net
-    for when the model ignores it (e.g. JSON-mode carousel captions that come back as one long block)."""
+    for when the model ignores it (e.g. JSON-mode carousel captions that come back as one long block).
+    """
     return (
         "FORMAT FOR LINKEDIN: Open with a scroll-stopping first line (the hook) - it is the only line "
         "shown before the '...more' fold. Then write SHORT, scannable paragraphs of 1-2 sentences each, "
@@ -75,7 +96,8 @@ _META_LINE_RE = re.compile(r"^(#\S|https?://|\W{0,3}$)")
 
 def _reflow_into_paragraphs(prose: str, target_paragraph_chars: int) -> list:
     """Group a single long prose string into short paragraphs of ~target_paragraph_chars, breaking
-    only on sentence boundaries."""
+    only on sentence boundaries.
+    """
     sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(prose) if s.strip()]
     if len(sentences) <= 1:
         return [prose]
@@ -102,7 +124,8 @@ def enforce_post_readability(text: str, max_chars: int = 2200, target_paragraph_
         multi-line blocks (lists) untouched. Trailing hashtag/link lines stay on their own.
       - hard-cap length at a sentence boundary (LinkedIn's limit is 3000; the default stays well under).
 
-    Well-formatted (short paragraphs) or short posts are returned unchanged."""
+    Well-formatted (short paragraphs) or short posts are returned unchanged.
+    """
     if not text:
         return text
     text = text.strip()
@@ -241,14 +264,16 @@ def contains_engagement_bait(text: Optional[str]) -> bool:
     """True when `text` asks for a reflex engagement action for its own sake (a one-word reply, a
     like, a tag, a follow) — the closes LinkedIn demotes in 2026. This is the ONE bait detector:
     `strip_engagement_bait` removes such lines from drafts, `is_bait_keyword` rejects colliding
-    lead-magnet trigger words, and the content-framework CTA menus are guarded against it."""
+    lead-magnet trigger words, and the content-framework CTA menus are guarded against it.
+    """
     return bool(text) and bool(_BAIT_RE.search(str(text)))
 
 
 def is_bait_keyword(keyword: Optional[str]) -> bool:
     """True when 'comment <keyword>' would itself trip the bait filter (YES/AGREE/BELOW/AMEN/ME/👇).
     Such a lead-magnet trigger word can never reliably survive strip_engagement_bait, so it must be
-    rejected at configuration time."""
+    rejected at configuration time.
+    """
     kw = str(keyword or "").strip()
     return bool(kw) and bool(_BAIT_RE.search(f"comment {kw}"))
 
@@ -257,7 +282,8 @@ def strip_engagement_bait(text: str, exempt_keyword: Optional[str] = None) -> st
     """Drop lines containing classic engagement-bait CTAs (penalized). Conservative and line-level:
     bait is almost always its own CTA line, and we avoid touching 'comment <keyword>' lead magnets.
     `exempt_keyword` protects lines carrying the user's configured lead-magnet trigger word
-    (whole-word, case-insensitive) when that keyword happens to collide with the bait regex."""
+    (whole-word, case-insensitive) when that keyword happens to collide with the bait regex.
+    """
     if not text:
         return text
     kw = str(exempt_keyword or "").strip()

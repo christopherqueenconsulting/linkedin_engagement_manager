@@ -1,7 +1,8 @@
 """Unit tests for cqc_lem.utilities.linkedin.helper — login_to_linkedin."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, call
 
 pytestmark = pytest.mark.unit
 
@@ -11,7 +12,8 @@ _MODULE = "cqc_lem.utilities.linkedin.helper"
 @pytest.fixture(autouse=True)
 def _no_real_sleep():
     """Login flow uses real time.sleep() between mocked Selenium steps — those
-    seconds are dead wait in unit tests (drivers are mocked, not timing-dependent)."""
+    seconds are dead wait in unit tests (drivers are mocked, not timing-dependent).
+    """
     with patch(f"{_MODULE}.time.sleep"):
         yield
 
@@ -19,14 +21,16 @@ def _no_real_sleep():
 @pytest.fixture(autouse=True)
 def _no_approval_wait(monkeypatch):
     """Disable the device-approval wait loop by default — it polls real wall-clock
-    for minutes. Tests that exercise the approval path opt back in explicitly."""
+    for minutes. Tests that exercise the approval path opt back in explicitly.
+    """
     monkeypatch.setenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "0")
 
 
 @pytest.fixture(autouse=True)
 def _breaker_closed():
     """Keep the 429 circuit breaker closed and hermetic by default so login tests
-    never touch Redis. Tests exercising the breaker patch these explicitly."""
+    never touch Redis. Tests exercising the breaker patch these explicitly.
+    """
     with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
          patch(f"{_MODULE}.mark_rate_limited"), \
          patch(f"{_MODULE}.is_automation_paused", return_value=False), \
@@ -37,7 +41,8 @@ def _breaker_closed():
 @pytest.fixture(autouse=True)
 def _stub_approval_email():
     """Stub the high-priority approval email (lazily imported inside the login flow)
-    so tests never touch a real provider; tests can assert on the returned mock."""
+    so tests never touch a real provider; tests can assert on the returned mock.
+    """
     with patch("cqc_lem.utilities.email.send_login_approval_email", return_value=True) as m:
         yield m
 
@@ -165,7 +170,8 @@ class TestLoginToLinkedinCookiePath:
 
     def test_stale_cookie_triggers_revalidation_email(self):
         """Cookies present but they don't authenticate → auto-detect stale session and
-        email the user to reconnect (revalidation=True)."""
+        email the user to reconnect (revalidation=True).
+        """
         state = {"url": "https://www.linkedin.com"}
         driver = MagicMock()
         driver.get_cookies.return_value = [{"name": "li_at"}]
@@ -269,6 +275,7 @@ class TestSolveArkoseChallenge:
 
         with patch.dict("sys.modules", {"capsolver": mock_capsolver}):
             from importlib import reload
+
             import cqc_lem.utilities.linkedin.helper as helper_mod
             reload(helper_mod)
             result = helper_mod.solve_arkose_challenge(driver, wait)
@@ -289,6 +296,7 @@ class TestSolveArkoseChallenge:
 
         with patch.dict("sys.modules", {"capsolver": mock_capsolver}):
             from importlib import reload
+
             import cqc_lem.utilities.linkedin.helper as helper_mod
             reload(helper_mod)
             result = helper_mod.solve_arkose_challenge(driver, wait)
@@ -311,6 +319,7 @@ class TestSolveArkoseChallenge:
 
         with patch.dict("sys.modules", {"capsolver": mock_capsolver}):
             from importlib import reload
+
             import cqc_lem.utilities.linkedin.helper as helper_mod
             reload(helper_mod)
             result = helper_mod.solve_arkose_challenge(driver, wait)
@@ -394,7 +403,8 @@ class TestLoginToLinkedinPostSubmitChallenge:
 
     def test_manual_approval_clears_checkpoint_and_logs_in(self, monkeypatch):
         """Device-approval checkpoint that clears mid-wait (user taps 'Yes' in the
-        mobile app) → login completes and cookies are persisted."""
+        mobile app) → login completes and cookies are persisted.
+        """
         monkeypatch.setenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "30")
 
         # url is driven by side effects: gets land on /login, the Sign-in click moves
@@ -507,7 +517,8 @@ class TestRateLimitCircuitBreaker:
     def test_measurement_session_survives_the_suppression_pause(self):
         """Read-only stat capture keeps logging in under the suppression tripwire's OWN pause — it
         produces the readings the tripwire re-evaluates, so freezing it would make recovery
-        permanently undetectable (issue #629). Every other pause still stops it."""
+        permanently undetectable (issue #629). Every other pause still stops it.
+        """
         driver = _make_driver("https://www.linkedin.com/feed/")
         wait = _make_wait()
         from cqc_lem.utilities.linkedin.helper import login_to_linkedin
@@ -553,7 +564,8 @@ class TestRateLimitCircuitBreaker:
 
     def test_rate_limited_with_cookies_self_heals_via_fresh_login(self):
         """A 429 at /feed/ WITH stored cookies is a stale-cookie/egress-IP mismatch: drop the
-        cookies and do a fresh credential login instead of opening the breaker."""
+        cookies and do a fresh credential login instead of opening the breaker.
+        """
         driver = _make_driver("https://www.linkedin.com/feed/")
         wait = _make_wait()
         # stage drives both the page body and the "logged-in" URL:
@@ -675,7 +687,8 @@ class TestDriveEmailPinChallenge:
 class TestRedirectLoopRecovery:
     """Stale cookies from a different egress IP produce a redirect-loop page at /feed/;
     login must recover via a fresh credential login instead of mistaking it for a 429
-    or for a live session."""
+    or for a live session.
+    """
 
     def _run(self):
         state = {"url": "https://www.linkedin.com"}
@@ -811,7 +824,8 @@ class TestHumanPause:
 class TestPersistSessionCookies:
     """store_cookies' bool is load-bearing (issue #745) — the login path must not claim a
     session was saved when the write was refused or swallowed a driver error. A lost write is
-    invisible until the NEXT run falls back to a password login and trips the device challenge."""
+    invisible until the NEXT run falls back to a password login and trips the device challenge.
+    """
 
     def _run(self, stored):
         from cqc_lem.utilities.linkedin.helper import _persist_session_cookies

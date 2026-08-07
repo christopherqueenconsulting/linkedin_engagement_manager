@@ -1,9 +1,9 @@
 """Unit tests for database utility functions."""
 
-import pytest
-from unittest.mock import MagicMock, patch, call
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, call, patch
 
+import pytest
 
 _GET_CONN = "cqc_lem.utilities.db.get_db_connection"
 
@@ -33,8 +33,9 @@ class TestPostUrlFromLogForUser:
         assert result is None
 
     def test_returns_none_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_post_url_from_log_for_user
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_post_url_from_log_for_user
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
@@ -91,9 +92,11 @@ class TestUserOwnsPosts:
     def test_a_db_error_raises_rather_than_answering_false(self, mock_database_connection):
         """Still a refusal at the call site, but a truthful one: the query never ran, so nothing was
         proved either way and reporting that as "not owned" (403) hides an outage behind a
-        permission error."""
-        from cqc_lem.utilities.db import user_owns_posts, OwnershipUnprovable
+        permission error.
+        """
         import mysql.connector
+
+        from cqc_lem.utilities.db import OwnershipUnprovable, user_owns_posts
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
@@ -101,8 +104,9 @@ class TestUserOwnsPosts:
                 user_owns_posts(7, [1])
 
     def test_a_db_error_still_closes_the_cursor_and_connection(self, mock_database_connection):
-        from cqc_lem.utilities.db import user_owns_posts, OwnershipUnprovable
         import mysql.connector
+
+        from cqc_lem.utilities.db import OwnershipUnprovable, user_owns_posts
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
@@ -122,10 +126,11 @@ class TestUserOwnsPosts:
 @pytest.mark.unit
 class TestPostMutationsAreOwnerScoped:
     """Issue #914: the ownership check is the gate, the WHERE scope is what makes forgetting it
-    harmless — and it closes the window between the check and the write."""
+    harmless — and it closes the window between the check and the write.
+    """
 
     def test_bulk_update_scopes_the_where_clause(self, mock_database_connection):
-        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, bulk_update_posts
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].rowcount = 2
@@ -136,7 +141,7 @@ class TestPostMutationsAreOwnerScoped:
 
     def test_bulk_update_without_a_user_id_is_unscoped(self, mock_database_connection):
         """The parameter is optional so the non-API callers keep working unchanged."""
-        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, bulk_update_posts
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].rowcount = 1
@@ -155,7 +160,7 @@ class TestPostMutationsAreOwnerScoped:
         assert params[-1] == 7
 
     def test_update_db_post_scopes_the_where_clause(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].rowcount = 1
@@ -166,7 +171,7 @@ class TestPostMutationsAreOwnerScoped:
         assert params[-1] == 7
 
     def test_update_db_post_without_a_user_id_is_unscoped(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].rowcount = 1
@@ -177,7 +182,8 @@ class TestPostMutationsAreOwnerScoped:
 
     def test_rejection_reason_scopes_the_where_clause(self, mock_database_connection):
         """The sibling write `/update_post/` makes right after `update_db_post` — every write on
-        this table carries the scope or the claim "forgetting the gate is harmless" is not true."""
+        this table carries the scope or the claim "forgetting the gate is harmless" is not true.
+        """
         from cqc_lem.utilities.db import update_db_post_rejection_reason
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
@@ -220,8 +226,9 @@ class TestPostMessageFromLogForUser:
         assert result is None
 
     def test_returns_none_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_post_message_from_log_for_user
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_post_message_from_log_for_user
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
@@ -270,7 +277,7 @@ class TestLogActionTypeEnum:
 @pytest.mark.unit
 class TestUpdateDbPostStatus:
     def test_executes_correct_sql(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post_status, PostStatus
+        from cqc_lem.utilities.db import PostStatus, update_db_post_status
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -286,8 +293,9 @@ class TestUpdateDbPostStatus:
             mock_database_connection["connection"].commit.assert_called_once()
 
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post_status, PostStatus
         import mysql.connector
+
+        from cqc_lem.utilities.db import PostStatus, update_db_post_status
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -315,8 +323,9 @@ class TestUpdateDbPostContent:
             assert 19 in args[1]
 
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post_content
         import mysql.connector
+
+        from cqc_lem.utilities.db import update_db_post_content
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -356,8 +365,9 @@ class TestUpdateDbPostRejectionReason:
             assert args[1][0] is None
 
     def test_returns_false_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_db_post_rejection_reason
         import mysql.connector
+
+        from cqc_lem.utilities.db import update_db_post_rejection_reason
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -387,8 +397,9 @@ class TestGetPostRejectionReason:
             assert get_post_rejection_reason(19) is None
 
     def test_returns_none_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_post_rejection_reason
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_post_rejection_reason
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -400,7 +411,7 @@ class TestGetPostRejectionReason:
 @pytest.mark.unit
 class TestSoftDeletePosts:
     def test_passes_rejection_reason_to_bulk_update(self, mock_database_connection):
-        from cqc_lem.utilities.db import soft_delete_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, soft_delete_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -536,6 +547,7 @@ class TestGetPosts:
 
     def test_db_error_returns_empty(self, mock_database_connection):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
@@ -547,8 +559,9 @@ class TestGetPosts:
             assert posts == [] and total == 0
 
     def test_start_date_filter_adds_lower_bound(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_posts
         from datetime import datetime, timezone
+
+        from cqc_lem.utilities.db import get_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -563,8 +576,9 @@ class TestGetPosts:
             assert datetime(2026, 7, 1, 0, 0, 0) in count_params
 
     def test_end_date_filter_adds_upper_bound(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_posts
         from datetime import datetime, timezone
+
+        from cqc_lem.utilities.db import get_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -579,8 +593,9 @@ class TestGetPosts:
             assert datetime(2026, 7, 31, 12, 30, 0) in count_params
 
     def test_date_range_converts_offset_to_naive_utc(self, mock_database_connection):
+        from datetime import datetime, timedelta, timezone
+
         from cqc_lem.utilities.db import get_posts
-        from datetime import datetime, timezone, timedelta
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -675,7 +690,8 @@ class TestBuildContentSearchClause:
 class TestGetPostByEmailIsGone:
     """`get_post_by_email` turned an ADDRESS into somebody's posts — the exact shape `GET /posts/`
     used to authenticate on. Its one caller resolves the session now, so the wrapper was deleted
-    rather than deprecated (issue #914); this test is what stops it coming back."""
+    rather than deprecated (issue #914); this test is what stops it coming back.
+    """
 
     def test_address_keyed_post_reader_no_longer_exists(self):
         import cqc_lem.utilities.db as db
@@ -686,7 +702,7 @@ class TestGetPostByEmailIsGone:
 @pytest.mark.unit
 class TestInsertPost:
     def test_inserts_post_and_returns_true(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id") as mock_get_user:
@@ -706,7 +722,7 @@ class TestInsertPost:
             mock_database_connection["connection"].commit.assert_called_once()
 
     def test_returns_false_when_user_not_found(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_user_id") as mock_get_user:
             mock_get_user.return_value = None
@@ -721,7 +737,7 @@ class TestInsertPost:
             assert result is False
 
     def test_inserts_with_explicit_status(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=60):
@@ -737,7 +753,7 @@ class TestInsertPost:
             assert PostStatus.APPROVED.value in params
 
     def test_status_defaults_to_pending(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=60):
@@ -780,7 +796,7 @@ class TestGetUserId:
 @pytest.mark.unit
 class TestInsertPostExtended:
     def test_inserts_with_video_url(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
+        from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id") as mock_uid:
@@ -801,8 +817,9 @@ class TestInsertPostExtended:
             assert "https://cdn.example.com/video.mp4" in call_args[1]
 
     def test_inserts_with_carousel_slides(self, mock_database_connection):
-        from cqc_lem.utilities.db import insert_post, PostType
         import json
+
+        from cqc_lem.utilities.db import PostType, insert_post
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id") as mock_uid:
@@ -828,7 +845,7 @@ class TestInsertPostExtended:
 @pytest.mark.unit
 class TestGetPostType:
     def test_returns_post_type_enum(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_post_type, PostType
+        from cqc_lem.utilities.db import PostType, get_post_type
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -853,8 +870,9 @@ class TestGetPostType:
 @pytest.mark.unit
 class TestGetCarouselSlides:
     def test_returns_parsed_slides(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_carousel_slides
         import json
+
+        from cqc_lem.utilities.db import get_carousel_slides
 
         slides = ["First slide", "Second slide"]
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
@@ -882,7 +900,7 @@ class TestGetCarouselSlides:
 @pytest.mark.unit
 class TestBulkUpdatePosts:
     def test_updates_status_for_multiple_ids(self, mock_database_connection):
-        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+        from cqc_lem.utilities.db import PostStatus, bulk_update_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -943,8 +961,9 @@ class TestUpdateLinkedinConnectionStatus:
             assert 42 in args[1]
 
     def test_returns_false_on_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_linkedin_connection_status
         import mysql.connector
+
+        from cqc_lem.utilities.db import update_linkedin_connection_status
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -975,8 +994,9 @@ class TestGetUserSubscriptionInfo:
             assert result == expected
 
     def test_returns_none_on_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_user_subscription_info
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_user_subscription_info
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1002,8 +1022,9 @@ class TestUpdateSubscriptionFromStripe:
             assert "active" in args[1]
 
     def test_returns_false_on_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_subscription_from_stripe
         import mysql.connector
+
+        from cqc_lem.utilities.db import update_subscription_from_stripe
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1027,8 +1048,9 @@ class TestGetUserPreferences:
             assert result == expected
 
     def test_returns_defaults_on_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_user_preferences
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_user_preferences
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1036,8 +1058,7 @@ class TestGetUserPreferences:
 
             result = get_user_preferences(5)
             # On DB error, safe defaults are returned so automation is not silently broken
-            from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
-                                              DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+            from cqc_lem.utilities.db import DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS
             assert result == {"last_login_inactivate_delay": None, "auto_schedule_posts": True,
                               "content_buffer_days": DEFAULT_CONTENT_BUFFER_DAYS,
                               "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS,
@@ -1086,8 +1107,9 @@ class TestUpdateUserPreferences:
             assert 0 in args[1]   # auto_schedule_posts=False → 0
 
     def test_returns_false_on_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import update_user_preferences
         import mysql.connector
+
+        from cqc_lem.utilities.db import update_user_preferences
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1110,8 +1132,9 @@ class TestGetActiveUserIds:
             assert result == [1, 2, 3]
 
     def test_returns_empty_list_on_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_active_user_ids
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_active_user_ids
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1181,8 +1204,9 @@ class TestGetUserAccessToken:
         assert "access_token_created_at" in sql
 
     def test_returns_none_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_user_access_token
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_user_access_token
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1239,8 +1263,9 @@ class TestGetOrphanedScheduledPosts:
 
     def test_cutoff_is_lookback_hours_before_now(self, mock_database_connection):
         """The cutoff passed to the query must be approximately (now - lookback_hours)."""
-        from cqc_lem.utilities.db import get_orphaned_scheduled_posts
         from datetime import timedelta
+
+        from cqc_lem.utilities.db import get_orphaned_scheduled_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
@@ -1257,8 +1282,9 @@ class TestGetOrphanedScheduledPosts:
         assert expected_lo <= cutoff_arg <= expected_hi
 
     def test_returns_empty_on_db_error(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_orphaned_scheduled_posts
         import mysql.connector
+
+        from cqc_lem.utilities.db import get_orphaned_scheduled_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]

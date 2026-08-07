@@ -1,9 +1,11 @@
 """Unit tests for the pending-reason surface in the content plan (issue #421): the gates record WHY
 a draft is held, the status-setter demotes on exactly the findings that demote, and 'edit &
-re-score' can move a fixed post PENDING -> APPROVED without a full regenerate."""
+re-score' can move a fixed post PENDING -> APPROVED without a full regenerate.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

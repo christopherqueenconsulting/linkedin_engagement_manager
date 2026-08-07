@@ -3,10 +3,12 @@
 The weekly group post used to be written and published inside one Selenium run, so a user only ever
 saw the per-group toggle — never the text. These endpoints are the preview: the draft is readable
 before it ships, editable in place, and skippable. Everything is scoped to the caller's OWN open
-draft — the request never names a draft id, so one session can't reach another user's post."""
+draft — the request never names a draft id, so one session can't reach another user's post.
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -19,6 +21,7 @@ _DRAFT = {"id": 11, "user_id": 1, "group_id": "g1", "group_name": "AI Leaders",
 
 def _client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app)
 

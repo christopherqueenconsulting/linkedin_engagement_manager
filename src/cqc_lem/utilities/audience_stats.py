@@ -40,7 +40,8 @@ def parse_labeled_count(text: Optional[str], label: str) -> Optional[int]:
     is already the VALUE of a different label in front of it (`_claimed_by_another_label`) is
     skipped, so a stacked label-first page can't hand every metric the first card's number. A label
     with no number in front of it falls back to the first number just after it. Returns None when no
-    count is present — callers persist that as NULL, which is distinct from a real zero."""
+    count is present — callers persist that as NULL, which is distinct from a real zero.
+    """
     if not text:
         return None
     for match in re.finditer(rf"{_NUMBER}[ \t]*\n?[ \t]*{label}", text, flags=re.IGNORECASE):
@@ -59,7 +60,8 @@ def _claimed_by_another_label(text: str, start: int, label: str) -> bool:
     Search appearances\\n88") would otherwise hand 288 to search appearances too, silently recording
     one metric's number under another. The other label only owns the number if it doesn't already
     have one of its own in front of it (the value-first layout, where "4,312 followers\\n500+
-    connections" leaves 500 legitimately ours)."""
+    connections" leaves 500 legitimately ours).
+    """
     head = text[:start]
     for other in _ALL_LABELS:
         if other == label:
@@ -72,7 +74,8 @@ def _claimed_by_another_label(text: str, start: int, label: str) -> bool:
 
 def _to_number(raw: str, suffix: str) -> Optional[int]:
     """"3.2" + "K" -> 3200. A K/M suffix means the digits are a rounded magnitude, so the comma is a
-    decimal separator in some locales — but LinkedIn renders en-US here, so commas are thousands."""
+    decimal separator in some locales — but LinkedIn renders en-US here, so commas are thousands.
+    """
     try:
         value = float(raw.replace(",", ""))
     except ValueError:
@@ -81,18 +84,39 @@ def _to_number(raw: str, suffix: str) -> Optional[int]:
 
 
 def parse_follower_count(text: Optional[str]) -> Optional[int]:
+    """Followers, read out of the profile page's own text.
+
+    None when the label is absent or unreadable — the caller persists that as NULL ("not measured"),
+    which a growth delta skips instead of charting as a total audience loss.
+    """
     return parse_labeled_count(text, FOLLOWER_LABEL)
 
 
 def parse_connection_count(text: Optional[str]) -> Optional[int]:
+    """Connections, read out of the profile page's own text.
+
+    "500+" reads as 500 — LinkedIn's own display ceiling, not a failure. None when unreadable,
+    never 0.
+    """
     return parse_labeled_count(text, CONNECTION_LABEL)
 
 
 def parse_profile_views(text: Optional[str]) -> Optional[int]:
+    """Profile views, read off the analytics surface.
+
+    The number is stacked ABOVE its caption next to the search-appearances card, so
+    `parse_labeled_count` is what keeps one card's number from binding to the other's label. None
+    when unreadable, never 0.
+    """
     return parse_labeled_count(text, PROFILE_VIEW_LABEL)
 
 
 def parse_search_appearances(text: Optional[str]) -> Optional[int]:
+    """Search appearances, read off the analytics surface.
+
+    None when unreadable, never 0 — and the caller treats that None as its cue to retry on the
+    dedicated search-appearances page before giving up.
+    """
     return parse_labeled_count(text, SEARCH_APPEARANCE_LABEL)
 
 
@@ -122,7 +146,8 @@ def build_follower_series(rows: Iterable[Mapping]) -> list:
     """Daily audience series, oldest first, for the growth panel. `rows` are the snapshot dicts from
     `db.get_follower_stats` (any order). Multiple captures on the same calendar day collapse to the
     LAST one — a re-run is a correction, not another data point, so summing would inflate exactly
-    the way the post-stats snapshot bug did. Missing counts stay None."""
+    the way the post-stats snapshot bug did. Missing counts stay None.
+    """
     buckets: dict = {}
     for row in rows:
         if not row:
@@ -167,7 +192,8 @@ def _latest_with(series: Sequence[Mapping], field: str) -> Optional[Mapping]:
 
 def _on_or_before(series: Sequence[Mapping], field: str, cutoff: date) -> Optional[Mapping]:
     """The newest point on/before `cutoff` that actually carries `field` — the baseline a delta is
-    measured from. None when the history doesn't reach back that far."""
+    measured from. None when the history doesn't reach back that far.
+    """
     best = None
     for point in series:
         day = _as_date(point.get("date"))
@@ -186,7 +212,8 @@ def follower_growth(rows: Iterable[Mapping], windows: Sequence[int] = GROWTH_WIN
     A delta is None unless there is a baseline snapshot on or before `today - window` that carried a
     follower count — with a shorter history the honest answer is "not enough data", not a delta
     measured against the oldest row we happen to have (which would read as explosive growth on day
-    two). Pure — no DB."""
+    two). Pure — no DB.
+    """
     series = build_follower_series(rows)
     reference = (now or datetime.now(timezone.utc)).date()
     latest = _latest_with(series, "follower_count")
@@ -223,7 +250,8 @@ def follower_growth(rows: Iterable[Mapping], windows: Sequence[int] = GROWTH_WIN
 def build_activity_series(rows: Iterable[Mapping]) -> list:
     """Daily posting/commenting activity, oldest first, for the overlay on the growth chart —
     follower growth is only readable next to what we actually DID that day. `rows` are the
-    `{date, action_type, count}` dicts from `db.get_daily_action_counts`."""
+    `{date, action_type, count}` dicts from `db.get_daily_action_counts`.
+    """
     buckets: dict = {}
     for row in rows:
         if not row:

@@ -1,11 +1,12 @@
 """Regression guards for the LinkedIn 429 root causes: unproxied Selenium sessions
-and a pinned User-Agent that contradicts Chrome's User-Agent Client Hints."""
+and a pinned User-Agent that contradicts Chrome's User-Agent Client Hints.
+"""
 
 import ast
 import pathlib
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -15,14 +16,16 @@ _SRC = pathlib.Path(__file__).resolve().parents[3] / "src" / "cqc_lem"
 
 def _proxy_url(user: str, password: str, host: str, port: int) -> str:
     """Assemble a credentialed proxy URL from parts so no literal user:pass@host
-    string lives in the source — secret scanners flag that as a Basic Auth String."""
+    string lives in the source — secret scanners flag that as a Basic Auth String.
+    """
     return f"http://{user}:{password}@{host}:{port}"
 
 
 class TestNoUserAgentOverride:
     """A hardcoded UA cannot be kept truthful: --user-agent does not update
     navigator.userAgentData / Sec-CH-UA, so any pinned string eventually contradicts the
-    real Chrome build and OS. Chrome's own UA is the only self-consistent option."""
+    real Chrome build and OS. Chrome's own UA is the only self-consistent option.
+    """
 
     def test_base_options_set_no_user_agent(self):
         from cqc_lem.utilities.selenium_util import getBaseOptions
@@ -58,7 +61,8 @@ class TestProxyLabel:
 
 class TestMissingUserIdIsLoud:
     """A session without user_id gets no proxy, timezone, locale or geo — it egresses from
-    the host's datacenter IP. That must never happen silently again."""
+    the host's datacenter IP. That must never happen silently again.
+    """
 
     def test_warns_when_user_id_missing(self):
         with patch(f"{_MOD}.log_warning") as warn:
@@ -100,7 +104,8 @@ class TestEgressLogging:
 
 class TestEverySessionPassesUserId:
     """AST guard: every get_driver_wait_pair() call in the app must pass user_id, or that
-    task silently loses its proxy and geo. This is the bug that caused the 429s."""
+    task silently loses its proxy and geo. This is the bug that caused the 429s.
+    """
 
     def test_all_call_sites_pass_user_id(self):
         offenders = []

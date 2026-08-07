@@ -1,13 +1,34 @@
+"""Every `.env` value the app reads, resolved ONCE at import into module-level constants.
+
+Reading the environment here and nowhere else is what makes a missing variable a startup-time fact
+rather than a surprise deep inside a Celery task. The cost of that is the mirror rule: because these
+are bound at import, a test that mutates `os.environ` will not move them — anything an operator must
+be able to retune on a live box is read at its call site instead (see `comment_outcomes`), and the
+constants here are the ones that legitimately need a restart to change.
+
+Names in `MISSING_CONSTANTS` are the ones that fell back to a default, kept for diagnostics.
+"""
 import os
 
 MISSING_CONSTANTS = []
 
 
 def isTrue(s: str) -> bool:
+    """Parse an env string as a boolean, accepting the shapes people actually type in a `.env`.
+
+    Anything unrecognised — including an empty string — is False, so a typo'd flag leaves a feature
+    OFF rather than accidentally enabling it.
+    """
     return s.lower() in ['true', '1', 't', 'y', 'yes']
 
 
 def get_constant_from_env(key: str, required: bool = False, default_value: str = None) -> str:
+    """Read one env var, recording it in `MISSING_CONSTANTS` when it falls back to `default_value`.
+
+    `required=True` raises `KeyError` at import so a mandatory secret fails the container start
+    instead of the first task that needs it. An empty string counts as absent, not as a deliberate
+    blank — a shell that exports a variable with no value is the same accident as not setting it.
+    """
     if required:
         return os.environ[key]
     else:
@@ -510,6 +531,13 @@ APP_VERSION = get_constant_from_env('APP_VERSION', default_value='')
 
 
 def get_app_version() -> str:
+    """The release string the SPA footer and `/api/app-info` show — what is ACTUALLY running.
+
+    `APP_VERSION` wins when set; otherwise the installed package metadata is read, which reflects
+    the version baked into the running image rather than whatever tag is checked out on disk (the
+    two diverge on a partial deploy). Returns `'unknown'` if neither can be determined — never
+    raises, because a version display must not be able to break the page it sits on.
+    """
     if APP_VERSION:
         return APP_VERSION
     try:

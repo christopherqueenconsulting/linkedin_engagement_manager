@@ -1,7 +1,8 @@
 """Unit tests for utilities/marketing/attribution.py — UTM discipline at the source (issue #658)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -159,10 +160,13 @@ class TestVocabularyIsWhatLandsOnTheUrl:
     def test_placement_constants_survive_slugging_unchanged(self):
         # Every value is slugged on the way onto a URL, so a constant spelled with an underscore
         # would never equal the value a PostHog filter has to match. The constant IS the data.
-        from cqc_lem.utilities.marketing.attribution import (PLACEMENT_FIRST_COMMENT,
-                                                             PLACEMENT_POST_BODY,
-                                                             PLACEMENT_VIDEO_DESCRIPTION,
-                                                             _slug, build_utm_url)
+        from cqc_lem.utilities.marketing.attribution import (
+            PLACEMENT_FIRST_COMMENT,
+            PLACEMENT_POST_BODY,
+            PLACEMENT_VIDEO_DESCRIPTION,
+            _slug,
+            build_utm_url,
+        )
         for placement in (PLACEMENT_POST_BODY, PLACEMENT_FIRST_COMMENT,
                           PLACEMENT_VIDEO_DESCRIPTION):
             assert _slug(placement) == placement
@@ -211,8 +215,7 @@ class TestCampaignNames:
         assert campaign_for_post() == "post"
 
     def test_edition_and_tutorial_campaigns(self):
-        from cqc_lem.utilities.marketing.attribution import (campaign_for_edition,
-                                                             campaign_for_tutorial)
+        from cqc_lem.utilities.marketing.attribution import campaign_for_edition, campaign_for_tutorial
         assert campaign_for_edition(4) == "newsletter-4"
         assert campaign_for_edition() == "newsletter"
         assert campaign_for_tutorial("account_prefs") == "tutorial-account-prefs"
@@ -233,7 +236,8 @@ class TestSignupAndReferralUrls:
 
     def test_no_signup_url_falls_back_to_the_public_base(self):
         """Issue #736: the landing page IS the signup surface, so the brand's CTA needs no extra
-        config — `BRAND_SIGNUP_URL` is an override, not a requirement."""
+        config — `BRAND_SIGNUP_URL` is an override, not a requirement.
+        """
         from cqc_lem.utilities.marketing.attribution import signup_url
         with _Patched(_owned(signup="")):
             out = signup_url("linkedin", "profile", "brand-profile")

@@ -8,11 +8,10 @@ end-to-end without a live MySQL container.
 """
 import threading
 from datetime import datetime, timedelta, timezone
-
-import pytest
 from unittest.mock import patch
 
 import mysql.connector
+import pytest
 from mysql.connector import errorcode
 
 pytestmark = pytest.mark.integration
@@ -137,6 +136,7 @@ class _Conn:
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 
@@ -185,7 +185,7 @@ def test_cohort_counter_is_atomic_under_concurrency(client):
     results: list = []
     barrier = threading.Barrier(len(user_ids))
 
-    from cqc_lem.api.main import trial_extend_endpoint, TrialExtendRequest
+    from cqc_lem.api.main import TrialExtendRequest, trial_extend_endpoint
 
     def _claim(user_id: int):
         barrier.wait()

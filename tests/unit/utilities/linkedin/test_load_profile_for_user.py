@@ -1,7 +1,8 @@
 """Unit tests for load_profile_for_user."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

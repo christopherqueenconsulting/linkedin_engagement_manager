@@ -51,7 +51,8 @@ def _default_parse_domain() -> str:
 
 def pin_reply_address(token: str) -> str:
     """Tokenized Reply-To used in the PIN-request email. Host is LINKEDIN_PARSE_DOMAIN if
-    set, else derived from the configured domain (see _default_parse_domain)."""
+    set, else derived from the configured domain (see _default_parse_domain).
+    """
     domain = os.getenv("LINKEDIN_PARSE_DOMAIN") or _default_parse_domain()
     return f"pin+{token}@{domain}"
 
@@ -97,7 +98,8 @@ def extract_pin_from_text(text: str) -> Optional[str]:
 
 def create_pin_request(user_id: int) -> str:
     """Mint a reply token mapping to user_id and store it (TTL). Returns the token even
-    if Redis is down (the caller still emails; attribution just degrades)."""
+    if Redis is down (the caller still emails; attribution just degrades).
+    """
     token = uuid.uuid4().hex[:20]
     client = _redis_client()
     if client is not None:
@@ -110,7 +112,8 @@ def create_pin_request(user_id: int) -> str:
 
 def submit_pin_by_token(token: str, pin: str) -> Optional[int]:
     """Attribute an inbound reply (token + code) to a user and store the PIN. Returns
-    the user_id on success, else None."""
+    the user_id on success, else None.
+    """
     client = _redis_client()
     if client is None or not token or not pin:
         return None
@@ -128,6 +131,15 @@ def submit_pin_by_token(token: str, pin: str) -> Optional[int]:
 
 
 def submit_pin(user_id: int, pin: str) -> bool:
+    """Hand a code to a waiting login when the user is ALREADY known.
+
+    Skips the reply-token attribution `submit_pin_by_token` does for inbound email.
+
+    Returns:
+        False when the code was not stored — Redis unavailable, or the write failed. The waiting
+        login simply never sees a PIN and times out, so a false negative costs one retry rather
+        than a wrong code typed into LinkedIn's challenge.
+    """
     client = _redis_client()
     if client is None:
         return False
@@ -144,6 +156,13 @@ def _store_pin(client, user_id: int, pin: str) -> bool:
 
 
 def get_pin(user_id: int) -> Optional[str]:
+    """The code this user replied with, or None while nothing has arrived yet.
+
+    This is polled in a loop by the paused login, so None is the ordinary answer for most calls and
+    a Redis error is swallowed to the same None: one unreadable poll must not end a wait the user
+    is still in the middle of answering. The code expires on its own with the key's TTL, so a stale
+    challenge can never be answered with yesterday's digits.
+    """
     client = _redis_client()
     if client is None:
         return None
@@ -154,6 +173,12 @@ def get_pin(user_id: int) -> Optional[str]:
 
 
 def clear_pin(user_id: int) -> None:
+    """Drop any stored code for this user — called on BOTH sides of a challenge.
+
+    Before emailing, so a leftover code from an earlier attempt cannot satisfy this one instantly;
+    after typing it, so a single-use code is not still sitting there for the next challenge to pick
+    up. A failure to clear only leaves a short-lived key that its TTL will collect.
+    """
     client = _redis_client()
     if client is None:
         return

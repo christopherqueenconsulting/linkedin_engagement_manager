@@ -416,11 +416,26 @@ def wait_for_analysis(
 def find_new_alerts(
     head_alerts: list[Alert], base_alerts: list[Alert]
 ) -> list[Alert]:
+    """Alerts present on the head ref that the base ref does not already carry.
+
+    Matched two ways, and the second one is load-bearing. `Alert.key` includes the LINE, so a
+    pre-existing alert whose line moved because the PR added code ABOVE it reads as new — which
+    fails the gate on debt the PR did not create, on any diff large enough to shift a line. The
+    alert NUMBER is repo-global and stable across refs, so an alert carrying a number the base ref
+    also carries is the same alert wherever it now sits.
+
+    Keeping the line key as well is deliberate: it still catches a genuinely new alert that happens
+    to arrive without a number.
+    """
     base_keys = {a.key for a in base_alerts}
+    base_numbers = {a.number for a in base_alerts if a.number}
     new_by_key: dict[tuple, Alert] = {}
     for alert in head_alerts:
-        if alert.key not in base_keys:
-            new_by_key[alert.key] = alert
+        if alert.key in base_keys:
+            continue
+        if alert.number and alert.number in base_numbers:
+            continue
+        new_by_key[alert.key] = alert
     return list(new_by_key.values())
 
 

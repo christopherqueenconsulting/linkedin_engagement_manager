@@ -5,8 +5,9 @@ docker-compose environment. They are marked @pytest.mark.e2e and skipped
 when LinkedIn credentials or a real DB are not available.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.mark.e2e
@@ -68,10 +69,10 @@ class TestVideoPostE2E:
     def test_video_url_uses_api_url_final(self):
         """Video URLs stored in DB should use the API_URL_FINAL base."""
         import importlib
-        import sys
 
         # Simulate having NGROK_CUSTOM_DOMAIN set correctly
         import os
+        import sys
         original = os.environ.get("NGROK_CUSTOM_DOMAIN")
         os.environ["NGROK_CUSTOM_DOMAIN"] = "relegable-preroyally-marti.ngrok-free.dev"
         if "cqc_lem.utilities.env_constants" in sys.modules:

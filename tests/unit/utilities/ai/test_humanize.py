@@ -1,7 +1,8 @@
 """Unit tests for the humanization / anti-AI-tell rewrite pass (issue #416 — A5): the deterministic
 audit + transform helpers (em-dash cap, contraction insertion, tell-word detection), the master +
 per-type toggle, and the humanize_text pass itself (READER-mode rewrite via the LLM judge, its
-fail-open guarantees, no-fabrication contract, and length budget)."""
+fail-open guarantees, no-fabrication contract, and length budget).
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -328,7 +329,8 @@ class TestHumanizeTitle:
 class TestGeneratorsRouteThroughHumanize:
     """Acceptance: all four content types run through the humanization pass before review. Each test
     turns the pass ON, spies on the wired humanize_text, and asserts the generator's output is the
-    humanized result tagged with the right content_type."""
+    humanized result tagged with the right content_type.
+    """
 
     def _profile(self):
         prof = MagicMock()

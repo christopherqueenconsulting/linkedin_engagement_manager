@@ -21,7 +21,8 @@ _M = "cqc_lem.utilities.webauthn_util"
 class TestRelyingParty:
     def test_the_rp_is_derived_from_the_public_base_url(self):
         """Derived, not separately configured: a passkey registered against one hostname is
-        worthless against another, so the two facts must not be able to drift."""
+        worthless against another, so the two facts must not be able to drift.
+        """
         with patch(f"{_M}.PUBLIC_BASE_URL", "https://lem.example.com/"), \
              patch(f"{_M}.WEBAUTHN_RP_ID", ""), patch(f"{_M}.WEBAUTHN_EXTRA_ORIGINS", ""):
             rp = wu.relying_party()
@@ -50,7 +51,8 @@ class TestRelyingParty:
 
     def test_a_plain_http_public_origin_is_refused(self):
         """A browser will not run the ceremony against a non-secure context. Failing here turns an
-        unreadable client-side error into a message an operator can act on."""
+        unreadable client-side error into a message an operator can act on.
+        """
         with patch(f"{_M}.PUBLIC_BASE_URL", "http://lem.example.com"), \
              patch(f"{_M}.WEBAUTHN_RP_ID", ""), patch(f"{_M}.WEBAUTHN_EXTRA_ORIGINS", ""):
             with pytest.raises(wu.WebAuthnUnavailable):
@@ -65,7 +67,8 @@ class TestRelyingParty:
 class TestOptions:
     def test_registration_options_exclude_the_passkeys_already_enrolled(self):
         """Without excludeCredentials a user "adds a second passkey", gets the same one back, and
-        believes they have a spare."""
+        believes they have a spare.
+        """
         with patch(f"{_M}.PUBLIC_BASE_URL", "https://lem.example.com"), \
              patch(f"{_M}.WEBAUTHN_RP_ID", ""), patch(f"{_M}.WEBAUTHN_EXTRA_ORIGINS", ""):
             options, challenge = wu.build_registration_options(
@@ -83,7 +86,8 @@ class TestOptions:
 
     def test_login_options_name_no_credentials_so_nothing_can_be_probed(self):
         """Username-less by design: asking for the email first would leak which addresses have an
-        account."""
+        account.
+        """
         with patch(f"{_M}.PUBLIC_BASE_URL", "https://lem.example.com"), \
              patch(f"{_M}.WEBAUTHN_RP_ID", ""), patch(f"{_M}.WEBAUTHN_EXTRA_ORIGINS", ""):
             options, challenge = wu.build_authentication_options()
@@ -120,7 +124,8 @@ class TestVerification:
 
     def test_a_rejected_assertion_returns_none(self):
         """py_webauthn raises on a bad signature AND on a sign counter that went backwards — the
-        standard tell for a cloned authenticator. Both must land here."""
+        standard tell for a cloned authenticator. Both must land here.
+        """
         with patch(f"{_M}.PUBLIC_BASE_URL", "https://lem.example.com"), \
              patch(f"{_M}.WEBAUTHN_RP_ID", ""), patch(f"{_M}.WEBAUTHN_EXTRA_ORIGINS", ""), \
              patch(f"{_M}.verify_authentication_response",

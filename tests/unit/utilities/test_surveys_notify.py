@@ -1,7 +1,8 @@
 """Unit tests for survey invite delivery (issue #501): the email builder and the notify wrapper."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

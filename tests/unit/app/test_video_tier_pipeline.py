@@ -1,7 +1,8 @@
 """Unit tests for tier selection + credit lifecycle in the video pipeline."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -146,7 +147,7 @@ class TestAvatarOnStandardTier:
 
 class TestDefaultVideoQualityPreference:
     def test_default_premium_upgrades_standard_post_when_credits(self):
-        """post video_quality='standard' but the user's default is premium + has credits -> premium."""
+        """Post video_quality='standard' but the user's default is premium + has credits -> premium."""
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
              patch("cqc_lem.utilities.db.get_default_video_quality", return_value="premium"), \
              patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
@@ -179,7 +180,8 @@ class TestDefaultVideoQualityPreference:
 
 class TestContentLanguageThreading:
     """Issue #548: the user's language must reach the motion prompt of audio-capable models —
-    Veo has no language parameter, so a prompt that omits it gets a voiceover of Veo's choosing."""
+    Veo has no language parameter, so a prompt that omits it gets a voiceover of Veo's choosing.
+    """
 
     def test_premium_render_passes_the_users_language(self):
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \
@@ -212,7 +214,8 @@ class TestContentLanguageThreading:
 
     def test_text_to_video_prompt_keeps_the_motion_half_intact(self):
         """The audio direction rides on the motion prompt — truncating the combined prompt must
-        never eat it (that is exactly how posts #34/#36 lost their audio direction)."""
+        never eat it (that is exactly how posts #34/#36 lost their audio direction).
+        """
         long_scene = "s" * 900
         motion_text = "Slow push-in. " + "m" * 400 + " Audio: ambient only."
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \

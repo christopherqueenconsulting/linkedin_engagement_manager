@@ -1,7 +1,8 @@
 """Unit tests for build_dm_from_template (templated, voice-aligned DMs)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

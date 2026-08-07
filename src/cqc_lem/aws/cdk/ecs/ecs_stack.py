@@ -1,11 +1,10 @@
 from aws_cdk import (
+    CfnOutput,
     NestedStack,
     aws_ec2 as ec2,
-    aws_servicediscovery as servicediscovery,
     aws_ecs as ecs,
     aws_elasticloadbalancingv2 as elbv2,
-    CfnOutput
-
+    aws_servicediscovery as servicediscovery,
 )
 from constructs import Construct
 

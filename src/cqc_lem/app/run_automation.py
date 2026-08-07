@@ -1,10 +1,29 @@
+"""Every engagement action LEM takes AS the user, as Celery tasks on the Selenium lanes.
+
+Feed commenting and replies, the self-comments (seed + second wave), DMs and their follow-up
+ladders, the outreach and roster funnels, invites, group posts and the read-only outcome sweeps all
+dispatch from here; the reusable Selenium mechanics they share live in `utilities/linkedin/*`. The
+per-beat posture — what each one guarantees and why — is `docs/engagement-automation.md`.
+
+Two rules cut across everything in this file.
+
+**Pacing is not a safety gate.** `utilities/human_pacing.py` (issue #626) decides only how slowly we
+act and fails OPEN; the hard stops are separate and checked in their own right — the 429 breaker in
+`linkedin/rate_limit.py`, the suppression tripwire's engagement pause (#629), and the comment-quality
+hold (#628, gated inside `automate_commenting` so every caller inherits it).
+
+**Success is the OUTCOME being present, never a click having landed** (#1013, `docs/sdui-selenium-notes.md`).
+A comment typed but not verifiably posted is a FAILURE row; a DM is sent only once it is visible in
+the thread. The cost of getting this wrong is not a bad metric — it is the account.
+"""
+
 import hashlib
 import inspect
 import json
 import math
 import os
-import re
 import random
+import re
 import sys
 import threading
 import time
@@ -13,110 +32,305 @@ from enum import StrEnum
 from typing import Callable, List, NamedTuple, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from cqc_lem.app.queue_once import QueueOnce
-from cqc_lem.app.my_celery import app as shared_task
-from cqc_lem.utilities.ai.content_framework import select_blueprint
-from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
-    generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
-    get_or_create_profile_synthesis, generate_lead_response, generate_nurture_dm, \
-    synthesize_profile, lint_repaired, generate_second_wave_comment
-from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
-from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
-from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandidate, \
-    CONNECT_NOTE_LIMIT, SOURCE_ADJACENT_POST, SOURCE_OWN_POST, SOURCE_ROSTER, \
-    default_connect_note, rank_candidates, target_terms_from_prefs
-from cqc_lem.utilities.lead_scoring import person_key
-from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
-    append_link_to_comment, resolve_artifact_delivery, ARTIFACT_KIND_LEAD_MAGNET
-from cqc_lem.utilities.date import convert_viewed_on_to_date
-from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
-    CONNECTION_REQUEST_SENT_MESSAGE, ALREADY_CONNECTED_MESSAGE, NO_CONNECT_BUTTON_MESSAGE, \
-    INVITE_NOT_SENT_MESSAGE, CONNECT_NOTE_MAX_CHARS, \
-    get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
-    get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
-    get_newsletter_edition, mark_edition_published, mark_edition_failed, \
-    upsert_user_group, get_enabled_group_ids, record_group_post, record_group_post_run, record_post_stats, \
-    create_group_post_draft, get_open_group_post_draft, get_group_post_draft, update_group_post_draft, \
-    GroupPostDraftStatus, \
-    get_recent_posted_post_ids, get_uncaptured_posted_post_ids, \
-    get_shipped_variant_keys, \
-    get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
-    LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
-    claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
-    get_recent_navigable_commented_posts, get_comment_followup, record_comment_followup, \
-    count_followup_replies_today, update_commented_post_key, get_recent_commented_rows_with_text, \
-    has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
-    update_db_post_content, update_db_post_first_comment_link, get_post_first_comment_link, \
-    get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
-    get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
-    claim_appreciation_touch, has_appreciation_touch, \
-    set_profile_synthesis, get_duplicate_comment_posts, get_recent_comment_texts, count_dms_sent_today, \
-    get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
-    OutreachStage, OutreachStatus, insert_outreach_target, get_outreach_target_by_url, \
-    count_open_outreach_targets, \
-    insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
-    LeadSignalSource, LeadSignalChannel, LeadSignalStatus, \
-    insert_scheduled_dm, has_open_scheduled_dm, count_scheduled_dms_created_today, \
-    ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE, SCHEDULED_DM_SOURCE_ARTIFACT, \
-    insert_connection_request, count_open_connection_requests, get_requested_person_keys, \
-    get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
-    CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
-    update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
-    get_engagement_targets, record_target_engagement, resolve_weekly_cap, \
-    record_target_comment_blocked, set_target_follow_status, record_target_follow_failure, \
-    set_target_connect_status, \
-    ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK, ENGAGEMENT_TARGET_FOLLOW_TERMINAL, FollowStatus, \
-    ENGAGEMENT_TARGET_CONNECT_TERMINAL, ConnectStatus, \
-    ROSTER_FOLLOWS_PER_DAY_DEFAULT, \
-    record_follower_stat, get_linkedin_profile_url_by_user_id, \
-    get_comment_outcome_targets, record_comment_outcome, \
-    count_user_comments_on_post_url, get_post_age_minutes, get_story_bank_entries, \
-    record_story_bank_use
-from cqc_lem.utilities.audience_stats import parse_follower_count, parse_connection_count, \
-    parse_profile_views, parse_search_appearances
-from cqc_lem.utilities.blog_source import resolve_blog_source
-from cqc_lem.utilities.engagement_window import record_pre_post_run
-from cqc_lem.utilities.ai import story_bank as _story_bank
-from cqc_lem.utilities import golden_hour as _golden
-from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_actions, \
-    engagement_caps_from_prefs, actions_used_today, \
-    ACTION_COMMENT, ACTION_DM, ACTION_FOLLOW, ACTION_INVITE, ACTION_REPLY
-from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
-from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations, \
-    plan_daily_invites, INVITE_STATUS_FAILED, INVITE_STATUS_PAUSED, INVITE_STATUS_SESSION_FAILED
-from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
-    load_profile_for_user, clean_person_name, connection_degree, is_first_degree
-from cqc_lem.utilities.linkedin.message_thread import ThreadState, name_matches, \
-    name_from_profile_url, open_addressed_composer, open_message_thread, read_last_message, \
-    read_last_sender, resolve_self_name
-from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
-    share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
-from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.linkedin.stale_invites import plan_withdrawals, withdraw_stale_invites, \
-    WITHDRAW_STATUS_DISABLED, WITHDRAW_STATUS_FAILED, WITHDRAW_STATUS_PAUSED, \
-    WITHDRAW_STATUS_SESSION_FAILED
-from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client, \
-    acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held, \
-    is_automation_paused, automation_pause_reason, rate_limit_cooldown_remaining
-from cqc_lem.utilities.linkedin_formatter import normalize_public_text
-from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning, log_debug
-from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
-    track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
-    track_catchup_run, track_feed_scan, track_stale_invite_run, attribute_llm_cost, llm_attribution, \
-    FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
-from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
-from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
-    get_element_wait_retry, get_elements_as_list_wait_stale, getText, get_driver_wait_pair, quit_gracefully, \
-    wait_for_ajax, find_first, click_first, find_all_first, is_session_lost
 from dotenv import load_dotenv
-from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException, \
-    ElementNotInteractableException, WebDriverException, ElementClickInterceptedException
+from selenium.common import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+    JavascriptException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+    WebDriverException,
+)
 from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.wait import WebDriverWait
+
+from cqc_lem.app.my_celery import app as shared_task
+from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.utilities import golden_hour as _golden
+from cqc_lem.utilities.ai import story_bank as _story_bank
+from cqc_lem.utilities.ai.ai_helper import (
+    ai_check_message_history,
+    choose_post_reaction,
+    generate_ai_response,
+    generate_comment_reply_followup,
+    generate_group_post,
+    generate_lead_response,
+    generate_newsletter_edition,
+    generate_nurture_dm,
+    generate_second_wave_comment,
+    generate_seed_comment,
+    generate_thread_reply,
+    get_ai_message_refinement,
+    get_or_create_profile_synthesis,
+    lint_repaired,
+    post_is_relevant,
+    summarize_recent_activity,
+    synthesize_profile,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    ARTIFACT_KIND_LEAD_MAGNET,
+    append_link_to_comment,
+    humanize_text,
+    resolve_artifact_delivery,
+    split_link_for_first_comment,
+)
+from cqc_lem.utilities.ai.content_framework import select_blueprint
+from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
+from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
+from cqc_lem.utilities.audience_stats import (
+    parse_connection_count,
+    parse_follower_count,
+    parse_profile_views,
+    parse_search_appearances,
+)
+from cqc_lem.utilities.blog_source import resolve_blog_source
+from cqc_lem.utilities.connection_targeting import (
+    CONNECT_NOTE_LIMIT,
+    SOURCE_ADJACENT_POST,
+    SOURCE_OWN_POST,
+    SOURCE_ROSTER,
+    CandidateSignal,
+    ScoredCandidate,
+    default_connect_note,
+    rank_candidates,
+    target_terms_from_prefs,
+)
+from cqc_lem.utilities.date import convert_viewed_on_to_date
+from cqc_lem.utilities.db import (
+    ALREADY_CONNECTED_MESSAGE,
+    CONNECT_NOTE_MAX_CHARS,
+    CONNECTION_REQUEST_SENT_MESSAGE,
+    ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK,
+    ENGAGEMENT_TARGET_CONNECT_TERMINAL,
+    ENGAGEMENT_TARGET_FOLLOW_TERMINAL,
+    INVITE_NOT_SENT_MESSAGE,
+    NO_CONNECT_BUTTON_MESSAGE,
+    ROSTER_FOLLOWS_PER_DAY_DEFAULT,
+    SCHEDULED_DM_SOURCE_ARTIFACT,
+    SCHEDULED_DM_SOURCE_NURTURE,
+    CatchupTouchStatus,
+    ConnectionRequestStatus,
+    ConnectStatus,
+    FollowStatus,
+    GroupPostDraftStatus,
+    LeadSignalChannel,
+    LeadSignalSource,
+    LeadSignalStatus,
+    LogActionType,
+    LogResultType,
+    OutreachStage,
+    OutreachStatus,
+    PostStatus,
+    PostType,
+    ScheduledDmStatus,
+    claim_appreciation_touch,
+    claim_post_for_comment,
+    count_catchup_touches_sent_today,
+    count_comments_today,
+    count_dms_sent_today,
+    count_followup_replies_today,
+    count_invites_sent_today,
+    count_open_connection_requests,
+    count_open_outreach_targets,
+    count_scheduled_dms_created_today,
+    count_user_comments_on_post_url,
+    create_group_post_draft,
+    enqueue_followup,
+    get_approved_outreach_targets,
+    get_carousel_slides,
+    get_catchup_touch,
+    get_comment_followup,
+    get_comment_outcome_targets,
+    get_dm_history_for_profile,
+    get_dm_template,
+    get_due_followups,
+    get_duplicate_comment_posts,
+    get_enabled_group_ids,
+    get_engagement_preferences,
+    get_engagement_targets,
+    get_engager_candidates,
+    get_group_post_draft,
+    get_lead_magnet_settings,
+    get_lead_signal,
+    get_linkedin_profile_url_by_user_id,
+    get_newsletter_edition,
+    get_newsletter_settings,
+    get_open_group_post_draft,
+    get_outreach_target_by_url,
+    get_post_age_minutes,
+    get_post_content,
+    get_post_first_comment_link,
+    get_post_message_from_log_for_user,
+    get_post_status,
+    get_post_type,
+    get_post_url_from_log_for_user,
+    get_post_video_url,
+    get_profile_facts,
+    get_recent_comment_texts,
+    get_recent_commented_rows_with_text,
+    get_recent_engagers,
+    get_recent_navigable_commented_posts,
+    get_recent_posted_post_ids,
+    get_requested_person_keys,
+    get_shipped_variant_keys,
+    get_story_bank_entries,
+    get_uncaptured_posted_post_ids,
+    get_user_blog_url,
+    get_user_id,
+    get_user_password_pair_by_id,
+    has_appreciation_touch,
+    has_catchup_touch,
+    has_commented_post,
+    has_engaged_url_with_x_days,
+    has_lead_signal,
+    has_open_scheduled_dm,
+    has_received_lead_magnet,
+    has_user_commented_on_post_url,
+    insert_catchup_touch,
+    insert_connection_request,
+    insert_lead_signal,
+    insert_new_log,
+    insert_outreach_target,
+    insert_scheduled_dm,
+    mark_edition_failed,
+    mark_edition_published,
+    mark_followup,
+    mark_newsletter_published,
+    mark_post_commented,
+    mark_post_reacted,
+    max_catchup_touches_allowed,
+    record_comment_followup,
+    record_comment_outcome,
+    record_follower_stat,
+    record_group_post,
+    record_group_post_run,
+    record_lead_magnet_sent,
+    record_newsletter_subscriber_stat,
+    record_post_stats,
+    record_story_bank_use,
+    record_target_comment_blocked,
+    record_target_engagement,
+    record_target_follow_failure,
+    release_post_claim,
+    resolve_weekly_cap,
+    set_profile_synthesis,
+    set_target_connect_status,
+    set_target_follow_status,
+    stop_followups_for_profile,
+    update_catchup_touch_status,
+    update_commented_post_key,
+    update_db_post_content,
+    update_db_post_first_comment_link,
+    update_db_post_status,
+    update_group_post_draft,
+    update_lead_signal,
+    update_outreach_target,
+    update_outreach_target_status,
+    upsert_engager,
+    upsert_user_group,
+)
+from cqc_lem.utilities.engagement_window import record_pre_post_run
+from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
+from cqc_lem.utilities.human_pacing import (
+    ACTION_COMMENT,
+    ACTION_DM,
+    ACTION_FOLLOW,
+    ACTION_INVITE,
+    ACTION_REPLY,
+    actions_used_today,
+    engagement_caps_from_prefs,
+    pace_read,
+    record_action,
+    remaining_actions,
+)
+from cqc_lem.utilities.lead_scoring import person_key
+from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
+from cqc_lem.utilities.linkedin.company_page_inviter import (
+    INVITE_STATUS_FAILED,
+    INVITE_STATUS_PAUSED,
+    INVITE_STATUS_SESSION_FAILED,
+    automate_invitations,
+    plan_daily_invites,
+)
+from cqc_lem.utilities.linkedin.helper import (
+    clean_person_name,
+    connection_degree,
+    get_linkedin_profile_from_url,
+    get_my_profile,
+    is_first_degree,
+    load_profile_for_user,
+    login_to_linkedin,
+)
+from cqc_lem.utilities.linkedin.message_thread import (
+    ThreadState,
+    name_from_profile_url,
+    name_matches,
+    open_addressed_composer,
+    open_message_thread,
+    read_last_message,
+    read_last_sender,
+    resolve_self_name,
+)
+from cqc_lem.utilities.linkedin.poster import (
+    comment_on_linkedin_post,
+    object_urn_from_post_url,
+    share_carousel_on_linkedin,
+    share_document_on_linkedin,
+    share_on_linkedin,
+)
+from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInRateLimited,
+    _redis_client,
+    acquire_run_lock,
+    automation_pause_reason,
+    commenting_hold_reason,
+    is_automation_paused,
+    is_commenting_held,
+    rate_limit_cooldown_remaining,
+    release_run_lock,
+)
+from cqc_lem.utilities.linkedin.stale_invites import (
+    WITHDRAW_STATUS_DISABLED,
+    WITHDRAW_STATUS_FAILED,
+    WITHDRAW_STATUS_PAUSED,
+    WITHDRAW_STATUS_SESSION_FAILED,
+    plan_withdrawals,
+    withdraw_stale_invites,
+)
+from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.observability import (
+    FEATURE_COMMENT,
+    FEATURE_CONTENT,
+    FEATURE_DM,
+    attribute_llm_cost,
+    llm_attribution,
+    track_audience_snapshot,
+    track_catchup_run,
+    track_comment_outcome,
+    track_company_page_invite_run,
+    track_feed_scan,
+    track_golden_hour_report,
+    track_post_outcome,
+    track_stale_invite_run,
+)
+from cqc_lem.utilities.selenium_util import (
+    click_element_wait_retry,
+    click_first,
+    find_all_first,
+    find_first,
+    get_driver_wait_pair,
+    get_element_wait_retry,
+    get_elements_as_list_wait_stale,
+    getText,
+    is_session_lost,
+    quit_gracefully,
+    wait_for_ajax,
+)
 
 # Load .env file
 load_dotenv()
@@ -127,6 +341,14 @@ time_remaining_seconds = 0
 
 
 def countdown_timer(seconds):
+    """Legacy in-process countdown from the pre-Celery script era; nothing in the task graph calls it.
+
+    Counts down on stdout with a carriage return, then SETS the module-global `stop_all_thread` —
+    the flag the old threaded runner used to stop its workers. Unconditionally, on every exit path:
+    a call that returns early because the flag was ALREADY set still sets it again. It is a global,
+    so a second call cannot run independently of the first, and once the flag is set it stays set
+    for the life of the process.
+    """
     global stop_all_thread
     global time_remaining_seconds
     time_remaining_seconds = seconds
@@ -144,15 +366,29 @@ def countdown_timer(seconds):
 
 
 def get_time_remaining_seconds():
+    """Whatever `countdown_timer` last wrote to the process-global counter — 0 if it never ran.
+
+    Not a clock: nothing decrements this except a running `countdown_timer`, so in a Celery worker
+    (where that timer is never started) it reads 0 forever.
+    """
     global time_remaining_seconds
     return time_remaining_seconds
 
 
 def get_time_remaining_minutes():
+    """`get_time_remaining_seconds()` floored to whole minutes — under 60 seconds left reads as 0."""
     return get_time_remaining_seconds() // 60
 
 
 def navigate_to_feed(driver, wait):
+    """Put the session on the home feed and ask `_switch_feed_to_recent` to sort it.
+
+    Skips the navigation when the current URL already looks like a feed, so a walk that comes back
+    here between passes does not pay for a reload. The sort is best-effort — a control that is gone
+    or stale warns rather than paging anyone — but it is never SILENT: `_switch_feed_to_recent`
+    records the sort state it actually achieved onto the run's funnel (#817), because an unsorted
+    scan must not read as recency-sorted.
+    """
     # Check to see if driver url is not already on feed
     if "feed" not in driver.current_url:
         # Navigate to LinkedIn home feed
@@ -166,6 +402,12 @@ def navigate_to_feed(driver, wait):
 
 
 def get_feed_posts(driver, wait, num_posts=10):
+    """Legacy feed reader: scroll until `num_posts` cards are present, return `{'link': ...}` dicts.
+
+    Superseded by the SDUI card walk in `comment_on_feed_inline` and no longer on any live path — it
+    still keys off `data-id="urn:li:activity"`, and the scroll loop gives up as soon as a scroll adds
+    no cards, so it can return FEWER than `num_posts` (or none at all) without saying so.
+    """
     posts = []
 
     # Find the posts in the feed
@@ -209,6 +451,11 @@ def get_feed_posts(driver, wait, num_posts=10):
 
 
 def simulate_writing_time(content):
+    """Seconds a human would take to type `content` at ~5 chars/sec — an estimate, it does not sleep.
+
+    Superseded on every live path by `utilities/human_pacing.py` (issue #626), which is the ONE
+    cadence engine and, unlike this, is seeded per (user, action, date) so a retry never re-rolls.
+    """
     # Simulate a human writing time (around 5 characters per second)
     char_count = len(content)
     writing_time = char_count / 5
@@ -221,6 +468,12 @@ def emoji_to_ue_string(emoji):
 
 
 def clear_text_from_element(element: WebElement):
+    """Empty a composer with select-all + Delete rather than `element.clear()`.
+
+    LinkedIn's composers are contenteditable nodes, not form inputs, so the keystroke path is the one
+    that reliably empties them — and it leaves the same input events behind that a person's typing
+    would. `simulate_typing` uses this to recover a field after a JS emoji substitution fails.
+    """
     # Select All
     element.send_keys(Keys.CONTROL + "a")
     # Delete what is selected
@@ -228,6 +481,17 @@ def clear_text_from_element(element: WebElement):
 
 
 def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow_pauses: bool = True):
+    """Type `text` into a composer one character at a time, with human-ish pauses between keys.
+
+    Non-BMP characters (emoji) are the reason this is not a single `send_keys`: ChromeDriver throws
+    on them, so each one is typed as a `|_n_|` placeholder and swapped back in afterwards with
+    JavaScript. If that JS swap fails the field is rewritten WITHOUT the character rather than left
+    holding a visible placeholder — losing an emoji is survivable, posting `|_1_|` is not.
+
+    `allow_pauses=False` types at machine speed; use it only where nobody is watching the field.
+    A key that will not send is warned about and skipped, so this can return having typed LESS than
+    `text` — never assume the composer holds exactly what was passed in.
+    """
     # Simulate typing the comment
     myprint("Typing Text...")
     type_speed_reducer = .5
@@ -316,8 +580,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
 
     A comment that does not land is a FAILURE log row and a RELEASED claim, never a SUCCESS row —
     `post_comment_inline` returns True only once the comment is verifiably posted, so the task no
-    longer reports a typed-but-unsubmitted comment as a comment."""
-
+    longer reports a typed-but-unsubmitted comment as a comment.
+    """
     # Check the database logs / claim ledger to make sure user hasn't already commented here.
     if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
         myprint("User has already commented on this post. Skipping...")
@@ -428,7 +692,8 @@ def _thread_carries_our_comment(driver, my_profile: LinkedInProfile) -> bool:
     Deliberately does NOT call `_load_comment_thread`: that resizes the window to 1400x3400 to
     lazy-render an entire thread, which is a heavy price — and a viewport change the composer path
     then inherits — for a check the ledger already covers. Only the comments LinkedIn renders by
-    default are read, and a miss falls through to commenting exactly as it did before."""
+    default are read, and a miss falls through to commenting exactly as it did before.
+    """
     slug = _profile_slug(str(getattr(my_profile, "profile_url", "") or ""))
     if not slug:
         return False
@@ -451,7 +716,8 @@ def _thread_carries_our_comment(driver, my_profile: LinkedInProfile) -> bool:
 def check_commented(driver, wait, user_id: int = None, post_url: str = None,
                     my_profile: LinkedInProfile = None) -> bool:
     """See if the current open url we've already posted on. The LinkedIn-side half only runs when
-    the caller supplies `my_profile` — our own profile slug is what identifies our comment."""
+    the caller supplies `my_profile` — our own profile slug is what identifies our comment.
+    """
     already_commented = False
 
     if post_url and post_url != driver.current_url:
@@ -566,7 +832,8 @@ _CATCHUP_CARD_CROSSCHECK_SEL = "main div[role='listitem']"
 
 def _page_native_count(driver, selector: str) -> "int | None":
     """How many of `selector` the page renders, or None when the read itself failed. None is
-    load-bearing: "we could not ask the page" must never be recorded as "the page said zero"."""
+    load-bearing: "we could not ask the page" must never be recorded as "the page said zero".
+    """
     try:
         return len(driver.find_elements(By.CSS_SELECTOR, selector))
     except WebDriverException:
@@ -578,7 +845,8 @@ def zero_walk_verdict(page_native: "int | None") -> str:
 
     'drift'   — the page renders items the walk could not see. A real defect.
     'empty'   — the page renders none either. An ordinary quiet day, and a no-op.
-    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect."""
+    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect.
+    """
     if page_native is None:
         return "unknown"
     return "drift" if page_native > 0 else "empty"
@@ -589,7 +857,8 @@ def _report_zero_walk(driver, selector: str, what: str, **context) -> str:
 
     Drift is a WARNING on purpose — once is a warning, repeatedly is a defect, and repeated selector
     rot is exactly the defect that should file itself. An empty page and an unreadable cross-check
-    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md)."""
+    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md).
+    """
     count = _page_native_count(driver, selector)
     verdict = zero_walk_verdict(count)
     if verdict == "drift":
@@ -619,7 +888,8 @@ def _card_for_textbox(driver, box):
 
     Multi-route by necessity: LinkedIn rotates which of aria-label / data-testid / visible text is
     canonical and often keeps several alive at once, so keying on one is a single point of failure
-    that fails SILENTLY — a null card is indistinguishable from an empty feed."""
+    that fails SILENTLY — a null card is indistinguishable from an empty feed.
+    """
     return driver.execute_script(_CARD_FOR_TEXTBOX_JS, box)
 
 
@@ -634,7 +904,8 @@ def _post_author_from_card(card) -> str:
 
 def _author_is_me(author: str, my_profile: LinkedInProfile) -> bool:
     """True if a feed card's author is the logged-in user — used to skip reacting/engaging on our
-    OWN posts (the reply-to-own-post path handles those separately)."""
+    OWN posts (the reply-to-own-post path handles those separately).
+    """
     try:
         me = (getattr(my_profile, "full_name", "") or "").strip().lower()
     except Exception:
@@ -652,7 +923,8 @@ _URN_RE = re.compile(r"urn:li:(?:activity|ugcPost|share):\d+", re.I)
 def _normalize_post_text(content: str) -> str:
     """Collapse the volatile bits of a card's rendered text so the SAME post hashes the same
     across re-renders: drop the 'see more'/'…more' expander tokens and ellipses, collapse all
-    whitespace, lowercase. Used only for the no-URN fallback key + the per-run fingerprint."""
+    whitespace, lowercase. Used only for the no-URN fallback key + the per-run fingerprint.
+    """
     t = (content or "").lower()
     t = re.sub(r"\s*(?:…|\.\.\.)?\s*see\s+more\b", " ", t)
     t = re.sub(r"\s*(?:…|\.\.\.)\s*more\b", " ", t)
@@ -673,7 +945,8 @@ _FEED_FP_PREFIX_CHARS = (60, _FEED_KEY_PREFIX_CHARS)
 
 def _norm_prefix(content: str, limit: int) -> str:
     """Normalized post text cut to `limit` chars on a word boundary — the same prefix for the
-    collapsed and the expanded render of one post."""
+    collapsed and the expanded render of one post.
+    """
     norm = _normalize_post_text(content)
     if len(norm) <= limit:
         return norm
@@ -690,14 +963,16 @@ def _content_digest(author: str, content: str, limit: int) -> str:
 def _feed_post_key(author: str, content: str) -> str:
     """Last-resort dedup key when no stable URN/permalink is available. Hashes the author plus a
     NORMALIZED, truncation-proof body prefix (see _norm_prefix) so the collapsed and the expanded
-    render of one post produce ONE key."""
+    render of one post produce ONE key.
+    """
     return f"feedpost://{_content_digest(author, content, _FEED_KEY_PREFIX_CHARS)}"
 
 
 def _feed_content_fingerprints(author: str, content: str) -> "set[str]":
     """Render-stable per-run fingerprints of a post's text at several prefix lengths — a second
     dedup guard so that even on the URN-less fallback path (or when a URN is found on one pass and
-    not the next) a re-render can't re-key the post and earn it a second comment."""
+    not the next) a re-render can't re-key the post and earn it a second comment.
+    """
     return {f"fp{n}:{_content_digest(author, content, n)}" for n in _FEED_FP_PREFIX_CHARS}
 
 
@@ -744,7 +1019,8 @@ return null;
 def _feed_post_urn_from_card(card, driver=None) -> "str | None":
     """The canonical urn:li:(activity|ugcPost|share):<id> for a feed card. Reads data-* attributes
     on the card, on its ancestors (never past an element that spans more than one post) and on its
-    descendants, then falls back to a regex over the card's own HTML. Lowercased URN or None."""
+    descendants, then falls back to a regex over the card's own HTML. Lowercased URN or None.
+    """
     runner = driver if driver is not None else getattr(card, "parent", None)
     if runner is not None:
         try:
@@ -768,7 +1044,8 @@ def _feed_post_urn_from_card(card, driver=None) -> "str | None":
 def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
     """(dedup key, key SOURCE) for a feed post. Source is 'permalink' | 'card' | 'hash' — recorded
     on the run so we can confirm live that feed comments key on the stable activity URN and not on
-    the volatile content hash (issue #580)."""
+    the volatile content hash (issue #580).
+    """
     permalink = _post_permalink_from_card(card)
     if permalink:
         m = _URN_RE.search(permalink)
@@ -784,13 +1061,15 @@ def _stable_feed_post_key(card, author: str, content: str, driver=None) -> str:
     """Single canonical dedup key for a feed post, stable across re-renders. Prefers the URN
     (from the permalink anchor OR the card/ancestor data attributes) so permalink-present and
     permalink-absent renders of the same post map to ONE key; only falls back to the normalized
-    content hash when no URN can be found."""
+    content hash when no URN can be found.
+    """
     return _feed_post_identity(card, author, content, driver=driver)[0]
 
 
 def _post_permalink_from_card(card):
     """Real LinkedIn permalink for a feed post, read from its /feed/update/ anchor (the SDUI
-    card has no data-urn). Returns a normalized https URL or None."""
+    card has no data-urn). Returns a normalized https URL or None.
+    """
     try:
         for a in card.find_elements(By.CSS_SELECTOR, "a[href*='/feed/update/']"):
             href = (a.get_attribute("href") or "").split("?")[0]
@@ -848,7 +1127,8 @@ def _parse_count(raw: "str | None") -> int:
 
 def _post_age_minutes(driver, card) -> "int | None":
     """Minutes since the post was published, from the card's relative timestamp span ('now', '3h',
-    '5d', '2w', '10mo'). None if not found — the caller treats unknown age as mid-priority, not top."""
+    '5d', '2w', '10mo'). None if not found — the caller treats unknown age as mid-priority, not top.
+    """
     try:
         token = driver.execute_script(
             "const root=arguments[0];"
@@ -872,7 +1152,8 @@ def _post_age_minutes(driver, card) -> "int | None":
 def _stacked_counts(text: str) -> dict:
     """Counts for the post-analytics layout, where a label and its value are on adjacent lines.
     Only exact label lines pair up, and only with a neighbour that is a bare count — so a row's
-    value can never be read as the next row's, and post body text is ignored."""
+    value can never be read as the next row's, and post body text is ignored.
+    """
     lines = [ln.strip() for ln in (text or "").splitlines()]
     lines = [ln for ln in lines if ln]
     out: dict = {}
@@ -893,7 +1174,8 @@ def _post_social_counts(card) -> dict:
     """Best-effort reaction/comment/repost/impression/save counts parsed from the card's social-counts
     bar text. Returns {reactions, comments, reposts, impressions, saves} (0 on miss). Impressions and
     saves show only on the author's own post detail/analytics view; reposts weigh 2× in the
-    engagement score (#387); reactions/comments feed the low-weight feed 'activity' scoring signal."""
+    engagement score (#387); reactions/comments feed the low-weight feed 'activity' scoring signal.
+    """
     zero = {"reactions": 0, "comments": 0, "reposts": 0, "impressions": 0, "saves": 0}
     try:
         text = card.text or ""
@@ -966,7 +1248,8 @@ def _passes_hard_excludes(content: str, author: str, prefs: dict) -> bool:
 def _literal_relevant(content: str, author: str, prefs: dict) -> bool:
     """Positive relevance signal without an LLM call: no include constraints (everything on-topic
     by config) OR a literal include keyword/author match. Topic-only relevance is confirmed by the
-    LLM on the selected post, so this is just the scoring hint."""
+    LLM on the selected post, so this is just the scoring hint.
+    """
     if not prefs:
         return True
     incl_kw = [k for k in (prefs.get("include_keywords") or []) if k]
@@ -983,7 +1266,8 @@ def _literal_relevant(content: str, author: str, prefs: dict) -> bool:
 
 def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
     """Prioritize which feed post to comment on: recency-dominant, then relevance, reciprocity
-    (author engaged with us / is a target), and a healthy-activity bonus. Higher = comment first."""
+    (author engaged with us / is a target), and a healthy-activity bonus. Higher = comment first.
+    """
     engagers = engagers or set()
     recency = _recency_score(meta.get("age_minutes"))
     relevance = 1.0 if meta.get("relevant") else 0.6
@@ -1020,7 +1304,8 @@ _SUBMIT_NEAR_COMPOSER_JS = (
 def _composer_submitted(driver, composer, text: str) -> bool:
     """True only if the text actually posted: the composer cleared (or detached), or the text now
     shows in the nearby comment list — NOT merely still sitting in a full composer (the old
-    'text in body' check false-positived on that, so comments silently never posted)."""
+    'text in body' check false-positived on that, so comments silently never posted).
+    """
     try:
         if (composer.text or "").strip() == "":
             return True
@@ -1037,7 +1322,8 @@ def _composer_submitted(driver, composer, text: str) -> bool:
 
 def _scroll_into_center(driver, element) -> None:
     """Best-effort: park `element` in the MIDDLE of the viewport. Positioning is never fatal on its
-    own, so a failure here is swallowed and left to the click that follows."""
+    own, so a failure here is swallowed and left to the click that follows.
+    """
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
         time.sleep(random.uniform(0.3, 0.8))
@@ -1053,7 +1339,8 @@ def _focus_composer(driver, composer) -> None:
     the click and Chrome raises ElementClickInterceptedException at y≈9 (issue #815). Centering is
     the actual fix; a JS click would also dodge the nav but would equally dodge a genuine modal or
     overlay, so the one retry re-centers and clicks for real and a second interception is allowed
-    to raise (the caller names the step it died on)."""
+    to raise (the caller names the step it died on).
+    """
     _scroll_into_center(driver, composer)
     try:
         composer.click()
@@ -1073,7 +1360,8 @@ _COMPOSER_MOUNT_POLL_SECONDS = 1.0
 def _is_post_comment_box(box: WebElement) -> bool:
     """True for the box LinkedIn labels as the POST's own comment composer. A reply box under an
     existing comment is a role=textbox too, and typing this post's comment into one answers a
-    stranger instead of the author."""
+    stranger instead of the author.
+    """
     try:
         return "creating comment" in (box.get_attribute("aria-label") or "").lower()
     except Exception:
@@ -1118,7 +1406,8 @@ def _post_composer_for_card(driver: WebDriver, card: WebElement,
 
     A miss is an expected no-op: the box never opened, so the caller skips the post and releases its
     claim. It is logged DEBUG here, once, the way `_reply_composer_for_comment` logs its own — the
-    per-card `log_warning` it replaces escalated into a filed defect for a skip we already handle."""
+    per-card `log_warning` it replaces escalated into a filed defect for a skip we already handle.
+    """
     for _ in range(_COMPOSER_MOUNT_POLLS):
         anchor = _visible_rect(card)
         if anchor is None:
@@ -1142,7 +1431,8 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
     mode as the same 'Inline comment post failed' warning, which both hid the real cause and
     collapsed unrelated faults into one escalated issue. Step names carry no quotes or digits on
     purpose — the escalation dedup key masks both, so quoting them would re-merge the very keys
-    this split exists to separate."""
+    this split exists to separate.
+    """
     step = "prepare text"
     try:
         comment_text = _strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
@@ -1183,7 +1473,8 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
 def _post_text_from_card(card) -> str:
     """The post's own body text read off its card — what the reaction chooser is given. `card.text`
     would fold the whole comment thread in, so a permalink page (which renders every comment) would
-    hand the classifier someone else's words instead of the post's."""
+    hand the classifier someone else's words instead of the post's.
+    """
     try:
         parts = [(el.text or "").strip() for el in card.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)]
     except Exception:
@@ -1202,7 +1493,8 @@ def _permalink_post_card(driver, post_link: str, user_id: int = None) -> "WebEle
 
     Cards are enumerated exactly the way the feed walk enumerates them (`_FEED_POST_TEXT_SEL` →
     `_card_for_textbox`) so the composer resolution downstream is the SAME card-scoped one
-    (`_post_composer_for_card`) — there is no permalink-only composer lookup to drift separately."""
+    (`_post_composer_for_card`) — there is no permalink-only composer lookup to drift separately.
+    """
     m = _URN_RE.search(post_link or "")
     wanted = m.group(0).lower() if m else None
     cards = []
@@ -1280,7 +1572,8 @@ def _reaction_option_locators(reaction: str) -> list:
 
     Document-scoped on purpose: the fly-out renders outside the card subtree (confirmed live — the
     options were only reachable from `driver`, never from the card), so scoping these to the card
-    finds nothing even when the menu is wide open."""
+    finds nothing even when the menu is wide open.
+    """
     low = (reaction or "like").strip().lower()
     return [
         (By.CSS_SELECTOR, f"button[aria-label='{reaction}']"),           # live: exact labels present
@@ -1310,7 +1603,8 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     'Open reactions menu' no longer exists. The fly-out renders OUTSIDE the card subtree, so the
     option lookup is document-scoped. The reaction itself is picked by a fast AI call scoped to the
     post + our comment, which self-falls-back to random. Returns True only if a reaction registered
-    (the toggle no longer reads 'no reaction')."""
+    (the toggle no longer reads 'no reaction').
+    """
     try:
         state = find_first(driver, wait, _REACTION_TRIGGER_LOCATORS,
                            "Reaction state", parent_element=card, required=False, visible_only=True,
@@ -1417,7 +1711,8 @@ def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
 
 def _topic_gate_topics(prefs: dict) -> list:
     """The topics a candidate post is judged on-topic against: the user's focus_topics (what they
-    want authority in), falling back to include_topics when no focus is set."""
+    want authority in), falling back to include_topics when no focus is set.
+    """
     focus = [t for t in ((prefs or {}).get("focus_topics") or []) if t]
     if focus:
         return focus
@@ -1432,7 +1727,8 @@ def passes_topic_gate(content: str, prefs: dict) -> bool:
 
     With no topics configured there is nothing to be off-topic against, so the gate is inert. A
     literal topic mention short-circuits the classifier; the classifier itself fails OPEN (a
-    lem-simple hiccup must not silence all engagement)."""
+    lem-simple hiccup must not silence all engagement).
+    """
     topics = _topic_gate_topics(prefs)
     if not topics:
         return True
@@ -1445,7 +1741,8 @@ def passes_topic_gate(content: str, prefs: dict) -> bool:
 def _mentions_topic(text: str, topic: str) -> bool:
     """Whole-term match for the gate's literal short-circuit. Substring matching would let a short
     topic ("HR") fire on an unrelated word ("thrive") and skip the classifier entirely, so the term
-    has to be bounded by non-word characters on both sides."""
+    has to be bounded by non-word characters on both sides.
+    """
     term = str(topic or "").strip().lower()
     if not term:
         return False
@@ -1473,7 +1770,8 @@ def _target_staleness(target: dict) -> tuple:
 
 def select_roster_targets(targets: list, limit: int) -> list:
     """Which roster authors to engage this run: active targets still under their per-author weekly
-    cap, drawn in the 50/30/20 peer/ICP/creator blend, least-recently-engaged first."""
+    cap, drawn in the 50/30/20 peer/ICP/creator blend, least-recently-engaged first.
+    """
     if limit <= 0:
         return []
     eligible = []
@@ -1595,6 +1893,14 @@ return controls(document) || ['unknown', null];
 # vocabulary rather than four magic strings — a typo in the budget comparison would un-bound the
 # clicking.
 class FollowOutcome(StrEnum):
+    """What ONE auto-follow attempt did — the closed vocabulary the follow budget is spent against.
+
+    The distinctions are the whole point: `ALREADY_FOLLOWING` is read off the card with no click at
+    all, while `FAILED` means a click was attempted and the control never verifiably flipped — the
+    one state that never self-corrects on its own, so it is recorded rather than retried blindly.
+    A `str` enum, so a value can be logged or compared as text without conversion.
+    """
+
     NONE = ""                    # nothing was attempted (held, no control, no URL)
     FOLLOWED = "followed"        # clicked AND the control confirmed the flip
     ALREADY_FOLLOWING = "already_following"   # the card already said so — recorded without a click
@@ -1612,7 +1918,8 @@ def _activity_page_owner_name(driver: WebDriver) -> str:
     """The page owner's display name, read from the activity page's own <title>
     ("(8) Activity | Arvid Kahl | LinkedIn"). LinkedIn writes the title and the follow controls'
     aria-labels from the same display name, so this is the one spelling guaranteed to match — a
-    roster row's stored name is only a fallback, because users type those freehand."""
+    roster row's stored name is only a fallback, because users type those freehand.
+    """
     try:
         parts = [p.strip() for p in str(driver.title or "").split("|")]
     except Exception:
@@ -1630,7 +1937,8 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
 
     `FollowStatus.UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
     caller must treat it as "do nothing", never as "click the first Follow you can find". The
-    element is None on every state but `NOT_FOLLOWING`, so a caller that clicks must check it."""
+    element is None on every state but `NOT_FOLLOWING`, so a caller that clicks must check it.
+    """
     owner = _activity_page_owner_name(driver) or str(name or "").strip()
     if not owner:
         # Selector-rot breadcrumb (not a warning — plenty of pages legitimately resolve nothing):
@@ -1660,7 +1968,8 @@ def roster_follow_budget(user_id: int, prefs: dict) -> int:
 
     The cap draws its own paced daily budget (`ACTION_FOLLOW`) so a follow never eats the comment
     lane's, and `caps` still engages the shared account envelope — an account that has spent its
-    outbound allowance stops following too."""
+    outbound allowance stops following too.
+    """
     if not (prefs or {}).get("roster_auto_follow"):
         return 0
     try:
@@ -1682,7 +1991,8 @@ def _outbound_hold_reason(user_id: int) -> str:
 
     Pacing only ever slows a lane down; these are the harder gates, re-read per action because the
     breaker can trip mid-run. The suppression tripwire (#629) rides `is_automation_paused` too, so
-    one check covers the manual pause, the deploy pause and a suppression hold."""
+    one check covers the manual pause, the deploy pause and a suppression hold.
+    """
     if is_automation_paused():
         return automation_pause_reason() or "automation paused"
     if rate_limit_cooldown_remaining() > 0:
@@ -1696,7 +2006,8 @@ def _await_follow_flip(driver: WebDriver, profile_url: str, name: str,
 
     LinkedIn REPLACES the top card after a follow rather than relabelling the button, so a single
     immediate re-read races that render — and losing that race costs the target a failed attempt it
-    did not earn, twice of which retires it."""
+    did not earn, twice of which retires it.
+    """
     sleep = sleep or time.sleep
     state = FollowStatus.UNKNOWN
     for attempt in range(_FOLLOW_FLIP_ATTEMPTS):
@@ -1714,7 +2025,8 @@ def reconcile_roster_follow_state(driver: WebDriver, user_id: int, target: dict)
 
     This is what keeps `follow_failed` from being a life sentence: an unverified flip is recorded as
     a failure precisely because it may have landed, so the next visit has to be allowed to notice
-    that it did. Only an affirmative "Following" is written — `unknown` leaves the record alone."""
+    that it did. Only an affirmative "Following" is written — `unknown` leaves the record alone.
+    """
     profile_url = str(target.get("profile_url") or "").strip()
     if not profile_url:
         return FollowStatus.UNKNOWN
@@ -1889,7 +2201,8 @@ return 'unknown';
 
 def _connect_status_of(target: dict) -> ConnectStatus:
     """A roster row's stored connect state as a member. Anything unrecognised (a row written before
-    the migration, a column read back NULL) is `UNKNOWN` — the resting state, which does nothing."""
+    the migration, a column read back NULL) is `UNKNOWN` — the resting state, which does nothing.
+    """
     stored = str((target or {}).get("connect_status") or "")
     try:
         return ConnectStatus(stored)
@@ -1902,7 +2215,8 @@ def _resolve_connect_state(driver: WebDriver, profile_url: str, name: str = "") 
 
     Three readings only: `REQUESTED` (a Pending control), `CONNECTED` (a 1st-degree badge in the
     owner's own card, or a Message control with no Connect offered), and `UNKNOWN` — which means "we
-    could not tell", never "not connected". Every caller treats `UNKNOWN` as "change nothing"."""
+    could not tell", never "not connected". Every caller treats `UNKNOWN` as "change nothing".
+    """
     owner = _activity_page_owner_name(driver) or str(name or "").strip()
     if not owner:
         log_debug("Connect state unresolvable — no owner name to anchor the label match on",
@@ -1928,7 +2242,8 @@ def reconcile_roster_connect_state(driver: WebDriver, user_id: int, target: dict
     moves FORWARD — an unreadable card leaves the record exactly as it was, because 'unknown' means
     we could not tell, not that the invite vanished.
 
-    Returns the target's connect state after the reading."""
+    Returns the target's connect state after the reading.
+    """
     stored = _connect_status_of(target)
     profile_url = str(target.get("profile_url") or "").strip()
     if not profile_url:
@@ -1960,7 +2275,8 @@ def roster_connect_budget(user_id: int, prefs: dict) -> int:
     ladder spends the SAME `max_invites_per_day` the profile-viewer and proactive flows spend
     (`ACTION_INVITE`, the account envelope's own field). Already-queued requests count as spent for
     the same reason `_connect_target_budget` counts them — they will spend tomorrow's cap the moment
-    it opens."""
+    it opens.
+    """
     if not (prefs or {}).get("roster_auto_connect"):
         return 0
     try:
@@ -1983,7 +2299,8 @@ def roster_connect_budget(user_id: int, prefs: dict) -> int:
 def _roster_connect_note(user_id: int, target: dict, prefs: dict) -> str:
     """The invite note for a roster target — the SAME voice-aligned path #486 uses
     (`_draft_connect_note` → grounded template + `lem-simple` refinement), with the roster's own
-    honest shared ground: we read and comment on their posts. Never a pitch."""
+    honest shared ground: we read and comment on their posts. Never a pitch.
+    """
     profile_url = str(target.get("profile_url") or "").strip()
     name = str(target.get("name") or "").strip() or _author_display_name(profile_url)
     terms = target_terms_from_prefs(prefs)
@@ -2010,7 +2327,8 @@ def queue_roster_connect_invite(user_id: int, target: dict, prefs: dict,
     `queued_this_run` is what the budget re-read cannot see. The send is ASYNCHRONOUS, so nothing
     durable records the invite until the task actually reaches LinkedIn — re-reading alone would
     hand every target in the walk the same "3 left" and invite the whole roster in one pass. The
-    fresh read still does the rest of the job (other lanes, other runs, a cap changed mid-run)."""
+    fresh read still does the rest of the job (other lanes, other runs, a cap changed mid-run).
+    """
     if not (prefs or {}).get("roster_auto_connect"):
         return False
     profile_url = str(target.get("profile_url") or "").strip()
@@ -2047,7 +2365,8 @@ def queue_roster_connect_invite(user_id: int, target: dict, prefs: dict,
 class RosterConnectOutcome(NamedTuple):
     """What the connect rung did for one target: the state it left behind, and whether THIS run is
     what sent the invite. The two are not the same — a target read as `requested` because the user
-    invited them by hand is not a send the run may claim in its funnel."""
+    invited them by hand is not a send the run may claim in its funnel.
+    """
     state: ConnectStatus
     invited: bool
 
@@ -2059,7 +2378,8 @@ def advance_roster_connect(driver: WebDriver, user_id: int, target: dict, prefs:
     Read-only advancement runs whatever the toggle says — a user who connected by hand must not keep
     a badge telling them to connect — and it runs FIRST, so a target LinkedIn already shows as
     connected or pending never draws an invite. Only `needs_connection` survives that reading, and
-    only then does the opt-in invite fire."""
+    only then does the opt-in invite fire.
+    """
     stored = _connect_status_of(target)
     if stored not in (ConnectStatus.NEEDS_CONNECTION, ConnectStatus.REQUESTED,
                       ConnectStatus.FAILED):
@@ -2117,7 +2437,8 @@ def _is_home_feed(driver) -> bool:
 
     An unreadable URL counts as NOT the home feed (issue #872): a dead session cannot say which
     surface it was on, and escalating on a guess costs a triage for working behaviour. A false
-    silence loses one signal; a false defect costs a person."""
+    silence loses one signal; a false defect costs a person.
+    """
     try:
         path = str(driver.current_url or "").split("?")[0].split("#")[0].lower()
     except Exception:
@@ -2132,7 +2453,8 @@ def _feed_sort_state(control) -> str:
     A label naming BOTH sorts is unreadable too. Some dropdown triggers spell their options into
     the accessible name ('Sort by, currently Top, options Top and Recent'), and taking 'recent' from
     one would do the two worst things at once: skip the flip below (the label already 'says' Recent)
-    and record the run as sorted — the exact lie #817 exists to stop."""
+    and record the run as sorted — the exact lie #817 exists to stop.
+    """
     if control is None:
         return ""
     try:
@@ -2197,7 +2519,8 @@ _FEED_FALLBACK_AFTER_MISSES = 6
 
 def set_feed_funnel(user_id: int, funnel: dict) -> None:
     """Persist the last feed scan's reach funnel (posts examined -> matched -> commented) so the UI
-    can show the user how strict their targeting is. Best-effort; no-op without Redis."""
+    can show the user how strict their targeting is. Best-effort; no-op without Redis.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -2233,7 +2556,8 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
 
     `recent_comments` is the user's own recent comment history (newest first) that the quality gate
     dedups this draft against; a comment that lands is prepended to it, so two posts in the SAME run
-    can't get near-identical comments either (issue #617)."""
+    can't get near-identical comments either (issue #617).
+    """
     if not claim_post_for_comment(user_id, key):
         return False
     comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
@@ -2309,7 +2633,8 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
     no comment affordance at all is the restricted-comments signature — the author only accepts
     comments from connections or followers — and it is now counted per target so the roster card can
     tell the user that following or connecting would unlock the account. When they have opted in,
-    the same visit also does the paced follow, on the page that is already open."""
+    the same visit also does the paced follow, on the page that is already open.
+    """
     stats = {"posted": 0, "targets_visited": 0, "examined": 0, "off_topic_skipped": 0,
              "comment_blocked": 0, "followed": 0, "connect_requested": 0,
              "key_sources": {}, "commented_key_sources": {}}
@@ -2464,7 +2789,8 @@ def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: 
     `_card_for_textbox` returning None for EVERY card of EVERY target is far more likely to be that
     helper drifting against LinkedIn's SDUI than a roster where nobody accepts comments — and the
     badge it would raise tells the user something false about other people's accounts. Small rosters
-    are exempt from the check: two restricted authors out of two visited is an ordinary roster."""
+    are exempt from the check: two restricted authors out of two visited is an ordinary roster.
+    """
     if targets_visited >= 3 and len(blocked_visits) == targets_visited:
         log_warning(f"Every roster target visited ({targets_visited}) rendered posts with no "
                     f"comment affordance — treating this as comment-selector drift, not {targets_visited} "
@@ -2497,7 +2823,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     for whatever budget is left, prioritizing by a scoring matrix instead of DOM order:
     recency-dominant (golden hour), then relevance, reciprocity (people who engaged with us), and
     healthy activity. Applies targeting filters + per-day cap + a max-post-age gate, and never
-    comments on a post that fails the on-topic gate. Returns the total number of comments posted."""
+    comments on a post that fails the on-topic gate. Returns the total number of comments posted.
+    """
     from selenium.common.exceptions import StaleElementReferenceException
     if prefs is None:
         prefs = get_engagement_preferences(user_id)
@@ -2777,7 +3104,8 @@ _COMPOSER_ABOVE_SLACK_PX = 8
 
 def _visible_rect(element: WebElement) -> dict | None:
     """Page-coordinate rect of a RENDERED element, else None. Zero-size IS the hidden case here —
-    the same width>0 && height>0 test #478 applies to composer candidates."""
+    the same width>0 && height>0 test #478 applies to composer candidates.
+    """
     try:
         r = element.rect or {}
     except Exception:
@@ -2789,7 +3117,8 @@ def _visible_rect(element: WebElement) -> dict | None:
 
 def _visible_composers(root: WebDriver | WebElement) -> list[tuple[WebElement, dict]]:
     """`(element, rect)` for every rendered role=textbox under `root` — a WebElement to search one
-    comment's subtree, or the driver to search the page."""
+    comment's subtree, or the driver to search the page.
+    """
     found = []
     try:
         for box in root.find_elements(By.CSS_SELECTOR, "div[role='textbox']"):
@@ -2803,7 +3132,8 @@ def _visible_composers(root: WebDriver | WebElement) -> list[tuple[WebElement, d
 
 def _in_same_comment(driver: WebDriver, comment_el: WebElement, other: WebElement | None) -> bool:
     """True when `other` is this comment or shares its subtree (a reply wrapper inside it, or a
-    wrapper holding it) — i.e. the composer that resolved to it is ours to type into."""
+    wrapper holding it) — i.e. the composer that resolved to it is ours to type into.
+    """
     if other is None:
         return False
     if other == comment_el:
@@ -2869,7 +3199,8 @@ def _type_and_submit_reply(driver: WebDriver, composer: WebElement, reply_text: 
                            user_id: int = None) -> bool:
     """Type into an ALREADY-resolved composer and submit (role=textbox + Ctrl+Enter fallback). Both
     reply paths share this so the submit/verify contract can never drift between them. True only when
-    `_composer_submitted` confirms the post."""
+    `_composer_submitted` confirms the post.
+    """
     reply_text = _strip_non_bmp(reply_text)
     if not reply_text.strip():
         return False
@@ -2885,7 +3216,8 @@ def _type_and_submit_reply(driver: WebDriver, composer: WebElement, reply_text: 
 def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
     post_comment_inline: role=textbox composer + Ctrl+Enter fallback). The composer is resolved
-    against THIS comment (`_reply_composer_for_comment`), never page-wide. Returns True if posted."""
+    against THIS comment (`_reply_composer_for_comment`), never page-wide. Returns True if posted.
+    """
     try:
         if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Reply']")],
                        "Open reply box", parent_element=comment_el, required=False, user_id=user_id) is None:
@@ -2902,7 +3234,8 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
 
 def _comment_items_from_thread(driver):
     """Comment items on the SDUI thread — walk up from each Reply button to the container that
-    also holds the author link + text (comments are no longer <article> elements)."""
+    also holds the author link + text (comments are no longer <article> elements).
+    """
     items = []
     reply_btns = find_all_first(driver, [
         (By.CSS_SELECTOR, "[data-testid*='-commentList'] button[aria-label='Reply']"),
@@ -2921,7 +3254,8 @@ def _fill_edition_description(driver, wait, subtitle: str) -> bool:
     """Best-effort: fill the newsletter edition-description field in the publish dialog. LinkedIn
     surfaces a 'what this edition is about' textarea/contenteditable whose placeholder/aria mentions
     'edition', 'about', or 'what this'. Non-fatal — the field wasn't present in one live run, so we
-    never block publishing on it (fail fast: max_try=1, no retries)."""
+    never block publishing on it (fail fast: max_try=1, no retries).
+    """
     if not subtitle:
         return False
     candidates = []
@@ -2988,9 +3322,14 @@ def _tagged_edition_body(body: str, edition_id: "int | None" = None) -> str:
     article's reach), so on the mainline path this is a no-op — but the SPA lets the author edit a
     draft before it publishes, and a hand-added link to their own site is exactly the traffic worth
     attributing to the edition that sent it. Publish time is the right choke point: it is the last
-    moment the body is still ours, and both publish tasks pass through here."""
-    from cqc_lem.utilities.marketing.attribution import (MEDIUM_NEWSLETTER, SOURCE_NEWSLETTER,
-                                                         campaign_for_edition, tag_links_in_text)
+    moment the body is still ours, and both publish tasks pass through here.
+    """
+    from cqc_lem.utilities.marketing.attribution import (
+        MEDIUM_NEWSLETTER,
+        SOURCE_NEWSLETTER,
+        campaign_for_edition,
+        tag_links_in_text,
+    )
     return tag_links_in_text(body, SOURCE_NEWSLETTER, MEDIUM_NEWSLETTER,
                              campaign_for_edition(edition_id))
 
@@ -3000,7 +3339,8 @@ def _tagged_edition_body(body: str, edition_id: "int | None" = None) -> str:
 def auto_publish_newsletter_edition(self, user_id: int):
     """Generate and publish a newsletter edition for the user (opt-in via newsletter_settings).
     Best-effort — the article publish flow is multi-step; the first real publish should be
-    supervised. Repurposes the user's blog when align_with_blog is set."""
+    supervised. Repurposes the user's blog when align_with_blog is set.
+    """
     settings = get_newsletter_settings(user_id)
     if not settings.get("enabled"):
         return "Newsletter not enabled"
@@ -3039,7 +3379,8 @@ def auto_publish_newsletter_edition(self, user_id: int):
 def auto_publish_edition(self, edition_id: int):
     """Publish a reviewed/untouched newsletter edition at its scheduled slot. Loads the pre-generated
     edition (draft or approved), fills LinkedIn's article editor, and records the outcome. Best-effort
-    — the multi-step publish flow varies; first real publish should be supervised."""
+    — the multi-step publish flow varies; first real publish should be supervised.
+    """
     edition = get_newsletter_edition(edition_id)
     if not edition or edition.get("status") not in ("draft", "approved"):
         return f"Edition {edition_id} not publishable"
@@ -3075,7 +3416,8 @@ def auto_publish_edition(self, edition_id: int):
 
 def _parse_subscriber_count(text: "str | None") -> "int | None":
     """Pull a subscriber count out of LinkedIn's label text, e.g. '1,234 subscribers' -> 1234,
-    '3.2K subscribers' -> 3200. Returns None when no count is present."""
+    '3.2K subscribers' -> 3200. Returns None when no count is present.
+    """
     if not text:
         return None
     m = re.search(r"([\d.,]+)\s*([KkMm]?)\s*subscriber", text)
@@ -3097,7 +3439,8 @@ def _read_newsletter_subscriber_count(driver, wait, newsletter_url: str) -> "int
     """Best-effort: open the user's newsletter page and read its 'N subscribers' label. LinkedIn
     renders the count in a header near the newsletter title; selectors vary, so we scan a few
     candidates and fall back to a page-text regex. Returns None when the count can't be read —
-    never raises (validated on a supervised first real run)."""
+    never raises (validated on a supervised first real run).
+    """
     if not newsletter_url:
         return None
     driver.get(newsletter_url)
@@ -3120,7 +3463,8 @@ def _invite_connections_to_newsletter(driver, wait, cap: int) -> int:
     Opens the 'Invite' dialog (LinkedIn labels it 'Invite connections'/'Manage'), selects up to
     `cap` connection checkboxes, and sends. Returns the number invited (0 when the flow isn't
     available or cap<=0). Never raises — caps are enforced here, opt-in is enforced by the caller
-    (validated on a supervised first real run)."""
+    (validated on a supervised first real run).
+    """
     if cap <= 0:
         return 0
     if click_first(driver, wait,
@@ -3160,7 +3504,8 @@ def track_newsletter_subscribers(self, user_id: int):
     connections to subscribe within the per-run cap (issue #400). Reads the count from the
     newsletter page and records a growth snapshot; inviting only runs when
     invite_connections_enabled is set and stops at max_invites_per_run. Best-effort Selenium —
-    the first real run should be supervised."""
+    the first real run should be supervised.
+    """
     settings = get_newsletter_settings(user_id)
     if not settings.get("enabled"):
         return "Newsletter not enabled"
@@ -3229,7 +3574,8 @@ def _delete_extra_own_comments_on_post(driver, my_full_name: str, dry_run: bool 
     """On the CURRENTLY-OPEN post page, keep our earliest comment and delete the rest so the post ends
     with exactly ONE comment from us. Returns (own_comments_found, deleted). In dry_run mode it only
     counts what WOULD be deleted (deleted stays 0). Only comments authored by `my_full_name` are ever
-    touched — replies/comments by others are never affected."""
+    touched — replies/comments by others are never affected.
+    """
     try:
         found = int(driver.execute_script(_COUNT_OWN_COMMENT_MENUS_JS, my_full_name) or 0)
     except Exception as e:
@@ -3273,7 +3619,8 @@ def consolidate_duplicate_comments_for_user(self, user_id: int, dry_run: bool = 
     """One-off cleanup: for each post this user commented on MORE THAN ONCE in the last `hours`,
     delete the extra comments so exactly ONE remains. dry_run=True (default) only REPORTS what it
     would delete — pass dry_run=False to actually delete. Only real post URLs are actionable; feed
-    comments logged under a synthetic key (no navigable URL) are reported as skipped."""
+    comments logged under a synthetic key (no navigable URL) are reported as skipped.
+    """
     dupes = get_duplicate_comment_posts(user_id, hours)
     if not dupes:
         return "No duplicate-commented posts found"
@@ -3331,7 +3678,8 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     comment's thread-starting value stands without it.
 
     When the publish step held an external link back (issue #392 — C3), that link is appended to the
-    comment: this is the delivery half of the link-in-first-comment mechanic."""
+    comment: this is the delivery half of the link-in-first-comment mechanic.
+    """
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
         return "No post URL yet for seed comment"
@@ -3376,7 +3724,8 @@ def _second_wave_story_directive(user_id: int, post_message: str, prefs: dict) -
     """The story-bank injection for the second wave and the entry it came from (issue #620): the
     added insight must be the user's OWN material, so the writer gets one relevant entry and the
     hard rule that its facts are the only personal specifics it may state. An empty or irrelevant
-    bank yields the explicit no-fabrication fallback rather than an invented anecdote."""
+    bank yields the explicit no-fabrication fallback rather than an invented anecdote.
+    """
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
@@ -3406,7 +3755,8 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
     The 6–8h wait is served in HOPS, not one long countdown: with `task_acks_late` the broker
     redelivers any message left unacked past `visibility_timeout` (~75 min), so a single 8-hour
     countdown would be handed to another worker every 75 minutes and post the comment several times
-    over. Each run re-checks the post's real age and re-arms itself until the post is due."""
+    over. Each run re-checks the post's real age and re-arms itself until the post is due.
+    """
     if not _golden.second_wave_enabled():
         return "Second-wave comment disabled"
     due_minutes = _golden.second_wave_due_minutes(user_id, post_id)
@@ -3488,7 +3838,8 @@ _ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
 def _post_analytics_counts(driver, post_url: str) -> dict:
     """Counts from the author's own post-analytics page. Prefers the URN the detail page redirected
     to (the logged permalink holds a share/ugcPost URN; analytics keys off the activity URN LinkedIn
-    resolves it to). Best-effort — {} when no URN, no page, or nothing parseable."""
+    resolves it to). Best-effort — {} when no URN, no page, or nothing parseable.
+    """
     try:
         current = getattr(driver, "current_url", None)
         urn = (object_urn_from_post_url(current if isinstance(current, str) else "")
@@ -3506,7 +3857,8 @@ def _post_analytics_counts(driver, post_url: str) -> dict:
 
 def _post_stats_backfill_bounds() -> Tuple[int, int]:
     """(window days, per-run cap) for the never-captured backfill (issue #809). A typo'd env value
-    falls back to the defaults rather than taking the whole sweep down."""
+    falls back to the defaults rather than taking the whole sweep down.
+    """
     def _read(name: str, default: int) -> int:
         try:
             return max(0, int((os.environ.get(name) or "").strip() or default))
@@ -3521,7 +3873,8 @@ def auto_scrape_post_stats(self, user_id: int):
     """Capture reactions/comments/reposts/impressions/saves for each of the user's recent posts
     (feeds personalized post-time recommendations + the content feedback loop). Reuses the
     social-count extraction on each post's detail page, then on its analytics page for the
-    signals the detail page never renders (saves, impressions)."""
+    signals the detail page never renders (saves, impressions).
+    """
     post_ids = get_recent_posted_post_ids(user_id)
     # The analytics dashboard reads a 90-day window while this sweep only walks the last few weeks,
     # so a post that missed its capture while it was fresh stayed unmeasurable forever (issue #809).
@@ -3593,7 +3946,8 @@ _SEARCH_APPEARANCES_URL = "https://www.linkedin.com/analytics/search-appearances
 
 def _read_page_text(driver, url: str) -> str:
     """Navigate and return the page's visible text (prefers <main>, falls back to <body>). Empty
-    string when the page can't be read — never raises."""
+    string when the page can't be read — never raises.
+    """
     try:
         driver.get(url)
     except Exception as e:
@@ -3618,7 +3972,8 @@ def capture_audience_snapshot(driver, profile_url: "str | None") -> dict:
 
     Best-effort PER SIGNAL and fail-closed: a missing anchor leaves that key None (recorded as SQL
     NULL = "not measured"), never 0, and never raises — a LinkedIn DOM change must not take the
-    daily capture, or anything downstream of it, down with it."""
+    daily capture, or anything downstream of it, down with it.
+    """
     counts = {"follower_count": None, "connection_count": None,
               "profile_views": None, "search_appearances": None}
     if profile_url:
@@ -3643,7 +3998,8 @@ def capture_follower_stats(self, user_id: int):
     """Daily audience telemetry: snapshot the user's follower/connection counts and (when the
     surface is reachable) their profile views + search appearances (issue #627). Audience growth is
     the outcome the whole system exists to produce and was previously untracked. One row per run
-    feeds the growth panel's 7/30-day deltas; unreadable signals are stored as NULL."""
+    feeds the growth panel's 7/30-day deltas; unreadable signals are stored as NULL.
+    """
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                   session_name="Audience Stats",
@@ -3713,7 +4069,8 @@ def auto_sync_user_groups(self, user_id: int):
                   queue='se_engage')
 def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     """Comment (value-add, scored) on posts in each of the user's ENABLED groups. Reuses the feed
-    commenting engine pointed at each group's feed. Shares the per-day comment cap."""
+    commenting engine pointed at each group's feed. Shares the per-day comment cap.
+    """
     enabled = get_enabled_group_ids(user_id)
     if not enabled:
         return "No enabled groups"
@@ -3757,7 +4114,8 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
     having been previewable first.
 
     Opens no browser: the voice comes from the CACHED profile, so a draft costs one LLM call and no
-    Chrome session slot."""
+    Chrome session slot.
+    """
     if get_open_group_post_draft(user_id):
         log_debug("Group post draft already waiting for review", user_id=user_id,
                   task_name="auto_draft_group_post")
@@ -3804,7 +4162,8 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
     never written here (issue #932) — it comes from the draft the user has had days to read and
     edit, and a run with no usable draft publishes NOTHING rather than falling back to an
     un-previewed generation. Best-effort — the group composer selectors are validated in the live
-    pass."""
+    pass.
+    """
     draft = get_group_post_draft(draft_id) if draft_id else None
     if (draft is None or draft.get("user_id") != user_id
             or str(draft.get("status")) != str(GroupPostDraftStatus.READY)):
@@ -3872,7 +4231,8 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     """Walk the feed and comment. `post_id` is set only by the pre-post warm-up dispatch
     (auto_check_scheduled_posts) — it makes each pass record a per-post engagement-window marker so
     a report can confirm the warm-up before that post actually happened (issue #547). It rides the
-    self-requeue kwargs, so every pass in the window accumulates onto the same marker."""
+    self-requeue kwargs, so every pass in the window accumulates onto the same marker.
+    """
     global stop_all_thread
 
     myprint("Starting Automate Commenting Thread...")
@@ -3996,7 +4356,8 @@ def _reply_target_key(user_id: int, post_id: int, commenter_slug: str, comment_t
     to the SAME comment twice across golden-hour sweeps. Keyed on identity (commenter slug) + a
     normalized prefix of the comment text — the same inputs the follow-up path uses for its dedup.
     If we cannot resolve the commenter we fall back to a text-only hash so the dedup still has a
-    chance to prevent duplicates."""
+    chance to prevent duplicates.
+    """
     text_norm = _normalize_post_text(comment_text)[:200]
     who = (commenter_slug or "").strip().lower()
     if not who:
@@ -4007,7 +4368,8 @@ def _reply_target_key(user_id: int, post_id: int, commenter_slug: str, comment_t
 
 def _has_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, comment_text: str) -> bool:
     """True if we have already recorded a reply to this comment (best-effort Redis check; fails
-    open when Redis is unavailable)."""
+    open when Redis is unavailable).
+    """
     client = _redis_client()
     if client is None:
         return False
@@ -4020,7 +4382,8 @@ def _has_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, com
 def _record_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, comment_text: str,
                                ttl_days: int = 3) -> None:
     """Mark a comment as replied-to in Redis so later sweeps skip it. TTL covers the reply look-back
-    window plus a small buffer; clamped so a misconfigured value can't pin keys forever."""
+    window plus a small buffer; clamped so a misconfigured value can't pin keys forever.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -4035,7 +4398,8 @@ def _record_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, 
 def _lead_thread_key(source: str, thread_ref: str, person_profile_url: str, person_name: str = "") -> str:
     """Stable dedup id for ONE conversation with ONE person, so a re-scan (or a second buying-intent
     line in the same thread) never re-flags a lead the operator has already seen. Keyed on identity
-    + thread — never on the message text (the #474 lesson)."""
+    + thread — never on the message text (the #474 lesson).
+    """
     who = _profile_slug(person_profile_url)
     if not who:
         who = hashlib.sha1((person_name or "").strip().lower().encode("utf-8", "ignore")).hexdigest()[:12]
@@ -4049,7 +4413,8 @@ def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", threa
                       my_profile=None, prefs: dict = None, profile_synthesis: str = None) -> "int | None":
     """Classify one piece of inbound text and, on a buying-intent hit, queue it as a hot lead with a
     drafted response awaiting approval. Returns the new signal id, or None (no intent, already
-    flagged, or an error). Best-effort and NON-FATAL — lead detection must never break a reply sweep."""
+    flagged, or an error). Best-effort and NON-FATAL — lead detection must never break a reply sweep.
+    """
     try:
         if not text or not str(text).strip():
             return None
@@ -4085,7 +4450,8 @@ def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", threa
 def _reply_outcome(status: str, summary: str, comments_found: int = 0,
                    replies_sent: int = 0) -> dict:
     """One post's reply-sweep outcome. A dict, not a string, because the golden-hour report
-    (issue #622) needs the counts the old summary line only ever rendered."""
+    (issue #622) needs the counts the old summary line only ever rendered.
+    """
     return {"status": status, "summary": summary, "comments_found": int(comments_found),
             "replies_sent": int(replies_sent)}
 
@@ -4103,7 +4469,8 @@ def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, co
     max_dms_per_day at send time, so the cap is enforced on delivery too.
 
     Returns the scheduled_dms id, or None when nothing was queued. Best-effort and NON-FATAL — a
-    delivery that can't be drafted must never break the reply sweep it rides on."""
+    delivery that can't be drafted must never break the reply sweep it rides on.
+    """
     try:
         delivery = resolve_artifact_delivery(lead_magnet)
         if delivery["kind"] != ARTIFACT_KIND_LEAD_MAGNET or not delivery["deliverable"]:
@@ -4160,7 +4527,8 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     """Navigate to the user's own post and reply to comments on it (thread-builder replies, plus
     reciprocity/lead-magnet handling). Shared by the per-post reply task and the recent-posts sweep.
     Returns a `_reply_outcome` dict (status + counts + human summary). Assumes the caller already
-    has a live driver/profile."""
+    has a live driver/profile.
+    """
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
         myprint(f"No successful post URL for post {post_id}; skipping replies.")
@@ -4304,7 +4672,8 @@ def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outc
     be the amplifier's business. Latency is measured from the post's real publish time, so the
     report answers the audit's question — did this sweep land inside the window, and did it find
     anything? A sweep that arrived late is logged as a WARNING: that is the queue-backlog signal the
-    #401 audit had no way to see."""
+    #401 audit had no way to see.
+    """
     outcome = dict(outcome or {})
     try:
         minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_id))
@@ -4349,7 +4718,8 @@ def _retry_golden_hour_sweep(user_id: int, sweep_slot: int, attempt: int, status
     "session_failed") against the freshest post's latency, so a silent hour has a cause in PostHog
     instead of an absence. Returns True when a retry was scheduled — bounded by
     `sweep_retry_countdown` (attempts AND window), so a sustained rate-limit decays to nothing
-    instead of hammering LinkedIn."""
+    instead of hammering LinkedIn.
+    """
     post_ids = get_recent_posted_post_ids(user_id, days=1)
     if not post_ids:
         return False
@@ -4382,7 +4752,8 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
     Every post swept emits a golden-hour report (issue #622) — comments found, replies sent, minutes
     since publish — so the amplifier's silence can be diagnosed instead of guessed at. `attempt` is
     the in-window retry counter; it is NOT part of the QueueOnce key, so a retry of the same slot
-    still dedups against a concurrently-queued one."""
+    still dedups against a concurrently-queued one.
+    """
     prefs = get_engagement_preferences(user_id)
     days = int(prefs.get("reply_max_post_age_days") or 2)
     post_ids = get_recent_posted_post_ids(user_id, days=days)
@@ -4442,7 +4813,8 @@ _MAX_FOLLOWUP_REPLIES_PER_DAY = 10  # cap on auto-replies/day (a real DM-like to
 def _post_url_from_key(key: str) -> "str | None":
     """A navigable LinkedIn post URL from a ledger key. feedurn://urn:li:activity:<id> ->
     https://www.linkedin.com/feed/update/urn:li:activity:<id>/. Returns None for the legacy
-    feedpost:// hash keys (not navigable) or anything unrecognized."""
+    feedpost:// hash keys (not navigable) or anything unrecognized.
+    """
     if not key:
         return None
     key = str(key)
@@ -4457,7 +4829,8 @@ def _post_url_from_key(key: str) -> "str | None":
 def _reply_is_question(text: str) -> bool:
     """True if a reply is asking us something (worth an auto-reply). A literal '?' is the primary
     signal; strip URLs first so a link's query string never counts. Reactions are handled
-    separately — this only gates whether we also post a reply."""
+    separately — this only gates whether we also post a reply.
+    """
     if not text:
         return False
     stripped = re.sub(r"https?://\S+", " ", text)
@@ -4467,7 +4840,8 @@ def _reply_is_question(text: str) -> bool:
 def _followup_reply_key(post_key: str, replier_href: str, reply_text: str) -> str:
     """Stable dedup id for a specific reply so we react/reply to it AT MOST ONCE (the #474 lesson —
     key on identity, not raw text). Anchored to the post, the replier's profile slug, and a
-    NORMALIZED hash of the reply text."""
+    NORMALIZED hash of the reply text.
+    """
     slug = ""
     if replier_href:
         m = re.search(r"/in/([^/?#]+)", replier_href)
@@ -4490,7 +4864,8 @@ _COMMENTLIST_TEXTBOX = "[data-testid*='commentList'] [data-testid='expandable-te
 
 def _comment_header_author(driver, container) -> str:
     """A comment's author profile href from its HEADER link — never an @mention inside the body
-    text box (that false match flagged a reply that mentioned us as 'ours')."""
+    text box (that false match flagged a reply that mentioned us as 'ours').
+    """
     try:
         return driver.execute_script(
             "const c=arguments[0];"
@@ -4503,7 +4878,8 @@ def _comment_header_author(driver, container) -> str:
 
 def _comment_container(driver, textbox):
     """Smallest ancestor of a comment text box that carries a HEADER author link and is not the
-    post wrapper (which uniquely has the GIF/Repost/Emoji composer buttons)."""
+    post wrapper (which uniquely has the GIF/Repost/Emoji composer buttons).
+    """
     try:
         return driver.execute_script(
             "let el=arguments[0],d=0;while(el&&d<10){"
@@ -4518,7 +4894,8 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
     """Like a comment/reply (best-effort, non-fatal). The action bar is HOVER-HIDDEN (the react
     button is zero-size until the comment is hovered), so hover first, then click the react control
     ('Open reactions menu' on this SDUI; a single click applies the default Like). If the click
-    opens the reaction flyout instead, pick the visible 'Like'. Skips if already reacted."""
+    opens the reaction flyout instead, pick the visible 'Like'. Skips if already reacted.
+    """
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
         try:
@@ -4573,7 +4950,8 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
     a box inside this comment wins, a box above it is rejected outright, a box owned by a DIFFERENT
     comment is rejected, and no box of ours means skip. This function keeps only its own way of
     OPENING the box — the #478 thread path needs the scroll + hover that renders a hover-hidden Reply
-    button before it can be clicked."""
+    button before it can be clicked.
+    """
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
         try:
@@ -4602,7 +4980,8 @@ def _load_comment_thread(driver) -> None:
     """Make a post's comment thread actually render: a TALL viewport is what lazy-renders comments a
     long post pushes far below the fold (scrolling alone on the default 1080-tall window did not —
     validated live, issue #478), then scroll down and expand the '…more' / 'previous replies'
-    controls. Best-effort throughout; every step is optional."""
+    controls. Best-effort throughout; every step is optional.
+    """
     try:
         driver.set_window_size(1400, 3400)
     except Exception:
@@ -4627,7 +5006,8 @@ def _load_comment_thread(driver) -> None:
 def _comment_items(driver) -> list:
     """[(text_box, container, author_href)] for every comment/reply currently rendered in the
     thread. Text boxes with no resolvable container are dropped — a comment we can't scope to a
-    container has no author and no action bar, so it is not addressable."""
+    container has no author and no action bar, so it is not addressable.
+    """
     items = []
     for tb in driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX):
         cont = _comment_container(driver, tb)
@@ -4642,7 +5022,8 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
                                       replies_remaining: int) -> dict:
     """Revisit ONE post we commented on: react to replies to our comment, answer question-replies,
     and flag buying intent. Returns {'reacted': n, 'replied': n, 'leads': n}. Best-effort/non-fatal
-    (issues #478, #483)."""
+    (issues #478, #483).
+    """
     result = {"reacted": 0, "replied": 0, "leads": 0}
     path = urlparse(str(my_profile.profile_url)).path
     our_slug = path.split("/")[2] if len(path.split("/")) > 2 else None
@@ -4720,13 +5101,15 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
 def sweep_comment_followups(self, user_id: int):
     """Revisit posts we automated a comment on in the last few days and follow up on replies to our
     comment: react to each reply, and answer question-replies (issue #478). Only touches OUR
-    automated comments (the commented_posts ledger). QueueOnce + single-flight lock + 429-safe."""
+    automated comments (the commented_posts ledger). QueueOnce + single-flight lock + 429-safe.
+    """
     return _run_comment_followups_sweep(user_id)
 
 
 def _run_comment_followups_sweep(user_id: int) -> str:
     """Body of sweep_comment_followups, extracted so it is unit-testable without the QueueOnce/Redis
-    task wrapper."""
+    task wrapper.
+    """
     posts = get_recent_navigable_commented_posts(user_id, days=_FOLLOWUP_WINDOW_DAYS)
     if not posts:
         return "No recent navigable commented posts to follow up on"
@@ -4775,7 +5158,8 @@ def _run_comment_followups_sweep(user_id: int) -> str:
 def process_comment_followups_for_url(self, user_id: int, post_url: str):
     """Single-post entrypoint for the follow-up feature — run it against ONE post URL (manual/API/
     verification), independent of the ledger. Reacts to replies on our comment and answers
-    questions, same as the sweep (issue #478)."""
+    questions, same as the sweep (issue #478).
+    """
     return _run_single_post_followup(user_id, post_url)
 
 
@@ -4816,7 +5200,8 @@ def _scrape_activity_comment_urns(driver, wait, my_profile) -> dict:
     """Map {normalized comment text -> post URL} from the user's own recent-activity/comments page.
     Each activity card holds the post's /feed/update/ permalink plus the comment we left, so we can
     recover the navigable URN for comments the ledger only has a hash for. Best-effort; validated on
-    a supervised run (issue #478)."""
+    a supervised run (issue #478).
+    """
     mapping = {}
     path = urlparse(str(my_profile.profile_url)).path.rstrip("/")
     if not path:
@@ -4848,7 +5233,8 @@ def _scrape_activity_comment_urns(driver, wait, my_profile) -> dict:
 def reconcile_recent_comment_urns(self, user_id: int, days: int = _FOLLOWUP_WINDOW_DAYS):
     """Backfill: recover navigable URNs for recent 'feedpost://' ledger rows via the user's own
     recent-activity/comments page, so pre-#474 comments become follow-up-able. Matches each activity
-    comment to a ledger row by our comment text, then upgrades the key to feedurn:// (issue #478)."""
+    comment to a ledger row by our comment text, then upgrades the key to feedurn:// (issue #478).
+    """
     return _run_reconcile_comment_urns(user_id, days)
 
 
@@ -4946,7 +5332,8 @@ def _sort_option_locators(target: str) -> list:
     """Menu-option locators for ONE sort, compared case-insensitively against the lowercase target.
     An exact-case literal ('Most Recent') never matches LinkedIn's 'Most recent', and a sort flip
     that can never find its option makes every absent comment read as unfindable instead of
-    demoted — the one reading this feature exists to produce."""
+    demoted — the one reading this feature exists to produce.
+    """
     target = (target or "").strip().lower()
     return [
         (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio']"
@@ -4976,7 +5363,8 @@ _SORT_CANDIDATE_SCAN_CAP = 8
 
 def _sort_from_element(el) -> str:
     """The sort an element names ('most relevant' / 'most recent'), or '' when it names neither —
-    which is how a wrong-but-matching node is told apart from the real control."""
+    which is how a wrong-but-matching node is told apart from the real control.
+    """
     try:
         text = f"{el.get_attribute('aria-label') or ''} {el.text or ''}".lower()
     except Exception:
@@ -4997,7 +5385,8 @@ def _find_comment_sort_control(driver, wait):
     miss), which is exactly the starved denominator #818 is about. Walking the chain here lets such
     a node fall through to a locator that names the real sort. Some renders label the control only
     inside its popup, so an unvalidated candidate is still returned when nothing in the chain parses
-    — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it."""
+    — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it.
+    """
     fallback = None
     for locator in _COMMENT_SORT_LOCATORS:
         try:
@@ -5018,7 +5407,8 @@ def _find_comment_sort_control(driver, wait):
 def _comment_sort_label(driver, wait) -> str:
     """The comment sort currently applied, lowercased ('most relevant' / 'most recent'), or '' when
     the control isn't present. '' is load-bearing: without knowing the sort we cannot say whether an
-    absent comment was demoted, so the visibility reading stays NULL rather than guessing."""
+    absent comment was demoted, so the visibility reading stays NULL rather than guessing.
+    """
     try:
         btn = _find_comment_sort_control(driver, wait)
     except Exception:
@@ -5029,7 +5419,8 @@ def _comment_sort_label(driver, wait) -> str:
 def _switch_comment_sort(driver, wait, target: str = _SORT_MOST_RECENT) -> bool:
     """Best-effort flip of the comment sort. True only when the control afterwards reports `target`
     — an unverified flip would let 'not found here' be read as a demotion when the sort never
-    actually changed."""
+    actually changed.
+    """
     try:
         btn = _find_comment_sort_control(driver, wait)
         if btn is None:
@@ -5051,7 +5442,8 @@ def _switch_comment_sort(driver, wait, target: str = _SORT_MOST_RECENT) -> bool:
 def _comment_text_matches(rendered: str, logged: str) -> bool:
     """True when a rendered comment box is the comment we logged. Compares truncation-proof
     normalized prefixes in BOTH directions, so a '…more'-collapsed render still matches the full
-    text we stored. Empty on either side never matches — two blank reads must not collide."""
+    text we stored. Empty on either side never matches — two blank reads must not collide.
+    """
     a = _norm_prefix(rendered, _COMMENT_MATCH_PREFIX_CHARS)
     b = _norm_prefix(logged, _COMMENT_MATCH_PREFIX_CHARS)
     if not a or not b:
@@ -5062,7 +5454,8 @@ def _comment_text_matches(rendered: str, logged: str) -> bool:
 def _href_is_profile(href: str, slug: str) -> bool:
     """True when a profile href belongs to EXACTLY `slug`. A substring test — `f"/in/{slug}" in
     href` — also matches every slug ours is a PREFIX of ('/in/chris' inside '/in/chris-queen-9b1'),
-    which would let a stranger's comment be read as ours and their reply be discounted as our own."""
+    which would let a stranger's comment be read as ours and their reply be discounted as our own.
+    """
     if not slug:
         return False
     return _profile_slug(href or "") == str(slug).strip().lower()
@@ -5074,7 +5467,8 @@ def _find_our_comment(items: list, our_slug: str, comment_text: str):
     Falls back to the single container authored by us when the text doesn't match: the
     commented_posts ledger makes our automated commenting at-most-once per post, so one comment of
     ours on the post IS this comment even when an @mention or emoji re-render broke the prefix
-    match. With several of ours present (a manual comment, a reply) the text has to decide."""
+    match. With several of ours present (a manual comment, a reply) the text has to decide.
+    """
     if not our_slug:
         return None
     ours = [(tb, cont) for (tb, cont, author) in items if _href_is_profile(author, our_slug)]
@@ -5101,7 +5495,8 @@ def _comment_like_count(driver, container) -> int:
 def _thread_replies(driver, our_cont, items: list) -> list:
     """[(container, author_href)] for the replies nested UNDER our comment. Replies are DOM-nested
     inside their parent comment's container (#478 thread map), and `contains` is true for the node
-    itself, so our own container is excluded explicitly."""
+    itself, so our own container is excluded explicitly.
+    """
     out = []
     for _tb, cont, author in items:
         try:
@@ -5117,7 +5512,8 @@ def _thread_replies(driver, our_cont, items: list) -> list:
 
 def _post_author_href(driver) -> str:
     """The post author's profile href on a post permalink page — the first /in/ link under <main>
-    that is NOT inside the comment list (a commenter's link would otherwise win)."""
+    that is NOT inside the comment list (a commenter's link would otherwise win).
+    """
     try:
         return driver.execute_script(
             "const root=document.querySelector('main')||document.body;"
@@ -5181,13 +5577,15 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
 def sweep_comment_outcomes(self, user_id: int):
     """Revisit comments we posted ~24h ago and record what each one earned — author replies, likes,
     thread replies, and whether it is still visible under LinkedIn's default 'Most relevant' sort
-    (issue #628). Read-only on LinkedIn: it navigates and reads, it never comments or reacts."""
+    (issue #628). Read-only on LinkedIn: it navigates and reads, it never comments or reacts.
+    """
     return _run_comment_outcomes_sweep(user_id)
 
 
 def _run_comment_outcomes_sweep(user_id: int) -> str:
     """Body of sweep_comment_outcomes, extracted so it is unit-testable without the QueueOnce/Redis
-    task wrapper."""
+    task wrapper.
+    """
     targets = get_comment_outcome_targets(user_id, min_age_hours=_OUTCOME_MIN_AGE_HOURS,
                                           max_age_hours=_OUTCOME_MAX_AGE_HOURS,
                                           limit=_MAX_OUTCOME_CHECKS_PER_RUN)
@@ -5248,8 +5646,8 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
 def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duration: int = 60, future_forward=0):
     """Reply to recent comments left on a single post. Retained for the manual/API trigger and
     back-compat; the default post-publish path now uses sweep_reply_comments (event/scheduled mode).
-    429-safe: a rate-limited session returns cleanly instead of dying before the re-queue."""
-
+    429-safe: a rate-limited session returns cleanly instead of dying before the re-queue.
+    """
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply to Comments")
     except LinkedInRateLimited as e:
@@ -5345,7 +5743,6 @@ def accept_connection_request(user_id: int) -> dict[str, str]:
     people whose click actually landed, and the cards are re-queried after every click because
     accepting re-renders the list (holding the original list went stale after the first accept).
     """
-
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Accept Connection Requests', user_id=user_id)
@@ -5394,7 +5791,8 @@ def accept_connection_request(user_id: int) -> dict[str, str]:
 def _next_pending_invitation(driver: WebDriver, accepted_urls: set[str]) -> tuple[str, str, WebElement] | None:
     """The next (profile_url, name, accept_button) still awaiting acceptance, read from a FRESH card
     query. Cards we already accepted are skipped by URL because LinkedIn sometimes leaves the accepted
-    card in place instead of removing it."""
+    card in place instead of removing it.
+    """
     for card in find_all_first(driver, _INVITATION_CARD_LOCATORS):
         link = _first_in_card(card, _INVITATION_PROFILE_LINK_LOCATORS)
         try:
@@ -5541,7 +5939,8 @@ _RELATIVE_AGE_UNIT_DAYS = (("mo", 30.0), ("min", 0.0), ("h", 0.0), ("d", 1.0), (
 
 def appreciation_lookback_days() -> int:
     """How far back a standing surface may be read. Anything older is somebody else's history, not
-    a moment worth reacting to."""
+    a moment worth reacting to.
+    """
     try:
         return max(1, int(os.getenv("APPRECIATION_LOOKBACK_DAYS")
                           or _APPRECIATION_LOOKBACK_DEFAULT_DAYS))
@@ -5551,7 +5950,8 @@ def appreciation_lookback_days() -> int:
 
 def _parse_recommendation_date(text: str, now: datetime = None) -> "float | None":
     """Age in days of the newest 'Month D, YYYY' in a recommendation card, or None when the card
-    carries no readable date. None means SKIP — an undated card could be from 2018."""
+    carries no readable date. None means SKIP — an undated card could be from 2018.
+    """
     matches = _RECOMMENDATION_DATE_RE.findall(text or "")
     if not matches:
         return None
@@ -5568,7 +5968,8 @@ def _parse_recommendation_date(text: str, now: datetime = None) -> "float | None
 
 def _parse_relative_age_days(text: str) -> "float | None":
     """Age in days from a LinkedIn relative timestamp ('2h', '3d', '2mo'). None when nothing in the
-    card reads as an age — which, like an undated recommendation, means SKIP."""
+    card reads as an age — which, like an undated recommendation, means SKIP.
+    """
     match = _RELATIVE_AGE_RE.search(text or "")
     if not match:
         return None
@@ -5598,7 +5999,8 @@ def _mention_actor_name(text: str) -> str:
     """The mentioner's name recovered from the card's own sentence, for when the actor link rendered
     without text. '' when nothing in it names anybody — the DM then opens with "Hi there", which is
     a DELIBERATE fallback: a thank-you addressed generically still beats not thanking someone who
-    publicly featured this user."""
+    publicly featured this user.
+    """
     match = _MENTION_ACTOR_NAME_RE.search(text or "")
     return clean_person_name(match.group(1)) if match else ""
 
@@ -5615,7 +6017,8 @@ def _recommendation_reading(driver, user_id: int = None) -> dict:
     an empty section apart from selectors that have rotated again.
 
     `page_dated` is the tripwire — the page plainly showing "Month D, YYYY" while no block resolves
-    is drift, whereas neither is just an account nobody has recommended."""
+    is drift, whereas neither is just an account nobody has recommended.
+    """
     empty = {"rows": [], "anchors": 0, "page_dated": False}
     try:
         reading = driver.execute_script(_RECOMMENDATION_ROWS_JS)
@@ -5742,7 +6145,8 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
 
 def _own_profile_url(driver, user_id: "int | None") -> str:
     """The user's own profile URL: the stored one first, else resolved live by letting LinkedIn's
-    /in/me/ redirect answer it. Empty string when neither works."""
+    /in/me/ redirect answer it. Empty string when neither works.
+    """
     if user_id is not None:
         try:
             stored = get_linkedin_profile_url_by_user_id(user_id)
@@ -5764,7 +6168,8 @@ def _own_profile_url(driver, user_id: "int | None") -> str:
 
 class _SafePlaceholders(dict):
     """format_map backing dict that leaves unknown {tokens} literal instead of raising —
-    so a user typo like {frst_name} never drops the whole message."""
+    so a user typo like {frst_name} never drops the whole message.
+    """
     def __missing__(self, key):
         return "{" + key + "}"
 
@@ -5773,7 +6178,8 @@ def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "
                            blog_url: str = "", event_detail: str = "") -> str:
     """Single source of truth for filling DM / lead-magnet {placeholders}: {first_name},
     {headline}, {blog_url}, {event_detail}. Used by BOTH the DM-template path and the Comment->DM
-    lead magnet so their substitution can never drift. Tolerates unknown/malformed tokens gracefully."""
+    lead magnet so their substitution can never drift. Tolerates unknown/malformed tokens gracefully.
+    """
     if not text:
         return text or ""
     ctx = _SafePlaceholders(first_name=first_name or "there",
@@ -5798,7 +6204,8 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
                            event_detail: str = "") -> "str | None":
     """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url}/
     {event_detail}) and LLM-refine it to their voice (<=300 chars). Falls back to the code-default
-    template; returns None only when no template exists for that (event, step)."""
+    template; returns None only when no template exists for that (event, step).
+    """
     tmpl = get_dm_template(user_id, event_type, step)
     if not tmpl:
         return None
@@ -5849,7 +6256,8 @@ def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event
     check costs one thread open: a reply becomes a nurture draft, and silence hits the existing
     "no template for this step" branch in process_user_followups and stops the sequence. This is the
     same shape _schedule_catchup_followup already used for catch-up touches (#482), generalized to
-    every sequence."""
+    every sequence.
+    """
     try:
         nxt = get_dm_template(user_id, event_type, current_step + 1)
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -5873,7 +6281,8 @@ def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event
 
 def _last_inbound_message(driver) -> str:
     """Text of the newest message in the ALREADY-OPEN thread. Best-effort — returns '' when the DOM
-    doesn't match (detection simply finds nothing rather than breaking the follow-up run)."""
+    doesn't match (detection simply finds nothing rather than breaking the follow-up run).
+    """
     return read_last_message(driver)
 
 
@@ -5938,7 +6347,8 @@ def _nurture_auto_approve() -> bool:
     and the scanner delivers it at its slot).
 
     Only an explicit affirmative opens the gate: unset, blank/whitespace, and anything unrecognized
-    all keep the human in the loop. This is the one flag where a typo must fail CLOSED."""
+    all keep the human in the loop. This is the one flag where a typo must fail CLOSED.
+    """
     raw = os.environ.get("DM_NURTURE_AUTO_APPROVE") or ""
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
@@ -5957,7 +6367,8 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
     approval. Returns the scheduled_dms id, or None when nothing was drafted (disabled, explicit
     disinterest, already drafted for this thread, daily cap, or no usable draft).
 
-    Best-effort and NON-FATAL — nurturing a conversation must never break the follow-up run."""
+    Best-effort and NON-FATAL — nurturing a conversation must never break the follow-up run.
+    """
     profile_url = followup.get("profile_url") or ""
     first_name = followup.get("first_name") or ""
     try:
@@ -6044,7 +6455,8 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
 def process_user_followups(self, user_id: int, max_per_run: int = 20):
     """Send this user's due DM follow-ups: anyone who has replied gets their sequence stopped and,
     instead of going cold, an approval-gated context-aware next message (issue #485); everyone else
-    gets the next-step template rendered in the user's voice, sent, marked, and re-scheduled."""
+    gets the next-step template rendered in the user's voice, sent, marked, and re-scheduled.
+    """
     due = [f for f in get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
            if f["user_id"] == user_id]
     if not due:
@@ -6140,7 +6552,8 @@ def _appreciation_dm_budget(user_id: int) -> int:
     The standing-list sources are what make this necessary (issue #968): a month of un-thanked
     mentions is not one DM, it is a burst of them, and the first pass after the flag is flipped
     would otherwise dispatch every one at once. Whoever is left over is never claimed, so the next
-    pass thanks them."""
+    pass thanks them.
+    """
     prefs = get_engagement_preferences(user_id)
     return max(0, remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
                                     count_dms_sent_today(user_id),
@@ -6163,7 +6576,8 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
 
     `budget` is the day's remaining DM allowance (`_appreciation_dm_budget`); once it is spent the
     rest of the list is LEFT UNCLAIMED and thanked on a later pass. None means unbounded, which is
-    only for callers that have already bounded themselves."""
+    only for callers that have already bounded themselves.
+    """
     sent = 0
     for profile_url, name in (recipients or {}).items():
         if budget is not None and sent >= budget:
@@ -6196,6 +6610,18 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
+    """Thank whoever just did something for this account: accepted an invite, recommended, collaborated.
+
+    ONE shared budget spans all three sources (issue #968). The two standing-list sources can each
+    hand back a month of people at once, so the first pass after the flag is switched on would
+    otherwise go out as a burst LinkedIn reads as a campaign; when the budget is spent the source
+    scans are skipped entirely rather than scraped and discarded.
+
+    `loop_for_duration` makes the task re-queue ITSELF `future_forward` seconds out with the
+    remaining time, until that runs out — so one dispatch covers a window rather than an instant.
+    Every failure is caught and returned as a message string: this beat never fails the worker, and
+    `appreciation_touches` is what stops the ~60s re-queue thanking the same person twice.
+    """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Appreciation DMs', user_id=user_id)
@@ -6272,6 +6698,18 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
 def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfile,
                               profile_synthesis: str = None) -> bool:
+    """Write a comment for the post at `post_link` and QUEUE it — this function does not post.
+
+    The text is generated here and handed to the `comment_on_post` task, which opens its own session
+    and submits it (issue #966), so a True return means a comment was queued, NOT that one landed on
+    LinkedIn. The caller (profile-viewer engagement) uses it only to decide it has engaged with this
+    person and can stop walking their activity.
+
+    Returns False for every ordinary reason to skip — already commented, no readable post text, or
+    nothing cleared the #617 quality contract — so a False is not an error and is never logged as
+    one. Missing engagement preferences or comment history degrade the generation rather than
+    stopping it: the account still comments, just without the voice settings or similarity gate.
+    """
     if post_link != driver.current_url:
         # Switch to post url
         driver.get(post_link)
@@ -6395,7 +6833,8 @@ _PROFILE_VIEWER_RENDER_WAIT_SECONDS = 30
 
 def _viewer_within_lookback(viewed_on: str, lookback_days: int) -> Optional[bool]:
     """Whether a viewed-on caption falls inside the lookback window; None when it won't parse
-    (the caller decides whether that stops the walk or just drops the row)."""
+    (the caller decides whether that stops the walk or just drops the row).
+    """
     try:
         viewed_date = convert_viewed_on_to_date(viewed_on)
     except (ValueError, TypeError, AttributeError):
@@ -6409,7 +6848,8 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
                                        lookback_days: int = 1):
     """Walk the profile-views analytics list and queue engagement for each viewer inside
     `lookback_days`. The default matches the daily cadence; a catch-up run passes a larger
-    window once, then the cadence sticks to the delta."""
+    window once, then the cadence sticks to the delta.
+    """
     global stop_all_thread
 
     myprint("Starting Profile Viewer DMs")
@@ -6555,6 +6995,17 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'viewer_url']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
+    """Engage ONE person who viewed the user's profile, branching on whether we are already connected.
+
+    A 1st-degree viewer gets a comment on ONE recent activity (at most one, then the walk stops) and
+    a templated DM; anyone else gets a personalised connection request instead — you cannot DM a
+    stranger, so the two branches are different actions, not the same action at different depths.
+
+    Bounded to once per viewer per day by `has_engaged_url_with_x_days`, because the analytics page
+    lists the same viewer on consecutive runs. Once the attempt actually starts, an ENGAGED row is
+    written in `finally` whichever way it goes — a failed engagement is a recorded attempt, with
+    SUCCESS/FAILURE saying which, never a gap in the record.
+    """
     myprint("Starting Profile Viewer Engagement")
 
     result = "Profile Viewer Engagement Started"
@@ -6699,7 +7150,8 @@ def clean_stale_invites(self, user_id: int):
     The budget is decided BEFORE a browser session is opened: the lane is opt-in and OFF by default,
     and even switched on most days are paced to zero — a Chrome slot spent discovering that is a slot
     an engagement lane needed. Returns the run report so a Flower run and the `stale_invite_run`
-    event tell the same story."""
+    event tell the same story.
+    """
     task_name = "clean_stale_invites"
 
     plan = plan_withdrawals(user_id)
@@ -6771,7 +7223,8 @@ def _type_dm_into_composer(driver: WebDriver, wait, message: str) -> None:
     while LinkedIn hydrates it, so the box found the moment it first appears goes stale a keystroke
     later — `StaleElementReferenceException` on the very next `send_keys` is what killed every send
     once the composer itself started resolving. Each attempt therefore re-finds the box, and because
-    each one CLEARS before typing, a retry after a half-typed message can never send a doubled one."""
+    each one CLEARS before typing, a retry after a half-typed message can never send a doubled one.
+    """
     attempts = max(1, DM_COMPOSER_ATTEMPTS)
     for attempt in range(attempts):
         try:
@@ -6801,7 +7254,8 @@ def _dm_send_landed(driver: WebDriver, message: str, user_id: int = None,
     `dm_sent = True` was written the moment the Send button accepted a click. Confirmation is the
     OUTCOME: our text is the newest message in the thread. A composer that still holds the full text
     is a positive DISPROOF and fails. Anything unreadable falls back to trusting the click (the #875
-    pattern) and warns, because reporting a delivered message as failed invites a duplicate send."""
+    pattern) and warns, because reporting a delivered message as failed invites a duplicate send.
+    """
     head = " ".join((message or "").split())[:60]
     deadline = time.monotonic() + max(0.0, DM_SEND_CONFIRM_SECONDS)
     while True:
@@ -6839,7 +7293,8 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
     renders that affordance as an `<a href='/messaging/compose/…'>` and the old
     `button[aria-label*='Message']` matched nothing, so every DM this function was asked to send
     failed at the first step (issue #1030). Navigating to the person's own compose URL also gives the
-    send path something a click never had — a recipient it can read back and verify before typing."""
+    send path something a click never had — a recipient it can read back and verify before typing.
+    """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id)
@@ -6893,7 +7348,7 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='2/m', queue='se_outreach')
 def send_private_dm(self, user_id: int, profile_url: str, message: str):
-    """ Send dm message to a profile. Must be a 1st connection"""
+    """Send dm message to a profile. Must be a 1st connection"""
     dm_sent = send_dm_now(user_id, profile_url, message)
     result = "DM Sent Successfully" if dm_sent else "DM Failed"
     myprint(result)
@@ -6904,9 +7359,14 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def send_scheduled_dm(self, dm_id: int):
     """Send a scheduled 1:1 DM (issue #306). Enforces the per-day DM cap at send time (defers back
-    to 'approved' for the next scan when the cap is hit) and updates the scheduled_dms status."""
-    from cqc_lem.utilities.db import (get_scheduled_dm, update_scheduled_dm_status,
-                                      count_dms_sent_today, ScheduledDmStatus)
+    to 'approved' for the next scan when the cap is hit) and updates the scheduled_dms status.
+    """
+    from cqc_lem.utilities.db import (
+        ScheduledDmStatus,
+        count_dms_sent_today,
+        get_scheduled_dm,
+        update_scheduled_dm_status,
+    )
     dm = get_scheduled_dm(dm_id)
     if not dm or dm["status"] not in (ScheduledDmStatus.APPROVED, ScheduledDmStatus.SCHEDULED):
         return f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})"
@@ -6929,7 +7389,8 @@ def _reply_to_person_on_post(driver, wait, post_url: str, person_profile_url: st
                              user_id: int = None) -> bool:
     """Post `text` as a reply UNDER a specific person's comment on `post_url` — the delivery half of
     an approved hot-lead response (issue #483). Reuses the #478 comment-thread helpers: a tall
-    viewport + scrolling is what actually makes comments lazy-render on a long post."""
+    viewport + scrolling is what actually makes comments lazy-render on a long post.
+    """
     slug = _profile_slug(person_profile_url)
     if not slug:
         log_warning("Lead response: no profile slug to target", user_id=user_id, action_type="reply")
@@ -6967,7 +7428,8 @@ def send_lead_response(self, signal_id: int):
 
 def _send_lead_response(signal_id: int) -> str:
     """Body of send_lead_response, extracted for unit testing (no QueueOnce/Redis). Only ever acts
-    on a signal a human APPROVED — nothing here can auto-respond to a lead on its own."""
+    on a signal a human APPROVED — nothing here can auto-respond to a lead on its own.
+    """
     signal = get_lead_signal(signal_id)
     if not signal:
         return f"Lead signal {signal_id} not found"
@@ -7019,7 +7481,8 @@ _PROFILE_DEGREE_LOCATORS = [
 
 def _profile_is_first_degree(driver) -> bool:
     """True only when the profile page SAYS 1st degree. Fails open (False) on any read problem —
-    a missed badge just means we try the invite, which is the old behaviour."""
+    a missed badge just means we try the invite, which is the old behaviour.
+    """
     try:
         for by, selector in _PROFILE_DEGREE_LOCATORS:
             for element in driver.find_elements(by, selector):
@@ -7069,7 +7532,8 @@ def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) ->
     first, else the profile page's top-card More menu. True only when the dialog's own controls
     are provably present. False is an ordinary outcome (invite already pending, Connect not
     offered, or the SDUI rotated again) and is why the total miss is a WARNING, not an error
-    (issue #571)."""
+    (issue #571).
+    """
     slug = _profile_slug(profile_url)
     if slug:
         driver.get(_CONNECT_INVITE_URL.format(slug=slug))
@@ -7122,7 +7586,8 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
     docstring already describes, the fallback is in hand, and warning on it filed a fingerprinted
     defect for working behaviour once per lost note — so it is DEBUG, and the bare-send control the
     dialog still shows is what says which no-op it was. A step that fails AFTER the affordance
-    answered is a genuine degraded path and still warns with `exc=`."""
+    answered is a genuine degraded path and still warns with `exc=`.
+    """
     if find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
                   required=False, warn_on_miss=False, max_try=1, visible_only=True,
                   user_id=user_id) is None:
@@ -7177,7 +7642,8 @@ _SEND_INVITE_XPATHS = ('//button[contains(@aria-label,"Send invitation")]',
 
 def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
     """Click Send on the open Connect dialog. False only when NEITHER Send affordance is clickable,
-    which loses the invite outright — that one stays an error (issue #573)."""
+    which loses the invite outright — that one stays an error (issue #573).
+    """
     xpaths = _SEND_INVITE_XPATHS if with_note else tuple(reversed(_SEND_INVITE_XPATHS))
     last_error: Exception = None
     for xpath in xpaths:
@@ -7203,7 +7669,8 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
     the proactive flow stores on the request row (issue #623). Shared by invite_to_connect (reactive
     profile-viewer flow) and send_connection_request (issue #398 approval-gated proactive flow) so
     both use the same send + log path (mirrors send_dm_now). Re-raises LinkedInRateLimited when the
-    kill-switch / 429 breaker is open so callers can defer rather than record a false failure."""
+    kill-switch / 429 breaker is open so callers can defer rather than record a false failure.
+    """
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
@@ -7270,7 +7737,8 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                   reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
 def invite_to_connect(self, user_id: int, profile_url: str, message: str = None):
     """Send a LinkedIn connection request (reactive profile-viewer flow). Thin wrapper over
-    invite_to_connect_now; a throttle / kill-switch defers silently."""
+    invite_to_connect_now; a throttle / kill-switch defers silently.
+    """
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
@@ -7300,7 +7768,8 @@ def send_roster_connect_invite(self, user_id: int, profile_url: str, message: st
 
     The status is already 'requested' before this runs (the one-shot guarantee). Only two things
     move it: a send that could not happen at all — throttled, nothing reached LinkedIn — hands the
-    target back to the ladder, and a real failure is terminal ('failed'), never auto-retried."""
+    target back to the ladder, and a real failure is terminal ('failed'), never auto-retried.
+    """
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
@@ -7331,9 +7800,14 @@ def send_connection_request(self, request_id: int):
     """Send an approved proactive connection request (issue #398). Enforces the per-day invite cap at
     send time (defers back to 'approved' for the next scan when the cap is hit or LinkedIn is
     throttled) and updates the connection_requests status. Reuses invite_to_connect_now, so it
-    honors the rate-limit / kill-switch."""
-    from cqc_lem.utilities.db import (get_connection_request, update_connection_request_status,
-                                      count_invites_sent_today, ConnectionRequestStatus)
+    honors the rate-limit / kill-switch.
+    """
+    from cqc_lem.utilities.db import (
+        ConnectionRequestStatus,
+        count_invites_sent_today,
+        get_connection_request,
+        update_connection_request_status,
+    )
     req = get_connection_request(request_id)
     if not req or req["status"] not in (ConnectionRequestStatus.APPROVED, ConnectionRequestStatus.SENDING):
         return f"Connection request {request_id} not sendable (status={req['status'] if req else 'missing'})"
@@ -7384,7 +7858,8 @@ _CONNECT_ENGAGER_LOOKBACK_DAYS = 30
 
 def _author_display_name(profile_url: str) -> str:
     """Readable name for an adjacent author from their /in/ slug (we don't scrape their profile just
-    to write a note). 'jane-doe-1a2b3c' -> 'Jane Doe'."""
+    to write a note). 'jane-doe-1a2b3c' -> 'Jane Doe'.
+    """
     slug = _profile_slug(profile_url)
     if not slug:
         return ""
@@ -7395,7 +7870,8 @@ def _author_display_name(profile_url: str) -> str:
 def _harvest_post_commenters(driver, post_url: str, author_name: str, now: datetime,
                              limit: int = _MAX_ENGAGERS_PER_ADJACENT_POST) -> list:
     """Commenters on ONE post as connection-targeting signals. Reuses the SDUI comment-thread walker
-    the reply sweep uses, so it survives the same DOM churn."""
+    the reply sweep uses, so it survives the same DOM churn.
+    """
     driver.get(post_url)
     time.sleep(random.uniform(3, 5))
     signals = []
@@ -7420,7 +7896,8 @@ def _adjacent_author_signals(driver, user_id: int, authors: list, my_name: str,
                              now: datetime) -> list:
     """Harvest engagers from the recent posts of the user's configured adjacent authors (thought
     leaders / competitors). Each author is best-effort: one unreachable profile must not lose the
-    others' candidates."""
+    others' candidates.
+    """
     from cqc_lem.utilities.linkedin.scrapper import get_profile_recent_activity
 
     signals: list = []
@@ -7448,7 +7925,8 @@ def _adjacent_author_signals(driver, user_id: int, authors: list, my_name: str,
 def _connect_target_budget(user_id: int, prefs: dict, max_new: int = None) -> int:
     """How many NEW targets this scan may file. The daily invite cap is shared with the reactive
     profile-viewer flow AND with targets already waiting, so sourcing can never build a backlog that
-    spends tomorrow's cap the moment it opens."""
+    spends tomorrow's cap the moment it opens.
+    """
     cap = int(prefs.get("max_invites_per_day") or 0)
     remaining = cap - count_invites_sent_today(user_id) - count_open_connection_requests(user_id)
     ceiling = _MAX_NEW_CONNECT_TARGETS_PER_SCAN if max_new is None else int(max_new)
@@ -7458,7 +7936,8 @@ def _connect_target_budget(user_id: int, prefs: dict, max_new: int = None) -> in
 def _draft_connect_note(user_id: int, candidate: ScoredCandidate, topic: str = None) -> str:
     """Personalized connect note for one candidate: a grounded template (it names the actual shared
     context) refined into the user's voice. Falls back to the template if the LLM is unavailable —
-    a missing note must never block the target."""
+    a missing note must never block the target.
+    """
     base = default_connect_note(candidate, topic=topic)
     try:
         refined = (get_ai_message_refinement(base, character_limit=CONNECT_NOTE_LIMIT) or "").strip()
@@ -7471,7 +7950,8 @@ def _draft_connect_note(user_id: int, candidate: ScoredCandidate, topic: str = N
 
 def _target_status_for_mode(mode: str, prefs: dict) -> "ConnectionRequestStatus":
     """'suggest' (default) ALWAYS files a draft needing human approval; 'auto_queue' defers to the
-    user's #398 connection_request_mode. So enabling targeting alone can never send anything."""
+    user's #398 connection_request_mode. So enabling targeting alone can never send anything.
+    """
     if mode != "auto_queue":
         return ConnectionRequestStatus.PENDING
     return (ConnectionRequestStatus.APPROVED
@@ -7490,7 +7970,8 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
     (scraped). They're ICP-scored against the user's focus topics, deduped against every
     connection_requests row they've ever had, and filed as #398 requests with a personalized note —
     so the existing approval gate, combined daily invite cap and 429 / kill-switch backoff all still
-    apply. Nothing is sent from here."""
+    apply. Nothing is sent from here.
+    """
     prefs = get_engagement_preferences(user_id)
     mode = str(prefs.get("connection_targeting_mode") or "suggest")
     if mode == "off":
@@ -7598,7 +8079,8 @@ def _funnel_first_name(target: dict) -> str:
 def _draft_funnel_stage(user_id: int, stage: str, target: dict) -> str:
     """Draft the voice-aligned action text for the NEXT funnel stage. Connect notes are refined to
     the user's voice; the DM is rendered from the user's 'funnel' DM template (existing machinery).
-    Returns '' when there's nothing to pre-draft — the operator can still edit before approving."""
+    Returns '' when there's nothing to pre-draft — the operator can still edit before approving.
+    """
     first_name = _funnel_first_name(target)
     if stage == OutreachStage.CONNECT:
         base = _FUNNEL_CONNECT_NOTE.format(first_name=first_name)
@@ -7617,7 +8099,8 @@ def _draft_funnel_stage(user_id: int, stage: str, target: dict) -> str:
 def _fire_funnel_stage(user_id: int, target: dict) -> str:
     """Fire one APPROVED funnel stage by enqueuing the existing primitive, then advance the target to
     the next stage as 'pending' (needs a fresh approval). Daily caps DEFER a stage (leave it approved
-    for the next run) rather than auto-firing it."""
+    for the next run) rather than auto-firing it.
+    """
     target_id = target["id"]
     stage = str(target.get("stage"))
     profile_url = target.get("target_profile_url")
@@ -7677,7 +8160,8 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
     Every stage is approval-gated: only status='approved' rows are acted on, and each fired stage
     drops the target to the NEXT stage as 'pending' — requiring a fresh human approval — so no step
     ever auto-fires at volume. Reuses comment_on_post / invite_to_connect / send_private_dm and the
-    DM follow-up machinery; daily comment/DM caps defer a stage rather than fire it."""
+    DM follow-up machinery; daily comment/DM caps defer a stage rather than fire it.
+    """
     targets = get_approved_outreach_targets(user_id)
     if not targets:
         return f"No approved outreach targets for user {user_id}"
@@ -7710,7 +8194,8 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
                                   now: datetime) -> list:
     """The engagement roster (G1, issue #616) and the people commenting on its posts, each paired
     with the post that put them on our radar — the comment stage needs something to comment ON.
-    Each roster author is best-effort: one unreachable profile must not lose the others."""
+    Each roster author is best-effort: one unreachable profile must not lose the others.
+    """
     from cqc_lem.utilities.linkedin.scrapper import get_profile_recent_activity
 
     prospects: list = []
@@ -7755,7 +8240,8 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
 def _funnel_prospects_from_engagers(user_id: int) -> list:
     """People who engaged with the user's OWN posts. They start at the CONNECT stage: they already
     engaged with us, so there is no third-party post to comment on first — and anyone the badge says
-    we're already connected to is dropped, since connecting is the only thing this funnel adds."""
+    we're already connected to is dropped, since connecting is the only thing this funnel adds.
+    """
     prospects: list = []
     for row in get_engager_candidates(user_id, days=_FUNNEL_ENGAGER_LOOKBACK_DAYS):
         if is_first_degree(row.get("connection_degree") or ""):
@@ -7772,7 +8258,8 @@ def _draft_funnel_comment(user_id: int, prospect: dict, my_profile: LinkedInProf
     """Pre-draft the comment-stage text from the post itself, using the same grounded generator the
     feed uses (so the quality contract and similarity gate apply). Returns '' when the post text is
     unreadable or the gate rejects every attempt — the operator writes it themselves rather than a
-    template comment going out under their name."""
+    template comment going out under their name.
+    """
     content = (prospect.get("context_text") or "").strip()
     if not content or my_profile is None:
         return ""
@@ -7791,7 +8278,8 @@ def _draft_funnel_comment(user_id: int, prospect: dict, my_profile: LinkedInProf
 def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
     """Populate the comment-first outreach funnel from the roster, roster-post commenters, and the
     user's own post engagers (issue #623). Files drafts only — the approval gate, the per-stage
-    re-approval, and the daily comment/DM caps in process_outreach_funnel all still apply."""
+    re-approval, and the daily comment/DM caps in process_outreach_funnel all still apply.
+    """
     prefs = get_engagement_preferences(user_id)
     if str(prefs.get("connection_targeting_mode") or "suggest") == "off":
         log_info("Outreach sourcing is off for this user (connection_targeting_mode=off)",
@@ -8037,7 +8525,8 @@ def _normalize_profile_url(url: str) -> str:
     enter a dedup ledger twice under two URL spellings. Two spellings are real: LinkedIn appends
     tracking params to catch-up links, and SDUI escapes the hyphens of a vanity slug
     (`/in/jane%2Ddoe%2D1234` — issue #968's grounding run). Encoded and decoded are the SAME person,
-    so the decoded form is the one key everything downstream compares on."""
+    so the decoded form is the one key everything downstream compares on.
+    """
     if not url:
         return ""
     parsed = urlparse(url.strip())
@@ -8049,7 +8538,8 @@ def _normalize_profile_url(url: str) -> str:
 
 def _classify_catchup_moment(text: str) -> "str | None":
     """Map a catch-up card's text to a CatchupEventType value, or None when it isn't a moment we
-    know how to congratulate (LinkedIn also renders suggestions/ads in this feed)."""
+    know how to congratulate (LinkedIn also renders suggestions/ads in this feed).
+    """
     if not text:
         return None
     for event_type, pattern in _CATCHUP_CLASSIFIERS:
@@ -8079,7 +8569,8 @@ def _catchup_excluded(moment: dict, prefs: dict) -> bool:
 def _score_catchup_moment(moment: dict, prefs: dict) -> int:
     """Score = milestone value + ICP fit. The literal keyword check is free; the LLM relevance check
     only runs when the literal one missed AND the user configured include_topics, so scoring a day's
-    feed costs at most a handful of lem-simple calls."""
+    feed costs at most a handful of lem-simple calls.
+    """
     score = _CATCHUP_EVENT_BASE.get(moment.get("event_type"), 0)
     haystack = f"{moment.get('name', '')} {moment.get('text', '')}".lower()
     literal_terms = (list(prefs.get("focus_topics") or []) + list(prefs.get("include_keywords") or [])
@@ -8095,7 +8586,8 @@ def _score_catchup_moment(moment: dict, prefs: dict) -> int:
 def _first_in_card(card: WebElement, locators: list) -> "WebElement | None":
     """First element inside a catch-up card matching the ordered locator chain. Searched directly
     (no WebDriverWait) because the card is already in the DOM — a per-card wait would cost the full
-    timeout on every non-person card LinkedIn mixes into the feed."""
+    timeout on every non-person card LinkedIn mixes into the feed.
+    """
     for find_by, value in locators:
         try:
             els = card.find_elements(find_by, value)
@@ -8112,7 +8604,8 @@ def _card_profile_link(card: WebElement) -> "WebElement | None":
 
 def _clean_suggested_message(text: str) -> str:
     """Normalize a draft LinkedIn handed us: collapse whitespace, drop the button chrome, cap at the
-    DM budget. Anything that doesn't look like a message (empty / a bare label) becomes ''."""
+    DM budget. Anything that doesn't look like a message (empty / a bare label) becomes ''.
+    """
     cleaned = " ".join((text or "").replace("\n", " ").split()).strip()
     if len(cleaned) < 4 or _CATCHUP_CHROME_RE.fullmatch(cleaned):
         return ""
@@ -8121,7 +8614,8 @@ def _clean_suggested_message(text: str) -> str:
 
 def _card_suggested_message(card: WebElement) -> str:
     """LinkedIn's suggested congratulations as rendered ON the card (a quick-reply chip), if any.
-    Read-only — no clicking."""
+    Read-only — no clicking.
+    """
     el = _first_in_card(card, _CATCHUP_SUGGESTED_TEXT_LOCATORS)
     if el is None:
         return ""
@@ -8135,7 +8629,8 @@ def _harvest_linkedin_draft(driver: WebDriver, card: WebElement, user_id: int = 
     """Open LinkedIn's "Say congrats" composer for this card, read the message it pre-drafted, and
     close it WITHOUT sending. We never type into the box and never click a send/submit control, so the
     worst case is an opened-and-dismissed overlay. Best-effort: any miss returns '' and the caller
-    falls back to the per-milestone default."""
+    falls back to the per-milestone default.
+    """
     if not CATCHUP_HARVEST_LINKEDIN_DRAFT:
         return ""
     trigger = _first_in_card(card, _CATCHUP_MESSAGE_TRIGGER_LOCATORS)
@@ -8188,7 +8683,8 @@ def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: i
     entry per card, deduped by profile+text. Classification happens here so LinkedIn's pre-drafted
     message is only harvested for moments the user actually congratulates (`enabled_event_types`);
     pass None to skip harvesting entirely. Best-effort by design: a selector miss returns fewer moments
-    (logged) rather than failing the run."""
+    (logged) rather than failing the run.
+    """
     driver.get(CATCHUP_URL)
     time.sleep(random.uniform(3, 5))
 
@@ -8263,7 +8759,8 @@ def _catchup_name_from_card(text: str, link) -> str:
     The profile link wraps the WHOLE card on the current surface, so its text is not a name — taking
     it verbatim put 'Jay Bailey Completed 5 years at Emory Un…' in the UI and in every downstream
     greeting (issue #1030). The name is what precedes the milestone phrase; when nothing looks like
-    one, the profile slug is the fallback, because a wrong name is worse than a plain one."""
+    one, the profile slug is the fallback, because a wrong name is worse than a plain one.
+    """
     try:
         raw = (getText(link) or "").strip().split("\n")[0]
     except (StaleElementReferenceException, NoSuchElementException):
@@ -8288,7 +8785,8 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
     'linkedin' (default): LinkedIn's OWN pre-drafted response — the suggestion it renders on the card
     or pre-fills in its composer — falling back to the matching plain one-liner when the feed gave us
     none. No LLM call. 'ai': the user's DM template refined to their voice (returns None when they
-    deactivated the template for that event type)."""
+    deactivated the template for that event type).
+    """
     first_name = (moment.get("name") or "").strip().split(" ")[0] or "there"
     if source != "ai":
         suggested = _clean_suggested_message(moment.get("suggested_message") or "")
@@ -8313,7 +8811,8 @@ _CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STA
 def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> None:
     """Ship ONE catch-up run report (issue #792) and log the same line locally. `user_id` is None for
     the fleet-wide beat dispatchers. Best-effort: a telemetry outage must never fail a scan that
-    otherwise worked."""
+    otherwise worked.
+    """
     summary = ", ".join(f"{k}={report[k]}" for k in
                         ("moments", "classified", "enabled_type", "excluded", "duplicate",
                          "below_bar", "drafted", "dispatched", "capped", "inactive", "pending",
@@ -8343,7 +8842,8 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     LinkedIn's own pre-drafted response unless the user opted into catchup_message_source='ai'.
 
     EVERY run reports (issue #792) — including the ones that draft nothing — with the per-stage
-    funnel counts, because a quiet lane and a broken one are otherwise the same silence."""
+    funnel counts, because a quiet lane and a broken one are otherwise the same silence.
+    """
     task_name = "automate_catchup_touches"
     prefs = get_engagement_preferences(user_id)
     enabled = {str(t) for t in (prefs.get("catchup_event_types") or [])}
@@ -8449,7 +8949,8 @@ def send_catchup_touch(self, touch_id: int):
 
     EVERY outcome reports (issue #792). A deferral puts the touch back to 'approved' and the drip
     re-dispatches it 20 minutes later, so without this the send phase's `dispatched` count climbs all
-    day on a lane that has never delivered a single message — which IS the reported symptom."""
+    day on a lane that has never delivered a single message — which IS the reported symptom.
+    """
     task_name = "send_catchup_touch"
 
     def _report(status: str, user_id: Optional[int]) -> None:
@@ -8505,7 +9006,8 @@ def _schedule_catchup_followup(user_id: int, profile_url: str, first_name: str, 
     — the out-of-the-box case, since the catch-up defaults only cover step 0 — a high-value milestone
     STILL needs the row, because the reply check it drives is what routes a replying prospect into the
     outreach funnel (#482, step 5). With no template build_dm_from_template returns None, so that row
-    only ever checks for a reply and is then stopped; it can never send an extra DM."""
+    only ever checks for a reply and is then stopped; it can never send an extra DM.
+    """
     try:
         if get_dm_template(user_id, event_type, 1):
             enqueue_next_followup(user_id, profile_url, first_name, event_type, 0)
@@ -8523,7 +9025,8 @@ def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
     """A reply to a new-job/promotion congratulations is the opening of a real conversation — drop that
     prospect into the comment-first outreach funnel at the DM stage as 'pending' so the operator can
     nurture it toward a BD conversation (issue #482, step 5). Approval-gated like every funnel stage,
-    and never duplicates a target already in the funnel. Best-effort: never breaks the follow-up loop."""
+    and never duplicates a target already in the funnel. Best-effort: never breaks the follow-up loop.
+    """
     event_type = str(followup.get("event_type") or "")
     if event_type not in _CATCHUP_HIGH_VALUE_EVENTS:
         return
@@ -8543,6 +9046,12 @@ def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
 
 
 def final_method(drivers: List[WebDriver]):
+    """Legacy shutdown from the pre-Celery script era: stop the threads, quit every driver, EXIT.
+
+    It ends with `sys.exit(0)`, so it never returns to its caller — which is why nothing on the
+    Celery path calls it, and why nothing should: killing the interpreter inside a worker takes
+    every other task in that process with it. Tasks quit their own driver in a `finally` instead.
+    """
     global stop_all_thread
     stop_all_thread.set()  # Set the flag to stop other threads
     for driver in drivers: quit_gracefully(driver)  # Quit all the drivers
@@ -8553,6 +9062,15 @@ def final_method(drivers: List[WebDriver]):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='1/m', queue='se_outreach')
 def update_stale_profile(self, user_id: int):
+    """Re-scrape the user's OWN LinkedIn profile and refresh the voice synthesis distilled from it.
+
+    The scrape is a side effect of `get_current_profile`; the session is closed immediately because
+    nothing else here needs a browser, and a Selenium slot held past its use is one an engagement
+    lane wanted. A login failure returns a message string rather than raising, so one user's broken
+    session shows up in that task's result instead of as a worker exception.
+
+    The synthesis refresh is best-effort and never fails a scrape that already succeeded.
+    """
     myprint(f"Updating Stale Profile. User ID: {user_id}")
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Update Stale Profile")
@@ -8583,8 +9101,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     rate_limit.is_measurement_paused.
 
     `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
-    back to the normal pool when the node is busy or absent."""
-
+    back to the normal pool when the node is busy or absent.
+    """
     myprint("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
@@ -8655,7 +9173,8 @@ def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
 
     Non-affiliate posts (virtually all of them) never touch a disclosure requirement, and any
     unexpected failure here publishes: this is a compliance check on a rare shape of post, not a new
-    way for the whole posting path to break."""
+    way for the whole posting path to break.
+    """
     try:
         from cqc_lem.utilities.marketing.affiliate import disclosure_report
         graded = "\n".join([content or "", *(first_comment_links or [])])
@@ -8678,8 +9197,7 @@ def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
     insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.FAILURE,
                    post_id=post_id, message=message)
     try:
-        from cqc_lem.utilities.observability import (AFFILIATE_DISCLOSURE_BLOCKED,
-                                                     track_affiliate_event)
+        from cqc_lem.utilities.observability import AFFILIATE_DISCLOSURE_BLOCKED, track_affiliate_event
         track_affiliate_event(AFFILIATE_DISCLOSURE_BLOCKED, user_id=user_id, post_id=post_id,
                               reason=reason)
     except Exception as e:
@@ -8691,7 +9209,6 @@ def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
                   rate_limit='2/m')
 def post_to_linkedin(self, user_id: int, post_id: int):
     """Posts to LinkedIn using the LinkedIn API - https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/share-on-linkedin#creating-a-share-on-linkedin"""
-
     task_id = f"{self.request.id}-{user_id}-{post_id}"
     myprint(f"Post To LinkedIn | Task ID: {task_id}")
 
@@ -8876,7 +9393,8 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
     The budget is decided BEFORE a browser session is opened: on most days the allowance is zero
     (rest day, budget already spent, single-digit cap already reached) and a Chrome slot spent to
     discover that is a slot an engagement lane needed. A paused account stands down here too — page
-    invites are discretionary amplification, never a response owed to someone."""
+    invites are discretionary amplification, never a response owed to someone.
+    """
     task_name = "automate_invites_to_company_page_for_user"
 
     if is_automation_paused():

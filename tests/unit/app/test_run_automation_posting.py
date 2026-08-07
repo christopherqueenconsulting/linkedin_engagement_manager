@@ -1,9 +1,9 @@
 """Unit tests for post_to_linkedin task — post-type branching."""
 
-import pytest
 from contextlib import ExitStack
 from unittest.mock import patch
 
+import pytest
 
 BASE_PATCHES = [
     ("cqc_lem.app.run_automation.get_post_status", {"return_value": "approved"}),
@@ -23,8 +23,8 @@ BASE_PATCHES = [
 class TestPostToLinkedinTypeBranching:
 
     def test_text_post_calls_share_on_linkedin(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -45,8 +45,8 @@ class TestPostToLinkedinTypeBranching:
             mock_carousel.assert_not_called()
 
     def test_text_post_attaches_its_generated_image(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -66,9 +66,10 @@ class TestPostToLinkedinTypeBranching:
     def test_success_log_stores_actual_post_content_not_status_string(self):
         """Regression: the POST success log must store the real post body — seed comments and
         thread replies read it back to ground the AI. Storing a status string made the model
-        write comments about the /posts API instead of the post's subject."""
-        from cqc_lem.utilities.db import PostType, LogActionType, LogResultType
+        write comments about the /posts API instead of the post's subject.
+        """
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import LogActionType, LogResultType, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -89,8 +90,8 @@ class TestPostToLinkedinTypeBranching:
             assert post_logs[0].kwargs["message"] == "Post text"
 
     def test_video_post_calls_share_on_linkedin_with_url(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -112,8 +113,8 @@ class TestPostToLinkedinTypeBranching:
             mock_carousel.assert_not_called()
 
     def test_carousel_post_calls_share_carousel_on_linkedin(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         slides = ["Slide one", "Slide two"]
         with ExitStack() as stack:
@@ -134,8 +135,8 @@ class TestPostToLinkedinTypeBranching:
             mock_share.assert_not_called()
 
     def test_event_mode_schedules_golden_hour_amplifier_sweeps(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -160,8 +161,8 @@ class TestPostToLinkedinTypeBranching:
                 assert c.kwargs["kwargs"]["user_id"] == 1
 
     def test_scheduled_and_off_modes_schedule_no_per_post_sweep(self):
-        from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostType
 
         for mode in ("scheduled", "off"):
             with ExitStack() as stack:
@@ -194,9 +195,10 @@ class TestPostToLinkedinTypeBranching:
 
     def test_carousel_without_real_images_flags_error_and_does_not_post(self):
         """Prod incident: a carousel with no real slide images must be flagged 'error'
-        (not posted with placeholder images)."""
-        from cqc_lem.utilities.db import PostType, PostStatus
+        (not posted with placeholder images).
+        """
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
@@ -217,8 +219,8 @@ class TestPostToLinkedinTypeBranching:
 
     def test_carousel_with_no_slides_flags_error(self):
         """Empty slides → don't even call the poster; flag 'error'."""
-        from cqc_lem.utilities.db import PostType, PostStatus
         from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:

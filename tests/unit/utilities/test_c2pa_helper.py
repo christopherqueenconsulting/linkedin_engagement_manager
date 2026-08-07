@@ -1,7 +1,8 @@
 """Unit tests for best-effort C2PA provenance helper."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 pytestmark = pytest.mark.unit
 

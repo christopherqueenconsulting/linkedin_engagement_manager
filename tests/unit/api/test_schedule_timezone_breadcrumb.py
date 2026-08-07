@@ -7,8 +7,9 @@ ET and published at 5am ET, and the only evidence was the wrong publish time. Th
 interpreted as UTC (legacy callers depend on it); we just refuse to do it silently.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +42,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -56,6 +58,7 @@ def _warned(mock_warn) -> bool:
 class TestWarnIfNaiveSchedule:
     def test_helper_is_quiet_for_an_aware_datetime(self):
         from datetime import datetime, timezone
+
         from cqc_lem.api.main import _warn_if_naive_schedule
         with patch(f"{_MAIN}.log_warning") as warn:
             _warn_if_naive_schedule(datetime(2026, 7, 28, 13, tzinfo=timezone.utc), "/x/")
@@ -69,6 +72,7 @@ class TestWarnIfNaiveSchedule:
 
     def test_helper_warns_for_a_naive_datetime(self):
         from datetime import datetime
+
         from cqc_lem.api.main import _warn_if_naive_schedule
         with patch(f"{_MAIN}.log_warning") as warn:
             _warn_if_naive_schedule(datetime(2026, 7, 28, 9), "/x/", user_id=7)

@@ -1,6 +1,7 @@
 """Unit tests for the analytics-coverage reads behind issue #809 — why the Engagement Analytics
 panel measures a SUBSET of the account, and the backfill that stops older posts being unmeasurable
-forever."""
+forever.
+"""
 
 import mysql.connector
 import pytest
@@ -50,7 +51,8 @@ class TestGetUncapturedPostedPostIds:
 
     def test_only_offers_posts_that_have_a_logged_permalink(self, mock_database_connection):
         """A post the sweep can't open never gains a stat row, so it would sit at the head of this
-        capped list forever and starve every post behind it."""
+        capped list forever and starve every post behind it.
+        """
         cursor = mock_database_connection["cursor"]
         cursor.fetchall.return_value = []
         from cqc_lem.utilities.db import get_uncaptured_posted_post_ids

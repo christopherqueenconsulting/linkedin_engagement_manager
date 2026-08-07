@@ -1,10 +1,12 @@
 """Unit tests for the target-creator engagement roster (issue #616): 50/30/20 selection, the
-per-author weekly cap, the on-topic gate, and the roster-vs-feed funnel diagnostics."""
+per-author weekly cap, the on-topic gate, and the roster-vs-feed funnel diagnostics.
+"""
 
-import pytest
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
-from contextlib import ExitStack
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -151,7 +153,8 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
     `card=False` makes every item render WITHOUT a comment affordance — the restricted-comments
     signature #962 detects. `follow_budget`/`follow_outcome` drive the opt-in auto-follow lane;
     `follow_on` overrides the toggle so the budget gate and the toggle can be tested apart.
-    `blocked_connect` is the connect state the blocked-visit write reports back (#979)."""
+    `blocked_connect` is the connect state the blocked-visit write reports back (#979).
+    """
     from cqc_lem.app import run_automation as ra
     from cqc_lem.utilities.db import BlockedVisit, ConnectStatus
 
@@ -275,9 +278,11 @@ class TestCommentOnRosterPosts:
     def test_a_session_quit_out_from_under_the_walk_stops_it_without_warning(self):
         """Issue #988: a deploy quits the browser once the drain window is spent. Every remaining
         target is unreachable for that same reason, so warning per target would escalate into a
-        filed defect for a routine release — the walk stops at INFO on what already shipped."""
-        from cqc_lem.app import run_automation as ra
+        filed defect for a routine release — the walk stops at INFO on what already shipped.
+        """
         from selenium.common import InvalidSessionIdException
+
+        from cqc_lem.app import run_automation as ra
         driver = MagicMock()
         driver.get.side_effect = InvalidSessionIdException("Unable to find session with ID: abc")
         with ExitStack() as es:
@@ -299,7 +304,8 @@ class TestCommentOnRosterPosts:
 
 def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=True):
     """Drive comment_on_feed_inline end-to-end with the roster pass stubbed, so the assertions are
-    about the feed walk's on-topic gate and the merged funnel."""
+    about the feed walk's on-topic gate and the merged funnel.
+    """
     from cqc_lem.app import run_automation as ra
 
     driver = MagicMock()
@@ -604,7 +610,8 @@ def _follow_env(state_before, state_after=None, hold="", flip_on_attempt=None):
     """Patch stack for auto_follow_roster_target: the resolver returns `state_before`, then
     `state_after` on every post-click re-read — the verification POLLS, so the after-state has to
     answer more than once. `flip_on_attempt` makes it read 'following' only from that poll onward,
-    which is the render race the polling exists for."""
+    which is the render race the polling exists for.
+    """
     es = ExitStack()
     p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
     control = MagicMock()
@@ -719,7 +726,8 @@ class TestOutboundHoldReason:
 
 class TestResolveFollowControl:
     """The live probe for PR #963 showed the resolver MUST anchor on the page owner's name — the
-    only stable discriminator between the top-card control and a feed card author's Follow."""
+    only stable discriminator between the top-card control and a feed card author's Follow.
+    """
 
     _URL = "https://www.linkedin.com/in/arvidkahl/"
 
@@ -1191,7 +1199,8 @@ class TestResolveConnectState:
 class TestConnectStateShortenedLabels:
     """The reading itself only runs in a real browser, so what a unit test can hold is the two
     invariants that make the shortened-label path safe. Both exist because the live run grounded
-    "Message Harshal" — a first name, not the display name the strict matcher wanted."""
+    "Message Harshal" — a first name, not the display name the strict matcher wanted.
+    """
 
     def test_a_shortened_label_is_read_only_inside_the_owner_card(self):
         from cqc_lem.app.run_automation import _CONNECT_STATE_JS
@@ -1213,7 +1222,8 @@ class TestALandedCommentStandsTheRungDown:
     """The seam between the comment walk and the connect rung. `record_target_engagement` stands a
     pending escalation down in the DB, but the rung reads the row the run loaded BEFORE the comment
     landed — so without the in-memory stand-down the same pass would invite an account it had just
-    successfully commented on, and burn that target's one shot forever."""
+    successfully commented on, and burn that target's one shot forever.
+    """
 
     def _walk(self, engaged: bool):
         from cqc_lem.app import run_automation as ra

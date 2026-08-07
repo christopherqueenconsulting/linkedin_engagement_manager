@@ -1,8 +1,9 @@
 """Unit tests for get_dashboard_counts (SQL-aggregate dashboard stats)."""
 
 import datetime
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

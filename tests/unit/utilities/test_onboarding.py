@@ -1,10 +1,11 @@
 """Unit tests for the activation checklist + stalled-user nudges (issue #500):
-step derivation, one-shot state persistence + PostHog emission, and the pure nudge selector."""
+step derivation, one-shot state persistence + PostHog emission, and the pure nudge selector.
+"""
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -28,20 +29,20 @@ class TestSelectNudge:
         assert select_nudge(_steps(), started_at=NOW - timedelta(hours=23), now=NOW) is None
 
     def test_connect_nudge_after_24h_without_a_session(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, select_nudge
         nudge = select_nudge(_steps(), started_at=NOW - timedelta(hours=25), now=NOW)
         assert nudge["key"] == NUDGE_CONNECT
         assert nudge["cta_path"] == "/account"
 
     def test_voice_nudge_after_48h_once_connected(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_VOICE
+        from cqc_lem.utilities.onboarding import NUDGE_VOICE, select_nudge
         steps = _steps(linkedin_connected=True)
         assert select_nudge(steps, started_at=NOW - timedelta(hours=47), now=NOW) is None
         nudge = select_nudge(steps, started_at=NOW - timedelta(hours=49), now=NOW)
         assert nudge["key"] == NUDGE_VOICE
 
     def test_first_post_nudge_after_72h(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_FIRST_POST
+        from cqc_lem.utilities.onboarding import NUDGE_FIRST_POST, select_nudge
         steps = _steps(linkedin_connected=True, voice_set=True)
         assert select_nudge(steps, started_at=NOW - timedelta(hours=71), now=NOW) is None
         nudge = select_nudge(steps, started_at=NOW - timedelta(hours=73), now=NOW)
@@ -49,7 +50,7 @@ class TestSelectNudge:
 
     def test_earliest_incomplete_step_wins(self):
         """A user who set their voice but never connected still gets the connect nudge."""
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, select_nudge
         steps = _steps(voice_set=True, first_post_approved=True)
         nudge = select_nudge(steps, started_at=NOW - timedelta(days=5), now=NOW)
         assert nudge["key"] == NUDGE_CONNECT
@@ -61,7 +62,7 @@ class TestSelectNudge:
                             trial_ends_at=NOW + timedelta(days=1), now=NOW) is None
 
     def test_each_nudge_sends_only_once(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, select_nudge
         assert select_nudge(_steps(), started_at=NOW - timedelta(days=3),
                             sent_keys={NUDGE_CONNECT}, now=NOW) is None
 
@@ -71,14 +72,14 @@ class TestSelectNudge:
                             last_sent_at=NOW - timedelta(hours=2), now=NOW) is None
 
     def test_trial_ending_nudge_once_the_step_nudge_was_sent(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT, NUDGE_TRIAL_ENDING
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, NUDGE_TRIAL_ENDING, select_nudge
         nudge = select_nudge(_steps(), started_at=NOW - timedelta(days=11),
                              trial_ends_at=NOW + timedelta(days=2),
                              sent_keys={NUDGE_CONNECT}, now=NOW)
         assert nudge["key"] == NUDGE_TRIAL_ENDING
 
     def test_no_trial_nudge_when_the_trial_is_far_out_or_over(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, select_nudge
         sent = {NUDGE_CONNECT}
         started = NOW - timedelta(days=11)
         assert select_nudge(_steps(), started_at=started, trial_ends_at=NOW + timedelta(days=5),
@@ -93,13 +94,14 @@ class TestSelectNudge:
 
 class TestStoryBankNudge:
     """The story-bank seeding nudge (issue #620) — fires once the voice is set and the bank is
-    still under the target, behind the blocking setup steps but ahead of the trial warning."""
+    still under the target, behind the blocking setup steps but ahead of the trial warning.
+    """
 
     _DONE = dict(linkedin_connected=True, voice_set=True, first_post_approved=True,
                  caps_enabled=True)
 
     def test_fires_for_an_empty_bank_after_the_grace_period(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_STORY_BANK
+        from cqc_lem.utilities.onboarding import NUDGE_STORY_BANK, select_nudge
         nudge = select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(hours=49),
                              story_bank_count=0, now=NOW)
         assert nudge["key"] == NUDGE_STORY_BANK
@@ -111,7 +113,7 @@ class TestStoryBankNudge:
                             story_bank_count=0, now=NOW) is None
 
     def test_a_seeded_bank_is_not_nudged(self):
-        from cqc_lem.utilities.onboarding import select_nudge, STORY_BANK_TARGET_ENTRIES
+        from cqc_lem.utilities.onboarding import STORY_BANK_TARGET_ENTRIES, select_nudge
         assert select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
                             story_bank_count=STORY_BANK_TARGET_ENTRIES, now=NOW) is None
 
@@ -121,7 +123,7 @@ class TestStoryBankNudge:
                             story_bank_count=None, now=NOW) is None
 
     def test_waits_until_the_voice_is_set(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT, NUDGE_VOICE
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, NUDGE_VOICE, select_nudge
         # Voice still unset: the voice STEP nudge wins, and once that has been sent the story bank
         # still waits rather than jumping the queue.
         steps = _steps(linkedin_connected=True)
@@ -131,12 +133,12 @@ class TestStoryBankNudge:
                             sent_keys={NUDGE_CONNECT, NUDGE_VOICE}, now=NOW) is None
 
     def test_sends_only_once(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_STORY_BANK
+        from cqc_lem.utilities.onboarding import NUDGE_STORY_BANK, select_nudge
         assert select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
                             story_bank_count=0, sent_keys={NUDGE_STORY_BANK}, now=NOW) is None
 
     def test_ranks_ahead_of_the_trial_warning(self):
-        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_STORY_BANK
+        from cqc_lem.utilities.onboarding import NUDGE_STORY_BANK, select_nudge
         nudge = select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
                              trial_ends_at=NOW + timedelta(days=1), story_bank_count=0, now=NOW)
         assert nudge["key"] == NUDGE_STORY_BANK
@@ -262,7 +264,7 @@ class TestSyncOnboardingState:
 
 class TestNextNudgeForUser:
     def test_reads_persisted_steps_sent_ledger_and_trial(self):
-        from cqc_lem.utilities.onboarding import next_nudge_for_user, NUDGE_CONNECT
+        from cqc_lem.utilities.onboarding import NUDGE_CONNECT, next_nudge_for_user
         state = {"started_at": datetime.now() - timedelta(days=2)}
         with patch(f"{_ON}.get_onboarding_nudges_sent", return_value={}), \
              patch(f"{_ON}.get_user_subscription_info", return_value={"trial_ends_at": None}):
@@ -292,7 +294,7 @@ class TestSnapshotAndSend:
         assert snap["steps"][0]["ok"] is True and snap["steps"][1]["ok"] is False
 
     def test_send_uses_llm_copy_and_records_the_nudge(self):
-        from cqc_lem.utilities.onboarding import send_onboarding_nudge, _STEP_NUDGES
+        from cqc_lem.utilities.onboarding import _STEP_NUDGES, send_onboarding_nudge
         nudge = dict(_STEP_NUDGES[0])
         with patch("cqc_lem.utilities.ai.ai_helper.generate_onboarding_nudge_copy",
                    return_value="Fresh copy."), \
@@ -304,7 +306,7 @@ class TestSnapshotAndSend:
         record.assert_called_once_with(9, nudge["key"])
 
     def test_send_falls_back_to_default_copy_when_the_llm_fails(self):
-        from cqc_lem.utilities.onboarding import send_onboarding_nudge, _STEP_NUDGES
+        from cqc_lem.utilities.onboarding import _STEP_NUDGES, send_onboarding_nudge
         nudge = dict(_STEP_NUDGES[0])
         with patch("cqc_lem.utilities.ai.ai_helper.generate_onboarding_nudge_copy",
                    side_effect=RuntimeError("llm down")), \
@@ -315,7 +317,7 @@ class TestSnapshotAndSend:
         assert notify.call_args.args[1]["body"] == nudge["body"]
 
     def test_nothing_is_recorded_when_the_email_fails(self):
-        from cqc_lem.utilities.onboarding import send_onboarding_nudge, _STEP_NUDGES
+        from cqc_lem.utilities.onboarding import _STEP_NUDGES, send_onboarding_nudge
         with patch("cqc_lem.utilities.ai.ai_helper.generate_onboarding_nudge_copy",
                    return_value="Fresh copy."), \
              patch("cqc_lem.utilities.notifications.notify_onboarding_nudge", return_value=False), \

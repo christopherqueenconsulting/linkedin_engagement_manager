@@ -1,9 +1,9 @@
 """Unit tests for the early-adopter extended-trial DB layer (issue #499)."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

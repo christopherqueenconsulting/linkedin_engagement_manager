@@ -51,13 +51,28 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from cqc_lem.utilities.db import (
-    AUTH_FACTOR_PASSKEY, AUTH_FACTOR_TOTP, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_RECOVERY,
-    confirm_totp_factor, consume_recovery_code, count_auth_factors, count_recovery_codes,
-    get_session_auth_state, get_totp_factor, get_unused_recovery_codes, list_auth_factors,
-    mark_session_verified, replace_recovery_codes, update_factor_counter, upsert_totp_factor,
+    AUTH_FACTOR_PASSKEY,
+    AUTH_FACTOR_TOTP,
+    SESSION_SCOPE_EXTENSION,
+    SESSION_SCOPE_RECOVERY,
+    confirm_totp_factor,
+    consume_recovery_code,
+    count_auth_factors,
+    count_recovery_codes,
+    get_session_auth_state,
+    get_totp_factor,
+    get_unused_recovery_codes,
+    list_auth_factors,
+    mark_session_verified,
+    replace_recovery_codes,
+    update_factor_counter,
+    upsert_totp_factor,
 )
 from cqc_lem.utilities.env_constants import (
-    RECOVERY_CODE_COUNT, STEP_UP_MAX_AGE_MINUTES, STRONG_AUTH_ENABLED, WEBAUTHN_RP_NAME,
+    RECOVERY_CODE_COUNT,
+    STEP_UP_MAX_AGE_MINUTES,
+    STRONG_AUTH_ENABLED,
+    WEBAUTHN_RP_NAME,
 )
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
@@ -73,6 +88,12 @@ _hasher = PasswordHasher()
 
 
 def strong_auth_enabled() -> bool:
+    """The 2c master switch.
+
+    Off, every question in this module answers as it did under 2b — no account holds a strong
+    factor, no login is offered one, and the step-up gate lets everything through — WITHOUT touching
+    an enrolled factor, so flipping it back restores the same state.
+    """
     return bool(STRONG_AUTH_ENABLED)
 
 
@@ -81,7 +102,8 @@ def has_strong_factor(user_id: int) -> bool:
 
     Recovery codes deliberately do not count. They are the way back in when every factor is gone,
     so treating them as a factor would mean a user who saved codes and enrolled nothing else had
-    their email PIN demoted with nothing to replace it."""
+    their email PIN demoted with nothing to replace it.
+    """
     if not strong_auth_enabled():
         return False
     return count_auth_factors(user_id) > 0
@@ -98,7 +120,8 @@ def available_methods(user_id: int) -> list[str]:
     something in it. The difference is the one case they exist for: a deployment that loses its
     secure public origin drops `passkey` from the list, and an account whose only factor is a
     passkey would otherwise be offered nothing at all — a demoted PIN and no way to finish it is a
-    total lockout, which is precisely what the sheet of codes is supposed to prevent."""
+    total lockout, which is precisely what the sheet of codes is supposed to prevent.
+    """
     if not strong_auth_enabled():
         return []
     methods: list[str] = []
@@ -140,7 +163,8 @@ def strong_factor_deadline() -> Optional[datetime]:
     timestamp is accepted for a deployment that wants to land the cutover mid-day. An UNPARSEABLE
     value is treated as unset and WARNS: the alternative is forcing every user in the deployment
     into enrolment over a typo, and a warning that repeats is exactly how a misconfiguration this
-    quiet gets noticed (see the escalation contract in utilities/CLAUDE.md)."""
+    quiet gets noticed (see the escalation contract in utilities/CLAUDE.md).
+    """
     raw = (os.environ.get(REQUIRE_STRONG_FACTOR_AFTER_VAR) or "").strip()
     if not raw:
         return None
@@ -163,7 +187,8 @@ def enrollment_hold_active() -> bool:
     Every read of an `enroll`-scoped session goes through this, not just the login that minted it,
     so the two ways to call the rollout off — clearing `REQUIRE_STRONG_FACTOR_AFTER` or pushing it
     forward, and `STRONG_AUTH_ENABLED=false` — release everyone already held instead of stranding
-    them until their session expires."""
+    them until their session expires.
+    """
     if not strong_auth_enabled():
         return False
     deadline = strong_factor_deadline()
@@ -180,7 +205,8 @@ def enrollment_required(user_id: int) -> bool:
     passes mid-session does not eject someone in the middle of their work.
 
     This is a hold, never a lockout. The email PIN still signs the account in; what it no longer
-    does is hand over a session that can reach anything but the enrolment surface."""
+    does is hand over a session that can reach anything but the enrolment surface.
+    """
     if not enrollment_hold_active():
         return False
     return not has_strong_factor(user_id)
@@ -189,7 +215,8 @@ def enrollment_required(user_id: int) -> bool:
 def strong_factor_prompt_due(user_id: int) -> bool:
     """Should the SPA show the pre-deadline nudge? A deadline is scheduled (past OR future) and this
     account still holds nothing — enrolling is what makes it go away, so it cannot be dismissed into
-    meeting the deadline cold."""
+    meeting the deadline cold.
+    """
     if not strong_auth_enabled() or strong_factor_deadline() is None:
         return False
     return not has_strong_factor(user_id)
@@ -197,6 +224,15 @@ def strong_factor_prompt_due(user_id: int) -> bool:
 
 @dataclass(frozen=True)
 class FactorSummary:
+    """What the Security card is allowed to know about an account's factors.
+
+    Only non-secret metadata: an id, kind, label and timestamps per factor — never a public key,
+    never a TOTP secret, never a recovery code, which are counted (`recovery_unused` of
+    `recovery_total`) rather than listed. `has_strong_factor` and `pin_is_bootstrap_only` are the
+    same answer under two names because they mean two different things to a reader: what the account
+    HOLDS, and what that did to the way they sign in.
+    """
+
     factors: list[dict]
     recovery_unused: int
     recovery_total: int
@@ -207,7 +243,8 @@ class FactorSummary:
 
 def factor_summary(user_id: int) -> FactorSummary:
     """Everything the Security card renders. `pin_is_bootstrap_only` is the state the user most
-    needs to see, because it is the one that changed how they sign in."""
+    needs to see, because it is the one that changed how they sign in.
+    """
     from cqc_lem.utilities.webauthn_util import passkeys_available
     unused, total = count_recovery_codes(user_id)
     factors = [{
@@ -235,7 +272,8 @@ def factor_summary(user_id: int) -> FactorSummary:
 def has_confirmed_totp(user_id: int) -> bool:
     """Whether an authenticator app is already enrolled. One per account: `get_totp_factor` reads
     the newest confirmed row, so a second one would be a factor that counts towards
-    `has_strong_factor` and shows on the Security card while none of its codes are ever checked."""
+    `has_strong_factor` and shows on the Security card while none of its codes are ever checked.
+    """
     return get_totp_factor(user_id) is not None
 
 
@@ -247,7 +285,8 @@ def begin_totp_enrollment(user_id: int, account_name: str) -> Optional[tuple[int
     step-up gated write) rather than ending up with two rows of which only the newer works.
 
     The QR is rendered in the browser from the URI: sending an image would put the seed through an
-    extra encoding for no benefit, and the URI is what every authenticator app accepts anyway."""
+    extra encoding for no benefit, and the URI is what every authenticator app accepts anyway.
+    """
     if has_confirmed_totp(user_id):
         log_debug("TOTP enrolment refused — one is already confirmed", user_id=user_id)
         return None
@@ -262,7 +301,8 @@ def begin_totp_enrollment(user_id: int, account_name: str) -> Optional[tuple[int
 
 def confirm_totp_enrollment(user_id: int, code: str) -> bool:
     """Prove the seed. Reads the UNCONFIRMED row — `verify_totp_code` reads only confirmed ones, so
-    the two can never be used to bypass one another."""
+    the two can never be used to bypass one another.
+    """
     factor = get_totp_factor(user_id, confirmed_only=False)
     if not factor or factor.get("confirmed_at"):
         return False
@@ -281,7 +321,8 @@ def _match_totp_step(secret: str, code: str) -> Optional[int]:
 
     One step of drift either way (±30s) — enough for a phone whose clock is slightly off, small
     enough that the code a user reads is the code they type. `compare_digest` because a timing
-    oracle on a 6-digit space is a real one."""
+    oracle on a 6-digit space is a real one.
+    """
     cleaned = "".join((code or "").split())
     if not cleaned.isdigit():
         return None
@@ -300,7 +341,8 @@ def verify_totp_code(user_id: int, code: str) -> bool:
     The replay guard is the point: a code stays valid for up to 90 seconds across the drift window,
     which is ample time for a phishing proxy to relay it a second time. Accepting only a step
     STRICTLY LATER than the last one spent closes that — TOTP cannot be made phishing-resistant,
-    but it can be made single-use."""
+    but it can be made single-use.
+    """
     factor = get_totp_factor(user_id)
     if not factor:
         return False
@@ -320,7 +362,8 @@ def verify_totp_code(user_id: int, code: str) -> bool:
 
 def generate_recovery_codes(user_id: int) -> list[str]:
     """A fresh sheet, returned in the clear EXACTLY ONCE — the rows hold argon2id hashes, so
-    neither we nor a DB dump can ever show them again. Regenerating invalidates the old set."""
+    neither we nor a DB dump can ever show them again. Regenerating invalidates the old set.
+    """
     codes = ["".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(_RECOVERY_CODE_LENGTH))
              for _ in range(max(1, RECOVERY_CODE_COUNT))]
     if not replace_recovery_codes(user_id, [_hasher.hash(_normalize_recovery(c)) for c in codes]):
@@ -331,14 +374,16 @@ def generate_recovery_codes(user_id: int) -> list[str]:
 
 def _normalize_recovery(code: str) -> str:
     """Codes are shown grouped and typed back by hand: strip whitespace and dashes, upper-case.
-    Normalising BEFORE hashing means the same code entered either way matches its stored hash."""
+    Normalising BEFORE hashing means the same code entered either way matches its stored hash.
+    """
     return "".join((code or "").split()).replace("-", "").upper()
 
 
 def verify_recovery_code(user_id: int, code: str) -> bool:
     """Spend one recovery code. Every unused hash is checked because argon2 hashes carry their own
     salt — there is no way to look the code up. The `used_at IS NULL` UPDATE is what makes it
-    single-use even under two simultaneous attempts."""
+    single-use even under two simultaneous attempts.
+    """
     cleaned = _normalize_recovery(code)
     if not cleaned:
         return False
@@ -399,7 +444,8 @@ def session_signed_in_with_recovery_code(token: Optional[str]) -> bool:
     """Did this session get in with a recovery code? Marked at mint time (`sessions.scope`) rather
     than inferred, because the two things it decides — may this session enrol, and may enrolling
     step it up — both have to stay true for the whole life of the session, not just the request
-    that created it."""
+    that created it.
+    """
     if not token:
         return False
     state = get_session_auth_state(token)
@@ -419,7 +465,8 @@ def enrollment_allowed(user_id: int, token: Optional[str]) -> bool:
     exist: its owner lost the factor the gate would ask for (design §6.8). It gets to enrol; it
     does NOT get stamped for doing so (see the enrolment call sites), so a found sheet of codes
     still has to run one visible, audited step-up ceremony with the new factor before it can touch
-    a LinkedIn credential."""
+    a LinkedIn credential.
+    """
     if not strong_auth_enabled() or not has_strong_factor(user_id):
         return True
     if session_signed_in_with_recovery_code(token):

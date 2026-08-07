@@ -1,10 +1,14 @@
 from aws_cdk import (
-    aws_ecs as ecs,
-    aws_logs as logs,
-    aws_applicationautoscaling as appscaling,
     Duration,
+    RemovalPolicy,
+    Stack,
+    TimeZone,
+    aws_applicationautoscaling as appscaling,
+    aws_ec2 as ec2,
+    aws_ecs as ecs,
     aws_elasticloadbalancingv2 as elbv2,
-    aws_ec2 as ec2, Stack, RemovalPolicy, TimeZone, )
+    aws_logs as logs,
+)
 from constructs import Construct
 
 from cqc_lem.aws.cdk.shared_stack_props import SharedStackProps

@@ -38,7 +38,8 @@ def test_flag_assigned_arms_come_straight_from_the_registry(mod):
 
 def test_shipped_arms_are_derived_from_the_live_combo_matrix(mod):
     """The media experiment's arms are data, not registry text — derived from DEFAULT_COMBOS so they
-    cannot drift the first time a combo changes."""
+    cannot drift the first time a combo changes.
+    """
     spec = _spec(mod, "post-media-variant")
     arms = mod.variants_for(spec)
     assert arms[0] == spec.control
@@ -70,7 +71,8 @@ def test_the_remainder_is_parked_in_control_not_distributed(mod):
 
 def test_flag_payload_uses_a_property_free_release_condition(mod):
     """Local evaluation cannot resolve a condition that needs server-held person properties, and one
-    it cannot resolve makes every Celery worker silently read the control arm."""
+    it cannot resolve makes every Celery worker silently read the control arm.
+    """
     payload = mod.flag_payload(_spec(mod, "cost-routing-arm"))
     groups = payload["filters"]["groups"]
     assert groups == [{"properties": [], "rollout_percentage": 100}]
@@ -125,7 +127,8 @@ def test_plan_reactivates_a_disabled_flag(mod):
 
 def test_an_existing_rollout_is_never_planned_as_drift(mod):
     """PostHog owns the ramp once the experiment runs — an --apply that reset a 50% ramp to the
-    spec's 10% start would silently re-cohort a live experiment."""
+    spec's 10% start would silently re-cohort a live experiment.
+    """
     spec = _spec(mod, "cost-routing-arm")
     flags = {spec.key: {"id": 3, "active": True, "variants": mod.variants_for(spec)}}
     actions = mod.plan_actions([spec], flags, {spec.key: {"id": 9}})

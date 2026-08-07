@@ -12,7 +12,8 @@ _RA = "cqc_lem.app.run_automation"
 class TestDeleteExtraOwnComments:
     def _driver(self, counts, open_ok=True, delete_ok=True, confirm_ok=True):
         """A driver whose execute_script returns the queued values for the count JS in order, and
-        fixed truthy/falsy for the open/delete/confirm JS steps."""
+        fixed truthy/falsy for the open/delete/confirm JS steps.
+        """
         driver = MagicMock()
         count_iter = iter(counts)
 

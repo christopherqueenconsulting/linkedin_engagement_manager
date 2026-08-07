@@ -91,6 +91,13 @@ def _sign_best_effort(file_path: str) -> None:
 
 
 def sample_asset_url(relative_path: str, api_url: Optional[str] = None) -> str:
+    """Absolute URL the SPA renders a stored sample from.
+
+    ``relative_path`` has to be the `sample_relative_dir` shape — `/api/assets` resolves the name
+    against real directory entries under ``assets_dir`` and rejects separators and traversal, so an
+    absolute container path 404s. That route is unauthenticated by design (LinkedIn fetches
+    published media through it), which is why these previews need no credential to display.
+    """
     from cqc_lem.utilities.env_constants import API_URL_FINAL
     base = api_url or API_URL_FINAL
     return f"{base}/api/assets?file_name={relative_path}"

@@ -1,14 +1,22 @@
 """Unit tests for the Topic Authority (Topic DNA) governor (issue #384): the deterministic, NO-LLM
 scoring of how tightly a draft sits inside the user's niche (declared focus topics + profile
 headline/about), plus the profile-derived subject steering that keeps drafts on-niche. Off-niche
-drafts must score low; on-niche drafts must clear the threshold."""
+drafts must score low; on-niche drafts must clear the threshold.
+"""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from cqc_lem.utilities.ai.content_alignment import (
-    topic_authority_score, topic_authority_min, topic_dna_tokens, is_on_niche,
-    profile_topic_dna, profile_niche_anchors, select_focus_topic)
+    is_on_niche,
+    profile_niche_anchors,
+    profile_topic_dna,
+    select_focus_topic,
+    topic_authority_min,
+    topic_authority_score,
+    topic_dna_tokens,
+)
 
 pytestmark = pytest.mark.unit
 

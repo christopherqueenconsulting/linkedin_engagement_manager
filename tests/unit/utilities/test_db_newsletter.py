@@ -1,7 +1,8 @@
 """Unit tests for newsletter_settings DB helpers."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -56,8 +57,9 @@ class TestNewsletterDue:
     def test_returns_due_user_ids(self):
         conn, cur = _mock_conn(fetch_all=[(1,), (5,)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_newsletter_due_user_ids
             import datetime
+
+            from cqc_lem.utilities.db import get_newsletter_due_user_ids
             assert get_newsletter_due_user_ids(datetime.datetime(2026, 7, 4)) == [1, 5]
         assert "enabled=1" in cur.execute.call_args[0][0]
 
@@ -447,7 +449,7 @@ class TestNewsletterCoverSettings:
     def test_upsert_writes_the_flag_as_an_int(self):
         conn, cur = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_newsletter_settings, _NEWSLETTER_COLS
+            from cqc_lem.utilities.db import _NEWSLETTER_COLS, update_newsletter_settings
             update_newsletter_settings(1, {"cover_image_auto": True})
         sql, values = cur.execute.call_args[0]
         assert "cover_image_auto" in sql
@@ -489,8 +491,11 @@ class TestEditionCoverImage:
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (clear_edition_cover_image, set_edition_cover_image,
-                                              set_edition_cover_status)
+            from cqc_lem.utilities.db import (
+                clear_edition_cover_image,
+                set_edition_cover_image,
+                set_edition_cover_status,
+            )
             assert set_edition_cover_image(9, 3, "p", "ai", "pending_review") is False
             assert set_edition_cover_status(9, 3, "approved") is False
             assert clear_edition_cover_image(9, 3) is False
@@ -498,8 +503,7 @@ class TestEditionCoverImage:
     def test_reads_select_the_cover_columns(self):
         conn, cur = _mock_conn(fetch_row={"id": 9}, fetch_all=[{"id": 9}])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (get_newsletter_edition,
-                                              get_pending_newsletter_editions)
+            from cqc_lem.utilities.db import get_newsletter_edition, get_pending_newsletter_editions
             get_newsletter_edition(9)
             single_sql = cur.execute.call_args[0][0]
             get_pending_newsletter_editions(3)

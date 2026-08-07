@@ -1,5 +1,6 @@
 """Unit tests for scripts/check_claude_md_size.py — the pure size/threshold/
-baseline logic (issue #1000). Real I/O (git, $GITHUB_OUTPUT) is mocked."""
+baseline logic (issue #1000). Real I/O (git, $GITHUB_OUTPUT) is mocked.
+"""
 
 import importlib.util
 import pathlib

@@ -10,8 +10,9 @@ when the model list changes.
 """
 import json
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 def _write_probe_results(results: dict, dest_dir: str) -> str:

@@ -1,0 +1,111 @@
+name: Docstring & Lint Gate
+
+# The gate that decides whether a change meets the house code standard: ruff's E/F/I/T201 rules plus
+# Google-convention docstrings (`D`), configured in pyproject.toml.
+#
+# It is a SEPARATE workflow from `CI / Unit Tests` on purpose. The lint step inside the test workflow
+# runs with `continue-on-error: true`, so it reports green whatever it finds — that is how 24,584
+# line-too-long errors (ruff measuring against its 88-column default while the code is written to
+# 120) sat unnoticed and took every real violation down with them. A gate that cannot fail is not a
+# gate.
+#
+# ── It is a RATCHET, not a cliff ────────────────────────────────────────────────────────────────
+# The tree does not meet the standard yet (`.ruff-baseline` holds the count that remains). Failing
+# on any violation would fail every PR on debt it did not create, and — because
+# `docstring-lint-router.yml` labels a failing PR `agent:docfix`, which `tick.sh` services in a
+# PRIORITY lane ahead of all roadmap work — it would point every open PR at the same ~3,400-item
+# backlog, burn three Claude attempts each, and stall the pipeline behind a standard nobody had
+# finished adopting.
+#
+# So the gate fails on REGRESSION: more violations than the committed baseline. Each sweep PR lowers
+# the baseline; when it reaches 0 this becomes an ordinary zero-tolerance gate and the ratchet
+# machinery can be deleted. Lowering the baseline is the only way it moves — nothing raises it
+# without a human reading the diff.
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+
+jobs:
+  lint:
+    name: Docstring & Lint Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Poetry and dependencies
+        uses: ./.github/actions/poetry_setup
+        with:
+          python-version: "3.12"
+          install-args: --with lint
+
+      - name: Compare violations against the baseline
+        shell: bash
+        run: |
+          set -uo pipefail
+          BASELINE="$(tr -cd '0-9' < .ruff-baseline)"
+          : "${BASELINE:=0}"
+
+          # Ruff exits 0 (clean) or 1 (violations found). ANYTHING else — a bad config, a failed
+          # install, a panic — is the tool not answering, and must not be read as "no violations".
+          # Counting matched lines alone would do exactly that: stderr matches nothing, COUNT lands
+          # on 0, `0 -gt 3455` is false, and a broken run reports green. That is the fail-open this
+          # gate exists to end, so it is checked rather than assumed.
+          set +e
+          poetry run ruff check src/ tests/ --output-format=concise > /tmp/ruff.txt 2>&1
+          RUFF_RC=$?
+          set -e
+          if [ "$RUFF_RC" -gt 1 ]; then
+            echo "::error::ruff exited $RUFF_RC — the gate could not measure this tree."
+            sed -n '1,40p' /tmp/ruff.txt
+            exit 1
+          fi
+          COUNT="$(grep -cE '^[^ ].*:[0-9]+:[0-9]+: ' /tmp/ruff.txt || true)"
+          : "${COUNT:=0}"
+          # A clean exit must mean zero findings, and a dirty exit must mean at least one. If the
+          # two disagree, the output shape changed under us and the count is not trustworthy.
+          if { [ "$RUFF_RC" -eq 0 ] && [ "$COUNT" -ne 0 ]; } ||
+             { [ "$RUFF_RC" -eq 1 ] && [ "$COUNT" -eq 0 ]; }; then
+            echo "::error::ruff exit $RUFF_RC disagrees with $COUNT parsed finding(s) — refusing to grade."
+            sed -n '1,40p' /tmp/ruff.txt
+            exit 1
+          fi
+
+          echo "baseline=$BASELINE  current=$COUNT"
+          {
+            echo "## Docstring & Lint Gate"
+            echo
+            echo "| | count |"
+            echo "|---|---|"
+            echo "| baseline (\`.ruff-baseline\`) | $BASELINE |"
+            echo "| this branch | $COUNT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            {
+              echo
+              echo "**Failed:** this branch adds $((COUNT - BASELINE)) violation(s)."
+              echo
+              echo '```'
+              poetry run ruff check src/ tests/ --statistics 2>&1 | head -20 || true
+              echo '```'
+              echo
+              echo "Fix the mechanical ones with \`poetry run ruff check src/ tests/ --fix\`."
+              echo "**Never \`--unsafe-fixes\`** — see \`docs/docstring-standard.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Lint violations rose from $BASELINE to $COUNT."
+            exit 1
+          fi
+
+          if [ "$COUNT" -lt "$BASELINE" ]; then
+            {
+              echo
+              echo "This branch REMOVES $((BASELINE - COUNT)) violation(s). Ratchet \`.ruff-baseline\`"
+              echo "down to **$COUNT** in this PR so the gain cannot be given back."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Baseline can ratchet down to $COUNT (currently $BASELINE)."
+          fi

@@ -5,10 +5,10 @@ the plaintext — and that every read unseals it again, so the ten consuming mod
 """
 
 import base64
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
-from unittest.mock import patch
 
 from cqc_lem.utilities.crypto import decrypt_secret, encrypt_secret, is_encrypted
 from cqc_lem.utilities.db import (
@@ -69,7 +69,8 @@ class TestCookieWrites:
                                                                    mock_database_connection):
         """No user_id means no AAD to bind to, so the row would be written as PLAINTEXT — and
         get_cookies JOINs users, so nothing could ever read it back. A dead plaintext li_at that
-        the backfill can't see is strictly worse than no row at all."""
+        the backfill can't see is strictly worse than no row at all.
+        """
         cur = mock_database_connection["cursor"]
         cookie = {"name": "li_at", "value": LI_AT, "domain": ".linkedin.com", "path": "/",
                   "expiry": 123, "secure": True, "httpOnly": True}
@@ -83,7 +84,8 @@ class TestCookieWrites:
             self, keyed, mock_database_connection):
         """store_linkedin_li_at's True is what authorises deleting the user's stored LinkedIn
         password. _store_cookie_rows swallows per-row driver errors, so the failure has to travel
-        back out — otherwise a user loses the only login they had left."""
+        back out — otherwise a user loses the only login they had left.
+        """
         from cqc_lem.utilities.db import store_linkedin_li_at
 
         cur = mock_database_connection["cursor"]
@@ -165,7 +167,8 @@ class TestPassword:
     def test_has_password_is_a_presence_check_not_a_decrypt(self, keyed,
                                                             mock_database_connection):
         """An undecryptable row must still read as 'has a password' — otherwise a broken key
-        silently flips a required readiness item to not-ready."""
+        silently flips a required readiness item to not-ready.
+        """
         cur = mock_database_connection["cursor"]
         cur.fetchone.return_value = (1,)
         assert has_linkedin_password(5) is True
@@ -246,7 +249,8 @@ class TestOAuthTokens:
         """Without `id = LAST_INSERT_ID(id)`, MySQL's lastrowid on the ON DUPLICATE KEY UPDATE
         branch can be the auto-increment value burned by the failed insert — a row that does not
         exist. The tokens would then be sealed against that id and the UPDATE would touch nothing,
-        silently leaving the reconnecting user with no OAuth token at all."""
+        silently leaving the reconnecting user with no OAuth token at all.
+        """
         cur = mock_database_connection["cursor"]
         cur.lastrowid = 5
         add_user_with_access_token("existing@example.com", "sub", "a-tok", 3600)
@@ -317,7 +321,8 @@ class TestBackfillAndRotation:
     def test_undecryptable_row_is_counted_not_destroyed(self, keyed, mock_database_connection,
                                                         monkeypatch):
         """Overwriting it would burn a secret a corrected key could still recover. Here the row is
-        due for rotation (sealed under v1) but bound to the wrong user, so it cannot be unsealed."""
+        due for rotation (sealed under v1) but bound to the wrong user, so it cannot be unsealed.
+        """
         rows = [{"id": 1, "password": encrypt_secret("pw", 999, SECRET_FIELD_PASSWORD),
                  "access_token": None, "refresh_token": None}]
         monkeypatch.setenv("LEM_SECRET_KEY", base64.urlsafe_b64encode(b"N" * 32).decode())
@@ -350,7 +355,8 @@ class TestBackfillAndRotation:
                                                                mock_database_connection):
         """A cookie row with no user_id can be neither encrypted nor read, but it IS a plaintext
         session in every dump. If it didn't count, the operator would read 'nothing unprotected'
-        and flip ENCRYPTION_REQUIRED with live credentials still in the clear."""
+        and flip ENCRYPTION_REQUIRED with live credentials still in the clear.
+        """
         cur = mock_database_connection["cursor"]
         self._rows(cur, [], [], orphans=2)
         stats = encrypt_secrets_at_rest()

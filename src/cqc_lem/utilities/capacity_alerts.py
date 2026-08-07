@@ -84,7 +84,8 @@ GUARD_TEST = "tests/unit/app/test_selenium_capacity.py"
 
 def default_thresholds() -> dict:
     """Thresholds from the environment (`CAPACITY_*`). Every caller merges over this, so a test — or
-    a CLI run — can override one threshold without restating the rest."""
+    a CLI run — can override one threshold without restating the rest.
+    """
     return {
         "saturation_pct": CAPACITY_SATURATION_PCT,
         "sustained_pct": CAPACITY_SUSTAINED_PCT,
@@ -112,13 +113,15 @@ def _round(value: Optional[float], digits: int = 4) -> Optional[float]:
 
 def _severity(share: float, sustained_pct: float) -> str:
     """A breach on twice the sustained share is not a busy patch — the ceiling IS the operating
-    point, and work is late for a large fraction of the window."""
+    point, and work is late for a large fraction of the window.
+    """
     return SEVERITY_CRITICAL if share >= min(1.0, sustained_pct * 2) else SEVERITY_WARNING
 
 
 def _percentile(values: Sequence[float], pct: float) -> Optional[float]:
     """Nearest-rank percentile — no interpolation, so the reported number is one that was actually
-    measured (a real session wait, not an average of two)."""
+    measured (a real session wait, not an average of two).
+    """
     ordered = sorted(float(v) for v in values or [])
     if not ordered:
         return None
@@ -135,7 +138,8 @@ def evaluate_session_saturation(samples: Optional[Sequence[Mapping]],
     """Busy Chrome slots against `SE_NODE_MAX_SESSIONS`, over the sample window.
 
     Samples with no readable cap are dropped rather than counted as 0 busy — a Grid that was down for
-    an hour must not read as an hour of idle capacity."""
+    an hour must not read as an hour of idle capacity.
+    """
     usable = [s for s in (samples or [])
               if s and s.get("max_sessions") and s.get("busy_sessions") is not None]
     if len(usable) < max(min_samples, 1):
@@ -169,7 +173,8 @@ def evaluate_lane_backlog(samples: Optional[Sequence[Mapping]],
     """Per-lane queue depth — messages sitting in the broker because no lane slot is free.
 
     One alert per breaching lane: the fix is per-lane (`SELENIUM_CONCURRENCY` on THAT worker, plus
-    the cap in lockstep), so the alert has to say which one."""
+    the cap in lockstep), so the alert has to say which one.
+    """
     usable = [dict(s.get("queues") or {}) for s in (samples or []) if s and s.get("queues")]
     if len(usable) < max(min_samples, 1):
         return _check(CHECK_BACKLOG, STATUS_SKIPPED, samples=len(usable),
@@ -204,7 +209,8 @@ def evaluate_session_wait(waits: Optional[Sequence[float]],
 
     The most direct evidence that the cap is the binding constraint: a free slot answers in seconds,
     a full pool blocks the caller until one frees up. Judged on p95 rather than a share of breaches
-    because the tail IS the user-visible symptom — the one task that missed its window."""
+    because the tail IS the user-visible symptom — the one task that missed its window.
+    """
     values = [float(w) for w in (waits or []) if w is not None and float(w) >= 0]
     if len(values) < max(min_samples, 1):
         return _check(CHECK_SESSION_WAIT, STATUS_SKIPPED, samples=len(values),
@@ -234,7 +240,8 @@ def build_capacity_report(samples: Optional[Sequence[Mapping]], waits: Optional[
     """Run all three checks over one window and collect them into a report.
 
     `samples` is None (not []) when Redis was unreadable; both mean "no measurements", and every
-    check reports itself skipped rather than passing."""
+    check reports itself skipped rather than passing.
+    """
     limits = {**default_thresholds(), **(thresholds or {})}
     checks = [
         evaluate_session_saturation(samples, limits["saturation_pct"], limits["sustained_pct"],
@@ -296,7 +303,8 @@ def render_capacity_issue_body(report: Mapping) -> str:
 
     Deliberately NOT a fix proposal the pipeline can just apply — raising the cap spends real RAM on
     a shared box, which §5a/§5c say is a human decision. It gives the numbers, the invariant that
-    must survive the change, and the two real options."""
+    must survive the change, and the two real options.
+    """
     lanes = _breaching_lanes(report)
     lane_hint = (f"`{lanes[0]}`" if len(lanes) == 1
                  else ", ".join(f"`{lane}`" for lane in lanes) if lanes
@@ -306,7 +314,7 @@ def render_capacity_issue_body(report: Mapping) -> str:
     cap = saturation.get("max_sessions")
     cap_line = f"{cap}" if cap else "the configured cap"
     return "\n".join([
-        f"Auto-filed by the capacity monitor (`auto_capacity_watch`, issue #552). "
+        "Auto-filed by the capacity monitor (`auto_capacity_watch`, issue #552). "
         + f"Measured over {report.get('sample_count', 0)} sample(s)"
         + (f" (~{report['window_hours']:g}h)" if report.get("window_hours") else "") + ".",
         "",
@@ -373,7 +381,8 @@ def _pool_slots(nodes: Sequence[Mapping], debug_host: str = SELENIUM_DEBUG_NODE_
 
     Matching is on the node's advertised URI host (the overlay pins it with `SE_NODE_HOST`). A Grid
     that reports no such node — the standalone, or a box that never deployed the debug node — is
-    unchanged: nothing matches and every slot counts."""
+    unchanged: nothing matches and every slot counts.
+    """
     keep = []
     for node in nodes:
         uri = str(node.get("uri") or "")
@@ -385,7 +394,8 @@ def _pool_slots(nodes: Sequence[Mapping], debug_host: str = SELENIUM_DEBUG_NODE_
 
 def collect_selenium_capacity() -> Optional[dict]:
     """Busy vs total Chrome slots from the Grid `/status` endpoint. None when it is unreachable —
-    which the checks report as missing samples, never as an idle pool."""
+    which the checks report as missing samples, never as an idle pool.
+    """
     import requests
 
     url = f"http://{SELENIUM_HUB_HOST}:{SELENIUM_HUB_PORT}/status"
@@ -406,7 +416,8 @@ def collect_selenium_capacity() -> Optional[dict]:
 
 def collect_lane_depths() -> Optional[dict]:
     """Messages waiting in the broker per Selenium lane. This counts what has NOT yet been reserved
-    by a worker — exactly the backlog a lane's concurrency is failing to absorb."""
+    by a worker — exactly the backlog a lane's concurrency is failing to absorb.
+    """
     client = _redis()
     if client is None:
         return None
@@ -424,7 +435,8 @@ def collect_host_headroom() -> Optional[dict]:
     """Load average + available RAM straight from `/proc` — no new dependency.
 
     CONTEXT, never an alert: the host has never been the constraint (§1), but whether "raise the cap"
-    is even a safe answer depends on the RAM left, so the review issue has to carry it."""
+    is even a safe answer depends on the RAM left, so the review issue has to carry it.
+    """
     try:
         with open("/proc/loadavg") as handle:
             load1 = float(handle.read().split()[0])
@@ -442,7 +454,8 @@ def collect_host_headroom() -> Optional[dict]:
 
 def record_sample(now: Optional[datetime] = None) -> Optional[dict]:
     """Take one capacity sample and append it to the rolling window in Redis (trimmed to
-    `CAPACITY_WINDOW_SAMPLES`). Returns the sample, or None when nothing could be read/stored."""
+    `CAPACITY_WINDOW_SAMPLES`). Returns the sample, or None when nothing could be read/stored.
+    """
     capacity = collect_selenium_capacity()
     queues = collect_lane_depths()
     if capacity is None and queues is None:
@@ -463,7 +476,8 @@ def record_sample(now: Optional[datetime] = None) -> Optional[dict]:
 
 def record_session_wait(seconds: float) -> None:
     """Record how long ONE `get_docker_driver()` call waited for its Chrome session. Called from the
-    Selenium hot path, so it never raises and never blocks on a slow Redis (2s socket timeout)."""
+    Selenium hot path, so it never raises and never blocks on a slow Redis (2s socket timeout).
+    """
     try:
         client = _redis()
         if client is None:
@@ -496,10 +510,21 @@ def _load_json_list(key: str, limit: int) -> Optional[list]:
 
 
 def load_samples(limit: int = CAPACITY_WINDOW_SAMPLES) -> Optional[list]:
+    """Recent capacity samples, NEWEST first — the order `build_capacity_report` reads `host` in.
+
+    None means Redis could not be read; `[]` means nothing has been sampled yet. Both end as a
+    `skipped` check with a reason rather than a passing one, so missing history is never reported
+    as an all-clear.
+    """
     return _load_json_list(SAMPLES_KEY, limit)
 
 
 def load_waits(limit: int = WAIT_WINDOW_SAMPLES) -> Optional[list]:
+    """Recorded Chrome-session acquisition waits in SECONDS, newest first, None when unreadable.
+
+    A row with no `seconds` is dropped rather than read as zero: a malformed sample pulling the p95
+    down would hide exactly the queueing this check exists to expose.
+    """
     rows = _load_json_list(WAITS_KEY, limit)
     return None if rows is None else [row.get("seconds") for row in rows
                                       if row.get("seconds") is not None]
@@ -541,7 +566,8 @@ def find_open_capacity_issue(max_pages: int = ISSUE_LOOKUP_PAGES) -> Optional[di
     Matched on the TITLE marker and deliberately NOT filtered by label: a fine-grained PAT silently
     drops labels from the create payload (issue #598), and a lookup that can't find the issue it just
     filed would open a fresh one every 15 minutes. An issue a human renamed is treated as new —
-    better a second issue than a silent alert."""
+    better a second issue than a silent alert.
+    """
     from cqc_lem.utilities.feedback.issue_service import github_request
 
     for page in range(1, max(max_pages, 1) + 1):
@@ -559,7 +585,8 @@ def find_open_capacity_issue(max_pages: int = ISSUE_LOOKUP_PAGES) -> Optional[di
 def _apply_issue_labels(number: int) -> None:
     """Re-apply the labels after creation. A fine-grained PAT drops `labels` in the CREATE payload
     (issue #598) — and an unlabelled capacity issue never reaches the `needs-human` queue. Idempotent,
-    so it stays harmless once #598 fixes this at the source."""
+    so it stays harmless once #598 fixes this at the source.
+    """
     from cqc_lem.utilities.feedback.issue_service import github_request
 
     github_request("POST", f"issues/{int(number)}/labels", {"labels": list(ISSUE_LABELS)})
@@ -581,9 +608,12 @@ def file_capacity_issue(report: Mapping, now: Optional[datetime] = None) -> dict
 
     The cooldown is read off the issue's own `updated_at` rather than local state, so it holds across
     deploys and container restarts (and a human's comment counts as recent activity — they are
-    already looking at it)."""
+    already looking at it).
+    """
     from cqc_lem.utilities.feedback.issue_service import (
-        comment_on_issue, create_github_issue, github_token,
+        comment_on_issue,
+        create_github_issue,
+        github_token,
     )
 
     if not report.get("alerts"):
@@ -617,7 +647,8 @@ def file_capacity_issue(report: Mapping, now: Optional[datetime] = None) -> dict
 def send_capacity_alerts(report: Optional[Mapping] = None) -> dict:
     """Deliver breaches: a structured log line each (`log_error` for critical — the logger forwards
     those to PostHog), one `capacity_alert` PostHog event each, and the GitHub issue. Delivery
-    failures are logged, never raised: a beat run must not die over a GitHub hiccup."""
+    failures are logged, never raised: a beat run must not die over a GitHub hiccup.
+    """
     from cqc_lem.utilities.observability import track_capacity_alert
 
     report = report if report is not None else collect_capacity_report()
@@ -655,6 +686,13 @@ def send_capacity_alerts(report: Optional[Mapping] = None) -> dict:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point for the capacity monitor — exit 2 on a breach, 0 when clean.
+
+    The exit code is the machine-readable half, so a cron or CI caller can act without parsing
+    stdout; the rendered text (or `--json`) IS this command's product. Sampling and delivery are
+    both opt-in flags: run bare, it only READS the window, so an operator can look without writing
+    a sample or filing an issue.
+    """
     parser = argparse.ArgumentParser(description="LEM Selenium/lane capacity monitor")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--sample", action="store_true",

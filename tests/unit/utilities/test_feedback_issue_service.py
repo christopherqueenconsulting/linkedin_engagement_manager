@@ -5,8 +5,9 @@ body shape, Decision Comment shape) and the orchestrator with GitHub + DB + the 
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -40,7 +41,8 @@ def grant_enabled(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_transport_cool_off():
     """Issue #767: the unreachable cool-off is process-global by design, so one test's simulated
-    outage would silently short-circuit the next test's request."""
+    outage would silently short-circuit the next test's request.
+    """
     _mod()._unreachable_until = 0.0
     yield
     _mod()._unreachable_until = 0.0
@@ -48,7 +50,11 @@ def _clear_transport_cool_off():
 
 def _classification(**overrides):
     from cqc_lem.utilities.feedback.classifier import (
-        FeedbackCategory, FeedbackClassification, FeedbackRisk, FeedbackSeverity)
+        FeedbackCategory,
+        FeedbackClassification,
+        FeedbackRisk,
+        FeedbackSeverity,
+    )
     kwargs = {
         "category": FeedbackCategory.BUG,
         "severity": FeedbackSeverity.HIGH,
@@ -657,7 +663,8 @@ class TestGithubIO:
 class TestTransportFailures:
     """Issue #767: a DNS/connect blip is the network, not a defect in this loop. It is retried in
     place and reported ONCE as a WARNING (recurrence escalation decides whether it is a defect) —
-    an ERROR per lost request turned a 100ms outage into an auto-filed GitHub issue."""
+    an ERROR per lost request turned a 100ms outage into an auto-filed GitHub issue.
+    """
 
     def _response(self, status=200, payload=None):
         response = MagicMock(status_code=status, text="")
@@ -1021,7 +1028,8 @@ class TestFileFeedbackIssue:
 
         Both holds below exist because the batch pass runs unattended. Re-applying them to a row an
         admin explicitly approved returned 200 and left the row in `new`, so the panel re-rendered
-        it unchanged — indistinguishable from a dead button."""
+        it unchanged — indistinguishable from a dead button.
+        """
         svc = _mod()
         with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=99) as counter, \
                 patch(f"{_SVC}.classify_feedback", return_value=_classification()), \
@@ -1037,7 +1045,8 @@ class TestFileFeedbackIssue:
 
     def test_admin_approval_files_a_low_confidence_row_instead_of_re_queueing_it(self):
         """NEEDS_HUMAN means "a person should look at this first" — and one just did. Parking it
-        back in the queue the admin is standing in is a loop with no exit (issue #1036)."""
+        back in the queue the admin is standing in is a loop with no exit (issue #1036).
+        """
         svc = _mod()
         with patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
                 patch(f"{_SVC}.classify_feedback", return_value=_classification(confidence=0.2)), \
@@ -1058,7 +1067,8 @@ class TestFileFeedbackIssue:
         """A low-confidence verdict and NO verdict are different things. The fail-safe result
         carries the RAW report as its `summary` — filing it would publish the feedback text this
         module promises never reaches GitHub, and `issue_created` is terminal, so one LiteLLM blip
-        would spend the report on an issue nobody can re-approve (issue #1036)."""
+        would spend the report on an issue nobody can re-approve (issue #1036).
+        """
         svc = _mod()
         unclassified = _classification(confidence=0.0, title="comments break sometimes",
                                        summary="comments break sometimes and I have no idea why",
@@ -1080,7 +1090,8 @@ class TestFileFeedbackIssue:
 
     def test_admin_approval_still_respects_the_noise_and_faq_verdicts(self):
         """Those two DO settle the row, so the panel already shows the admin what happened — and
-        forcing an issue for something classified as noise is not what Approve is for."""
+        forcing an issue for something classified as noise is not what Approve is for.
+        """
         from cqc_lem.utilities.db import FeedbackStatus
         from cqc_lem.utilities.feedback.classifier import FeedbackCategory
         svc = _mod()
@@ -1156,7 +1167,8 @@ class TestProcessNewFeedback:
     def test_only_admin_rows_are_asked_for_and_the_backlog_is_reported(self):
         """Issue #793: the admin filter must be pushed into the query. Non-admin rows keep their
         new/NULL-cluster shape forever, so a caller-side skip would refill `limit` with the same
-        parked rows every pass and admin feedback would never be reached again."""
+        parked rows every pass and admin feedback would never be reached again.
+        """
         svc = _mod()
         rows = [{"id": 1, "user_id": 1, "body": "admin feedback"}]
         with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows) as loader, \
@@ -1252,7 +1264,8 @@ class TestReclusterFeedback:
 
     def test_non_admin_feedback_is_not_silently_reclustered(self):
         """Issue #793: reclustering accepts a report into an existing issue, so it must be gated
-        the same way filing is — and gated in SQL, not by skipping rows the query returned."""
+        the same way filing is — and gated in SQL, not by skipping rows the query returned.
+        """
         svc = _mod()
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
                 patch(f"{_SVC}.get_unprocessed_feedback", return_value=[]) as loader:

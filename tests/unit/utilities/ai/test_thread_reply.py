@@ -1,7 +1,8 @@
 """Unit tests for the thread-building reply generator (P7)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

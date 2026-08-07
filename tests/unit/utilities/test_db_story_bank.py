@@ -1,7 +1,8 @@
 """Unit tests for the story-bank DB helpers (issue #620)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

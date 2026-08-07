@@ -104,14 +104,16 @@ def test_assign_arm_without_user_is_control():
 
 def test_assign_arm_treats_the_analytics_sentinel_as_no_user():
     """Requests carry user_id="system" so PostHog has a distinct_id (issue #647). It is not a user,
-    so hashing it would drop ALL unattributed traffic into one arm instead of control."""
+    so hashing it would drop ALL unattributed traffic into one arm instead of control.
+    """
     assert rp.assign_arm(rp.SYSTEM_USER_ID, _bucket(cohort_pct=1.0)) == rp.ARM_CONTROL
     assert rp.assign_arm("System", _bucket(cohort_pct=1.0)) == rp.ARM_CONTROL
 
 
 def test_a_user_id_is_bucketed_the_same_as_an_int_or_a_string():
     """client.py may send the id as an int; the sentinel forces the field's type to vary. Cohort
-    assignment must not flip when it does, or a user changes arm mid-experiment."""
+    assignment must not flip when it does, or a user changes arm mid-experiment.
+    """
     bucket = _bucket(cohort_pct=0.5)
     assert all(rp.assign_arm(u, bucket) == rp.assign_arm(str(u), bucket) for u in range(50))
 
@@ -168,7 +170,8 @@ def test_resolve_tier_matches_the_bucket_by_feature_and_tier():
 
 def test_flag_arm_reads_the_document_map_with_string_keys():
     """The document round-trips through Redis as JSON, so an int user id comes back as "7". Reading
-    it back as 7 would silently lose every assignment."""
+    it back as 7 would silently lose every assignment.
+    """
     bucket = _bucket(cohort_pct=0.1, arms={"7": rp.ARM_TREATMENT, "8": rp.ARM_CONTROL})
     assert rp.flag_arm(7, bucket) == rp.ARM_TREATMENT
     assert rp.flag_arm("7", bucket) == rp.ARM_TREATMENT
@@ -192,7 +195,8 @@ def test_flag_arm_ignores_the_analytics_sentinel_and_no_user():
 
 def test_flag_assignment_beats_the_hash_in_both_directions():
     """The flag decides WHO: it can pull a user the hash left in control into the treatment, and it
-    can keep the holdout the ramp would have swept up."""
+    can keep the holdout the ramp would have swept up.
+    """
     hashed = {u: rp.assign_arm(u, _bucket(cohort_pct=0.5)) for u in range(50)}
     control_user = next(u for u, arm in hashed.items() if arm == rp.ARM_CONTROL)
     treated_user = next(u for u, arm in hashed.items() if arm == rp.ARM_TREATMENT)
@@ -209,7 +213,8 @@ def test_flag_assignment_beats_the_hash_in_both_directions():
 
 def test_a_parked_bucket_cannot_be_started_by_a_flag():
     """cohort_pct is the optimizer's ramp and it decides WHETHER: a rolled-back bucket routes nothing
-    no matter what the experiment flag says."""
+    no matter what the experiment flag says.
+    """
     assert rp.assign_arm(7, _bucket(cohort_pct=0.0, arms={"7": rp.ARM_TREATMENT})) == rp.ARM_CONTROL
 
 
@@ -224,7 +229,8 @@ def test_resolve_tier_reports_which_side_assigned_the_arm():
 
 def test_normalize_policy_preserves_the_arms_map():
     """The router reads the document through normalize_policy — dropping `arms` there would silently
-    revert every flag assignment to the hash."""
+    revert every flag assignment to the hash.
+    """
     policy = rp.normalize_policy(_policy(_bucket(cohort_pct=0.1, arms={"7": rp.ARM_TREATMENT})))
     assert policy["buckets"]["content:lem-complex"]["arms"] == {"7": rp.ARM_TREATMENT}
 
@@ -233,7 +239,8 @@ def test_the_decision_core_stays_stdlib_only():
     """This file is MOUNTED into the LiteLLM container, which has no LEM package and none of LEM's
     dependencies. #652 moved cohorting to PostHog, which makes `from cqc_lem.utilities.experiments
     import ...` a tempting one-liner here — it would break routing in production the moment the proxy
-    reloaded the hook, and nothing else in CI would notice."""
+    reloaded the hook, and nothing else in CI would notice.
+    """
     import ast
     import sys
     from pathlib import Path

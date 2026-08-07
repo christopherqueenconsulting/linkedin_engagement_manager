@@ -1,3 +1,21 @@
+"""The ONE place LEM emits an analytics event — every server-side `posthog.capture` lives in here.
+
+Callers hand over a measurement (`track_llm_call`, `track_task`, `track_api_call`,
+`track_funnel_event`, `capture_exception`, and the per-surface `track_*` reporters); this module
+owns the event names, the property shapes, and the `distinct_id` rule that makes browser, Celery and
+proxy activity read as ONE person — `str(user_id)`, falling back to a shared `"system"` /
+`"anonymous"` rather than dropping the row, because an unattributed run still has to appear in the
+count. A capture written anywhere else is invisible to the dashboards those events feed
+(`docs/observability-map.md`).
+
+Two money signals live here and are NEVER summed: `llm_call` carries LEM's OWN token-price estimate
+(`estimate_llm_cost_usd`), `$ai_generation` carries the provider's price for the same call. They
+answer different questions, and adding them double-counts every request.
+
+With no `POSTHOG_API_KEY` the SDK is disabled at import, so every function here is a no-op in local
+dev and under test — a call site should never guard itself on the key.
+"""
+
 import contextvars
 import hashlib
 import inspect
@@ -89,7 +107,8 @@ def _vendored_specs() -> dict:
 
     The map contains both LiteLLM's metered prices and LEM's hand-picked shadow references for
     subscription-only models (Ollama Cloud). It is read once per process; a missing file is not
-    fatal — the hardcoded tier fallbacks take over."""
+    fatal — the hardcoded tier fallbacks take over.
+    """
     global _vendored_specs_cache
     if _vendored_specs_cache is not None:
         return _vendored_specs_cache
@@ -140,7 +159,8 @@ def estimate_llm_cost_usd(model: str, prompt_tokens: int, completion_tokens: int
     """Coarse USD cost estimate for a completion from the per-1K-token table. The serving model
     (what LiteLLM actually ran) is looked up first; unknown serving models fall back to a substring
     match and then the lem-medium rate so a real call's cost signal is never silently zero.
-    Returns 0.0 when there are no tokens."""
+    Returns 0.0 when there are no tokens.
+    """
     prompt = int(prompt_tokens or 0)
     completion = int(completion_tokens or 0)
     if not prompt and not completion:
@@ -197,7 +217,8 @@ def estimate_shadow_cost_usd(model: str, prompt_tokens: int, completion_tokens: 
 
 def _extract_token_usage(result) -> Tuple[int, int]:
     """(prompt_tokens, completion_tokens) from an OpenAI-style response's `.usage`, or (0, 0) when
-    the wrapped call returned something without usage."""
+    the wrapped call returned something without usage.
+    """
     usage = getattr(result, "usage", None)
     if usage is None:
         return 0, 0
@@ -208,7 +229,8 @@ def _extract_token_usage(result) -> Tuple[int, int]:
 
 def llm_cache_hit(result) -> bool:
     """True when LiteLLM served this completion from its cache — the provider was never called, so
-    the tokens carry no spend. Only a real cache hit counts; prompt-cache discounts are still billed."""
+    the tokens carry no spend. Only a real cache hit counts; prompt-cache discounts are still billed.
+    """
     hidden = getattr(result, "_hidden_params", None)
     return bool(hidden.get("cache_hit")) if isinstance(hidden, dict) else False
 
@@ -250,7 +272,8 @@ _TASK_FEATURE_RULES = (
 
 def feature_from_task_name(task_name: Optional[str]) -> Optional[str]:
     """Map a Celery task name (fully qualified or bare) onto a feature bucket, for LLM calls whose
-    caller can't supply one. Returns None when nothing matches, so the caller can decide the default."""
+    caller can't supply one. Returns None when nothing matches, so the caller can decide the default.
+    """
     if not task_name:
         return None
     name = task_name.rsplit(".", 1)[-1].lower()
@@ -263,7 +286,8 @@ def feature_from_task_name(task_name: Optional[str]) -> Optional[str]:
 def _current_task_context() -> Tuple[Optional[str], Optional[int]]:
     """(task_name, user_id) of the Celery task executing on this worker, or (None, None) off-worker
     (API/CLI path). Every per-user task in LEM is dispatched with `kwargs={'user_id': ...}`, so the
-    request kwargs are a reliable last-resort attribution source for calls no scope covered."""
+    request kwargs are a reliable last-resort attribution source for calls no scope covered.
+    """
     try:
         from celery import current_task
         name = getattr(current_task, "name", None)
@@ -283,7 +307,8 @@ _llm_attribution: contextvars.ContextVar[dict] = contextvars.ContextVar("llm_att
 def llm_attribution(user_id: Optional[int] = None, feature: Optional[str] = None) -> Iterator[None]:
     """Attribute every LLM call made inside this block to a user and/or feature. Task entry points
     wrap their body in it so cost lands on the right user without threading kwargs through the ~40
-    ai_helper signatures. Nested scopes inherit the outer values; None never clears an outer value."""
+    ai_helper signatures. Nested scopes inherit the outer values; None never clears an outer value.
+    """
     scope = dict(_llm_attribution.get())
     if user_id is not None:
         scope["user_id"] = user_id
@@ -298,7 +323,8 @@ def llm_attribution(user_id: Optional[int] = None, feature: Optional[str] = None
 
 def _argument_reader(fn, arg_name: str):
     """A `(args, kwargs) -> value` reader for one of `fn`'s own arguments, keyword or positional.
-    Bound once at decoration time so the signature isn't introspected on every call."""
+    Bound once at decoration time so the signature isn't introspected on every call.
+    """
     try:
         params = list(inspect.signature(fn).parameters)
     except (TypeError, ValueError):
@@ -316,7 +342,8 @@ def _argument_reader(fn, arg_name: str):
 def attribute_llm_cost(feature: str, user_id_arg: str = "user_id"):
     """Decorator form of llm_attribution() for a function that OWNS a feature's LLM work (a Celery
     task, a generator entry point). It reads the user id from the call's own `user_id_arg` argument,
-    so cost is attributed the same way no matter which caller — beat, API, or healer — invoked it."""
+    so cost is attributed the same way no matter which caller — beat, API, or healer — invoked it.
+    """
     def decorator(fn):
         read_user_id = _argument_reader(fn, user_id_arg)
 
@@ -330,7 +357,8 @@ def attribute_llm_cost(feature: str, user_id_arg: str = "user_id"):
 
 def current_llm_attribution() -> Tuple[Optional[int], Optional[str]]:
     """(user_id, feature) for an LLM call happening right now: the innermost llm_attribution() scope
-    first, then the running Celery task (its name for the feature, its kwargs for the user)."""
+    first, then the running Celery task (its name for the feature, its kwargs for the user).
+    """
     scope = _llm_attribution.get()
     user_id, feature = scope.get("user_id"), scope.get("feature")
     if user_id is None or feature is None:
@@ -358,13 +386,15 @@ _llm_trace: contextvars.ContextVar[dict] = contextvars.ContextVar("llm_trace", d
 
 def llm_tracing_enabled() -> bool:
     """Kill switch, read at call time. Off means no trace id is ever minted, so the client attaches
-    nothing and the proxy stream is exactly what it was before tracing shipped."""
+    nothing and the proxy stream is exactly what it was before tracing shipped.
+    """
     return _env_flag("LLM_TRACING_ENABLED")
 
 
 def current_llm_trace() -> Tuple[Optional[str], Optional[str]]:
     """(trace_id, span_id) for the LLM call happening right now — the pipeline it belongs to, and the
-    step within it. (None, None) when no pipeline is open, which every untraced call still is."""
+    step within it. (None, None) when no pipeline is open, which every untraced call still is.
+    """
     scope = _llm_trace.get()
     return scope.get("trace_id"), scope.get("span_id")
 
@@ -374,7 +404,8 @@ def _capture_ai_span(event: str, trace_id: str, span_id: str, name: str, started
                      user_id: Optional[int], feature: Optional[str],
                      properties: Optional[dict] = None) -> None:
     """Emit one $ai_trace / $ai_span. Best-effort by construction — a post must never fail to
-    generate because its telemetry could not be written."""
+    generate because its telemetry could not be written.
+    """
     try:
         props = {
             "$ai_trace_id": trace_id,
@@ -412,7 +443,8 @@ def llm_trace(name: str, user_id: Optional[int] = None,
 
     Nesting is deliberate: a trace opened inside an open one becomes a SPAN of the outer trace rather
     than a second trace. `create_text_post` recurses into itself for post-type fallbacks, and two
-    half-traces of one post answer nobody's question."""
+    half-traces of one post answer nobody's question.
+    """
     if _llm_trace.get().get("trace_id"):
         with llm_attribution(user_id=user_id, feature=feature):
             with llm_span(name):
@@ -451,7 +483,8 @@ def llm_span(name: str, **properties) -> Iterator[Optional[str]]:
     """One step of the pipeline currently open around this block.
 
     Outside a pipeline this does nothing at all and yields None — a span with no trace is an orphan
-    PostHog cannot render, and the work itself must run identically either way."""
+    PostHog cannot render, and the work itself must run identically either way.
+    """
     scope = _llm_trace.get()
     trace_id, parent_id = scope.get("trace_id"), scope.get("span_id")
     if not trace_id:
@@ -476,7 +509,8 @@ def llm_pipeline(name: str, feature: Optional[str] = None, user_id_arg: str = "u
     """Decorator form of llm_trace() for a function that IS one pipeline (`create_text_post`,
     `generate_newsletter_edition`, `generate_ai_response`). Supersedes `attribute_llm_cost` on such a
     function: it opens the same attribution scope AND the trace, reading the user id off the call's
-    own `user_id_arg` the same way."""
+    own `user_id_arg` the same way.
+    """
     def decorator(fn):
         read_user_id = _argument_reader(fn, user_id_arg)
 
@@ -494,7 +528,8 @@ def llm_step(name: str):
 
     It goes on the STEP FUNCTION, not at its call sites: newsletters and comments draw draft,
     research, humanize and authenticity from the same shared content core as posts, so decorating
-    the core is what makes every pipeline's trace legible without touching any caller."""
+    the core is what makes every pipeline's trace legible without touching any caller.
+    """
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -520,7 +555,8 @@ def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int
 
     The task name/user default to the running Celery task's, so a call site that knows nothing about
     its context still lands attributed. distinct_id follows the same convention as every other
-    event here: the user id, or the `"system"` sentinel."""
+    event here: the user id, or the `"system"` sentinel.
+    """
     if posthog.disabled:
         return
     try:
@@ -549,7 +585,8 @@ def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int
 
 def _model_tier(model: Optional[str]) -> Optional[str]:
     """The tier alias a call was routed through (lem-simple/medium/complex/...), or None for a call
-    that named a raw provider model instead of a tier."""
+    that named a raw provider model instead of a tier.
+    """
     return model if model and model.startswith("lem-") else None
 
 
@@ -571,7 +608,8 @@ def track_llm_call(
     `serving_model`, when provided, is the model LiteLLM actually ran — including after fallback
     or cost-aware down-routing. Spend is priced by the SERVING model so a fallback to a paid
     provider is visible in the ledger. The requested alias is preserved as `model_tier` so
-    per-tier reporting survives."""
+    per-tier reporting survives.
+    """
     resolved_model = serving_model or model
     tier = model_tier or _model_tier(model)
     cost_usd = 0.0 if cached else estimate_llm_cost_usd(resolved_model, prompt_tokens, completion_tokens)
@@ -832,8 +870,9 @@ def track_post_outcome(
     This is the success metric of the cost-routing experiment (issue #652), so the user's arm rides
     along as `$feature/cost-routing-arm` when PostHog enrolled them — `variant_key` (the #396 media
     combo this post shipped, when the caller knows it) becomes the media experiment's arm the same
-    way."""
-    from cqc_lem.utilities.post_stats import engagement_score, engagement_rate
+    way.
+    """
+    from cqc_lem.utilities.post_stats import engagement_rate, engagement_score
     shipped = extra.pop("variant_key", None)
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -865,7 +904,8 @@ def track_audience_snapshot(
 ) -> None:
     """Emit one audience-telemetry snapshot (issue #627) so follower growth and profile views are
     queryable in PostHog next to the content outcomes that drove them. Unreadable counts stay None
-    (not 0) — a zero would read as a real collapse in a growth chart."""
+    (not 0) — a zero would read as a real collapse in a growth chart.
+    """
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="audience_snapshot",
@@ -888,7 +928,8 @@ def track_golden_hour_report(
     """Emit one golden-hour presence reading (issue #622) — per reply sweep and per second-wave
     self-comment, so "did the amplifier actually fire inside the window?" is a query instead of a
     log grep. `latency_minutes` stays None when the publish time is unknown, and `within_window` is
-    then False: an unmeasured sweep must never count as an on-time one."""
+    then False: an unmeasured sweep must never count as an on-time one.
+    """
     report = dict(report or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -923,7 +964,8 @@ def track_comment_outcome(
     `author_replied` is the metric of the pilot prompt experiment (issue #652), so the user's arm
     rides along. It is resolved HERE, at read time, rather than stored with the comment: PostHog's
     assignment is deterministic per person for the life of the flag, and a per-comment copy would
-    still be wrong if the flag were re-rolled — see the attribution caveat in docs/experiments.md."""
+    still be wrong if the flag were re-rolled — see the attribution caveat in docs/experiments.md.
+    """
     outcome = dict(outcome or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -948,7 +990,8 @@ def track_suppression_check(user_id: Optional[int], verdict: Optional[dict] = No
                             paused: bool = False, **extra) -> None:
     """Emit one daily suppression-tripwire reading (issue #629). Every check is emitted, not just
     the trips: the whole point is to see the reach curve BEFORE the step-collapse, and a series that
-    only has trips in it cannot show the run-up."""
+    only has trips in it cannot show the run-up.
+    """
     verdict = dict(verdict or {})
     signals = {s.get("name"): s for s in (verdict.get("signals") or []) if isinstance(s, dict)}
     reach = signals.get("reach_collapse") or {}
@@ -978,7 +1021,8 @@ def track_suppression_check(user_id: Optional[int], verdict: Optional[dict] = No
 def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
     """Emit the weekly per-user comment-quality scorecard (issue #628) — reply/like rates plus the
     demotion rate and the verdict that gates commenting — as one `comment_quality` event, so a hold
-    is queryable next to the rates that caused it and a PostHog alert can page off it."""
+    is queryable next to the rates that caused it and a PostHog alert can page off it.
+    """
     report = dict(report or {})
     verdict = dict(report.get("verdict") or {})
     posthog.capture(
@@ -1011,7 +1055,8 @@ def track_content_quality(user_id: Optional[int], score: Optional[dict] = None, 
     Every unmeasured dimension stays None: an event that reported 0 for a post with no impressions
     yet would drag every ER average toward zero the night it shipped. Content BODIES are never sent
     (they are the user's own LinkedIn material, redacted everywhere else too) — only the names of the
-    slop checks that fired, which is what makes a regression explainable."""
+    slop checks that fired, which is what makes a regression explainable.
+    """
     score = dict(score or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -1046,7 +1091,8 @@ def track_content_quality_rollup(user_id: Optional[int], rollup: Optional[dict] 
     """Emit the weekly content-quality rollup (issue #630) as one `content_quality_rollup` event:
     this period's summary, the prior period's, the deltas between them, and any regression alert that
     fired. Both periods ride on the SAME event so a dashboard tile (and a PostHog alert) can read the
-    regression without joining two time ranges — the comparison is the point of the event."""
+    regression without joining two time ranges — the comparison is the point of the event.
+    """
     rollup = dict(rollup or {})
     current = dict(rollup.get("current") or {})
     prior = dict(rollup.get("prior") or {})
@@ -1074,7 +1120,8 @@ def track_content_quality_rollup(user_id: Optional[int], rollup: Optional[dict] 
 def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str, **extra) -> None:
     """Emit the per-post pre-post engagement-window marker (issue #547) — dispatched, skipped (with
     the reason) or ran (with the comment count) — so a report can confirm the warm-up before a post
-    actually fired instead of inferring it from task logs."""
+    actually fired instead of inferring it from task logs.
+    """
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="pre_post_engagement",
@@ -1092,7 +1139,8 @@ def track_company_page_invite_run(user_id: Optional[int], report: Optional[dict]
     """Emit one company-page invite run (issue #732) — EVERY run, including the ones that sent
     nothing. The lane used to be a once-a-month blast with no volume series at all; a series that
     only carried sends could not distinguish "paced down to zero today" from "silently broken", so
-    the skip reason (budget_reached / credits_exhausted / paused / disabled) is the point."""
+    the skip reason (budget_reached / credits_exhausted / paused / disabled) is the point.
+    """
     report = dict(report or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -1119,7 +1167,8 @@ def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None
     This lane replaced a beat that had been a no-op stub while LOOKING operational, so a series that
     only carried withdrawals would reproduce exactly the problem it was written to fix. `rows_seen`
     is the tell: zero rows day after day on an account with pending invites means the invitation
-    manager's markup moved, not that the account is clean."""
+    manager's markup moved, not that the account is clean.
+    """
     report = dict(report or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -1160,7 +1209,8 @@ def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **e
     Three phases, because a `dispatched` touch is not a sent one: `scan` drafts, `send` is the drip
     that dispatches, and `deliver` is the per-touch terminal outcome. A touch the account-wide DM cap
     defers goes back to 'approved' and is re-dispatched on the next beat, so only the `deliver` phase
-    can tell a lane that sends from one that has looped all day without delivering anything."""
+    can tell a lane that sends from one that has looped all day without delivering anything.
+    """
     report = dict(report or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -1229,7 +1279,8 @@ def track_margin_report(report: dict) -> None:
     """Emit the weekly unit-economics scorecard (plan §E.1.4) as one `margin_report` event so the
     PostHog tiles read system margin, cohort margin and LTV:CAC without re-deriving them. Per-user
     financials stay out of the event body — internal-only by policy (plan §E.5) — but the cohort
-    aggregates the Margin-by-Cohort dashboard needs ride along."""
+    aggregates the Margin-by-Cohort dashboard needs ride along.
+    """
     system = dict((report or {}).get("system") or {})
     unit = dict((report or {}).get("unit_economics") or {})
     period = dict((report or {}).get("period") or {})
@@ -1253,7 +1304,8 @@ def track_routing_policy(report: dict) -> None:
     """Emit the weekly cost-aware routing decision (plan §D.1(1)) as one `routing_policy` event, so
     a down-route — and especially an auto-rollback — is queryable next to the cost it was meant to
     save and the engagement it was gated on. The full comparison stats stay out of the event body;
-    the per-bucket verdict and cohort are what a dashboard needs."""
+    the per-bucket verdict and cohort are what a dashboard needs.
+    """
     report = dict(report or {})
     policy = dict(report.get("policy") or {})
     buckets = policy.get("buckets") or {}
@@ -1292,7 +1344,8 @@ def track_experiment_exposure(experiment: str, variant: str, user_id: Optional[i
     internals.
 
     Deduping is the CALLER's job (`experiments.track_exposure`) — this stays a dumb emitter like every
-    other tracker here."""
+    other tracker here.
+    """
     posthog.capture(
         distinct_id=str(user_id if user_id is not None else "system"),
         event="$feature_flag_called",
@@ -1314,7 +1367,8 @@ def experiment_props(user_id: Optional[int] = None, keys: Optional[tuple] = None
 
     Wrapped here (rather than imported at each tracker) so an experiment plane that is down, missing
     or misconfigured can never stop an outcome event from being recorded — the outcome is the
-    valuable half; its experiment label is not."""
+    valuable half; its experiment label is not.
+    """
     try:
         from cqc_lem.utilities.experiments import experiment_properties
         return experiment_properties(user_id, keys=keys, extra=shipped)
@@ -1325,7 +1379,8 @@ def experiment_props(user_id: Optional[int] = None, keys: Optional[tuple] = None
 def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
     """Emit one budget/anomaly alert (plan §E.2) as a `cost_alert` event so a breach is queryable
     next to the spend it came from, and a PostHog alert can page off it. Per-user alerts are keyed
-    to that user's distinct_id; system-wide ones to "system"."""
+    to that user's distinct_id; system-wide ones to "system".
+    """
     alert = dict(alert or {})
     posthog.capture(
         distinct_id=str(alert.get("user_id") or "system"),
@@ -1337,7 +1392,8 @@ def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
 def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> None:
     """Emit one Selenium/lane capacity breach (issue #552) as a `capacity_alert` event, so the
     saturation history is queryable next to the task latency it explains and a PostHog alert can page
-    off it. Always system-scoped: a full browser pool is an infra limit, not one user's problem."""
+    off it. Always system-scoped: a full browser pool is an infra limit, not one user's problem.
+    """
     alert = dict(alert or {})
     posthog.capture(
         distinct_id="system",
@@ -1351,7 +1407,8 @@ def track_youtube_token_check(state: Optional[dict] = None) -> None:
 
     The dated OK line in the logs is the audit trail; this is the queryable series behind it, so
     "when did publishing actually go bad?" is answerable without grepping a year of logs. Always
-    system-scoped: one OAuth grant publishes the whole channel, not one user's."""
+    system-scoped: one OAuth grant publishes the whole channel, not one user's.
+    """
     state = dict(state or {})
     posthog.capture(
         distinct_id="system",
@@ -1372,7 +1429,8 @@ def track_rate_limit_trip(seconds: int, trips: int, reason: str = "429") -> None
     is distinguishable from a single unlucky session. Always system-scoped: LinkedIn rate-limits by
     egress IP, so a trip is an account-wide condition, not one user's.
 
-    Never raises: the breaker must open even when analytics is down."""
+    Never raises: the breaker must open even when analytics is down.
+    """
     try:
         posthog.capture(
             distinct_id="system",
@@ -1391,7 +1449,8 @@ def session_replay_url(session_id: Optional[str]) -> Optional[str]:
     The SPA sends its `posthog_session_id` with every feedback report; this is what turns that
     opaque id into something a human can open. Ids that aren't the SDK's own uuid-ish shape are
     rejected rather than escaped: the result is pasted into GitHub markdown, and a "session id"
-    carrying a space or a bracket is not a session id."""
+    carrying a space or a bracket is not a session id.
+    """
     sid = str(session_id or "").strip()
     project_id = (os.getenv("POSTHOG_PROJECT_ID") or "").strip()
     if not sid or not project_id or not _SESSION_ID_RE.fullmatch(sid):
@@ -1404,7 +1463,8 @@ def posthog_hogql_query(sql: str, timeout: int = 30) -> Optional[list]:
     """Run a HogQL query against the PostHog query API and return its result ROWS, or None when the
     read path isn't configured (no personal API key / project) or the call fails. None means
     "unknown" — never zero — so a check reading it reports itself skipped instead of alerting on a
-    missing analytics plane. Reads only; the write/provision path lives in scripts/posthog_dashboards.py."""
+    missing analytics plane. Reads only; the write/provision path lives in scripts/posthog_dashboards.py.
+    """
     api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
     project_id = os.getenv("POSTHOG_PROJECT_ID", "")
     if not api_key or not project_id:
@@ -1433,7 +1493,8 @@ def track_onboarding_step(
     **extra,
 ) -> None:
     """Emit one activation-funnel event per checklist step (issue #500), the first time that step
-    completes — so time-to-aha and per-step drop-off are queryable in PostHog."""
+    completes — so time-to-aha and per-step drop-off are queryable in PostHog.
+    """
     posthog.capture(
         distinct_id=str(user_id),
         event="onboarding_step",
@@ -1461,7 +1522,8 @@ def track_survey_prompt(user_id: int, survey_key: str, **extra) -> None:
 
 def track_shipped_notice(user_id: int, issue_number: int, **extra) -> None:
     """Emit the "you asked, we shipped" notice we sent (issue #502), so notice → micro-CSAT response
-    is measurable against the GA satisfaction gate."""
+    is measurable against the GA satisfaction gate.
+    """
     posthog.capture(
         distinct_id=str(user_id),
         event="shipped_notice",
@@ -1471,7 +1533,8 @@ def track_shipped_notice(user_id: int, issue_number: int, **extra) -> None:
 
 def track_survey_response(user_id: int, source: str, **extra) -> None:
     """Emit an NPS/review answer (issue #501) with its score/rating, so NPS and CSAT can be trended
-    in PostHog next to the activation funnel."""
+    in PostHog next to the activation funnel.
+    """
     posthog.capture(
         distinct_id=str(user_id),
         event="survey_response",
@@ -1591,7 +1654,8 @@ def resolve_channel(attribution: Optional[dict]) -> str:
     a typo or an unknown value becomes `other` rather than a new bucket the CAC rollup can't group.
     Paid mediums are checked before source so `utm_source=google&utm_medium=cpc` is paid spend, not
     SEO. Anything with UTMs we don't recognise is `other` rather than `direct` — a tagged visit was
-    never direct."""
+    never direct.
+    """
     data = attribution if isinstance(attribution, dict) else {}
     explicit = _clean_property(data.get("channel"))
     if explicit:
@@ -1627,7 +1691,8 @@ def resolve_channel(attribution: Optional[dict]) -> str:
 def normalize_attribution(attribution: Optional[dict]) -> dict:
     """The allow-listed source/UTM properties for a funnel event plus the derived `channel`. Unknown
     keys are dropped so a client can't widen the event schema, and `channel` is always present so a
-    PostHog breakdown never has an ungrouped bucket."""
+    PostHog breakdown never has an ungrouped bucket.
+    """
     data = attribution if isinstance(attribution, dict) else {}
     props = {}
     for key in _ATTRIBUTION_KEYS:
@@ -1641,7 +1706,8 @@ def normalize_attribution(attribution: Optional[dict]) -> dict:
 def anonymous_distinct_id(email: str) -> str:
     """Stable pseudonymous distinct_id for a visitor who has no user row yet, so `signup_started`
     can be aliased onto the real user id once the account exists. The email is hashed — the funnel
-    needs a stable key, not the address itself."""
+    needs a stable key, not the address itself.
+    """
     normalized = (email or "").strip().lower()
     if not normalized:
         return "anonymous"
@@ -1664,7 +1730,8 @@ def track_funnel_event(
     attributable to the channel that brought the user in. `alias_from` merges the pre-signup
     anonymous person into the identified one so the funnel joins end to end.
 
-    Never raises: analytics must not fail a signup or a billing webhook."""
+    Never raises: analytics must not fail a signup or a billing webhook.
+    """
     from cqc_lem.utilities.logger import log_warning
     try:
         if event not in FUNNEL_EVENTS:
@@ -1728,7 +1795,8 @@ def track_affiliate_event(event: str, user_id: Optional[int] = None, **extra) ->
     Deliberately NOT a `track_funnel_event`: the acquisition funnel is one ordered path per person,
     and an affiliate event is about the REFERRER, not about the person moving through the funnel.
     Emitting them there would put one person's referral conversions inside another person's journey.
-    Never raises — analytics must not fail an opt-out."""
+    Never raises — analytics must not fail an opt-out.
+    """
     from cqc_lem.utilities.logger import log_warning
     try:
         if event not in AFFILIATE_EVENTS:
@@ -1749,6 +1817,13 @@ def track_task(
     user_id: Optional[int] = None,
     **extra,
 ) -> None:
+    """Emit `celery_task` — one row per task run, however it ended.
+
+    Its only caller is `my_celery.on_task_postrun`, which is what makes this event a complete census
+    of the queue rather than a sample: capturing it from inside a task as well would double-count
+    that task. A task with no user (the scheduler beats) lands on the shared `"system"` person
+    instead of being dropped, since an unattributed run still has to show up in the count.
+    """
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="celery_task",
@@ -1761,7 +1836,8 @@ def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:
     debounced / unknown_reply_token / …). The webhook drops most mail BY DESIGN, so without this a
     broken forwarding chain is indistinguishable from no mail arriving at all — weeks of 100%-ignored
     traffic left no signal anywhere. `verdict` is a STRING prop so alert tiles can filter on it
-    (docs/kpi-dashboards.md)."""
+    (docs/kpi-dashboards.md).
+    """
     posthog.capture(
         distinct_id=str(user_id or "anonymous"),
         event="inbound_parse_email",
@@ -1776,6 +1852,13 @@ def track_api_call(
     latency_ms: int,
     user_id: Optional[int] = None,
 ) -> None:
+    """Emit `api_call` — one row per HTTP request, from the middleware's `finally`.
+
+    `status_code` is what the caller actually received, INCLUDING the 500 an unhandled exception
+    became, so this counts failures rather than only the requests that survived. Callers with no
+    session land on the shared `"anonymous"` person, which is the only way public-surface traffic
+    is visible at all.
+    """
     posthog.capture(
         distinct_id=str(user_id or "anonymous"),
         event="api_call",

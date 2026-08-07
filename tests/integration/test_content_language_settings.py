@@ -4,8 +4,9 @@ The language is what stops an audio-capable video model inventing a foreign-lang
 voiceover, so it has to be readable AND settable through /api/user/settings.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.mark.integration
@@ -22,6 +23,7 @@ class TestGetUserSettingsLanguage:
              patch("cqc_lem.api.main.get_user_sitemap_url", return_value=None), \
              patch("cqc_lem.api.main.get_company_linked_in_url_for_user", return_value=None):
             from fastapi.testclient import TestClient
+
             from cqc_lem.api.main import app
 
             response = TestClient(app).get("/api/user/settings?session_token=t")
@@ -43,6 +45,7 @@ class TestGetUserSettingsLanguage:
              patch("cqc_lem.api.main.get_user_sitemap_url", return_value=None), \
              patch("cqc_lem.api.main.get_company_linked_in_url_for_user", return_value=None):
             from fastapi.testclient import TestClient
+
             from cqc_lem.api.main import app
 
             response = TestClient(app).get("/api/user/settings?session_token=t")
@@ -58,6 +61,7 @@ class TestUpdateUserSettingsLanguage:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.main.update_user_preferences", return_value=True) as upd:
             from fastapi.testclient import TestClient
+
             from cqc_lem.api.main import app
 
             response = TestClient(app).put("/api/user/settings", json={
@@ -72,6 +76,7 @@ class TestUpdateUserSettingsLanguage:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.main.update_user_preferences", return_value=True) as upd:
             from fastapi.testclient import TestClient
+
             from cqc_lem.api.main import app
 
             TestClient(app).put("/api/user/settings", json={
@@ -86,6 +91,7 @@ class TestUpdateUserSettingsLanguage:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
              patch("cqc_lem.api.main.update_user_preferences", return_value=True) as upd:
             from fastapi.testclient import TestClient
+
             from cqc_lem.api.main import app
 
             response = TestClient(app).put("/api/user/settings", json={

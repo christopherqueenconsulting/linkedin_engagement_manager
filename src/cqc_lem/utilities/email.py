@@ -1,3 +1,16 @@
+"""Every outbound email LEM sends, and the login PIN's generate/hash pair.
+
+`_dispatch_email` is the ONE send path: SendGrid first, SMTP as the fallback, and it returns a bool
+rather than raising — an email is a notification, never a reason a task dies. It always ships BOTH a
+text/plain and a text/html part, because a missing plaintext alternative is a strong spam signal and
+most of what leaves here is transactional mail (sign-in codes, "your session died") that has to
+arrive.
+
+No provider configured is a real state, not an error: `send_pin_email` reports it as a BYPASS so the
+caller can skip PIN verification entirely rather than locking everyone out of a stack that was never
+given SMTP credentials.
+"""
+
 import hashlib
 import re
 import secrets
@@ -23,10 +36,22 @@ from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 
 def generate_pin() -> str:
+    """A 6-digit login PIN, zero-padded so "000042" is as likely as any other value.
+
+    `secrets`, not `random`: this is a credential, and the padding matters — trimming leading zeros
+    would quietly shrink the space and make short PINs a tell.
+    """
     return str(secrets.randbelow(1_000_000)).zfill(6)
 
 
 def hash_pin(pin: str, email: str) -> str:
+    """Hash a PIN bound to the address it was issued for — only this value is ever stored.
+
+    The address is the salt, so the same six digits issued to two accounts hash differently and a
+    row captured for one address cannot be replayed against another. Deterministic on purpose:
+    verification recomputes the hash and compares (`verify_pin_for_email`), so there is no
+    per-attempt salt to carry.
+    """
     return hashlib.sha256(f"{pin}{email}".encode()).hexdigest()
 
 
@@ -38,7 +63,8 @@ def _from_header() -> str:
     """RFC-5322 From with a friendly display name on the authenticated domain.
 
     A recognizable name that matches the sending domain (not a bare address, and not a
-    mismatched gmail.com address) is a key anti-phishing signal for Gmail."""
+    mismatched gmail.com address) is a key anti-phishing signal for Gmail.
+    """
     return formataddr((EMAIL_FROM_NAME, SENDGRID_FROM_EMAIL))
 
 
@@ -151,7 +177,12 @@ def _sendgrid_send(to_email: str, subject: str, html_content: str, text_content:
                    reply_to: Optional[str], high_priority: bool) -> None:
     from sendgrid import SendGridAPIClient
     from sendgrid.helpers.mail import (
-        ClickTracking, Email, Header, Mail, ReplyTo, TrackingSettings,
+        ClickTracking,
+        Email,
+        Header,
+        Mail,
+        ReplyTo,
+        TrackingSettings,
     )
 
     message = Mail(
@@ -204,7 +235,8 @@ def _dispatch_email(to_email: str, subject: str, html_content: str,
     """Send a multipart/alternative email via SendGrid, falling back to SMTP.
 
     Always ships both a text/plain and a text/html part (a missing plaintext alternative is a
-    strong spam signal). Returns True only if a provider accepted the message."""
+    strong spam signal). Returns True only if a provider accepted the message.
+    """
     has_sendgrid = bool(SENDGRID_API_KEY)
     has_smtp = bool(SMTP_USER) and bool(SMTP_PASSWORD)
     if not has_sendgrid and not has_smtp:
@@ -251,7 +283,8 @@ def send_login_pin_request_email(to_email: str, reply_to: str) -> bool:
     """Ask the user to REPLY with the 6-digit LinkedIn verification code.
 
     The reply routes back (via SendGrid Inbound Parse) to `reply_to`, whose token
-    attributes it to the paused login."""
+    attributes it to the paused login.
+    """
     subject = "⚠️ Reply ASAP with your LinkedIn verification code"
     html = (
         "<html><body style=\"font-family:Arial,Helvetica,sans-serif;color:#222;\">"
@@ -271,7 +304,8 @@ def send_reply_forward_confirmation_email(to_email: str, verify_url: Optional[st
                                           code: Optional[str]) -> bool:
     """Forward Gmail's forwarding-confirmation to the user so they can finish it from their OWN
     signed-in browser (the most reliable way — a server-side click may not complete Gmail's flow).
-    The confirmation was delivered to our reply+<token> address, so the user never saw it."""
+    The confirmation was delivered to our reply+<token> address, so the user never saw it.
+    """
     if not verify_url and not code:
         return False
     button = (f'<p style="margin:18px 0"><a href="{verify_url}" '
@@ -346,7 +380,8 @@ def send_session_revalidation_email(to_email: str, account_url: Optional[str] = 
 def _human_date(value: Optional[str]) -> Optional[str]:
     """The only producer of an expiry string is `resolve_token_status`, which emits ISO-8601 —
     "expires on 2026-09-14T08:30:12+00:00" is not something to put in front of a customer. Anything
-    that isn't a timestamp is passed through untouched."""
+    that isn't a timestamp is passed through untouched.
+    """
     if not value:
         return None
     try:
@@ -362,7 +397,8 @@ def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[i
     """Tell a user their LinkedIn authorization is running out and we could NOT renew it for them
     (issue #600). Only sent after the daily renewal pass has already tried — LinkedIn caps the
     authorization at 60 days and only hands refresh tokens to approved apps, so for some accounts a
-    manual reconnect is the only option and this email IS the notice."""
+    manual reconnect is the only option and this email IS the notice.
+    """
     url = account_url or _account_url()
     expires_on = _human_date(expires_on)
     if days_remaining is None:
@@ -421,7 +457,8 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
 def send_content_generation_ready_email(to_email: str, ready_count: int,
                                         failed_count: int = 0) -> bool:
     """Email a user that their weekly content finished generating (issue #545). Generation runs
-    for minutes in the background, so this is the "come back and review" signal."""
+    for minutes in the background, so this is the "come back and review" signal.
+    """
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}/content?tab=review"
@@ -447,7 +484,8 @@ def send_content_generation_ready_email(to_email: str, ready_count: int,
 def send_suppression_tripwire_email(to_email: str, reason: str) -> bool:
     """Tell the user their engagement automation stopped itself because their reach collapsed
     (issue #629). LinkedIn never says it has suppressed an account, so this email IS the notice —
-    it has to be plain language, not a metric dump, and it has to say what happens next."""
+    it has to be plain language, not a metric dump, and it has to say what happens next.
+    """
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}/account"
@@ -478,7 +516,8 @@ def send_suppression_tripwire_email(to_email: str, reason: str) -> bool:
 def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body: str,
                                 cta_label: str, cta_path: str = "/account") -> bool:
     """Nudge a user who stalled part-way through activation (issue #500). Copy is supplied by the
-    caller (LLM-refreshed, with a static fallback) so this stays a pure send."""
+    caller (LLM-refreshed, with a static fallback) so this stays a pure send.
+    """
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
@@ -504,7 +543,8 @@ def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body
 def send_survey_prompt_email(to_email: str, subject: str, headline: str, body: str,
                              cta_label: str, cta_path: str = "/") -> bool:
     """Invite a user to answer an NPS survey or leave a review (issue #501). The CTA deep-links to
-    the in-app modal, so both channels write the same `feedback` row."""
+    the in-app modal, so both channels write the same `feedback` row.
+    """
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
@@ -528,7 +568,8 @@ def send_survey_prompt_email(to_email: str, subject: str, headline: str, body: s
 def send_shipped_fix_email(to_email: str, changelog_line: str, issue_number: int,
                            cta_path: str = "/") -> bool:
     """Tell a reporter the thing they asked for shipped (issue #502). The CTA opens the app, where
-    the in-app notice asks the micro-CSAT ("did this fix it?") that re-enters the feedback loop."""
+    the in-app notice asks the micro-CSAT ("did this fix it?") that re-enters the feedback loop.
+    """
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
@@ -554,7 +595,8 @@ def send_shipped_fix_email(to_email: str, changelog_line: str, issue_number: int
 def send_faq_answer_email(to_email: str, question: str, answer: str,
                           cta_path: str = "/#faq") -> bool:
     """Answer someone who asked a support question (issue #507). Both halves are generated/derived
-    from user text, so both are escaped before templating."""
+    from user text, so both are escaped before templating.
+    """
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"

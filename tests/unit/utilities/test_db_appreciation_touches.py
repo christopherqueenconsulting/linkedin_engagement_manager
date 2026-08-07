@@ -4,9 +4,10 @@ The claim is the whole safety property: it must be granted exactly once, and a l
 read must never read as "go ahead".
 """
 
+from unittest.mock import MagicMock, patch
+
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -78,7 +79,8 @@ def test_event_types_match_the_migration_enum():
 def test_collaboration_default_thanks_them_for_the_mention():
     """What fires this trigger is a mention, so the DEFAULT wording has to say that and not thank
     somebody for a project neither party worked on. A customized template is read from the DB and
-    is untouched by this."""
+    is untouched by this.
+    """
     from cqc_lem.utilities.db import _DM_DEFAULT_TEMPLATES
     text = _DM_DEFAULT_TEMPLATES["collaboration"]
     assert "{first_name}" in text

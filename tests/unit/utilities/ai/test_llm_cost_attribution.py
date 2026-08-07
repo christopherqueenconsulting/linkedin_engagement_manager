@@ -1,8 +1,9 @@
 """Unit tests for the cost-attribution dimensions threaded through ai_helper._call_llm."""
 
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

@@ -26,9 +26,13 @@ from typing import Optional
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.client import client
-from cqc_lem.utilities.env_constants import (DEFAULT_IMAGE_MODEL, IMAGE_BACKEND,
-                                             IMAGE_GATE_MAX_ATTEMPTS, IMAGE_QUALITY,
-                                             IMAGE_QUALITY_GATE_SURFACES)
+from cqc_lem.utilities.env_constants import (
+    DEFAULT_IMAGE_MODEL,
+    IMAGE_BACKEND,
+    IMAGE_GATE_MAX_ATTEMPTS,
+    IMAGE_QUALITY,
+    IMAGE_QUALITY_GATE_SURFACES,
+)
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # gpt-image accepts exactly these; anything else falls back to square.
@@ -79,6 +83,11 @@ class QualityVerdict:
 
 
 def size_for_ratio(ratio: str) -> str:
+    """The gpt-image `size` for an aspect ratio; anything unrecognised falls back to square.
+
+    Only the three ratios the surfaces render at map to a size the API accepts, so an unknown ratio
+    degrades to 1024x1024 rather than being passed through as a size the request would fail on.
+    """
     return _SIZE_BY_RATIO.get(ratio, "1024x1024")
 
 

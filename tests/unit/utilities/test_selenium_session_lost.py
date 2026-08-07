@@ -1,8 +1,7 @@
 """Unit tests for the lost-browser-session predicate (issue #988)."""
 
 import pytest
-from selenium.common import (InvalidSessionIdException, NoSuchElementException, TimeoutException,
-                             WebDriverException)
+from selenium.common import InvalidSessionIdException, NoSuchElementException, TimeoutException, WebDriverException
 
 pytestmark = pytest.mark.unit
 

@@ -13,8 +13,7 @@ from typing import Any, Optional
 
 from cqc_lem.utilities.env_constants import BRAND_USER_ID, LAUNCH_PHASE
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
-from cqc_lem.utilities.marketing.attribution import (CAMPAIGN_BRAND_PROFILE, MEDIUM_PROFILE,
-                                                     SOURCE_LINKEDIN, signup_url)
+from cqc_lem.utilities.marketing.attribution import CAMPAIGN_BRAND_PROFILE, MEDIUM_PROFILE, SOURCE_LINKEDIN, signup_url
 
 # The brand account is user 1 BY CONVENTION (issue #736): the first account onboarded on the box is
 # the owner's own, and it permanently doubles as the LEM brand account. The old
@@ -63,7 +62,8 @@ MODE_FIELDS = ("connection_request_mode", "connection_targeting_mode")
 
 def current_launch_phase() -> str:
     """The active rollout phase. An unrecognized value falls back to the most conservative phase
-    rather than failing open — a typo in the deployment .env must never widen outbound volume."""
+    rather than failing open — a typo in the deployment .env must never widen outbound volume.
+    """
     phase = (LAUNCH_PHASE or "").strip().upper()
     if phase not in LAUNCH_PHASES:
         if phase:
@@ -74,7 +74,8 @@ def current_launch_phase() -> str:
 
 def brand_outbound_policy(phase: Optional[str] = None) -> dict:
     """The brand's caps + approval posture for `phase` (defaults to the active one), clamped to the
-    per-user ceilings."""
+    per-user ceilings.
+    """
     resolved = (phase or current_launch_phase()).strip().upper()
     policy = dict(PHASE_OUTBOUND_POLICY.get(resolved) or PHASE_OUTBOUND_POLICY[DEFAULT_LAUNCH_PHASE])
     for cap, ceiling in BRAND_CAP_CEILINGS.items():
@@ -165,7 +166,8 @@ def brand_preference_overrides(existing: Optional[dict] = None, phase: Optional[
 
 def _comparable(value: Any) -> Any:
     """`value` in a shape two sources can be compared in — the DB hands back strings for numbers the
-    policy holds as ints, and focus topics as a list."""
+    policy holds as ints, and focus topics as a list.
+    """
     if isinstance(value, (list, tuple)):
         return tuple(str(item).strip() for item in value)
     if value is None or isinstance(value, bool):
@@ -180,7 +182,8 @@ def preference_changes(existing: Optional[dict], overrides: dict) -> dict:
     """The fields this sync would actually change, as `{field: (before, after)}`. The brand user is
     the owner's own account, so a sync that edits his settings has to be readable in the logs rather
     than inferred from a nightly "synced" line that says the same thing whether it changed anything
-    or not."""
+    or not.
+    """
     current = existing or {}
     return {field: (current.get(field), value) for field, value in overrides.items()
             if _comparable(current.get(field)) != _comparable(value)}
@@ -202,8 +205,11 @@ def sync_brand_preferences(phase: Optional[str] = None) -> Optional[dict]:
     phase over the owner's real caps is the failure being fixed.
     """
     user_id = brand_user_id()
-    from cqc_lem.utilities.db import (engagement_preferences_are_configured,
-                                      get_engagement_preferences, update_engagement_preferences)
+    from cqc_lem.utilities.db import (
+        engagement_preferences_are_configured,
+        get_engagement_preferences,
+        update_engagement_preferences,
+    )
     resolved_phase = (phase or current_launch_phase()).strip().upper()
     configured = engagement_preferences_are_configured(user_id)
     if configured is None:

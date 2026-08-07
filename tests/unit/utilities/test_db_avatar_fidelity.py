@@ -148,7 +148,8 @@ class TestUpdateAvatarSamples:
 
 class TestSampleRenderClaim:
     """The cap has to be decided IN the write: reading a counter that only moves when a render
-    finishes let a double-click queue two full renders against the same reading."""
+    finishes let a double-click queue two full renders against the same reading.
+    """
 
     def test_regeneration_claim_increments_under_the_cap(self):
         conn, cur = _conn(rowcount=1)
@@ -323,7 +324,7 @@ class TestPostAvatarFlags:
 class TestInsertPostUseAvatar:
     @pytest.mark.parametrize("value,stored", [(True, 1), (False, 0), (None, None)])
     def test_compose_choice_is_persisted(self, value, stored):
-        from cqc_lem.utilities.db import PostType, PostStatus
+        from cqc_lem.utilities.db import PostStatus, PostType
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_id", return_value=3):

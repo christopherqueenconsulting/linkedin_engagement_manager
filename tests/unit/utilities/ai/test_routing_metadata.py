@@ -1,5 +1,6 @@
 """`_call_llm` tells the LiteLLM proxy which (user, feature) bucket a call belongs to, so the
-complexity router can look up its cost-aware routing policy (issue #494)."""
+complexity router can look up its cost-aware routing policy (issue #494).
+"""
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,7 +44,8 @@ class TestRoutingMetadata:
     def test_unattributed_calls_carry_the_system_sentinel(self):
         """LiteLLM's PostHog logger uses metadata.user_id as the $ai_generation distinct_id, so an
         unattributed call must still name one — otherwise every housekeeping call mints its own
-        anonymous person (issue #647)."""
+        anonymous person (issue #647).
+        """
         with patch("cqc_lem.utilities.observability.current_llm_attribution",
                    return_value=(None, None)):
             sent = _call("lem-simple")

@@ -1,8 +1,9 @@
 """Unit tests for cqc_lem.utilities.engagement_window (issue #547)."""
 
-import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -95,8 +96,7 @@ class TestPlanPrePostWindow:
         assert window.duration_seconds == 10 * 60
 
     def test_viewer_lead_is_shorter_than_comment_lead(self):
-        from cqc_lem.utilities.engagement_window import (
-            PRE_POST_COMMENT_LEAD_MINUTES, PRE_POST_VIEWER_LEAD_MINUTES)
+        from cqc_lem.utilities.engagement_window import PRE_POST_COMMENT_LEAD_MINUTES, PRE_POST_VIEWER_LEAD_MINUTES
         assert PRE_POST_VIEWER_LEAD_MINUTES < PRE_POST_COMMENT_LEAD_MINUTES
 
 
@@ -115,9 +115,14 @@ class TestMarkers:
 
     def test_each_pre_post_task_gets_its_own_marker(self, mock_redis):
         """Both pre-post tasks fire for the SAME post — the viewer dispatch must not overwrite the
-        commenting window's eta/duration (Copilot review, PR #594)."""
+        commenting window's eta/duration (Copilot review, PR #594).
+        """
         from cqc_lem.utilities.engagement_window import (
-            PRE_POST_TASK_COMMENTING, PRE_POST_TASK_VIEWER, PrePostWindow, record_pre_post_scheduled)
+            PRE_POST_TASK_COMMENTING,
+            PRE_POST_TASK_VIEWER,
+            PrePostWindow,
+            record_pre_post_scheduled,
+        )
         record_pre_post_scheduled(18, 7, PrePostWindow(eta=_NOW, duration_seconds=900, clamped=False))
         record_pre_post_scheduled(18, 7, PrePostWindow(eta=_NOW, duration_seconds=600, clamped=False),
                                   task_name=PRE_POST_TASK_VIEWER)
@@ -159,7 +164,11 @@ class TestMarkers:
 
     def test_markers_fail_open_without_redis(self, mock_track):
         from cqc_lem.utilities.engagement_window import (
-            PrePostWindow, record_pre_post_run, record_pre_post_scheduled, record_pre_post_skipped)
+            PrePostWindow,
+            record_pre_post_run,
+            record_pre_post_scheduled,
+            record_pre_post_skipped,
+        )
         record_pre_post_scheduled(15, 7, PrePostWindow(eta=_NOW, duration_seconds=900, clamped=True))
         record_pre_post_skipped(15, 7, "past_window")
         record_pre_post_run(15, 7, 1)
@@ -264,7 +273,8 @@ class TestStaggerOffsetMinutes:
 
     def test_consecutive_users_do_not_clump(self):
         """user_id % window would put ids 1..50 on 50 consecutive minutes AND on the same minute in
-        every window; the salted hash has to spread them instead."""
+        every window; the salted hash has to spread them instead.
+        """
         from cqc_lem.utilities.engagement_window import stagger_offset_minutes
         offsets = [stagger_offset_minutes(u, 180, "GOLDEN_HOUR") for u in range(1, 51)]
         assert len(set(offsets)) > 30                          # spread, not a 50-minute run
@@ -337,7 +347,8 @@ class TestPlanDailySlot:
 
     def test_local_anchor_uses_the_users_timezone(self):
         """Anchor 9 with a 1-minute window = 09:00 local, which is 13:00 UTC in New York and
-        16:00 UTC in Los Angeles — the whole point of anchoring per user."""
+        16:00 UTC in Los Angeles — the whole point of anchoring per user.
+        """
         from cqc_lem.utilities.engagement_window import plan_daily_slot
         config = _config(window_minutes=1)
         east = plan_daily_slot(7, config, "America/New_York", now=_NOW)
@@ -366,7 +377,8 @@ class TestPlanDailySlot:
 
     def test_every_user_gets_exactly_one_tick_per_day(self):
         """The property the whole design rests on: with the beat ticking every 15 minutes, each
-        user's slot matches exactly one tick — no misses, no doubles."""
+        user's slot matches exactly one tick — no misses, no doubles.
+        """
         from cqc_lem.utilities.engagement_window import plan_daily_slot
         config = _config()
         start = datetime(2026, 7, 25, 0, 0, tzinfo=timezone.utc)
@@ -407,7 +419,8 @@ class TestClaimDailySlot:
 
     def test_a_late_claim_cannot_block_the_next_days_slot(self):
         """A catch-up dispatched late in the day writes a claim that would still be alive at
-        tomorrow's slot under a flat TTL — the local date in the key is what prevents that."""
+        tomorrow's slot under a flat TTL — the local date in the key is what prevents that.
+        """
         from cqc_lem.utilities.engagement_window import claim_daily_slot
         client = MagicMock()
         client.set.return_value = True
@@ -450,14 +463,16 @@ class TestApprovedFanoutDefaults:
     def test_the_appreciation_dm_window_stays_centred_on_the_approved_off_peak_hour(self):
         """Anchor and window have to move together. Widening the window without pulling the anchor
         back would slide the batch's tail into the afternoon again (#696); narrowing it without
-        pushing the anchor forward would send the DMs earlier than the hour PR #607 approved."""
+        pushing the anchor forward would send the DMs earlier than the hour PR #607 approved.
+        """
         import cqc_lem.utilities.engagement_window as mod
         _, anchor_hour, window_minutes = mod.STAGGER_APPRECIATION_DM
         assert anchor_hour * 60 + window_minutes / 2 == mod.APPRECIATION_DM_MIDPOINT_HOUR * 60
 
     def test_the_average_dm_still_goes_out_on_the_approved_hour(self, monkeypatch):
         """The invariant above is arithmetic on the constants; this is the behaviour it buys —
-        across a fleet, the mean dispatch minute is the approved 08:00, not an hour after it."""
+        across a fleet, the mean dispatch minute is the approved 08:00, not an hour after it.
+        """
         import cqc_lem.utilities.engagement_window as mod
         name, anchor_hour, window_minutes = mod.STAGGER_APPRECIATION_DM
         for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
@@ -487,7 +502,8 @@ class TestApprovedFanoutDefaults:
         """The failure mode #696 can actually ship into: `.env.example` lists this var explicitly,
         so every existing deployment's own .env carries `APPRECIATION_DM_ANCHOR_HOUR=8` and the new
         default never reaches it. Nothing errors — the batch just goes on colliding — so config
-        resolution says it out loud instead."""
+        resolution says it out loud instead.
+        """
         import cqc_lem.utilities.engagement_window as mod
         monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "8")
         monkeypatch.delenv("APPRECIATION_DM_WINDOW_MINUTES", raising=False)
@@ -508,7 +524,8 @@ class TestApprovedFanoutDefaults:
 
     def test_a_matching_retune_of_both_halves_is_silent(self, monkeypatch):
         """Anchor and window moved together — 05:00 + 6h still centres on 08:00, which is the
-        supported retune. Warning on that would train ops to ignore the line."""
+        supported retune. Warning on that would train ops to ignore the line.
+        """
         import cqc_lem.utilities.engagement_window as mod
         monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "5")
         monkeypatch.setenv("APPRECIATION_DM_WINDOW_MINUTES", "360")
@@ -530,7 +547,8 @@ class TestApprovedFanoutDefaults:
 
     def test_the_drift_warning_is_one_line_per_process_not_one_per_beat_tick(self, monkeypatch):
         """`stagger_config` resolves once per user per 15-minute tick — an unmemoized warning would
-        be thousands of identical lines a day and PostHog noise, not a signal."""
+        be thousands of identical lines a day and PostHog noise, not a signal.
+        """
         import cqc_lem.utilities.engagement_window as mod
         monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "8")
         with patch.object(mod, "log_warning") as warn:

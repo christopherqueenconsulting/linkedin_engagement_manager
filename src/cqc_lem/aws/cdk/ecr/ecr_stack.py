@@ -1,14 +1,10 @@
 from datetime import datetime
 
 import cdk_ecr_deployment as ecrdeploy
-from aws_cdk import (
-    NestedStack,
-    aws_ecr as ecr,
-    aws_ecr_assets as ecr_assets,
-    RemovalPolicy
-)
+from aws_cdk import NestedStack, RemovalPolicy, aws_ecr as ecr, aws_ecr_assets as ecr_assets
 from aws_cdk.aws_ecr_assets import DockerImageAsset, Platform
 from constructs import Construct
+
 from cqc_lem import build_dir
 
 

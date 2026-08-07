@@ -1,7 +1,8 @@
 """Unit tests for connection-request DB helpers (issue #398)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -38,7 +39,7 @@ class TestConnectionRequestDb:
         assert "ORDER BY created_at ASC" in sql
 
     def test_get_orphaned(self):
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
         conn, cur = _conn(fetchall=[(9, 5)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_orphaned_connection_requests
@@ -54,7 +55,7 @@ class TestConnectionRequestDb:
         conn, cur = _conn()
         cur.fetchone.return_value = (4,)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import count_invites_sent_today, CONNECTION_REQUEST_SENT_MESSAGE
+            from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE, count_invites_sent_today
             assert count_invites_sent_today(1) == 4
         sql, params = cur.execute.call_args[0]
         assert "FROM logs" in sql and "action_type=%s" in sql and "message=%s" in sql and "CURDATE()" in sql
@@ -72,7 +73,7 @@ class TestConnectionRequestDb:
     def test_update_status(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_connection_request_status, ConnectionRequestStatus
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
             assert update_connection_request_status(7, ConnectionRequestStatus.SENT) is True
         assert "UPDATE connection_requests SET status" in cur.execute.call_args[0][0]
 

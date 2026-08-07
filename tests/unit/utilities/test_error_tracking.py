@@ -1,8 +1,10 @@
 """Unit tests for PostHog error tracking — capture_exception + the log_error/log_critical
-forwarding (issue #648)."""
+forwarding (issue #648).
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

@@ -7,9 +7,9 @@ through the read-only accessors the margin report uses (`get_cost_rollup` / `get
 the ledger") proven end to end, without needing a live MySQL container.
 """
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.integration
 
@@ -105,8 +105,7 @@ def _redis_with_bucket():
 class TestCostLedgerPipeline:
     def test_media_llm_and_fixed_costs_all_land_and_roll_up(self, ledger):
         from cqc_lem.app.run_scheduler import _monthly_cost_accruals
-        from cqc_lem.utilities.db import (accrue_monthly_fixed_costs, get_cost_rollup,
-                                          get_user_cost)
+        from cqc_lem.utilities.db import accrue_monthly_fixed_costs, get_cost_rollup, get_user_cost
         from cqc_lem.utilities.observability import flush_llm_cost_rollup, track_media_cost
 
         # 1. A video render for user 1 (variable, per-post).
@@ -148,8 +147,7 @@ class TestCostLedgerPipeline:
         assert by_feature["system"] == pytest.approx(52.0)   # proxy + infra accruals
 
     def test_reads_respect_the_reporting_window(self, ledger):
-        from cqc_lem.utilities.db import (get_daily_cost_totals, get_user_cost,
-                                          insert_cost_ledger_entry)
+        from cqc_lem.utilities.db import get_daily_cost_totals, get_user_cost, insert_cost_ledger_entry
 
         insert_cost_ledger_entry("content", "media", 1.0, user_id=1, incurred_on=date(2026, 6, 30))
         insert_cost_ledger_entry("content", "media", 2.0, user_id=1, incurred_on=date(2026, 7, 15))

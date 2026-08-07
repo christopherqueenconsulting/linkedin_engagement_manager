@@ -1,8 +1,9 @@
 """Coverage tests for LinkedIn poster media upload and share routing."""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

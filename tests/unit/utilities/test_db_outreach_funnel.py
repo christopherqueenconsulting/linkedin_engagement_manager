@@ -1,7 +1,8 @@
 """Unit tests for outreach-funnel DB helpers (issue #399)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -97,14 +98,14 @@ class TestOutreachFunnelDb:
     def test_update_status(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_outreach_target_status, OutreachStatus
+            from cqc_lem.utilities.db import OutreachStatus, update_outreach_target_status
             assert update_outreach_target_status(7, OutreachStatus.CANCELED) is True
         assert "UPDATE outreach_funnel_targets SET status" in cur.execute.call_args[0][0]
 
     def test_partial_update_builds_only_provided_fields(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_outreach_target, OutreachStage, OutreachStatus
+            from cqc_lem.utilities.db import OutreachStage, OutreachStatus, update_outreach_target
             assert update_outreach_target(7, draft_text="new", stage=OutreachStage.DM,
                                           status=OutreachStatus.PENDING) is True
         sql = cur.execute.call_args[0][0]

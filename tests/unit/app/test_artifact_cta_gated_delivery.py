@@ -1,6 +1,7 @@
 """Issue #624 — comment-gated artifact delivery is APPROVAL-GATED. 'Comment X and I'll send it' is
 the mechanic that makes an artifact CTA worth writing, but DM-ing every commenter at volume is a
-spam surface, so the payload lands as a pending draft in the operator's queue and never as a send."""
+spam surface, so the payload lands as a pending draft in the operator's queue and never as a send.
+"""
 from unittest.mock import patch
 
 _RA = "cqc_lem.app.run_automation"
@@ -20,7 +21,7 @@ def _queue(**overrides):
 
 class TestQueueArtifactDelivery:
     def test_queues_a_pending_draft_and_records_the_recipient(self):
-        from cqc_lem.utilities.db import ScheduledDmStatus, SCHEDULED_DM_SOURCE_ARTIFACT
+        from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_ARTIFACT, ScheduledDmStatus
         with patch(f"{_RA}.has_received_lead_magnet", return_value=False), \
              patch(f"{_RA}.has_open_scheduled_dm", return_value=False), \
              patch(f"{_RA}.count_scheduled_dms_created_today", return_value=0), \

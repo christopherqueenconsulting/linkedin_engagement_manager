@@ -1,3 +1,22 @@
+"""Content planning and generation — the Celery lane that books a user's calendar, then writes it.
+
+Two beats, deliberately separate. `auto_generate_content` PLANS: per active user it walks the
+day-type calendar to the end of the month and inserts empty `planning` rows at fixed UTC instants,
+balanced across `PLANNED_POST_TYPES` and classed by the 70/20/10 mix governor.
+`auto_create_weekly_content` WRITES: it fills only the `planning` rows due inside that user's
+rolling buffer with text, carousels, documents and video, so forward LLM and Runway spend stays
+bounded by the buffer rather than by the size of the plan. The `regenerate_*` tasks redo one asset
+or one post without disturbing the plan around it.
+
+Cadence is the invariant that bites (issue #621): the plan is NOT one post a day. It fills only
+the slots the fixed day-type calendar owns, `posting_days` bounds which weekdays may carry one at
+all, and `MIN_POST_INTERVAL` is enforced on the stored UTC instants rather than on dates —
+Thu 17:00 and Fri 11:00 are different days and still only 18 hours apart.
+
+Everything from `get_main_blog_url_content` downwards is the source-material half: fetching a
+user's own blog or sitemap so a post can be written from something they actually published.
+"""
+
 import calendar
 import json
 import os
@@ -10,68 +29,157 @@ from xml.etree import ElementTree
 import pytz
 import requests
 from bs4 import BeautifulSoup
-from cqc_lem import assets_dir
-from cqc_lem.app.my_celery import app as shared_task
-from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_website_content_post_from_ai, \
-    get_flux_image_prompt_from_ai, get_runway_ml_video_prompt_from_ai, \
-    create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
-from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
-    get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post, \
-    get_or_create_profile_synthesis, apply_post_guidance
-from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, update_db_post_content, \
-    get_last_planned_post_date_for_user, get_user_password_pair_by_id, \
-    get_user_blog_url, get_user_sitemap_url, get_active_user_ids, PostStatus, \
-    update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
-    update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
-from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_posts_within_buffer, \
-    get_next_planned_posts_after_buffer, get_next_planned_post_date, \
-    get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
-    DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, \
-    DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX, \
-    DEFAULT_POSTING_DAYS, normalize_posting_days
-from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
-    get_shape_performance, get_newsletter_settings, get_post_content_mix
-from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
-    get_post_authenticity_score, update_db_post_dwell_score, update_db_post_gate_reason
-from cqc_lem.utilities.db import get_story_bank_entries, record_story_bank_use
-from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
-                                             focus_finding, missing_asset_finding,
-                                             meeting_cta_finding, fact_grounding_finding,
-                                             slop_finding, affiliate_promo_finding,
-                                             demoting_findings)
-from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
-    find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
-    dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
-    fact_anchored_formats, weekly_post_slots, day_type_stage, day_type_formats, \
-    day_type_for_weekday, deck_slides
-from cqc_lem.utilities.ai.content_alignment import (
-    should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
-    personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
-    score_authenticity, authenticity_gate_enabled, authenticity_score_min,
-    humanize_text, ContentMix, assign_content_mix, contains_meeting_ask, meeting_ask_excerpts,
-    normalize_content_mix, replace_meeting_ask_cta)
-from cqc_lem.utilities.ai import story_bank as _story_bank
-from cqc_lem.utilities.ai.slop_lint import (lint_report as slop_lint_report,
-                                            slop_retry_directive, violation_reasons)
-from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
-    record_post_generated, record_post_failed, mark_empty, ContentGenerationEmptyReason
-from cqc_lem.utilities.notifications import notify_content_generation_ready
-from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
-    DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
-    STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
-    PREMIUM_VIDEO_CREDITS, PREMIUM_TOP_VIDEO_CREDITS
-from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
-from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
-from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
-from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
-from cqc_lem.utilities.observability import (attribute_llm_cost, llm_attribution, llm_pipeline,
-                                             llm_step, FEATURE_CONTENT)
-from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
-from cqc_lem.utilities.utils import get_post_time, create_folder_if_not_exists, \
-    save_video_url_to_dir, apply_schedule_jitter
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
+
+from cqc_lem import assets_dir
+from cqc_lem.app.my_celery import app as shared_task
+from cqc_lem.utilities.ai import story_bank as _story_bank
+from cqc_lem.utilities.ai.ai_helper import (
+    apply_post_guidance,
+    create_runway_video,
+    generate_engagement_prompt_post,
+    get_ai_linked_post_refinement,
+    get_blog_summary_post_from_ai,
+    get_flux_image_prompt_from_ai,
+    get_industry_news_post_from_ai,
+    get_or_create_profile_synthesis,
+    get_personal_story_post_from_ai,
+    get_runway_ml_video_prompt_from_ai,
+    get_thought_leadership_post_from_ai,
+    get_website_content_post_from_ai,
+    optimize_post_hook,
+)
+from cqc_lem.utilities.ai.content_alignment import (
+    ContentMix,
+    assign_content_mix,
+    authenticity_gate_enabled,
+    authenticity_score_min,
+    contains_meeting_ask,
+    ensure_lead_magnet_cta,
+    humanize_text,
+    lead_magnet_cta_directive,
+    meeting_ask_excerpts,
+    normalize_content_mix,
+    personal_proof_directive,
+    profile_topic_dna,
+    replace_meeting_ask_cta,
+    score_authenticity,
+    should_include_lead_magnet_cta,
+    topic_authority_min,
+    topic_authority_score,
+)
+from cqc_lem.utilities.ai.content_framework import (
+    day_type_for_weekday,
+    day_type_formats,
+    day_type_stage,
+    deck_slides,
+    dwell_report,
+    dwell_score_min,
+    fact_anchored_formats,
+    fact_grounding_report,
+    fact_retry_directive,
+    find_most_similar,
+    has_first_person_proof,
+    history_avoidance_directive,
+    post_similarity_max,
+    requires_fact_anchor,
+    select_blueprint,
+    shape_for_dwell,
+    weekly_post_slots,
+)
+from cqc_lem.utilities.ai.slop_lint import lint_report as slop_lint_report, slop_retry_directive, violation_reasons
+from cqc_lem.utilities.content_generation_status import (
+    ContentGenerationEmptyReason,
+    mark_empty,
+    mark_finished,
+    mark_in_progress,
+    record_post_failed,
+    record_post_generated,
+)
+from cqc_lem.utilities.db import (
+    DEFAULT_CONTENT_BUFFER_DAYS,
+    DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+    DEFAULT_POSTING_DAYS,
+    DEFAULT_POSTS_PER_WEEK,
+    MAX_CONTENT_BUFFER_DAYS,
+    MAX_CONTENT_BUFFER_POSTS,
+    POSTS_PER_WEEK_MAX,
+    POSTS_PER_WEEK_MIN,
+    PostStatus,
+    PostType,
+    count_ready_posts_within_buffer,
+    get_active_user_ids,
+    get_engagement_preferences,
+    get_last_planned_post_date_for_user,
+    get_lead_magnet_settings,
+    get_newsletter_settings,
+    get_next_planned_post_date,
+    get_next_planned_posts_after_buffer,
+    get_planned_posts_within_buffer,
+    get_post_authenticity_score,
+    get_post_content,
+    get_post_content_mix,
+    get_post_type_counts,
+    get_recent_post_shape_history,
+    get_recent_post_texts,
+    get_shape_performance,
+    get_story_bank_entries,
+    get_user_blog_url,
+    get_user_ids_with_planned_posts_within_buffer,
+    get_user_password_pair_by_id,
+    get_user_preferences,
+    get_user_sitemap_url,
+    get_user_timezone,
+    insert_planned_post,
+    normalize_posting_days,
+    record_story_bank_use,
+    update_db_post_authenticity_score,
+    update_db_post_carousel_slides,
+    update_db_post_content,
+    update_db_post_dwell_score,
+    update_db_post_gate_reason,
+    update_db_post_shape,
+    update_db_post_status,
+    update_db_post_video_url,
+)
+from cqc_lem.utilities.env_constants import (
+    AI_DISCLOSURE_ENABLED,
+    AI_DISCLOSURE_TEXT,
+    API_URL_FINAL,
+    DEFAULT_IMAGE_RATIO,
+    DEFAULT_VIDEO_RATIO,
+    PREMIUM_TOP_VIDEO_CREDITS,
+    PREMIUM_TOP_VIDEO_MODEL,
+    PREMIUM_VIDEO_CREDITS,
+    PREMIUM_VIDEO_MODEL,
+    STANDARD_VIDEO_MODEL,
+)
+from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
+from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
+from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
+from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.notifications import notify_content_generation_ready
+from cqc_lem.utilities.observability import FEATURE_CONTENT, attribute_llm_cost, llm_attribution, llm_pipeline, llm_step
+from cqc_lem.utilities.quality_gates import (
+    affiliate_promo_finding,
+    authenticity_finding,
+    demoting_findings,
+    fact_grounding_finding,
+    focus_finding,
+    meeting_cta_finding,
+    missing_asset_finding,
+    similarity_finding,
+    slop_finding,
+)
+from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
+from cqc_lem.utilities.utils import (
+    apply_schedule_jitter,
+    create_folder_if_not_exists,
+    get_post_time,
+    save_video_url_to_dir,
+)
 
 # Post types the 30-day plan balances across. Native documents (PDF decks) are 2026's
 # highest-reach format, so they get an equal share alongside text/carousel/video.
@@ -86,6 +194,11 @@ MIN_POST_INTERVAL = timedelta(hours=24)
 
 @shared_task.task
 def auto_generate_content():
+    """Beat entry point for planning: queue one `plan_content_for_user` task per active user.
+
+    Does no planning itself. Each user's month is planned as its own task, so a user whose plan
+    fails or runs long neither blocks nor half-plans anybody else's.
+    """
     # Get active users from DB
     active_users = get_active_user_ids()
     # For each user generate content for the next 30 days
@@ -147,7 +260,8 @@ def _schedule_slot_utc(post_date, user_id: int, previous_utc: Optional[datetime]
     """One slot's stored (naive UTC) time: the golden/peak hour for that weekday, clamped into the
     user's waking hours, jittered 15-30 minutes, converted from the user's zone to UTC, and finally
     held at least 24h after the previous post so a plan can never put two posts in one day-window
-    (docs/timezone-contract.md, issue #621)."""
+    (docs/timezone-contract.md, issue #621).
+    """
     post_time = apply_schedule_jitter(get_post_time(post_date, user_id))
     scheduled_datetime = datetime.combine(post_date, post_time)
     try:
@@ -165,12 +279,10 @@ def _schedule_slot_utc(post_date, user_id: int, previous_utc: Optional[datetime]
 
 @shared_task.task(bind=True, reject_on_worker_lost=True, rate_limit='1/m')
 def plan_content_for_user(self, user_id: int):
-    """
-    Generate and plan content through the end of the month on the user's day-type calendar.
+    """Generate and plan content through the end of the month on the user's day-type calendar.
     Ensures a balanced distribution of post types (carousel, text, video, document); the buyer
     journey stage now comes from the weekly slot's job rather than a uniform round-robin.
     """
-
     # 1. Review existing content in the database
     # Query the database to count the current representation of each post_type in the 'posts' table
     # Example: SELECT COUNT(*) FROM posts WHERE post_type = 'carousel'
@@ -314,7 +426,7 @@ def plan_content_for_user(self, user_id: int):
 
     # Log the final content plan for the next 30 days
     # myprint(f"Generated content plan: {daily_plan}")
-    myprint(f"Generated content plan")
+    myprint("Generated content plan")
 
     # 4. Save the daily plan to the database for tracking and scheduling
     save_content_plan(user_id, daily_plan)
@@ -324,7 +436,8 @@ def _take_planned_post_type(post_types: list, content_mix: str = None) -> str:
     """Pop the next post type off the shuffled plan list. The promo slot PREFERS a text post because
     the governor requires a case-study-shaped, no-pressure BODY, and that shaping is steered in the
     text-post prompt (carousels/videos run their own generators). Falls back to whatever is left, so
-    a plan of only carousels still schedules its promo slot."""
+    a plan of only carousels still schedules its promo slot.
+    """
     if content_mix == ContentMix.PROMO.value and PostType.TEXT.value in post_types:
         post_types.remove(PostType.TEXT.value)
         return PostType.TEXT.value
@@ -333,11 +446,21 @@ def _take_planned_post_type(post_types: list, content_mix: str = None) -> str:
 
 # Function to find the key with the highest value in a dictionary
 def get_max_key(d):
+    """Key with the highest value — the over-represented post type a slot is taken away from.
+
+    Used by `plan_content_for_user`'s distribution loop. Ties go to whichever key `max` reaches
+    first, which is fine here: the loop runs until the totals match, so an arbitrary tie-break
+    only decides WHICH equally-represented type moves.
+    """
     return max(d, key=d.get)
 
 
 # Function to find the key with the lowest value in a dictionary
 def get_min_key(d):
+    """Key with the lowest value — the under-represented post type a slot is given to.
+
+    The other half of `plan_content_for_user`'s distribution loop; see `get_max_key`.
+    """
     return min(d, key=d.get)
 
 
@@ -352,7 +475,6 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     archetype family for text posts (issue #621) so a Wednesday reads as a story and a Thursday as
     a spiky POV. Carousels and videos carry their own template menus and are unaffected.
     """
-
     video_url = None
     content = None
 
@@ -414,10 +536,10 @@ def _affiliate_promo_content(user_id: int, post_id: Optional[int],
     """The LEM-promotional post for this slot, or None to write the author's own post instead.
 
     Never raises: the (B) writer is an opt-in extra, and a user who consented to it must not lose
-    the post they would otherwise have had because it failed."""
+    the post they would otherwise have had because it failed.
+    """
     try:
-        from cqc_lem.utilities.marketing.affiliate_content import (claims_promo_slot,
-                                                                   generate_promo_post)
+        from cqc_lem.utilities.marketing.affiliate_content import claims_promo_slot, generate_promo_post
         # Asked BEFORE the prefs/synthesis reads: the answer is no on almost every post, and a
         # voice-synthesis read per planned post is a real cost to pay for an answer of "not this one".
         if not claims_promo_slot(user_id, post_id, content_mix):
@@ -433,7 +555,8 @@ def _affiliate_promo_content(user_id: int, post_id: Optional[int],
 
 def _profile_synthesis_or_none(user_id: int) -> Optional[str]:
     """The user's cached voice synthesis with no Selenium fallback — promotional copy is worth
-    matching the author's voice, never worth a browser session."""
+    matching the author's voice, never worth a browser session.
+    """
     try:
         return get_or_create_profile_synthesis(user_id, load_profile_for_user(user_id))
     except Exception as e:
@@ -451,7 +574,8 @@ def _fact_anchors(user_id: int) -> list:
 
     An empty or unreadable bank returns [], which runs everything downstream in its strictest mode:
     every specific must ship as a marked placeholder, and a draft that stated one anyway is held for
-    review. Never raises — a bank read that fails costs the credit, never the post."""
+    review. Never raises — a bank read that fails costs the credit, never the post.
+    """
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
@@ -462,7 +586,8 @@ def _fact_anchors(user_id: int) -> list:
 
 def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
     """The verified facts for the gate pass on THIS post — read only when the post's archetype is
-    actually fact-anchored, so an ordinary post never pays for a story-bank read it cannot use."""
+    actually fact-anchored, so an ordinary post never pays for a story-bank read it cannot use.
+    """
     return _fact_anchors(user_id) if requires_fact_anchor("post", archetype) else []
 
 
@@ -477,7 +602,8 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
     biases toward one, `preferred_formats` narrows the menu to the day-type calendar's family
     (#621), and `exclude_formats` takes archetypes off the menu for a caller that cannot
     honor their contract. Every input is best-effort: a history or performance read that fails costs
-    the steering, never the post."""
+    the steering, never the post.
+    """
     try:
         shape_history = get_recent_post_shape_history(user_id)
     except Exception as e:
@@ -509,7 +635,8 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
     issue #728) — that, not the size of the whole bank, is what this deck can actually write from;
     the None fallback reads the bank only because a caller with no story selected has nothing
     narrower to offer. Never raises — a carousel that loses its archetype still generates from the
-    generic slide guidance."""
+    generic slide guidance.
+    """
     try:
         anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
         return _select_post_blueprint(
@@ -525,7 +652,8 @@ def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], bluepr
     """Grade a generated DECK's specifics against the user's whole verified bank (issue #728) and log
     anything it could not back. Only for the fact-anchored archetypes, whose value IS the specifics.
     Advisory by design: the slides are rendered into images, so there is nothing a hold could fix —
-    the point is that an invented slide number is visible instead of silent. Never raises."""
+    the point is that an invented slide number is visible instead of silent. Never raises.
+    """
     fmt = (blueprint or {}).get("format")
     if not carousel or not requires_fact_anchor("post", fmt):
         return
@@ -552,11 +680,16 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     """Generate AI carousel content, render slide images, update DB, and return the post text.
 
     `guidance` is the user's free-text revision request from the regenerate flow (issue #794) — it
-    steers the CAPTION AND the slides, since on a deck the slides are the post."""
+    steers the CAPTION AND the slides, since on a deck the slides are the post.
+    """
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     from cqc_lem.utilities.carousel_creator import (
-        create_ppt, create_carousel_slide_images,
-        EducationalContentCarousel, CaseStudyCarousel, IndustryInsightsCarousel, ProductDemoCarousel,
+        CaseStudyCarousel,
+        EducationalContentCarousel,
+        IndustryInsightsCarousel,
+        ProductDemoCarousel,
+        create_carousel_slide_images,
+        create_ppt,
     )
 
     # Same alignment inputs as text posts (best-effort — carousel generation never blocks on them).
@@ -696,7 +829,8 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
 
 def _post_missing_required_asset(post_id: int, post_type, video_url) -> bool:
     """True when a video post has no video or a carousel post has no slides — used to
-    hold such posts PENDING instead of approving them to publish with no media."""
+    hold such posts PENDING instead of approving them to publish with no media.
+    """
     pt = str(post_type).lower()
     if pt == PostType.VIDEO.value:
         return not video_url
@@ -754,13 +888,18 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     the user has no credits, and to Pexels stock on error.
     Returns the remote Runway URL (http) or a local Pexels path, or None.
     """
-    from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
-    from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
+    from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for
-    from cqc_lem.utilities.db import (get_post_video_quality, get_video_credit_balance,
-                                      deduct_video_credits, refund_video_credits,
-                                      get_default_video_quality, get_user_content_language)
+    from cqc_lem.utilities.db import (
+        deduct_video_credits,
+        get_default_video_quality,
+        get_post_video_quality,
+        get_user_content_language,
+        get_video_credit_balance,
+        refund_video_credits,
+    )
+    from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
 
     quality = get_post_video_quality(post_id) if post_id else "standard"
     # Auto-planned posts default posts.video_quality to 'standard'; honor the user's per-user
@@ -840,6 +979,14 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
 
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple[str, str | None]:
+    """Write a video post: the text first, then a video generated to match it.
+
+    Returns:
+        `(text_content, video_url)`. The URL is None when BOTH the generator and the Pexels stock
+        fallback came back empty — `_generate_video_src` never raises and refunds any video
+        credits it spent, so this returns usable text with no asset rather than failing.
+        `_post_missing_required_asset` is what turns that into a flagged post downstream.
+    """
     # Get Text Content
     text_content = create_text_post(user_id, stage, post_id=post_id)
     # Load profile once so the image prompt is brand/role-aligned
@@ -851,7 +998,8 @@ def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple
 def _store_video_asset(post_id: int, video_src_url: str) -> str:
     """Download a generated video into the shared assets volume, attach C2PA credentials to AI
     output, persist posts.video_url, and return the public API asset URL. The ONE place a
-    regenerated video is stored — both the asset-only healer and the full post regenerate use it."""
+    regenerated video is stored — both the asset-only healer and the full post regenerate use it.
+    """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
     video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
@@ -930,8 +1078,12 @@ def regenerate_post_carousel_task(post_id: int):
     failure, so a failed regeneration stays flagged for manual/dev attention.
     """
     from cqc_lem.utilities.db import (
-        get_post_user_id, get_post_buyer_stage, update_db_post_content,
-        get_post_carousel_slides, update_db_post_status, get_post_status,
+        get_post_buyer_stage,
+        get_post_carousel_slides,
+        get_post_status,
+        get_post_user_id,
+        update_db_post_content,
+        update_db_post_status,
     )
     user_id = get_post_user_id(post_id)
     if not user_id:
@@ -955,7 +1107,8 @@ def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
                                  user_profile: LinkedInProfile, guidance: str) -> str:
     """Apply the user's free-text guidance to a generated text caption, then sanitize and repair
     deterministic CTAs that LLM rewrites can drop. Returns the caption unchanged if guidance is
-    empty or the rewrite fails."""
+    empty or the rewrite fails.
+    """
     guidance = (guidance or "").strip()
     if not guidance or not content:
         return content
@@ -977,7 +1130,8 @@ def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
 
 def _post_is_flagged_error(post_id: int) -> bool:
     """Did the media step just flag this post 'error'? Never raises — an unreadable status falls
-    back to the normal PENDING reset rather than stranding a good post."""
+    back to the normal PENDING reset rather than stranding a good post.
+    """
     try:
         from cqc_lem.utilities.db import get_post_status
         return get_post_status(post_id) == PostStatus.ERROR.value
@@ -991,7 +1145,8 @@ def _finish_regenerated_post(user_id: int, post_id: int, content: str,
                              ai_media: bool = False) -> str:
     """Shared close-out for a regenerated post: disclose AI visuals, persist content, re-score
     dwell, refresh gate findings, and reset the post to PENDING for re-review. Returns the content
-    as PERSISTED — the caller must return this, not its pre-disclosure copy."""
+    as PERSISTED — the caller must return this, not its pre-disclosure copy.
+    """
     # Regeneration replaces the whole caption, so the old draft's disclosure line went with it —
     # re-apply it here or a regenerated video/avatar post ships undisclosed (issue #744).
     if ai_media or _post_used_avatar_media(post_id):
@@ -1015,8 +1170,9 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
     user's saved engagement settings (voice/tone, focus/goals, emoji/hashtag prefs, anti-self-promo)
     — then folds in optional free-text `guidance`. Mirrors regenerate_newsletter_edition. Resets
     the post to PENDING so the user re-reviews. Works for text, carousel, document, and video posts
-    (issue #794)."""
-    from cqc_lem.utilities.db import get_post_user_id, get_post_buyer_stage, get_post_type
+    (issue #794).
+    """
+    from cqc_lem.utilities.db import get_post_buyer_stage, get_post_type, get_post_user_id
 
     user_id = get_post_user_id(post_id)
     if not user_id:
@@ -1094,7 +1250,8 @@ def regenerate_post_task(post_id: int, guidance: str = None):
 
 def _post_content_mix(post_id: int) -> Optional[str]:
     """The post's assigned 70/20/10 class — a regenerate has to keep it or the plan's mix silently
-    drifts. Best-effort: an unreadable class only costs the mix steering, never the regenerate."""
+    drifts. Best-effort: an unreadable class only costs the mix steering, never the regenerate.
+    """
     try:
         return get_post_content_mix(post_id)
     except Exception as e:
@@ -1112,7 +1269,8 @@ def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_i
     (default OFF, the COMMENT_RESEARCH_ENABLED cost-gating pattern) lets an LLM relevance check rescue
     keyword misses — it only fires when the heuristic already failed, so the default path costs
     nothing. An off-niche post logs a structured warning (with its score) and never blocks the
-    pipeline."""
+    pipeline.
+    """
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
     if not topics or not content:
         return True
@@ -1137,7 +1295,8 @@ def _proof_regen_enabled() -> bool:
     at call time (the POST_SIMILARITY_MAX / research-toggle live-env pattern) so ops can dial the
     extra generation cost back without a restart. Defaults ON — the reject/regenerate is the point of
     issue #383; the detector still runs and warns even when regeneration is off, so the A1/anti-slop
-    signal is never lost."""
+    signal is never lost.
+    """
     return str(os.getenv("POST_PROOF_REGEN_ENABLED", "on")).strip().lower() in (
         "1", "true", "yes", "on")
 
@@ -1146,7 +1305,8 @@ def _fabrication_regen_enabled() -> bool:
     """Whether a draft that states a first-person specific we never gave it is regenerated (vs. only
     logged). Same live-env pattern as POST_PROOF_REGEN_ENABLED; defaults ON because a fabricated
     number about the author is the one failure the story bank exists to prevent (issues #620/#416).
-    Only ever consulted when a story entry WAS selected — without one there is no allow-list."""
+    Only ever consulted when a story entry WAS selected — without one there is no allow-list.
+    """
     return str(os.getenv("POST_FABRICATION_REGEN_ENABLED", "on")).strip().lower() in (
         "1", "true", "yes", "on")
 
@@ -1155,7 +1315,8 @@ def _select_story_for_post(user_id: int, prefs: dict = None,
                            blueprint: dict = None) -> Optional[dict]:
     """The one story-bank entry this post is anchored to, or None when the bank can't ground it
     (empty, all retired, or nothing related to the user's focus topics). Never fatal — a DB hiccup
-    just falls back to the no-fabrication directive."""
+    just falls back to the no-fabrication directive.
+    """
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
@@ -1172,7 +1333,8 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
     """Run the authenticity gate's LLM judge on a finished draft and persist the 0-100 score (issue
     #382). This only SCORES + records; the demotion to PENDING happens in the content-plan
     status-setter, which reads the score back. No-op when the gate is disabled. Best-effort — a scorer
-    or DB hiccup never blocks generation (score_authenticity itself fails open)."""
+    or DB hiccup never blocks generation (score_authenticity itself fails open).
+    """
     if not authenticity_gate_enabled():
         return
     try:
@@ -1196,7 +1358,8 @@ def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
     """Whether this draft is affiliate promotion — scoped to the post's OWN author's referral code,
     the same way the publish gate grades it, so a post that quotes somebody else's link is not held
     as if it were this author's paid endorsement. Unreadable ownership reads as 'not affiliate': the
-    hold is a review courtesy, and the publish gate is what actually enforces the disclosure."""
+    hold is a review courtesy, and the publish gate is what actually enforces the disclosure.
+    """
     try:
         from cqc_lem.utilities.db import get_post_user_id
         from cqc_lem.utilities.marketing.affiliate import is_affiliate_content
@@ -1297,7 +1460,8 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
                             video_url: Optional[str] = None) -> list[dict]:
     """The generation-time gate pass: the gates that can hold a fresh draft (media + authenticity),
     evaluated against the user's own thresholds. Best-effort — the reason is review UX, so a prefs
-    or score read that fails costs the explanation, never the post."""
+    or score read that fails costs the explanation, never the post.
+    """
     try:
         score = get_post_authenticity_score(post_id)
     except Exception as e:
@@ -1323,7 +1487,8 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
 def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
     """The lead-magnet trigger word this post is allowed to ask for, so the slop lint's bait check
     exempts a sanctioned "Comment KEYWORD" CTA (the same exemption `strip_engagement_bait` makes at
-    generation time). Never raises — an unreadable setting just means no exemption."""
+    generation time). Never raises — an unreadable setting just means no exemption.
+    """
     try:
         lead_magnet = get_lead_magnet_settings(user_id)
     except Exception as e:
@@ -1336,7 +1501,8 @@ def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
 
 def _post_archetype_or_none(post_id: int) -> Optional[str]:
     """The post's assigned archetype (V51), never raising — an unreadable one just means the
-    archetype-specific gates are skipped for this pass, exactly like an unreadable score does."""
+    archetype-specific gates are skipped for this pass, exactly like an unreadable score does.
+    """
     try:
         from cqc_lem.utilities.db import get_post_archetype
         return get_post_archetype(post_id)
@@ -1347,7 +1513,8 @@ def _post_archetype_or_none(post_id: int) -> Optional[str]:
 
 def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> None:
     """Best-effort write of the gate findings onto the post (issue #421). The reason is review UX —
-    losing it must never fail generation or a re-score."""
+    losing it must never fail generation or a re-score.
+    """
     try:
         update_db_post_gate_reason(post_id, findings)
     except Exception as e:
@@ -1356,7 +1523,8 @@ def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> 
 
 def _engagement_prefs_or_empty(user_id: int) -> dict:
     """Engagement preferences for threshold resolution, never raising — a prefs read that fails just
-    means the gates fall back to the deploy-wide defaults."""
+    means the gates fall back to the deploy-wide defaults.
+    """
     try:
         return get_engagement_preferences(user_id) or {}
     except Exception as e:
@@ -1374,8 +1542,7 @@ def rescore_post(post_id: int) -> dict:
     Returns {passed, status, authenticity_score, findings, detail} — never raises for a missing post,
     the caller turns that into a 404.
     """
-    from cqc_lem.utilities.db import (get_post_type, get_post_video_url, get_post_user_id,
-                                      get_post_status)
+    from cqc_lem.utilities.db import get_post_status, get_post_type, get_post_user_id, get_post_video_url
 
     user_id = get_post_user_id(post_id)
     content = get_post_content(post_id)
@@ -1433,7 +1600,8 @@ def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Option
     """Compute the deterministic dwell-proxy score for a finished post and persist it next to the
     authenticity score (issue #391 — C2). No LLM, no gate: dwell is the dominant 2026 ranking signal
     but our score is a heuristic proxy, so a weak one only logs the specific structural reasons for
-    review. Best-effort — a DB hiccup never blocks the pipeline."""
+    review. Best-effort — a DB hiccup never blocks the pipeline.
+    """
     if not content or post_id is None:
         return None
     try:
@@ -1465,7 +1633,8 @@ def _fabricated_specifics(content: str, story: Optional[dict],
     meaningful when a story entry was selected: with no entry there is no allow-list, so every
     number would look fabricated and the check is skipped entirely. `extra_sources` covers other
     text we legitimately handed the writer (e.g. the lead-magnet CTA directive, whose keyword or
-    resource name can carry a number) so it is never flagged as invented."""
+    resource name can carry a number) so it is never flagged as invented.
+    """
     if not story or not content:
         return []
     return _story_bank.unsourced_specifics(
@@ -1491,7 +1660,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     avoid/proof/no-invention directive; still failing → log a structured warning and keep the second
     attempt (never loop, never hard-block — the fact-grounding GATE is what holds a still-fabricating
     fact-anchored draft out of auto-publish). Also runs the cheap focus-alignment check on whatever
-    content ships."""
+    content ships.
+    """
     threshold = post_similarity_max(prefs)
     score, match = find_most_similar(content, recent_texts)
     too_similar = score > threshold
@@ -1595,8 +1765,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                      lead_magnet_cta: str = None, history_directive: str = None,
                      similarity_check: bool = True, story_directive: str = None,
                      content_mix: str = None, day_weekday: int = None):
-    """
-    Generate a text post for LinkedIn based on the user's profile, blog, or website content.
+    """Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
     Parameters:
     - user_id: ID of user to grab user profile
@@ -1608,7 +1777,6 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     Returns:
     - str: Generated text post content.
     """
-
     final_content = None
 
     content_mix = normalize_content_mix(content_mix)
@@ -1946,8 +2114,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
 
 
 def get_main_blog_url_content(blog_url):
-    """
-    Retrieve recent posts from a blog, randomly select one, and send the post content to another function.
+    """Retrieve recent posts from a blog, randomly select one, and send the post content to another function.
 
     Parameters:
     - blog_url (str): URL of the blog's homepage.
@@ -2021,8 +2188,7 @@ def get_main_blog_url_content(blog_url):
 
 
 def scrape_recent_posts(blog_url):
-    """
-    Fallback method to scrape recent posts from a non-WordPress blog.
+    """Fallback method to scrape recent posts from a non-WordPress blog.
 
     Parameters:
     - blog_url (str): URL of the blog's homepage.
@@ -2066,8 +2232,7 @@ def scrape_recent_posts(blog_url):
 
 
 def process_selected_post(url, content):
-    """
-    Process the selected post's content and URL.
+    """Process the selected post's content and URL.
 
     Parameters:
     - content (str): The text content of the selected post.
@@ -2098,11 +2263,9 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
                                   profile_synthesis: Optional[str] = None, blueprint: dict = None,
                                   lead_magnet_cta: str = None, history_directive: str = None,
                                   story_directive: str = None, content_mix: str = None):
-    """
-    Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
+    """Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
     """
-
     # 1. Fetch and parse the sitemap XML
     page_urls = fetch_sitemap_urls(sitemap_url)
     myprint(f"Founds {len(page_urls)} URLs from sitemap {sitemap_url}")
@@ -2142,6 +2305,18 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
 
 
 def get_session_for_response() -> Tuple[requests.Session, dict]:
+    """A retrying `requests` Session, plus the browser-shaped headers to send with it.
+
+    A user's own marketing site is the flakiest dependency in this pipeline and often refuses a
+    default `python-requests` UA outright, hence the desktop-Chrome header set and five backed-off
+    retries covering 403 and 429 as well as 5xx. Retries are restricted to HEAD/GET so nothing
+    replayable is ever a write.
+
+    Returns:
+        `(session, headers)` — the headers are deliberately NOT mounted on the session, so a
+        caller that forgets to pass them through to `session.get` sends the default UA and gets
+        blocked by exactly the sites this exists for.
+    """
     # Set up headers to simulate a browser request
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.91 Safari/537.36',
@@ -2169,6 +2344,18 @@ def get_session_for_response() -> Tuple[requests.Session, dict]:
 
 # Function to make a request and return parsed HTML content
 def fetch_content(url):
+    """Fetch a URL's raw bytes for the blog/sitemap scrapers.
+
+    Every `requests` failure — HTTP status, connection, timeout, anything else — is logged and
+    swallowed. Source material is an ENRICHMENT for a post, so an unreachable site is meant to
+    degrade the content rather than fail a generation task.
+
+    Returns:
+        `response.content` (bytes), or **None** when the fetch failed. None is not a benign empty
+        string: callers hand this straight to BeautifulSoup / `ElementTree.fromstring`, both of
+        which raise `TypeError` on None, and their own `except` clauses only cover
+        `requests.RequestException` / `ParseError`.
+    """
     session, headers = get_session_for_response()
 
     content = None
@@ -2196,8 +2383,7 @@ def fetch_content(url):
 
 
 def fetch_sitemap_urls(sitemap_url):
-    """
-    Fetch and parse the sitemap XML to get a list of URLs, including any sub-sitemaps.
+    """Fetch and parse the sitemap XML to get a list of URLs, including any sub-sitemaps.
 
     Parameters:
     - sitemap_url (str): The URL of the main sitemap.
@@ -2254,8 +2440,7 @@ def fetch_sitemap_urls(sitemap_url):
 
 
 def filter_relevant_urls(urls: list[str], by_blog_post_check=True, max_list_size=10):
-    """
-    Filter the URLs to keep only those that are likely to be a blog post or contain shareable content.
+    """Filter the URLs to keep only those that are likely to be a blog post or contain shareable content.
     """
     keywords = ["blog", "case-study", "testimonial", "service", "news", "about"]
 
@@ -2271,8 +2456,7 @@ def filter_relevant_urls(urls: list[str], by_blog_post_check=True, max_list_size
 
 
 def extract_page_content(page_url):
-    """
-    Extract key content from the page, such as the title, main points, or summary.
+    """Extract key content from the page, such as the title, main points, or summary.
     """
     try:
         content = fetch_content(page_url)
@@ -2331,7 +2515,6 @@ def auto_create_weekly_content(user_id: int = None):
     generated nothing) while keeping forward LLM/video spend bounded to the buffer size — the
     same bounded path the /create_weekly_content/ button runs, so it can't be spammed.
     """
-
     if user_id is not None:
         myprint(f"Creating buffer content for user id: {user_id}")
         user_ids = [user_id]
@@ -2596,6 +2779,12 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
 
 
 def is_blog_post(url):
+    """Cheap offline guess from the URL shape alone: an article, or a section/landing page?
+
+    True on a digit-bearing path segment (a date or a post id) or on more than one segment. Costs
+    nothing, which is why `is_blog_post_combined` asks it first and only pays for a page fetch on
+    the URLs it rejects.
+    """
     parsed = urlparse(url)
     path = parsed.path.strip('/')
 
@@ -2606,6 +2795,12 @@ def is_blog_post(url):
 
 
 def is_blog_post_by_metadata(url):
+    """Second opinion for a URL whose shape said nothing: does the page declare a `meta` author?
+
+    Costs a full page fetch, so it runs only after `is_blog_post` has said no. Any fetch or parse
+    failure reads as False — an unreadable page is not evidence of an article, and the cost of
+    that false negative is one candidate URL dropped from the source material.
+    """
     try:
         content = fetch_content(url)
         # myprint(f"Fetched URL: {url}: Content: {content}")
@@ -2621,6 +2816,12 @@ def is_blog_post_by_metadata(url):
 
 
 def is_blog_post_combined(url):
+    """Is this URL worth scraping for post source material? Shape first, metadata only if needed.
+
+    `filter_relevant_urls` runs this over every URL in a user's sitemap, so the ordering is the
+    point: the free URL test settles most candidates and only what it rejects is paid for with a
+    fetch.
+    """
     if is_blog_post(url):
         return True
     if is_blog_post_by_metadata(url):

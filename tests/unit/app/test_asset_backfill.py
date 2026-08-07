@@ -1,7 +1,8 @@
 """Unit tests for the asset-backfill safety net + missing-asset guard."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

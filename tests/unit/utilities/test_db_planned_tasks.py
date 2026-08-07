@@ -1,8 +1,9 @@
 """Unit tests for get_planned_tasks and the default_video_quality getter/setter."""
 
 import datetime
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -58,7 +59,7 @@ class TestGetPlannedTasks:
     def test_uses_non_terminal_status_enums_for_posts(self):
         conn, cur = _conn_fetchall([[], [], []])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_planned_tasks, PostStatus, ScheduledDmStatus
+            from cqc_lem.utilities.db import PostStatus, ScheduledDmStatus, get_planned_tasks
             get_planned_tasks(1)
         post_params = cur.execute.call_args_list[0][0][1]
         assert PostStatus.PENDING.value in post_params

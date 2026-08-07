@@ -1,5 +1,6 @@
 """Configurability-audit tests for DEFAULT_POSTING_HOURS: the weekday→hour default posting model
-is env-overridable per deploy, and any invalid value falls back to the built-in 2026 peak model."""
+is env-overridable per deploy, and any invalid value falls back to the built-in 2026 peak model.
+"""
 
 from datetime import date, time
 

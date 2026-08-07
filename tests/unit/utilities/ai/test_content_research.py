@@ -1,8 +1,10 @@
 """Unit tests for the SHARED research layer (all I/O mocked) used by newsletters, posts, and
-comments — including the per-type cost toggles (comment research OFF by default)."""
+comments — including the per-type cost toggles (comment research OFF by default).
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities.ai import content_research as cr
 

@@ -233,7 +233,8 @@ def test_referral_from_an_unknown_referrer_is_rejected():
 
 def test_a_referrer_who_predates_the_program_is_enrolled_not_rejected():
     """The whole existing user base has no enrollment row until they open the Account page. Their
-    links have to work, or the program launches with every referral silently zeroed."""
+    links have to work, or the program launches with every referral silently zeroed.
+    """
     result, calls = _run_attribute(9, {"ref": "42"}, enrollment=None)
     assert result["status"] == affiliate.REFERRAL_PENDING
     assert calls["record"]["status"] == affiliate.REFERRAL_PENDING
@@ -324,7 +325,8 @@ def _enroll(bonus_days: int, created: bool,
 
 def test_joining_is_counted_even_when_no_join_bonus_is_configured():
     """The shipped policy pays nothing for joining, so `affiliate_enrolled` cannot hang off a grant —
-    the marketing funnel still has to count the enrollment."""
+    the marketing funnel still has to count the enrollment.
+    """
     events, grant = _enroll(bonus_days=0, created=True)
     assert grant.call_count == 0
     assert [c.args[0] for c in events] == ["affiliate_enrolled"]
@@ -361,7 +363,8 @@ def _state(totals: dict, bonus_days: int = 0) -> dict:
 
 def test_the_state_reports_what_leaving_would_actually_revoke_not_the_configured_bonus():
     """The user enrolled under the old defaults still HOLDS +7 that opting out claws back, even
-    though joining now pays 0 — so the copy that tells them what leaving costs cannot read config."""
+    though joining now pays 0 — so the copy that tells them what leaving costs cannot read config.
+    """
     state = _state({"total": 21, "enrollment": 7, "referral": 14, "revoked": 0})
     assert state["bonus_days"] == 0                  # what joining pays today
     assert state["revocable_bonus_days"] == 7        # what leaving takes back from THIS user
@@ -374,7 +377,8 @@ def test_earned_referral_days_are_never_reported_as_revocable():
 
 def test_an_already_revoked_join_bonus_is_no_longer_revocable():
     """Opt out, opt back in with the bonus now off: the ledger nets to zero and leaving is free
-    again. Same arithmetic `revoke_affiliate_enrollment_bonus` uses, so the two cannot disagree."""
+    again. Same arithmetic `revoke_affiliate_enrollment_bonus` uses, so the two cannot disagree.
+    """
     state = _state({"total": 14, "enrollment": 7, "referral": 14, "revoked": -7})
     assert state["revocable_bonus_days"] == 0
 

@@ -68,7 +68,8 @@ def tier_mrr_usd(tier: Optional[str]) -> float:
 def split_cost_by_kind(by_category: Optional[Mapping[str, float]]) -> dict:
     """Bucket a `{category: usd}` rollup into the §C.1 kinds:
     `{"variable", "semi_variable", "fixed"}`. Proxy is semi-variable (linear-ish in users), infra is
-    fixed/amortized, everything else — including categories added later — is variable."""
+    fixed/amortized, everything else — including categories added later — is variable.
+    """
     out = {"variable": 0.0, "semi_variable": 0.0, "fixed": 0.0}
     for category, usd in (by_category or {}).items():
         key = ("fixed" if category in FIXED_CATEGORIES else
@@ -79,7 +80,8 @@ def split_cost_by_kind(by_category: Optional[Mapping[str, float]]) -> dict:
 
 def monthly_run_rate(period_usd: float, period_days: float) -> float:
     """Scale a window's spend to a monthly run rate so it is comparable with monthly MRR. A
-    non-positive window returns the spend unchanged rather than dividing by zero."""
+    non-positive window returns the spend unchanged rather than dividing by zero.
+    """
     if period_days <= 0:
         return float(period_usd or 0.0)
     return float(period_usd or 0.0) * (DAYS_PER_MONTH / float(period_days))
@@ -93,7 +95,8 @@ def contribution_margin(mrr_usd: float, variable_cost_usd: float,
 
 def margin_pct(margin_usd: float, mrr_usd: float) -> Optional[float]:
     """Margin as a fraction of revenue. None when there is no revenue — CM% is undefined then, and
-    reporting 0% would read as "breaking even" for a free trial that is actually pure cost."""
+    reporting 0% would read as "breaking even" for a free trial that is actually pure cost.
+    """
     if not mrr_usd or float(mrr_usd) <= 0:
         return None
     return float(margin_usd or 0.0) / float(mrr_usd)
@@ -114,7 +117,8 @@ def fully_loaded_margin(contribution_margin_usd: float, allocated_fixed_usd: flo
 def system_gross_margin(total_mrr_usd: float, total_variable_usd: float,
                         total_semi_variable_usd: float, infra_monthly_usd: float) -> dict:
     """§C.1 system block: `gross_margin$ = ΣMRR − Σvariable − Σsemi_var − INFRA_FIXED_MONTHLY` and
-    `gross_margin% = gross_margin$ / ΣMRR` (None with no revenue)."""
+    `gross_margin% = gross_margin$ / ΣMRR` (None with no revenue).
+    """
     gross = (float(total_mrr_usd or 0.0) - float(total_variable_usd or 0.0)
              - float(total_semi_variable_usd or 0.0) - float(infra_monthly_usd or 0.0))
     return {"gross_margin_usd": gross, "gross_margin_pct": margin_pct(gross, total_mrr_usd)}
@@ -128,7 +132,8 @@ def ltv_usd(avg_monthly_cm_usd: float, expected_lifetime_months: float) -> float
 def payback_months(cac_usd: float, avg_monthly_cm_usd: float) -> Optional[float]:
     """§C.1 `payback = CAC / avg_monthly_contribution_margin`. None when CM ≤ 0 — a negative-margin
     customer never pays back — and None when CAC is unknown/0, which would otherwise report an
-    instant payback."""
+    instant payback.
+    """
     if not cac_usd or float(cac_usd) <= 0:
         return None
     if not avg_monthly_cm_usd or float(avg_monthly_cm_usd) <= 0:
@@ -150,7 +155,8 @@ def _cell(row: Sequence, index: int):
 def _window_metric(rows: Sequence) -> dict:
     """Engagement for one set of post-stat rows: impression-normalized RATE when every row carries
     impressions, else average weighted engagement per post (the same rate-mode gate `post_stats`
-    uses, so a partial-impression window is never mixed with a complete one)."""
+    uses, so a partial-impression window is never mixed with a complete one).
+    """
     if not rows:
         return {"metric": None, "value": None, "samples": 0}
     if all(int(_cell(r, _IDX_IMPRESSIONS) or 0) > 0 for r in rows):
@@ -166,7 +172,8 @@ def engagement_lift(rows: Iterable[Sequence], window_start: date) -> dict:
     """§B.2 engagement lift: the user's engagement in the report window vs. their EARLIER posts.
     `rows` are `db.get_post_engagement_rows` tuples (latest stats per post + its posted time).
     Returns `{"current", "baseline", "metric", "lift_pct", "samples", "baseline_samples"}`;
-    `lift_pct` is None unless both windows have data on the SAME metric and a positive baseline."""
+    `lift_pct` is None unless both windows have data on the SAME metric and a positive baseline.
+    """
     current, baseline = [], []
     for row in rows or []:
         scheduled = _cell(row, _IDX_SCHEDULED) if row else None
@@ -198,7 +205,8 @@ def build_daily_margin_block(day: date, spend_by_feature: Optional[Mapping[str, 
 
     `spend_usd` / `cost_by_feature` are TODAY's spend; the margin figures are MONTH-TO-DATE against
     the current MRR run rate, because §C.1 margin is a monthly quantity — so the daily line trends
-    toward the true month-end margin as the month fills in."""
+    toward the true month-end margin as the month fills in.
+    """
     by_feature = {str(k): round(float(v or 0.0), 6) for k, v in (spend_by_feature or {}).items()}
     kinds = split_cost_by_kind(mtd_cost_by_category)
     cm = contribution_margin(total_mrr_usd, kinds["variable"], kinds["semi_variable"])
@@ -227,7 +235,8 @@ def build_margin_report(period_start: date, period_end: date, users: Sequence[Ma
     Every cost figure is put on a MONTHLY RUN-RATE basis (`period spend × 30.4375 / period_days`) so
     it is comparable with monthly MRR and the §C.1 formulas apply unchanged; the raw window spend
     rides along as `period_cost_usd`. Each `users` entry is
-    `{"user_id", "tier", "cohort", "cost_by_category", "engagement"}`."""
+    `{"user_id", "tier", "cohort", "cost_by_category", "engagement"}`.
+    """
     days = max((period_end - period_start).days + 1, 1)
     rows, margins, total_mrr, total_variable, total_semi = [], [], 0.0, 0.0, 0.0
     attributed = 0.0
@@ -315,7 +324,8 @@ def build_margin_report(period_start: date, period_end: date, users: Sequence[Ma
 
 def _build_cohorts(rows: Sequence[Mapping]) -> list:
     """Per signup-month cohort aggregates (§B.2): CM, CM% and engagement lift, so a newer cohort can
-    be read against an older one. Sorted by cohort so the trend reads top-to-bottom."""
+    be read against an older one. Sorted by cohort so the trend reads top-to-bottom.
+    """
     groups: dict = {}
     for row in rows:
         groups.setdefault(row.get("cohort") or "unknown", []).append(row)
@@ -347,7 +357,8 @@ def _usd(value: Optional[float]) -> str:
 
 def render_margin_report_text(report: Mapping) -> str:
     """Plain-text owner report — also the plaintext alternative of the email (a missing text/plain
-    part is a spam signal, see `email._dispatch_email`)."""
+    part is a spam signal, see `email._dispatch_email`).
+    """
     period, system, unit = report.get("period", {}), report.get("system", {}), report.get("unit_economics", {})
     lines = [f"LEM margin report — {period.get('start')} → {period.get('end')} "
              f"({period.get('days')}d, {period.get('basis')} basis)", ""]
@@ -387,7 +398,8 @@ def render_margin_report_text(report: Mapping) -> str:
 
 def render_margin_report_html(report: Mapping) -> str:
     """HTML body of the owner email — the text report in a <pre> block keeps it readable in every
-    client without a template, and the numbers are identical to the plaintext part."""
+    client without a template, and the numbers are identical to the plaintext part.
+    """
     body = (render_margin_report_text(report)
             .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     return ("<h2>LEM margin report</h2><pre style=\"font-family:ui-monospace,monospace;"
@@ -419,8 +431,7 @@ def collect_daily_margin_block(day: Optional[date] = None) -> dict:
 
 def collect_margin_report(end: Optional[date] = None, days: int = 7) -> dict:
     """Read the trailing `days` window per user and build the weekly report."""
-    from cqc_lem.utilities.db import (cost_ledger_available, get_cost_rollup, get_margin_users,
-                                      get_post_engagement_rows)
+    from cqc_lem.utilities.db import cost_ledger_available, get_cost_rollup, get_margin_users, get_post_engagement_rows
 
     end = end or _today()
     start = end - timedelta(days=max(days, 1) - 1)
@@ -448,7 +459,8 @@ def send_weekly_margin_report(report: Optional[Mapping] = None,
                               to_email: Optional[str] = None) -> dict:
     """Deliver the weekly report to the owner: email + a PostHog `margin_report` event for the
     unit-economics scorecard (§E.1.4). Returns `{"emailed": bool, "tracked": bool, "report": ...}` —
-    delivery failures are logged, never raised, so a beat run is not lost over an email hiccup."""
+    delivery failures are logged, never raised, so a beat run is not lost over an email hiccup.
+    """
     from cqc_lem.utilities.email import _dispatch_email
     from cqc_lem.utilities.observability import track_margin_report
 
@@ -480,6 +492,17 @@ def send_weekly_margin_report(report: Optional[Mapping] = None,
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point (`python -m cqc_lem.utilities.margin`) for both consumers named at the top.
+
+    `--daily-json` prints ONE JSON object on stdout and nothing else, because `scripts/perf_snapshot.sh`
+    reads the last line of this command's output straight into `metrics.jsonl` — any extra printing
+    on that path corrupts the snapshot. The printed output IS the product here, which is why `T201`
+    must never be "fixed" in this function.
+
+    Returns:
+        A process exit code: 0 when a report was produced, 1 when no mode was selected (help is
+        printed instead), so a mistyped cron line fails loudly rather than logging a silent success.
+    """
     parser = argparse.ArgumentParser(description="LEM cost/margin reporting")
     parser.add_argument("--daily-json", action="store_true",
                         help="print today's cost/margin block as one JSON object (snapshot.sh)")

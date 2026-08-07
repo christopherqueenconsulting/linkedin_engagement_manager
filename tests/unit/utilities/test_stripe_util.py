@@ -1,8 +1,9 @@
 """Unit tests for cqc_lem.utilities.stripe_util."""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -55,6 +56,7 @@ class TestGetStripe:
     def test_sets_api_key_and_returns_stripe_module(self):
         """_get_stripe() must set stripe.api_key and return the stripe module."""
         import stripe as real_stripe
+
         from cqc_lem.utilities.stripe_util import _get_stripe
 
         with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_set_by_test"):
@@ -68,6 +70,7 @@ class TestGetStripe:
     def test_returns_stripe_module_even_without_key(self):
         """_get_stripe() succeeds even when STRIPE_API_KEY is empty."""
         import stripe as real_stripe
+
         from cqc_lem.utilities.stripe_util import _get_stripe
 
         with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", None):
@@ -167,7 +170,7 @@ class TestCreateCheckoutSession:
         with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_key"), \
              patch("cqc_lem.utilities.stripe_util.TIER_PRICE_MAP", {"starter": "price_starter_id"}), \
              patch("cqc_lem.utilities.stripe_util._get_stripe", return_value=mock_stripe):
-            from cqc_lem.utilities.stripe_util import create_checkout_session, STRIPE_MAX_TRIAL_DAYS
+            from cqc_lem.utilities.stripe_util import STRIPE_MAX_TRIAL_DAYS, create_checkout_session
             create_checkout_session("cus_abc", "starter", "https://e.com/s", "https://e.com/c",
                                     trial_period_days=5000)
 

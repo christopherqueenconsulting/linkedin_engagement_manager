@@ -4,8 +4,9 @@ An empty invitation manager is the normal steady state and must NOT page the err
 accepting must pair each click with its own card so we only DM people we actually connected with.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -14,7 +15,8 @@ _RA = "cqc_lem.app.run_automation"
 
 def _card(href="https://www.linkedin.com/in/jane?trk=x", link_text="Jane Doe", accept=True):
     """A mock invitation card: find_elements answers the profile-link chain first, then the
-    accept-button chain (the locator chains are disjoint, so dispatch on the selector value)."""
+    accept-button chain (the locator chains are disjoint, so dispatch on the selector value).
+    """
     link = MagicMock()
     link.get_attribute.return_value = href
     link.text = link_text
@@ -88,6 +90,7 @@ class TestAcceptConnectionRequest:
     def test_a_failed_click_is_warned_not_errored_and_is_not_dmed(self, _session):
         """A stale/blocked accept must not enter the return dict — we only DM people we connected with."""
         from selenium.common import ElementNotInteractableException
+
         from cqc_lem.app.run_automation import accept_connection_request
         jane = _card(href="https://www.linkedin.com/in/jane", link_text="Jane Doe")
         jane.accept_button.click.side_effect = ElementNotInteractableException("covered")

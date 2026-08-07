@@ -4,8 +4,9 @@ Tests that make live API calls are skipped when PEXELS_API_KEY is absent.
 Structural/fallback tests run without a key.
 """
 import os
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 @pytest.mark.integration
@@ -17,6 +18,7 @@ class TestPexelsVideoSearch:
             pytest.skip("PEXELS_API_KEY not set")
 
         import requests
+
         from cqc_lem.utilities.pexels_helper import search_videos
 
         try:
@@ -77,6 +79,7 @@ class TestPexelsVideoSearch:
             pytest.skip("PEXELS_API_KEY not set")
 
         import requests
+
         from cqc_lem.utilities.pexels_helper import download_pexels_video
 
         dest = str(tmp_path)

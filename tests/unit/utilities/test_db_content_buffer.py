@@ -1,7 +1,8 @@
 """Unit tests for the bounded rolling content-buffer DB helpers (issue #544)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -20,7 +21,7 @@ class TestCountReadyPostsWithinBuffer:
     def test_counts_generated_posts_due_in_window(self):
         conn, cur = _mock_conn(fetch_one=(3,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import count_ready_posts_within_buffer, READY_POST_STATUSES
+            from cqc_lem.utilities.db import READY_POST_STATUSES, count_ready_posts_within_buffer
             assert count_ready_posts_within_buffer(1, 5) == 3
         sql, params = cur.execute.call_args[0]
         assert "scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY" in sql
@@ -165,8 +166,7 @@ class TestGetUserIdsWithPlannedPostsWithinBuffer:
     def test_defaults_to_the_max_window_so_long_buffers_are_not_missed(self):
         conn, cur = _mock_conn(fetch_all=[])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (get_user_ids_with_planned_posts_within_buffer,
-                                              MAX_CONTENT_BUFFER_DAYS)
+            from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS, get_user_ids_with_planned_posts_within_buffer
             get_user_ids_with_planned_posts_within_buffer()
         assert cur.execute.call_args[0][1] == (MAX_CONTENT_BUFFER_DAYS,)
 
@@ -183,8 +183,11 @@ class TestUserPreferencesBufferColumns:
     def test_defaults_include_buffer_knobs(self):
         conn, _ = _mock_conn(fetch_one=None)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (get_user_preferences, DEFAULT_CONTENT_BUFFER_DAYS,
-                                              DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+            from cqc_lem.utilities.db import (
+                DEFAULT_CONTENT_BUFFER_DAYS,
+                DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+                get_user_preferences,
+            )
             prefs = get_user_preferences(1)
         assert prefs["content_buffer_days"] == DEFAULT_CONTENT_BUFFER_DAYS
         assert prefs["content_buffer_max_posts"] == DEFAULT_CONTENT_BUFFER_MAX_POSTS
@@ -223,8 +226,7 @@ class TestUserPreferencesBufferColumns:
         conn, cur = _mock_conn()
         cur.rowcount = 1
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (update_user_preferences, MAX_CONTENT_BUFFER_DAYS,
-                                              MAX_CONTENT_BUFFER_POSTS)
+            from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, update_user_preferences
             update_user_preferences(1, None, True, content_buffer_days=999,
                                     content_buffer_max_posts=0)
         params = cur.execute.call_args[0][1]

@@ -52,7 +52,8 @@ class TestEncryptSecretsTask:
 
 def test_task_is_on_the_beat_schedule():
     """A backfill nobody schedules is a backfill nobody runs — and this pass is also the key
-    rotation, so it has to be recurring, not one-shot."""
+    rotation, so it has to be recurring, not one-shot.
+    """
     from cqc_lem.app.my_celery import app
     entry = app.conf.beat_schedule["encrypt-secrets-at-rest"]
     assert entry["task"] == "cqc_lem.app.run_scheduler.auto_encrypt_secrets_at_rest"

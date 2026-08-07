@@ -52,20 +52,37 @@ def _env_int(name: str, default: int) -> int:
 
 
 def demotion_hold_rate() -> float:
+    """Demoted share (0–1) at or above which feed commenting is held, from `COMMENT_DEMOTION_HOLD_RATE`.
+
+    Read per call rather than at import so an operator can retune the threshold on a live account
+    without a deploy. An unparseable value falls back to the default instead of raising — a bad env
+    string must not take the whole nightly sweep down.
+    """
     return _env_float("COMMENT_DEMOTION_HOLD_RATE", DEFAULT_DEMOTION_HOLD_RATE)
 
 
 def min_visibility_sample() -> int:
+    """How many visibility-readable comments must exist before a demotion rate may trip the hold.
+
+    Floored at 1 so a misconfigured 0 can never make an empty sample look like a conclusive one —
+    the hold pauses a user's feed commenting, and it must never fire off noise.
+    """
     return max(1, _env_int("COMMENT_QUALITY_MIN_SAMPLE", DEFAULT_MIN_VISIBILITY_SAMPLE))
 
 
 def hold_seconds() -> int:
+    """How long a tripped hold lasts, in seconds (default 7 days), from `COMMENT_QUALITY_HOLD_SECONDS`.
+
+    Floored at 60s: a hold shorter than that is indistinguishable from no hold at all, which would
+    silently disable the protection rather than loosen it.
+    """
     return max(60, _env_int("COMMENT_QUALITY_HOLD_SECONDS", DEFAULT_HOLD_SECONDS))
 
 
 def _rate(numerator: int, denominator: int) -> Optional[float]:
     """Share as a 0–1 float, or None when there is nothing to divide by. None is not 0.0: an empty
-    window has no reply rate, and charting it as zero reads as a collapse that never happened."""
+    window has no reply rate, and charting it as zero reads as a collapse that never happened.
+    """
     if not denominator:
         return None
     return round(numerator / denominator, 4)
@@ -166,6 +183,7 @@ def quality_verdict(summary: Optional[Mapping[str, Any]]) -> dict:
 
 def comment_quality_report(rows: Optional[Iterable[Mapping[str, Any]]], days: int = 7) -> dict:
     """The one shape shared by the weekly PostHog event, the analytics endpoint and the dashboard —
-    so the number the user reads and the number the guard acts on can never diverge."""
+    so the number the user reads and the number the guard acts on can never diverge.
+    """
     summary = summarize_outcomes(rows)
     return {"days": int(days), **summary, "verdict": quality_verdict(summary)}

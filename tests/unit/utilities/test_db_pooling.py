@@ -1,10 +1,9 @@
 """Issue #555: get_db_connection() hands out connections from a per-process MySQL pool."""
 
 import os
-
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from mysql.connector.errors import PoolError
 
 from cqc_lem.utilities import db

@@ -1,3 +1,20 @@
+"""LinkedIn OAuth token lifetime — reading it, and renewing it before it lapses (issue #600).
+
+This module owns ONE question: how long has this user's REST access got left, and can we extend it
+without them. `resolve_token_status` is where that is decided for everybody — the SPA countdown and
+the daily `refresh-linkedin-tokens` beat both call it, so what a user is shown and what triggers
+their reconnect email can never drift apart.
+
+The invariant underneath every predicate here is that **unknown is treated as expired**. LinkedIn
+caps authorization at 60 days and a lapsed token silently breaks posting and stats, so a token whose
+expiry cannot be computed reads expired/expiring rather than healthy: the cost of being wrong that
+way is one renewal attempt or one email, the cost the other way is a user who finds out their
+account stopped working days later. `days_until_expiry` is the deliberate exception — a countdown
+has to say "unknown" (None), never a frightening "0 days".
+
+Full posture, including where the beat sits in the daily order: `docs/linkedin-session-health.md`.
+"""
+
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
@@ -30,6 +47,15 @@ def _as_utc(value: object) -> Optional[datetime]:
 
 
 def get_token_expiry(token_info: dict) -> Optional[datetime]:
+    """When the access token lapses, derived from when it was issued plus its lifetime.
+
+    LinkedIn hands back a duration, not an instant, so the answer only exists if BOTH halves were
+    stored. Rows written before this pairing existed, or by a connect flow that failed part-way,
+    return None — every caller here reads that None as "assume the worst", never as "fine".
+
+    Returns:
+        A timezone-aware UTC datetime, or None when either half is missing or unparseable.
+    """
     created_at = _as_utc(token_info.get('access_token_created_at'))
     expires_in = _to_seconds(token_info.get('access_token_expires_in'))
     if not created_at or not expires_in:
@@ -38,6 +64,11 @@ def get_token_expiry(token_info: dict) -> Optional[datetime]:
 
 
 def is_token_expired(token_info: dict) -> bool:
+    """Is this token past its expiry — or unreadable, which counts the same.
+
+    Fails CLOSED: an unknown expiry reads expired. Every REST call made on a dead token fails
+    anyway, so the only thing optimism buys is a user who is never told to reconnect.
+    """
     expiry = get_token_expiry(token_info)
     if expiry is None:
         return True
@@ -45,6 +76,14 @@ def is_token_expired(token_info: dict) -> bool:
 
 
 def is_token_expiring_soon(token_info: dict, days: int = EXPIRY_WARNING_DAYS) -> bool:
+    """Is the token inside the renewal window?
+
+    This is the trigger for both the SPA banner and the daily beat's renewal attempt.
+
+    The default window is half a 60-day token's life, which is what makes automatic renewal able to
+    outlive LinkedIn's 60-day cap at all. Unreadable expiry reads True for the same reason
+    `is_token_expired` does: a wasted renewal attempt is cheap, a missed one is not.
+    """
     expiry = get_token_expiry(token_info)
     if expiry is None:
         return True
@@ -54,7 +93,8 @@ def is_token_expiring_soon(token_info: dict, days: int = EXPIRY_WARNING_DAYS) ->
 def days_until_expiry(token_info: dict) -> Optional[int]:
     """Whole days left on the access token — None when the expiry is unknown, which is NOT the
     same as zero: the SPA renders 'unknown' rather than an alarming '0 days'. Floored, so a token
-    with 29h left reads '1 day' and never rounds up into a promise we can't keep."""
+    with 29h left reads '1 day' and never rounds up into a promise we can't keep.
+    """
     expiry = get_token_expiry(token_info)
     if expiry is None:
         return None
@@ -65,7 +105,8 @@ def days_until_expiry(token_info: dict) -> Optional[int]:
 def refresh_token_usable(token_info: dict) -> bool:
     """True when a refresh token exists AND has not itself lapsed. LinkedIn only issues refresh
     tokens to approved apps, so 'no refresh token' is the ordinary case — a user on that path can
-    only ever reconnect by hand, which is what the expiry email is for."""
+    only ever reconnect by hand, which is what the expiry email is for.
+    """
     refresh_token = token_info.get('refresh_token')
     if not refresh_token:
         return False
@@ -79,6 +120,18 @@ def refresh_token_usable(token_info: dict) -> bool:
 
 
 def attempt_token_refresh(user_id: int) -> Tuple[bool, Optional[str]]:
+    """Exchange the stored refresh token for a fresh access token and persist BOTH halves.
+
+    Never raises: a LinkedIn outage, a rejected grant or a response without an `access_token` all
+    come back as a failure the caller reports, because this runs inside a daily sweep over every
+    user and one bad row must not stop the rest. The rotated refresh token is written back with the
+    access token — dropping it would strand the user on a single renewal.
+
+    Returns:
+        (succeeded, new_access_token). A False with no error is the ORDINARY case for an app
+        LinkedIn never granted refresh tokens to; that path is DEBUG, not a warning, because
+        warning on it would file a defect against working behaviour.
+    """
     # Import here to avoid circular imports at module load
     from cqc_lem.utilities.db import get_user_token_info, update_user_access_token
 
@@ -141,7 +194,8 @@ def resolve_token_status(user_id: int, auto_refresh: bool = True) -> dict:
     Both readers use it — the SPA's `/user/token_status` and the daily renewal beat — so the
     countdown a user sees and the countdown that triggers their email can never disagree.
     `auto_refresh` renews in place when the token is inside the warning window and a usable refresh
-    token exists; the returned state is the state AFTER that attempt."""
+    token exists; the returned state is the state AFTER that attempt.
+    """
     from cqc_lem.utilities.db import get_user_token_info
 
     token_info = get_user_token_info(user_id)

@@ -10,11 +10,10 @@ storage layer is a mock that returns whatever the test says.
 """
 from datetime import datetime, timedelta
 from typing import Optional
-
-import pytest
 from unittest.mock import patch
 
 import mysql.connector
+import pytest
 from mysql.connector import errorcode
 
 pytestmark = pytest.mark.integration
@@ -209,6 +208,7 @@ def store():
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 
@@ -245,7 +245,8 @@ def _post(client, path, **body):
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
     """The endpoint's own serializer — asserting against it pins the SHAPE the SPA parses, which is
-    the thing that would silently differ if the two producers of `trial_ends_at` ever diverged."""
+    the thing that would silently differ if the two producers of `trial_ends_at` ever diverged.
+    """
     from cqc_lem.api.main import _utc_iso
     return _utc_iso(dt)
 
@@ -415,7 +416,8 @@ def test_the_enrollment_event_fires_once_per_user_not_once_per_page_load(client,
 def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(client, env_no_join_bonus,
                                                                       store):
     """With no join bonus there is no reward to revoke — and the user must STILL be told what their
-    trial now is, which is the acceptance criterion the old grant-derived date could not meet."""
+    trial now is, which is the acceptance criterion the old grant-derived date could not meet.
+    """
     from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
     _get(client)
     attribute_referral(7, {"ref": str(USER)})
@@ -432,7 +434,8 @@ def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(client, e
 
 def test_the_reward_date_wins_over_the_user_record_when_a_grant_actually_moved(client, env, store):
     """`env` configures the 7-day join bonus, so opting out revokes — and the date the user is told
-    must be the one the revoke computed, not a re-read that could race it."""
+    must be the one the revoke computed, not a re-read that could race it.
+    """
     _get(client)
     assert store.trial_days() == 21
 
@@ -446,7 +449,8 @@ def test_a_user_who_is_no_longer_on_a_trial_is_not_quoted_a_stale_trial_date(cli
                                                                             env_no_join_bonus,
                                                                             store):
     """`users.trial_ends_at` outlives the trial. A paid account opting out must not be told "your
-    trial still ends <a date in the past>" — with no grant to report, the field stays null."""
+    trial still ends <a date in the past>" — with no grant to report, the field stays null.
+    """
     _get(client)
     store.users[USER]["subscription_status"] = "active"
 
@@ -461,7 +465,8 @@ def test_the_grandfathered_join_bonus_is_reported_as_revocable_after_the_policy_
     """The #750 cohort: enrolled while the join bonus was 7, still holding it after the config went
     to 0. `bonus_days` (what joining pays now) and `revocable_bonus_days` (what leaving takes back
     from THIS user) must disagree — the enrollment notice's "leave in one click" line reads the
-    second, and reading the first would promise them a claw-back-free exit they do not have."""
+    second, and reading the first would promise them a claw-back-free exit they do not have.
+    """
     _get(client)                                         # enrolled under the 7-day bonus
     assert store.trial_days() == 21
 

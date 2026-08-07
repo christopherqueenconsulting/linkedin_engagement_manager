@@ -1,5 +1,6 @@
 """Follower & audience telemetry capture (issue #627): the Selenium snapshot, its task, the daily
-dispatcher, and the db accessors that persist/read it. All I/O mocked."""
+dispatcher, and the db accessors that persist/read it. All I/O mocked.
+"""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -222,6 +223,7 @@ class TestFollowerStatDb:
 
     def test_record_swallows_db_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import record_follower_stat
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
@@ -247,6 +249,7 @@ class TestFollowerStatDb:
 
     def test_get_stats_swallows_db_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_follower_stats
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
@@ -277,6 +280,7 @@ class TestFollowerStatDb:
 
     def test_daily_action_counts_swallows_db_error(self):
         import mysql.connector
+
         from cqc_lem.utilities.db import get_daily_action_counts
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")

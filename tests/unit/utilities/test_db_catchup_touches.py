@@ -1,7 +1,8 @@
 """Unit tests for catch-up touch DB helpers and the catch-up engagement preferences (issue #482)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -23,7 +24,7 @@ class TestCatchupTouchDb:
     def test_insert_returns_id(self):
         conn, cur = _conn(lastrowid=42)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_catchup_touch, CatchupEventType
+            from cqc_lem.utilities.db import CatchupEventType, insert_catchup_touch
             got = insert_catchup_touch(1, "https://x/in/jane", CatchupEventType.JOB_CHANGE, "2026-07",
                                        person_name="Jane", event_detail="started a new position",
                                        message="Congrats!", score=50)
@@ -36,7 +37,7 @@ class TestCatchupTouchDb:
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="duplicate entry")
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_catchup_touch, CatchupEventType
+            from cqc_lem.utilities.db import CatchupEventType, insert_catchup_touch
             assert insert_catchup_touch(1, "u", CatchupEventType.PROMOTION, "2026-07") is None
 
     def test_get_touch_and_user_id(self):
@@ -63,13 +64,13 @@ class TestCatchupTouchDb:
     def test_has_catchup_touch_true_and_false(self):
         conn, cur = _conn(fetch_row=(1,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_catchup_touch, CatchupEventType
+            from cqc_lem.utilities.db import CatchupEventType, has_catchup_touch
             assert has_catchup_touch(1, "https://x/in/jane", CatchupEventType.JOB_CHANGE, "2026-07") is True
         sql = cur.execute.call_args[0][0]
         assert "event_period = %s" in sql
         conn, _ = _conn(fetch_row=None)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_catchup_touch, CatchupEventType
+            from cqc_lem.utilities.db import CatchupEventType, has_catchup_touch
             assert has_catchup_touch(1, "u", CatchupEventType.JOB_CHANGE, "2026-07") is False
 
     def test_has_catchup_touch_error_fails_open(self):
@@ -77,7 +78,7 @@ class TestCatchupTouchDb:
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_catchup_touch, CatchupEventType
+            from cqc_lem.utilities.db import CatchupEventType, has_catchup_touch
             assert has_catchup_touch(1, "u", CatchupEventType.BIRTHDAY, "2026") is False
 
     def test_list_returns_pagination_shape_and_filters(self):
@@ -130,7 +131,8 @@ class TestCatchupTouchDb:
 
     def test_count_pending_backlog(self):
         """The send drip reads this on every beat (issue #792) — it is what separates a queue sitting
-        behind approval from an empty lane, so it must count 'pending' and nothing else."""
+        behind approval from an empty lane, so it must count 'pending' and nothing else.
+        """
         conn, cur = _conn(fetch_row=(6,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_pending_catchup_touches
@@ -147,7 +149,8 @@ class TestCatchupTouchDb:
     def test_count_pending_backlog_error_returns_zero(self):
         """A DB error must read as 'no backlog', not blow up the beat — the drip still has approved
         touches to dispatch and the report is diagnostic, not load-bearing. But 0 makes the beat
-        report `nothing_to_send`, so the failure itself has to surface at ERROR, not at INFO."""
+        report `nothing_to_send`, so the failure itself has to surface at ERROR, not at INFO.
+        """
         import mysql.connector
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
@@ -190,7 +193,7 @@ class TestCatchupTouchDb:
     def test_update_status(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_catchup_touch_status, CatchupTouchStatus
+            from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch_status
             assert update_catchup_touch_status(3, CatchupTouchStatus.SENT) is True
         assert cur.execute.call_args[0][1] == ("sent", 3)
 
@@ -199,13 +202,13 @@ class TestCatchupTouchDb:
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_catchup_touch_status, CatchupTouchStatus
+            from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch_status
             assert update_catchup_touch_status(3, CatchupTouchStatus.SENT) is False
 
     def test_update_fields(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_catchup_touch, CatchupTouchStatus
+            from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch
             assert update_catchup_touch(3, message="edited", person_name="Jane",
                                         status=CatchupTouchStatus.APPROVED) is True
         sql = cur.execute.call_args[0][0]
@@ -270,7 +273,7 @@ class TestCatchupEngagementPrefs:
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_subscription_info", return_value=None):
-            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"max_catchup_touches_per_day": given})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("max_catchup_touches_per_day")] == expected
@@ -281,7 +284,7 @@ class TestCatchupEngagementPrefs:
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_subscription_info",
                    return_value={"subscription_tier": "professional", "subscription_status": "active"}):
-            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"max_catchup_touches_per_day": given})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("max_catchup_touches_per_day")] == expected
@@ -292,7 +295,7 @@ class TestCatchupEngagementPrefs:
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_subscription_info", return_value=None):
-            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"catchup_message_source": given})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("catchup_message_source")] == expected
@@ -312,7 +315,7 @@ class TestCatchupEngagementPrefs:
     def test_bad_mode_falls_back_to_pre_review(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"catchup_touch_mode": "yolo"})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("catchup_touch_mode")] == "pre_review"
@@ -320,7 +323,7 @@ class TestCatchupEngagementPrefs:
     def test_unknown_event_types_are_dropped_before_the_enum_column(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"catchup_event_types": ["job_change", "nonsense"]})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("catchup_event_types")] == '["job_change"]'

@@ -21,7 +21,8 @@ _EMAIL = "comment-outcomes-628@example.test"
 
 def _schema_available() -> bool:
     """A reachable server is not enough — these tests need the migrated schema. An un-migrated DB
-    (a bare local server) skips instead of erroring; CI provisions it before the suite runs."""
+    (a bare local server) skips instead of erroring; CI provisions it before the suite runs.
+    """
     try:
         config = db._get_mysql_config()
         connection = mysql.connector.connect(connect_timeout=3, **config)

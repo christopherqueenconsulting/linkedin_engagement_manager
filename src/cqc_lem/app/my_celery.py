@@ -1,17 +1,37 @@
+"""The Celery app itself: broker wiring, the whole beat schedule, and per-task telemetry.
+
+Every recurring behaviour in LEM is scheduled from `app.conf.beat_schedule` below, so this file is
+the one place that answers "what runs, and when". The signal handlers are the other half of that:
+Celery swallows a failed task's traceback into its own logger, so `on_task_failure` / `on_task_retry`
+are what turn a crashed task into a grouped PostHog issue (issue #648) instead of a log line nobody
+counts, and the prerun/postrun pair is what gives every task a duration.
+
+The broker is Redis locally and SQS on AWS; the result backend must stay Redis either way, because
+SQS is fire-and-forget and the API layer queries task state.
+"""
+
 import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import (worker_process_init, task_received, task_success, task_sent,
-                            task_prerun, task_postrun, task_failure, task_retry)
+from celery.signals import (
+    task_failure,
+    task_postrun,
+    task_prerun,
+    task_received,
+    task_retry,
+    task_sent,
+    task_success,
+    worker_process_init,
+)
 
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import AWS_REGION
-from cqc_lem.utilities.logger import myprint, logger
+from cqc_lem.utilities.logger import logger
 from cqc_lem.utilities.observability import capture_exception, track_task
 from cqc_lem.utilities.utils import get_cloudwatch_client
 
@@ -392,7 +412,12 @@ def restore_all_unacknowledged_messages(*args, **kwargs):
 
 def get_queue_metric(name_space: str = 'cqc-lem/celery_queue/celery', metric_name: str = 'QueueLength',
                      period: int = 60, time_delta_minutes: int = 1, statistics: str = "Maximum") -> int:
+    """The most recent CloudWatch datapoint for a queue metric, or 0 when there is nothing to read.
 
+    0 stands for every non-answer — no `AWS_REGION` (the Docker Compose deployment, which has no
+    CloudWatch at all), an empty window, or a failed API call. Nothing propagates: this is
+    instrumentation, and reading a metric must never be the reason the caller fails.
+    """
     if not AWS_REGION:
         return 0
 
@@ -424,6 +449,7 @@ _task_start_times: dict = {}
 
 @worker_process_init.connect(weak=False)
 def configure_posthog_for_worker(**kwargs) -> None:
+    """Put PostHog into sync mode in each forked worker, or everything it captures is lost."""
     # Celery forks worker processes; the PostHog background Consumer thread does not
     # survive fork. Sync mode sends each capture immediately instead of queuing.
     import posthog as _posthog
@@ -432,11 +458,22 @@ def configure_posthog_for_worker(**kwargs) -> None:
 
 @task_prerun.connect(weak=False)
 def on_task_prerun(task_id: str = None, task=None, **kwargs) -> None:
+    """Stamp a task's start so `on_task_postrun` can report how long it actually took.
+
+    Keyed by `task_id` because a worker runs several tasks at once; the postrun handler POPS the
+    entry, which is the only thing keeping this dict from growing for the life of the process.
+    """
     _task_start_times[task_id] = _time.time()
 
 
 @task_postrun.connect(weak=False)
 def on_task_postrun(task_id: str = None, task=None, state: str = None, **kwargs) -> None:
+    """Emit the `celery_task` event for every task that ran, however it ended.
+
+    `success` is strictly `state == "SUCCESS"`, so a RETRY or a REVOKED task is never counted as a
+    win. A task whose prerun never fired has no start to pop and reports ~0ms rather than dropping
+    the event — an unmeasured run still has to appear in the count.
+    """
     start = _task_start_times.pop(task_id, _time.time())
     track_task(
         task_name=task.name,
@@ -448,7 +485,8 @@ def on_task_postrun(task_id: str = None, task=None, state: str = None, **kwargs)
 
 def _task_user_id(kwargs) -> Optional[int]:
     """The user a task was dispatched for. Every per-user task in LEM carries `user_id` in its
-    kwargs, which is the only attribution a signal handler can see."""
+    kwargs, which is the only attribution a signal handler can see.
+    """
     if not isinstance(kwargs, dict):
         return None
     user_id = kwargs.get("user_id")
@@ -463,7 +501,8 @@ def on_task_failure(task_id: str = None, exception: BaseException = None, sender
                     kwargs: dict = None, einfo=None, **_) -> None:
     """File a failed task's exception as a grouped PostHog error-tracking issue (issue #648). Celery
     swallows the traceback into its own logger, so without this the only trace of a crashed task is
-    a log line — nothing that groups, counts or alerts."""
+    a log line — nothing that groups, counts or alerts.
+    """
     capture_exception(
         exception,
         user_id=_task_user_id(kwargs),
@@ -478,7 +517,8 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
     """A retry is a failure that will be tried again — worth the same issue so a task that only ever
     succeeds on its 3rd attempt is still visible. `reason` is the exception when the retry was
     raised from one; anything else (a bare `self.retry()`) carries no exception to group and is
-    skipped rather than filed as a synthetic one."""
+    skipped rather than filed as a synthetic one.
+    """
     if not isinstance(reason, BaseException):
         return
     capture_exception(
@@ -495,8 +535,7 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
 @task_received.connect
 @task_success.connect
 def update_queue_length_metric(sender=None, headers=None, **kwargs) -> int:
-    """
-    Get the current queue length from Redis broker and push to CloudWatch
+    """Get the current queue length from Redis broker and push to CloudWatch
     """
     # Use the global app
     global app

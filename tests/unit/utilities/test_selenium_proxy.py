@@ -4,9 +4,9 @@ import base64
 import io
 import json
 import zipfile
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock
 
 from cqc_lem.utilities.selenium_util import apply_proxy
 

@@ -47,7 +47,8 @@ class TestUrnHandling:
 
     def test_activity_urn_is_rejected(self):
         """The analytics PAGE keys off the activity URN; this finder does not, and the ids are
-        not interchangeable. Guessing one from the other would probe the wrong post."""
+        not interchangeable. Guessing one from the other would probe the wrong post.
+        """
         assert probe.entity_param("urn:li:activity:123") is None
 
     def test_garbage_urn_is_rejected(self):
@@ -284,7 +285,8 @@ class TestVerdict:
     def test_a_daily_only_restriction_blames_the_flag_not_the_version(self):
         """LinkedIn answers a DAILY-unsupported metric with the same 400 shape as a version gap.
         Sending the operator to bump LI_API_VERSION over their own --aggregation flag would waste
-        the exact debugging session this probe exists to prevent."""
+        the exact debugging session this probe exists to prevent.
+        """
         results = [{"status": "unsupported_metric", "metric": "IMPRESSION",
                     "version_ok": True, "aggregation_ok": False}]
         outcome = probe.verdict(results, {})
@@ -299,7 +301,8 @@ class TestVerdict:
 
     def test_an_unsupported_metric_on_a_new_enough_pin_is_just_partial(self):
         """version_ok True means the pin clears the floor — blaming LI_API_VERSION there would
-        send whoever reads this report to fix the wrong thing."""
+        send whoever reads this report to fix the wrong thing.
+        """
         results = [{"status": "unsupported_metric", "metric": "POST_SAVE", "version_ok": True}]
         outcome = probe.verdict(results, {})
         assert outcome["outcome"] == "partial"
@@ -335,7 +338,8 @@ class TestBuildReport:
 
     def test_report_records_the_aggregation_it_ran_under(self):
         """The report is pasted into an issue; without the aggregation, a metric that came back
-        empty cannot be told apart from one LinkedIn refuses to serve that way."""
+        empty cannot be told apart from one LinkedIn refuses to serve that way.
+        """
         report = probe.build_report("urn:li:share:7", "(share:x)", "202606", [], None, "DAILY")
         assert report["aggregation"] == "DAILY"
 

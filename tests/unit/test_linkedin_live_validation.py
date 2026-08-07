@@ -36,7 +36,8 @@ def _sort_control(text: str, aria: str = ""):
 def _find_first_returning(results: list):
     """`find_first` answering each call of the probe's chain in order: trigger, Recent option,
     trigger again after the flip. Running out means the probe stopped early, which is the point of
-    several of these cases."""
+    several of these cases.
+    """
     calls = iter(results)
 
     def _find_first(*_a, **_k):
@@ -293,7 +294,8 @@ class TestMessageThreadProbe:
 @pytest.mark.unit
 class TestFeedSortProbe:
     """#817: the probe has to say WHICH half of the sort control broke — the trigger or the menu —
-    because `Selector miss: Feed sort control` alone cannot, and they need different fixes."""
+    because `Selector miss: Feed sort control` alone cannot, and they need different fixes.
+    """
 
     def test_recent_is_the_only_healthy_verdict(self):
         assert llv.feed_sort_verdict({"control_found": True, "sort_before": "top",
@@ -345,7 +347,8 @@ class TestFeedSortProbe:
 
     def test_an_unresolved_recent_option_leaves_the_menu_open_for_the_capture(self, monkeypatch):
         """`option_found is False` is the finding: the trigger is fine, the MENU rotated — and the
-        dropdown must still be open when `visible_controls` is read, or it captures nothing."""
+        dropdown must still be open when `visible_controls` is read, or it captures nothing.
+        """
         control = _sort_control("Sort by: Top")
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
                             _find_first_returning([control, None]))
@@ -373,14 +376,16 @@ class TestFeedSortProbe:
 
     def test_a_control_label_naming_both_sorts_is_unreadable_not_recent(self):
         """Production reads a both-sorts label as unknown; a probe that called it 'recent' would
-        report the control healthy on exactly the reading that leaves the run unsorted."""
+        report the control healthy on exactly the reading that leaves the run unsorted.
+        """
         assert llv.control_sort_state(_sort_control("", "Sort by, currently Top, options Recent")) == ""
         assert llv.control_sort_state(_sort_control("Sort by: Recent")) == "recent"
 
     def test_menu_rows_are_captured_before_the_page_is_full_of_list_items(self):
         """One comma-joined selector returns DOCUMENT order, and a feed page's nav/rail/post <li>s
         come before an overlay dropdown — so the cap would be spent on furniture and the menu this
-        probe exists to re-ground could be missing from its own capture."""
+        probe exists to re-ground could be missing from its own capture.
+        """
         def _item(text):
             el = MagicMock()
             el.text = text
@@ -415,7 +420,8 @@ class TestFeedSortProbe:
 class TestFeedSortChainCopy:
     """The probe runs inside a Selenium worker whose `cqc_lem` is the DEPLOYED image, so a pre-merge
     grounding pass cannot import the chain it is grounding. The script therefore carries a copy —
-    and a copy that drifts grounds a chain nothing ships, which is worse than not probing at all."""
+    and a copy that drifts grounds a chain nothing ships, which is worse than not probing at all.
+    """
 
     def test_carried_chain_is_identical_to_the_one_run_automation_uses(self):
         from cqc_lem.app import run_automation as ra
@@ -463,7 +469,8 @@ class TestRecommendationReadCopy:
     """#1007's read is NEW, so the image the probe is piped into does not have it — and grounding a
     rebuilt reader only after it merges is exactly how the ladder it replaces shipped dead. Same
     posture as the feed-sort chain: image first, carried copy otherwise, and the reading says which.
-    A copy that drifts grounds a read nothing ships, which is worse than not probing at all."""
+    A copy that drifts grounds a read nothing ships, which is worse than not probing at all.
+    """
 
     def test_carried_read_is_identical_to_the_one_run_automation_uses(self):
         from cqc_lem.app import run_automation as ra
@@ -535,7 +542,8 @@ class TestMain:
 @pytest.mark.unit
 class TestAppreciationSourcesProbe:
     """#968: the probe exists so the scrapers can be grounded BEFORE the flag is flipped, so its
-    job is to distinguish 'nothing there' from 'there but unreadable'."""
+    job is to distinguish 'nothing there' from 'there but unreadable'.
+    """
 
     def test_no_cards_says_production_sends_nothing(self):
         verdict = llv.appreciation_verdict({"cards": 0})
@@ -560,13 +568,15 @@ class TestAppreciationSourcesProbe:
 
     def test_zero_cards_on_a_dated_page_names_the_read_as_rotated(self):
         """#1007's whole finding: the recommendations page rendered dated cards and the locator
-        ladder resolved none. That must not read the same as an account with no recommendations."""
+        ladder resolved none. That must not read the same as an account with no recommendations.
+        """
         verdict = llv.appreciation_verdict({"cards": 0, "page_dated": True, "profile_anchors": 24})
         assert "silently dead" in verdict and "24 profile link(s)" in verdict
 
     def test_probe_reads_both_surfaces_and_never_claims_a_ledger_row(self, monkeypatch):
         """It grounds the PRODUCTION card reads + parsers (the scrapers themselves are gated
-        off until this run happens), and it must stay read-only."""
+        off until this run happens), and it must stay read-only.
+        """
         from unittest.mock import patch
 
         link = MagicMock()
@@ -601,7 +611,8 @@ class TestAppreciationSourcesProbe:
 
     def test_the_probe_reports_the_grounded_shape_of_this_profile(self):
         """The acceptance reading from the issue: two 2010-2012 recommendations resolve, both date,
-        and NEITHER is inside the 30-day window — a fixed reader that still sends nothing today."""
+        and NEITHER is inside the 30-day window — a fixed reader that still sends nothing today.
+        """
         from unittest.mock import patch
 
         driver = _fake_driver(current_url="https://www.linkedin.com/in/christopherqueen")
@@ -625,7 +636,8 @@ class TestAppreciationSourcesProbe:
     def test_a_block_resolved_around_the_users_own_link_is_never_a_thankable_person(self):
         """The page is full of the account's OWN /in/ links (nav, the Received/Given/Pending tabs).
         Production drops a row whose href is the user themselves; a probe that reports it as someone
-        production would thank is grounding a person who can never be messaged."""
+        production would thank is grounding a person who can never be messaged.
+        """
         from unittest.mock import patch
 
         driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
@@ -647,7 +659,8 @@ class TestAppreciationSourcesProbe:
     def test_an_image_that_predates_the_rebuild_still_grounds_both_surfaces(self, monkeypatch):
         """The pre-merge run the owner asked for: the deployed image has no `_recommendation_reading`
         to import, so a hard import would kill the whole probe — mentions half included — instead of
-        grounding the branch's read against the live DOM."""
+        grounding the branch's read against the live DOM.
+        """
         import builtins
         from unittest.mock import patch
 
@@ -678,7 +691,8 @@ class TestAppreciationSourcesProbe:
 
     def test_an_early_paint_is_re_read_before_it_counts_as_an_empty_section(self):
         """Production polls the render; the probe has to poll it too or it grounds a page that had
-        not finished painting and calls the section empty."""
+        not finished painting and calls the section empty.
+        """
         from unittest.mock import patch
 
         rows = {"rows": [{"href": "https://www.linkedin.com/in/jane", "name": "Jane Doe",
@@ -696,7 +710,8 @@ class TestAppreciationSourcesProbe:
 
     def test_mention_row_reports_the_name_production_would_use(self, monkeypatch):
         """A textless actor link is what the live run actually hit — the probe has to apply the same
-        sentence fallback, or a blank name here would read as a probe artifact."""
+        sentence fallback, or a blank name here would read as a probe artifact.
+        """
         from unittest.mock import patch
 
         link = MagicMock()
@@ -723,7 +738,8 @@ class TestSentInvitesProbe:
     """#969: the probe that has to run GREEN before the withdrawal lane may be switched on.
 
     Two readings mean "production would withdraw nothing tonight" and must be named as such rather
-    than read as a clean account: no rows at all, and rows whose sent dates do not parse."""
+    than read as a clean account: no rows at all, and rows whose sent dates do not parse.
+    """
 
     def test_no_rows_on_a_rendered_page_names_selector_drift_as_a_possibility(self):
         verdict = llv.sent_invites_verdict(
@@ -734,7 +750,8 @@ class TestSentInvitesProbe:
     def test_the_pages_own_empty_state_separates_a_clean_account_from_drift(self):
         """The first live run (PR #983) came back with zero rows and no way to tell which of the two
         it was looking at. The page says so itself when it renders empty — so read that, and still
-        refuse to call the anchors grounded on a run that never saw a row."""
+        refuse to call the anchors grounded on a run that never saw a row.
+        """
         verdict = llv.sent_invites_verdict(
             {"rows_seen": 0, "page_text": "Manage invitations You have no pending invitations",
              "empty_state": "no pending invitations"})
@@ -750,7 +767,8 @@ class TestSentInvitesProbe:
     def test_an_empty_state_phrase_needs_its_own_negation(self):
         """A looser pattern would match "You have 3 pending invitations" and report an empty state on
         a page FULL of rows the anchors missed — a false clean bill of health on the exact drift this
-        probe exists to catch."""
+        probe exists to catch.
+        """
         assert llv.sent_invite_empty_state("You have no pending invitations") == \
             "no pending invitations"
         assert llv.sent_invite_empty_state("No invitations") == "No invitations"
@@ -780,7 +798,8 @@ class TestSentInvitesProbe:
 
     def test_the_probe_clicks_nothing(self, monkeypatch):
         """Read-only is the whole safety story: withdrawing is one-way, so grounding the selectors
-        must not withdraw anybody."""
+        must not withdraw anybody.
+        """
         driver = MagicMock()
         driver.current_url = llv_sent_url()
         monkeypatch.setattr("cqc_lem.utilities.linkedin.stale_invites._load_more_rows",
@@ -822,7 +841,8 @@ class TestThreeStateVerdicts:
 
     `drift` is the only state that files an issue, so it may only be claimed against a page-native
     cross-check; `unknown` (the page did not render) must never be filed, or the weekly sweep puts
-    the same non-finding in the backlog until it buries the real drift underneath."""
+    the same non-finding in the backlog until it buries the real drift underneath.
+    """
 
     def test_worst_state_is_drift_then_unknown_then_ok(self):
         assert llv.worst_state([llv.STATE_OK, llv.STATE_UNKNOWN]) == llv.STATE_UNKNOWN
@@ -863,7 +883,8 @@ class TestThreeStateVerdicts:
 
     def test_profile_viewers_only_calls_a_flat_scroll_drift_when_the_headline_says_theres_more(self):
         """An account with eight viewers really does have one page of them — grading that drift
-        would file the same issue every week for a healthy surface."""
+        would file the same issue every week for a healthy surface.
+        """
         driver = MagicMock()
         rows = [{"href": "/in/a/", "viewed": "Viewed 1h ago"}] * 8
         driver.execute_script.side_effect = [rows, 8, None, rows]
@@ -905,7 +926,8 @@ class TestSurfaceCoverageMatrix:
 
     def test_every_sweepable_surface_has_a_default_runner(self):
         """`run_sweep` filters its keys by the runner map, so a sweepable surface with no runner is
-        dropped in silence — the sweep would report full coverage while never probing it."""
+        dropped in silence — the sweep would report full coverage while never probing it.
+        """
         report = llv.run_sweep(MagicMock(), 1, session_state="signed_out")
         assert sorted(report["probes"]) == sorted(llv.SWEEP_ORDER)
 
@@ -950,7 +972,8 @@ class TestConnectDialogProbe:
 
     def test_an_unattributable_control_is_a_hazard_too(self):
         """With no target name every invite control is a hazard: a control we cannot attribute is
-        precisely the one production must never click."""
+        precisely the one production must never click.
+        """
         assert llv.rail_invite_hazards(["Invite Bob Smith to connect"], "") == ["Bob Smith"]
 
     def test_invite_control_names_are_extracted_in_order(self):
@@ -973,7 +996,8 @@ class TestConnectDialogProbe:
     def test_a_dialog_without_the_note_affordance_is_reported_but_never_drift(self):
         """#1039: production logs that absence at DEBUG because a spent personalized-invite quota
         hides the control. This probe is the only place the quota reading and selector rot can be
-        told apart, so it says so — without claiming drift it cannot ground."""
+        told apart, so it says so — without claiming drift it cannot ground.
+        """
         reading = {"dialog_present": True, "page_text": "x", "bare_send_present": True,
                    "note_affordance_present": False}
         assert llv.connect_dialog_state(reading) == llv.STATE_OK
@@ -1004,7 +1028,8 @@ class TestConnectDialogProbe:
 
     def test_the_probe_records_which_of_the_dialogs_controls_rendered(self, monkeypatch):
         """The verdict tests above build readings by hand, so only this one fails if the probe
-        stops writing the fields the #1039 reading is made of."""
+        stops writing the fields the #1039 reading is made of.
+        """
         reading, _looked_up = self._probe(monkeypatch, {"Connect invite dialog",
                                                         "Send without a note"})
         assert reading["dialog_present"] is True
@@ -1015,7 +1040,8 @@ class TestConnectDialogProbe:
 
     def test_a_page_with_no_dialog_reports_no_affordance_reading_at_all(self, monkeypatch):
         """None, not False: with no dialog on the page there is nothing to read the note affordance
-        against, and 'no Add-a-note control' would be a drift signal nobody observed."""
+        against, and 'no Add-a-note control' would be a drift signal nobody observed.
+        """
         reading, looked_up = self._probe(monkeypatch, set())
         assert reading["dialog_present"] is False
         assert reading["note_affordance_present"] is None
@@ -1027,7 +1053,8 @@ class TestConnectDialogProbe:
 @pytest.mark.unit
 class TestProfileScrapeProbe:
     """The owner's #1013 comment: `span.dist-value` / `span.distance-badge` are dead, and the same
-    read drives `profile.is_1st_connection` for every profile viewer."""
+    read drives `profile.is_1st_connection` for every profile viewer.
+    """
 
     def test_a_badge_the_page_writes_and_the_locators_miss_is_drift(self):
         reading = {"page_text": "Jane Doe · 2nd  Head of Ops", "full_name": "Jane Doe",
@@ -1045,7 +1072,8 @@ class TestProfileScrapeProbe:
 
     def test_a_profile_with_no_badge_at_all_says_the_degree_half_is_ungrounded(self):
         """Your OWN profile carries no degree badge — a green verdict there would claim coverage
-        the run does not have."""
+        the run does not have.
+        """
         reading = {"page_text": "Jane Doe  Head of Ops", "full_name": "Jane Doe",
                    "page_degree_token": None, "degree_grounded": False,
                    "degree_locator_matches": []}
@@ -1083,7 +1111,8 @@ class TestCatchupProbe:
 class TestGroupComposerProbe:
     def test_an_admin_only_group_is_unknown_not_drift(self):
         """Production already records such a group unpostable and rotates past it — that is correct
-        behaviour, and filing an issue for it every week would be noise."""
+        behaviour, and filing an issue for it every week would be noise.
+        """
         reading = {"page_text": "Announcements group", "share_box_present": False}
         assert llv.group_composer_state(reading) == llv.STATE_UNKNOWN
 
@@ -1127,7 +1156,8 @@ class TestCompanyInviteProbe:
 class TestSweepSessionGate:
     """A signed-out session renders prose and controls at EVERY surface, so a per-probe grade reads
     `drift` on nearly all of them at once — a whole Monday of `priority:high` issues about one
-    expired cookie. The sweep grades that `unknown`, which files nothing."""
+    expired cookie. The sweep grades that `unknown`, which files nothing.
+    """
 
     def _driver(self, url: str = "https://www.linkedin.com/feed/", text: str = "Start a post"):
         driver = MagicMock()
@@ -1147,7 +1177,8 @@ class TestSweepSessionGate:
 
     def test_an_unreadable_page_fails_open_rather_than_standing_the_sweep_down(self):
         """`unknown` is what an unreadable page is for; refusing to sweep on one would be the same
-        silence this issue exists to end, one level up."""
+        silence this issue exists to end, one level up.
+        """
         driver = MagicMock()
         driver.get.side_effect = RuntimeError("session gone")
         assert llv.sweep_session_state(driver, sleep=lambda *_: None) == "signed_in"
@@ -1170,7 +1201,8 @@ class TestSweepSessionGate:
 
     def test_the_matrix_carries_each_flags_argument_into_the_sweep(self):
         """The filer builds its reproduce command from this — a `--profile-scrape` with nothing
-        after it is an argparse error, not a repro."""
+        after it is an argparse error, not a repro.
+        """
         report = llv.run_sweep(MagicMock(), 1,
                                runners={"profile_scrape": lambda: {"state": "drift"},
                                         "catchup_cards": lambda: {"state": "ok"}},
@@ -1182,7 +1214,8 @@ class TestSweepSessionGate:
 @pytest.mark.unit
 class TestReportFences:
     """The probe shares stdout with `cqc_lem.utilities.logger` (`get_current_profile` alone logs
-    before the first probe), and the weekly cron pipes that stdout into `json.loads`."""
+    before the first probe), and the weekly cron pipes that stdout into `json.loads`.
+    """
 
     def test_the_fences_are_distinct_and_non_empty(self):
         assert llv.REPORT_JSON_BEGIN and llv.REPORT_JSON_END
@@ -1192,7 +1225,8 @@ class TestReportFences:
 @pytest.mark.unit
 class TestPermalinkCommentProbe:
     """#966: the permalink comment path failed SILENTLY, so the probe's job is to say plainly
-    whether production would have a composer to type into."""
+    whether production would have a composer to type into.
+    """
 
     _URL = "https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/"
     _URN = "urn:li:activity:7000000000000000001"
@@ -1265,7 +1299,8 @@ class TestPermalinkCommentProbe:
 @pytest.mark.unit
 class TestProfileExperiencesProbe:
     """#970 — the probe has to separate 'page never rendered' from 'grammar moved', because those
-    two need opposite fixes and both look like an empty experience list from the desk."""
+    two need opposite fixes and both look like an empty experience list from the desk.
+    """
 
     def _page(self, *lines_per_entity):
         entities = ""
@@ -1357,7 +1392,8 @@ class TestProfileExperiencesProbe:
 
     def test_dated_lines_the_parser_cannot_read_are_drift(self):
         """The 2026-08-03 failure: the page plainly rendered dated roles and the winning rung saw
-        the footer. Graded off the PAGE's own dated lines, not off the ladder that missed them."""
+        the footer. Graded off the PAGE's own dated lines, not off the ladder that missed them.
+        """
         driver = MagicMock()
         driver.page_source = (
             "<html><body><main><div role='list'><div>Mar 2019 - Present · 7 yrs 6 mos</div>"
@@ -1384,7 +1420,8 @@ class TestProfileExperiencesProbe:
 
     def test_no_target_navigates_nothing_and_grades_unknown(self):
         """The sweep resolves its own target; when it cannot, probing a relative URL would grade
-        this surface off whatever page that lands on."""
+        this surface off whatever page that lands on.
+        """
         driver = MagicMock()
 
         reading = llv.probe_profile_experiences(driver, "", sleep=lambda s: None)

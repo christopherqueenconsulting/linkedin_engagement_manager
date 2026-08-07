@@ -1,8 +1,9 @@
 """Issue #624 — owned-asset delivery counts, the attribution side of the CTA loop."""
 
+from unittest.mock import MagicMock, patch
+
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -34,9 +35,9 @@ class TestCountArtifactCtaDeliveries:
     def test_a_linkedin_newsletter_is_counted_from_the_body(self):
         """`newsletter_url` is a linkedin.com article URL (mark_newsletter_published writes it from
         the publish flow's current_url), and #392's split leaves in-platform links in the BODY — so
-        a first_comment_link-only count would report 0 forever for the mainline newsletter."""
-        from cqc_lem.utilities.ai.content_alignment import (artifact_cta_line,
-                                                            split_link_for_first_comment)
+        a first_comment_link-only count would report 0 forever for the mainline newsletter.
+        """
+        from cqc_lem.utilities.ai.content_alignment import artifact_cta_line, split_link_for_first_comment
         url = "https://www.linkedin.com/newsletters/the-build-log-7123/"
         body = "Here is what I learned.\n\n" + artifact_cta_line(
             newsletter={"enabled": True, "title": "The Build Log", "newsletter_url": url})

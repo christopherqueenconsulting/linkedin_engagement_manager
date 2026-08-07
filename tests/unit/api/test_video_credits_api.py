@@ -1,7 +1,8 @@
 """Unit tests for video credit + upgrade API endpoints."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from cqc_lem.utilities.db import PostType
 
@@ -20,6 +21,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc

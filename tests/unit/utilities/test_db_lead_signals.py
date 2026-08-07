@@ -1,10 +1,11 @@
 """Unit tests for the lead_signals DB helpers (issue #483) — dedup insert, fail-safe existence
-check, paginated inbox, partial updates, and the unactioned count."""
+check, paginated inbox, partial updates, and the unactioned count.
+"""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -28,7 +29,7 @@ class TestInsertLeadSignal:
     def test_inserts_and_returns_the_id(self):
         conn, cursor = _mock_conn(lastrowid=7)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_lead_signal, LeadSignalSource, LeadSignalChannel
+            from cqc_lem.utilities.db import LeadSignalChannel, LeadSignalSource, insert_lead_signal
             sid = insert_lead_signal(1, LeadSignalSource.POST_COMMENT, "lead:post:1:jane",
                                      person_name="Jane", score=55, matched_signals="pricing",
                                      channel=LeadSignalChannel.DM)
@@ -40,26 +41,26 @@ class TestInsertLeadSignal:
     def test_duplicate_thread_returns_none(self):
         conn, _ = _mock_conn(lastrowid=0)   # INSERT IGNORE swallowed it
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_lead_signal, LeadSignalSource
+            from cqc_lem.utilities.db import LeadSignalSource, insert_lead_signal
             assert insert_lead_signal(1, LeadSignalSource.DM, "lead:dm:thread:jane") is None
 
     def test_blank_key_is_refused(self):
         with patch(f"{_DB}.get_db_connection") as get:
-            from cqc_lem.utilities.db import insert_lead_signal, LeadSignalSource
+            from cqc_lem.utilities.db import LeadSignalSource, insert_lead_signal
             assert insert_lead_signal(1, LeadSignalSource.DM, "") is None
         get.assert_not_called()
 
     def test_score_is_clamped_into_the_tinyint_column(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_lead_signal, LeadSignalSource
+            from cqc_lem.utilities.db import LeadSignalSource, insert_lead_signal
             insert_lead_signal(1, LeadSignalSource.DM, "k", score=9999)
         assert cursor.execute.call_args[0][1][7] == 255
 
     def test_db_error_returns_none(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
         with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
-            from cqc_lem.utilities.db import insert_lead_signal, LeadSignalSource
+            from cqc_lem.utilities.db import LeadSignalSource, insert_lead_signal
             assert insert_lead_signal(1, LeadSignalSource.DM, "k") is None
 
 
@@ -139,7 +140,7 @@ class TestUpdateLeadSignal:
     def test_updates_only_the_supplied_fields(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_lead_signal, LeadSignalStatus
+            from cqc_lem.utilities.db import LeadSignalStatus, update_lead_signal
             assert update_lead_signal(3, status=LeadSignalStatus.SENT) is True
         sql, params = cursor.execute.call_args[0]
         assert "status = %s" in sql and "draft_response" not in sql
@@ -148,7 +149,7 @@ class TestUpdateLeadSignal:
     def test_draft_and_status_together(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_lead_signal, LeadSignalStatus
+            from cqc_lem.utilities.db import LeadSignalStatus, update_lead_signal
             update_lead_signal(3, draft_response="hi", status=LeadSignalStatus.APPROVED)
         assert cursor.execute.call_args[0][1] == ("hi", "approved", 3)
 
@@ -161,7 +162,7 @@ class TestUpdateLeadSignal:
     def test_db_error_returns_false(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
         with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
-            from cqc_lem.utilities.db import update_lead_signal, LeadSignalStatus
+            from cqc_lem.utilities.db import LeadSignalStatus, update_lead_signal
             assert update_lead_signal(3, status=LeadSignalStatus.SENT) is False
 
 

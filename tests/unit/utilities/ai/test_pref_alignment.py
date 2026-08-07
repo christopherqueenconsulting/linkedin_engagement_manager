@@ -1,11 +1,12 @@
 """Configurability-audit tests: generation/refinement prompts must be driven by the user's
 engagement preferences (use_emojis / use_hashtags / tone) when set. Hashtags follow the shared
-2026 policy (issue #393) — OFF unless the user explicitly opted in, in every prompt builder."""
+2026 policy (issue #393) — OFF unless the user explicitly opted in, in every prompt builder.
+"""
 
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

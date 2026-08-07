@@ -73,6 +73,7 @@ def user_id():
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app)
 
@@ -102,7 +103,8 @@ def pending_request(user_id):
 
 class TestTheGuardIsReachableAtRuntime:
     """The single claim static analysis cannot make: the ContextVar is populated by the time the
-    handler asks."""
+    handler asks.
+    """
 
     def test_an_agent_session_is_refused_when_it_tries_to_approve(self, client, agent_token,
                                                                   pending_request):
@@ -122,7 +124,8 @@ class TestTheGuardIsReachableAtRuntime:
 
     def test_the_same_call_on_a_human_session_approves(self, client, human_token, pending_request):
         """The guard must refuse the agent WITHOUT breaking the endpoint for its real user —
-        otherwise a green refusal test is indistinguishable from a broken route."""
+        otherwise a green refusal test is indistinguishable from a broken route.
+        """
         r = client.put("/api/connection_request",
                        json={"session_token": human_token, "request_id": pending_request,
                              "action": "approve"})
@@ -163,7 +166,8 @@ class TestApprovalAtCreateTime:
     def test_the_account_auto_approve_default_does_not_approve_for_an_agent(
             self, client, agent_token, user_id):
         """`connection_request_mode` is `auto_approve` out of the box, so naming no status at all
-        used to land an APPROVED row on nearly every account."""
+        used to land an APPROVED row on nearly every account.
+        """
         db.update_engagement_preferences(user_id, {"connection_request_mode": "auto_approve"})
         r = client.post("/api/connection_request",
                         json={"session_token": agent_token,
@@ -209,7 +213,8 @@ class TestTheGrantedTtlSurvivesBeingUsed:
             self, client, agent_token):
         """resolve_session slides EVERY other session to now + SESSION_IDLE_HOURS. Doing that here
         rewrote the 90-day token to 24 hours on its FIRST request — the weekly agent dead every run,
-        which is the exact failure `ttl_hours` was added to prevent."""
+        which is the exact failure `ttl_hours` was added to prevent.
+        """
         before = _exec("SELECT expires_at FROM sessions WHERE session_token=%s",
                        (db.hash_session_token(agent_token),), fetch=True)[0]["expires_at"]
 

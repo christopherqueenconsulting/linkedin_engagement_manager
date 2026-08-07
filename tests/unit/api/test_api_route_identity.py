@@ -110,7 +110,8 @@ def _enforces_identity(route, gates: Set[str]) -> bool:
 class TestEveryGatedApiRouteResolvesItsCaller:
     def test_gate_derivation_finds_the_known_wrappers(self, main_mod):
         """Guard the derivation itself. Too narrow and the test below reports false failures; too
-        wide and it passes vacuously, so pin both ends."""
+        wide and it passes vacuously, so pin both ends.
+        """
         gates = _gates(main_mod)
         assert {"get_session_user_id", "require_session_user_id", "_require_user_admin",
                 "_owned_edition", "_require_admin", "_require_api_and_admin"} <= gates

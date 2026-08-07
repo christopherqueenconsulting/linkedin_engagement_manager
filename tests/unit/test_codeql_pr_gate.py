@@ -147,7 +147,8 @@ class TestWaitForAnalysis:
     def test_first_push_calibrates_off_the_base_ref(self):
         """The live hole this closes: on PR #913's own run the gate accepted at 07:10:36
         with javascript + python/advanced in, while /language:python landed at
-        07:10:54 — head was compared two-deep against a three-category base."""
+        07:10:54 — head was compared two-deep against a three-category base.
+        """
         base = [_analysis(OLD_SHA, PY), _analysis(OLD_SHA, JS),
                 _analysis(OLD_SHA, PY_ADVANCED)]
         client = _FakeClient(
@@ -276,3 +277,47 @@ class TestArgs:
     def test_wait_timeout_outlasts_a_real_codeql_run(self):
         # The wait is real now, so the timeout has to cover a CodeQL run + queue time.
         assert gate.parse_args(_MINIMAL_ARGV).wait_timeout >= 600
+
+
+def _raw_alert(number: int, path: str, line: int, rule: str = "py/empty-except") -> dict:
+    return {
+        "number": number,
+        "rule": {"id": rule, "severity": "note", "security_severity_level": None},
+        "html_url": f"https://example.invalid/{number}",
+        "most_recent_instance": {
+            "location": {"path": path, "start_line": line, "end_line": line},
+            "message": {"text": "same finding"},
+        },
+    }
+
+
+class TestFindNewAlerts:
+    """The gate keys alerts on (rule, path, LINE). A PR that adds code ABOVE a pre-existing alert
+    moves its line, which read as a NEW alert and failed the gate on debt the PR did not create —
+    deterministically, on every merge_group run, which evicted the PR from the merge queue."""
+
+    def _alerts(self, raws):
+        return [a for a in (gate._alert_from_raw(r) for r in raws) if a]
+
+    def test_a_line_shifted_pre_existing_alert_is_not_new(self):
+        base = self._alerts([_raw_alert(2623, "src/a.py", 4240)])
+        head = self._alerts([_raw_alert(2623, "src/a.py", 4253)])
+        assert gate.find_new_alerts(head, base) == []
+
+    def test_a_genuinely_new_alert_still_fails_the_gate(self):
+        base = self._alerts([_raw_alert(2623, "src/a.py", 4240)])
+        head = self._alerts([_raw_alert(2623, "src/a.py", 4253),
+                             _raw_alert(9001, "src/b.py", 12)])
+        assert [a.number for a in gate.find_new_alerts(head, base)] == [9001]
+
+    def test_an_unchanged_alert_is_not_new(self):
+        base = self._alerts([_raw_alert(2623, "src/a.py", 10)])
+        head = self._alerts([_raw_alert(2623, "src/a.py", 10)])
+        assert gate.find_new_alerts(head, base) == []
+
+    def test_the_line_key_still_catches_an_alert_carrying_no_number(self):
+        """Number matching is the addition, not the replacement: an alert that arrives without one
+        must still be judged on its location."""
+        base = self._alerts([_raw_alert(0, "src/a.py", 10)])
+        head = self._alerts([_raw_alert(0, "src/b.py", 99)])
+        assert len(gate.find_new_alerts(head, base)) == 1

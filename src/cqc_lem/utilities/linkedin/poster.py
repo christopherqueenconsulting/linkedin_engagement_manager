@@ -1,19 +1,35 @@
+"""LinkedIn publishing through the official API — the non-Selenium half of posting.
+
+Everything here authenticates with the user's stored OAuth token (`get_user_access_token`) rather
+than a browser session, so none of it is subject to the navigation 429 breaker that throttles the
+Selenium engagement lanes. Four shapes live here: a text / single-media / article-link `ugcPost`
+(`share_on_linkedin`), a multi-image carousel (`share_carousel_on_linkedin`), a NATIVE document
+deck via the versioned Documents API (`share_document_on_linkedin`), and comments and replies on
+the member's OWN posts via socialActions.
+
+Two rules run through all of it. **Missing credentials are not an exception** — every entry point
+logs and returns None so the caller can flag the post instead of failing a Celery task. And **a
+deck is all-or-nothing**: a carousel or document whose slides do not ALL resolve to a real image is
+not posted at all, because a placeholder deck on the feed is worse than a post the caller marks
+`error` for manual fix.
+"""
+
 import json
 import os
 import re
 import shutil
 import tempfile
 import uuid
-from typing import List, Optional, Annotated, Dict
+from typing import Annotated, Dict, List, Optional
 
 import requests
 from linkedin_api.clients.restli.client import RestliClient
 from pydantic import BaseModel, Field
 from pydantic.types import StringConstraints
 
-from cqc_lem.utilities.db import get_user_linked_sub_id, get_user_access_token
+from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.env_constants import LI_API_VERSION
-from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
+from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 
@@ -24,6 +40,13 @@ NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 
 
 class ShareMedia(BaseModel):
+    """One media entry inside a legacy `ugcPost` share.
+
+    `media` carries the asset URN returned by `upload_media` for an uploaded image / video /
+    document; `originalUrl` is what an ARTICLE share uses instead, since a link has nothing
+    uploaded to point at. The two are never both meaningful on the same entry.
+    """
+
     status: ReadyStatus = "READY"
     description: Optional[Dict[str, str]] = Field(default_factory=lambda: {"text": ""})
     media: Optional[str] = None  # DigitalMediaAsset URN
@@ -32,12 +55,29 @@ class ShareMedia(BaseModel):
 
 
 class ShareContent(BaseModel):
+    """The `com.linkedin.ugc.ShareContent` half of a legacy `ugcPost` entity.
+
+    `shareMediaCategory` is constrained to the categories LinkedIn accepts and has to agree with
+    what `media` holds — `NONE` for a text-only share, `IMAGE` / `VIDEO` / `ARTICLE` / `DOCUMENT`
+    once entries are present. The commentary is a non-empty string, so a body-less share fails at
+    construction here rather than as an opaque API rejection.
+    """
+
     shareCommentary: Dict[str, NonEmptyString]
     shareMediaCategory: ShareMediaCategory
     media: Optional[List[ShareMedia]] = None
 
 
 def download_media(media_path: str) -> str:
+    """Fetch a remote media URL into a uniquely named /tmp file so it can be uploaded as bytes.
+
+    The caller owns the returned path: `upload_media` deletes what it downloaded, and
+    `share_document_on_linkedin` tracks them in `tmp_paths` and clears them in its `finally`.
+
+    Raises:
+        requests.HTTPError: a non-2xx download is deliberately not swallowed — media we cannot
+            fetch must fail the post, never publish it silently without the media.
+    """
     response = requests.get(media_path, timeout=30)
     response.raise_for_status()
     content = response.content
@@ -50,6 +90,19 @@ def download_media(media_path: str) -> str:
 
 
 def upload_media(access_token, owner_sub_id: str, media_path, media_type: str = "image"):
+    """Register and upload one media file, returning the asset URN a `ShareMedia` entry points at.
+
+    Two hops: `assets?action=registerUpload` reserves the asset and hands back a one-shot upload
+    URL, then the bytes go there. `media_path` may be an http(s) URL — it is downloaded first and
+    the temp copy removed once the upload has been attempted.
+
+    `media_type` names the feedshare recipe (`image` / `video` / `document`, case-insensitive),
+    which is how LinkedIn decides to process the asset.
+
+    Raises:
+        Exception: the byte upload did not answer 201. Nothing is published at this point, so a
+            failed upload costs the post, never leaves a half-published one.
+    """
     API_URL = 'https://api.linkedin.com/v2'
 
     is_tmp_path = False
@@ -107,6 +160,16 @@ def upload_media(access_token, owner_sub_id: str, media_path, media_type: str = 
 
 
 def determine_media_type(media_path: str) -> str:
+    """Classify a media file by extension into the `shareMediaCategory` LinkedIn needs for it.
+
+    Returns:
+        `IMAGE` or `VIDEO` — never a guess.
+
+    Raises:
+        ValueError: the extension is neither. The answer picks the feedshare recipe the bytes are
+            registered under, so defaulting would upload the file as the wrong kind of asset;
+            stopping the post is the safe end.
+    """
     _, ext = os.path.splitext(os.path.basename(media_path))
     mime = get_file_mime_type(ext)
     if "image" in mime:
@@ -121,6 +184,18 @@ def share_on_linkedin(user_id: int, content: str,
                       media_path: Optional[str] = None,
                       article_url: Optional[str] = None
                       ):
+    """Publish a text, single-media, or article-link post as the user.
+
+    `media_path` may be a local path or an http(s) URL; its kind is read off the extension and the
+    bytes are uploaded BEFORE the share is created, so an upload failure raises with nothing
+    published. `article_url` is the link-share alternative — when both are supplied the article
+    replaces the media entry.
+
+    Returns:
+        The created post's URN, or None when the user has no stored LinkedIn credentials. That
+        None is an account state for the caller to surface, not a failure to retry — no token
+        means no amount of retrying will post.
+    """
     restli_client = RestliClient()
     restli_client.session.hooks["response"].append(lambda r: r.raise_for_status())
 
@@ -230,6 +305,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     All images are uploaded individually and included as a multi-image ugcPost.
     """
     import os
+
     from cqc_lem.utilities.carousel_creator import get_pexels_image_path
 
     restli_client = RestliClient()
@@ -537,7 +613,8 @@ _URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):[0-9]+")
 
 def object_urn_from_post_url(post_url: str) -> Optional[str]:
     """Pull the share/ugcPost/activity URN out of a feed permalink like
-    https://www.linkedin.com/feed/update/urn:li:share:123/ — the socialActions path key."""
+    https://www.linkedin.com/feed/update/urn:li:share:123/ — the socialActions path key.
+    """
     if not post_url:
         return None
     m = _URN_RE.search(post_url)
@@ -553,7 +630,8 @@ def _restli() -> RestliClient:
 def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
                              parent_comment_urn: Optional[str] = None) -> Optional[str]:
     """Create a comment (or reply, when parent_comment_urn is given) on object_urn via the
-    socialActions API. Returns the created comment URN, or None on missing creds/failure."""
+    socialActions API. Returns the created comment URN, or None on missing creds/failure.
+    """
     sub_id = get_user_linked_sub_id(user_id)
     access_token = get_user_access_token(user_id)
     if not sub_id or not access_token:

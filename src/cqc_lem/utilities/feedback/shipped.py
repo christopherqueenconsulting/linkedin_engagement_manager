@@ -36,8 +36,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from cqc_lem.utilities.db import (
-    get_feedback_reporters_for_issue, get_shipped_notice_by_issue,
-    get_shipped_notice_recipient_ids, mark_feedback_resolved_for_issue, record_shipped_notice,
+    get_feedback_reporters_for_issue,
+    get_shipped_notice_by_issue,
+    get_shipped_notice_recipient_ids,
+    mark_feedback_resolved_for_issue,
+    record_shipped_notice,
     record_shipped_notice_recipient,
 )
 from cqc_lem.utilities.feedback.issue_service import github_request, github_token
@@ -79,6 +82,14 @@ class ShipAction:
 
 
 def lookback_hours() -> int:
+    """How far back one pass scans merged PRs (`FEEDBACK_SHIPPED_LOOKBACK_HOURS`, default 48).
+
+    The beat runs daily, so the default window OVERLAPS the previous pass on purpose — a PR merged
+    while a pass was running is still caught by the next one, and `shipped_notice_recipients` is what
+    keeps that overlap from re-emailing anyone. Clamped to 1..720 hours, and anything unparseable
+    falls back to the default, so a fat-fingered env var can't turn one beat into a scan of the
+    repo's whole history.
+    """
     raw = (os.environ.get("FEEDBACK_SHIPPED_LOOKBACK_HOURS") or "").strip()
     try:
         return max(1, min(720, int(float(raw)))) if raw else LOOKBACK_HOURS_DEFAULT
@@ -88,7 +99,8 @@ def lookback_hours() -> int:
 
 def fix_csat_delay_hours() -> int:
     """How long a reporter keeps the fix before the in-app "did this fix it?" appears. This is the
-    'schedule' half of the micro-CSAT — asking in the same minute as the email measures nothing."""
+    'schedule' half of the micro-CSAT — asking in the same minute as the email measures nothing.
+    """
     raw = (os.environ.get("FEEDBACK_FIX_CSAT_DELAY_HOURS") or "").strip()
     try:
         return max(0, min(720, int(float(raw)))) if raw else FIX_CSAT_DELAY_HOURS_DEFAULT
@@ -100,7 +112,8 @@ def fix_csat_delay_hours() -> int:
 
 def closing_issue_numbers(*texts: Optional[str]) -> list:
     """Every issue number a merged PR's title/body says it CLOSES, de-duplicated in first-seen
-    order. Only GitHub's closing keywords count, so "related to #12" never claims a fix shipped."""
+    order. Only GitHub's closing keywords count, so "related to #12" never claims a fix shipped.
+    """
     found: list = []
     for text in texts:
         for match in _CLOSES_RE.finditer(text or ""):
@@ -112,7 +125,8 @@ def closing_issue_numbers(*texts: Optional[str]) -> list:
 
 def humanize_title(pr_title: Optional[str]) -> tuple:
     """(change_label, plain summary) from a conventional-commit PR title. `feat(dms): add X
-    (closes #9)` -> ('New', 'Add X'). An unprefixed title keeps its own words."""
+    (closes #9)` -> ('New', 'Add X'). An unprefixed title keeps its own words.
+    """
     title = (pr_title or "").strip()
     label = DEFAULT_CHANGE_LABEL
     prefix = _COMMIT_PREFIX_RE.match(title)
@@ -128,7 +142,8 @@ def humanize_title(pr_title: Optional[str]) -> tuple:
 def build_changelog_line(pr_title: Optional[str], issue_number: int,
                          pr_number: Optional[int] = None) -> str:
     """The human-readable changelog entry for a shipped fix — what the reporter reads in the email
-    and the in-app notice, and what the "what's new" feed lists."""
+    and the in-app notice, and what the "what's new" feed lists.
+    """
     label, summary = humanize_title(pr_title)
     summary = summary or "A fix you reported"
     refs = f"#{int(issue_number)}" + (f", PR #{int(pr_number)}" if pr_number else "")
@@ -149,7 +164,8 @@ def _parse_github_time(value: Optional[str]) -> Optional[datetime]:
 
 def merged_pull_requests(hours: int = None, limit: int = MAX_PRS_PER_PASS) -> list:
     """PRs merged into the default branch within the lookback window, newest first. Returns [] when
-    there is no token or GitHub is unreachable — this stage is best-effort."""
+    there is no token or GitHub is unreachable — this stage is best-effort.
+    """
     if not github_token():
         log_warning("Shipped-fix notify skipped — no FEEDBACK_GITHUB_TOKEN/GITHUB_TOKEN set",
                     api_provider="github")
@@ -180,7 +196,8 @@ def notify_shipped_issue(issue_number: int, pr_title: str = None,
                          pr_number: int = None) -> dict:
     """Take ONE shipped issue to its reporters: record the changelog line, email + queue the in-app
     "you asked, we shipped" notice for every reporter who hasn't had one, and mark the cluster
-    resolved. Never raises; safe to re-run (each reporter is notified at most once)."""
+    resolved. Never raises; safe to re-run (each reporter is notified at most once).
+    """
     reporters = get_feedback_reporters_for_issue(issue_number)
     if not reporters:
         log_debug(f"Issue #{issue_number} shipped but has no feedback reporters — no notice sent")
@@ -230,7 +247,8 @@ def notify_shipped_issue(issue_number: int, pr_title: str = None,
 def process_shipped_fixes(hours: int = None, limit: int = MAX_PRS_PER_PASS) -> dict:
     """Scan recently merged PRs and close the loop on every feedback cluster they shipped (plan
     §B.4). Idempotent: reporters already told are skipped, so this can run daily over an overlapping
-    window without re-emailing anyone."""
+    window without re-emailing anyone.
+    """
     prs = merged_pull_requests(hours=hours, limit=limit)
     counts: dict = {}
     lines: list = []

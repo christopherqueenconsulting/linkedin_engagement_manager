@@ -1,10 +1,12 @@
 """Unit tests for the DB side of the pending-reason surface (issue #421): the gate_reason
 round-trip, the self-exclusion the re-score path needs from the post history, and the clamping of
-the user-tunable gate thresholds in the single-row engagement upsert."""
+the user-tunable gate thresholds in the single-row engagement upsert.
+"""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -110,7 +112,7 @@ class TestEngagementThresholdPersistence:
         conn, cur = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn), \
              patch(f"{_DB}.max_catchup_touches_allowed", return_value=5):
-            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             assert update_engagement_preferences(1, prefs) is True
         values = cur.execute.call_args[0][1]
         return dict(zip(_ENGAGEMENT_COLS, values[1:]))

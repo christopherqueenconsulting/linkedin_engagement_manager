@@ -1,9 +1,11 @@
 """Unit tests for the post review gate in create_text_post: pre-generation avoid steering built
 from the user's recent posts, the deterministic similarity gate with its single avoid-directive
-retry, and the cheap focus-alignment check — none of which may ever hard-block the pipeline."""
+retry, and the cheap focus-alignment check — none of which may ever hard-block the pipeline.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -192,7 +194,8 @@ class TestAlignmentCheck:
 
 class TestProofGate:
     """A2 personal-expertise gate: a finished post lacking a concrete first-person lived detail is
-    regenerated once (never hard-blocked); one that already carries proof ships untouched."""
+    regenerated once (never hard-blocked); one that already carries proof ships untouched.
+    """
 
     def test_post_with_proof_passes_untouched(self):
         out, gen = _run([_WITH_PROOF], recent=[])

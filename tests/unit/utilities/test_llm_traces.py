@@ -5,8 +5,9 @@ question answerable at all: every call a pipeline makes shares ONE trace id, and
 share one. Everything else here guards the fail-soft posture — a trace is telemetry, so no failure
 inside it may change what the generation chain returns.
 """
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -44,7 +45,8 @@ class TestTraceIdentity:
 
     def test_a_nested_trace_is_a_span_not_a_second_trace(self):
         """create_text_post recurses into itself for post-type fallbacks. Two half-traces of one
-        post answer nobody's question, so the inner one joins the outer."""
+        post answer nobody's question, so the inner one joins the outer.
+        """
         from cqc_lem.utilities.observability import llm_trace
         with patch(f"{_MOD}.posthog") as mock_ph:
             with llm_trace("post_generation", user_id=7) as outer:
@@ -99,8 +101,9 @@ class TestEmittedEvents:
     def test_a_top_level_span_parents_onto_the_trace_id_itself(self):
         """PostHog collects a trace's children with `$ai_parent_id = $ai_trace_id` (see
         traces_query_runner.py). Parent a step onto a separate root-span uuid instead and the trace
-        opens empty — every generation still carries the right trace id, and none of them show."""
-        from cqc_lem.utilities.observability import llm_trace, llm_span
+        opens empty — every generation still carries the right trace id, and none of them show.
+        """
+        from cqc_lem.utilities.observability import llm_span, llm_trace
         with patch(f"{_MOD}.posthog") as mock_ph:
             with llm_trace("post_generation", user_id=7, feature="content") as trace_id:
                 with llm_span("draft"):
@@ -112,7 +115,7 @@ class TestEmittedEvents:
         assert span["$ai_span_name"] == "draft"
 
     def test_nested_spans_parent_onto_each_other(self):
-        from cqc_lem.utilities.observability import llm_trace, llm_span
+        from cqc_lem.utilities.observability import llm_span, llm_trace
         with patch(f"{_MOD}.posthog") as mock_ph:
             with llm_trace("post_generation", user_id=7):
                 with llm_span("draft"):
@@ -123,7 +126,7 @@ class TestEmittedEvents:
         assert inner["$ai_parent_id"] == outer["$ai_span_id"]
 
     def test_extra_span_properties_ride_along(self):
-        from cqc_lem.utilities.observability import llm_trace, llm_span
+        from cqc_lem.utilities.observability import llm_span, llm_trace
         with patch(f"{_MOD}.posthog") as mock_ph:
             with llm_trace("post_generation", user_id=7):
                 with llm_span("draft", post_type="personal_story"):
@@ -142,7 +145,7 @@ class TestEmittedEvents:
         assert kwargs["properties"]["feature"] == "system"
 
     def test_a_failed_pipeline_still_reports_and_re_raises(self):
-        from cqc_lem.utilities.observability import llm_trace, llm_span
+        from cqc_lem.utilities.observability import llm_span, llm_trace
         with patch(f"{_MOD}.posthog") as mock_ph:
             with pytest.raises(ValueError):
                 with llm_trace("post_generation", user_id=7):
@@ -173,8 +176,7 @@ class TestFailSoft:
 
 class TestDecorators:
     def test_llm_pipeline_opens_a_trace_and_attributes_it(self):
-        from cqc_lem.utilities.observability import (current_llm_attribution, current_llm_trace,
-                                                     llm_pipeline)
+        from cqc_lem.utilities.observability import current_llm_attribution, current_llm_trace, llm_pipeline
 
         @llm_pipeline("post_generation", feature="content")
         def generate(user_id: int, stage: str):
@@ -224,7 +226,8 @@ class TestDecorators:
 
 class TestTheDecoratedPipelines:
     """The decorators are the whole mechanism: strip one and its chain silently splinters back into
-    isolated generations with nothing in PostHog to say a step went missing."""
+    isolated generations with nothing in PostHog to say a step went missing.
+    """
 
     @pytest.mark.parametrize("module,name,pipeline", [
         ("cqc_lem.app.run_content_plan", "create_text_post", "post_generation"),

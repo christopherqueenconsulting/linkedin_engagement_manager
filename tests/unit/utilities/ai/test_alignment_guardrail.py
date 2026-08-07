@@ -1,8 +1,10 @@
 """Unit tests for the anti-self-promo guardrail and focus/goal steering that keep generated
-comments and posts aligned to the target post + the user's declared goals (never LEM-drift)."""
+comments and posts aligned to the target post + the user's declared goals (never LEM-drift).
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +65,7 @@ class TestIntentionDirective:
 
 class TestAlignmentDirective:
     def test_always_contains_guardrail(self):
-        from cqc_lem.utilities.ai.ai_helper import _alignment_directive, _NO_SELF_PROMO_GUARDRAIL
+        from cqc_lem.utilities.ai.ai_helper import _NO_SELF_PROMO_GUARDRAIL, _alignment_directive
         assert _NO_SELF_PROMO_GUARDRAIL in _alignment_directive(None)
         assert "LEM" in _alignment_directive(None)
 

@@ -57,9 +57,9 @@ from cqc_lem.utilities.env_constants import (
 from cqc_lem.utilities.flags import COST_ROUTING, flag_enabled
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.routing_policy import (
-    ARMS,
     ARM_CONTROL,
     ARM_TREATMENT,
+    ARMS,
     ASSIGNMENT_FLAG,
     ASSIGNMENT_HASH,
     POLICY_REDIS_KEY,
@@ -112,7 +112,8 @@ COHORT_RAMP_TAIL = (0.5, ADOPTED_COHORT_PCT)
 def routing_enabled() -> bool:
     """Is the app side of cost-aware routing on RIGHT NOW? Runtime flag first, `COST_ROUTING_ENABLED`
     as its default and fallback (issue #651). System-scoped: this is a fleet-wide experiment
-    governor, not a per-user setting."""
+    governor, not a per-user setting.
+    """
     return flag_enabled(COST_ROUTING)
 
 
@@ -122,7 +123,8 @@ def default_thresholds() -> dict:
 
     The initial cohort is clamped to `ADOPTED_COHORT_PCT`: a configured start above the adopted
     ceiling would open an experiment with (almost) no control arm, and the permanent holdout is what
-    keeps the §D.3 quality gate measurable — including after a bucket is adopted."""
+    keeps the §D.3 quality gate measurable — including after a bucket is adopted.
+    """
     return {
         "min_samples": COST_ROUTING_MIN_SAMPLES,
         "max_quality_drop": COST_ROUTING_MAX_QUALITY_DROP,
@@ -137,7 +139,8 @@ def default_thresholds() -> dict:
 
 def cohort_ramp(initial_pct: float) -> tuple:
     """The ramp an experiment climbs. Steps at or below the initial cohort are dropped so a
-    configured 60% start doesn't "promote" down to 50%."""
+    configured 60% start doesn't "promote" down to 50%.
+    """
     return (float(initial_pct),) + tuple(step for step in COHORT_RAMP_TAIL if step > initial_pct)
 
 
@@ -153,7 +156,8 @@ def next_cohort_pct(current: float, initial_pct: float) -> Optional[float]:
 
 def _engagement(row: Mapping) -> float:
     """Weighted engagement — same weighting `post_stats` and `track_post_outcome` use, restated here
-    only through the shared helper so the loop can never score posts on a different scale."""
+    only through the shared helper so the loop can never score posts on a different scale.
+    """
     from cqc_lem.utilities.post_stats import engagement_score
     return float(engagement_score(row.get("reactions"), row.get("comments"), row.get("reposts")))
 
@@ -161,7 +165,8 @@ def _engagement(row: Mapping) -> float:
 def pick_metric(rows: Sequence[Mapping]) -> str:
     """Impression-normalized rate when EVERY row in the comparison carries impressions, else raw
     engagement. Mixing the two would compare a rate against a count; falling back to counts is safe
-    because both arms cover the same window and the same cohort split."""
+    because both arms cover the same window and the same cohort split.
+    """
     rows = list(rows or [])
     if rows and all((row.get("impressions") or 0) > 0 for row in rows):
         return METRIC_RATE
@@ -171,7 +176,8 @@ def pick_metric(rows: Sequence[Mapping]) -> str:
 def summarize_arm(rows: Optional[Sequence[Mapping]], metric: str = METRIC_COUNT) -> dict:
     """Mean/σ of the quality metric plus the median authenticity score for one arm. Posts with no
     authenticity score (pre-gate rows) are simply absent from the median rather than counted as 0 —
-    an unscored post is unknown quality, not bad quality."""
+    an unscored post is unknown quality, not bad quality.
+    """
     rows = list(rows or [])
     values = []
     for row in rows:
@@ -290,7 +296,8 @@ def evaluate_bucket(bucket: Mapping, comparison: Mapping, today: date,
 
 def split_observations(observations: Optional[Sequence[Mapping]], bucket: Mapping) -> dict:
     """Bucket every observed post into the arm its author was assigned to, ignoring posts published
-    before the experiment started (they predate the routing change and would dilute both arms)."""
+    before the experiment started (they predate the routing change and would dilute both arms).
+    """
     started_on = bucket.get("started_on")
     arms = {ARM_TREATMENT: [], ARM_CONTROL: []}
     for row in observations or []:
@@ -313,7 +320,8 @@ def normalize_arms(arms: Optional[Mapping]) -> dict:
     JSON has no integer keys, so ids are stringified HERE rather than at read time — `flag_arm` in the
     stdlib-only core compares strings, and a document written with int keys would round-trip through
     Redis as strings and match nothing. Anything that isn't a recognized arm is dropped: a bad value
-    must fall back to the hash, not route traffic."""
+    must fall back to the hash, not route traffic.
+    """
     normalized = {}
     for user_id, arm in (arms or {}).items():
         if user_id is None or arm not in ARMS:
@@ -336,7 +344,8 @@ def carried_arms(buckets: Optional[Mapping]) -> dict:
     This is what a run that could not ASK PostHog falls back to. Wiping the map instead would send
     every enrolled user back to the hash for a week — a different split, mid-experiment — which is
     the exact arm-flipping `assign_arm` exists to prevent. "PostHog was unreachable" and "PostHog
-    enrolled nobody" are different facts here for the same reason `_raw_variant` keeps them apart."""
+    enrolled nobody" are different facts here for the same reason `_raw_variant` keeps them apart.
+    """
     carried: dict = {}
     for bucket in (buckets or {}).values():
         if isinstance(bucket, Mapping) and bucket.get("state") in ROUTING_STATES:
@@ -350,7 +359,8 @@ def apply_arms(bucket: Mapping, arms: Optional[Mapping]) -> dict:
 
     `arms=None` means the run could not ask PostHog at all, so the bucket keeps whatever cohort it
     already carried; `{}` means PostHog answered for nobody (the experiment is over, or the flag is
-    at 0%) and the map is cleared back to hash assignment."""
+    at 0%) and the map is cleared back to hash assignment.
+    """
     updated = dict(bucket)
     routing = updated.get("state") in ROUTING_STATES
     source = updated.get("arms") if arms is None else arms
@@ -368,7 +378,8 @@ def arms_summary(arms: Optional[Mapping]) -> dict:
     """What the readout says about the cohort: how many users PostHog enrolled and what share of them
     it put in the treatment. `treatment_share` is None (not 0.0) with nobody enrolled — "the flag
     answered for nobody" and "the flag put nobody in the treatment" are different facts, and only one
-    of them means the experiment is running."""
+    of them means the experiment is running.
+    """
     resolved = normalize_arms(arms)
     treatment = sum(1 for arm in resolved.values() if arm == ARM_TREATMENT)
     return {
@@ -381,6 +392,14 @@ def arms_summary(arms: Optional[Mapping]) -> dict:
 
 def new_bucket(feature: str, from_tier: str, today: date, cohort_pct: float,
                generation: int = 1) -> dict:
+    """A freshly opened experiment record for one (feature, tier) pair, at the bottom of the ramp.
+
+    `generation` is what keeps a re-opened bucket from inheriting the last one's verdict: the id
+    carries it (`feature:tier#2`), so a bucket that rolled back and later cleared its cooldown reads
+    as a NEW experiment in every downstream readout rather than a continuation of the failed one.
+    Always opened at `STATE_EXPERIMENT` with no cooldown — the ramp and the rollback are decided by
+    the evaluator, never here.
+    """
     to_tier = cheaper_tier(from_tier)
     return {
         "id": f"{bucket_key(feature, from_tier)}#{generation}",
@@ -461,7 +480,8 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
     arm they are about to be in rather than the one they were written in. `None` means the run could
     not ASK PostHog (outage, key missing, experiments off) — the previous document's cohort is carried
     forward untouched, because reshuffling a live cohort back onto the hash is exactly the mid-flight
-    arm flip the fallback exists to avoid."""
+    arm flip the fallback exists to avoid.
+    """
     enabled = routing_enabled() if enabled is None else bool(enabled)
     limits = {**default_thresholds(), **(thresholds or {})}
     policy = normalize_policy(previous)
@@ -518,7 +538,8 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
 
 def recommend_unmeasurable(spend_by_feature: Optional[Mapping]) -> list:
     """§D.3: features that spend real money but expose no per-artifact quality signal can't clear an
-    automated gate, so they are surfaced as human-gated recommendations rather than auto-routed."""
+    automated gate, so they are surfaced as human-gated recommendations rather than auto-routed.
+    """
     recommendations = []
     for feature, usd in sorted((spend_by_feature or {}).items(), key=lambda kv: -float(kv[1] or 0)):
         if feature in MEASURABLE_FEATURES or float(usd or 0) <= 0:
@@ -565,6 +586,12 @@ def render_routing_text(report: Mapping) -> str:
 
 
 def render_routing_html(report: Mapping) -> str:
+    """The email body, which is deliberately just the TEXT report escaped into a `<pre>`.
+
+    One renderer means the HTML and plain-text parts of the same email can never disagree about what
+    the loop decided, and escaping after rendering (never before) keeps a feature or reason string
+    from injecting markup into the owner's inbox.
+    """
     body = (render_routing_text(report)
             .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     return ("<h2>LEM cost-aware routing</h2><pre style=\"font-family:ui-monospace,monospace;"
@@ -580,7 +607,8 @@ def _today() -> date:
 def _redis_client():
     """Redis handle for the policy document, or None when Redis is unavailable (the loop then still
     evaluates and reports — it just can't publish). Must resolve to the same instance the LiteLLM
-    container reads, hence the shared `COST_ROUTING_REDIS_URL` override."""
+    container reads, hence the shared `COST_ROUTING_REDIS_URL` override.
+    """
     try:
         import redis
     except Exception:
@@ -599,7 +627,8 @@ def _redis_client():
 def load_policy() -> dict:
     """The currently published policy, or `{}` when there is none (or Redis is unreachable). An
     unreadable policy is treated as "no experiments running" for evaluation purposes — the router
-    fails open the same way, so both sides degrade to complexity-only routing together."""
+    fails open the same way, so both sides degrade to complexity-only routing together.
+    """
     client = _redis_client()
     if client is None:
         return {}
@@ -621,7 +650,8 @@ def load_policy() -> dict:
 
 def publish_policy(policy: Mapping) -> bool:
     """Write the policy where `.litellm/complexity_router.py` reads it. No TTL: an expired key would
-    silently revert routing mid-week, and "no policy" must mean "nothing decided", not "we forgot"."""
+    silently revert routing mid-week, and "no policy" must mean "nothing decided", not "we forgot".
+    """
     client = _redis_client()
     if client is None:
         log_warning("Redis unavailable — routing policy not published",
@@ -639,7 +669,8 @@ def publish_policy(policy: Mapping) -> bool:
 def collect_quality_observations(days: int = COST_ROUTING_WINDOW_DAYS,
                                  end: Optional[date] = None) -> list:
     """Per-post quality rows for the window, tagged with the feature they belong to. Posts are the
-    `content` feature by definition — the other features have no per-artifact outcome to measure."""
+    `content` feature by definition — the other features have no per-artifact outcome to measure.
+    """
     from cqc_lem.utilities.db import get_post_quality_rows
 
     end = end or _today()
@@ -652,7 +683,8 @@ def cohort_user_ids(observations: Optional[Sequence[Mapping]] = None) -> list:
     """Who to resolve an arm for: every currently active user, plus anyone who published inside the
     window. The union matters in both directions — an active user with no posts yet still needs an arm
     before their first LLM call, and a user who has since gone inactive must keep the arm their
-    already-observed posts were written under, or the window's analysis loses a whole side."""
+    already-observed posts were written under, or the window's analysis loses a whole side.
+    """
     from cqc_lem.utilities.db import get_active_user_ids
 
     ids = []
@@ -684,7 +716,8 @@ def resolve_cohort(observations: Optional[Sequence[Mapping]] = None) -> Optional
       cleared and every bucket falls back to the hash split that shipped before #652.
 
     The availability check comes FIRST so a project with no experiment plane doesn't pay for the
-    active-user scan it could never use an answer from."""
+    active-user scan it could never use an answer from.
+    """
     from cqc_lem.utilities.experiments import COST_ROUTING_ARM, assignments, enrollment_available
 
     if not enrollment_available():
@@ -716,7 +749,8 @@ def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional
     anyone INTO, and an exposure event for an experiment that isn't running would put control-arm
     traffic in a readout that never had a treatment arm. It is not CLEARED while off either (the
     cohort is carried forward, same as an outage) — "resumes exactly where the loop left off" has to
-    include who was in which arm, or a flag flip would reshuffle the cohort on the way back on."""
+    include who was in which arm, or a flag flip would reshuffle the cohort on the way back on.
+    """
     from cqc_lem.utilities.db import cost_ledger_available, get_cost_rollup
 
     enabled = routing_enabled() if enabled is None else bool(enabled)
@@ -740,7 +774,8 @@ def apply_routing_report(report: Optional[Mapping] = None, publish: bool = True,
                          to_email: Optional[str] = None) -> dict:
     """Publish the new policy and tell the owner what moved. Only ACTUAL changes are delivered — a
     weekly "nothing changed" email would train the owner to ignore the one that says a bucket rolled
-    back. A rollback logs at ERROR so it reaches PostHog through the logger on its own."""
+    back. A rollback logs at ERROR so it reaches PostHog through the logger on its own.
+    """
     from cqc_lem.utilities.email import _dispatch_email
     from cqc_lem.utilities.observability import track_routing_policy
 
@@ -783,6 +818,12 @@ def apply_routing_report(report: Optional[Mapping] = None, publish: bool = True,
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point. Read-only unless `--apply` is passed, and `--dry-run` overrides it.
+
+    Returns the process exit code: **2 when any bucket rolled back**, so a cron or CI caller can act
+    on a quality breach without parsing the output; 0 otherwise. The report is always printed, even
+    with `--apply` — for a CLI the printed report IS the product, so it is never suppressed.
+    """
     parser = argparse.ArgumentParser(description="LEM cost-aware routing optimizer")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     parser.add_argument("--dry-run", action="store_true",

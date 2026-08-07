@@ -1,6 +1,7 @@
 """Unit tests for the 2026 hashtag + anti-engagement-bait policy (issue #393 / C4): generated
 content is hashtag-free unless the user explicitly opts in, and no CTA the framework can assign
-asks for a reflex action the algorithm demotes."""
+asks for a reflex action the algorithm demotes.
+"""
 
 import pytest
 
@@ -70,7 +71,8 @@ class TestHashtagDirective:
 
 class TestGeneratorsDefaultToNoHashtags:
     """Unset prefs used to mean 'hashtags ON' in these prompt builders — the opposite of the 2026
-    default. Each prompt must now come back hashtag-free unless the user opted in."""
+    default. Each prompt must now come back hashtag-free unless the user opted in.
+    """
 
     @staticmethod
     def _prompt_text(mock_llm) -> str:

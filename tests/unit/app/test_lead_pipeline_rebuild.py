@@ -1,10 +1,11 @@
 """Unit tests for the nightly lead re-score (issue #484) — per-user rebuild, decay of people who
-went quiet, ICP terms pulled from engagement preferences, and the fan-out task."""
+went quiet, ICP terms pulled from engagement preferences, and the fan-out task.
+"""
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 

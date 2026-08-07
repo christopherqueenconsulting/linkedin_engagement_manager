@@ -52,18 +52,35 @@ from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import text_similarity
 from cqc_lem.utilities.db import (
-    FaqStatus, FeedbackStatus, apply_faq_entry_version, get_faq_candidate_feedback,
-    get_faq_entries, get_faq_entry_versions, record_faq_entry_version, update_feedback_triage,
+    FaqStatus,
+    FeedbackStatus,
+    apply_faq_entry_version,
+    get_faq_candidate_feedback,
+    get_faq_entries,
+    get_faq_entry_versions,
+    record_faq_entry_version,
+    update_feedback_triage,
     upsert_faq_entry,
 )
+
 # Same-package internals reused on purpose: one env-parsing rule, one similarity measure, one
 # GitHub client and one JSON extractor for the whole feedback loop.
 from cqc_lem.utilities.feedback.classifier import (
-    NEEDS_HUMAN_LABEL, RISK_LABELS, FeedbackRisk, _json_object_candidates,
+    NEEDS_HUMAN_LABEL,
+    RISK_LABELS,
+    FeedbackRisk,
+    _json_object_candidates,
 )
 from cqc_lem.utilities.feedback.issue_service import (
-    FEEDBACK_LABEL, PLAN_DOC, _env_float, _env_int, comment_on_issue, create_github_issue,
-    embed_text, issue_assignee, similarity,
+    FEEDBACK_LABEL,
+    PLAN_DOC,
+    _env_float,
+    _env_int,
+    comment_on_issue,
+    create_github_issue,
+    embed_text,
+    issue_assignee,
+    similarity,
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 
@@ -158,35 +175,72 @@ _SYSTEM_PROMPT = (
 # --- Config -------------------------------------------------------------------------------------
 
 def faq_model() -> str:
+    """Model alias the one answer call runs on — `FAQ_MODEL`, else `lem-medium`."""
     return (os.environ.get("FAQ_MODEL") or "").strip() or DEFAULT_MODEL
 
 
 def recurrence_min() -> int:
+    """How many times the SAME question must be asked before any answer is generated.
+
+    This is the cost gate the module's "cost is gated on recurrence, not volume" property rests on:
+    below it a cluster returns PENDING and waits, spending nothing. Clamped to 1..100.
+    """
     return _env_int("FAQ_RECURRENCE_MIN", RECURRENCE_MIN_DEFAULT, 1, 100)
 
 
 def cluster_similarity_min() -> float:
+    """Score at which two INCOMING questions are treated as the same question.
+
+    Raising it splits clusters, so fewer ever reach `recurrence_min` and more questions go
+    unanswered; lowering it merges unrelated questions into one published answer.
+    """
     return _env_float("FAQ_CLUSTER_SIMILARITY", CLUSTER_SIMILARITY_DEFAULT, 0.0, 1.0)
 
 
 def entry_similarity_min() -> float:
+    """Score at which an incoming question counts as ALREADY covered by an existing FAQ entry.
+
+    Not comparable to `cluster_similarity_min` despite the lower default: `match_entry` is lexical
+    token overlap (entries carry no stored embedding), while clustering is embedding cosine.
+    """
     return _env_float("FAQ_ENTRY_SIMILARITY", ENTRY_SIMILARITY_DEFAULT, 0.0, 1.0)
 
 
 def max_answers_per_pass() -> int:
+    """Answer generations one pass may spend (0..50) — the per-run ceiling on LLM cost.
+
+    A HELD cluster spends budget too: both hold paths run only AFTER the generation call, so the
+    money is already gone whether or not anything was published.
+    """
     return _env_int("FAQ_MAX_ANSWERS_PER_PASS", MAX_ANSWERS_PER_PASS_DEFAULT, 0, 50)
 
 
 def auto_publish() -> bool:
+    """Whether a NEW auto-written entry goes live at once instead of landing `draft`.
+
+    Off by default, per issue #506's contract that an auto-generated answer is reviewed before it
+    is public. It has no say over a REVISION — refreshing an already-published entry keeps its
+    existing status either way.
+    """
     return (os.environ.get("FAQ_AUTO_PUBLISH") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def auto_reply_enabled() -> bool:
+    """Whether askers are emailed the answer to what they asked. ON unless explicitly turned off.
+
+    The one toggle here that defaults on: the reply is direct support to the person who asked, and
+    it is only ever sent for an answer that already cleared the publish guardrails.
+    """
     return (os.environ.get("FAQ_AUTO_REPLY") or "true").strip().lower() not in (
         "0", "false", "no", "off")
 
 
 def grounding_docs() -> list:
+    """Repo-relative docs that, with the published FAQ, make up the closed grounding corpus.
+
+    Adding a doc here is the only way to make a new fact answerable — nothing outside this corpus
+    may reach an answer, so an unlisted fact holds the question for a human instead.
+    """
     raw = (os.environ.get("FAQ_GROUNDING_DOCS") or "").strip() or DEFAULT_GROUNDING_DOCS
     return [part.strip() for part in raw.split(",") if part.strip()]
 
@@ -197,7 +251,8 @@ def redact_pii(text: Optional[str]) -> str:
     """Strip the personal data a support question tends to carry — the address someone signed up
     with, the phone number they left, an API key they pasted — BEFORE it reaches the model, GitHub
     or the public page. Order matters: emails and secrets first, so their digits can't be
-    half-eaten by the phone pattern."""
+    half-eaten by the phone pattern.
+    """
     out = str(text or "")
     out = _EMAIL_RE.sub(REDACTED, out)
     out = _SECRET_RE.sub(REDACTED, out)
@@ -206,13 +261,20 @@ def redact_pii(text: Optional[str]) -> str:
 
 
 def contains_profanity(text: Optional[str]) -> list:
+    """The disallowed words present in `text`, sorted — empty when it is clean.
+
+    Whole-token only: the text is split on whitespace and each token stripped of surrounding
+    punctuation, so an innocent word that merely CONTAINS one of these never matches. A non-empty
+    result is a hard hold in `check_answer` — this is public copy.
+    """
     words = {w.lower().strip(".,!?;:\"'()") for w in str(text or "").split()}
     return sorted(words & _PROFANITY)
 
 
 def looks_like_question(text: Optional[str]) -> bool:
     """Free deterministic prefilter: does this feedback read like a question at all? Everything it
-    rejects costs nothing — no embedding, no LLM call, and the row is left for the human queue."""
+    rejects costs nothing — no embedding, no LLM call, and the row is left for the human queue.
+    """
     body = str(text or "").strip()
     if not body:
         return False
@@ -224,7 +286,8 @@ def looks_like_question(text: Optional[str]) -> bool:
 
 def normalize_question(text: Optional[str]) -> str:
     """The raw feedback body reduced to ONE publishable question: PII redacted, the question
-    sentence isolated, whitespace collapsed, capitalized and '?'-terminated."""
+    sentence isolated, whitespace collapsed, capitalized and '?'-terminated.
+    """
     body = " ".join(redact_pii(text).split())
     if not body:
         return ""
@@ -244,7 +307,8 @@ def normalize_question(text: Optional[str]) -> str:
 def implies_policy_claim(*texts: Optional[str]) -> Optional[str]:
     """The wording that makes an answer a commitment rather than a fact — returns the phrase that
     tripped it, or None. Deterministic on purpose: this hold must not depend on the model's own
-    honesty about what it is claiming."""
+    honesty about what it is claiming.
+    """
     for text in texts:
         match = _POLICY_RE.search(str(text or ""))
         if match:
@@ -259,7 +323,8 @@ def _numbers(text: Optional[str]) -> list:
 
 def ungrounded_numbers(answer: Optional[str], grounding: Optional[str]) -> list:
     """Numeric specifics in the answer that appear nowhere in the source material — the fabrication
-    the FAQ can least afford ("$19/month", "up to 500 comments a day")."""
+    the FAQ can least afford ("$19/month", "up to 500 comments a day").
+    """
     allowed = set(_numbers(grounding))
     out: list = []
     for value in _numbers(answer):
@@ -270,7 +335,8 @@ def ungrounded_numbers(answer: Optional[str], grounding: Optional[str]) -> list:
 
 def check_answer(question: str, answer: str, grounding: str) -> Optional[str]:
     """Fail-closed publish guardrails, in order: something to say, inside the cap, clean, free of
-    personal data, and free of invented specifics. Returns the hold reason, or None to publish."""
+    personal data, and free of invented specifics. Returns the hold reason, or None to publish.
+    """
     text = str(answer or "").strip()
     if not text:
         return "the answer is empty"
@@ -291,7 +357,8 @@ def check_answer(question: str, answer: str, grounding: str) -> Optional[str]:
 
 def match_entry(question: str, entries: Optional[list]) -> tuple:
     """The existing FAQ entry that already asks this, and its score. Lexical only — an entry has no
-    stored embedding, and FAQ questions are short and keyword-dense enough for token overlap."""
+    stored embedding, and FAQ questions are short and keyword-dense enough for token overlap.
+    """
     best = None
     best_score = 0.0
     for entry in entries or []:
@@ -316,7 +383,8 @@ def cluster_questions(rows: Optional[list]) -> list:
     `feedback.embedding` is neither read nor written here: that column holds the filer's
     body-derived vector, and cosine between a question vector and a body vector is not a
     like-for-like score. The cost of re-embedding a still-pending question each pass is a bounded
-    handful of `lem-embedding` calls."""
+    handful of `lem-embedding` calls.
+    """
     threshold = cluster_similarity_min()
     clusters: list = []
     for row in rows or []:
@@ -341,7 +409,8 @@ def cluster_questions(rows: Optional[list]) -> list:
 
 def _read_doc(path: str) -> str:
     """One grounding doc, read relative to the repo root. Unreadable/missing docs are simply not
-    part of the corpus — a narrower corpus makes answers MORE conservative, never less."""
+    part of the corpus — a narrower corpus makes answers MORE conservative, never less.
+    """
     try:
         root = Path(__file__).resolve().parents[4]
         candidate = (root / path).resolve()
@@ -356,7 +425,8 @@ def _read_doc(path: str) -> str:
 def build_grounding(entries: Optional[list] = None, docs: Optional[list] = None) -> str:
     """The closed corpus an answer may draw on: the FAQ we already stand behind, plus the product
     docs. Bounded — a corpus that does not fit is truncated, and anything outside it is unanswerable
-    by construction."""
+    by construction.
+    """
     parts: list = []
     for entry in entries or []:
         question = str(entry.get("question") or "").strip()
@@ -372,7 +442,8 @@ def build_grounding(entries: Optional[list] = None, docs: Optional[list] = None)
 
 def _parse_answer(raw_text: Optional[str]) -> Optional[dict]:
     """The model's reply as {question, answer, answerable, policy_claim, confidence}, or None when
-    it is unusable. Fails CLOSED — an off-contract answer is never published."""
+    it is unusable. Fails CLOSED — an off-contract answer is never published.
+    """
     for candidate in _json_object_candidates(raw_text or ""):
         try:
             data = json.loads(candidate)
@@ -396,7 +467,8 @@ def generate_faq_answer(question: str, grounding: str, asks: int = 1,
                         current_answer: Optional[str] = None) -> Optional[dict]:
     """ONE `lem-medium` call that writes (or rewrites) the answer to a recurring question, using
     only `grounding`. Returns None when the call fails or the reply is off-contract — the caller
-    holds instead of publishing."""
+    holds instead of publishing.
+    """
     if not str(question or "").strip() or not str(grounding or "").strip():
         return None
     model = faq_model()
@@ -428,7 +500,8 @@ def generate_faq_answer(question: str, grounding: str, asks: int = 1,
 
 def build_hold_body(question: str, answer: Optional[str], reason: str, asks: int) -> str:
     """The GitHub issue body for a question the auto-FAQ pass refuses to publish. Carries the
-    redacted question and the proposed wording so the owner can approve/edit in one pass."""
+    redacted question and the proposed wording so the owner can approve/edit in one pass.
+    """
     lines = [f"**Users have asked this {max(1, int(asks or 1))} time(s) and the auto-FAQ pass will "
              "not answer it unattended.**", "",
              f"**Question:** {question}", "",
@@ -452,7 +525,8 @@ def build_hold_body(question: str, answer: Optional[str], reason: str, asks: int
 
 def build_hold_decision_comment(question: str, answer: Optional[str], reason: str) -> str:
     """RUNBOOK-shaped Decision Comment: ONE genuine question (what should the public FAQ say),
-    lettered options with consequences, and a recommendation."""
+    lettered options with consequences, and a recommendation.
+    """
     options = [
         ("Publish the proposed answer as written",
          "it goes live on the landing page FAQ and askers get it by email"),
@@ -484,7 +558,8 @@ def hold_for_human(question: str, answer: Optional[str], reason: str, asks: int,
                    policy: bool = False) -> Optional[int]:
     """File the hold as a `needs-human` issue (plus `risk:product-decision` for a policy claim) with
     a letter-pickable Decision Comment. Returns the issue number, or None when GitHub is
-    unconfigured/unreachable — holding is best-effort, the answer is withheld either way."""
+    unconfigured/unreachable — holding is best-effort, the answer is withheld either way.
+    """
     labels = [QUESTION_LABEL, FEEDBACK_LABEL, NEEDS_HUMAN_LABEL]
     if policy:
         labels.append(PRODUCT_DECISION_LABEL)
@@ -505,7 +580,8 @@ def _result(action: str, cluster_id: Optional[int], **extra) -> dict:
 
 def reply_to_askers(rows: Optional[list], question: str, answer: str) -> int:
     """Email everyone in the cluster the answer to what they asked. Anonymous rows (no user_id) have
-    nowhere to reply to and are skipped. Never raises — a mail outage must not block publishing."""
+    nowhere to reply to and are skipped. Never raises — a mail outage must not block publishing.
+    """
     if not auto_reply_enabled() or not str(answer or "").strip():
         return 0
     from cqc_lem.utilities.notifications import notify_faq_answer
@@ -527,7 +603,8 @@ def reply_to_askers(rows: Optional[list], question: str, answer: str) -> int:
 def _close_cluster(cluster: dict, status: "FeedbackStatus") -> None:
     """Stamp every row in the cluster with the FAQ cluster id and its outcome, so the pass never
     reconsiders (or re-charges for) it. The seed carries `cluster_id = id`, exactly like the filer's
-    work clusters — but at a status the filer's cluster query ignores, so the two never mix."""
+    work clusters — but at a status the filer's cluster query ignores, so the two never mix.
+    """
     for row in cluster.get("rows") or []:
         update_feedback_triage(row.get("id"), status=status, cluster_id=cluster["cluster_id"])
 
@@ -538,7 +615,8 @@ def answer_question_cluster(cluster: dict, entries: Optional[list] = None,
     """Take ONE clustered question to its outcome (see `FaqAction`). Never raises.
 
     `entries` / `grounding` are injectable so a batch pass loads the FAQ and reads the docs once;
-    `allow_generate=False` is the per-pass answer budget saying "not this one, next pass"."""
+    `allow_generate=False` is the per-pass answer budget saying "not this one, next pass".
+    """
     cluster_id = cluster.get("cluster_id")
     question = str(cluster.get("question") or "").strip()
     rows = cluster.get("rows") or []
@@ -625,7 +703,8 @@ def answer_question_cluster(cluster: dict, entries: Optional[list] = None,
 def process_faq_feedback(limit: int = 50) -> dict:
     """Drain the support queue into the FAQ (issue #507). The FAQ and the grounding docs are read
     ONCE per pass, and entries published mid-pass join the in-memory list so two clusters of the
-    same question in one pass produce one entry."""
+    same question in one pass produce one entry.
+    """
     rows = get_faq_candidate_feedback(limit)
     questions = [row for row in rows if looks_like_question(row.get("body"))]
     if not questions:
@@ -660,7 +739,8 @@ def process_faq_feedback(limit: int = 50) -> dict:
 
 def revert_faq_answer(entry_id: int, version_id: int) -> Optional[dict]:
     """Roll an FAQ entry back to a stored version (the revertible half of versioned answers). The
-    revert is itself appended to the history, so nothing is ever lost by undoing."""
+    revert is itself appended to the history, so nothing is ever lost by undoing.
+    """
     version = apply_faq_entry_version(entry_id, version_id)
     if not version:
         log_warning(f"Could not revert FAQ entry {entry_id} to version {version_id}")

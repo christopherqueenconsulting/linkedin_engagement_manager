@@ -1,8 +1,9 @@
 """Unit tests for the connection-targeting DB helpers (issue #486)."""
 
+from unittest.mock import MagicMock, patch
+
 import mysql.connector
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

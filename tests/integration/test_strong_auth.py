@@ -17,8 +17,7 @@ import mysql.connector
 import pyotp
 import pytest
 
-from cqc_lem.utilities import auth_factors as af
-from cqc_lem.utilities import db
+from cqc_lem.utilities import auth_factors as af, db
 from cqc_lem.utilities.crypto import SECRET_ENVELOPE_PREFIX, hash_session_token
 
 pytestmark = pytest.mark.integration
@@ -85,7 +84,8 @@ def user_id():
 @pytest.fixture
 def encryption_key(monkeypatch):
     """A master key for the whole test, so the TOTP seed takes the ENCRYPTED path. Without one the
-    module is deliberately a pass-through (pre-#745 behaviour) and would prove nothing here."""
+    module is deliberately a pass-through (pre-#745 behaviour) and would prove nothing here.
+    """
     from cqc_lem.utilities.crypto import generate_master_key
     monkeypatch.setenv("LEM_SECRET_KEY", generate_master_key())
     monkeypatch.setenv("LEM_SECRET_KEY_VERSION", "1")
@@ -220,7 +220,8 @@ class TestChallenges:
     def test_a_pending_login_survives_a_wrong_code_and_dies_on_the_last_one(self, user_id):
         """A mistyped digit must not end the login — the only way back would be the whole email
         round trip. The count is what bounds guessing, and it lives here rather than in the Redis
-        limiter in front of it, which fails open."""
+        limiter in front of it, which fails open.
+        """
         expires = datetime.now(timezone.utc) + timedelta(minutes=5)
         handle = db.create_auth_challenge("second_factor", expires, user_id=user_id)
 
@@ -247,7 +248,8 @@ class TestChallenges:
     def test_the_guessing_budget_is_counted_per_account_not_per_handle(self, user_id):
         """A per-handle counter bounds one pending login and nothing else: starting the sign-in
         again issues a fresh handle with a fresh counter. Summing the account's attempts over a
-        window is what turns five guesses per round into five guesses, full stop."""
+        window is what turns five guesses per round into five guesses, full stop.
+        """
         expires = datetime.now(timezone.utc) + timedelta(minutes=5)
         window_start = datetime.now(timezone.utc) - timedelta(minutes=15)
 
@@ -308,7 +310,8 @@ class TestStepUpState:
 
     def test_a_recovery_session_may_enrol_but_still_cannot_touch_a_credential(self, user_id):
         """Both halves of the recovery-code bargain, against the real schema: it gets you back to
-        a factor (design §6.8) and it gets you no further."""
+        a factor (design §6.8) and it gets you no further.
+        """
         db.add_passkey_factor(user_id, "cred-lost", "pk")
         token = db.create_session(user_id, scope=db.SESSION_SCOPE_RECOVERY)
         assert af.session_signed_in_with_recovery_code(token) is True
@@ -326,7 +329,8 @@ class TestStepUpState:
 
 class TestNoPlaintextSecretsRemain:
     """The acceptance criterion that spans all three PRs: drive every secret through its real write
-    path, then read the raw columns back and assert none of them holds what was handed in."""
+    path, then read the raw columns back and assert none of them holds what was handed in.
+    """
 
     def test_every_secret_column_holds_an_envelope_or_a_hash(self, user_id, encryption_key):
         session_token = db.create_session(user_id)

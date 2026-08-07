@@ -5,9 +5,10 @@ resolved from that cookie, auth endpoints are rate limited and PIN-locked, sessi
 and revocable per device, and the email address can move without the account moving.
 """
 
-import pytest
 from contextlib import contextmanager
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -23,7 +24,8 @@ def _live_session(token: str = "real", user_id: int = _UID, scope: str = "full")
     Since 2c.1 `get_session_user_id` reads the row (id + scope) through `_db_resolve_session` so it
     can refuse a scoped session outside its surface; `current_session_token` still only asks whether
     a token resolves. Patching one and not the other would let a test pass on a resolver the request
-    never used."""
+    never used.
+    """
     with patch(f"{_M}._db_resolve_session",
                side_effect=lambda t: {"user_id": user_id, "scope": scope} if t == token else None), \
          patch(f"{_M}._db_get_session_user_id",
@@ -44,6 +46,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -55,7 +58,8 @@ def client():
 @pytest.fixture(autouse=True)
 def _quiet_audit():
     """The audit row and the verified stamp are asserted where they matter; everywhere else they
-    would just be two unmocked DB calls."""
+    would just be two unmocked DB calls.
+    """
     with patch(f"{_M}.record_auth_event", return_value=True), \
          patch(f"{_M}.mark_email_verified", return_value=True):
         yield
@@ -104,7 +108,8 @@ class TestSessionCookie:
 
     def test_the_bypass_login_does_not_claim_the_email_was_verified(self, client):
         """No mail provider means no PIN reached the address, so nothing proved control of it.
-        email_verified_at records that proof and must stay empty here."""
+        email_verified_at records that proof and must stay empty here.
+        """
         with patch(f"{_M}.get_user_id", return_value=_UID), \
              patch(f"{_M}.generate_pin", return_value="123456"), \
              patch(f"{_M}.hash_pin", return_value="h"), \
@@ -182,7 +187,8 @@ class TestCookieResolution:
         """The seam between the two resolvers. When a stale explicit token falls through to the
         cookie, the token the request ACTS as has to fall through with it — otherwise logout deletes
         a row that no longer exists and leaves the live one signed in, and "sign out all other
-        devices" fails to match the caller's own session as the one to keep and revokes it."""
+        devices" fails to match the caller's own session as the one to keep and revokes it.
+        """
         with _live_session(), \
              patch(f"{_M}.delete_session") as ds:
             resp = client.post("/api/auth/logout", json={"session_token": "expired"},
@@ -321,7 +327,8 @@ class TestSessionManagement:
 
     def test_the_extension_gets_its_own_labelled_session(self, client):
         """The SPA has no token to hand over any more, so the extension is minted one — a device of
-        its own that can be revoked without signing the person out of the app."""
+        its own that can be revoked without signing the person out of the app.
+        """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.create_session", return_value="tok_ext") as cs:
             resp = client.post("/api/user/extension-token", json={"session_token": "tok"})

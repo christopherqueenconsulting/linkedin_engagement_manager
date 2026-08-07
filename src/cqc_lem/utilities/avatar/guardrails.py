@@ -67,8 +67,7 @@ def resolve_avatar_for(user_id: Optional[int], *, surface: str,
         raise ValueError(f"Unknown avatar surface: {surface}")
 
     try:
-        from cqc_lem.utilities.db import (get_active_avatar, get_avatar_preferences,
-                                          get_post_use_avatar)
+        from cqc_lem.utilities.db import get_active_avatar, get_avatar_preferences, get_post_use_avatar
 
         prefs = get_avatar_preferences(user_id)
         if prefs.get("avatar_disabled"):

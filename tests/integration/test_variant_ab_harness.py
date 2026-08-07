@@ -7,10 +7,10 @@ its post's engagement is captured (`record_post_stats`), the two are joined back
 seeded results — the acceptance criterion — without a live MySQL container.
 """
 import json
-import pytest
 from datetime import datetime
-
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -99,8 +99,7 @@ class _FakeConn:
 
 class TestVariantABHarness:
     def test_shipped_variant_recorded_and_winner_reflects_seeded_results(self):
-        from cqc_lem.utilities.db import (record_shipped_variant, record_post_stats,
-                                          get_variant_outcome_rows)
+        from cqc_lem.utilities.db import get_variant_outcome_rows, record_post_stats, record_shipped_variant
         from cqc_lem.utilities.post_stats import select_variant_winners
 
         now = datetime(2026, 7, 24, 12, 0)
@@ -143,7 +142,8 @@ class TestVariantABHarness:
 
     def test_shipped_variant_lookup_feeds_the_posthog_experiment_label(self):
         """Issue #652: the stats sweep reads {post_id: variant_key} ONCE and puts each post's arm on
-        its `post_outcome` event, so PostHog can compare variants beside select_variant_winners."""
+        its `post_outcome` event, so PostHog can compare variants beside select_variant_winners.
+        """
         from cqc_lem.utilities.db import get_shipped_variant_keys, record_shipped_variant
         from cqc_lem.utilities.experiments import POST_MEDIA_VARIANT, experiment_properties
 
@@ -164,7 +164,7 @@ class TestVariantABHarness:
         assert props == {f"$feature/{POST_MEDIA_VARIANT}": "flux-dev-gen4-turbo-1-1"}
 
     def test_re_recording_overwrites_shipped_variant(self):
-        from cqc_lem.utilities.db import record_shipped_variant, get_variant_outcome_rows
+        from cqc_lem.utilities.db import get_variant_outcome_rows, record_shipped_variant
         posts = {1: _post(datetime(2026, 7, 23, 9, 0))}
         stats = [{"id": 1, "user_id": 1, "post_id": 1, "reactions": 10, "comments": 0,
                   "reposts": 0, "impressions": None}]

@@ -8,9 +8,9 @@ right source, the ask is recorded once, and a review provably flips the extended
 """
 import json
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -94,6 +94,7 @@ class _FakeConn:
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 
@@ -200,7 +201,8 @@ class TestSurveyCapture:
 
 class TestPostHogSurveyCapture:
     """POST /api/survey/posthog — a PostHog survey answer becoming a `feedback` row, and the
-    homegrown NPS ask standing down so nobody is prompted twice (issue #653)."""
+    homegrown NPS ask standing down so nobody is prompted twice (issue #653).
+    """
 
     def test_a_detractor_lands_as_a_new_feedback_row_the_loop_will_file(self, client, store):
         response = _call(client, store, "post", "/api/survey/posthog", json={

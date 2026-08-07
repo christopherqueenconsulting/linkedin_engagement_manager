@@ -1,7 +1,8 @@
 """Unit tests for graceful profile fallback in run_automation.get_current_profile."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 pytestmark = pytest.mark.unit
 

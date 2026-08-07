@@ -1,8 +1,9 @@
 """Unit tests for engagement-preferences DB helpers."""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -93,7 +94,8 @@ class TestUpdateEngagementPreferences:
 
 class TestPartialUpdateKeepsTheRest:
     """Issue #639 — the upsert writes EVERY column, so a partial dict must merge over the user's
-    SAVED row. Merging over `_ENGAGEMENT_DEFAULTS` let one sparse caller wipe the whole row."""
+    SAVED row. Merging over `_ENGAGEMENT_DEFAULTS` let one sparse caller wipe the whole row.
+    """
 
     # What a fully-customized row looks like coming back out of MySQL (JSON columns as text,
     # booleans as tinyints), keyed by column, plus what it must decode to in the upsert params.
@@ -186,7 +188,8 @@ class TestPartialUpdateKeepsTheRest:
 
 class TestEngagementPreferencesAreConfigured:
     """Three-valued (issue #952): a caller that would otherwise write policy defaults over the
-    user's own settings has to tell "never configured" from "could not read"."""
+    user's own settings has to tell "never configured" from "could not read".
+    """
 
     def test_true_when_a_row_exists(self):
         conn, _ = _mock_conn(fetch_row={"tone": "warm"})
@@ -212,7 +215,8 @@ class TestEngagementPreferencesAreConfigured:
 
     def test_it_only_asks_whether_the_row_exists(self):
         """Existence is a `SELECT 1`, not a read of all 41 columns — one query, one semantics, and
-        `has_engagement_preferences` is this same question."""
+        `has_engagement_preferences` is this same question.
+        """
         conn, cursor = _mock_conn(fetch_row=(1,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import engagement_preferences_are_configured
@@ -222,7 +226,8 @@ class TestEngagementPreferencesAreConfigured:
 
     def test_has_engagement_preferences_is_the_two_valued_view(self):
         """The bool helper folds the unreadable case back into False, exactly as before — but there
-        is only ONE query behind both, so they can never drift apart."""
+        is only ONE query behind both, so they can never drift apart.
+        """
         import mysql.connector
         conn, cursor = _mock_conn(fetch_row=(1,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
@@ -325,7 +330,7 @@ class TestPostsPerWeekPref:
     def test_default_is_three_a_week(self):
         conn, _ = _mock_conn(fetch_row=None)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_engagement_preferences, DEFAULT_POSTS_PER_WEEK
+            from cqc_lem.utilities.db import DEFAULT_POSTS_PER_WEEK, get_engagement_preferences
             assert get_engagement_preferences(1)["posts_per_week"] == DEFAULT_POSTS_PER_WEEK == 3
 
     def test_null_column_reads_as_the_default(self):
@@ -342,7 +347,7 @@ class TestPostsPerWeekPref:
         assert self._saved(cursor)["posts_per_week"] == 4
 
     def test_out_of_range_values_are_clamped(self):
-        from cqc_lem.utilities.db import POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX
+        from cqc_lem.utilities.db import POSTS_PER_WEEK_MAX, POSTS_PER_WEEK_MIN
         for given, expected in ((0, POSTS_PER_WEEK_MIN), (99, POSTS_PER_WEEK_MAX),
                                 ("nonsense", 3), (None, 3)):
             conn, cursor = _mock_conn(rowcount=1)
@@ -354,7 +359,8 @@ class TestPostsPerWeekPref:
 
 class TestPostingDays:
     """The publishing day allow-list (issue #581) — Mon-Fri by default, weekends opt-in, and never
-    an empty set that would schedule nothing."""
+    an empty set that would schedule nothing.
+    """
 
     def _saved(self, cursor):
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -363,7 +369,7 @@ class TestPostingDays:
     def test_default_is_monday_to_friday(self):
         conn, _ = _mock_conn(fetch_row=None)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_engagement_preferences, DEFAULT_POSTING_DAYS
+            from cqc_lem.utilities.db import DEFAULT_POSTING_DAYS, get_engagement_preferences
             assert get_engagement_preferences(1)["posting_days"] == DEFAULT_POSTING_DAYS == [0, 1, 2, 3, 4]
 
     def test_null_column_reads_as_monday_to_friday(self):

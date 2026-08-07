@@ -7,9 +7,9 @@ automation depend on this at all.
 """
 
 from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities import flags
 
@@ -22,7 +22,8 @@ _PH = "cqc_lem.utilities.flags.posthog"
 def _sdk():
     """A stand-in posthog module that is CONFIGURED (not disabled) — a bare MagicMock's truthy
     `.disabled` would read as "PostHog turned off" and quietly take every test down the fallback
-    path this file is trying to distinguish from."""
+    path this file is trying to distinguish from.
+    """
     with patch(_PH) as ph:
         ph.disabled = False
         ph.setup.return_value = MagicMock(personal_api_key=None, poll_interval=None)
@@ -146,7 +147,8 @@ class TestFallsBackToEnvWhenPostHogCannotAnswer:
 
     def test_a_failing_load_retries_at_most_once_per_poll_interval(self, monkeypatch):
         """Without the cooldown a PostHog outage would make every flag check in a feed loop attempt
-        its own definition fetch."""
+        its own definition fetch.
+        """
         _with_backend(monkeypatch)
         monkeypatch.setenv("POSTHOG_FLAG_POLL_SECONDS", "30")
         clock = [1000.0]
@@ -212,7 +214,8 @@ class TestLocalEvaluation:
 
     def test_settings_are_pushed_onto_an_already_built_client(self, monkeypatch):
         """setup() reuses a client that a prior capture() may have built with no personal key —
-        that client would never poll."""
+        that client would never poll.
+        """
         _with_backend(monkeypatch)
         with _sdk() as ph:
             ph.get_feature_flag.return_value = True

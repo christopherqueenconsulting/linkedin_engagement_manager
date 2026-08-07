@@ -4,10 +4,16 @@ from datetime import datetime
 
 import pytest
 
-from cqc_lem.utilities.audience_stats import (build_activity_series, build_follower_series,
-                                              follower_growth, parse_connection_count,
-                                              parse_follower_count, parse_labeled_count,
-                                              parse_profile_views, parse_search_appearances)
+from cqc_lem.utilities.audience_stats import (
+    build_activity_series,
+    build_follower_series,
+    follower_growth,
+    parse_connection_count,
+    parse_follower_count,
+    parse_labeled_count,
+    parse_profile_views,
+    parse_search_appearances,
+)
 
 pytestmark = pytest.mark.unit
 

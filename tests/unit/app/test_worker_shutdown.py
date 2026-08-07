@@ -129,7 +129,8 @@ class TestDeployMaintenanceWiring:
         """There are TWO paths that recreate workers — the normal deploy and the legacy full
         rollback — and issue #549's contract binds both. Guarding only the first is how the
         rollback path ended up recreating workers with no drain when the drain moved after the
-        blue/green flip."""
+        blue/green flip.
+        """
         deploy = _read("scripts/deploy.sh")
         lines = deploy.splitlines()
         recreates = [i for i, line in enumerate(lines)
@@ -144,7 +145,8 @@ class TestDeployMaintenanceWiring:
         """The point of the 2026-07-31 reorder: the blue/green cutover must NOT wait on the Celery
         drain. Measured on v0.113.0, the flip took 22s and the drain 482s — so draining first made
         96% of a ~9-minute deploy user-visible latency for workers the web tier doesn't depend on.
-        If someone moves the drain back above the flip, this fails."""
+        If someone moves the drain back above the flip, this fails.
+        """
         deploy = _read("scripts/deploy.sh")
         flip = deploy.index('log "Edge now routing to web_api_')
         # The drain that guards the normal recreate is the LAST drain_workers call site.
@@ -153,7 +155,8 @@ class TestDeployMaintenanceWiring:
 
     def test_migrations_still_run_before_the_flip(self):
         """Reordering must not push migrations past the cutover — the new web code may depend on
-        the new schema."""
+        the new schema.
+        """
         deploy = _read("scripts/deploy.sh")
         assert deploy.index('log "Running database migrations"') < deploy.index(
             'log "Blue/green: active=')

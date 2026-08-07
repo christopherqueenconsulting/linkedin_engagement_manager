@@ -328,7 +328,8 @@ class TestMainDryRun:
 class TestFlowLabelIsAPrivilegeBoundary:
     """`agent:ready` makes an issue body the prompt for an autonomous run holding the owner's
     credentials. On a public repo anyone can author that text, so this cron may not grant it to
-    an outsider however confident the model was."""
+    an outsider however confident the model was.
+    """
 
     @pytest.mark.parametrize("assoc", ["OWNER", "MEMBER", "COLLABORATOR"])
     def test_a_trusted_author_may_receive_agent_ready(self, mod, assoc):

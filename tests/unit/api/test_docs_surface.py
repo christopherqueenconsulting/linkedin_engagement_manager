@@ -13,8 +13,9 @@ derived from the route table precisely so a nineteenth admin route inherits it, 
 what fails if that derivation ever stops reaching them.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -23,6 +24,7 @@ pytestmark = pytest.mark.unit
 def client():
     with patch("cqc_lem.utilities.observability.track_api_call"):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -38,7 +40,8 @@ class TestDocsSurfaceMovedUnderApi:
     def test_swagger_oauth2_redirect_helper_moved_with_it(self, client):
         """FastAPI defaults `swagger_ui_oauth2_redirect_url` to the fixed literal
         `/docs/oauth2-redirect` and does NOT derive it from `docs_url`. Left alone it strands the
-        helper outside `/api` and Swagger's Authorize flow breaks silently."""
+        helper outside `/api` and Swagger's Authorize flow breaks silently.
+        """
         assert client.get("/api/docs/oauth2-redirect").status_code == 200
 
     @pytest.mark.parametrize("old,new", [
@@ -53,7 +56,8 @@ class TestDocsSurfaceMovedUnderApi:
 
     def test_new_paths_are_public_leaf_entries_not_subtrees(self):
         """Leaf entries, so `/api/docs/oauth2-redirect` is covered (the non-slash branch matches
-        path-segment children) while a future `/api/docs-admin` is NOT quietly unlocked."""
+        path-segment children) while a future `/api/docs-admin` is NOT quietly unlocked.
+        """
         from cqc_lem.api.main import _PUBLIC_API_PREFIXES, _is_public_api_path
         for prefix in ("/api/docs", "/api/redoc", "/api/openapi.json"):
             assert prefix in _PUBLIC_API_PREFIXES
@@ -69,7 +73,8 @@ class TestDocsSurfaceMovedUnderApi:
 
         That prod/CI difference is the shape of #1020 itself, so pin the prod config directly: with
         tokens configured the docs surface still answers uncredentialed, and neither a look-alike
-        sibling nor an admin route rides in on it."""
+        sibling nor an admin route rides in on it.
+        """
         with patch("cqc_lem.api.main._API_ACCESS_TOKEN_SET", {"a-configured-token"}):
             for path in ("/api/docs", "/api/redoc", "/api/openapi.json",
                          "/api/docs/oauth2-redirect"):
@@ -85,8 +90,10 @@ class TestDocsSurfaceMovedUnderApi:
         Starlette matches in registration order and they are declared first. Register a stand-in
         catch-all so that ordering is actually exercised: without it, moving those three
         registrations below the SPA block would turn every legacy docs link into a 200 HTML page
-        and no test would notice."""
+        and no test would notice.
+        """
         from fastapi.responses import HTMLResponse
+
         from cqc_lem.api.main import app
 
         app.get("/{full_path:path}", include_in_schema=False)(
@@ -117,15 +124,16 @@ class TestAdminRoutesAreNotInTheSchema:
     def test_every_admin_route_was_hidden_not_merely_absent(self):
         """The counter proves the derivation REACHED the routes. Without it, a walk that silently
         matched nothing (FastAPI ≥0.139 keeps an included router as one opaque node) would leave
-        the schema unchanged and the test above would fail for a reason nobody could read."""
+        the schema unchanged and the test above would fail for a reason nobody could read.
+        """
         from cqc_lem.api.main import _ADMIN_ROUTES_HIDDEN
         assert _ADMIN_ROUTES_HIDDEN >= 18
 
     def test_admin_routes_still_exist_and_still_answer(self, client):
         """Hidden is not removed: the routes must keep serving their real handler, and their auth
-        is unchanged — a missing admin secret is still 403, never 404."""
-        from cqc_lem.api.main import app
-        from cqc_lem.api.main import _walk_routes
+        is unchanged — a missing admin secret is still 403, never 404.
+        """
+        from cqc_lem.api.main import _walk_routes, app
         paths = {getattr(r, "path", "") for r in _walk_routes(app.routes)}
         assert "/api/admin/automation-pause" in paths
         with patch("cqc_lem.api.main.ADMIN_SECRET", "s3cret"):
@@ -137,10 +145,11 @@ class TestSecuritySchemeDescriptions:
     """Describe the credential, not where it is stored (issue #1020).
 
     Naming `API_ACCESS_TOKENS` / `ADMIN_SECRET` in a public description hands an attacker the exact
-    string to grep for in a leaked build, a stack trace or a misconfigured container."""
+    string to grep for in a leaked build, a stack trace or a misconfigured container.
+    """
 
     def test_no_env_var_name_is_disclosed(self):
-        from cqc_lem.api.main import _bearer_scheme, _admin_secret_scheme
+        from cqc_lem.api.main import _admin_secret_scheme, _bearer_scheme
         for scheme in (_bearer_scheme, _admin_secret_scheme):
             description = scheme.model.description or ""
             assert "API_ACCESS_TOKENS" not in description

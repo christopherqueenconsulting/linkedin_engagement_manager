@@ -10,9 +10,9 @@ To run locally:
 """
 
 import os
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 _CAPSOLVER_BALANCE_URL = "https://api.capsolver.com/getBalance"
 
@@ -112,6 +112,7 @@ class TestSolveArkoseChallengeE2E:
 
         with patch.dict("sys.modules", {"capsolver": mock_capsolver}):
             from importlib import reload
+
             import cqc_lem.utilities.linkedin.helper as helper_mod
             reload(helper_mod)
             result = helper_mod.solve_arkose_challenge(driver, wait)

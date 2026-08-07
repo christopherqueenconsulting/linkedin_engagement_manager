@@ -1,7 +1,26 @@
+"""The ONE logger: level helpers, structured context, handlers, and the OTLP hop into PostHog Logs.
+
+`print()` is never used in this codebase; `myprint` is the shim that predates these helpers. Context
+travels as keyword args (`user_id`, `post_id`, `task_name`, …) and is coerced to primitives before it
+leaves, because an exception or a WebElement passed as context would otherwise be dropped by the
+backend rather than logged.
+
+**Once is a warning, repeatedly is a defect.** `log_warning` runs every message through
+`log_escalation`: past the threshold the SAME warning is re-emitted at ERROR and filed as one grouped
+`$exception`, which is what alerts and what the daily cron turns into a GitHub issue. So an expected
+no-op must be logged at DEBUG — warning about it files a defect against working behaviour. The
+escalation import, the capture hop and the escalation call are each guarded independently: a
+telemetry failure must never turn a logged error into a raised one, and a partial deploy must degrade
+to the pre-escalation behaviour rather than break every log call in the app.
+
+A log line and a PostHog `$exception` are different products. Only `exc=` on `log_error` /
+`log_critical` (or an escalated warning) files the second one.
+"""
+
+import datetime as DT
 import logging
 import os
 import sys
-import datetime as DT
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
@@ -18,7 +37,8 @@ def _otlp_resource():
     """OTel Resource identifying LEM in PostHog Logs. Without this the provider defaults to
     'unknown_service' — set a real service.name so logs are filterable, tag the version from the
     deployed image tag, and use the container hostname as the instance id so each worker
-    (web_app / celery_worker / *_selenium / *_content) is distinguishable."""
+    (web_app / celery_worker / *_selenium / *_content) is distinguishable.
+    """
     from opentelemetry.sdk.resources import Resource
     attrs = {
         "service.name": os.getenv("OTEL_SERVICE_NAME", "cqc-lem"),
@@ -121,7 +141,8 @@ except Exception:  # pragma: no cover - import guard
 
 def _caller_origin() -> str:
     """`module.function` of whoever called the public log helper — part of the escalation key so a
-    generic message emitted from two places stays two problems."""
+    generic message emitted from two places stays two problems.
+    """
     try:
         frame = sys._getframe(2)
         return f"{frame.f_globals.get('__name__', '?')}.{frame.f_code.co_name}"
@@ -134,7 +155,8 @@ def _capture(exc: Optional[BaseException], message: str, level: str, context: di
     """Forward a logged exception to PostHog Error Tracking. Imported lazily because
     observability.py imports this module — and swallowing everything (including a caller's context
     key colliding with a named argument), since a telemetry failure must never turn a logged error
-    into a raised one."""
+    into a raised one.
+    """
     if exc is None or not _CAPTURE_EXCEPTIONS:
         return
     try:
@@ -187,7 +209,8 @@ def log_warning(
     **context,
 ) -> None:
     """Log at WARNING level with optional structured context. Pass exc= to capture the
-    exception's stack trace (via exc_info) instead of passing it as a raw attribute."""
+    exception's stack trace (via exc_info) instead of passing it as a raw attribute.
+    """
     escalation = None
     if _ESCALATION_AVAILABLE:
         # note() swallows its own errors, but this is the logging path: if escalation ever raises,
@@ -223,7 +246,8 @@ def log_error(
     **context,
 ) -> None:
     """Log at ERROR level. Pass exc= to capture exception info and stack trace, and to file the
-    exception as a grouped PostHog error-tracking issue."""
+    exception as a grouped PostHog error-tracking issue.
+    """
     if exc is not None:
         logger.error(message, exc_info=exc, extra=_extra(**context))
         _capture(exc, message, "ERROR", _extra(**context))
@@ -237,7 +261,8 @@ def log_critical(
     **context,
 ) -> None:
     """Log at CRITICAL level. Pass exc= to capture exception info and stack trace, and to file the
-    exception as a grouped PostHog error-tracking issue."""
+    exception as a grouped PostHog error-tracking issue.
+    """
     if exc is not None:
         logger.critical(message, exc_info=exc, extra=_extra(**context))
         _capture(exc, message, "CRITICAL", _extra(**context))

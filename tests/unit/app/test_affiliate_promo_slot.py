@@ -118,7 +118,8 @@ class TestApprovalHold:
     def test_an_unresolvable_owner_is_never_read_as_this_authors_endorsement(self):
         """Falling through to `user_id=None` would match ANY member's referral code — holding
         somebody's post, over a link that is not theirs, with copy calling it their paid
-        endorsement."""
+        endorsement.
+        """
         from cqc_lem.app.run_content_plan import evaluate_post_gates
         from cqc_lem.utilities.quality_gates import GATE_AFFILIATE_PROMO
         with ExitStack() as stack:

@@ -6,7 +6,8 @@ newsletters, posts, and comments can never drift apart in how variety is enforce
 
 This generalizes the newsletter-only blueprint system (V50): the newsletter menu is unchanged, and
 posts/comments now rotate through their own menus with the same guarantees — no two consecutive
-pieces share a format or hook style, and nothing repeats within the recent-history window."""
+pieces share a format or hook style, and nothing repeats within the recent-history window.
+"""
 
 import json
 import os
@@ -230,7 +231,8 @@ ENGAGEMENT_BAIT_EXAMPLES: tuple = (
 def cta_policy_directive() -> str:
     """The invariant CTA rule injected wherever a CTA style is assigned: earn a real reply, never
     farm a reflex — and never a meeting ask (the artifact-CTA half lives in content_alignment, which
-    also owns the detector and the deterministic repair)."""
+    also owns the detector and the deterministic repair).
+    """
     from cqc_lem.utilities.ai.content_alignment import ARTIFACT_CTA_POLICY
     bait = ", ".join(f"'{e}'" for e in ENGAGEMENT_BAIT_EXAMPLES[:4])
     return ("CTA RULE: the close must invite a genuine, specific response the reader has to think "
@@ -242,7 +244,8 @@ def cta_policy_directive() -> str:
 def hashtag_directive(prefs: Optional[dict] = None) -> str:
     """The hashtag instruction for any prompt. The default is NONE — in 2026 hashtags no longer
     expand reach and hashtag-free posts measurably out-perform tagged ones — so tags appear only
-    when the user explicitly turned `use_hashtags` on, and even then they stay minimal."""
+    when the user explicitly turned `use_hashtags` on, and even then they stay minimal.
+    """
     if prefs and prefs.get("use_hashtags"):
         return (f"Use at most {HASHTAG_MAX} highly relevant hashtags, together on the final line — "
                 "hashtags no longer expand reach, so include only ones a human would actually follow.")
@@ -678,13 +681,19 @@ def _normalize(value, options: dict) -> Optional[str]:
 
 def normalize_key(content_type: str, kind: str, value) -> Optional[str]:
     """Normalize a model-supplied format/hook/CTA value to a known key for that content type.
-    `kind` is 'format', 'hook' or 'cta'."""
+    `kind` is 'format', 'hook' or 'cta'.
+    """
     menu = _menu(content_type)
     options = {"format": menu["formats"], "hook": menu["hooks"], "cta": menu["ctas"]}[kind]
     return _normalize(value, options)
 
 
 def structure_for(content_type: str, format_key) -> list:
+    """The ordered section outline a format is written to, or [] when the format is unknown/absent.
+
+    A fresh list every call — the menu entries are module-level constants, so handing out the stored
+    list would let a caller that edits its outline mutate the archetype for the whole process.
+    """
     meta = _menu(content_type)["formats"].get(normalize_key(content_type, "format", format_key) or "")
     return list(meta["structure"]) if meta else []
 
@@ -698,7 +707,8 @@ def format_meta(content_type: str, format_key) -> dict:
 def allowed_hooks(content_type: str, format_key=None) -> dict:
     """The hook menu a given format may draw from. Most formats use the whole menu; a save-targeted
     archetype (issue #619) narrows it to the hook styles that can honestly lead with a real number.
-    An unknown format or an empty intersection falls back to the full menu rather than to nothing."""
+    An unknown format or an empty intersection falls back to the full menu rather than to nothing.
+    """
     hooks = _menu(content_type)["hooks"]
     allowed = format_meta(content_type, format_key).get("hook_styles")
     if not allowed or not hooks:
@@ -708,7 +718,8 @@ def allowed_hooks(content_type: str, format_key=None) -> dict:
 
 def is_save_targeted(content_type: str, format_key) -> bool:
     """True for the archetypes written to be SAVED rather than scrolled past — the save signal is
-    weighted ~5x a like in 2026 and feeds evergreen redistribution, so scheduling can prefer them."""
+    weighted ~5x a like in 2026 and feeds evergreen redistribution, so scheduling can prefer them.
+    """
     return bool(format_meta(content_type, format_key).get("save_targeted"))
 
 
@@ -720,14 +731,16 @@ def save_targeted_formats(content_type: str) -> list:
 def fact_anchored_formats(content_type: str) -> list:
     """Every fact-anchored format key for a content type, in menu order — the archetypes a caller
     that has NO verified facts may need to keep out of the rotation (a carousel bakes its text into
-    rendered slide images, so a placeholder there can never be edited away)."""
+    rendered slide images, so a placeholder there can never be edited away).
+    """
     return [k for k, m in _menu(content_type)["formats"].items() if m.get("fact_anchored")]
 
 
 def requires_fact_anchor(content_type: str, format_key) -> bool:
     """True for archetypes whose whole value IS the specifics (build receipt, compendium). Their
     drafts run through the no-fabrication guard: a number that no verified fact backs must be a
-    marked placeholder, never an invention (#416 policy)."""
+    marked placeholder, never an invention (#416 policy).
+    """
     return bool(format_meta(content_type, format_key).get("fact_anchored"))
 
 
@@ -768,7 +781,8 @@ def _shape_engagement(agg: dict, rate_mode: bool = False) -> float:
     normalized (engagement rate) ONLY when the caller passes `rate_mode` — i.e. EVERY sampled
     shape of this kind has full impression coverage (see `_all_impression_covered`); otherwise
     average engagement per post. The rate/per-post decision is made once by the caller so all
-    shapes of a kind stay on the same scale (see `performance_weights`)."""
+    shapes of a kind stay on the same scale (see `performance_weights`).
+    """
     samples = agg.get("samples", 0) or 0
     if samples <= 0:
         return 0.0
@@ -783,7 +797,8 @@ def _shape_engagement(agg: dict, rate_mode: bool = False) -> float:
 def _all_impression_covered(perf: dict) -> bool:
     """True only when every sampled shape has full impression coverage — the gate for using
     engagement-RATE scoring uniformly instead of average-per-post (mixing the two scales across
-    shapes would make the comparison meaningless)."""
+    shapes would make the comparison meaningless).
+    """
     sampled = [a for a in perf.values() if (a.get("samples", 0) or 0) > 0]
     return bool(sampled) and all(
         a.get("impression_samples", 0) == a.get("samples", 0) and (a.get("impressions", 0) or 0) > 0
@@ -833,7 +848,8 @@ def _pick(options: dict, recency: list, forbidden: set, weights: dict = None) ->
     (a shape→multiplier map; missing/None ⇒ uniform, preserving prior behavior). Recency stays the
     PRIMARY axis so variety is never sacrificed; performance only biases the random tie-break so
     under-performing shapes surface less often while every shape can still be picked. `recency` is
-    most-recent-first; options never used rank best. Relaxes `forbidden` rather than ever failing."""
+    most-recent-first; options never used rank best. Relaxes `forbidden` rather than ever failing.
+    """
     keys = list(options.keys())
     candidates = [k for k in keys if k not in forbidden]
     if not candidates:  # everything forbidden → only hard rule left is "not the immediate previous"
@@ -858,7 +874,8 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
     format/hook/cta to known keys for the content type and reassign any that repeat — no two
     consecutive pieces (nor a piece and the most recent history) share a format or hook style, no
     format/hook repeats within the batch or the recent-history window, and every blueprint carries
-    its format's structure."""
+    its format's structure.
+    """
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
     rf = [f for f in (_normalize(x, formats) for x in (recent_formats or [])) if f]
@@ -921,7 +938,8 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
     `fact_anchored_formats`; excluding every format falls back to the full menu rather than to
     nothing. `preferred_formats` narrows the format menu to one family (the day-type calendar's
     archetypes, issue #621) — rotation, recency and performance still apply WITHIN it, and an
-    unrecognised family is ignored rather than emptying the menu."""
+    unrecognised family is ignored rather than emptying the menu.
+    """
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
     if exclude_formats:
@@ -970,7 +988,8 @@ def blueprint_directive(content_type: str, blueprint: dict,
     source). Callers that already thread a blueprint through several prompt builders can instead hang
     the anchors on the blueprint itself as `fact_anchors`; the explicit argument wins. With no anchors
     either way the writer may not state a specific at all: every number ships as a marked placeholder
-    the author fills in at approval."""
+    the author fills in at approval.
+    """
     if not isinstance(blueprint, dict):
         return ""
     menu = _menu(content_type)
@@ -1083,7 +1102,8 @@ def first_person_proof_sentences(text: Optional[str]) -> list:
     """Sentences carrying BOTH a first-person marker AND a concrete-specificity signal — i.e. a
     lived, first-person detail rather than an abstract claim. Deterministic, no LLM. The same-sentence
     tie is what keeps an unrelated stat elsewhere in a generic post from counting as the author's own
-    proof."""
+    proof.
+    """
     out = []
     for sentence in _PROOF_SENTENCE_SPLIT.split(text or ""):
         s = sentence.strip()
@@ -1094,7 +1114,8 @@ def first_person_proof_sentences(text: Optional[str]) -> list:
 
 def has_first_person_proof(text: Optional[str]) -> bool:
     """True when the draft fills the A2 proof slot — at least one concrete first-person lived detail.
-    Empty/None or purely-generic content → False, so the caller reject/regenerates it."""
+    Empty/None or purely-generic content → False, so the caller reject/regenerates it.
+    """
     return bool(first_person_proof_sentences(text))
 
 
@@ -1115,7 +1136,8 @@ def post_similarity_max(prefs: dict = None) -> float:
     """The similarity ceiling. The user's own setting (engagement_preferences.post_similarity_max_pct,
     a whole percent — issue #421) wins when set; otherwise read at call time (same live-env pattern as
     the research toggles in content_research) so ops/tests can tune POST_SIMILARITY_MAX without a
-    restart."""
+    restart.
+    """
     override = (prefs or {}).get("post_similarity_max_pct")
     if override is not None:
         try:
@@ -1150,7 +1172,8 @@ def text_similarity(a: str, b: str) -> float:
     SequenceMatcher because near-duplicate posts are usually REWORDINGS (same vocabulary, different
     order/length) — a set measure catches those where a sequence measure misses them, and it stays
     cheap at generation volume. The min-denominator keeps a short near-copy of a longer post from
-    hiding behind the length difference. Range 0.0-1.0."""
+    hiding behind the length difference. Range 0.0-1.0.
+    """
     ta, tb = content_tokens(a), content_tokens(b)
     if not ta or not tb:
         return 0.0
@@ -1164,7 +1187,8 @@ def cosine_similarity(a: Optional[list], b: Optional[list]) -> float:
 
     Lives here, next to `text_similarity`, because this module is the ONE similarity toolbox every
     dedup gate shares: the feedback loop's duplicate detection imports it from here (issue #498),
-    and so does the comment-side gate below (issue #617)."""
+    and so does the comment-side gate below (issue #617).
+    """
     if not a or not b or len(a) != len(b):
         return 0.0
     try:
@@ -1180,7 +1204,8 @@ def cosine_similarity(a: Optional[list], b: Optional[list]) -> float:
 
 def as_vector(raw: object) -> Optional[list]:
     """An embedding as a list of floats. A stored one (`feedback.embedding` is a JSON column) comes
-    back as a str on some connector versions and a list on others; junk becomes None."""
+    back as a str on some connector versions and a list on others; junk becomes None.
+    """
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -1196,7 +1221,8 @@ def as_vector(raw: object) -> Optional[list]:
 
 def find_most_similar(text: str, candidates: list) -> tuple:
     """(best_score, best_candidate_text) of `text` against each candidate; (0.0, None) when there is
-    nothing to compare."""
+    nothing to compare.
+    """
     best_score, best_match = 0.0, None
     for cand in candidates or []:
         score = text_similarity(text, cand)
@@ -1207,14 +1233,16 @@ def find_most_similar(text: str, candidates: list) -> tuple:
 
 def opening_line(text: str, max_chars: int = 200) -> str:
     """First non-empty line of a piece of content — the post-side twin of the newsletter's
-    opening_line history (V50)."""
+    opening_line history (V50).
+    """
     return next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")[:max_chars]
 
 
 def infer_post_subject(text: str, max_keywords: int = 5) -> str:
     """Cheap deterministic subject fingerprint: the most frequent meaningful tokens (ties broken by
     first appearance), joined as a keyword phrase. No LLM call — posts have no stored subject column
-    (unlike newsletter_editions.subject), so the subject is derived from content on demand."""
+    (unlike newsletter_editions.subject), so the subject is derived from content on demand.
+    """
     words = re.findall(r"[a-z0-9']+", (text or "").lower())
     counts: dict = {}
     first_pos: dict = {}
@@ -1232,7 +1260,8 @@ def history_avoidance_directive(recent_texts: list, offending_text: str = None,
     """The AVOID block injected into post prompts, mirroring how newsletter regeneration passes
     avoid_subjects/avoid_openers: recent posts' opening lines + subject fingerprints the new post
     must not reuse. `offending_text` (a similarity-gate retry) adds the specific too-similar post so
-    the retry steers hard away from it. Returns '' when there is nothing to avoid."""
+    the retry steers hard away from it. Returns '' when there is nothing to avoid.
+    """
     openers, subjects = [], []
     seen_o, seen_s = set(), set()
     for t in recent_texts or []:
@@ -1301,7 +1330,8 @@ _PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
 
 def dwell_score_min() -> int:
     """The dwell-proxy warning threshold, read at call time (the POST_SIMILARITY_MAX live-env
-    pattern) so ops can tune DWELL_SCORE_MIN without a restart."""
+    pattern) so ops can tune DWELL_SCORE_MIN without a restart.
+    """
     raw = (os.environ.get("DWELL_SCORE_MIN") or "").strip()
     try:
         return max(0, min(100, int(raw))) if raw else DWELL_SCORE_MIN_DEFAULT
@@ -1311,14 +1341,16 @@ def dwell_score_min() -> int:
 
 def read_seconds(text: Optional[str]) -> float:
     """Estimated read time in seconds at DWELL_READ_WPM — the closest cheap proxy for dwell there
-    is without impression data."""
+    is without impression data.
+    """
     words = len(re.findall(r"\S+", text or ""))
     return round(words / DWELL_READ_WPM * 60, 1)
 
 
 def dwell_metrics(text: Optional[str]) -> dict:
     """The raw deterministic dwell measurements of a finished draft: length/read-time, where the
-    hook lands relative to the '...more' fold, and how scannable the body is. No LLM, no I/O."""
+    hook lands relative to the '...more' fold, and how scannable the body is. No LLM, no I/O.
+    """
     body = (text or "").strip()
     words = len(re.findall(r"\S+", body))
     paragraphs = [p.strip() for p in _PARAGRAPH_SPLIT_RE.split(body) if p.strip()]
@@ -1345,7 +1377,8 @@ def dwell_report(text: Optional[str]) -> dict:
     and the human-readable issues behind any lost points. Weights follow what actually buys hold
     time: the fold decides whether the post is read AT ALL (30), read-time is the dwell itself (30),
     scannability decides whether the reader survives the body (25), and re-readable structure is
-    what earns the save/scroll-back (15)."""
+    what earns the save/scroll-back (15).
+    """
     m = dwell_metrics(text)
     issues = []
 
@@ -1406,7 +1439,8 @@ def meets_dwell_heuristics(text: Optional[str]) -> bool:
     """True when a draft passes the structural dwell contract: a full hook before the '...more'
     fold, no wall-of-text paragraph, and enough paragraphs to give the reader white space. Read
     time is scored (and steered) but deliberately NOT part of the pass/fail — a slightly short post
-    is weaker, not broken."""
+    is weaker, not broken.
+    """
     m = dwell_metrics(text)
     return bool(m["hook_within_fold"] and not m["wall_of_text"]
                 and m["paragraphs"] >= DWELL_MIN_PARAGRAPHS)
@@ -1418,7 +1452,8 @@ def shape_for_dwell(text: Optional[str]) -> Optional[str]:
     sentence-boundary reflow — no parallel implementation). The only trim is the formatter's
     sentence-boundary cap at LINKEDIN_MAX_CHARS — LinkedIn's own hard limit, which such a post
     already exceeds — so within a postable draft no CTA, hashtag line, or proof detail can be lost.
-    Falsy input and already-scannable text are returned unchanged."""
+    Falsy input and already-scannable text are returned unchanged.
+    """
     from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
     if not text or not dwell_metrics(text)["wall_of_text"]:
         return text
@@ -1429,7 +1464,8 @@ def shape_for_dwell(text: Optional[str]) -> Optional[str]:
 
 def dwell_directive() -> str:
     """The WRITER-side dwell rules appended to every post prompt (see `post_writing_directive`):
-    hold the reader past the fold, past a minute, and give them something worth coming back to."""
+    hold the reader past the fold, past a minute, and give them something worth coming back to.
+    """
     return (
         "\n\nDWELL TIME (the dominant 2026 ranking signal — a reader who holds for 60+ seconds is "
         "worth far more than a like):\n"
@@ -1456,7 +1492,8 @@ def save_worthy_directive(content_type: str = "carousel") -> str:
     """Reference-framing rules that make a CAROUSEL/document worth SAVING rather than swiping past
     (issue #391 / C2). A saved carousel is the strongest 2026 signal there is: it holds the reader
     slide-by-slide (dwell) and gets re-opened later. The whole trick is to design a REFERENCE the
-    reader expects to need again, not an ad they consume once."""
+    reader expects to need again, not an ad they consume once.
+    """
     noun = "carousel" if content_type == "carousel" else "document"
     return (
         f"\n\nDESIGN THIS {noun.upper()} TO BE SAVED (saves and slide-by-slide dwell are the "
@@ -1479,7 +1516,8 @@ def post_writing_directive() -> str:
     """Channel-craft rules for SHORT-FORM feed posts, appended to every post prompt. This replaces
     the old one-size-fits-all 'viral post framework' suffix (which forced every post into the same
     ten-word-sentence, ten-hashtag template — the exact sameness the blueprint system exists to
-    kill). Structure/hook/CTA come from the assigned blueprint; these are the invariant rules."""
+    kill). Structure/hook/CTA come from the assigned blueprint; these are the invariant rules.
+    """
     from cqc_lem.utilities.linkedin_formatter import PLAIN_PUNCTUATION_DIRECTIVE
     return (
         "\n\nLinkedIn post craft rules (always apply):\n"
@@ -1593,7 +1631,8 @@ _SMART_PUNCTUATION = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '
 
 def _plain(text: Optional[str]) -> str:
     """Lowercased text with smart quotes folded to ASCII, so 'couldn’t' and "couldn't" match
-    the same ban entry."""
+    the same ban entry.
+    """
     return (text or "").translate(_SMART_PUNCTUATION).lower()
 
 
@@ -1604,7 +1643,8 @@ def _sentences(text: Optional[str]) -> list:
 def comment_filler_openers() -> tuple:
     """The banned validation-filler openers, read at call time (the POST_SIMILARITY_MAX live-env
     pattern). `COMMENT_FILLER_OPENERS` (comma-separated) EXTENDS the built-in list so ops can ban a
-    newly-observed tell without a deploy; it can never shrink it."""
+    newly-observed tell without a deploy; it can never shrink it.
+    """
     raw = (os.environ.get("COMMENT_FILLER_OPENERS") or "").split(",")
     extra = [p.strip().lower() for p in raw]
     return COMMENT_FILLER_OPENERS + tuple(
@@ -1613,7 +1653,8 @@ def comment_filler_openers() -> tuple:
 
 def filler_openers_found(text: Optional[str]) -> list:
     """Every banned filler phrase present in the comment's OPENING. The trailing guard keeps
-    "a great post-mortem" from matching the "great post" ban."""
+    "a great post-mortem" from matching the "great post" ban.
+    """
     opening = _plain(" ".join(_sentences(text)[:_OPENER_SCAN_SENTENCES]))
     return [p for p in comment_filler_openers()
             if re.search(rf"\b{re.escape(p)}\b(?![-\w])", opening)]
@@ -1623,7 +1664,8 @@ def references_post(comment: Optional[str], post_content: Optional[str]) -> bool
     """True when the comment demonstrably engages with THIS post: it shares enough meaningful
     (non-stopword) vocabulary with the post that it could not sit unchanged under a different one.
     A post with no extractable content can't be graded against, so it passes rather than burning
-    regenerations on a grounding we cannot check."""
+    regenerations on a grounding we cannot check.
+    """
     post_words = content_tokens(post_content)
     if not post_words:
         return True
@@ -1633,7 +1675,8 @@ def references_post(comment: Optional[str], post_content: Optional[str]) -> bool
 
 def has_genuine_question(text: Optional[str]) -> bool:
     """True when the comment asks something the author has to think about — a reflex closer
-    ("Thoughts?", "Agree?") does not count."""
+    ("Thoughts?", "Agree?") does not count.
+    """
     for sentence in _sentences(text):
         if not sentence.endswith("?"):
             continue
@@ -1646,7 +1689,8 @@ def has_genuine_question(text: Optional[str]) -> bool:
 
 def comment_value_adds(text: Optional[str]) -> list:
     """Which of the contract's four value-adds the comment actually carries: own experience, a data
-    point, respectful disagreement, or a genuine question."""
+    point, respectful disagreement, or a genuine question.
+    """
     found = []
     if any(_EXPERIENCE_CUE_RE.search(s) for s in _sentences(text)):
         found.append("experience")
@@ -1665,7 +1709,8 @@ def comment_contract_report(comment: Optional[str], post_content: Optional[str] 
 
     `value_add` requires AT LEAST one of the four, not exactly one: every comment blueprint closes
     on a question by design, so an exactly-one rule would reject every well-formed draft that also
-    brought experience or a number — the opposite of what the contract is for."""
+    brought experience or a number — the opposite of what the contract is for.
+    """
     text = (comment or "").strip()
     fillers = filler_openers_found(text)
     value_adds = comment_value_adds(text)
@@ -1699,7 +1744,8 @@ def meets_comment_contract(comment: Optional[str], post_content: Optional[str] =
 def comment_similarity_max() -> float:
     """Embedding-cosine ceiling for a fresh comment vs the user's recent ones, read at call time
     (the POST_SIMILARITY_MAX live-env pattern) so ops can tune COMMENT_SIMILARITY_MAX without a
-    restart."""
+    restart.
+    """
     raw = (os.environ.get("COMMENT_SIMILARITY_MAX") or "").strip()
     try:
         return float(raw) if raw else COMMENT_SIMILARITY_MAX_DEFAULT
@@ -1709,7 +1755,8 @@ def comment_similarity_max() -> float:
 
 def comment_lexical_similarity_max() -> float:
     """Token-overlap ceiling used when embeddings are unavailable — the post gate's scale and
-    default, so the fallback path stays as strict as the one comments were missing."""
+    default, so the fallback path stays as strict as the one comments were missing.
+    """
     raw = (os.environ.get("COMMENT_LEXICAL_SIMILARITY_MAX") or "").strip()
     try:
         return float(raw) if raw else COMMENT_LEXICAL_SIMILARITY_MAX_DEFAULT
@@ -1729,7 +1776,8 @@ def comment_gate_max_attempts() -> int:
 def embed_comments(texts: list) -> Optional[list]:
     """Embed a batch of comment texts in ONE `lem-embedding` call (the draft plus the history it is
     compared against). Returns None on any failure — the caller then grades with the deterministic
-    token-overlap measure, never with "nothing is similar"."""
+    token-overlap measure, never with "nothing is similar".
+    """
     batch = [str(t or "")[:COMMENT_EMBED_CHARS] for t in (texts or [])]
     if not batch or not all(batch):
         return None
@@ -1754,7 +1802,8 @@ def comment_similarity_report(draft: Optional[str], recent_comments: list) -> di
     Prefers embedding cosine (it catches the same comment reworded into different vocabulary, which
     is exactly what a template produces) and degrades to token overlap when the embedding endpoint
     is unavailable — each measure graded against its OWN ceiling. Empty history ⇒ no API call at
-    all, so a first-ever comment costs nothing."""
+    all, so a first-ever comment costs nothing.
+    """
     text = (draft or "").strip()
     history = [c.strip() for c in (recent_comments or []) if (c or "").strip()][:COMMENT_HISTORY_LIMIT]
     if not text or not history:
@@ -1801,7 +1850,8 @@ def comment_contract_directive(variant: Optional[str] = None) -> str:
     missed — flattery for the author earns nothing and is what the 2026 ranking demotes.
 
     `variant` is the arm of the pilot prompt experiment (#652). An unknown or missing variant is the
-    control contract, so a mis-provisioned flag can only ever produce today's prompt."""
+    control contract, so a mis-provisioned flag can only ever produce today's prompt.
+    """
     banned = ", ".join(f"'{p}'" for p in comment_filler_openers()[:8])
     extra = (COMMENT_AUTHOR_QUESTION_DIRECTIVE
              if variant == COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT else "")
@@ -1829,7 +1879,8 @@ def comment_contract_directive(variant: Optional[str] = None) -> str:
 
 def comment_retry_directive(failures: list, offending_comment: Optional[str] = None) -> str:
     """The regeneration steer after a draft fails the gate: name exactly what went wrong and, for a
-    near-duplicate, show the earlier comment the retry must not resemble."""
+    near-duplicate, show the earlier comment the retry must not resemble.
+    """
     lines = ["\n\nYOUR PREVIOUS DRAFT WAS REJECTED. Fix ALL of this and write a genuinely "
              "different comment:"]
     lines += [f"- {reason}" for reason in (failures or []) if reason]
@@ -1909,7 +1960,8 @@ def hook_constraint_directive() -> str:
 def hook_report(text: Optional[str], content_type: str = "post", format_key=None) -> dict:
     """Grade a finished draft's first line against the hook constraints. Deterministic — no LLM, no
     I/O. `required` is False (and `passes` therefore True) for an archetype that has no number-led
-    constraint, so this is safe to run over every draft."""
+    constraint, so this is safe to run over every draft.
+    """
     hook = opening_line(text or "", max_chars=LINKEDIN_MAX_CHARS)
     required = bool(format_meta(content_type, format_key).get("hook_styles")) if format_key else False
     # A placeholder in the hook IS the number slot, correctly deferred — it counts as number-led.
@@ -1929,7 +1981,8 @@ def fact_anchor_directive(anchors: Optional[list] = None) -> str:
     """The NO-FABRICATION rules for a fact-anchored archetype. With verified facts, they are the only
     specifics the writer may state. With none, every specific must ship as a marked placeholder —
     the #416 policy applied where it bites hardest: a receipt full of invented numbers is worse than
-    no receipt at all."""
+    no receipt at all.
+    """
     facts = [str(f).strip() for f in (anchors or []) if str(f or "").strip()]
     lines = ["NO-FABRICATION RULE (this archetype is built on specifics, so this is absolute):"]
     if facts:
@@ -1955,7 +2008,8 @@ def fact_anchor_directive(anchors: Optional[list] = None) -> str:
 
 def fact_placeholders(text: Optional[str]) -> list:
     """Every clearly-marked placeholder in a draft, in order — the specifics the author still has to
-    fill in before it can publish."""
+    fill in before it can publish.
+    """
     return [m.group(1).strip() for m in _FACT_PLACEHOLDER_RE.finditer(text or "") if m.group(1).strip()]
 
 
@@ -1966,7 +2020,8 @@ def _normalize_number(token: str) -> str:
 
 def _anchor_numbers(anchors: Optional[list]) -> set:
     """Every number the verified facts actually contain — the set a draft's specifics are checked
-    against."""
+    against.
+    """
     found = set()
     for fact in anchors or []:
         for match in _NUMBER_TOKEN_RE.finditer(str(fact or "")):
@@ -1978,7 +2033,8 @@ def _anchor_numbers(anchors: Optional[list]) -> set:
 
 def _self_evident_counts(text: Optional[str]) -> set:
     """Counts the draft PROVES on its own page: the number of numbered/bulleted entries it contains.
-    'The 7 checks I run' above a 7-item list is self-verifying, so it is not a fabrication."""
+    'The 7 checks I run' above a 7-item list is self-verifying, so it is not a fabrication.
+    """
     count = len(_LIST_LINE_RE.findall(text or ""))
     return {str(count)} if count else set()
 
@@ -1986,7 +2042,8 @@ def _self_evident_counts(text: Optional[str]) -> set:
 def _is_product_version(sentence: str, start: int, raw: str) -> bool:
     """True when a bare number is part of a TOOL/MODEL NAME rather than a claim — 'GPT-4o',
     'Claude 3.5', 'Postgres 16'. A number carrying a unit ($, %, x) is always a metric, and a
-    capitalized word that merely opens the sentence ('The 9 checks') is not a product name."""
+    capitalized word that merely opens the sentence ('The 9 checks') is not a product name.
+    """
     if re.search(r"[$%x]|percent", raw, re.IGNORECASE):
         return False
     end = start + len(raw)  # raw is stripped, so this excludes whitespace the token regex ate
@@ -2007,7 +2064,8 @@ def _is_product_version(sentence: str, start: int, raw: str) -> bool:
 def numeric_claims(text: Optional[str]) -> list:
     """Every numeric specific a draft ASSERTS, as {value, raw, context} dicts. Placeholders, list/step
     numbering, bare years, and tool/model version numbers are excluded — none of them is a claim the
-    author has to stand behind."""
+    author has to stand behind.
+    """
     body = _FACT_PLACEHOLDER_RE.sub(" ", text or "")
     body = "\n".join(_LEADING_ENUM_RE.sub("", line) for line in body.splitlines())
     claims = []
@@ -2032,7 +2090,8 @@ def fact_grounding_report(text: Optional[str], anchors: Optional[list] = None) -
     `unverified` holds every numeric specific the draft asserts that no verified fact backs and the
     draft does not prove on its own page; ANY of them fails the guard, because that is precisely a
     number the model made up. `placeholders` are the honestly-deferred specifics — they do not fail
-    the draft, they make it approval-gated so the author fills them in before it publishes."""
+    the draft, they make it approval-gated so the author fills them in before it publishes.
+    """
     placeholders = fact_placeholders(text)
     anchor_numbers = _anchor_numbers(anchors) | _self_evident_counts(text)
     verified, unverified = [], []
@@ -2055,7 +2114,8 @@ def meets_fact_grounding(text: Optional[str], anchors: Optional[list] = None) ->
 
 def fact_retry_directive(report: dict) -> str:
     """The regeneration steer after a draft invented specifics: name the exact numbers it may not
-    keep, and how to defer them instead."""
+    keep, and how to defer them instead.
+    """
     offenders = [str(c.get("raw")) for c in (report or {}).get("unverified", []) if c.get("raw")]
     lines = [("\n\nYOUR PREVIOUS DRAFT INVENTED SPECIFICS AND WAS REJECTED. Rewrite it with every " +
               "unverified number replaced by a placeholder:")]
@@ -2071,7 +2131,8 @@ def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] =
     """The post archetype's shape mapped onto a CAROUSEL/document (issue #619 / G4). A build receipt
     renders naturally as a document post — the highest-engagement LinkedIn format there is — so the
     carousel generator draws its beats from the SAME post menu instead of a parallel carousel-only
-    prompt. Returns '' for a blueprint with no known post format."""
+    prompt. Returns '' for a blueprint with no known post format.
+    """
     if not isinstance(blueprint, dict):
         return ""
     fmt = normalize_key("post", "format", blueprint.get("format"))
@@ -2248,7 +2309,8 @@ REFERENCE_SLIDE_SHAPES: tuple = (
 
 def deck_reference_enabled() -> bool:
     """Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can stand the gate down
-    without a restart. Fails OPEN when disabled: an ungraded deck ships exactly as it did before."""
+    without a restart. Fails OPEN when disabled: an ungraded deck ships exactly as it did before.
+    """
     raw = (os.environ.get("DECK_REFERENCE_ENABLED") or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
@@ -2264,7 +2326,8 @@ def deck_reference_max_attempts() -> int:
 
 def reference_slide_directive() -> str:
     """The writer-side injection for a save-targeted deck: the slide SHAPES that are inherently
-    reusable, plus the one-artifact-per-slide rule the gate below enforces."""
+    reusable, plus the one-artifact-per-slide rule the gate below enforces.
+    """
     lines = [
         ("EVERY BODY SLIDE MUST CARRY SOMETHING REUSABLE (this is checked, and a deck of claims is " +
          "regenerated):"),
@@ -2284,7 +2347,8 @@ def reference_slide_directive() -> str:
 
 def slide_artifacts(text: Optional[str]) -> list:
     """Which reusable-artifact kinds a single slide carries, in a stable order. Empty = the slide is
-    narrative or claims only. Deterministic — no LLM, no I/O."""
+    narrative or claims only. Deterministic — no LLM, no I/O.
+    """
     body = str(text or "")
     if not body.strip():
         return []
@@ -2308,7 +2372,8 @@ def slide_artifacts(text: Optional[str]) -> list:
 def deck_slides(carousel: Optional[dict]) -> list:
     """Every slide in a carousel dict, in schema order, as {key, index, title, content, graded}.
     Schema-agnostic on purpose: the six carousel models in `carousel_creator` differ only in which
-    keys hold slides and which hold lists of them, and the gate has to grade all of them."""
+    keys hold slides and which hold lists of them, and the gate has to grade all of them.
+    """
     if not isinstance(carousel, dict):
         return []
     slides = []
@@ -2335,7 +2400,8 @@ def deck_slides(carousel: Optional[dict]) -> list:
 
 def _slide_label(slide: dict) -> str:
     """How a slide is named back to the writer and in the logs — its own title when it has one, so
-    the retry directive points at something the model can actually find in its last deck."""
+    the retry directive points at something the model can actually find in its last deck.
+    """
     title = str((slide or {}).get("title") or "").strip()
     if title:
         return title
@@ -2347,7 +2413,8 @@ def _slide_label(slide: dict) -> str:
 def deck_promises(post_text: Optional[str]) -> list:
     """What the CAPTION tells the reader the deck contains, as {promise, needs} entries. This is the
     cheap half of the consistency check — the copy said 'here is the exact stack', so the slides
-    have to hold one."""
+    have to hold one.
+    """
     body = str(post_text or "")
     if not body.strip():
         return []
@@ -2407,7 +2474,8 @@ def deck_reference_report(carousel: Optional[dict], post_text: Optional[str] = N
 def deck_retry_directive(report: Optional[dict]) -> str:
     """The regeneration steer after a deck failed the reference gate: name the exact slides that
     carried nothing reusable and the exact promise the slides never delivered, so the retry adds
-    material instead of rewording the same claims."""
+    material instead of rewording the same claims.
+    """
     reasons = [str(r) for r in (report or {}).get("reasons", []) if str(r).strip()]
     if not reasons:
         return ""

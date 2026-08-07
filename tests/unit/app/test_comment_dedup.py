@@ -1,9 +1,11 @@
 """Unit tests for the persistent at-most-once feed-comment dedup guard in comment_on_feed_inline
-and the URL-based comment_on_post task."""
+and the URL-based comment_on_post task.
+"""
+
+from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
-from contextlib import ExitStack
 
 pytestmark = pytest.mark.unit
 
@@ -25,13 +27,15 @@ def _box(text):
 def _messages(mock, needle):
     """Log messages recorded on a patched logger call that mention `needle`. Matched on the bare
     word 'hash' rather than either message's own phrasing, so the #1064 guard still fires if the
-    warning comes back worded the way it was before ('unstable content-hash key')."""
+    warning comes back worded the way it was before ('unstable content-hash key').
+    """
     return [c.args[0] for c in mock.call_args_list if c.args and needle in c.args[0]]
 
 
 def _card_for(box):
     """A card mock that remembers which post text it was resolved from, so a test can answer the
-    URN scan per post rather than once for the whole run."""
+    URN scan per post rather than once for the whole run.
+    """
     card = MagicMock()
     card.box_text = box.text
     return card
@@ -47,7 +51,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     `find_elements` overrides the driver's element lookup wholesale, so a test can answer the post-
     text selector and the zero-walk cross-check selector differently (issue #1013).
     `urn_by_text` maps a post's text to the URN its card carries, so one scan can mix cards that
-    resolve a URN with cards that fall back to the content hash."""
+    resolve a URN with cards that fall back to the content hash.
+    """
     from cqc_lem.app import run_automation as ra
 
     driver = MagicMock()
@@ -379,7 +384,8 @@ class TestFeedFunnelAndFallback:
 class TestFeedZeroWalkTripwire:
     """#1013: zero post-text nodes across a whole scan is indistinguishable from an empty feed in
     every funnel number — which is how #964 and #1009 stayed invisible for weeks. The scan asks the
-    page through a per-post control the text-node chain does not use."""
+    page through a per-post control the text-node chain does not use.
+    """
 
     def test_a_walk_that_saw_cards_is_ok(self):
         r = _run_feed([_box("A feed post with plenty of content to comment on.")])
@@ -406,7 +412,8 @@ class TestFeedZeroWalkTripwire:
 
     def test_only_drift_warns(self):
         """The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a
-        grouped $exception, so an empty feed or an unreadable cross-check must stay DEBUG."""
+        grouped $exception, so an empty feed or an unreadable cross-check must stay DEBUG.
+        """
         from cqc_lem.app.run_automation import _report_zero_walk
         driver = MagicMock()
 

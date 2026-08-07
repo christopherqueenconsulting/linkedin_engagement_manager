@@ -1,15 +1,16 @@
 """Integration tests for FastAPI endpoints."""
 
 from contextlib import ExitStack, contextmanager
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 
 @pytest.mark.integration
 class TestHealthEndpoint:
     def test_health_returns_200(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         client = TestClient(app)
@@ -47,6 +48,7 @@ def _signed_in(**extra):
 class TestSchedulePostEndpoint:
     def test_schedule_post_returns_200_for_the_session_user(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with _signed_in(insert_post=True):
@@ -65,6 +67,7 @@ class TestSchedulePostEndpoint:
 
     def test_schedule_post_returns_401_without_a_session(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
@@ -83,6 +86,7 @@ class TestSchedulePostEndpoint:
 
     def test_schedule_post_returns_403_for_another_account(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with _signed_in() as mocks:
@@ -106,6 +110,7 @@ class TestSchedulePostEndpoint:
 class TestGetPostsEndpoint:
     def test_get_posts_returns_200_with_posts(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         rows = (
@@ -129,6 +134,7 @@ class TestGetPostsEndpoint:
 
     def test_get_posts_returns_200_with_empty_list_when_no_posts(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with _signed_in(get_posts=([], 0)):
@@ -142,6 +148,7 @@ class TestGetPostsEndpoint:
 
     def test_get_posts_returns_401_without_a_session(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
@@ -154,6 +161,7 @@ class TestGetPostsEndpoint:
 
     def test_get_posts_returns_403_for_another_accounts_email(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with _signed_in(), patch("cqc_lem.api.main.get_posts") as mock_posts:
@@ -169,6 +177,7 @@ class TestGetPostsEndpoint:
 class TestUpdatePostEndpoint:
     def test_update_post_returns_200(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with _signed_in(update_db_post=True):
@@ -186,6 +195,7 @@ class TestUpdatePostEndpoint:
 
     def test_update_post_returns_403_for_a_post_the_caller_does_not_own(self):
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
 
         with _signed_in(user_owns_posts=False), \

@@ -34,17 +34,34 @@ from typing import Optional
 from selenium.common import TimeoutException
 from selenium.webdriver import ActionChains
 
-from cqc_lem.utilities.db import get_user_password_pair_by_id, get_company_linked_in_url_for_user, \
-    insert_new_log, LogActionType, LogResultType, get_engagement_preferences, \
-    count_company_page_invites_sent_today, COMPANY_PAGE_INVITE_SENT_MESSAGE, \
-    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
-from cqc_lem.utilities.human_pacing import (ACTION_COMPANY_INVITE, ACTION_INVITE,
-                                            engagement_caps_from_prefs, pacing_enabled,
-                                            record_action, remaining_actions)
+from cqc_lem.utilities.db import (
+    COMPANY_PAGE_INVITE_SENT_MESSAGE,
+    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT,
+    LogActionType,
+    LogResultType,
+    count_company_page_invites_sent_today,
+    get_company_linked_in_url_for_user,
+    get_engagement_preferences,
+    get_user_password_pair_by_id,
+    insert_new_log,
+)
+from cqc_lem.utilities.human_pacing import (
+    ACTION_COMPANY_INVITE,
+    ACTION_INVITE,
+    engagement_caps_from_prefs,
+    pacing_enabled,
+    record_action,
+    remaining_actions,
+)
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
-from cqc_lem.utilities.logger import myprint, log_info
-from cqc_lem.utilities.selenium_util import get_element_wait_retry, get_elements_as_list_wait_stale, getText, \
-    wait_for_ajax, click_element_wait_retry
+from cqc_lem.utilities.logger import log_info, myprint
+from cqc_lem.utilities.selenium_util import (
+    click_element_wait_retry,
+    get_element_wait_retry,
+    get_elements_as_list_wait_stale,
+    getText,
+    wait_for_ajax,
+)
 
 # Run statuses — stable strings, so "why did this account send nothing yesterday?" is a group-by on
 # the telemetry rather than a log grep.
@@ -70,7 +87,8 @@ SELECTION_PAUSE_MAX_SECONDS = 2.5
 
 def days_left_in_month(day: Optional[date] = None) -> int:
     """Days remaining in `day`'s month, counting today. The credit pool renews on the 1st, so this
-    is the horizon the remaining credits have to cover."""
+    is the horizon the remaining credits have to cover.
+    """
     day = day or datetime.now(timezone.utc).date()
     return calendar.monthrange(day.year, day.month)[1] - day.day + 1
 
@@ -80,7 +98,8 @@ def credit_spread_budget(credits_remaining: int, day: Optional[date] = None) -> 
 
     Floor division of credits over the days left, with a floor of 1 while any credit remains — a
     thin pool late in the month should still drip rather than stop entirely (the daily cap and the
-    credit count are the real ceilings above this). 0 credits is 0, never 1."""
+    credit count are the real ceilings above this). 0 credits is 0, never 1.
+    """
     credits = max(0, int(credits_remaining or 0))
     if credits <= 0:
         return 0
@@ -91,7 +110,8 @@ def invite_cap_for_user(prefs: Optional[dict]) -> int:
     """The lane's own per-day ceiling: its cap, bounded by the account-wide invite cap.
 
     `max_invites_per_day` is the harder bound on purpose — it is what `brand_account`'s launch-phase
-    policy clamps, so the brand account can never run page invites hotter than its phase allows."""
+    policy clamps, so the brand account can never run page invites hotter than its phase allows.
+    """
     prefs = prefs or {}
 
     def _cap(key: str, default: int) -> int:
@@ -111,7 +131,8 @@ def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
     Returns `{'allowance': int, 'status': str, 'cap': int, 'sent_today': int}`. A zero allowance is
     the common case on most days (rest day, budget already spent, cap of 0) and must not cost a
     Chrome slot, which is why this is separate from the Selenium half. `status` is only meaningful
-    when the allowance is 0 — it says WHY nothing may go out."""
+    when the allowance is 0 — it says WHY nothing may go out.
+    """
     prefs = prefs if prefs is not None else get_engagement_preferences(user_id)
     cap = invite_cap_for_user(prefs)
     if cap <= 0:  # lane switched off — don't spend a DB round-trip proving it
@@ -128,6 +149,13 @@ def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
 
 
 def get_available_credits(driver, wait):
+    """Read the page's live "<current>/<total> credits available" counter — ceiling number 3.
+
+    Returns `(0, 0)` when that element never resolves, which is the fail-CLOSED reading the caller
+    depends on: it treats 0 as `credits_exhausted` and sends nothing. An unreadable counter and a
+    genuinely empty pool therefore both stop the run, because spending an invite we cannot account
+    for is the one outcome worse than skipping a day.
+    """
     # myprint("Entering get_available_credits function.")
     current_credits = 0
     total_credits = 0
@@ -145,6 +173,15 @@ def get_available_credits(driver, wait):
 
 
 def get_initial_selected_count(driver, wait):
+    """The invitee picker's own "N selected" counter, read BEFORE this run ticks anything.
+
+    The dialog can open with boxes already ticked, so counting only our own clicks would let a run
+    send more invites than the day's budget. Starting the count from what the page says is what keeps
+    the budget the number of invites actually dispatched.
+
+    Raises rather than defaulting to 0: an unreadable counter means the ceiling is unknown, and
+    guessing low is how a paced drip turns back into a blast.
+    """
     # myprint("Entering get_initial_selected_count function.")
     selected_text_element = get_element_wait_retry(driver, wait, '//span[text()[contains(.,"selected")]]',
                                                    "Finding Selected Text Element")
@@ -155,6 +192,13 @@ def get_initial_selected_count(driver, wait):
 
 
 def scroll_invitee_list(driver, wait):
+    """Scroll the invitee picker once to make its next lazy-loaded page of connections render.
+
+    Goes through mouse-wheel ActionChains against a sentinel div below the list rather than setting
+    `scrollTop` — the picker's infinite scroller does not fire on a scripted scroll position, so the
+    JS route silently loads nothing. Waits for the AJAX round-trip before returning, but does NOT
+    promise the list grew: the caller decides whether it did and stops when it stops growing.
+    """
     invitee_list_element = get_element_wait_retry(driver, wait,
                                                   "//div[contains(@class,'scaffold-finite-scroll__content')]",
                                                   "Finding Invitee List Element", max_try=0)
@@ -182,7 +226,8 @@ def scroll_invitee_list(driver, wait):
 
 def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
     """A short human pause between ticking two invitees. 0 (and no sleep) when pacing is off, so
-    HUMAN_PACING_ENABLED=false restores the pre-#626 behaviour here too."""
+    HUMAN_PACING_ENABLED=false restores the pre-#626 behaviour here too.
+    """
     if not pacing_enabled():
         return 0.0
     delay = (rng or random).uniform(SELECTION_PAUSE_MIN_SECONDS, SELECTION_PAUSE_MAX_SECONDS)
@@ -191,6 +236,18 @@ def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
 
 
 def select_connection_checkboxes(driver, wait, limit):
+    """Tick invitees until the picker's own selected count reaches `limit`, and return that count.
+
+    `limit` is the run's whole budget — the smallest of the paced allowance, the credit spread and
+    the live credit count — so this is where that number becomes clicks. The count starts from
+    `get_initial_selected_count`, not from zero, so pre-ticked boxes spend the budget too.
+
+    Scrolling continues only while a pass loads new invitees AND new checkboxes AND the checkbox
+    count is still under the limit — so it stops as soon as EITHER counter stalls, and a page with
+    fewer candidates than budget returns short instead of looping. Selections are spaced by
+    `_pause_between_selections`; N machine-timed clicks in a row is the velocity signal #732 exists
+    to remove.
+    """
     # myprint("Entering select_connection_checkboxes function.")
 
     # Get the list of connections and scroll until there are as many available as the limit we need or end if there are now new connections
@@ -242,6 +299,15 @@ def select_connection_checkboxes(driver, wait, limit):
 
 
 def invite_selected_connections(driver, wait):
+    """Click the invite dialog's primary button and report whether that click landed.
+
+    False means the button never resolved — the run is a `failed` report and a FAILURE log row, and
+    crucially no `invites_sent` count is recorded, so tomorrow's drip is not shortened by a batch
+    that never went out.
+
+    True is the weaker claim: the control was found and clicked. Nothing here re-reads the page to
+    confirm LinkedIn accepted the batch, so a True is "we asked", not "they landed".
+    """
     # myprint("Entering invite_selected_connections function.")
     xpath = "//div[contains(@class,'modal')]//button[contains(@class,'artdeco-button--primary')]"
     invite_button = click_element_wait_retry(driver, wait, xpath, "Finding Invite Button",
@@ -256,6 +322,12 @@ def invite_selected_connections(driver, wait):
 
 
 def dismiss_prompt(driver, wait):
+    """Clear the "boost this post?" nudge LinkedIn may raise after a batch of invites goes out.
+
+    Cosmetic housekeeping, and False is the ordinary case — the nudge usually is not shown at all.
+    It runs AFTER the invites are logged and recorded precisely so that a missing (or moved) dismiss
+    control can never cost the run its record of what it sent.
+    """
     # myprint("Entering dismiss_prompt function.")
     dismiss_button = click_element_wait_retry(driver, wait,
                                               "//button[@data-test-org-post-nudge-dismiss-cta]",
@@ -279,7 +351,8 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
     """Send AT MOST today's paced budget of company-page invites, in one pass.
 
     Returns the run report — the caller turns it into telemetry. `plan` lets the task reuse the
-    allowance it already computed to decide whether opening a browser was worth it at all."""
+    allowance it already computed to decide whether opening a browser was worth it at all.
+    """
     myprint("Automate invitations to Company Page.")
 
     plan = plan if plan is not None else plan_daily_invites(user_id)

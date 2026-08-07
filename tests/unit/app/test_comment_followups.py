@@ -1,10 +1,12 @@
 """Unit tests for the auto-follow-up feature — issue #478. Covers URL/URN derivation, question
 detection, stable reply keys, the DOM helpers + worker (mocked driver), the sweep/single/reconcile
 orchestration, and the guest-voice reply generator. Selenium DOM targeting itself is validated on a
-supervised live run."""
+supervised live run.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

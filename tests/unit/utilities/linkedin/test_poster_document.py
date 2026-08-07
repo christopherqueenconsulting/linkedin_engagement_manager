@@ -1,7 +1,8 @@
 """Unit tests for the native document (PDF) publish path — issue #390."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -12,7 +13,7 @@ class TestDocumentTitle:
         assert _document_title("\n\n5 lessons from 2026\n\nrest of the post") == "5 lessons from 2026"
 
     def test_truncates_to_linkedin_max(self):
-        from cqc_lem.utilities.linkedin.poster import _document_title, DOCUMENT_TITLE_MAX
+        from cqc_lem.utilities.linkedin.poster import DOCUMENT_TITLE_MAX, _document_title
 
         title = _document_title("x" * 300)
         assert len(title) == DOCUMENT_TITLE_MAX
@@ -67,8 +68,10 @@ class TestUploadDocument:
 
     def test_retired_api_version_is_named_in_the_error(self, tmp_path):
         """A retired LinkedIn-Version 426s every versioned call — say so instead of
-        letting it look like the app simply isn't provisioned for documents."""
+        letting it look like the app simply isn't provisioned for documents.
+        """
         import requests
+
         from cqc_lem.utilities.linkedin.poster import upload_document
 
         pdf = tmp_path / "deck.pdf"
@@ -196,6 +199,7 @@ class TestShareDocumentOnLinkedin:
     def test_removes_the_scratch_pdf_dir_when_there_is_no_post_id(self, tmp_path):
         """Without a post_id the PDF goes to a temp dir we own — it must not outlive the call."""
         import os
+
         from cqc_lem.utilities.linkedin.poster import share_document_on_linkedin
 
         scratch = str(tmp_path / "scratch")
@@ -217,6 +221,7 @@ class TestShareDocumentOnLinkedin:
 
     def test_scratch_pdf_dir_is_removed_even_when_publishing_fails(self, tmp_path):
         import os
+
         from cqc_lem.utilities.linkedin.poster import share_document_on_linkedin
 
         scratch = str(tmp_path / "scratch")

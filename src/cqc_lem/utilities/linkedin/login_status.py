@@ -44,7 +44,8 @@ def _ttl_seconds() -> int:
 
 def _pending_ttl_seconds() -> int:
     """A PENDING record expires on its own so a worker that died mid-challenge cannot leave the
-    Account page telling the user to approve a sign-in nobody is waiting on any more."""
+    Account page telling the user to approve a sign-in nobody is waiting on any more.
+    """
     try:
         return int(os.getenv("LINKEDIN_LOGIN_STATUS_PENDING_TTL_SECONDS",
                              str(_DEFAULT_PENDING_TTL_SECONDS)))
@@ -62,7 +63,8 @@ def _now() -> str:
 
 def _is_recent(iso: Optional[str], seconds: int) -> bool:
     """Whether a timestamp we wrote is younger than `seconds`. A record that can't be parsed is
-    treated as old, so a stale approval is never re-claimed as this sign-in's."""
+    treated as old, so a stale approval is never re-claimed as this sign-in's.
+    """
     if not iso:
         return False
     try:
@@ -156,5 +158,6 @@ def mark_signed_in(user_id: int) -> None:
 
 def get_login_status(user_id: int) -> Optional[dict]:
     """The last recorded sign-in state for the user, or None when nothing is recorded (no run has
-    signed in since the record expired, or Redis is unavailable)."""
+    signed in since the record expired, or Redis is unavailable).
+    """
     return _read(user_id)

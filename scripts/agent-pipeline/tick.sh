@@ -152,7 +152,7 @@ claim_branch() {  # $1=branch -> 0 claimed, 1 busy
 # posthog_capture is fire-and-forget and never breaks a tick.
 TICK_T0="$SECONDS"                       # wall-clock seconds since shell start
 TICK_OUTCOME="unknown"                   # dispatched | skipped | error | nothing_to_do
-TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_revise", "mode_phasefix", "escalate"
+TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_docfix", "mode_revise", "mode_phasefix", "escalate"
 TICK_MODE=""                             # mode name if a Claude run was dispatched
 TICK_ISSUE=""                            # issue number dispatched
 TICK_PR=""                               # PR number processed
@@ -229,6 +229,11 @@ TRUSTED_ASSOCIATIONS="${TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
 # Who may mint `agent:ready`. Deliberately NOT every bot: only automations whose input is not
 # attacker-controlled. The feedback loop is absent on purpose (it files `needs-human` now).
 AGENT_LABEL_TRUSTED_ACTORS="${AGENT_LABEL_TRUSTED_ACTORS:-$ASSIGNEE}"
+# Who may apply the CI-ROUTED auto-fix labels (`agent:depfix`, `agent:docfix`) — our own workflows,
+# which act as `github-actions[bot]`. Kept apart from the human allowlist above on purpose: these
+# two labels report a CI failure on an existing PR and grant no work, while `agent:ready` and
+# `release:now` remain human-only. See `label_actor_trusted`.
+AGENT_CI_LABEL_ACTORS="${AGENT_CI_LABEL_ACTORS:-github-actions[bot]}"
 
 agent_token_scopes() {
   # Classic OAuth tokens advertise their scopes in a response header. Fine-grained PATs carry
@@ -290,6 +295,24 @@ label_actor_trusted() {
                     | .actor.login] | last // empty" 2>/dev/null)"
   [ -n "$actor" ] || { log "TRUST: #$n — no readable '$label' labeler; refusing."; return 1; }
   case " $AGENT_LABEL_TRUSTED_ACTORS " in *" $actor "*) return 0 ;; esac
+  # CI-ROUTED labels are the one place our own workflows are the legitimate applier. A router runs
+  # `actions/github-script` with the default GITHUB_TOKEN, so the timeline actor is
+  # `github-actions[bot]` — never a human, and never in the human allowlist. Refusing it made BOTH
+  # auto-fix lanes dead on arrival: `agent:depfix` has been shipped since the Dependabot router
+  # landed and has dispatched exactly ZERO times.
+  #
+  # This is deliberately narrow, and it is not the hole the allowlist exists to close. These two
+  # labels grant nothing: they say "this EXISTING pull request has failing CI", not "build this".
+  # `author_trusted` and `pr_is_upstream` are still enforced by `pr_admissible`, so the work still
+  # only ever lands on a trusted author's branch inside this repo. The labels that DO grant
+  # privilege — `agent:ready`, `release:now` — stay human-only.
+  case " $label " in
+    " agent:depfix "|" agent:docfix ")
+      case " $AGENT_CI_LABEL_ACTORS " in
+        *" $actor "*) return 0 ;;
+      esac
+      ;;
+  esac
   log "TRUST: #$n — '$label' applied by '$actor', not in AGENT_LABEL_TRUSTED_ACTORS."
   return 1
 }
@@ -966,7 +989,10 @@ fi
 if [ -n "$DEPFIX" ]; then
   DPR="$(echo "$DEPFIX" | jq -r .number)"
   DBR="$(echo "$DEPFIX" | jq -r .headRefName)"
-  CLAUDE_TRIES="$(git -C "$REPO" log "origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  # RANGE, not a branch tip: `git log <branch>` walks the WHOLE ancestry, so a branch cut from
+  # main inherits every Claude commit ever merged (measured: 677) and reads as exhausted on its
+  # first tick, before it has attempted anything. `origin/main..` counts only this branch's own.
+  CLAUDE_TRIES="$(git -C "$REPO" log "origin/main..origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
   if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
     log "Dependabot PR #$DPR still failing after $CLAUDE_TRIES Claude attempts — escalating."
     TICK_OUTCOME="escalated"; TICK_REASON="depfix_exhausted"; TICK_PR="$DPR"; TICK_BRANCH="$DBR"
@@ -986,6 +1012,46 @@ if [ -n "$DEPFIX" ]; then
     WT="$(add_worktree "$DBR" origin/main)"
     export MODE=depfix PR="$DPR" BRANCH="$DBR" WORKTREE="$WT"
     run_claude "$WT" "Read $RUNBOOK and follow MODE=depfix. PR=$DPR BRANCH=$DBR."
+    exit 0
+  fi
+fi
+
+# ---- PRIORITY LANE: Docstring & Lint Gate failures (labeled agent:docfix by the router) ----
+# Runs right after depfix and before roadmap work: a lint failure blocks a PR that is otherwise
+# finished, and it is the class of defect an agent should never need a human for. Same escalation
+# budget as depfix — three Claude attempts, then it becomes a human's problem rather than a loop.
+DOCFIX="$(gh pr list --repo "$SLUG" --state open --label "agent:docfix" \
+  --json number,headRefName,labels \
+  | jq -r 'map(select((.labels|map(.name))|index("needs-human")|not))|.[0]//empty|@json')"
+if [ -n "$DOCFIX" ] && ! pr_admissible "$(echo "$DOCFIX" | jq -r .number)" "agent:docfix"; then
+  DOCFIX=""   # refused by the trust boundary — fall through to the other lanes this tick
+fi
+if [ -n "$DOCFIX" ]; then
+  XPR="$(echo "$DOCFIX" | jq -r .number)"
+  XBR="$(echo "$DOCFIX" | jq -r .headRefName)"
+  # RANGE, not a branch tip: `git log <branch>` walks the WHOLE ancestry, so a branch cut from
+  # main inherits every Claude commit ever merged (measured: 677) and reads as exhausted on its
+  # first tick, before it has attempted anything. `origin/main..` counts only this branch's own.
+  CLAUDE_TRIES="$(git -C "$REPO" log "origin/main..origin/$XBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
+    log "PR #$XPR still failing the lint gate after $CLAUDE_TRIES Claude attempts — escalating."
+    TICK_OUTCOME="escalated"; TICK_REASON="docfix_exhausted"; TICK_PR="$XPR"; TICK_BRANCH="$XBR"
+    if [ "$DRY_RUN" != "1" ]; then
+      gh pr edit "$XPR" --repo "$SLUG" --add-label needs-human --remove-label agent:docfix >/dev/null 2>&1
+      gh issue comment "$XPR" --repo "$SLUG" --body "🚧 Claude couldn't clear the Docstring & Lint Gate after $CLAUDE_TRIES attempts. The standard is \`docs/docstring-standard.md\`; assigning @$ASSIGNEE." >/dev/null 2>&1
+      gh pr edit "$XPR" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+    fi
+    exit 0
+  fi
+  log "PR #$XPR failing the lint gate — invoking docfix (priority lane, try $((CLAUDE_TRIES+1)))."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_docfix"; TICK_MODE="docfix"; TICK_PR="$XPR"; TICK_BRANCH="$XBR"
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=docfix for #$XPR ($XBR)."; exit 0; fi
+  if ! claim_branch "$XBR"; then
+    log "PR #$XPR already claimed by another slot — moving on."
+  else
+    WT="$(add_worktree "$XBR" origin/main)"
+    export MODE=docfix PR="$XPR" BRANCH="$XBR" WORKTREE="$WT"
+    run_claude "$WT" "Read $RUNBOOK and follow MODE=docfix. PR=$XPR BRANCH=$XBR."
     exit 0
   fi
 fi

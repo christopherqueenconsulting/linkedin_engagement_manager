@@ -1,15 +1,15 @@
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 from aws_cdk import (
-    aws_applicationautoscaling as applicationautoscaling,
-    aws_cloudwatch as cloudwatch,
     Duration,
-    aws_ecs as ecs,
+    Stack,
+    aws_applicationautoscaling as applicationautoscaling,
     aws_ec2 as ec2,
-    aws_logs as logs,
-    aws_iam as iam,
+    aws_ecs as ecs,
     aws_elasticloadbalancingv2 as elbv2,
-    Stack)
+    aws_iam as iam,
+    aws_logs as logs,
+)
 from aws_cdk.aws_servicediscovery import DnsRecordType
 from constructs import Construct
 
@@ -97,11 +97,7 @@ class SeleniumStack(Stack):
                              memory_limit: int = 1024,
                              cpu: int = 512
                              ) -> ecs.FargateService:
-        """
-        Create Selenium Hub resources including service, autoscaling, and load balancer configuration
-
-        """
-
+        """Create the Selenium Hub service, its autoscaling and its load balancer."""
         # Create the ECS Service
         selenium_hub_service = self.create_service(
             identifier=identifier,
@@ -411,10 +407,7 @@ class SeleniumStack(Stack):
             cpu: int = 256
 
     ) -> ecs.FargateService:
-        """
-        Create a Fargate service with the specified configuration.
-        """
-
+        """Create a Fargate service with the specified configuration."""
         # Task and container definition
         task_definition = ecs.FargateTaskDefinition(
             self,

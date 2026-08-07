@@ -81,11 +81,22 @@ def _redis_client():
 
 def shared_redis_client():
     """Public handle to the same Redis this breaker uses (None when unavailable), so other
-    runtime-state helpers reuse one URL-resolution rule instead of re-deriving it."""
+    runtime-state helpers reuse one URL-resolution rule instead of re-deriving it.
+    """
     return _redis_client()
 
 
 def mark_rate_limited(reason: str = "") -> None:
+    """Trip the breaker — one task's 429 stops the Selenium lanes for everyone on this egress IP.
+
+    The cooldown DOUBLES per consecutive trip (up to the cap) rather than staying fixed, because a
+    fixed window is what produced the doom loop: it expired, some task probed LinkedIn, drew a fresh
+    429 and re-tripped it every 30 minutes for days. `reason` is stored as the breaker's value purely
+    for whoever is reading Redis later.
+
+    Fails open and silently: with Redis unavailable this is a no-op, so a caller may never treat a
+    return from here as proof the breaker is open.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -143,7 +154,8 @@ def rate_limit_cooldown_remaining() -> int:
 
 def clear_rate_limit() -> None:
     """Close the breaker AND reset the consecutive-trip counter — called on a successful login, so
-    the next 429 (if any) starts the escalation from the base cooldown again."""
+    the next 429 (if any) starts the escalation from the base cooldown again.
+    """
     client = _redis_client()
     if client is None:
         return
@@ -224,6 +236,12 @@ def automation_pause_reason() -> "str | None":
 
 
 def is_automation_paused() -> bool:
+    """Whether the manual/deploy/suppression kill-switch is standing right now.
+
+    Only that switch — the 429 breaker is a separate, independent gate
+    (`rate_limit_cooldown_remaining`), so neither answer implies the other. Fails open: no Redis
+    reads as NOT paused, because a Redis outage must not be able to freeze every Selenium lane.
+    """
     return automation_pause_remaining() > 0
 
 
@@ -291,6 +309,11 @@ def commenting_hold_reason(user_id: int) -> "str | None":
 
 
 def is_commenting_held(user_id: int) -> bool:
+    """Whether THIS user's feed commenting is held on comment quality (issue #628).
+
+    Narrower than the global pause on purpose: their posting, replies and DMs keep running, because
+    the measured problem is the comments and not the account. Fails open (no Redis -> not held).
+    """
     return commenting_hold_remaining(user_id) > 0
 
 
@@ -307,11 +330,18 @@ SUPPRESSION_PAUSE_REASON_PREFIX = "suppression"
 
 def suppression_pause_reason(user_id: int) -> str:
     """The `pause_automation` reason string this tripwire writes, tagged with the user whose signals
-    tripped it so a later run can tell its own pause apart from a manual or maintenance one."""
+    tripped it so a later run can tell its own pause apart from a manual or maintenance one.
+    """
     return f"{SUPPRESSION_PAUSE_REASON_PREFIX}:{int(user_id)}"
 
 
 def is_suppression_pause(reason: "str | None") -> bool:
+    """Was this pause set by the suppression tripwire, rather than by a human or a deploy?
+
+    A PREFIX match, so it holds for the per-user form `suppression:<id>` that
+    `suppression_pause_reason` writes. Missing or empty reads False: an unattributed pause is treated
+    as somebody else's, which is the safe direction — the tripwire only ever lifts its OWN pause.
+    """
     return bool(reason) and str(reason).startswith(SUPPRESSION_PAUSE_REASON_PREFIX)
 
 
@@ -350,7 +380,8 @@ def record_suppression_trip(user_id: int, reason: str, detail: "dict | None" = N
 
 def clear_suppression_trip(user_id: int) -> bool:
     """Human re-enable: forget the trip. Lifting the automation pause is the caller's separate,
-    explicit step — clearing the record must never be what silently restarts engagement."""
+    explicit step — clearing the record must never be what silently restarts engagement.
+    """
     client = _redis_client()
     if client is None:
         return False
@@ -381,6 +412,12 @@ def suppression_trip_state(user_id: int) -> "dict | None":
 
 
 def is_suppression_tripped(user_id: int) -> bool:
+    """Whether the tripwire has fired for this user and no human has cleared it.
+
+    Separate question from whether automation is currently paused: the trip record carries NO TTL, so
+    it outlives the pause it caused and only `clear_suppression_trip` ends it. Fails open (no Redis ->
+    not tripped), so an outage can never manufacture a standing trip.
+    """
     return suppression_trip_state(user_id) is not None
 
 
@@ -396,7 +433,8 @@ _LOCK_FAILOPEN = ("no-redis", "lock-error")
 def acquire_run_lock(name: str, ttl_seconds: int = 1800) -> "str | None":
     """Try to take a named single-flight lock. Returns an opaque token to pass to
     release_run_lock() if acquired (or a fail-open sentinel if Redis is down), else None when
-    another holder is active. TTL auto-expires the lock if the holder crashes without releasing."""
+    another holder is active. TTL auto-expires the lock if the holder crashes without releasing.
+    """
     client = _redis_client()
     if client is None:
         return "no-redis"  # fail open — don't block the task when Redis is unavailable
@@ -412,7 +450,8 @@ def acquire_run_lock(name: str, ttl_seconds: int = 1800) -> "str | None":
 
 def release_run_lock(name: str, token: "str | None") -> None:
     """Release a lock only if we still hold the same token (never free another holder's lock, e.g.
-    one that TTL-expired and was reacquired). No-ops for the fail-open sentinels."""
+    one that TTL-expired and was reacquired). No-ops for the fail-open sentinels.
+    """
     if not token or token in _LOCK_FAILOPEN:
         return
     client = _redis_client()

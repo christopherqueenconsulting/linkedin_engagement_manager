@@ -1,5 +1,6 @@
 """Unit tests for `get_post_quality_rows` — the observation source of the cost-aware routing
-experiment (issue #494)."""
+experiment (issue #494).
+"""
 
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
@@ -45,7 +46,8 @@ class TestGetPostQualityRows:
 
     def test_unknown_impressions_and_scores_stay_none(self):
         """A post with no impressions or no authenticity score is UNKNOWN quality, never zero —
-        scoring it as 0 would drag an arm's mean down for a missing measurement."""
+        scoring it as 0 would drag an arm's mean down for a missing measurement.
+        """
         conn, _ = _mock_conn(fetch_all=[_row(impressions=None, authenticity_score=None)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_quality_rows

@@ -66,7 +66,8 @@ ASSIGNMENT_SHIPPED = "shipped"
 class ExperimentSpec:
     """One experiment. `key` is the PostHog feature-flag key AND the experiment key AND this
     registry's name — one identifier, so a rename can't leave the code, the flag and the experiment
-    readout disagreeing. `variants[0]` is the control by definition."""
+    readout disagreeing. `variants[0]` is the control by definition.
+    """
     key: str
     variants: tuple
     owner: str
@@ -79,6 +80,11 @@ class ExperimentSpec:
 
     @property
     def control(self) -> str:
+        """The arm that is also the safe answer.
+
+        Every unresolvable path in this module returns it, and because it is `variants[0]` by
+        construction it is always the behaviour that shipped before the experiment existed.
+        """
         return self.variants[0]
 
 
@@ -159,6 +165,13 @@ _OFF_VALUES = ("0", "false", "no", "off", "disabled")
 
 
 def spec(key: str) -> ExperimentSpec:
+    """The registered experiment, or a loud failure.
+
+    Raises:
+        KeyError: the key is not in `EXPERIMENTS`. Deliberately fatal rather than control-by-default:
+            an unregistered key is a typo or a deleted experiment, and silently reading control would
+            hide it inside a Celery task where nobody would see the arm never moved.
+    """
     found = EXPERIMENTS.get(key)
     if found is None:
         raise KeyError(f"Unregistered experiment '{key}' — add an ExperimentSpec to "
@@ -168,7 +181,8 @@ def spec(key: str) -> ExperimentSpec:
 
 def enabled() -> bool:
     """The one kill switch. Off means every experiment reads as its control arm and no exposure is
-    emitted — the pre-experiment behaviour, everywhere, immediately."""
+    emitted — the pre-experiment behaviour, everywhere, immediately.
+    """
     raw = (os.environ.get("EXPERIMENTS_ENABLED") or "").strip().lower()
     return raw not in _OFF_VALUES if raw else True
 
@@ -177,7 +191,8 @@ def distinct_id(user_id: Optional[int] = None) -> str:
     """Same convention as observability.py and flags.py, so an exposure lands on the SAME PostHog
     person the metric events do — which is the whole mechanism by which PostHog attributes an
     outcome to an arm. The "system" sentinel is taken from routing_policy, the one stdlib-only copy
-    every side of the cost experiment already shares."""
+    every side of the cost experiment already shares.
+    """
     return str(user_id) if user_id is not None else SYSTEM_USER_ID
 
 
@@ -197,7 +212,8 @@ def _flag_surface():
 
     Imported lazily and latched: this module holds no import-time dependency on the flag surface, and
     a failure is reported ONCE rather than per feed comment — `_raw_variant` runs in hot loops, and a
-    warning per LLM call would be the noise that hides the next real one."""
+    warning per LLM call would be the noise that hides the next real one.
+    """
     global _flags_module, _flags_unavailable
     if _flags_module is None and not _flags_unavailable:
         try:
@@ -216,7 +232,8 @@ def _local_evaluation_ready() -> bool:
     flags.py owns the ONE local-evaluation bootstrap — personal API key, the SDK's background
     definition poller and the failed-load cooldown. Experiments reuse it instead of starting a second
     poller in the same process, so a flag flip and an experiment ramp become visible to a worker on
-    the same tick. Every not-ready path is the control arm."""
+    the same tick. Every not-ready path is the control arm.
+    """
     flags = _flag_surface()
     if flags is None:
         return False
@@ -233,7 +250,8 @@ def enrollment_available() -> bool:
 
     For callers that would have to do REAL WORK to produce a cohort — `cost_routing` lists every
     active user before it can ask for their arms — so an experiment plane that is off costs a DB scan
-    it can never use. A per-call resolution doesn't need this: `_raw_variant` checks the same thing."""
+    it can never use. A per-call resolution doesn't need this: `_raw_variant` checks the same thing.
+    """
     return enabled() and _local_evaluation_ready()
 
 
@@ -243,7 +261,8 @@ def _raw_variant(key: str, user_id: Optional[int] = None) -> Optional[str]:
     None is not the control arm: it means nobody was enrolled, which callers must be able to tell
     apart (see `experiment_properties`). A value PostHog returns that is not one of the spec's
     variants is also None — a flag reconfigured behind the code's back must not silently become an
-    arm the code has no branch for."""
+    arm the code has no branch for.
+    """
     experiment = spec(key)
     if experiment.assignment != ASSIGNMENT_FLAG or not enabled():
         return None
@@ -278,7 +297,8 @@ def resolve_variant(key: str, user_id: Optional[int] = None, track: bool = True)
     """The arm this user is in — always one of the spec's variants, control when PostHog has no
     answer. Emits the exposure PostHog's readout is built on (once per person per variant per
     process) unless `track=False`, which is for callers that only need to know the arm to LABEL
-    something that already happened."""
+    something that already happened.
+    """
     variant = _raw_variant(key, user_id)
     if variant is None:
         return spec(key).control
@@ -298,7 +318,8 @@ def assignments(user_ids: Optional[Iterable], key: str) -> dict:
     assignment for them instead of quietly parking everyone in control.
 
     Exposure is emitted for each enrolled user: this is the enrolment moment for a cohort that is
-    decided in bulk once a week rather than per request."""
+    decided in bulk once a week rather than per request.
+    """
     resolved = {}
     for user_id in user_ids or []:
         if user_id is None:
@@ -324,7 +345,8 @@ def experiment_properties(user_id: Optional[int] = None,
     `extra` carries arms the caller already knows (a shipped media variant), which have no flag to
     read — those are slugified here so the caller never has to know PostHog's variant-key rules. The
     kill switch covers those too: `EXPERIMENTS_ENABLED=false` must mean NO event carries an arm, or
-    a switched-off experiment still renders a populated property breakdown."""
+    a switched-off experiment still renders a populated property breakdown.
+    """
     if not enabled():
         return {}
     props = {}
@@ -342,7 +364,8 @@ def track_exposure(key: str, variant: str, user_id: Optional[int] = None, **extr
     """Emit ONE `$feature_flag_called` exposure, deduped per (experiment, person, variant).
 
     Returns True when this call emitted it. Never raises: an experiment that cannot be measured must
-    still not break the code path it is measuring."""
+    still not break the code path it is measuring.
+    """
     identity = distinct_id(user_id)
     token = (key, identity, str(variant))
     with _exposure_lock:
@@ -367,7 +390,8 @@ def track_shipped_variant(key: str, shipped_key: Optional[str], user_id: Optiona
                           **extra) -> Optional[str]:
     """Exposure for an `ASSIGNMENT_SHIPPED` experiment — the #396 harness adapter. The arm is
     whatever combo shipped, so it is slugified into a PostHog variant key and reported as-is.
-    Returns the variant key, or None when there was nothing to report."""
+    Returns the variant key, or None when there was nothing to report.
+    """
     if spec(key).assignment != ASSIGNMENT_SHIPPED or not enabled():
         return None
     if not shipped_key:
@@ -387,7 +411,8 @@ def registry_rows() -> list:
 
 def reset_exposure_cache() -> None:
     """Drop the exposure dedup set AND the latched flag-surface import. For tests, and for a
-    long-lived process that legitimately wants to re-emit enrolment (a re-provisioned experiment)."""
+    long-lived process that legitimately wants to re-emit enrolment (a re-provisioned experiment).
+    """
     global _flags_module, _flags_unavailable
     with _exposure_lock:
         _exposed.clear()

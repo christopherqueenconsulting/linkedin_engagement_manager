@@ -1,10 +1,8 @@
 #  Copyright (c) 2024. Christopher Queen Consulting LLC (http://www.ChristopherQueenConsulting.com/)
-import os
 
 import streamlit as st
 
 from cqc_lem.streamlit.utils import get_custom_css
-
 
 # Initialize session state variables
 # init_session_state()

@@ -86,13 +86,15 @@ def _int_env(name: str, default: int) -> int:
 
 def encryption_required() -> bool:
     """Fail-closed mode (design §7): once the backfill reports zero plaintext rows, flipping this
-    makes the legacy plaintext read path an error instead of a silent pass-through."""
+    makes the legacy plaintext read path an error instead of a silent pass-through.
+    """
     return isTrue(os.environ.get("ENCRYPTION_REQUIRED") or "False")
 
 
 def _keyring() -> tuple[Optional[int], dict[int, bytes]]:
     """(current_version, {version: master_key}) read from env at CALL time — a key rotation lands
-    on the next worker restart without a code change, and tests can set it per-case."""
+    on the next worker restart without a code change, and tests can set it per-case.
+    """
     current_version = _int_env("LEM_SECRET_KEY_VERSION", 1)
     keys: dict[int, bytes] = {}
     current = _parse_master_key(os.environ.get("LEM_SECRET_KEY"))
@@ -119,7 +121,8 @@ def _keyring() -> tuple[Optional[int], dict[int, bytes]]:
 
 def encryption_enabled() -> bool:
     """True when a usable master key is configured. False leaves every value untouched, which is
-    exactly the pre-#745 behaviour — a dev box with no key keeps working."""
+    exactly the pre-#745 behaviour — a dev box with no key keeps working.
+    """
     return _keyring()[0] is not None
 
 
@@ -133,7 +136,8 @@ def hash_session_token(token: Optional[str]) -> Optional[str]:
 
     Deliberately UNKEYED: the token is 256 bits of `secrets.token_hex(32)`, so there is nothing to
     brute-force, and keying it would mean a lost or rotated `LEM_SECRET_KEY` logged every user out.
-    Returns 64 lowercase hex chars, which is exactly the existing column width."""
+    Returns 64 lowercase hex chars, which is exactly the existing column width.
+    """
     if not token:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -145,7 +149,8 @@ def hash_client_ip(ip: Optional[str]) -> Optional[str]:
     Keyed with the master key when one is configured, because an IP is a ~2^32 space that a plain
     digest does not protect. With no key it falls back to an unkeyed digest — same pre-#745
     fail-open posture as the rest of this module; the value is only ever displayed, never compared
-    across a key rotation."""
+    across a key rotation.
+    """
     if not ip:
         return None
     current_version, keys = _keyring()
@@ -174,6 +179,14 @@ def is_encrypted(value: Optional[str]) -> bool:
 
 
 def envelope_key_version(value: Optional[str]) -> Optional[int]:
+    """Which master key sealed this envelope, or None when that cannot be read — never a guess.
+
+    None covers all three unreadable shapes: legacy plaintext, a truncated envelope, and a
+    non-integer version field. `needs_reencrypt` compares this against the current version, so None
+    sends the row through the backfill rather than passing it as up to date — the safe direction,
+    because re-sealing a good row costs one write while skipping a stale one makes it permanently
+    undecryptable the moment `LEM_SECRET_KEY_PREVIOUS` is dropped.
+    """
     if not is_encrypted(value):
         return None
     parts = value.split(":", 3)
@@ -188,7 +201,8 @@ def envelope_key_version(value: Optional[str]) -> Optional[int]:
 def needs_reencrypt(value: Optional[str]) -> bool:
     """True when a stored value should be (re-)written by the backfill: legacy plaintext, or an
     envelope under a superseded key version. Empty values and current-version envelopes are done —
-    which is what makes the backfill idempotent."""
+    which is what makes the backfill idempotent.
+    """
     if not value or not encryption_enabled():
         return False
     current_version = _keyring()[0]

@@ -1,7 +1,8 @@
 """Unit tests for the hourly auto-FAQ beat task and its notification/email path (issue #507)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

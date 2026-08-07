@@ -89,6 +89,12 @@ def maintenance_remaining() -> int:
 
 
 def is_maintenance_mode() -> bool:
+    """Is a deploy window open right now?
+
+    Derived from the flag's remaining TTL rather than a stored boolean, so a deploy that died before
+    `end_maintenance` expires on its own instead of leaving the stack pinned in maintenance. Redis
+    being unreachable reads False — fail open, the deploy proceeds.
+    """
     return maintenance_remaining() > 0
 
 
@@ -118,7 +124,8 @@ def active_task_count() -> int:
 def _snapshot_ttl_seconds(pause_seconds: int) -> int:
     """The snapshot must outlive the window it describes, or end_maintenance() would have nothing
     to restore consumers from. Scale with the caller's pause (a long manual window included) and
-    never go below the default deploy window."""
+    never go below the default deploy window.
+    """
     return max(int(pause_seconds), DEFAULT_PAUSE_SECONDS) * 2
 
 
@@ -248,6 +255,14 @@ def end_maintenance(queues: Optional[Iterable[str]] = None) -> bool:
 
 
 def status() -> Dict[str, Any]:
+    """One snapshot of the maintenance flag, the pause behind it, and what is still running.
+
+    The pause is reported separately from `maintenance` because the two legitimately disagree: a 429
+    breaker or an operator pause outlives the deploy window, and `pause_reason` is exactly what tells
+    `end_maintenance` the pause is not ours to lift. Every field degrades to a
+    not-in-maintenance / nothing-to-drain reading when Redis or the broker is unreachable, so
+    reading status can never be what blocks a deploy.
+    """
     return {
         "maintenance": is_maintenance_mode(),
         "maintenance_remaining": maintenance_remaining(),
@@ -259,6 +274,13 @@ def status() -> Dict[str, Any]:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """CLI entry point (`python -m cqc_lem.utilities.maintenance`) — this is what `deploy.sh` calls.
+
+    Only `drain` can exit non-zero, and it means the timeout expired with work still running, NOT
+    that the deploy should stop: `task_acks_late` re-queues whatever was in flight, so deploy.sh
+    logs the timeout and continues. `status` prints its JSON on stdout — that printed output IS the
+    product here, which is why the `print` is deliberate rather than a stray one.
+    """
     parser = argparse.ArgumentParser(prog="cqc_lem.utilities.maintenance",
                                      description="Celery deploy maintenance mode (issue #549)")
     sub = parser.add_subparsers(dest="command", required=True)

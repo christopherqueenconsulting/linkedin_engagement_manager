@@ -25,6 +25,7 @@ _SESSION_TOKEN = SESSION
 
 def _client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app)
 

@@ -7,9 +7,9 @@ stateful fake Redis standing in for the breaker store — so the whole stack tha
 re-enable button provably clears the Redis record it claims to.
 """
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -93,6 +93,7 @@ def _history(baseline: int, recent: int) -> list:
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app, raise_server_exceptions=False)
 

@@ -141,7 +141,8 @@ class TestConvergeStack:
     def test_retries_once_on_a_name_collision(self) -> None:
         """An orphaned `<hex>_<name>` container makes the next converge fail with
         'is already in use', not 'No such container'. Retrying only on the latter is why the
-        v0.118.0 converge gave up after one attempt and left the worker tier in Created."""
+        v0.118.0 converge gave up after one attempt and left the worker tier in Created.
+        """
         body = DEPLOY_SH.read_text(encoding="utf-8")
         retry_test = body.split("if [[ ${attempts} -lt ${max_attempts} ]]", 1)[1].split("then", 1)[0]
         assert "is already in use" in retry_test
@@ -152,7 +153,8 @@ class TestConvergeStack:
         deploy. Under `set -e` an unguarded `x="$(docker ...)"` assignment exits the shell the
         moment docker errors — which took the whole converge down with it, `up` never running.
 
-        `_run` puts tmp_path first on PATH, so this docker stub shadows the real binary."""
+        `_run` puts tmp_path first on PATH, so this docker stub shadows the real binary.
+        """
         docker_stub = tmp_path / "docker"
         docker_stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         docker_stub.chmod(0o755)

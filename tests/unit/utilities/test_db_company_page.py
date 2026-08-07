@@ -1,7 +1,8 @@
 """Unit tests for update_company_linked_in_url_for_user."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

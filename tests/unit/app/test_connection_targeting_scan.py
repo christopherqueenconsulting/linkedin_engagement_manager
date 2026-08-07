@@ -76,7 +76,8 @@ class TestScanGating:
 
 class TestEmptyScanIsNotAWarning:
     """Filing nothing is the scan's resting state, so none of its three empty outcomes may warn —
-    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#985)."""
+    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#985).
+    """
 
     @pytest.mark.parametrize("kwargs, marker", [
         ({"sent_today": 10}, "no invite budget left"),
@@ -151,7 +152,7 @@ class TestScanFiling:
         assert "ICP floor" in out
 
     def test_adjacent_signals_are_included(self):
-        from cqc_lem.utilities.connection_targeting import CandidateSignal, SOURCE_ADJACENT_POST
+        from cqc_lem.utilities.connection_targeting import SOURCE_ADJACENT_POST, CandidateSignal
         adjacent = [CandidateSignal(person_name="Guru Fan",
                                     person_profile_url="https://www.linkedin.com/in/guru-fan",
                                     source=SOURCE_ADJACENT_POST, context_author="Guru Gary",
@@ -200,8 +201,7 @@ class TestConnectNoteDrafting:
 
     def test_refined_note_is_truncated_to_linkedins_limit(self):
         from cqc_lem.app import run_automation as ra
-        from cqc_lem.utilities.connection_targeting import CONNECT_NOTE_LIMIT, CandidateSignal, \
-            score_candidate
+        from cqc_lem.utilities.connection_targeting import CONNECT_NOTE_LIMIT, CandidateSignal, score_candidate
         candidate = score_candidate([CandidateSignal(person_name="Jane",
                                                      person_profile_url="https://x/in/jane")],
                                     datetime(2026, 7, 25))
@@ -243,7 +243,7 @@ class TestAdjacentAuthorHarvest:
 
     def test_walks_each_authors_recent_posts_and_drops_ourselves(self):
         from cqc_lem.app import run_automation as ra
-        from cqc_lem.utilities.connection_targeting import CandidateSignal, SOURCE_ADJACENT_POST
+        from cqc_lem.utilities.connection_targeting import SOURCE_ADJACENT_POST, CandidateSignal
         harvested = [CandidateSignal(person_name="Me Myself", person_profile_url="https://x/in/me",
                                      source=SOURCE_ADJACENT_POST),
                      CandidateSignal(person_name="Guru Fan", person_profile_url="https://x/in/fan",

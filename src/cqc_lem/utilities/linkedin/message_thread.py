@@ -30,8 +30,7 @@ from enum import Enum
 from typing import Optional
 from urllib.parse import quote, unquote
 
-from selenium.common import (NoSuchElementException, StaleElementReferenceException,
-                             WebDriverException)
+from selenium.common import NoSuchElementException, StaleElementReferenceException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -162,7 +161,8 @@ _TRAILING_ID_RE = re.compile(r"-[0-9a-f]{4,}$", re.IGNORECASE)
 
 class ThreadState(str, Enum):
     """What one reply check could actually establish. UNKNOWN is NOT 'no reply' — it means the thread
-    could not be read, and the caller must skip rather than send blind."""
+    could not be read, and the caller must skip rather than send blind.
+    """
     REPLIED = "replied"
     NOT_REPLIED = "not_replied"
     UNKNOWN = "unknown"
@@ -214,7 +214,8 @@ def profile_slug(profile_url: str) -> str:
 
 def name_from_profile_url(profile_url: str) -> str:
     """A best-effort human name from a profile slug ('jane-doe-8a4b21' -> 'jane doe'), used only to
-    seed the messaging SEARCH box when the caller has no stored name."""
+    seed the messaging SEARCH box when the caller has no stored name.
+    """
     slug = profile_slug(profile_url)
     if not slug:
         return ""
@@ -324,6 +325,12 @@ class ComposerOpen:
 
     @property
     def addressed(self) -> bool:
+        """The only reading a sender may act on: the composer is open AND names somebody.
+
+        `__bool__` delegates here, so `if open_addressed_composer(...)` is already the send gate —
+        an open-but-unaddressed composer is falsy, because typing into it sends to whoever a
+        typeahead resolves, or to nobody (issue #1030).
+        """
         return self.opened and bool(self.recipient)
 
     def __bool__(self) -> bool:
@@ -451,7 +458,8 @@ def read_last_message(driver: WebDriver) -> str:
 
 def _visible_elements(root, locators: list[tuple[str, str]]) -> list[WebElement]:
     """Displayed matches from the FIRST locator that yields any — the ladder needs a fail-FAST scan,
-    so this never waits (routes get their patience in the post-click verification instead)."""
+    so this never waits (routes get their patience in the post-click verification instead).
+    """
     for find_by, value in locators:
         try:
             found = root.find_elements(find_by, value)
@@ -496,7 +504,8 @@ def _try_control(driver: WebDriver, locators: list[tuple[str, str]], root=None,
 
 def _try_overflow(driver: WebDriver, timeout: float) -> Optional[dict]:
     """LinkedIn demotes Message into the top-card **More** menu for some profiles/states. Several
-    'More' controls can share a page, so each is opened in turn and routes 1-3 re-run inside it."""
+    'More' controls can share a page, so each is opened in turn and routes 1-3 re-run inside it.
+    """
     for menu in _visible_elements(driver, _MORE_LOCATORS):
         if not _click(driver, menu):
             continue

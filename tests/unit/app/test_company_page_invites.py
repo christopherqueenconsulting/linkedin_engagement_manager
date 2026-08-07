@@ -68,9 +68,10 @@ class TestInviteCap:
 
     def test_a_null_page_cap_reads_as_the_default_not_as_off(self):
         """Every row predating the migration has NULL here — reading it as 0 would silently switch
-        page invites off for the whole fleet."""
-        from cqc_lem.utilities.linkedin.company_page_inviter import invite_cap_for_user
+        page invites off for the whole fleet.
+        """
         from cqc_lem.utilities.db import COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+        from cqc_lem.utilities.linkedin.company_page_inviter import invite_cap_for_user
         assert invite_cap_for_user({"max_company_page_invites_per_day": None,
                                     "max_invites_per_day": 10}) == COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
 
@@ -109,7 +110,8 @@ class TestPlanDailyInvites:
     def test_it_draws_its_own_budget_and_never_the_connection_lanes(self, monkeypatch):
         """`daily_budget` keys its stored draw on the ACTION alone, so a page-invite draw against
         ACTION_INVITE would become the budget the connection-request lane reads back — clamping it
-        to this lane's much smaller cap for the rest of the day (10/day -> 5/day or less)."""
+        to this lane's much smaller cap for the rest of the day (10/day -> 5/day or less).
+        """
         from cqc_lem.utilities import human_pacing as hp
         from cqc_lem.utilities.linkedin.company_page_inviter import plan_daily_invites
 
@@ -223,7 +225,8 @@ class TestAutomateInvitations:
     def test_it_never_recurses(self):
         """The old path called itself while selected_count < credits, draining the pool in one
         sitting. Selecting fewer than the budget used to be the exact trigger; one run is now
-        exactly one batch — one credit read, one selection pass, one log row."""
+        exactly one batch — one credit read, one selection pass, one log row.
+        """
         report, picked, log, _ = self._run(allowance=5, credits=(250, 250),
                                            selected=2, day=date(2026, 7, 1), count_credit_reads=True)
         assert self.credit_reads == 1
@@ -341,7 +344,8 @@ class TestInviteTask:
     def test_a_browser_that_never_comes_up_still_emits_a_run(self):
         """The whole point of emitting on every run is that a silent day has a CAUSE. A Chrome
         session that can't be acquired (grid full, container restart) must not be the one path
-        that emits nothing — that reads exactly like a day paced down to zero."""
+        that emits nothing — that reads exactly like a day paced down to zero.
+        """
         from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_SESSION_FAILED
         with patch(f"{_RA}.is_automation_paused", return_value=False), \
@@ -361,7 +365,7 @@ class TestInviteTask:
 
 class TestDailyBeat:
     def test_the_beat_dispatches_only_users_whose_slot_is_due(self):
-        from cqc_lem.app.run_scheduler import auto_invite_to_company_pages, STAGGER_COMPANY_INVITE
+        from cqc_lem.app.run_scheduler import STAGGER_COMPANY_INVITE, auto_invite_to_company_pages
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1, 2, 3]), \
              patch(f"{_RS}.get_company_linked_in_url_for_user", return_value="https://x/company/a"), \

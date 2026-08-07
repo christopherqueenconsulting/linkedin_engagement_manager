@@ -1,7 +1,8 @@
 """Unit tests for scheduled-DM DB helpers (issue #306)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -44,7 +45,7 @@ class TestScheduledDmDb:
         assert len(cur.execute.call_args[0][1]) == 1
 
     def test_get_orphaned_scheduled_dms(self):
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
         conn, cur = _conn(fetchall=[(9, MagicMock(), 5)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_orphaned_scheduled_dms
@@ -75,7 +76,7 @@ class TestScheduledDmDb:
     def test_update_status(self):
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_scheduled_dm_status, ScheduledDmStatus
+            from cqc_lem.utilities.db import ScheduledDmStatus, update_scheduled_dm_status
             assert update_scheduled_dm_status(7, ScheduledDmStatus.SENT) is True
         assert "UPDATE scheduled_dms SET status" in cur.execute.call_args[0][0]
 
@@ -94,13 +95,14 @@ class TestScheduledDmDb:
 
 class TestNurtureSourceDb:
     """The `source` column (issue #485) is what lets an auto-drafted nurture reply share the
-    operator's approval queue without being confused for a DM they wrote."""
+    operator's approval queue without being confused for a DM they wrote.
+    """
 
     def test_insert_records_the_source(self):
         from datetime import datetime
         conn, cur = _conn(lastrowid=11)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import insert_scheduled_dm, SCHEDULED_DM_SOURCE_NURTURE
+            from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_NURTURE, insert_scheduled_dm
             got = insert_scheduled_dm(1, "https://x/in/jane", "hi", datetime(2026, 8, 1, 9),
                                       source=SCHEDULED_DM_SOURCE_NURTURE)
         assert got == 11
@@ -119,7 +121,7 @@ class TestNurtureSourceDb:
     def test_has_open_scheduled_dm_true_when_a_draft_is_queued(self):
         conn, cur = _conn(fetch_row=(1,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_open_scheduled_dm, SCHEDULED_DM_SOURCE_NURTURE
+            from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_NURTURE, has_open_scheduled_dm
             assert has_open_scheduled_dm(1, "https://x/in/jane",
                                          source=SCHEDULED_DM_SOURCE_NURTURE) is True
         sql, params = cur.execute.call_args[0]
@@ -156,8 +158,7 @@ class TestNurtureSourceDb:
     def test_count_created_today_filters_by_source(self):
         conn, cur = _conn(fetch_row=(4,))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (count_scheduled_dms_created_today,
-                                              SCHEDULED_DM_SOURCE_NURTURE)
+            from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_NURTURE, count_scheduled_dms_created_today
             assert count_scheduled_dms_created_today(1, source=SCHEDULED_DM_SOURCE_NURTURE) == 4
         sql, params = cur.execute.call_args[0]
         assert "created_at >= CURDATE()" in sql and "source=%s" in sql

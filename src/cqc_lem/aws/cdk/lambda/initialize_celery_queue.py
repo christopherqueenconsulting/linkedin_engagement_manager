@@ -1,5 +1,6 @@
-import json
+
 import redis
+
 
 def handler(event, context):
     redis_url = event['ResourceProperties']['RedisUrl']

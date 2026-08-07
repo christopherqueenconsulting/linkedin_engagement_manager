@@ -1,5 +1,6 @@
 """Unit tests for scripts/posthog_annotate.py — the release-deploy PostHog annotation (issue
-#654)."""
+#654).
+"""
 
 import importlib.util
 import pathlib

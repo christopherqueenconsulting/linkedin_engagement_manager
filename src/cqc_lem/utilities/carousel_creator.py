@@ -33,12 +33,18 @@ from pptx import Presentation
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml import parse_xml
 from pptx.slide import Slide
-from pydantic import BaseModel, Field, HttpUrl, conlist, StrictStr
+from pydantic import BaseModel, Field, HttpUrl, StrictStr, conlist
 from pydantic_extra_types.color import Color
 
 
 # Generic slide model for reusability
 class CarouselSlide(BaseModel):
+    """One slide's content — the shape every template's slide type inherits.
+
+    Renderers read `image_path` (a LOCAL file) and nothing reads `image_url`, so a slide whose only
+    image is a URL is treated as having no image at all.
+    """
+
     title: Optional[StrictStr] = Field(None, description="Title or heading of the slide")
     content: Optional[StrictStr] = Field(None, description="Main content of the slide", max_length=500)
     image_url: Optional[HttpUrl] = Field(None, description="URL to an image")
@@ -48,11 +54,24 @@ class CarouselSlide(BaseModel):
 # Specific Carousel Templates
 
 class EducationalContentSlide(CarouselSlide):
+    """Slide of an educational deck — `CarouselSlide` unchanged.
+
+    Typed separately only so one template can gain fields without touching the others.
+    """
+
     # Custom Educational Content slides could have additional elements if needed
     pass
 
 
 class EducationalContentCarousel(BaseModel):
+    """The AWARENESS-stage deck: a cover, 1-4 tip/step slides, then a call to action.
+
+    Both `run_content_plan.create_carousel_content` and the `POST /api/generate-carousel` preview
+    route pick the carousel class from the buyer stage, and `ai_helper.generate_carousel_content`
+    names these fields verbatim in its prompt — so renaming one changes BOTH what the model is asked
+    to return and which builder `create_ppt` dispatches to.
+    """
+
     cover: EducationalContentSlide = Field(..., description="Cover Slide: A bold title that clearly states the topic.")
     contents: conlist(EducationalContentSlide, min_length=1, max_length=4) = Field(...,
                                                                                    description="Content Slides: Each slide covers one tip or step with a combination of short text and relevant visuals.")
@@ -61,11 +80,21 @@ class EducationalContentCarousel(BaseModel):
 
 
 class CaseStudySlide(CarouselSlide):
+    """Slide of a case-study deck — `CarouselSlide` unchanged.
+
+    Typed separately only so one template can gain fields without touching the others.
+    """
+
     # Custom case study slides can have additional constraints or attributes
     pass
 
 
 class CaseStudyCarousel(BaseModel):
+    """The CONSIDERATION-stage deck: challenge → solution → results, an optional testimonial, a CTA.
+
+    Same stage-map and prompt contract as `EducationalContentCarousel`.
+    """
+
     cover: CaseStudySlide = Field(...,
                                   description="Cover Slide: Title of the case study with the client’s name or project outcome.")
     challenge: CaseStudySlide = Field(..., description="Slide 2: Brief description of the problem faced by the client.")
@@ -78,11 +107,23 @@ class CaseStudyCarousel(BaseModel):
 
 
 class PersonalStorySlide(CarouselSlide):
+    """Slide of a personal-story deck — `CarouselSlide` unchanged.
+
+    Typed separately only so one template can gain fields without touching the others.
+    """
+
     # Custom personal story slide if needed
     pass
 
 
 class PersonalStoryCarousel(BaseModel):
+    """A personal-story deck: cover, 1-3 moments of the journey, a takeaway, then a CTA.
+
+    Only the `POST /api/generate-carousel` preview route selects it (stages `personal`/`story`); the
+    30-day plan's stage map never does. It is also the one deck whose slides may carry the user's
+    avatar likeness — `CAROUSEL_AVATAR_RELEVANT_TYPES` holds exactly its content type.
+    """
+
     cover: PersonalStorySlide = Field(..., description="Cover Slide: Compelling title introducing the personal story.")
     story_slides: conlist(PersonalStorySlide, min_length=1, max_length=3) = Field(...,
                                                                                   description="Slides 2-4: Key moments in the journey.")
@@ -92,11 +133,22 @@ class PersonalStoryCarousel(BaseModel):
 
 
 class IndustryInsightSlide(CarouselSlide):
+    """Slide of an industry-insight deck — `CarouselSlide` unchanged.
+
+    Typed separately only so one template can gain fields without touching the others.
+    """
+
     # Custom industry insight slide for trends and insights
     pass
 
 
 class IndustryInsightsCarousel(BaseModel):
+    """The FALLBACK deck: cover, 1-4 trends/insights, then a CTA.
+
+    Every stage that is not awareness, consideration or decision lands here, in both stage maps — so
+    an unrecognised stage still produces a valid deck rather than failing.
+    """
+
     cover: IndustryInsightSlide = Field(...,
                                         description="Cover Slide: Title with an attention-grabbing phrase for industry insights.")
     insights: conlist(IndustryInsightSlide, min_length=1, max_length=4) = Field(...,
@@ -106,11 +158,22 @@ class IndustryInsightsCarousel(BaseModel):
 
 
 class EventRecapSlide(CarouselSlide):
+    """Slide of an event-recap deck — `CarouselSlide` unchanged.
+
+    Typed separately only so one template can gain fields without touching the others.
+    """
+
     # Custom event recap slide if additional details are needed
     pass
 
 
 class EventRecapCarousel(BaseModel):
+    """An event-recap deck: title/date cover, 1-3 highlights, then a CTA.
+
+    No buyer stage maps to it, so nothing in the app generates one today; `create_ppt` still renders
+    one if it is handed one.
+    """
+
     cover: EventRecapSlide = Field(..., description="cover Slide: Event title and date.")
     key_moments: conlist(EventRecapSlide, min_length=1, max_length=3) = Field(...,
                                                                               description="Slides 2-4: Key takeaways or highlights from the event.")
@@ -119,11 +182,24 @@ class EventRecapCarousel(BaseModel):
 
 
 class TestimonialSlide(CarouselSlide):
+    """A testimonial, adding the client attribution to the base slide shape.
+
+    `create_ppt_testimonial_carousel` renders `content` as the quote and `client_name` as the
+    attribution; no layout consumes `client_logo_url`.
+    """
+
     client_name: str = Field(..., description="Name of the client providing the testimonial")
     client_logo_url: Optional[HttpUrl] = Field(None, description="URL to the client’s logo or photo")
 
 
 class TestimonialCarousel(BaseModel):
+    """A client-testimonial deck: cover, 1-3 quotes, then a CTA.
+
+    Like `EventRecapCarousel` no stage maps to it, so it is renderable but never generated. It is
+    also the ONE type `create_ppt` dispatches without `post_id`/`user_id`, so its slides get no
+    deterministic image selection.
+    """
+
     cover: CarouselSlide = Field(...,
                                  description="Cover Slide: Cover slide with a title like 'What Our Clients Are Saying'.")
     testimonials: conlist(TestimonialSlide, min_length=1, max_length=3) = Field(...,
@@ -133,11 +209,18 @@ class TestimonialCarousel(BaseModel):
 
 
 class ProductDemoSlide(CarouselSlide):
+    """Slide of a product-demo deck — `CarouselSlide` unchanged.
+
+    Typed separately only so one template can gain fields without touching the others.
+    """
+
     # Custom product demo slide if additional details are needed
     pass
 
 
 class ProductDemoCarousel(BaseModel):
+    """The DECISION-stage deck: cover, the headline feature, 1-2 further features, then a CTA."""
+
     cover: ProductDemoSlide = Field(...,
                                     description="Cover Slide: Introduction to the product with a compelling headline.")
     main_feature: ProductDemoSlide = Field(...,
@@ -149,6 +232,12 @@ class ProductDemoCarousel(BaseModel):
 
 
 class PowerPointThemeColors(BaseModel):
+    """The theme colour slots `convert_ppt_theme_colors` writes into a saved .pptx.
+
+    Every field name is used VERBATIM as the `<a:clrScheme>` child element in the XPath, so these
+    must stay the OOXML names. A field left unset keeps whatever colour the design template shipped.
+    """
+
     dk1: Optional[Color] = Field(None, description="RGB color code for the 1st dark color in the theme")
     lt1: Optional[Color] = Field(None, description="RGB color code for the 1st light color in the theme")
     dk2: Optional[Color] = Field(None, description="RGB color code for the 2nd dark color in the theme")
@@ -176,6 +265,16 @@ def create_ppt(ppt_name, carousel_data: Union[
                design_number: int = 1,
                post_id: Optional[int] = None,
                user_id: Optional[int] = None):
+    """Render `carousel_data` into a .pptx under `generated_designs/` and return the saved path.
+
+    The carousel's CONCRETE TYPE is the dispatch key. A model with no matching branch is saved as an
+    untouched copy of the design template rather than raising — a new carousel type that forgets to
+    add its branch here produces an empty deck, not an error.
+
+    `design_number` selects `carousel_designs/Design-{n}.pptx`; theme colours are applied to the file
+    AFTER it is saved. `post_id`/`user_id` are threaded through only to seed the deterministic
+    per-slide image and layout selection, so re-rendering the same post reproduces the same deck.
+    """
     current_dir = os.path.dirname(__file__)
     generated_dir = os.path.join(current_dir, "generated_designs")
     os.makedirs(generated_dir, exist_ok=True)
@@ -210,6 +309,7 @@ def create_ppt(ppt_name, carousel_data: Union[
 
 
 def get_default_image_path() -> str:
+    """Path to the placeholder image shipped beside this module, used as the builders' `default_path`."""
     # Get the default image path local to this file
     file_dir = os.path.dirname(__file__)
     default_image_path = os.path.join(file_dir, "images/image.png")
@@ -305,7 +405,7 @@ def derive_image_query(title: Optional[str], content: Optional[str],
 
 
 def _should_include_slide_image(post_id: Optional[int], slide_index: int) -> bool:
-    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGES_ENABLED, CAROUSEL_IMAGE_RATE
+    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGE_RATE, CAROUSEL_IMAGES_ENABLED
     if not CAROUSEL_IMAGES_ENABLED:
         return False
     if CAROUSEL_IMAGE_RATE >= 1.0:
@@ -351,7 +451,8 @@ def _query_depicts_person(query: Optional[str], content_type: Optional[str]) -> 
 def _should_generate_with_replicate(post_id: Optional[int], slide_index: int,
                                     user_id: Optional[int], content_type: Optional[str]) -> bool:
     """Replicate generation is gated: globally enabled, avatar-relevant content type,
-    a deterministic low-rate sample, AND the user's guardrails allow the avatar here."""
+    a deterministic low-rate sample, AND the user's guardrails allow the avatar here.
+    """
     from cqc_lem.utilities.env_constants import CAROUSEL_REPLICATE_ENABLED, CAROUSEL_REPLICATE_RATE
     if not CAROUSEL_REPLICATE_ENABLED or user_id is None:
         return False
@@ -426,7 +527,8 @@ def select_slide_image(
 
 def _content_layout_pools() -> tuple[list[Callable], list[Callable]]:
     """(image-capable, text-only) content layout pools. Image-capable layouts have a
-    picture placeholder; text-only layouts render title+body with no image slot."""
+    picture placeholder; text-only layouts render title+body with no image slot.
+    """
     image_layouts = [create_one_column_text_layout_slide, create_one_column_text_1_layout_slide]
     text_layouts = [create_title_and_body_layout_slide, create_title_and_body_1_layout_slide]
     return image_layouts, text_layouts
@@ -442,7 +544,8 @@ def choose_content_layout(
     """Route a content slide to a layout. When ``image_path`` is set the slide is
     guaranteed an IMAGE-CAPABLE layout (with a picture placeholder) so the fetched
     image never lands on a layout that silently discards it; otherwise a text-only
-    layout is used. The choice is deterministic per (post_id, slide_index)."""
+    layout is used. The choice is deterministic per (post_id, slide_index).
+    """
     default_img, default_txt = _content_layout_pools()
     image_layouts = image_layouts or default_img
     text_layouts = text_layouts or default_txt
@@ -473,15 +576,13 @@ def _insert_picture_into_placeholder(slide: Slide, placeholder, image_path: str)
 def create_ppt_educational_content_carousel(prs: Presentation, carousel: EducationalContentCarousel,
                                             post_id: Optional[int] = None,
                                             user_id: Optional[int] = None) -> Presentation:
-    """
-    Create a PowerPoint presentation for Educational Content Carousel.
+    """Create a PowerPoint presentation for Educational Content Carousel.
 
     Parameters:
     - prs: Presentation object to add slides to.
     - carousel: EducationalContentCarousel containing carouseldata.
 
     """
-
     # Get the default image path local to this file
     default_image_path = get_default_image_path()
 
@@ -528,14 +629,12 @@ def create_ppt_educational_content_carousel(prs: Presentation, carousel: Educati
 def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseStudyCarousel,
                                    post_id: Optional[int] = None,
                                    user_id: Optional[int] = None) -> Presentation:
-    """
-    Create a PowerPoint presentation for Case Study Carousel.
+    """Create a PowerPoint presentation for Case Study Carousel.
 
     Parameters:
     - prs: Presentation object to add slides to.
     - case_study_carousel: CaseStudyCarousel instance with structured content for each slide.
     """
-
     # Slide 1: Cover
     cover_layouts = [create_title_layout_slide, create_section_header_layout_slide, create_title_only_layout_slide]
     cover_kwargs = {
@@ -614,6 +713,12 @@ def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseS
 def create_ppt_personal_story_carousel(prs: Presentation, carousel: PersonalStoryCarousel,
                                        post_id: Optional[int] = None,
                                        user_id: Optional[int] = None) -> Presentation:
+    """Append a personal-story deck's slides to `prs` and return it.
+
+    Story slides are numbered from 2, and that index is half the seed for both `select_slide_image`
+    and `choose_content_layout` — so a re-render of the same post reproduces the same images and
+    layouts. The cover and CTA are picked with unseeded `random.choice` and do vary between runs.
+    """
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_section_header_layout_slide, create_title_only_layout_slide]
@@ -646,6 +751,11 @@ def create_ppt_personal_story_carousel(prs: Presentation, carousel: PersonalStor
 def create_ppt_industry_insights_carousel(prs: Presentation, carousel: IndustryInsightsCarousel,
                                           post_id: Optional[int] = None,
                                           user_id: Optional[int] = None) -> Presentation:
+    """Append an industry-insights deck's slides to `prs` and return it.
+
+    Insight slides are numbered from 2, the index that (with `post_id`) seeds image and layout
+    selection, so a re-render of the same post is stable. Cover and CTA use unseeded `random.choice`.
+    """
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_title_only_layout_slide]
@@ -673,6 +783,12 @@ def create_ppt_industry_insights_carousel(prs: Presentation, carousel: IndustryI
 def create_ppt_event_recap_carousel(prs: Presentation, carousel: EventRecapCarousel,
                                     post_id: Optional[int] = None,
                                     user_id: Optional[int] = None) -> Presentation:
+    """Append an event-recap deck's slides to `prs` and return it.
+
+    Highlight slides are numbered from 2, which with `post_id` seeds image and layout selection.
+    Nothing in the app generates an `EventRecapCarousel` today, so this only runs if one is built by
+    hand and handed to `create_ppt`.
+    """
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_section_header_layout_slide]
@@ -699,6 +815,11 @@ def create_ppt_event_recap_carousel(prs: Presentation, carousel: EventRecapCarou
 
 
 def create_ppt_testimonial_carousel(prs: Presentation, carousel: TestimonialCarousel) -> Presentation:
+    """Append a testimonial deck's slides to `prs` and return it.
+
+    Alone among the builders it takes no `post_id`/`user_id`, so its slides get no image selection at
+    all — every testimonial renders as quote + attribution on the blank layout.
+    """
     cover_layouts = [create_title_layout_slide, create_title_only_layout_slide]
     random.choice(cover_layouts)(
         prs=prs, title=carousel.cover.title, subtitle=carousel.cover.content
@@ -722,6 +843,11 @@ def create_ppt_testimonial_carousel(prs: Presentation, carousel: TestimonialCaro
 def create_ppt_product_demo_carousel(prs: Presentation, carousel: ProductDemoCarousel,
                                      post_id: Optional[int] = None,
                                      user_id: Optional[int] = None) -> Presentation:
+    """Append a product-demo deck's slides to `prs` and return it.
+
+    The headline feature is slide 2 and the additional features run from 3, so the (post_id,
+    slide_index) seed holds a re-render on the same images and layouts.
+    """
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_title_only_layout_slide]
@@ -758,11 +884,19 @@ def create_ppt_product_demo_carousel(prs: Presentation, carousel: ProductDemoCar
 
 
 def debug_slide(slide):
+    """Print each shape on `slide` with its type and placeholder index (developer aid, no callers)."""
     for shape in slide.shapes:
         print(f"Shape: {shape.name}, Type: {shape.shape_type}, Placeholder: {shape.placeholder_format.idx}")
 
 
 def convert_ppt_theme_colors(ppt_path, theme_colors: PowerPointThemeColors):
+    """Rewrite a saved deck's theme colour scheme IN PLACE and re-save it.
+
+    Only fields SET on `theme_colors` are touched; the rest keep the design template's own colours.
+    python-pptx exposes no writable theme part, so the modified XML is assigned to its private
+    `_blob`. Each field name goes straight into the `<a:clrScheme>` XPath, so a name with no matching
+    element raises IndexError rather than being skipped.
+    """
     # Load the presentation
     prs = Presentation(ppt_path)
 
@@ -793,6 +927,11 @@ def convert_ppt_theme_colors(ppt_path, theme_colors: PowerPointThemeColors):
 
 
 def set_ppt_theme_colors(ppt_path, theme_colors: dict = None):
+    """Same in-place theme rewrite as `convert_ppt_theme_colors`, driven by a name→hex dict.
+
+    Omitting `theme_colors` sets EVERY slot to white, which flattens the design's palette rather than
+    leaving it alone — the opposite of the model-driven variant's partial update. No caller today.
+    """
     # Load default theme colors
     if theme_colors is None:
         theme_colors = {
@@ -837,6 +976,7 @@ def set_ppt_theme_colors(ppt_path, theme_colors: dict = None):
 
 
 def get_attr_gracefully(obj, attr):
+    """Return `getattr(obj, attr)`, or None if the lookup raises. No caller in the tree today."""
     try:
         return getattr(obj, attr)
     except Exception as e:
@@ -853,7 +993,6 @@ def create_title_layout_slide(prs: Presentation, title: str, subtitle: str, **kw
     - subtitle: Additional descriptive text.
     - **kwargs: Additional keyword arguments are thrown away to allow for flexible function calls.
     """
-
     # Get the layout and add a slide
     layout = prs.slide_layouts[0]  # Assuming 0 index is the TITLE layout
     slide = prs.slides.add_slide(layout)
@@ -871,8 +1010,7 @@ def create_title_layout_slide(prs: Presentation, title: str, subtitle: str, **kw
 
 def create_section_header_layout_slide(prs: Presentation, percentage: str, title: str, subtitle: str,
                                        **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the SECTION_HEADER layout.
+    """Create a PowerPoint slide with the SECTION_HEADER layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -899,6 +1037,11 @@ def create_section_header_layout_slide(prs: Presentation, percentage: str, title
 
 
 def debug_master_slide_placeholders_and_text(design_number: int = 1):
+    """Print every layout, placeholder and placeholder text in a `Design-{n}.pptx` template.
+
+    A developer aid for discovering which layout index and placeholder ids a design exposes, since
+    the `create_*_layout_slide` builders address both by number.
+    """
     current_dir = os.path.dirname(__file__)
     design_path = os.path.join(current_dir, f"carousel_designs/Design-{design_number}.pptx")
     prs = Presentation(design_path)
@@ -917,8 +1060,7 @@ def debug_master_slide_placeholders_and_text(design_number: int = 1):
 
 
 def create_title_and_body_layout_slide(prs: Presentation, title: str, body_text: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_BODY layout.
+    """Create a PowerPoint slide with the TITLE_AND_BODY layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -946,8 +1088,7 @@ def create_title_and_two_columns_layout_slide(prs: Presentation, title: str,
                                               right_column_title: str, right_column_subtitle: str,
                                               **kwargs
                                               ) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS layout.
+    """Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -980,8 +1121,7 @@ def create_title_and_two_columns_layout_slide(prs: Presentation, title: str,
 
 
 def create_title_only_layout_slide(prs: Presentation, title: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_ONLY layout.
+    """Create a PowerPoint slide with the TITLE_ONLY layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1004,8 +1144,7 @@ def create_title_only_layout_slide(prs: Presentation, title: str, **kwargs) -> S
 
 
 def create_main_point_layout_slide(prs: Presentation, title: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the MAIN_POINT layout.
+    """Create a PowerPoint slide with the MAIN_POINT layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1029,8 +1168,7 @@ def create_main_point_layout_slide(prs: Presentation, title: str, **kwargs) -> S
 
 def create_one_column_text_layout_slide(prs: Presentation, title: str, body_text: str, image_path: str = None,
                                         **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the ONE_COLUMN_TEXT layout.
+    """Create a PowerPoint slide with the ONE_COLUMN_TEXT layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1065,8 +1203,7 @@ def create_one_column_text_layout_slide(prs: Presentation, title: str, body_text
 
 def create_section_title_and_description_layout_slide(prs: Presentation, title: str, description: str,
                                                       **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the SECTION_TITLE_AND_DESCRIPTION layout.
+    """Create a PowerPoint slide with the SECTION_TITLE_AND_DESCRIPTION layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1094,8 +1231,7 @@ def create_section_title_and_description_layout_slide(prs: Presentation, title: 
 
 
 def create_caption_only_layout_slide(prs: Presentation, title: str, image_path: str = None, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the CAPTION_ONLY layout.
+    """Create a PowerPoint slide with the CAPTION_ONLY layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1124,8 +1260,7 @@ def create_caption_only_layout_slide(prs: Presentation, title: str, image_path: 
 
 
 def create_big_number_layout_slide(prs: Presentation, big_number: str, subtitle: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the BIG_NUMBER layout.
+    """Create a PowerPoint slide with the BIG_NUMBER layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1153,8 +1288,7 @@ def create_big_number_layout_slide(prs: Presentation, big_number: str, subtitle:
 
 
 def create_blank_layout_slide(prs: Presentation, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the BLANK layout.
+    """Create a PowerPoint slide with the BLANK layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1172,8 +1306,7 @@ def create_blank_layout_slide(prs: Presentation, **kwargs) -> Slide:
 
 
 def create_custom_6_1_layout_slide(prs: Presentation, title: str, columns: list[dict], **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the CUSTOM_6_1 (Title and Three Columns) layout.
+    """Create a PowerPoint slide with the CUSTOM_6_1 (Title and Three Columns) layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1212,8 +1345,7 @@ def create_custom_6_1_layout_slide(prs: Presentation, title: str, columns: list[
 
 
 def create_title_only_1_1_layout_slide(prs: Presentation, title: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_ONLY_1_1 layout.
+    """Create a PowerPoint slide with the TITLE_ONLY_1_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1237,8 +1369,7 @@ def create_title_only_1_1_layout_slide(prs: Presentation, title: str, **kwargs) 
 
 def create_one_column_text_1_layout_slide(prs: Presentation, title: str, body_text: str, image_path: str = None,
                                           **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the ONE_COLUMN_TEXT_1 layout.
+    """Create a PowerPoint slide with the ONE_COLUMN_TEXT_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1272,8 +1403,7 @@ def create_one_column_text_1_layout_slide(prs: Presentation, title: str, body_te
 
 
 def create_blank_1_1_layout_slide(prs: Presentation, quote: str, author: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the BLANK_1_1 (Quote) layout.
+    """Create a PowerPoint slide with the BLANK_1_1 (Quote) layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1302,8 +1432,7 @@ def create_blank_1_1_layout_slide(prs: Presentation, quote: str, author: str, **
 
 def create_title_and_two_columns_1_layout_slide(prs: Presentation, title: str, column_1: dict,
                                                 column_2: dict, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS_1 layout.
+    """Create a PowerPoint slide with the TITLE_AND_TWO_COLUMNS_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1342,8 +1471,7 @@ def create_title_and_two_columns_1_layout_slide(prs: Presentation, title: str, c
 
 
 def create_title_and_body_1_layout_slide(prs: Presentation, title: str, body_text: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the TITLE_AND_BODY_1 layout.
+    """Create a PowerPoint slide with the TITLE_AND_BODY_1 layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1371,8 +1499,7 @@ def create_title_and_body_1_layout_slide(prs: Presentation, title: str, body_tex
 
 
 def create_custom_3_1_layout_slide(prs: Presentation, title: str, subtitle: str, **kwargs) -> Slide:
-    """
-    Create a PowerPoint slide with the CUSTOM_3_1 (Thanks) layout.
+    """Create a PowerPoint slide with the CUSTOM_3_1 (Thanks) layout.
 
     Parameters:
     - prs: Presentation object to add slides to.
@@ -1400,8 +1527,7 @@ def create_custom_3_1_layout_slide(prs: Presentation, title: str, subtitle: str,
 
 
 def test_create_educational_ppt():
-    """
-    Test function to create an EducationalContentCarousel presentation and test the create_ppt function.
+    """Test function to create an EducationalContentCarousel presentation and test the create_ppt function.
     """
     # Sample data for an educational content carousel
     carousel_data = {
@@ -1428,8 +1554,7 @@ def test_create_educational_ppt():
 
 
 def test_create_case_study_ppt():
-    """
-    Test function to create an CaseStudyCarousel presentation and test the create_ppt function.
+    """Test function to create an CaseStudyCarousel presentation and test the create_ppt function.
     """
     # Sample data for an case study content carousel
     carousel_data = {
@@ -1473,6 +1598,11 @@ def test_create_case_study_ppt():
 
 
 def test_caption_only_slide(design_number: int = 1):
+    """Render one CAPTION_ONLY slide into `generated_designs/` as a manual eyeball check.
+
+    Despite the `test_` prefix this is not part of the pytest suite (which collects `tests/`) — it is
+    run by hand from this module's `__main__` block and writes a real file.
+    """
     current_dir = os.path.dirname(__file__)
     generated_dir = os.path.join(current_dir, "generated_designs")
     os.makedirs(generated_dir, exist_ok=True)
@@ -1624,7 +1754,8 @@ def _fit_and_crop_image(image_path: str, target_w: int, target_h: int):
 
 def _carousel_content_type(carousel_data) -> str:
     """Map a carousel model instance to the content_type string used by the shared
-    image-selection engine (query derivation + avatar relevance)."""
+    image-selection engine (query derivation + avatar relevance).
+    """
     return {
         EducationalContentCarousel: "educational",
         CaseStudyCarousel: "case_study",
@@ -1671,6 +1802,7 @@ def create_carousel_slide_images(
     are left as-is.
     """
     from PIL import Image, ImageDraw, ImageFont
+
     from cqc_lem.utilities.logger import log_warning
 
     W, H = 1080, 1080
@@ -2405,6 +2537,7 @@ def create_carousel_pdf(image_paths: list[str], post_id: int,
     partial/placeholder deck — the caller flags the post 'error' instead).
     """
     from PIL import Image
+
     from cqc_lem.utilities.logger import log_warning
 
     pages = []

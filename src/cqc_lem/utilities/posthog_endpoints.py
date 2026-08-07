@@ -50,7 +50,8 @@ def run_endpoint(name: str, user_id: int) -> Optional[dict]:
     """Execute one provisioned endpoint scoped to `user_id`'s own distinct_id (issue #654's
     `str(user_id)` convention, same as observability.py). Returns None on any failure — no key
     configured, the endpoint/variable isn't provisioned yet (404), or PostHog is unreachable — so a
-    caller can treat every failure mode identically: this panel isn't available right now."""
+    caller can treat every failure mode identically: this panel isn't available right now.
+    """
     config = _client_config()
     if config is None:
         return None
@@ -73,7 +74,8 @@ def run_endpoint(name: str, user_id: int) -> Optional[dict]:
 
 def _rows_as_dicts(payload: Optional[dict]) -> list:
     """Endpoint `/run` responses are columnar (a `columns` list + row-arrays) — reshape to the list
-    of dicts the SPA and any other JSON consumer actually wants."""
+    of dicts the SPA and any other JSON consumer actually wants.
+    """
     if not payload:
         return []
     columns = payload.get("columns") or []
@@ -84,7 +86,8 @@ def _rows_as_dicts(payload: Optional[dict]) -> list:
 def get_user_stats_panel(user_id: int) -> dict:
     """The combined panel payload for `/user/posthog-stats`: one key per panel, each with
     `available` + `rows`, so a partial PostHog outage still renders whichever panels did answer
-    rather than failing the whole response."""
+    rather than failing the whole response.
+    """
     panel = {}
     for key, endpoint_name in STATS_PANELS.items():
         payload = run_endpoint(endpoint_name, user_id)

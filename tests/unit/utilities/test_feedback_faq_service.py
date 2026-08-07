@@ -6,8 +6,9 @@ orchestrator runs with the LLM, the DB, GitHub and email all mocked.
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

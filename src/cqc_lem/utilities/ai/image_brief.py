@@ -114,6 +114,18 @@ _BRIEF_MAX_TOKENS = 2500
 
 @dataclass
 class ImageBrief:
+    """One authored image prompt plus the facts the renderer and the vision gate need alongside it.
+
+    `focal_concept` is carried separately because it is what `render_image_gated` scores the render
+    AGAINST — a caller that drops it degrades the gate to judging the image against the first 200
+    characters of the prompt, which is a far weaker question.
+
+    `prompt` is the brief as written: the no-marks constraint belongs to the renderer
+    (`image_gen.with_no_marks`), which phrases it per backend, so it is never baked in here.
+    `style_preset` is the preset that was actually applied, which is `surface` only when that
+    surface has one — otherwise it is the default, and the two differ.
+    """
+
     prompt: str
     ratio: str
     surface: str

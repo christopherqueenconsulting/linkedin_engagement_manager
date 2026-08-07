@@ -1,12 +1,13 @@
 """Integration tests for the pending-reason API surface (issue #421): the posts list carries the
 gate verdict the review UI renders, and /user/post/rescore re-runs the gates on the saved content
-(promoting a fixed draft PENDING -> APPROVED) while refusing posts that aren't the caller's."""
+(promoting a fixed draft PENDING -> APPROVED) while refusing posts that aren't the caller's.
+"""
 
 import json
 from contextlib import contextmanager
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.integration
 
@@ -22,6 +23,7 @@ _SESSION_TOKEN = "gate-reason-session"
 
 def _client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app)
 

@@ -1,8 +1,10 @@
 """DB layer for network activation (issue #623): engager connection-degree capture, connection
-request failure reasons, and the outreach-funnel backlog counter."""
+request failure reasons, and the outreach-funnel backlog counter.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -53,8 +55,7 @@ class TestConnectionRequestFailureReason:
         conn, cur = _mock_conn()
         cur.rowcount = 1
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (update_connection_request_status,
-                                              ConnectionRequestStatus)
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
             assert update_connection_request_status(3, ConnectionRequestStatus.FAILED,
                                                     failure_reason="x" * 900) is True
         sql, params = cur.execute.call_args[0]
@@ -65,8 +66,7 @@ class TestConnectionRequestFailureReason:
         conn, cur = _mock_conn()
         cur.rowcount = 1
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import (update_connection_request_status,
-                                              ConnectionRequestStatus)
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
             update_connection_request_status(3, ConnectionRequestStatus.SENT)
         assert cur.execute.call_args[0][1][1] is None
 

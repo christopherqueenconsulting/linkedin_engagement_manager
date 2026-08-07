@@ -2,9 +2,9 @@
 
 import io
 import zipfile
-import pytest
 from unittest.mock import patch
 
+import pytest
 
 SESSION = "test-session-token"
 USER_ID = 42
@@ -19,6 +19,7 @@ def _make_zip() -> bytes:
 
 def _client():
     from fastapi.testclient import TestClient
+
     from cqc_lem.api.main import app
     return TestClient(app)
 

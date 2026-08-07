@@ -1,7 +1,8 @@
 """Unit tests for cqc_lem.app.my_celery CloudWatch guard logic."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

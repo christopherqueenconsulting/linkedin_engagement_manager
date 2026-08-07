@@ -1,7 +1,8 @@
 """Unit tests for the unified DM/lead-magnet placeholder engine and post regeneration."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -156,7 +157,8 @@ class TestRegeneratePost:
 
     def test_carousel_slide_failure_keeps_error_status(self):
         """create_carousel_content flags a slide-render failure 'error'; the regenerate close-out
-        must not clear it back to PENDING — the deck still carries the old draft's slides."""
+        must not clear it back to PENDING — the deck still carries the old draft's slides.
+        """
         from cqc_lem.app import run_content_plan as rcp
         p = self._patches(post_type="carousel")
         with p["get_post_user_id"], p["get_post_buyer_stage"], p["get_post_type"], p["load_profile"], \

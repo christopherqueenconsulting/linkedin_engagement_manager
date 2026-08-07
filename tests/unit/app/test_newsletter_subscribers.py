@@ -1,7 +1,8 @@
 """Unit tests for newsletter subscriber-growth tracking + opt-in invite flow (issue #400)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

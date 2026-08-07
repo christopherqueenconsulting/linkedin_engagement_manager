@@ -35,7 +35,8 @@ _KEY_PREFIX = "lem:auth_rl"
 @dataclass(frozen=True)
 class RateLimitVerdict:
     """`allowed` is what the endpoint acts on; `scope` names which bucket ran out, so the audit row
-    can say whether it was the address or the network being throttled."""
+    can say whether it was the address or the network being throttled.
+    """
     allowed: bool
     scope: Optional[str] = None
     retry_after_seconds: int = _WINDOW_SECONDS
@@ -47,7 +48,8 @@ _ALLOWED = RateLimitVerdict(allowed=True)
 def _bump(bucket: str, identity: str, limit: int) -> Optional[bool]:
     """Increment one fixed-window counter. True = within the limit, False = over it, None = Redis
     unavailable (fail open). The TTL is set only on the first increment of a window, so the window
-    is fixed rather than sliding forward with every request."""
+    is fixed rather than sliding forward with every request.
+    """
     client = shared_redis_client()
     if client is None:
         return None
@@ -86,7 +88,8 @@ def _check(bucket: str, identity: Optional[str], limit: int) -> RateLimitVerdict
 
 def check_auth_init(email: str, ip: Optional[str] = None) -> RateLimitVerdict:
     """Bound PIN emails per address and per client IP. Counted even when the address is unknown —
-    probing for which addresses exist is exactly what this stops."""
+    probing for which addresses exist is exactly what this stops.
+    """
     verdict = _check("init_email", (email or "").strip().lower(), AUTH_INIT_MAX_PER_HOUR)
     if not verdict.allowed:
         return verdict
@@ -95,7 +98,8 @@ def check_auth_init(email: str, ip: Optional[str] = None) -> RateLimitVerdict:
 
 def check_auth_verify(email: str, ip: Optional[str] = None) -> RateLimitVerdict:
     """Bound PIN submissions. The per-IP bucket is what stops one host walking the PIN space across
-    many addresses; the per-email bucket stops it walking one address from many hosts."""
+    many addresses; the per-email bucket stops it walking one address from many hosts.
+    """
     verdict = _check("verify_email", (email or "").strip().lower(), AUTH_VERIFY_MAX_PER_HOUR)
     if not verdict.allowed:
         return verdict
@@ -104,7 +108,8 @@ def check_auth_verify(email: str, ip: Optional[str] = None) -> RateLimitVerdict:
 
 def clear_auth_limits(email: str, ip: Optional[str] = None) -> None:
     """Drop this identity's counters — called after a SUCCESSFUL login so a user who fat-fingered
-    their PIN four times isn't throttled for the rest of the hour."""
+    their PIN four times isn't throttled for the rest of the hour.
+    """
     client = shared_redis_client()
     if client is None:
         return

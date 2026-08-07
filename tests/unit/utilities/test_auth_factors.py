@@ -36,7 +36,8 @@ class TestFactorState:
 
     def test_the_kill_switch_returns_the_account_to_2b_behaviour(self):
         """STRONG_AUTH_ENABLED=false must not read as "this account has no factor and never did" —
-        it has to leave the enrolled rows alone and simply stop enforcing."""
+        it has to leave the enrolled rows alone and simply stop enforcing.
+        """
         with patch(f"{_M}.STRONG_AUTH_ENABLED", False), \
              patch(f"{_M}.count_auth_factors", return_value=3) as counted:
             assert af.has_strong_factor(_UID) is False
@@ -45,7 +46,8 @@ class TestFactorState:
 
     def test_recovery_codes_alone_are_not_a_strong_factor(self):
         """A user who saved codes but enrolled nothing else must keep their PIN login — otherwise
-        the demotion happens with nothing to replace it."""
+        the demotion happens with nothing to replace it.
+        """
         with patch(f"{_M}.count_auth_factors", return_value=0), \
              patch(f"{_M}.count_recovery_codes", return_value=(10, 10)):
             assert af.has_strong_factor(_UID) is False
@@ -59,7 +61,8 @@ class TestFactorState:
         """...but the recovery codes do NOT. A deployment that loses its secure public origin
         drops `passkey` from the list, and an account whose only factor is a passkey would then be
         offered nothing at all — a demoted PIN with no way to finish it is a total lockout, which
-        is the exact thing the sheet of codes exists to prevent."""
+        is the exact thing the sheet of codes exists to prevent.
+        """
         with patch(f"{_M}.list_auth_factors", return_value=[{"kind": "passkey"}]), \
              patch("cqc_lem.utilities.webauthn_util.passkeys_available", return_value=False), \
              patch(f"{_M}.count_recovery_codes", return_value=(10, 10)):
@@ -67,7 +70,8 @@ class TestFactorState:
 
     def test_an_account_with_no_factor_is_offered_nothing_even_holding_codes(self):
         """The other direction: recovery codes are not a factor, so they never appear on their own
-        — an account with none of the real ones never reaches the second stage at all."""
+        — an account with none of the real ones never reaches the second stage at all.
+        """
         with patch(f"{_M}.list_auth_factors", return_value=[]), \
              patch(f"{_M}.count_recovery_codes", return_value=(10, 10)):
             assert af.available_methods(_UID) == []
@@ -106,7 +110,8 @@ class TestTotp:
     def test_a_second_enrollment_is_refused_while_one_is_confirmed(self):
         """One authenticator per account. Restarting enrolment only ever replaces an UNCONFIRMED
         attempt — letting it run against a confirmed factor leaves two rows of which only the
-        newer one is ever verified."""
+        newer one is ever verified.
+        """
         with patch(f"{_M}.get_totp_factor",
                    return_value={"id": 9, "secret": "S", "confirmed_at": "now"}), \
              patch(f"{_M}.upsert_totp_factor") as upsert:
@@ -151,7 +156,8 @@ class TestTotp:
 
     def test_the_same_code_cannot_be_used_twice(self):
         """The replay guard: a code stays valid for up to 90 seconds across the drift window, which
-        is ample time for a phishing proxy to relay it a second time."""
+        is ample time for a phishing proxy to relay it a second time.
+        """
         secret = pyotp.random_base32()
         code = pyotp.TOTP(secret).now()
         spent_step = int(time.time()) // 30
@@ -172,7 +178,8 @@ class TestTotp:
 
     def test_an_undecryptable_secret_verifies_nothing(self):
         """`get_totp_factor` returns None when the envelope will not open — a caller that compared
-        a code against ciphertext would reject every valid one and look like a broken phone."""
+        a code against ciphertext would reject every valid one and look like a broken phone.
+        """
         with patch(f"{_M}.get_totp_factor", return_value=None):
             assert af.verify_totp_code(_UID, "123456") is False
 
@@ -218,7 +225,8 @@ class TestRecoveryCodes:
 
     def test_losing_the_race_to_consume_is_a_refusal(self):
         """Two requests presenting the same code: the UPDATE only matches once, and the loser must
-        be told no rather than let through on a code someone else just spent."""
+        be told no rather than let through on a code someone else just spent.
+        """
         code = "ABCD234XYZ"
         stored = af._hasher.hash(code)
         with patch(f"{_M}.get_unused_recovery_codes", return_value=[{"id": 3, "code_hash": stored}]), \
@@ -260,7 +268,8 @@ def _session(minutes_ago=None, scope="full"):
 class TestStepUpGate:
     def test_an_account_with_no_factor_passes(self):
         """Opt-in rollout: gating accounts that have nothing to prove with would brick the cookie
-        paste and the email change for everyone who has not enrolled yet."""
+        paste and the email change for everyone who has not enrolled yet.
+        """
         with patch(f"{_M}.count_auth_factors", return_value=0), \
              patch(f"{_M}.get_session_auth_state") as state:
             assert af.step_up_satisfied(_UID, _TOKEN) is True
@@ -288,7 +297,8 @@ class TestStepUpGate:
 
     def test_a_naive_timestamp_from_mysql_is_read_as_utc(self):
         """MySQL hands back tz-naive datetimes. Treating one as local time would make a fresh
-        verification look hours old (or hours in the future) depending on the host."""
+        verification look hours old (or hours in the future) depending on the host.
+        """
         naive = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
         with patch(f"{_M}.count_auth_factors", return_value=1), \
              patch(f"{_M}.get_session_auth_state",
@@ -306,7 +316,8 @@ class TestStepUpGate:
 
     def test_the_extension_scoped_session_passes_where_it_is_opted_in(self):
         """The extension POSTs li_at holding nothing but its own token and cannot run WebAuthn. Its
-        step-up happened once, in the SPA, when that token was minted (design §6.5)."""
+        step-up happened once, in the SPA, when that token was minted (design §6.5).
+        """
         with patch(f"{_M}.count_auth_factors", return_value=1), \
              patch(f"{_M}.get_session_auth_state",
                    return_value=_session(scope=af.SESSION_SCOPE_EXTENSION)):
@@ -315,7 +326,8 @@ class TestStepUpGate:
     def test_the_extension_scope_is_not_a_blanket_exemption(self):
         """An extension token is otherwise an ordinary session. If the scope satisfied the gate
         everywhere, a stolen one could change the email address and revoke every device — the exact
-        escalation the gate exists to stop."""
+        escalation the gate exists to stop.
+        """
         with patch(f"{_M}.count_auth_factors", return_value=1), \
              patch(f"{_M}.get_session_auth_state",
                    return_value=_session(scope=af.SESSION_SCOPE_EXTENSION)):
@@ -336,7 +348,8 @@ class TestEnrollmentGate:
     def test_an_account_with_no_factor_may_always_enrol(self):
         """The bootstrap case, and the reason the gate cannot simply be step-up: an account that
         holds nothing has nothing to prove with, so gating here would mean it never gets a first
-        factor at all."""
+        factor at all.
+        """
         with patch(f"{_M}.count_auth_factors", return_value=0), \
              patch(f"{_M}.get_session_auth_state") as state:
             assert af.enrollment_allowed(_UID, _TOKEN) is True
@@ -344,7 +357,8 @@ class TestEnrollmentGate:
 
     def test_adding_another_one_needs_a_proved_factor(self):
         """Enrolment stamps the session as verified. Leaving it open would hand a stolen session a
-        step-up it never proved — enrol your own passkey, then read the LinkedIn cookie (T4)."""
+        step-up it never proved — enrol your own passkey, then read the LinkedIn cookie (T4).
+        """
         with patch(f"{_M}.count_auth_factors", return_value=1), \
              patch(f"{_M}.get_session_auth_state", return_value=_session()):
             assert af.enrollment_allowed(_UID, _TOKEN) is False
@@ -356,7 +370,8 @@ class TestEnrollmentGate:
 
     def test_a_recovery_code_session_may_enrol_without_proving_anything(self):
         """The anti-lockout path (design §6.8): the only person who genuinely cannot prove a factor
-        is the one who lost it, and this is how they get a new one."""
+        is the one who lost it, and this is how they get a new one.
+        """
         with patch(f"{_M}.count_auth_factors", return_value=1), \
              patch(f"{_M}.get_session_auth_state",
                    return_value=_session(scope=af.SESSION_SCOPE_RECOVERY)):
@@ -408,7 +423,8 @@ class TestMandatoryEnrollment:
 
     def test_a_naive_timestamp_is_read_as_utc(self):
         """Everything else in the auth surface is UTC; guessing the host's zone here would move the
-        cutover by hours depending on where the container runs."""
+        cutover by hours depending on where the container runs.
+        """
         with _after("2026-10-01T12:30:00"):
             assert af.strong_factor_deadline().tzinfo is not None
 
@@ -440,7 +456,8 @@ class TestMandatoryEnrollment:
         """STRONG_AUTH_ENABLED=false is the 2c rollback, and it has to roll this back with it —
         otherwise disabling strong auth would leave people held at a screen that cannot help them.
         It releases sessions ALREADY held, not just future logins, because every read goes through
-        enrollment_hold_active()."""
+        enrollment_hold_active().
+        """
         with _after("2020-01-01"), patch(f"{_M}.STRONG_AUTH_ENABLED", False):
             assert af.enrollment_hold_active() is False
             assert af.enrollment_required(_UID) is False

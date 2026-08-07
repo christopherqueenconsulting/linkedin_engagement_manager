@@ -223,7 +223,8 @@ class TestReferenceSlideDirective:
 
 class TestEnglishVerbsAreNotCommands:
     """Several runner names are also ordinary English verbs. If "Make sure …" reads as a command,
-    a deck of pure narrative passes the gate — the exact failure this module exists to catch."""
+    a deck of pure narrative passes the gate — the exact failure this module exists to catch.
+    """
 
     @pytest.mark.parametrize("text", [
         "Release count is not the goal. Make sure the pipeline is boring first.",

@@ -2,11 +2,11 @@
 Requires MySQL + Redis service containers (run via docker-compose).
 Uses real DB but mocks AI and Selenium.
 """
-import pytest
-from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
-from cqc_lem.utilities.db import PostType, PostStatus
+import pytest
+
 
 
 @pytest.mark.integration
@@ -85,8 +85,10 @@ class TestPlanContentForUser:
 
     def test_scheduled_times_converted_from_user_local_to_utc(self, mock_database_connection):
         """Regression: best-times are the user's LOCAL audience times and must be stored
-        as UTC, so posts fire at the intended local time (not hours off)."""
+        as UTC, so posts fire at the intended local time (not hours off).
+        """
         import pytz
+
         from cqc_lem.app.run_content_plan import plan_content_for_user
         from cqc_lem.utilities.utils import get_best_posting_times
 

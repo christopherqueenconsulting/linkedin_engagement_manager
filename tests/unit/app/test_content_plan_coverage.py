@@ -1,5 +1,6 @@
 """Coverage tests for run_content_plan pure logic: asset guards, AI disclosure, premium
-tiers, video save pipeline, sitemap/blog scraping helpers."""
+tiers, video save pipeline, sitemap/blog scraping helpers.
+"""
 
 from datetime import datetime as _real_datetime
 from unittest.mock import MagicMock, patch

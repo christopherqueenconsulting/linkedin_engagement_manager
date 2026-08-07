@@ -26,11 +26,15 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
-from cqc_lem.utilities.db import (get_app_credential, get_app_credential_updated_at,
-                                  set_app_credential)
-from cqc_lem.utilities.env_constants import (MARGIN_REPORT_EMAIL, YOUTUBE_ALERT_EMAIL,
-                                             YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
-                                             YOUTUBE_PRIVACY_STATUS, YOUTUBE_REFRESH_TOKEN)
+from cqc_lem.utilities.db import get_app_credential, get_app_credential_updated_at, set_app_credential
+from cqc_lem.utilities.env_constants import (
+    MARGIN_REPORT_EMAIL,
+    YOUTUBE_ALERT_EMAIL,
+    YOUTUBE_CLIENT_ID,
+    YOUTUBE_CLIENT_SECRET,
+    YOUTUBE_PRIVACY_STATUS,
+    YOUTUBE_REFRESH_TOKEN,
+)
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 
 TASK_NAME = "auto_weekly_youtube_token_check"
@@ -62,6 +66,13 @@ REAUTH_STEPS = (
 
 
 def alert_email() -> str:
+    """Where a `needs_reauth` verdict is sent, or `''` when nobody is reachable.
+
+    `YOUTUBE_ALERT_EMAIL` is the override; the margin report's recipient is the fallback so the
+    alert still lands on the owner without a second variable being configured. Empty is a real
+    outcome the caller must handle — the probe has proved the grant is gone and there is no address
+    to tell, which `_alert_owner` warns about rather than silently dropping.
+    """
     return (YOUTUBE_ALERT_EMAIL or MARGIN_REPORT_EMAIL or "").strip()
 
 
@@ -106,7 +117,8 @@ def youtube_configured() -> bool:
 
 def mint_access_token() -> str:
     """Exchange the refresh token for a short-lived access token. Raises on any failure — callers
-    that must not die over it (the upload path) already catch."""
+    that must not die over it (the upload path) already catch.
+    """
     import requests
     current = refresh_token()
     response = requests.post(TOKEN_ENDPOINT, timeout=_PROBE_TIMEOUT, data={
@@ -126,7 +138,8 @@ def probe(persist: bool = True) -> dict:
     """Exchange the refresh token once and judge the result. Never raises: a probe that cannot run
     is a state (`unknown`), not an exception. `persist=False` skips writing the Redis state record,
     for read-only callers that must not overwrite the weekly audit trail — it does NOT skip storing
-    a refresh token Google rotated in, which every exchange must keep whoever asked for it."""
+    a refresh token Google rotated in, which every exchange must keep whoever asked for it.
+    """
     checked_at = datetime.now(timezone.utc).isoformat()
     if not (YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET):
         return _state(STATUS_NOT_CONFIGURED, "YOUTUBE_CLIENT_ID/SECRET are not set", checked_at,
@@ -178,7 +191,8 @@ def probe(persist: bool = True) -> dict:
 def preflight() -> dict:
     """The gate `produce_tutorial` runs BEFORE it spends on capture/TTS/render. Same probe, read-only
     (it never rewrites the weekly audit record). Only `needs_reauth` should abort a run: an
-    unconfigured install still produces a usable MP4, and `unknown` is not evidence of anything."""
+    unconfigured install still produces a usable MP4, and `unknown` is not evidence of anything.
+    """
     state = probe(persist=False)
     state["should_abort"] = state["status"] == STATUS_NEEDS_REAUTH
     return state
@@ -186,7 +200,8 @@ def preflight() -> dict:
 
 def last_probe() -> Optional[dict]:
     """The most recent persisted probe result, or None when none has been recorded (or Redis is
-    unavailable). No TTL: the last known state is the audit trail."""
+    unavailable). No TTL: the last known state is the audit trail.
+    """
     client = _redis()
     if client is None:
         return None
@@ -205,7 +220,8 @@ def last_probe() -> Optional[dict]:
 
 def status_report(live: bool = False) -> dict:
     """What the owner sees: 'connected' vs 'needs re-auth (reason)'. Reads the last recorded probe by
-    default so opening a settings page never spends a round trip on Google; `live=True` re-probes."""
+    default so opening a settings page never spends a round trip on Google; `live=True` re-probes.
+    """
     state = probe(persist=True) if live else (last_probe() or probe(persist=True))
     return {
         "configured": youtube_configured(),
@@ -224,7 +240,8 @@ def status_report(live: bool = False) -> dict:
 
 def run_health_probe() -> dict:
     """The weekly beat body: probe, leave the dated audit line, and alert the owner ONLY when the
-    grant is provably gone. Returns the state dict."""
+    grant is provably gone. Returns the state dict.
+    """
     from cqc_lem.utilities.observability import track_youtube_token_check
 
     state = probe()
@@ -271,7 +288,8 @@ def _persist_rotated_token(payload: dict, current: str) -> None:
     record, and dropping a rotated token there would leave the very next publish holding a value
     Google has already retired — the render spend this module exists to protect. Storage failures
     are logged, never raised: `probe()` promises a state, not an exception, and `get_db_connection`
-    raises when MySQL is down."""
+    raises when MySQL is down.
+    """
     rotated = str((payload or {}).get("refresh_token") or "").strip()
     if not rotated or rotated == current:
         return

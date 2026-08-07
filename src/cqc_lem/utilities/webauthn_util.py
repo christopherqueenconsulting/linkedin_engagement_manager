@@ -41,7 +41,10 @@ from webauthn.helpers.structs import (
 )
 
 from cqc_lem.utilities.env_constants import (
-    PUBLIC_BASE_URL, WEBAUTHN_EXTRA_ORIGINS, WEBAUTHN_RP_ID, WEBAUTHN_RP_NAME,
+    PUBLIC_BASE_URL,
+    WEBAUTHN_EXTRA_ORIGINS,
+    WEBAUTHN_RP_ID,
+    WEBAUTHN_RP_NAME,
 )
 from cqc_lem.utilities.logger import log_debug, log_warning
 
@@ -52,6 +55,15 @@ class WebAuthnUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class RelyingParty:
+    """The identity every passkey in this deployment is bound to, resolved from the environment.
+
+    `rp_id` is the single hostname the credential is scoped to — change it and every enrolled
+    passkey stops working, which is why `relying_party()` derives it from `PUBLIC_BASE_URL` instead
+    of taking it as a separate setting. `origins` is a list because one relying party can be reached
+    from more than one URL (`WEBAUTHN_EXTRA_ORIGINS`) and the library accepts a set of expected
+    origins; `PUBLIC_BASE_URL`'s origin leads it when there is one.
+    """
+
     rp_id: str
     rp_name: str
     origins: list[str]
@@ -69,7 +81,8 @@ def relying_party() -> RelyingParty:
 
     Read at CALL time, not at import: the same reason the feature flags are (root CLAUDE.md) — an
     env change lands on the next request rather than the next rebuild, and a test can set it
-    per-case."""
+    per-case.
+    """
     base = (PUBLIC_BASE_URL or "").strip()
     origins: list[str] = []
     rp_id = (WEBAUTHN_RP_ID or "").strip()
@@ -105,7 +118,8 @@ def relying_party() -> RelyingParty:
 
 def passkeys_available() -> bool:
     """Whether this deployment can offer passkeys at all. Used to decide what the login screen and
-    the Security card show — an option a user cannot complete is worse than no option."""
+    the Security card show — an option a user cannot complete is worse than no option.
+    """
     try:
         relying_party()
         return True
@@ -133,7 +147,8 @@ def build_registration_options(user_id: int, user_name: str, user_display_name: 
     keys that cannot store one, and the design keeps TOTP as the path for people passkeys don't fit.
 
     `exclude_credentials` is what stops the same authenticator being enrolled twice — without it a
-    user "adds a second passkey", gets the same one back, and believes they have a spare."""
+    user "adds a second passkey", gets the same one back, and believes they have a spare.
+    """
     import json
 
     rp = relying_party()
@@ -157,7 +172,8 @@ def build_authentication_options(credential_ids: Optional[list[str]] = None) -> 
 
     With no credential ids the ceremony is username-less: the browser offers whatever discoverable
     passkey it holds for this RP and the assertion tells us who signed in. That is deliberate —
-    asking for the email first would leak which addresses have an account."""
+    asking for the email first would leak which addresses have an account.
+    """
     import json
 
     rp = relying_party()
@@ -171,6 +187,14 @@ def build_authentication_options(credential_ids: Optional[list[str]] = None) -> 
 
 @dataclass(frozen=True)
 class RegistrationResult:
+    """A passkey that VERIFIED, in the shape the credential row stores it.
+
+    `credential_id` and `public_key` are base64url text rather than bytes because that is the form
+    that round-trips through the database and back into `_descriptors`. `sign_count` is the opening
+    value of the clone-detection counter — it only detects anything if the caller keeps persisting
+    the counter `verify_assertion` hands back, so storing this one is where that starts.
+    """
+
     credential_id: str
     public_key: str
     sign_count: int
@@ -178,7 +202,8 @@ class RegistrationResult:
 
 def verify_registration(credential: dict, expected_challenge: str) -> Optional[RegistrationResult]:
     """Verify a registration response. None on ANY failure — a caller that stored an unverified
-    credential would have enrolled an attacker's key as a second factor."""
+    credential would have enrolled an attacker's key as a second factor.
+    """
     rp = relying_party()
     try:
         verified = verify_registration_response(
@@ -203,7 +228,8 @@ def verify_assertion(credential: dict, expected_challenge: str, public_key: str,
 
     The counter matters: py_webauthn rejects an assertion whose counter did not advance past the
     stored one, which is the standard tell for a cloned authenticator. Returning it here is what
-    makes the caller persist it — a counter that is never written back never detects anything."""
+    makes the caller persist it — a counter that is never written back never detects anything.
+    """
     rp = relying_party()
     try:
         verified = verify_authentication_response(
@@ -222,7 +248,8 @@ def verify_assertion(credential: dict, expected_challenge: str, public_key: str,
 
 def credential_id_from_response(credential: dict) -> Optional[str]:
     """The base64url credential id the browser sent, used to find WHOSE passkey this is before any
-    signature is checked. Untrusted until `verify_assertion` passes — it only selects the row."""
+    signature is checked. Untrusted until `verify_assertion` passes — it only selects the row.
+    """
     raw = (credential or {}).get("id") or (credential or {}).get("rawId")
     if not isinstance(raw, str) or not raw.strip():
         return None

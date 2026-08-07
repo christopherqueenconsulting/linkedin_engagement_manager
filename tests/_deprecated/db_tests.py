@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 
-from cqc_lem.utilities.db import update_db_post_status, PostStatus, update_db_post_video_url, update_db_post_content
+from cqc_lem.utilities.db import PostStatus, update_db_post_content, update_db_post_status, update_db_post_video_url
 
 
 def test_change_post_status():

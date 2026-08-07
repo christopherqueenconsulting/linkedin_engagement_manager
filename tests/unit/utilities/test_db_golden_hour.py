@@ -1,5 +1,6 @@
 """Unit tests for the two DB reads the golden-hour work added (issue #622): the self-comment count
-that caps seed + second wave, and the real publish time the latency report is measured from."""
+that caps seed + second wave, and the real publish time the latency report is measured from.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -52,7 +53,8 @@ class TestCountUserCommentsOnPostUrl:
 class TestGetPostAgeMinutes:
     def test_age_is_computed_in_sql_not_python(self):
         """`logs.created_at` is written in the DB session's zone (TZ, not UTC), so the subtraction
-        has to happen against the server's own NOW() or every latency is off by the offset."""
+        has to happen against the server's own NOW() or every latency is off by the offset.
+        """
         from cqc_lem.utilities.db import LogActionType, LogResultType
         conn, cur = _mock_conn(fetchone=(1320,))     # 22 minutes, in seconds
         with patch(f"{_DB}.get_db_connection", return_value=conn):

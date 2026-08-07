@@ -13,8 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities.marketing import video_tutorials as vt
-from cqc_lem.utilities.marketing import youtube_auth as ya
+from cqc_lem.utilities.marketing import video_tutorials as vt, youtube_auth as ya
 
 pytestmark = pytest.mark.unit
 
@@ -367,7 +366,8 @@ class TestVoiceOver:
 
 def _fake_ffmpeg(duration: str = "4.0"):
     """Stand-in for ffmpeg/ffprobe that also CREATES its output file, so callers that read the
-    render back (the YouTube upload) work against a real path."""
+    render back (the YouTube upload) work against a real path.
+    """
     def _run(cmd, capture_output=True, text=True):
         if os.path.basename(cmd[0]) == "ffprobe":
             return SimpleNamespace(returncode=0, stdout=duration, stderr="")
@@ -610,7 +610,8 @@ class TestProduceTutorial:
 
     def test_a_dead_publishing_token_aborts_before_any_capture_or_tts_spend(self, monkeypatch):
         """Issue #742: a render that can't be published is wasted money, so the token is verified
-        before the browser opens — not discovered at the upload step after the spend."""
+        before the browser opens — not discovered at the upload step after the spend.
+        """
         self._patched(monkeypatch)
         _configure_youtube(monkeypatch)
         with patch("requests.post",
@@ -625,7 +626,8 @@ class TestProduceTutorial:
 
     def test_an_unconfigured_install_still_renders_an_unpublished_tutorial(self, monkeypatch):
         """No OAuth credentials is the expected pre-1.0 state — the MP4 is still a usable asset, so
-        the preflight must not turn "publishing is off" into "produce nothing"."""
+        the preflight must not turn "publishing is off" into "produce nothing".
+        """
         element = self._patched(monkeypatch)
         with patch("cqc_lem.utilities.selenium_util.get_docker_driver", return_value=_driver()), \
              patch("cqc_lem.utilities.selenium_util.find_first", return_value=element), \
@@ -641,7 +643,8 @@ class TestProduceTutorial:
 
     def test_an_undecidable_probe_never_blocks_a_run(self, monkeypatch):
         """Google being unreachable is not evidence the grant is dead — the run proceeds and the
-        upload takes its own chances (an upload failure never loses the render)."""
+        upload takes its own chances (an upload failure never loses the render).
+        """
         element = self._patched(monkeypatch)
         _configure_youtube(monkeypatch)
         with patch("cqc_lem.utilities.selenium_util.get_docker_driver", return_value=_driver()), \

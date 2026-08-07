@@ -6,9 +6,10 @@ that would otherwise defeat it — #392 carrying the referral link out of the bo
 comment before the gate ever sees it.
 """
 
-import pytest
 from contextlib import ExitStack
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -71,7 +72,8 @@ class TestAffiliateDisclosureGate:
     def test_moving_the_link_to_the_first_comment_does_not_defeat_the_gate(self):
         """#392 strips the link out of the body before the gate runs. Grading only the trimmed body
         would let every affiliate post through by having its link carried — so the carried link is
-        graded too."""
+        graded too.
+        """
         from cqc_lem.app.run_automation import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, f"This tool changed my week.\n\nHere: {REF_LINK}",
@@ -100,7 +102,8 @@ class TestAffiliateDisclosureGate:
 
     def test_a_published_affiliate_post_is_counted_as_published(self):
         """Issue #770: 'generated' and 'published' are different numbers — a promo post the author
-        never approved is one and not the other, and that gap is the read on the program."""
+        never approved is one and not the other, and that gap is the read on the program.
+        """
         from cqc_lem.app.run_automation import post_to_linkedin
         with ExitStack() as stack:
             _post_patches(stack, f"This tool changed my week. {REF_LINK}\n\n{DISCLOSURE}",

@@ -1,9 +1,9 @@
 """Unit tests for the NPS/review survey policy and capture (issue #501)."""
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -67,8 +67,12 @@ class TestSelectSurvey:
                              review_answered_at=NOW - timedelta(days=20), now=NOW) is None
 
     def test_already_asked_surveys_are_skipped(self):
-        from cqc_lem.utilities.surveys import (SURVEY_NPS_DAY3, SURVEY_NPS_TRIAL_END,
-                                               SURVEY_REVIEW_TRIAL_END, select_survey)
+        from cqc_lem.utilities.surveys import (
+            SURVEY_NPS_DAY3,
+            SURVEY_NPS_TRIAL_END,
+            SURVEY_REVIEW_TRIAL_END,
+            select_survey,
+        )
         survey = select_survey(activated_at=NOW - timedelta(days=5),
                                trial_ends_at=NOW + timedelta(days=1),
                                sent_keys={SURVEY_REVIEW_TRIAL_END}, now=NOW)
@@ -141,8 +145,8 @@ class TestRecordNps:
         with patch(f"{_S}.insert_feedback", return_value=11) as insert, \
              patch(f"{_S}.record_survey_prompt") as record, \
              patch("cqc_lem.utilities.observability.track_survey_response") as track:
-            from cqc_lem.utilities.surveys import SURVEY_NPS_DAY3, record_nps_response
             from cqc_lem.utilities.db import FeedbackSource
+            from cqc_lem.utilities.surveys import SURVEY_NPS_DAY3, record_nps_response
             assert record_nps_response(7, 9, why="  It writes like me  ",
                                        context={"route": "/"},
                                        survey_key=SURVEY_NPS_DAY3) == 11
@@ -194,8 +198,8 @@ class TestRecordReview:
         with patch(f"{_S}.insert_feedback", return_value=21) as insert, \
              patch(f"{_S}.record_survey_prompt") as record, \
              patch("cqc_lem.utilities.observability.track_survey_response") as track:
-            from cqc_lem.utilities.surveys import SURVEY_REVIEW_TRIAL_END, record_review_response
             from cqc_lem.utilities.db import FeedbackSource
+            from cqc_lem.utilities.surveys import SURVEY_REVIEW_TRIAL_END, record_review_response
             assert record_review_response(7, 5, improvement="Faster carousels",
                                           testimonial="Saves me an hour a day",
                                           consent_testimonial=True,

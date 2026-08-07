@@ -24,9 +24,16 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from cqc_lem.utilities.db import (
-    FeedbackSource, FeedbackStatus, get_latest_feedback_at, get_onboarding_state,
-    get_survey_prompts_sent, get_user_subscription_info, has_review_feedback, insert_feedback,
-    record_survey_prompt, update_feedback_triage,
+    FeedbackSource,
+    FeedbackStatus,
+    get_latest_feedback_at,
+    get_onboarding_state,
+    get_survey_prompts_sent,
+    get_user_subscription_info,
+    has_review_feedback,
+    insert_feedback,
+    record_survey_prompt,
+    update_feedback_triage,
 )
 from cqc_lem.utilities.logger import log_warning
 
@@ -123,7 +130,8 @@ def select_survey(activated_at: Optional[datetime] = None,
 
     `nps_enabled=False` retires the two homegrown NPS asks because PostHog Surveys now own NPS
     (issue #653). The review offer is NOT retired with them: it is the extended-trial gate (#499),
-    which PostHog has no way to unlock."""
+    which PostHog has no way to unlock.
+    """
     now = now or datetime.now()
     if last_sent_at and now - last_sent_at < timedelta(hours=SURVEY_COOLDOWN_HOURS):
         return None
@@ -165,7 +173,8 @@ def next_survey_for_user(user_id: int) -> Optional[dict]:
 
 def survey_snapshot(user_id: int) -> dict:
     """Everything the SPA modal needs: the survey to ask (if any) and whether the review that
-    unlocks the extended trial (issue #499) is already on file."""
+    unlocks the extended trial (issue #499) is already on file.
+    """
     survey = next_survey_for_user(user_id)
     return {
         "survey": {k: survey[k] for k in ("key", "source", "headline", "body", "cta_label")}
@@ -180,7 +189,8 @@ def record_nps_response(user_id: Optional[int], score: int, why: Optional[str] =
                         context: Optional[dict] = None,
                         survey_key: Optional[str] = None) -> Optional[int]:
     """Persist an NPS answer as a `feedback` row (source='nps'). The free-text 'why' is the body so
-    the classifier can act on it; the score rides in context_json and as the NPS band."""
+    the classifier can act on it; the score rides in context_json and as the NPS band.
+    """
     text = (why or "").strip()
     body = text or f"NPS {score}/{NPS_MAX} — no comment"
     payload = {**(context or {}), "score": int(score), "survey_key": survey_key}
@@ -198,7 +208,8 @@ def record_review_response(user_id: Optional[int], rating: int, improvement: Opt
                            context: Optional[dict] = None,
                            survey_key: Optional[str] = None) -> Optional[int]:
     """Persist a review as a `feedback` row (source='review'). This row IS the extended-trial gate
-    (issue #499), and its body feeds the classifier + auto-FAQ like any other feedback."""
+    (issue #499), and its body feeds the classifier + auto-FAQ like any other feedback.
+    """
     parts = [p.strip() for p in (testimonial, improvement) if p and p.strip()]
     body = "\n\n".join(parts) or f"Review {rating}/{REVIEW_MAX_RATING} — no comment"
     payload = {**(context or {}), "rating": int(rating),
@@ -222,7 +233,8 @@ def fix_csat_key(issue_number: int) -> str:
 
 def is_fix_csat_key(survey_key: Optional[str]) -> bool:
     """True for a per-issue micro-CSAT key. These are generated, not listed in `_SURVEYS`, so every
-    key check has to accept them too."""
+    key check has to accept them too.
+    """
     key = (survey_key or "")
     return key.startswith(FIX_CSAT_PREFIX) and key[len(FIX_CSAT_PREFIX):].isdigit()
 
@@ -239,7 +251,8 @@ def record_fix_csat_response(user_id: Optional[int], issue_number: int, resolved
     A "no, still broken" is left at status `new` ON PURPOSE: it re-enters the auto-work loop like any
     other report, so the cluster gets re-opened rather than the dissatisfaction being buried in an
     analytics event. A "yes" is stamped `resolved` immediately — there is nothing to classify, and
-    it must not burn an LLM call on every happy answer."""
+    it must not burn an LLM call on every happy answer.
+    """
     key = fix_csat_key(issue_number)
     text = (comment or "").strip()
     body = text or (f"Confirmed fixed (issue #{int(issue_number)})" if resolved
@@ -282,7 +295,8 @@ def dismiss_survey(user_id: int, survey_key: str) -> bool:
 
 def send_survey_prompt(user_id: int, survey: dict) -> bool:
     """Email the survey invite and record the ask so it never goes out twice. Returns True only when
-    an email actually went out."""
+    an email actually went out.
+    """
     from cqc_lem.utilities.notifications import notify_survey_prompt
     if not notify_survey_prompt(user_id, survey):
         return False
@@ -349,13 +363,15 @@ _POSTHOG_KINDS: dict = {
 
 def posthog_survey_kinds() -> dict:
     """The registry as plain data — the SPA contract test and the provisioning script both read it
-    rather than re-listing the names."""
+    rather than re-listing the names.
+    """
     return {kind: dict(spec) for kind, spec in _POSTHOG_KINDS.items()}
 
 
 def posthog_surveys_enabled(user_id: Optional[int] = None) -> bool:
     """Whether PostHog owns NPS/CSAT for this user. Fails open to POSTHOG_SURVEYS_ENABLED, so a
-    PostHog outage leaves the homegrown scheduler exactly as it was."""
+    PostHog outage leaves the homegrown scheduler exactly as it was.
+    """
     try:
         from cqc_lem.utilities.flags import POSTHOG_SURVEYS, flag_enabled
         return flag_enabled(POSTHOG_SURVEYS, user_id)
@@ -373,6 +389,13 @@ def is_low_score(kind: str, score: int) -> bool:
 
 
 def posthog_response_sentiment(kind: str, score: int) -> str:
+    """Band a PostHog answer with the SAME vocabulary the homegrown asks already store.
+
+    The two scales are not interchangeable — NPS is 0-10 and reads promoter/passive/detractor, CSAT
+    is 1-5 and reads positive/neutral/negative — so the kind picks the scale here rather than at each
+    call site. Keeping the words identical is what lets a feedback row be read without caring which
+    survey engine produced it. Anything that is not NPS is treated as CSAT.
+    """
     return nps_bucket(int(score)) if kind == POSTHOG_KIND_NPS else review_sentiment(int(score))
 
 

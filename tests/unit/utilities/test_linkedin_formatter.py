@@ -1,16 +1,23 @@
 """Unit tests for LinkedIn text formatter utility."""
 
 import pytest
+
 from cqc_lem.utilities.ai.content_alignment import LEAD_MAGNET_CTA_REPAIR_MENU
 from cqc_lem.utilities.linkedin_formatter import (
-    sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE,
-    strip_engagement_bait, is_bait_keyword, contains_engagement_bait)
+    PLAIN_PUNCTUATION_DIRECTIVE,
+    contains_engagement_bait,
+    is_bait_keyword,
+    normalize_public_text,
+    sanitize_for_linkedin,
+    strip_engagement_bait,
+)
 
 
 @pytest.mark.unit
 class TestContainsEngagementBait:
     """The ONE bait detector — shared by the stripper, the lead-magnet keyword guard, and the
-    content-framework CTA-menu test (issue #393)."""
+    content-framework CTA-menu test (issue #393).
+    """
 
     @pytest.mark.parametrize("bait", [
         "Follow for more tips like this.",
@@ -267,7 +274,8 @@ class TestSanitizeForLinkedIn:
 class TestSanitizeLeavesUrlsIntact:
     """Issue #823 — a URL is markdown-shaped by accident, and the markdown passes used to eat it.
     `?utm_source=a&utm_medium=b` is exactly `_word_`, so the italic pass published `utmsource=` and
-    the click was silently lost. Every transform now runs against a masked token."""
+    the click was silently lost. Every transform now runs against a masked token.
+    """
 
     @pytest.mark.parametrize("url", [
         "https://app.example.com/signup?utm_source=referral&utm_medium=referral&utm_campaign=x&ref=12",

@@ -1,7 +1,8 @@
 """Unit tests for FastAPI billing and auth endpoints in cqc_lem.api.main."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.unit
@@ -18,7 +19,8 @@ def _auth_hardening_side_effects():
     """Issue #745 (2b): every login now stamps `email_verified_at`, writes an `auth_audit_log` row
     and reads the PIN lockout, and /auth/session resolves the account's public_uid. Those are DB
     calls these tests never mocked — pin them so each test still exercises the flow it was written
-    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py)."""
+    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
+    """
     with patch(f"{_MAIN}.record_auth_event", return_value=True), \
          patch(f"{_MAIN}.mark_email_verified", return_value=True), \
          patch(f"{_MAIN}.get_pin_lockout", return_value=None), \

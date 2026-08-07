@@ -1,8 +1,9 @@
 """Unit tests for create_carousel_slide_images() using Pillow."""
 
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -11,7 +12,8 @@ class TestCreateCarouselSlideImages:
 
     def _make_educational_carousel(self):
         from cqc_lem.utilities.carousel_creator import (
-            EducationalContentCarousel, EducationalContentSlide,
+            EducationalContentCarousel,
+            EducationalContentSlide,
         )
         return EducationalContentCarousel(
             cover=EducationalContentSlide(title="5 Tips for Growth", content="Learn to grow faster"),
@@ -68,7 +70,9 @@ class TestCreateCarouselSlideImages:
     def test_slide_count_matches_carousel_structure(self, tmp_path):
         """EducationalContentCarousel with N content slides → N+2 total (cover + contents + CTA)."""
         from cqc_lem.utilities.carousel_creator import (
-            create_carousel_slide_images, EducationalContentCarousel, EducationalContentSlide,
+            EducationalContentCarousel,
+            EducationalContentSlide,
+            create_carousel_slide_images,
         )
         carousel = EducationalContentCarousel(
             cover=EducationalContentSlide(title="Cover", content="Intro"),

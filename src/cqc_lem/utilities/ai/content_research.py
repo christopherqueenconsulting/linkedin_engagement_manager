@@ -17,7 +17,8 @@ COST POLICY (per-type toggles, all under the CONTENT_RESEARCH_ENABLED master swi
   search per comment would multiply API spend for marginal value, so comment research is opt-in.
   This is the one type ALSO carried by a runtime feature flag (issue #651): it is the expensive,
   reversible toggle worth trialling on a cohort without a deploy. The env var stays its default and
-  its fallback — see utilities/flags.py."""
+  its fallback — see utilities/flags.py.
+"""
 
 import os
 
@@ -66,7 +67,8 @@ def _bool_env(name: str, default: bool) -> bool:
 def research_enabled(content_type: str, user_id: int = None) -> bool:
     """Master switch AND the per-type toggle must both allow research. The comment toggle is
     additionally flag-controlled (issue #651) and can therefore be trialled per-user; the flag falls
-    back to COMMENT_RESEARCH_ENABLED whenever PostHog has no answer."""
+    back to COMMENT_RESEARCH_ENABLED whenever PostHog has no answer.
+    """
     if not _bool_env("CONTENT_RESEARCH_ENABLED", True):
         return False
     env_name, default = _TYPE_TOGGLES.get(content_type, _TYPE_TOGGLES["comment"])
@@ -127,7 +129,8 @@ def research_topic(subject: str, content_type: str = "newsletter", blueprint: di
     """One research call for one piece of content. Returns {'findings': str, 'sources': [{'url':
     ...}]}; empty findings on toggle-off, missing key, or any failure — callers always generate
     regardless. `user_id` only scopes the flag lookup (issue #651) — pass it where a per-user
-    rollout should be able to reach this call."""
+    rollout should be able to reach this call.
+    """
     subject = (subject or "").strip()
     if not subject or not research_enabled(content_type, user_id=user_id):
         return dict(_EMPTY)

@@ -1,3 +1,15 @@
+"""The ONE Celery settings object — `my_celery.py` loads it with `config_from_object(celeryconfig)`.
+
+Celery reads the MODULE NAMESPACE, so a module-level name here IS a setting and anything that wants
+to change one has to rebind a module attribute (see `setup_aws_sqs_config`, which does not).
+
+The queue block below is the other half of the fixed Chrome session pool: each `se_*` lane's
+`SELENIUM_CONCURRENCY` in docker-compose must sum to `SE_NODE_MAX_SESSIONS`, and
+`tests/unit/app/test_selenium_capacity.py` fails the build when they drift apart. `task_routes` is
+only the safety net — a `queue=` passed to `apply_async` wins over it, which is how the same task
+runs on two different lanes.
+"""
+
 import os
 
 import boto3
@@ -91,6 +103,14 @@ broker_transport_options = {'visibility_timeout': visibility_timeout,
 def get_aws_sqs(queue_name: str,
                 # region_name: str,
                 session: boto3.session.Session) -> dict:
+    """Look a queue's URL up through an already-authenticated boto3 session.
+
+    `service_name='sqs'` is load-bearing — it was once `'elasticcache'`, which asks a different
+    service entirely and never resolved a queue.
+
+    Returns:
+        The raw `get_queue_url` response; the caller wants `['QueueUrl']` out of it.
+    """
     sqs = session.client(
         service_name='sqs',
         # region_name=region_name
@@ -176,6 +196,15 @@ task_routes = {
 
 # !!! NOTE !!! - The setup function below works but flower won't work with SQS and there are still some other bugs with using SQS Queue
 def setup_aws_sqs_config():
+    """Discover the SQS broker settings for the abandoned AWS path (see the NOTE above).
+
+    A no-op unless `AWS_REGION` is set, and every boto3/credential failure is caught and printed —
+    this runs inside a config module, so it must never raise.
+
+    Note what it does NOT do: `broker_url`, `broker_transport_options` and
+    `task_create_missing_queues` are assigned as function LOCALS, so calling this leaves the
+    module-level settings Celery actually reads untouched. Nothing in the stack calls it today.
+    """
     sqs_queue_url = os.getenv('AWS_SQS_QUEUE_URL')
     sqs_queue_name = os.getenv('AWS_SQS_QUEUE_NAME')
     aws_region = os.getenv('AWS_REGION')

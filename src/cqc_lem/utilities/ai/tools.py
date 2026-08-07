@@ -1,3 +1,15 @@
+"""The two outside-world research fetchers the content pipeline grounds itself on.
+
+`search_with_perplexity` is `content_research`'s DIRECT fallback for when the proxy's
+`lem-research-preferred` route is unavailable; `search_recent_news` is the free GoogleNews path
+`get_industry_trend_analysis_based_on_user_profile` drops to when research is disabled or came back
+empty. Both are SOURCES, never gates — every caller already treats "nothing found" as "write from
+the profile and topic alone", so raising here costs freshness, never the post.
+
+`google_news_tool` and the `chat_*` helpers below are a worked OpenAI tool-calling example. Nothing
+in the app calls them.
+"""
+
 import os
 from typing import Dict
 
@@ -8,8 +20,7 @@ from cqc_lem.utilities.ai.client import client
 
 
 def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
-    """
-    Search for recent information using Perplexity Sonar (online search-augmented LLM).
+    """Search for recent information using Perplexity Sonar (online search-augmented LLM).
 
     Returns {query, answer, sources} where sources is a list of {url} dicts.
     Raises RuntimeError if PERPLEXITY_API_KEY is not set.
@@ -48,8 +59,7 @@ def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
 
 # Define the tool for GoogleNews search
 def search_recent_news(industry: str, days: int = 7) -> dict:
-    """
-    Search recent news articles using GoogleNews.
+    """Search recent news articles using GoogleNews.
 
     Parameters:
     - industry (str): The industry or topic to search for.
@@ -79,8 +89,7 @@ def search_recent_news(industry: str, days: int = 7) -> dict:
 
 # Define a function to generate prompts for OpenAI ChatCompletion
 def news_analysis_prompt(industry: str, articles: list) -> str:
-    """
-    Generate a prompt for OpenAI to analyze news articles and extract keywords/categories.
+    """Generate a prompt for OpenAI to analyze news articles and extract keywords/categories.
 
     Parameters:
     - industry (str): The industry related to the articles.
@@ -107,8 +116,7 @@ def news_analysis_prompt(industry: str, articles: list) -> str:
 
 # Tool definition for GoogleNews search and analysis
 def google_news_tool(parameters: Dict) -> Dict:
-    """
-    Tool function for searching recent news and performing analysis.
+    """Tool function for searching recent news and performing analysis.
     Expects 'industry' and 'days' in parameters.
     """
     industry = parameters.get("industry", "Technology")
@@ -138,6 +146,12 @@ def google_news_tool(parameters: Dict) -> Dict:
 
 
 def get_openai_google_news_tool():
+    """The GoogleNews tool declaration, with its Python implementation bound under `"function"`.
+
+    Byte-for-byte the module-level `news_tool` below, and unlike that constant it has no callers at
+    all — the two `chat_*` demos read `news_tool` directly. Kept as the worked example of how the
+    tool would be handed to a completion.
+    """
     # Define the tool as an iterable object for ChatCompletion
     return {
         "name": "google_news_tool",
@@ -170,8 +184,7 @@ news_tool = {
 
 
 def chat_with_tools(industry: str, days: int):
-    """
-    ChatCompletion with integrated tools for GoogleNews analysis.
+    """ChatCompletion with integrated tools for GoogleNews analysis.
     """
     # Messages for the chat session
     messages = [
@@ -192,8 +205,7 @@ def chat_with_tools(industry: str, days: int):
     return output
 
 def chat_about_news(news, industry):
-    """
-    ChatCompletion with integrated tools for GoogleNews analysis.
+    """ChatCompletion with integrated tools for GoogleNews analysis.
     """
     # Messages for the chat session
     messages = [

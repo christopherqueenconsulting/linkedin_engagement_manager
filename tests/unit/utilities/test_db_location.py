@@ -1,8 +1,9 @@
 """Unit tests for per-user location database functions."""
 
-import pytest
-import mysql.connector
 from unittest.mock import patch
+
+import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 

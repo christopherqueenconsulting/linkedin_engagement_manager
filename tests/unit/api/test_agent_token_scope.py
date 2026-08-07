@@ -40,7 +40,8 @@ class TestAgentSurface:
         Asserting against the raw frozenset would pass on an entry that no live request can ever
         match: _scope_path strips the /api prefix AND rstrips trailing slashes, so a surface entry
         written as "/dashboard/stats/" is dead on arrival. That is not hypothetical — it was the
-        first version of this surface."""
+        first version of this surface.
+        """
         key = main_mod._scope_path("/api" + path)
         assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, key) is True, f"{path} -> {key}"
 
@@ -80,7 +81,8 @@ class TestAgentSurface:
         The surface is a list of path literals, so the failure mode is a route that merely STARTS
         with a granted one inheriting the grant — `/lead` opening `/lead_magnets`, `/lead_signals`
         opening `/lead_signals/admin`. The trailing-slash bug this suite already covers proves this
-        class of mistake is real rather than theoretical."""
+        class of mistake is real rather than theoretical.
+        """
         key = main_mod._scope_path("/api" + path)
         assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, key) is False, key
 
@@ -134,7 +136,8 @@ class TestAgentMayNotApproveAtCreateTime:
 
     Every create endpoint on the queueing surface takes a `status` and inserts APPROVED when it
     reads "approved" — no `action` field anywhere. Guarding only the PUT left a POST /schedule_dm
-    with status="approved" landing a row `auto_check_scheduled_dms` then SENDS to a real person."""
+    with status="approved" landing a row `auto_check_scheduled_dms` then SENDS to a real person.
+    """
 
     @pytest.fixture
     def as_agent(self, main_mod):
@@ -173,7 +176,8 @@ class TestAgentMayNotApproveAtCreateTime:
 
         `connection_request_mode` is `auto_approve` out of the box, so an agent naming no status at
         all would land an APPROVED row on nearly every account — the guarantee broken by doing
-        nothing at all."""
+        nothing at all.
+        """
         from cqc_lem.utilities.db import ConnectionRequestStatus
         with patch.object(main_mod, "get_session_user_id", return_value=7), \
              patch.object(main_mod, "get_engagement_preferences",
@@ -203,7 +207,8 @@ class TestAgentMayNotApproveAtCreateTime:
 class TestAgentMayNotConfigure:
     """The scope surface matches on PATH, so the entry added so the agent could READ whether
     automation is safe to queue granted the PUT along with it — and that write sets the approval
-    modes and the per-day caps, i.e. it re-opens everything else."""
+    modes and the per-day caps, i.e. it re-opens everything else.
+    """
 
     def test_an_agent_cannot_write_engagement_preferences(self, main_mod):
         from fastapi import HTTPException
@@ -255,6 +260,7 @@ class TestAgentTokenTTL:
         """Drive db.resolve_session over a mocked row and return the UPDATE it issued."""
         from datetime import datetime, timezone
         from unittest.mock import MagicMock
+
         from cqc_lem.utilities import db
 
         conn, cursor = MagicMock(), MagicMock()
@@ -274,7 +280,8 @@ class TestAgentTokenTTL:
 
         resolve_session slides EVERY session to now + SESSION_IDLE_HOURS, so a 90-day agent token
         was rewritten to 24 hours on its FIRST request — the weekly agent still dead every run,
-        exactly the failure the parameter exists to prevent."""
+        exactly the failure the parameter exists to prevent.
+        """
         from cqc_lem.utilities.db import SESSION_SCOPE_AGENT
 
         resolved, sql = self._resolve_with_scope(SESSION_SCOPE_AGENT)
@@ -305,7 +312,8 @@ class TestAgentTokenMint:
         appear anywhere in the function", which a comment DOCUMENTING the exemption satisfies just
         as well as an argument granting it — so the text version failed on prose while the code was
         correct, and would equally have passed had the exemption been passed under a comment. The
-        call is what grants the exemption, so the call is what gets asserted on."""
+        call is what grants the exemption, so the call is what gets asserted on.
+        """
         import ast
         import inspect
         import textwrap

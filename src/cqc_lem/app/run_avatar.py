@@ -7,9 +7,13 @@ scene set and overwrites the stored paths.
 from typing import Optional
 
 from cqc_lem.app.my_celery import app as shared_task
-from cqc_lem.utilities.db import (AVATAR_APPROVAL_PENDING, get_avatar_training,
-                                  release_avatar_sample_render, set_avatar_approval,
-                                  update_avatar_samples)
+from cqc_lem.utilities.db import (
+    AVATAR_APPROVAL_PENDING,
+    get_avatar_training,
+    release_avatar_sample_render,
+    set_avatar_approval,
+    update_avatar_samples,
+)
 from cqc_lem.utilities.logger import log_info, log_warning
 
 

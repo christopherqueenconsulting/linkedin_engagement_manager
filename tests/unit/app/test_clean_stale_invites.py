@@ -34,7 +34,8 @@ class TestCleanStaleInvites:
 
     def test_the_off_by_default_skip_is_debug_not_info(self):
         """It is the default, it repeats for every active user every night, and it is working
-        behaviour — an INFO line here is one row per user per day saying nothing happened."""
+        behaviour — an INFO line here is one row per user per day saying nothing happened.
+        """
         from cqc_lem.app.run_automation import clean_stale_invites
         with patch(f"{_RA}.plan_withdrawals", return_value=_plan()), \
                 patch(f"{_RA}.track_stale_invite_run"), \
@@ -61,7 +62,8 @@ class TestCleanStaleInvites:
 
     def test_a_session_that_never_starts_is_its_own_status(self):
         """'The browser never came up' and 'LinkedIn's markup moved' need different fixes, and an
-        escaping exception would emit nothing — indistinguishable from a day paced to zero."""
+        escaping exception would emit nothing — indistinguishable from a day paced to zero.
+        """
         from cqc_lem.app.run_automation import clean_stale_invites
         with patch(f"{_RA}.plan_withdrawals", return_value=_plan(allowance=3, status="withdrew")), \
                 patch(f"{_RA}.get_driver_wait_pair", side_effect=RuntimeError("grid full")), \

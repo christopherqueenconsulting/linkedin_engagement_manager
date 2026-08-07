@@ -2,8 +2,9 @@
 
 import json
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -170,7 +171,8 @@ class TestRecordShippedVariant:
 
     def test_reports_the_shipped_combo_as_a_posthog_exposure(self):
         """The #396 harness adapter (issue #652): the combo that shipped IS the arm, so PostHog can
-        read post_outcome per variant beside select_variant_winners' own ranking."""
+        read post_outcome per variant beside select_variant_winners' own ranking.
+        """
         with patch("cqc_lem.app.generate_variants._db_record_shipped_variant", return_value=True), \
              patch("cqc_lem.utilities.experiments.track_shipped_variant") as exposure:
             from cqc_lem.app.generate_variants import record_shipped_variant
@@ -181,7 +183,8 @@ class TestRecordShippedVariant:
 
     def test_a_failed_db_write_reports_no_exposure(self):
         """post_outcome reads the arm back out of post_variants, so an exposure for a row that never
-        landed would be an enrolment the metric can never cover."""
+        landed would be an enrolment the metric can never cover.
+        """
         with patch("cqc_lem.app.generate_variants._db_record_shipped_variant", return_value=False), \
              patch("cqc_lem.utilities.experiments.track_shipped_variant") as exposure:
             from cqc_lem.app.generate_variants import record_shipped_variant

@@ -1,7 +1,8 @@
 """Unit tests for the feedback auto-filing beat tasks and their schedule entries — issue #498."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

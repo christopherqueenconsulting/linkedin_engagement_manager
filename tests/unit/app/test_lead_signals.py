@@ -1,9 +1,11 @@
 """Unit tests for inbound hot-lead routing — issue #483. Covers the dedup key, the flag/draft
 helper, the DM-body read that rides the existing follow-up thread open, and the approval-gated
-responder (DM + reply channels). Selenium DOM targeting itself is validated on a supervised run."""
+responder (DM + reply channels). Selenium DOM targeting itself is validated on a supervised run.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities.linkedin.message_thread import ThreadState
 

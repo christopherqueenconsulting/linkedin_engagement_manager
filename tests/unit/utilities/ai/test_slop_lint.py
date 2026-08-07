@@ -361,7 +361,8 @@ class TestReportShape:
 
 class TestGoldenSet:
     """The rubric's labeled drafts (issue #405) are the calibration target: the linter must catch
-    the generic ones and must NOT demote the good AI-assisted-but-personal ones."""
+    the generic ones and must NOT demote the good AI-assisted-but-personal ones.
+    """
 
     @pytest.mark.parametrize("draft", [d for d in GOLDEN_SET if d["label"] == "generic"],
                              ids=lambda d: d["id"])
@@ -422,7 +423,7 @@ class TestRetryDirective:
 
 class TestQualityGateFinding:
     def test_the_finding_carries_the_reasons_and_holds_the_post(self):
-        from cqc_lem.utilities.quality_gates import slop_finding, GATE_SLOP, demoting_findings
+        from cqc_lem.utilities.quality_gates import GATE_SLOP, demoting_findings, slop_finding
         finding = slop_finding(["contrastive_frame: uses the frame"], ["burstiness: flat"])
         assert finding["gate"] == GATE_SLOP
         assert finding["demoted"] is True
@@ -432,7 +433,8 @@ class TestQualityGateFinding:
 
     def test_it_survives_the_persistence_round_trip(self):
         import json
-        from cqc_lem.utilities.quality_gates import slop_finding, parse_gate_findings
+
+        from cqc_lem.utilities.quality_gates import parse_gate_findings, slop_finding
         raw = json.dumps([slop_finding(["a reason"])])
         assert parse_gate_findings(raw)[0]["gate"] == "ai_slop"
 
@@ -501,7 +503,8 @@ class TestCommentGenerationWiring:
 
 class TestShortFormRepair:
     """lint_repaired is the shared bounded-regeneration helper for the surfaces with no review
-    queue — a still-slopped draft ships with a warning rather than breaking the sequence."""
+    queue — a still-slopped draft ships with a warning rather than breaking the sequence.
+    """
 
     def test_a_passing_draft_costs_no_extra_call(self):
         from cqc_lem.utilities.ai import ai_helper
@@ -605,7 +608,8 @@ class TestDmWiring:
 
 class TestGroupPostWiring:
     """A group post publishes straight from the generator — it never reaches the `ai_slop` gate's
-    review queue, so it gets the queue-less surfaces' bounded re-draft instead."""
+    review queue, so it gets the queue-less surfaces' bounded re-draft instead.
+    """
 
     def test_a_slopped_group_post_is_regenerated(self):
         from cqc_lem.utilities.ai import ai_helper

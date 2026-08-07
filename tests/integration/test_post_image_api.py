@@ -8,9 +8,9 @@ this account was issued can ride into `/schedule_post/`, and that removing one t
 
 import io
 import os
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 _SESSION = "tok"
 _USER = 5
@@ -31,6 +31,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -173,7 +174,8 @@ class TestComposeTimePreview:
 
     def test_a_url_we_never_issued_is_dropped_rather_than_stored(self, client, store):
         """`image_url` is caller-supplied on a field the publish step later fetches — anything but
-        this account's own preview is refused."""
+        this account's own preview is refused.
+        """
         for hostile in ("https://evil.test/payload.png",
                         f"https://api.test/api/assets?file_name=images/post_previews/{_OTHER_USER}/x.png",
                         "https://api.test/api/assets?file_name=../../etc/passwd"):
@@ -215,7 +217,8 @@ class TestGenerate:
     def test_a_draft_longer_than_a_linkedin_post_still_generates(self, client, store):
         """Nothing truncates a generated draft and the Review & Edit textarea has no maxLength, so
         a 3000-char field cap here would answer 422 — whose `detail` is a list the SPA cannot
-        render, leaving the author with an unexplainable failure on their own post."""
+        render, leaving the author with an unexplainable failure on their own post.
+        """
         with patch("cqc_lem.api.main.generate_image_for_post",
                    return_value=("https://api.test/api/assets?file_name=images/posts/42/g.png",
                                  None)) as gen:

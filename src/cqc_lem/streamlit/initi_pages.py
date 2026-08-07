@@ -1,6 +1,7 @@
 #  Copyright (c) 2024. Christopher Queen Consulting LLC (http://www.ChristopherQueenConsulting.com/)
 
 import streamlit as st
+
 from cqc_lem.utilities.env_constants import OPENAI_API_KEY
 
 

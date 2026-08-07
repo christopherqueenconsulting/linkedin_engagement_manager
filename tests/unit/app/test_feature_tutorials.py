@@ -1,7 +1,8 @@
 """Unit tests for the weekly feature-tutorial beat task (issue #505)."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 

@@ -1,8 +1,10 @@
 """Unit tests for onboarding nudge delivery (issue #500): the email builder, the notification
-wrapper, and the brand-voice copy generator."""
+wrapper, and the brand-voice copy generator.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

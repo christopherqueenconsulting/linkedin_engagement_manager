@@ -98,7 +98,8 @@ def test_celeryconfig_declares_lane_queues():
 
 def test_prepost_queue_constant_matches_declared_queue():
     """The name the dispatch site overrides with must be a queue a worker actually consumes —
-    a typo here silently parks pre-post warm-ups in a queue nobody drains."""
+    a typo here silently parks pre-post warm-ups in a queue nobody drains.
+    """
     from cqc_lem.app import celeryconfig
     assert celeryconfig.SE_PREPOST_QUEUE == "se_prepost"
     assert celeryconfig.SE_PREPOST_QUEUE in {q.name for q in celeryconfig.task_queues}
@@ -106,7 +107,8 @@ def test_prepost_queue_constant_matches_declared_queue():
 
 class TestComposeLaneWiring:
     """A declared queue with no worker consuming it is a black hole — tasks sit there forever.
-    These read the compose files so a lane can't be added in code without its worker (#553)."""
+    These read the compose files so a lane can't be added in code without its worker (#553).
+    """
 
     @staticmethod
     def _compose(name: str) -> str:
@@ -114,7 +116,7 @@ class TestComposeLaneWiring:
 
     @staticmethod
     def _lane_workers(compose: str) -> dict:
-        """service name -> (queues, concurrency) for every Selenium lane worker."""
+        """Service name -> (queues, concurrency) for every Selenium lane worker."""
         workers = {}
         for block in re.split(r"\n  (?=\w)", compose):
             queues = re.search(r"SELENIUM_QUEUES=(\S+)", block)

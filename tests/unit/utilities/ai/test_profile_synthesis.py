@@ -1,9 +1,11 @@
 """Unit tests for the DURABLE profile synthesis: the generator that distills a profile into a stable
 voice brief (excluding volatile recent-activity/project noise), the lazy get-or-create cache helper,
-and the generation functions using the synthesis in place of the full profile JSON."""
+and the generation functions using the synthesis in place of the full profile JSON.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -19,7 +21,8 @@ def _resp(text):
 
 def _mock_profile():
     """MagicMock profile whose full-JSON dump is a distinctive sentinel so tests can assert the raw
-    JSON is NOT smuggled into a prompt when a synthesis is supplied."""
+    JSON is NOT smuggled into a prompt when a synthesis is supplied.
+    """
     p = MagicMock()
     p.model_dump_json.return_value = '{"RAW_PROFILE_JSON_SENTINEL": true}'
     return p
@@ -28,7 +31,7 @@ def _mock_profile():
 class TestSynthesizeProfile:
     def test_excludes_recent_activity_project_noise(self):
         from cqc_lem.utilities.ai import ai_helper
-        from cqc_lem.utilities.linkedin.profile import LinkedInProfile, LinkedInActivity
+        from cqc_lem.utilities.linkedin.profile import LinkedInActivity, LinkedInProfile
         profile = LinkedInProfile(
             full_name="Jane Doe", job_title="COO", company_name="Acme Logistics",
             recent_activities=[LinkedInActivity(text="Currently building SECRETPROJECTX right now")])
@@ -60,6 +63,7 @@ class TestSynthesizeProfile:
 class TestGetOrCreateProfileSynthesis:
     def test_returns_fresh_cache_without_regenerating(self):
         from datetime import datetime
+
         from cqc_lem.utilities.ai import ai_helper
         with patch(f"{_DB}.get_profile_synthesis", return_value=("cached brief", datetime.now())), \
              patch(f"{_AI}.synthesize_profile") as syn:
@@ -69,6 +73,7 @@ class TestGetOrCreateProfileSynthesis:
 
     def test_regenerates_when_stale(self):
         from datetime import datetime, timedelta
+
         from cqc_lem.utilities.ai import ai_helper
         old = datetime.now() - timedelta(days=30)
         with patch(f"{_DB}.get_profile_synthesis", return_value=("old brief", old)), \
@@ -90,6 +95,7 @@ class TestGetOrCreateProfileSynthesis:
 
     def test_falls_back_to_cached_when_synthesis_fails(self):
         from datetime import datetime, timedelta
+
         from cqc_lem.utilities.ai import ai_helper
         old = datetime.now() - timedelta(days=30)
         with patch(f"{_DB}.get_profile_synthesis", return_value=("old brief", old)), \

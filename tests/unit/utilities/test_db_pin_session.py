@@ -1,10 +1,10 @@
 """Unit tests for PIN auth, session management, and planned-posts DB functions."""
 
 from datetime import datetime, timedelta, timezone
-
-import pytest
 from unittest.mock import MagicMock, patch
+
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 

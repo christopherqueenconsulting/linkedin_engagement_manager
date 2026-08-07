@@ -1,9 +1,9 @@
 """Coverage tests for LinkedIn-profile CRUD + user-lookup DB helpers (db.py)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 import mysql.connector
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -234,7 +234,8 @@ class TestUpdateUser:
     def test_email_keyword_is_rejected(self):
         """`update_user(..., email=…)` moved an account's address with no `user_email_history`
         row, no PIN to the new address and no session revoke. The parameter is gone, so the call
-        raises instead of silently doing it."""
+        raises instead of silently doing it.
+        """
         with patch(f"{_DB}.get_db_connection") as gdc:
             from cqc_lem.utilities.db import update_user
             with pytest.raises(TypeError):

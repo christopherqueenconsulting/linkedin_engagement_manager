@@ -211,6 +211,12 @@ src/cqc_lem/ui/dist/
 # stale .claude state into releases.
 .claude/worktrees/
 
+# Personal Claude Code settings — permission grants accumulate here one accepted prompt at a time,
+# so tracking it means every `git status` is dirty and one machine's grants get pushed onto everyone
+# else's checkout. Shared project config lives in .claude/settings.json, which IS tracked (the
+# pipeline's worktrees need it, and a gitignored file does not exist in a fresh worktree).
+.claude/settings.local.json
+
 # VPS deploy runtime state (written by scripts/deploy.sh on the box; never tracked so a release
 # checkout can't clobber live blue/green routing)
 .last_good_tag

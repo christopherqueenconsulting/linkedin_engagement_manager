@@ -1,10 +1,11 @@
 """Coverage tests for api/main.py pure helpers: slide parsing, UTC serialization,
-asset path resolution, HTTP range plumbing, and the /api/assets endpoint."""
+asset path resolution, HTTP range plumbing, and the /api/assets endpoint.
+"""
 
-import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import HTTPException
 
 pytestmark = pytest.mark.unit
@@ -25,6 +26,7 @@ def client():
         p.start()
     try:
         from fastapi.testclient import TestClient
+
         from cqc_lem.api.main import app
         with TestClient(app, raise_server_exceptions=False) as tc:
             yield tc
@@ -66,8 +68,9 @@ class TestUtcIso:
         assert _utc_iso(datetime(2026, 7, 6, 15, 30)) == "2026-07-06T15:30:00Z"
 
     def test_aware_datetime_converted(self):
-        from cqc_lem.api.main import _utc_iso
         import pytz
+
+        from cqc_lem.api.main import _utc_iso
         eastern = pytz.timezone("US/Eastern").localize(datetime(2026, 7, 6, 11, 30))
         assert _utc_iso(eastern) == "2026-07-06T15:30:00Z"
 
@@ -218,8 +221,9 @@ class TestAuthInitBypassSessionFailure:
 
 class TestComputeNextPublish:
     def test_bad_timezone_falls_back_to_utc(self):
-        from cqc_lem.api.main import _compute_next_publish
         import pytz
+
+        from cqc_lem.api.main import _compute_next_publish
         with patch(f"{_M}.get_newsletter_settings", return_value={
                 "publish_day": 1, "publish_hour": 9, "cadence": "weekly",
                 "last_published_at": None}), \

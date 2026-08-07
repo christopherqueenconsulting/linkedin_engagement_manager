@@ -1,32 +1,64 @@
+"""The LinkedIn session: getting a Selenium driver signed in, and the cached profile behind it.
+
+`login_to_linkedin` is the ONE door every Selenium task goes through, which is why the safety gates
+live at the top of it rather than at each call site: the manual/deploy/suppression pause and the
+shared 429 breaker both refuse here, before a single navigation, because probing LinkedIn while
+throttled is what prolongs the throttle. Cookies are the preferred credential (`li_at` since #745)
+and a password login is the fallback; `_persist_session_cookies` is where both paths meet, so it is
+also where a sign-in gets recorded (issue #933).
+
+The rest of the module is the scraped-text hygiene that keeps bad data out of the DB — a body that
+says "HTTP ERROR 429" or "redirected you too many times" still sits on a `/feed` URL, so being
+logged in is never decided from the URL alone, and `clean_person_name` strips the badge text SDUI
+renders inside the same anchor as a person's name (issue #623) before it can reach a connection note.
+"""
+
 import os
 import random
 import re
 import time
 from typing import Optional
 
-from cqc_lem.utilities.ai.ai_helper import get_industries_of_profile_from_ai
-from cqc_lem.utilities.db import get_cookies, store_cookies, get_linked_in_profile_by_email, add_linkedin_profile, \
-    get_linked_in_profile_by_url, get_linked_in_profile_by_user_id
-from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, \
-    mark_approval_timed_out, mark_signed_in
-from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rate_limit, \
-    mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, \
-    automation_pause_remaining, is_measurement_paused
-from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
-from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_warning
-from cqc_lem.utilities.selenium_util import load_cookies, get_element_wait_retry, \
-    get_visible_element_wait_retry, getText
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
+from cqc_lem.utilities.ai.ai_helper import get_industries_of_profile_from_ai
+from cqc_lem.utilities.db import (
+    add_linkedin_profile,
+    get_cookies,
+    get_linked_in_profile_by_email,
+    get_linked_in_profile_by_url,
+    get_linked_in_profile_by_user_id,
+    store_cookies,
+)
+from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, mark_approval_timed_out, mark_signed_in
+from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.rate_limit import (
+    LinkedInRateLimited,
+    automation_pause_remaining,
+    clear_rate_limit,
+    is_automation_paused,
+    is_measurement_paused,
+    mark_rate_limited,
+    rate_limit_cooldown_remaining,
+)
+from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
+from cqc_lem.utilities.logger import log_debug, log_error, log_warning, myprint
+from cqc_lem.utilities.selenium_util import (
+    get_element_wait_retry,
+    get_visible_element_wait_retry,
+    getText,
+    load_cookies,
+)
+
 
 def _human_pause(min_seconds: float, max_seconds: float) -> None:
     """Sleep a random human-like interval to space out automated navigations. Set
-    LINKEDIN_HUMANIZE_DELAYS=false (e.g. in tests) to make this a no-op."""
+    LINKEDIN_HUMANIZE_DELAYS=false (e.g. in tests) to make this a no-op.
+    """
     if os.getenv("LINKEDIN_HUMANIZE_DELAYS", "true").lower() == "false":
         return
     time.sleep(random.uniform(min_seconds, max_seconds))
@@ -59,7 +91,8 @@ _NAME_SEGMENT_RE = re.compile(r"[\n\r•·|]+")
 
 def _collapse_repeated_name(name: str) -> str:
     """LinkedIn renders the name twice (visible + screen-reader copy) inside one link, which
-    `.text` flattens to "Jane Doe Jane Doe". Fold an exact doubling back to one."""
+    `.text` flattens to "Jane Doe Jane Doe". Fold an exact doubling back to one.
+    """
     parts = name.split()
     half = len(parts) // 2
     if half and len(parts) % 2 == 0 and parts[:half] == parts[half:]:
@@ -69,7 +102,8 @@ def _collapse_repeated_name(name: str) -> str:
 
 def clean_person_name(raw: str) -> str:
     """A scraped display name with LinkedIn's badge/status/degree text removed. Returns '' when
-    nothing name-like survives (a link whose text was only a status badge)."""
+    nothing name-like survives (a link whose text was only a status badge).
+    """
     text = str(raw or "").replace("\u00a0", " ")
     aria = _NAME_FROM_ARIA_RE.search(text)
     if aria:
@@ -83,7 +117,8 @@ def clean_person_name(raw: str) -> str:
 
 def connection_degree(raw: str) -> Optional[str]:
     """The connection-degree badge ('1st' / '2nd' / '3rd+') carried in scraped name text, or None
-    when LinkedIn didn't render one (it omits the badge on your own card and on some SDUI surfaces)."""
+    when LinkedIn didn't render one (it omits the badge on your own card and on some SDUI surfaces).
+    """
     match = _DEGREE_RE.search(str(raw or ""))
     if not match:
         return None
@@ -93,14 +128,16 @@ def connection_degree(raw: str) -> Optional[str]:
 
 def is_first_degree(raw: str) -> bool:
     """True only when the badge SAYS 1st. A missing badge is unknown, not 'not connected' — callers
-    that skip on this must fail open, or a selector drift silently stops all outreach."""
+    that skip on this must fail open, or a selector drift silently stops all outreach.
+    """
     return connection_degree(raw) == "1st"
 
 
 def _text_is_transport_error(body: str) -> bool:
     """Chrome network/proxy error interstitial ("This site can't be reached", ERR_* codes) — a
     transport failure (flaky residential proxy, DNS, timeout), NOT a LinkedIn throttle. Kept separate
-    so a proxy blip doesn't trip the shared 429 breaker and pause all automation."""
+    so a proxy blip doesn't trip the shared 429 breaker and pause all automation.
+    """
     low = (body or "").lower()
     return ("this site can’t be reached" in low or "this site can't be reached" in low
             or "err_" in low)
@@ -110,7 +147,8 @@ def _text_is_rate_limited(body: str) -> bool:
     """True when the rendered page text is a LinkedIn rate-limit response (HTTP 429, or LinkedIn's
     custom 999 anti-bot status). Deliberately does NOT fire on the bare "This page isn't working"
     shell alone — Chrome renders that identical shell for 500/502/503 and for proxy/network errors,
-    so keying off it indiscriminately trips the breaker on transient failures."""
+    so keying off it indiscriminately trips the breaker on transient failures.
+    """
     if _text_is_transport_error(body):
         return False
     low = (body or "").lower()
@@ -168,7 +206,7 @@ def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
 
         # Extract publicKey and surl from the iframe src
         src = arkose_frame.get_attribute("src") or ""
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
         parsed = urlparse(src)
         qs = parse_qs(parsed.query)
         public_key = qs.get("pk", qs.get("public_key", [""]))[0]
@@ -270,8 +308,7 @@ def drive_email_pin_challenge(driver, user_email: str, is_logged_in) -> bool:
     login completes. Best-effort: any failure returns False so the caller can fall back.
     """
     from cqc_lem.utilities.db import get_user_id
-    from cqc_lem.utilities.linkedin.verification_pin import (
-        clear_pin, create_pin_request, get_pin, pin_reply_address)
+    from cqc_lem.utilities.linkedin.verification_pin import clear_pin, create_pin_request, get_pin, pin_reply_address
 
     otp = None
     for _ in range(5):
@@ -344,7 +381,8 @@ def drive_email_pin_challenge(driver, user_email: str, is_logged_in) -> bool:
 
 def _user_id_for_email(user_email: str) -> Optional[int]:
     """Best-effort id lookup for the status writes below — a failed lookup only costs the SPA a
-    status line, so it can never raise into the login path."""
+    status line, so it can never raise into the login path.
+    """
     try:
         from cqc_lem.utilities.db import get_user_id
         return get_user_id(user_email)
@@ -379,6 +417,26 @@ def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
 
 def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, user_password: str,
                       measurement_only: bool = False):
+    """Sign `driver` in — stored cookies first, a credential login only if they no longer authenticate.
+
+    The central gate for all Selenium work. Both back-off checks run BEFORE any navigation, because
+    the whole point of the 429 breaker is not to touch LinkedIn while throttled. `measurement_only`
+    marks the read-only lanes (post stats, follower capture): they still stop for every pause EXCEPT
+    the suppression tripwire's own, since freezing the very scrape that would show a recovery makes
+    the tripwire self-perpetuating (issue #629).
+
+    Being signed in is never decided from the URL alone. A 429 body, a Chrome transport error and a
+    cookie/egress-IP redirect loop all sit on `/feed`, and only the first is a real throttle — the
+    other two drop the cookies (or raise transiently) rather than tripping the breaker on a network
+    blip. A 429 WITH stored cookies is treated as a stale-cookie mismatch and re-authenticated fresh;
+    only a 429 with nothing left to drop trips the breaker.
+
+    Raises:
+        LinkedInRateLimited: automation paused, breaker open, a genuine 429, or a transient
+            proxy/network failure that must NOT trip the breaker.
+        RuntimeError: a challenge that neither the CAPTCHA solver, the email PIN flow nor a manual
+            mobile approval could clear.
+    """
     linked_url = "https://www.linkedin.com"
     feed_url = "https://www.linkedin.com/feed/"
     login_url = "https://www.linkedin.com/login"
@@ -414,7 +472,8 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         residential proxy) can make LinkedIn loop on re-auth, serving a browser error
         page ("redirected you too many times / ERR_TOO_MANY_REDIRECTS"). The URL still
         looks logged-in (/feed), so detect it from the body to avoid mistaking it for a
-        live session — the fix is to drop the cookies and do a fresh credential login."""
+        live session — the fix is to drop the cookies and do a fresh credential login.
+        """
         try:
             body = drv.find_element(By.TAG_NAME, "body").text or ""
         except Exception:
@@ -690,6 +749,17 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
 
 def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None) -> LinkedInProfile:
+    """The signed-in user's OWN profile, from the DB cache when it is there and by scraping when it is
+    not.
+
+    Only the cache-miss path touches Chrome (it logs in and follows `/in/` to whatever URL LinkedIn
+    redirects to), so a warm cache costs no browser time. A row older than the getter's freshness
+    window reads as absent, so this re-scrapes roughly daily. `user_id` is the preferred cache key;
+    email is the backward-compatible fallback.
+
+    Returns None, despite the annotation, when the scrape yields nothing; every caller must handle
+    that, because a DOM change makes it the normal failure.
+    """
     profile = None
 
     # Prefer user_id-based cache key; fall back to email for backward compat.
@@ -755,6 +825,21 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
 
 
 def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False, force_save=False):
+    """Anyone's profile as a plain dict — DB cache first, scrape (plus an AI industry guess) on a miss.
+
+    A dict rather than a `LinkedInProfile` because that is what `get_my_profile` and the viewer
+    outreach walk feed onward. LinkedIn rewrites vanity URLs, so a navigation that lands somewhere
+    else re-enters this function on the URL it actually got — the cache is keyed on the resolved URL,
+    not the one asked for.
+
+    The two branches do not return quite the same thing: a fresh scrape returns the SCRAPED fields
+    only, so the AI-derived `industry` reaches the DB but is missing from the dict until a later
+    cached read. `force_save` is currently accepted and not read.
+
+    Raises:
+        ProfileUnavailableError: from the scraper, and deliberately not caught here — an auth-wall or
+            rate-limited page must never be cached or read as a sparse profile.
+    """
     # Get the profile from the DB if it exists
     profile_json = get_linked_in_profile_by_url(profile_url)
 

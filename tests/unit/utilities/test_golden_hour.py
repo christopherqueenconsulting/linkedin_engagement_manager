@@ -186,7 +186,8 @@ class TestSecondWaveSchedule:
 
     def test_due_offset_is_stable_per_post(self):
         """The wait is served in hops, so every re-arm has to recompute the SAME target — a fresh
-        draw per hop would walk the second wave forward forever."""
+        draw per hop would walk the second wave forward forever.
+        """
         first = g.second_wave_due_minutes(1, 9)
         assert first == g.second_wave_due_minutes(1, 9)
         assert g.SECOND_WAVE_MIN_HOURS * 60 <= first <= g.SECOND_WAVE_MAX_HOURS * 60
@@ -196,7 +197,8 @@ class TestSecondWaveSchedule:
 
     def test_hop_never_outlasts_the_broker_visibility_timeout(self, monkeypatch):
         """A single 6-8h countdown is redelivered every visibility_timeout with task_acks_late —
-        that is how one second wave becomes five self-comments."""
+        that is how one second wave becomes five self-comments.
+        """
         monkeypatch.setenv("CELERY_VISIBILITY_TIMEOUT", "4500")
         hop = g.second_wave_hop_seconds(7 * 60.0, 5.0)
         assert 0 < hop <= g.second_wave_hop_cap_seconds() < 4500

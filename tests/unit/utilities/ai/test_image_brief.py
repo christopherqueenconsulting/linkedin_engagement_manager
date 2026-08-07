@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities.ai.image_brief import (ImageBrief, _STYLE_PRESETS, build_image_brief)
+from cqc_lem.utilities.ai.image_brief import _STYLE_PRESETS, ImageBrief, build_image_brief
 
 _GOOD = {"focal_concept": "a founder reviewing a growth chart",
          "prompt": ("A confident founder stands beside a floor-to-ceiling window in a modern "
@@ -38,7 +38,8 @@ class TestBuildImageBrief:
 
     def test_no_text_constraint_is_always_in_the_system_prompt(self):
         """The author must never NAME text/logos in a render prompt (FLUX summons what is
-        named) — the system prompt instructs positive phrasing instead."""
+        named) — the system prompt instructs positive phrasing instead.
+        """
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
             build_image_brief("content", surface="post_image")
         system_msg = llm.call_args[1]["messages"][0]["content"]
@@ -87,7 +88,8 @@ class TestBuildImageBrief:
 @pytest.mark.unit
 class TestRefusalFilterIsAnchoredToRefusals:
     """Regression: a bare "language model" ban rejected every legitimate brief an AI-focused
-    author writes, so their briefs silently fell back to the deterministic template."""
+    author writes, so their briefs silently fell back to the deterministic template.
+    """
 
     @pytest.mark.parametrize("prompt_text", [
         ("A photorealistic scene of an engineer studying a wall display of large language model "
@@ -117,7 +119,8 @@ class TestRefusalFilterIsAnchoredToRefusals:
 class TestReasoningTokenBudget:
     """Regression: lem-medium is a REASONING model. At max_tokens=600 the whole budget went to
     thinking tokens, the response came back EMPTY with finish_reason='length', and every image
-    silently rendered from the deterministic template."""
+    silently rendered from the deterministic template.
+    """
 
     def test_budget_leaves_room_for_reasoning_plus_json(self):
         from cqc_lem.utilities.ai.image_brief import _BRIEF_MAX_TOKENS
@@ -152,7 +155,8 @@ class TestReasoningTokenBudget:
 @pytest.mark.unit
 class TestAnonymousPersonSteer:
     """A stranger's face on a PERSONAL-brand newsletter is the stock-photo look the engine
-    exists to replace; with the author's own likeness, a person IS the point."""
+    exists to replace; with the author's own likeness, a person IS the point.
+    """
 
     def test_no_avatar_steers_away_from_an_anonymous_face(self):
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
@@ -172,7 +176,8 @@ class TestAnonymousPersonSteer:
 @pytest.mark.unit
 class TestHandsGuidance:
     """Owner verdict after the Aug 2026 bake-off: FLUX.1 stays; its one quality gap is hands.
-    The brief must steer toward low-risk hand positions and never complex gestures."""
+    The brief must steer toward low-risk hand positions and never complex gestures.
+    """
 
     def test_system_prompt_steers_hands_low_risk(self):
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:

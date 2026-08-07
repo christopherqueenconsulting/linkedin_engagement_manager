@@ -46,7 +46,8 @@ def signed_in():
 
     `record_auth_event` is stubbed because a denied foreign target writes an `auth_audit_log` row
     (`_deny`) — best effort in production, but an unmocked one here is a real connection attempt on
-    every 403 case."""
+    every 403 case.
+    """
     with patch("cqc_lem.api.main.get_session_user_id", return_value=SESSION_USER_ID), \
          patch("cqc_lem.api.main.get_user_email", return_value=SESSION_EMAIL), \
          patch("cqc_lem.api.main.record_auth_event", return_value=True), \

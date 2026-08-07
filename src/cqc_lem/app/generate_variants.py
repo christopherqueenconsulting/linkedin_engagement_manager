@@ -16,14 +16,23 @@ from uuid import uuid4
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.ai_helper import (
-    get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, generate_post_image,
-    get_runway_ml_video_prompt_from_ai, create_runway_video,
+    create_runway_video,
+    generate_flux1_image_from_prompt,
+    generate_post_image,
+    get_flux_image_prompt_from_ai,
+    get_runway_ml_video_prompt_from_ai,
 )
-from cqc_lem.utilities.ai.video_models import estimate_video_cost, supports_audio, RATIO_ALIASES
-from cqc_lem.utilities.db import (get_post_content, get_user_content_language,
-                                  record_shipped_variant as _db_record_shipped_variant)
+from cqc_lem.utilities.ai.video_models import RATIO_ALIASES, estimate_video_cost, supports_audio
+from cqc_lem.utilities.db import (
+    get_post_content,
+    get_user_content_language,
+    record_shipped_variant as _db_record_shipped_variant,
+)
 from cqc_lem.utilities.env_constants import (
-    API_URL_FINAL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, DEFAULT_IMAGE_MODEL,
+    API_URL_FINAL,
+    DEFAULT_IMAGE_MODEL,
+    DEFAULT_VIDEO_MODEL,
+    DEFAULT_VIDEO_RATIO,
 )
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -64,7 +73,8 @@ def _image_cost(image_model: str) -> float:
 def combo_key(combo: dict) -> str:
     """Stable A/B identity for a variant combo — the key realized `post_stats` are attributed to
     (issue #396). Combos that render the same look collapse to the same key; ``seed`` and the
-    video-off case are only encoded when they actually differ the output."""
+    video-off case are only encoded when they actually differ the output.
+    """
     image = combo.get("image_model", DEFAULT_IMAGE_MODEL)
     include_video = combo.get("include_video", True)
     video = combo.get("video_model", DEFAULT_VIDEO_MODEL) if include_video else "none"
@@ -91,7 +101,8 @@ def record_shipped_variant(user_id: int, post_id: int, combo: dict, *,
     (`post_stats.select_variant_winners`) is untouched — PostHog gets the stats engine, the ranking
     keeps its recency weighting. The exposure follows the DB write, not the other way round: the arm
     a `post_outcome` event carries is read back out of `post_variants`, so an exposure for a row that
-    never landed would be an enrolment the metric can never cover."""
+    never landed would be an enrolment the metric can never cover.
+    """
     key = combo_key(combo)
     recorded = _db_record_shipped_variant(
         user_id, post_id, key, combo=combo,
@@ -104,7 +115,8 @@ def record_shipped_variant(user_id: int, post_id: int, combo: dict, *,
 def _track_shipped_variant_exposure(user_id: Optional[int], post_id: Optional[int],
                                     key: str) -> None:
     """Best-effort PostHog exposure for the shipped variant. Never raises: analytics can lose an
-    exposure, a post cannot lose its variant record."""
+    exposure, a post cannot lose its variant record.
+    """
     try:
         from cqc_lem.utilities.experiments import POST_MEDIA_VARIANT, track_shipped_variant
         track_shipped_variant(POST_MEDIA_VARIANT, key, user_id=user_id, post_id=post_id)

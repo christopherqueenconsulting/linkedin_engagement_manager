@@ -4,9 +4,13 @@ from unittest.mock import patch
 
 import pytest
 
-from cqc_lem.utilities.avatar.samples import (AVATAR_SAMPLE_SCENES, render_avatar_samples,
-                                              sample_asset_url, sample_payload,
-                                              sample_relative_dir)
+from cqc_lem.utilities.avatar.samples import (
+    AVATAR_SAMPLE_SCENES,
+    render_avatar_samples,
+    sample_asset_url,
+    sample_payload,
+    sample_relative_dir,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -56,7 +60,8 @@ class TestRenderAvatarSamples:
 
     def test_base_flux_fallback_is_discarded(self, fake_assets, tmp_path):
         """A fallback render is a picture of a stranger — showing it as 'your avatar' is worse
-        than showing nothing."""
+        than showing nothing.
+        """
         src = _source_image(tmp_path)
         with patch(_GEN, return_value=(src, False)), \
              patch("cqc_lem.utilities.avatar.samples._sign_best_effort"):

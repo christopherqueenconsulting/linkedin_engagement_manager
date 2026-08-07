@@ -1,8 +1,10 @@
 """Unit tests for the carousel one-anchor split (issue #728): the WRITER gets the single selected
-story-bank entry, the CHECKERS keep every active entry."""
+story-bank entry, the CHECKERS keep every active entry.
+"""
+
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
@@ -76,7 +78,8 @@ class TestOneAnchorPerDeck:
 
 class TestTheAnchorIsRotatedNotJustRead:
     """One anchor per deck is only half the invariant — without the usage write, `select_story`'s
-    least-used ordering hands EVERY deck the same entry, and the next text post re-uses it too."""
+    least-used ordering hands EVERY deck the same entry, and the next text post re-uses it too.
+    """
 
     def test_the_deck_counts_its_anchor_as_used(self):
         used = []

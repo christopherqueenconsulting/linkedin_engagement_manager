@@ -62,6 +62,14 @@ class PostImageVerdict:
 
     @property
     def extension(self) -> str:
+        """Extension to store this image under, taken from the DECODED format, never the upload's name.
+
+        An uploaded filename is untrusted — a `.png` that is really a JPEG is an ordinary browser
+        upload — and `determine_media_type` reads the STORED extension at publish to pick LinkedIn's
+        share category, so getting it from the name would fail there rather than here. The `.png`
+        fallback is only reachable on a rejected verdict: every `ok` verdict carries a format that
+        was matched against `_EXT_BY_FORMAT`.
+        """
         return _EXT_BY_FORMAT.get(self.image_format or "", ".png")
 
 
@@ -96,7 +104,8 @@ def inspect_post_image_bytes(data: bytes) -> PostImageVerdict:
 
 def post_image_relative_dir(user_id: int, post_id: Optional[int]) -> str:
     """Assets-relative dir this image belongs in — per POST once there is one, per USER while the
-    author is still composing (a preview has no row to be scoped by)."""
+    author is still composing (a preview has no row to be scoped by).
+    """
     if post_id:
         return f"{POST_IMAGE_SUBDIR}/{int(post_id)}"
     return f"{POST_IMAGE_PREVIEW_SUBDIR}/{int(user_id)}"

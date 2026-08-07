@@ -1,9 +1,11 @@
 """Unit tests for the inbound buying-intent classifier — issue #483. Covers the heuristic families,
 the cost gate (only ambiguous text reaches the LLM), the LLM tier's fail-closed behaviour, and the
-env-tunable threshold."""
+env-tunable threshold.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -105,7 +107,7 @@ class TestLlmTier:
         return resp
 
     def test_yes_is_a_lead(self):
-        from cqc_lem.utilities.ai.lead_intent import _llm_says_lead, _LLM_MAX_TOKENS
+        from cqc_lem.utilities.ai.lead_intent import _LLM_MAX_TOKENS, _llm_says_lead
         with patch(f"{_AI}._call_llm", return_value=self._response("Yes")) as call:
             assert _llm_says_lead("do you do this?") is True
         # _call_llm is what emits the PostHog llm_call event, so routing through it keeps this

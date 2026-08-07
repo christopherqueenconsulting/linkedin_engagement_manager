@@ -1,10 +1,11 @@
 """Unit tests for the tightened lead-magnet CTA flow: strengthened prompt contract, rewrite-pass
-preservation context, and soft-paraphrase dedup at repair time."""
+preservation context, and soft-paraphrase dedup at repair time.
+"""
 
 import os
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -38,8 +39,7 @@ class TestSoftOfferDedup:
 
     def test_soft_paraphrase_stripped_when_repair_fires(self):
         # The live post-27 failure mode: model wove a soft offer, mechanic missing.
-        from cqc_lem.utilities.ai.content_alignment import (ensure_lead_magnet_cta,
-                                                            has_lead_magnet_cta_mechanic)
+        from cqc_lem.utilities.ai.content_alignment import ensure_lead_magnet_cta, has_lead_magnet_cta_mechanic
         content = ("Strong insight about AI costs.\n\n"
                    "Feel free to reach out if you'd like a checklist to help you balance both. "
                    "It only takes 5 minutes to run.")

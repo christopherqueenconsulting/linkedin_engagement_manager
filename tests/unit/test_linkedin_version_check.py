@@ -44,7 +44,8 @@ class TestIsActiveResponse:
     @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 404, 418])
     def test_anything_that_proves_neither_raises(self, status):
         """A throttle or an outage must never read as 'this version is live' — guessing
-        there would forge a live window and drive a bad keep/bump decision."""
+        there would forge a live window and drive a bad keep/bump decision.
+        """
         with pytest.raises(lvc.ProbeError):
             lvc.is_active_response(status, "boom")
 

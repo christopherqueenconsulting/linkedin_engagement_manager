@@ -64,6 +64,12 @@ class CoverVerdict:
 
     @property
     def extension(self) -> str:
+        """Suffix for the stored file, taken from the format Pillow actually DECODED.
+
+        Never from whatever the uploader named the file — a mislabelled ``.png`` that is really a
+        JPEG would otherwise be served under a type it is not. ``.png`` when the format is unknown,
+        which only happens on a verdict that already failed the gate and is never written.
+        """
         return _EXT_BY_FORMAT.get(self.image_format or "", ".png")
 
 
@@ -228,7 +234,8 @@ def classify_avatar_relevance(title: Optional[str], subtitle: Optional[str],
 def _avatar_for_explicit_choice(user_id: int) -> Optional[dict]:
     """The avatar for a per-edition 'With me' click. The explicit choice beats the per-surface
     opt-in (same precedence a post's compose-time toggle has), but NEVER beats ``avatar_disabled``
-    or the preview/approval gate. Fails closed."""
+    or the preview/approval gate. Fails closed.
+    """
     try:
         from cqc_lem.utilities.avatar.guardrails import avatar_is_usable
         from cqc_lem.utilities.db import get_active_avatar, get_avatar_preferences

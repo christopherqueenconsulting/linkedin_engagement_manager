@@ -90,7 +90,8 @@ def profile_slug(profile_url: str) -> str:
 def person_key(person_name: str = None, person_profile_url: str = None) -> str:
     """Stable per-person identity so the same human found via post_engagers, a DM, and a lead signal
     collapses to ONE lead row. Prefers the profile slug; falls back to the normalized name (all we
-    get from feed/comment scrapes). Empty when we have neither — such a row is skipped."""
+    get from feed/comment scrapes). Empty when we have neither — such a row is skipped.
+    """
     slug = profile_slug(person_profile_url)
     if slug:
         return f"in:{slug}"
@@ -100,7 +101,8 @@ def person_key(person_name: str = None, person_profile_url: str = None) -> str:
 
 def _age_days(occurred_at: datetime, now: datetime) -> float:
     """Days between two timestamps, tolerating one side being tz-aware: MySQL hands back naive-UTC
-    datetimes while callers may pass an aware `now`, and mixing them raises."""
+    datetimes while callers may pass an aware `now`, and mixing them raises.
+    """
     if (occurred_at.tzinfo is None) != (now.tzinfo is None):
         occurred_at = occurred_at.replace(tzinfo=now.tzinfo)
     return (now - occurred_at).total_seconds() / 86400.0
@@ -108,7 +110,8 @@ def _age_days(occurred_at: datetime, now: datetime) -> float:
 
 def recency_weight(occurred_at: Optional[datetime], now: datetime) -> float:
     """Half-life decay in [RECENCY_FLOOR, 1.0]. An unknown or future timestamp is treated as now —
-    a missing date should never silently zero out a real signal."""
+    a missing date should never silently zero out a real signal.
+    """
     if not occurred_at:
         return 1.0
     days = _age_days(occurred_at, now)
@@ -119,13 +122,15 @@ def recency_weight(occurred_at: Optional[datetime], now: datetime) -> float:
 
 def _mentions(text: str, term: str) -> bool:
     """Whole-word match. Substring matching is wrong here in both directions: 'cto' is inside
-    'director' and 'ai' is inside 'chain', and either one silently mis-scores a lead."""
+    'director' and 'ai' is inside 'chain', and either one silently mis-scores a lead.
+    """
     return bool(re.search(rf"\b{re.escape(term)}\b", text))
 
 
 def icp_fit(facts: dict, target_terms: Iterable[str]) -> int:
     """0-100 fit of a person's title/company/industry against what the user says they care about
-    (focus topics, include topics/keywords). ICP_UNKNOWN when we have no facts on them."""
+    (focus topics, include topics/keywords). ICP_UNKNOWN when we have no facts on them.
+    """
     blob = " ".join(str(facts.get(k) or "") for k in ("job_title", "company_name", "industry")).lower()
     if not blob.strip():
         return ICP_UNKNOWN
@@ -152,7 +157,8 @@ def icp_fit(facts: dict, target_terms: Iterable[str]) -> int:
 
 def engagement_strength(activities: Iterable[LeadActivity], now: datetime) -> int:
     """0-100 from recency AND frequency. Repeats of the same signal add with diminishing returns
-    (1, 1/2, 1/3 …) so one person commenting ten times never outranks someone who asked to buy."""
+    (1, 1/2, 1/3 …) so one person commenting ten times never outranks someone who asked to buy.
+    """
     by_kind: dict = {}
     for a in activities or []:
         by_kind.setdefault(a.kind, []).append(a)
@@ -236,7 +242,8 @@ def score_lead(activities: list, now: datetime, person_name: str = None,
                target_terms: Iterable[str] = None) -> ScoredLead:
     """Score ONE person. The blend keeps engagement dominant (it is observed behaviour) while ICP
     fit scales it up or down by up to ±40% — an unknown-fit person lands right where engagement
-    alone puts them."""
+    alone puts them.
+    """
     acts = list(activities or [])
     icp = icp_fit(facts or {}, target_terms or [])
     engagement = engagement_strength(acts, now)
@@ -270,7 +277,8 @@ def group_activity(rows: Iterable[dict]) -> dict:
 
     A name-only row does NOT merge into a URL row for the same human: display names collide and we
     have nothing to tie them together with, so a wrong merge would silently blend two people's
-    signals. Those rows stay a separate name-keyed lead until a source gives us their URL."""
+    signals. Those rows stay a separate name-keyed lead until a source gives us their URL.
+    """
     people: dict = {}
     for row in rows or []:
         name = (row.get("person_name") or "").strip() or None

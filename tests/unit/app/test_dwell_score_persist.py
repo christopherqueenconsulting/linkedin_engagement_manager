@@ -1,10 +1,12 @@
 """Unit tests for the content-plan side of dwell-time optimization (issue #391 — C2): the
 dwell-proxy score is computed for every generated post and persisted next to the authenticity
 score, the deterministic wall-of-text repair runs on whatever draft ships, and neither may ever
-block the pipeline."""
+block the pipeline.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 

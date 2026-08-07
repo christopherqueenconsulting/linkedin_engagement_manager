@@ -93,8 +93,7 @@ class TestSaveAndRemove:
         assert not (tmp_path / "images").exists()
 
     def test_remove_deletes_the_file_behind_a_stored_url(self, tmp_path):
-        from cqc_lem.utilities.post_image import (post_image_abs_path, remove_post_image_file,
-                                                  save_post_image_bytes)
+        from cqc_lem.utilities.post_image import post_image_abs_path, remove_post_image_file, save_post_image_bytes
         with patch(f"{_PI}.assets_dir", str(tmp_path)):
             url = save_post_image_bytes(7, _image_bytes(), post_id=42)
             assert post_image_abs_path(url)
@@ -111,7 +110,8 @@ class TestSaveAndRemove:
 class TestUrlResolution:
     def test_a_traversal_path_never_resolves_outside_assets(self, tmp_path):
         """The value comes from our DB, but a hand-edited row must not hand a delete — or a
-        publish — an arbitrary file."""
+        publish — an arbitrary file.
+        """
         from cqc_lem.utilities.post_image import post_image_abs_path
         outside = tmp_path / "secret.png"
         outside.write_bytes(b"png")
