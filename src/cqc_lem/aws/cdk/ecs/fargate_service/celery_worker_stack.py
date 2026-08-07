@@ -186,7 +186,7 @@ class CeleryWorkerStack(Stack):
         )
         '''
 
-        scaling_policy = applicationautoscaling.TargetTrackingScalingPolicy(
+        applicationautoscaling.TargetTrackingScalingPolicy(
             self, "celery_worker-target-cpu-scaling-policy",
             policy_name="celery-worker-scalable-target-cpu-scaling",
             scaling_target=target,

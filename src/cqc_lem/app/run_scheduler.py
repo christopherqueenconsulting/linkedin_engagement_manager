@@ -246,7 +246,7 @@ def auto_check_scheduled_posts(self):
         if scheduled_time.tzinfo is None:
             scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
         log_warning(
-            "Re-queueing orphaned scheduled post",
+            f"Re-queueing orphaned scheduled post (scheduled {scheduled_time.isoformat()})",
             post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts",
         )
         post_to_linkedin.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})

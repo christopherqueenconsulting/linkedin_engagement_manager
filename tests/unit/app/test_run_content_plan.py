@@ -1,8 +1,14 @@
 from unittest.mock import ANY, MagicMock, patch
 
-import pydantic.v1.types  # noqa: F401
+import importlib
+
 import pytest
 from freezegun import freeze_time
+
+# Imported for the side effect ONLY, and via importlib so it reads as one: `pydantic.v1.types` must
+# be loaded before freezegun freezes the clock, or its `ConstrainedNumberMeta` metaclass conflicts.
+# A bare `import` here looks unused to every linter and gets deleted by an auto-fixer.
+importlib.import_module("pydantic.v1.types")
 
 from cqc_lem.utilities.db import PostType
 
