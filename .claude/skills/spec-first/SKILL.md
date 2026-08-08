@@ -9,8 +9,11 @@ description: Use before starting implementation on any non-trivial LEM issue, fe
    not memory. If `## Acceptance` isn't testable (no test names, numbers, or named behaviors), or
    `## Scope` hides a real fork ("pick whichever's simpler" between two options that trade off
    differently), that's the interview moment: name the fork and ask, or state the assumption
-   explicitly in the PR body — don't silently pick one and build it. A genuinely unspecifiable ask
-   (needs the account owner's judgment) is `needs-human`, not a best guess.
+   explicitly in the PR body as a literal `Uncertain: <one-line reason>` line — don't silently pick
+   one and build it. That exact line is grep-able residue, not just a note to the reader: it's what
+   `AGENT_WORKFLOW_PLAYBOOK.md`'s Review-economy "policy-triggered exception" keys off to route a
+   self-flagged PR to an independent Copilot review instead of same-identity self-review. A genuinely
+   unspecifiable ask (needs the account owner's judgment) is `needs-human`, not a best guess.
 2. **Verifier.** Before touching implementation, decide the specific check that proves this is done —
    a named test file/lane (per **test-lanes**), a coverage number, a skill's checklist
    (**db-migration**, **add-feature-flag**), or for fuzzy-correctness LLM output the deterministic
