@@ -75,6 +75,34 @@ def test_post_creation_and_publishing():
     pass
 ```
 
+## One workflow per lane — do not add a "run everything" workflow
+
+Each lane has exactly one CI workflow, and that workflow owns its Codecov flag:
+
+| Lane | Workflow | Check name | Codecov flag |
+|---|---|---|---|
+| unit | `unit-tests.yml` | `Unit Tests (Python 3.12)` — **required** | `unit` |
+| integration | `integration-coverage.yml` | `Integration Tests` — **required** | `integration` |
+| e2e | `e2e-coverage.yml` | `E2E Tests` | `e2e` |
+
+Those three flags are the *only* ones `codecov.yml` declares, and the required checks are the only
+ones branch protection reads.
+
+A general `Test Suite` workflow used to run alongside them, invoking pytest **three times** in one
+job — `tests/unit`, then `tests/integration`, then `pytest tests/` with coverage, which re-ran both.
+So every PR ran the unit lane 3× and the integration lane 3×, for ~13.7 min of the ~35 min of CI,
+while gating nothing: it was not a required context and had no `merge_group` trigger, so it took no
+part in queue validation.
+
+Two things made it actively misleading rather than merely wasteful. It declared **no service
+containers**, so its integration step had no MySQL or Redis and could never pass — which is why the
+step carried `continue-on-error: true`. And it uploaded coverage under a flag `codecov.yml` does not
+declare, so a fourth report merged into the project number from a run that excluded
+`requires_database`, `requires_openai`, `requires_selenium` and `slow`.
+
+If you want the whole suite in one command, run it locally. In CI, add tests to the lane that owns
+them.
+
 ## Test Markers
 
 Tests use markers to categorize and filter execution:

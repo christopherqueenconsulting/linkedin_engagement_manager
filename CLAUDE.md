@@ -242,18 +242,16 @@ cases. Plan with this table, drill in with the doc.
 
 ## CI Gates
 
-The SIX contexts branch protection actually requires on `main` (verified against the API — the
-earlier list named four, two of them wrong):
-- `Unit Tests (Python 3.12)`
-- `Integration Tests`
-- `UI Build`
-- `Migration Versions`
-- `GitGuardian Scan`
-- `CodeQL PR Quality Gate`
+The SIX contexts branch protection requires on `main` (verified against the API): `Unit Tests
+(Python 3.12)`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`,
+`CodeQL PR Quality Gate`.
 
-`CodeQL Security Analysis` runs but is NOT required. `Docstring & Lint Gate` is not required either —
-it is a ratchet against `.ruff-baseline` and joins this list when that reaches 0. **`required_approving_review_count`
-is 0**, so `require_code_owner_reviews` enforces nothing (`docs/contribution-security.md`).
+**One workflow per test lane**, each owning the one Codecov flag `codecov.yml` declares — never add
+a whole-suite workflow (`tests/README.md`; the old `Test Suite` ran two lanes 3×/PR and gated none).
+
+`CodeQL Security Analysis` and `Docstring & Lint Gate` run but are NOT required (the latter is the
+ratchet described under Code Conventions). **`required_approving_review_count` is 0**, so
+`require_code_owner_reviews` enforces nothing (`docs/contribution-security.md`).
 
 ## Production Deployment & Environment
 
@@ -279,7 +277,7 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
 
 ## Known Gotchas
 
-- **Legacy drift:** `get_docker_driver()` targets `selenium/standalone-chrome:latest` at 4444, not a Grid hub+node; `ai_helper.py` uses tier aliases, not a hardcoded `gpt-4o-mini`; PostHog replaced Prometheus + Jaeger (both gone from docker-compose); the external `linkedin-preview` service is gone — preview is the native `LinkedInPostPreview.tsx`.
+- **Legacy drift:** `get_docker_driver()` targets `selenium/standalone-chrome:latest` at 4444, not a Grid hub+node; `ai_helper.py` uses tier aliases, not a hardcoded `gpt-4o-mini`.
 - **LinkedIn SDUI** (`docs/sdui-selenium-notes.md`): the old `urn:`, `feed-shared-*` and `comments-comment-*` anchors are gone — prefer `data-testid` / `aria-label`. Three fix invariants (#1013): **success is the OUTCOME being present, never a click having landed**; **never click a control whose label names a different entity than the target** (the #1012 rail hazard); **zero items is not "nothing to do" until the page agrees** — cross-check an anchor the walk doesn't use (`_report_zero_walk`). Every surface maps to a read-only probe flag + a weekly `ok`/`drift`/`unknown` sweep filing ONE issue per drift (`docs/sdui-probe-coverage.md`). The comment composer has NO `<form>`; the sticky global nav steals clicks from an unfocused composer; every composer lookup is scoped to its OWN post (`_post_composer_for_card` / `_reply_composer_for_comment`), and a miss is a DEBUG no-op. A post PERMALINK runs that SAME engine (`comment_on_post` → `_permalink_post_card`, #966) — NOT a one-post page, so the card is picked by the permalink's URN, the reaction happens BEFORE the comment, and a comment that doesn't land is a FAILURE row, never a SUCCESS.
 - **Emoji in Selenium:** ChromeDriver `send_keys` throws on non-BMP emoji — strip them before typing with `_strip_non_bmp()`.
 - **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs — adding a value requires a migration. New migrations use **TIMESTAMP** versions so two branches never collide; the **db-migration** skill and `compose/local/database/migrations/README.md`.

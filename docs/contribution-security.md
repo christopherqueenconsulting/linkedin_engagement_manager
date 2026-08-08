@@ -159,6 +159,13 @@ GH_TOKEN="$AGENT_GH_TOKEN" gh api -X PUT \
 GH_TOKEN="$AGENT_GH_TOKEN" gh issue list --repo christopherqueenconsulting/linkedin_engagement_manager --limit 1
 ```
 
+> **If it succeeds it leaves a real file behind, and that file is evidence.** The probe writes
+> `.github/workflows/probe.yml` to `main` directly, with no PR. One ran on 2026-08-05 and committed
+> exactly that — an 11-byte `name: probe` with no `on:` or `jobs:`, which GitHub then recorded as a
+> failed workflow run on every push until it was deleted. So a stray `probe.yml` on `main` is not
+> litter to tidy away quietly: it means the token under test could write the gates at that moment.
+> Delete it, and re-check the scope that let it through.
+
 The first command **must** fail. If it succeeds, the token is over-scoped and the control does not
 exist — no amount of CODEOWNERS makes up for it while agent and owner share an identity.
 
