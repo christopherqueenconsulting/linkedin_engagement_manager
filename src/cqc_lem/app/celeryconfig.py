@@ -60,9 +60,19 @@ task_acks_late = True
 # Re-queue a task whose worker process died mid-execution (the pool child was killed) rather
 # than marking it failed and losing the work. Several tasks already set this per-decorator;
 # making it global means every task — including new ones — survives a deploy the same way.
-# Safe here because the re-runnable tasks are idempotent: posting short-circuits on
-# PostStatus.POSTED, comments/DMs dedup on the commented_posts / dm ledgers, and the
-# high-volume dispatchers are QueueOnce-locked.
+#
+# Safe because the re-runnable tasks are idempotent against a SECOND delivery: posting
+# short-circuits on PostStatus.POSTED, comments/DMs dedup on the commented_posts / dm ledgers,
+# group posts and newsletter editions gate on a durable DB status, and appreciation claims every
+# recipient in appreciation_touches BEFORE dispatch.
+#
+# What does NOT belong in that list is celery-once, which this comment used to cite. QueueOnce
+# takes its lock in `apply_async` — the PRODUCER side (celery_once/tasks.py:100-107) — and
+# `Task.__call__` only ever CLEARS a lock, never checks one. It stops two dispatchers racing; it
+# is not a redelivery guard, which is the only failure mode this setting creates. The remaining
+# gap is `send_private_dm`, whose log row is written in a `finally` AFTER the send, so a kill in
+# that window can cost one duplicate DM. The deploy drain window (stop_grace_period 8m) is the
+# mitigation; a durable pre-send claim is the real fix and is tracked separately.
 task_reject_on_worker_lost = True
 
 # Celery 5 deprecation: leaving this unset warns on every boot. False keeps a task RUNNING

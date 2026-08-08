@@ -22,8 +22,6 @@ from celery.signals import (
     task_prerun,
     task_received,
     task_retry,
-    task_sent,
-    task_success,
     worker_process_init,
 )
 
@@ -531,11 +529,11 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
     )
 
 
-@task_sent.connect
-@task_received.connect
-@task_success.connect
 def update_queue_length_metric(sender=None, headers=None, **kwargs) -> int:
-    """Get the current queue length from Redis broker and push to CloudWatch
+    """Get the current queue length from Redis broker and push to CloudWatch.
+
+    Connected only when `AWS_REGION` is set — see below. The Redis LLEN happens BEFORE the
+    CloudWatch check, so on a deploy with nowhere to publish this is pure cost on the hot path.
     """
     # Use the global app
     global app
@@ -584,3 +582,13 @@ def update_queue_length_metric(sender=None, headers=None, **kwargs) -> int:
             logger.error(f"Failed to publish metric: {str(e)}")
 
     return total_tasks
+
+
+# Connected ONLY when there is a CloudWatch to publish to. It used to hang off task_sent,
+# task_received AND task_success unconditionally — three broker-connection acquisitions and three
+# Redis LLENs per task, on the hot path, whose result was then discarded on the Compose deploy
+# (the only supported one, where AWS_REGION is unset). One signal is enough to sample queue depth;
+# on Compose, the `capacity-watch` beat already reports it every 15 minutes without touching the
+# per-task path at all. `weak=False` keeps the receiver alive past this module's import scope.
+if AWS_REGION:
+    task_received.connect(update_queue_length_metric, weak=False)

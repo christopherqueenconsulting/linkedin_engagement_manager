@@ -453,21 +453,6 @@ urllib3 = ">=1.25.4,<2.2.0 || >2.2.0,<3"
 crt = ["awscrt (==0.36.0)"]
 
 [[package]]
-name = "bs4"
-version = "0.0.2"
-description = "Dummy package for Beautiful Soup (beautifulsoup4)"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "bs4-0.0.2-py2.py3-none-any.whl", hash = "sha256:abf8742c0805ef7f662dce4b51cca104cffe52b835238afc169142ab9b3fbccc"},
-    {file = "bs4-0.0.2.tar.gz", hash = "sha256:a48685c58f50fe127722417bae83fe6badf500d54b55f7e39ffe43b798653925"},
-]
-
-[package.dependencies]
-beautifulsoup4 = "*"
-
-[[package]]
 name = "c2pa-python"
 version = "0.37.1"
 description = "Python bindings for the C2PA Content Authenticity Initiative (CAI) library"
@@ -1016,7 +1001,7 @@ version = "0.1.4"
 description = "Create data objects"
 optional = false
 python-versions = ">=3.5"
-groups = ["main"]
+groups = ["streamlit"]
 files = [
     {file = "cobble-0.1.4-py3-none-any.whl", hash = "sha256:36c91b1655e599fd428e2b95fdd5f0da1ca2e9f1abb0bc871dec21a0e78a2b44"},
     {file = "cobble-0.1.4.tar.gz", hash = "sha256:de38be1539992c8a06e569630717c485a5f91be2192c461ea2b220607dfa78aa"},
@@ -1327,7 +1312,7 @@ version = "0.7.1"
 description = "XML bomb protection for Python stdlib modules"
 optional = false
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*"
-groups = ["main", "dev"]
+groups = ["dev"]
 files = [
     {file = "defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61"},
     {file = "defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69"},
@@ -1362,21 +1347,6 @@ files = [
     {file = "distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"},
     {file = "distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed"},
 ]
-
-[[package]]
-name = "docx"
-version = "0.2.4"
-description = "The docx module creates, reads and writes Microsoft Office Word 2007 docx files"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "docx-0.2.4.tar.gz", hash = "sha256:9d7595eac6e86cda0b7136a2995318d039c1f3eaa368a3300805abbbe5dc8877"},
-]
-
-[package.dependencies]
-lxml = "*"
-Pillow = ">=2.0"
 
 [[package]]
 name = "executing"
@@ -1488,17 +1458,6 @@ humanize = "*"
 prometheus-client = ">=0.8.0"
 pytz = "*"
 tornado = ">=5.0.0,<7.0.0"
-
-[[package]]
-name = "fpdf"
-version = "1.7.2"
-description = "Simple PDF generation for Python"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "fpdf-1.7.2.tar.gz", hash = "sha256:125840783289e7d12552b1e86ab692c37322e7a65b96a99e0ea86cca041b6779"},
-]
 
 [[package]]
 name = "fqdn"
@@ -2329,18 +2288,6 @@ files = [
 ]
 
 [[package]]
-name = "joblib"
-version = "1.5.3"
-description = "Lightweight pipelining with Python functions"
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713"},
-    {file = "joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3"},
-]
-
-[[package]]
 name = "jsii"
 version = "1.139.0"
 description = "Python client for jsii runtime"
@@ -2947,7 +2894,7 @@ version = "1.12.0"
 description = "Convert Word documents from docx to simple and clean HTML and Markdown"
 optional = false
 python-versions = ">=3.7"
-groups = ["main"]
+groups = ["streamlit"]
 files = [
     {file = "mammoth-1.12.0-py2.py3-none-any.whl", hash = "sha256:d195ae2403b98276d7646e252035b6f70adb255987bb267e9eac6bc6531fe38f"},
     {file = "mammoth-1.12.0.tar.gz", hash = "sha256:10955a55d9173167b550de3aeb8f2ed48b420756fd66378156b2f78661a33dd5"},
@@ -3304,33 +3251,6 @@ files = [
     {file = "nest_asyncio2-1.7.2-py3-none-any.whl", hash = "sha256:f5dfa702f3f81f6a03857e9a19e2ba578c0946a4ad417b4c50a24d7ba641fe01"},
     {file = "nest_asyncio2-1.7.2.tar.gz", hash = "sha256:1921d70b92cc4612c374928d081552efb59b83d91b2b789d935c665fa01729a8"},
 ]
-
-[[package]]
-name = "nltk"
-version = "3.10.0"
-description = "Natural Language Toolkit"
-optional = false
-python-versions = ">=3.10"
-groups = ["main"]
-files = [
-    {file = "nltk-3.10.0-py3-none-any.whl", hash = "sha256:54ff84d4916d3ef127e8953bee0023f6a6b320b75d634a19e06ef056d3d244bf"},
-    {file = "nltk-3.10.0.tar.gz", hash = "sha256:4fbac1d98203cbcd1b5d94a2877fb822300072d80604a5e7fae49d2c5f84e8c1"},
-]
-
-[package.dependencies]
-click = "*"
-defusedxml = "*"
-joblib = "*"
-regex = ">=2021.8.3"
-tqdm = "*"
-
-[package.extras]
-all = ["matplotlib", "numpy", "pyparsing", "python-crfsuite", "requests", "scikit-learn", "scipy", "twython"]
-corenlp = ["requests"]
-machine-learning = ["numpy", "python-crfsuite", "scikit-learn", "scipy"]
-plot = ["matplotlib"]
-tgrep = ["pyparsing"]
-twitter = ["twython"]
 
 [[package]]
 name = "notebook"
@@ -4203,53 +4123,6 @@ files = [
     {file = "pycparser-3.0.tar.gz", hash = "sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29"},
 ]
 markers = {main = "implementation_name != \"PyPy\"", dev = "implementation_name != \"PyPy\"", mcp = "platform_python_implementation != \"PyPy\" and implementation_name != \"PyPy\""}
-
-[[package]]
-name = "pycurl"
-version = "7.47.0"
-description = "PycURL -- A Python Interface To The cURL library"
-optional = false
-python-versions = ">=3.10"
-groups = ["main"]
-files = [
-    {file = "pycurl-7.47.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:40e767edb50eeac391734134f6737ffef8e08dd6749b8bbc183cb72f93efeb6c"},
-    {file = "pycurl-7.47.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:b2256215ffda1e59cda8f297997295f9cf82703427b081eec58fb0f90eacef54"},
-    {file = "pycurl-7.47.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:00113d7f6ec5fba960ddbc260adce30b98b26d308fb3eb996abca8e678987bc8"},
-    {file = "pycurl-7.47.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:285a9e9e68181c4ba53412346544fe0ad61720ddc0e05735b770ccfdbed9480e"},
-    {file = "pycurl-7.47.0-cp310-cp310-win_amd64.whl", hash = "sha256:0b4534368fc8840d83e78af4ffb96d68ac6ee434b24ced9d8f722785d8be6728"},
-    {file = "pycurl-7.47.0-cp310-cp310-win_arm64.whl", hash = "sha256:41bc45d1842b5e6af33476edfa9fc893c43d9f27db05590da266474b22c85a0d"},
-    {file = "pycurl-7.47.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:850f4228ec24b0dbcad6815fe217bf40ac513c4c5f8fa7f459ca60ece387b61e"},
-    {file = "pycurl-7.47.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:57081f093a28172750be51a9d041b402ed774fe8692225a59a57436af3d1eb5f"},
-    {file = "pycurl-7.47.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:34213259bf0c852ddc061bf8028b734798a9bde417959e22706ba22098912c4e"},
-    {file = "pycurl-7.47.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:4783d02346b21a1337166a81dc7c0f29e3dde2485fa4985b9c169390a299f34a"},
-    {file = "pycurl-7.47.0-cp311-cp311-win_amd64.whl", hash = "sha256:bd7cf7e711b1a362b1c131de505b3c1f93798baff4fab27629473ba581a68dbc"},
-    {file = "pycurl-7.47.0-cp311-cp311-win_arm64.whl", hash = "sha256:dead83f7096e1bbf1493c395dfd8818e89c1d1c41aa697e5801c2ab480fa425e"},
-    {file = "pycurl-7.47.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:a36d2a0e1a159cf1dc6d7683c40ba2e6d346fe6450e418dec95d98555e9c349d"},
-    {file = "pycurl-7.47.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:09fdb6ca1e4f7f166dd8dc0371d69f4aad72e3d7f5123e755548993219d10f8d"},
-    {file = "pycurl-7.47.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:065e900f45c1882738c6866b1557e983050d51bf2eef8b3b0e47145a484b6515"},
-    {file = "pycurl-7.47.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:478c76dacb28cb59dc19cf7e7d1a8e0211385d2a3082c63e326883109963a617"},
-    {file = "pycurl-7.47.0-cp312-cp312-win_amd64.whl", hash = "sha256:b165ec60bf0207b1899c09ce119eebcfb87c13a343be3d6eafc06a0273d5f520"},
-    {file = "pycurl-7.47.0-cp312-cp312-win_arm64.whl", hash = "sha256:9c2086cef1298aba442a78d9ade04a06480a8f1a1f6fc32b85d4a6f7bd33b1a9"},
-    {file = "pycurl-7.47.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:75f576d491fff65b059bf9de0d7a9c8babb83d73cdf2db2f3b1acbfce52942dc"},
-    {file = "pycurl-7.47.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5b149b78b8ada4814f31b952370d90d07783df609e746022849481e4f415dba3"},
-    {file = "pycurl-7.47.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:1002b12a3e8f3596f94a57f2a5f58a3f61fbd97261ea23c0407f3d00fabdbf0d"},
-    {file = "pycurl-7.47.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:1a23f26e739147588610f1cba82abb9346dd913b0e1f9839942e946a76a955f6"},
-    {file = "pycurl-7.47.0-cp313-cp313-win_amd64.whl", hash = "sha256:855bc9e0ef22cba654dcb4321e79ea4a14fce31bd28cfc09e904072babebeabf"},
-    {file = "pycurl-7.47.0-cp313-cp313-win_arm64.whl", hash = "sha256:6a5f0d079dc6535c5f64d04dc9e579b1d618b1e4a027d693907d11d2296a5a10"},
-    {file = "pycurl-7.47.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:2679e52599d1104883ff3ba57d3c288a2e63b9e69c3fa99ab2fbb6677a706308"},
-    {file = "pycurl-7.47.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:36a1f8e1a293c8cda453724df05d98f95fa85ebc43628e2f85f0d8f90ccdb29a"},
-    {file = "pycurl-7.47.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:e9f950b5f33565af3e0fc2023c8e311c0d3dd25701c9402de525931ff67c5101"},
-    {file = "pycurl-7.47.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:36f3ca3e81468ed359f98c5e93af616c9c781f47cf0859563f2a8ec5b51d8795"},
-    {file = "pycurl-7.47.0-cp314-cp314-win_amd64.whl", hash = "sha256:0a073902c9b530ada73a86d04ef553fbeb2ac6c5311c002e61094b669af4dca8"},
-    {file = "pycurl-7.47.0-cp314-cp314-win_arm64.whl", hash = "sha256:60ae61b827f272f5fd7bc957e77533002d95e1c601247a4c4b2b7f391eb1571e"},
-    {file = "pycurl-7.47.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:ce7648d04766aaacf9ce082eac3d45a4faffae3f905622f69ad9b1d89d8a2c27"},
-    {file = "pycurl-7.47.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:89bb4492f480b2a5dbd7220d4261c4cc8f6b69604193ef8ac1b11e7267ba9b99"},
-    {file = "pycurl-7.47.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:2540c99276b131b2ceb07aedeca06ecee63d7cf80f817bc555ddb51fdc422c21"},
-    {file = "pycurl-7.47.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:43517146a604a3f710cb51da555d68ebadf7982083b6557b08d2325f9f7beb2b"},
-    {file = "pycurl-7.47.0-cp314-cp314t-win_amd64.whl", hash = "sha256:35da2c8884efb5aed09e13d4b2207f184eb59c27b4ada62f5b3a59ef18262a81"},
-    {file = "pycurl-7.47.0-cp314-cp314t-win_arm64.whl", hash = "sha256:c6cd58780400e1bed6aad32c542afa4a6901abde116be24b64e5d6cc3fef583e"},
-    {file = "pycurl-7.47.0.tar.gz", hash = "sha256:5e3cf357939da8d4ceefe3c7f305afcf9b47cba66cfd95e7768ca43b38445e14"},
-]
 
 [[package]]
 name = "pydantic"
@@ -6646,4 +6519,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "895c92138dcf4f6c11dbd38071b6d814eba235aea65c45b0153749556269ac86"
+content-hash = "a866d911b65331cbdf16afb676e94dcd740214a24a701ceebdc2ec4f7c154101"

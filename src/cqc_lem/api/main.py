@@ -39,6 +39,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from linkedin_api.clients.auth.client import AuthClient
@@ -2953,6 +2954,15 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
         form = await request.form()
     except Exception:
         return ResponseModel(status_code=200, detail="ignored")
+    # Everything past the form parse is blocking — MySQL and Redis on every path, and on the
+    # Gmail-confirmation branch two 15s `requests.get` plus an SMTP send. This handler has to stay
+    # `async def` to await the form, so the blocking span goes to the threadpool that a plain `def`
+    # endpoint would have got for free, instead of stalling the event loop for up to 30s.
+    return await run_in_threadpool(_handle_inbound_parse, form)
+
+
+def _handle_inbound_parse(form) -> ResponseModel:
+    """The synchronous body of the SendGrid Inbound Parse webhook (see the route above)."""
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
     # SendGrid Inbound Parse routes ALL mail for the parse host to this ONE URL, so this endpoint
@@ -3198,7 +3208,8 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
         form = await request.form()
     except Exception:
         return ResponseModel(status_code=200, detail="ignored")
-    return _process_reply_inbound(form)
+    # Same reasoning as the shared parse route: _process_reply_inbound is blocking.
+    return await run_in_threadpool(_process_reply_inbound, form)
 
 
 @router.put("/user/", responses={
@@ -7631,6 +7642,14 @@ async def start_avatar_training_endpoint(
     if not zip_bytes:
         raise HTTPException(status_code=400, detail="No file data received")
 
+    # The zip scan and the multi-MB Replicate upload are both blocking, and the upload is the
+    # slowest thing any route in this file does. Off the event loop — a plain `def` endpoint would
+    # have got this threadpool for free, and only the `await photos.read()` above forces `async`.
+    return await run_in_threadpool(_start_avatar_training, user_id, zip_bytes, trigger_word)
+
+
+def _start_avatar_training(user_id: int, zip_bytes: bytes, trigger_word: str) -> ResponseModel:
+    """Validate the upload, start the Replicate job, then charge for it (see the route above)."""
     _MAX_ZIP_BYTES = 50 * 1024 * 1024  # 50 MB compressed
     _MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB uncompressed guard
     if len(zip_bytes) > _MAX_ZIP_BYTES:
