@@ -866,7 +866,6 @@ def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
         try:
             # Wait to close the new window or tab
             wait.until(EC.number_of_windows_to_be(len(handles) - 1), "Waiting for browser/tab to close.")
-            pass
         except TimeoutException as te:
             log_info(te)
             if (max_retry > 0):
@@ -901,6 +900,7 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
     reports at least one window handle, so the caller never gets a half-started session.
     """
     # Create the driver. Passing user_id applies that user's geo/timezone/locale spoofing.
+    driver = None
     for attempt in range(max_retry):
         try:
             driver = get_docker_driver(headless=headless, session_name=session_name, coordinates=coordinates,
@@ -911,6 +911,12 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
                 raise e  # Raise the exception if max retries reached
             wait_time = 30 * (2 ** attempt)  # Exponential backoff starting at 30 seconds
             time.sleep(wait_time)  # Wait before retrying
+
+    if driver is None:
+        # `range(max_retry)` with max_retry < 1 never enters the loop, so nothing assigns `driver`
+        # and nothing raises — the next line used to fail with a bare NameError from inside a
+        # Selenium helper, which reads like a driver fault rather than a bad argument.
+        raise ValueError(f"get_driver_wait_pair needs max_retry >= 1, got {max_retry}")
 
     wait = get_driver_wait(driver)
 
