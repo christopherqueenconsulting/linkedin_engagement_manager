@@ -938,6 +938,24 @@ class TestCatchupDispatchers:
         task.apply_async.assert_called_once()
         assert "1 orphaned" in out
 
+    def test_send_scanner_skips_a_touch_whose_claim_failed(self):
+        """A failed `sending` claim means another worker owns the touch — dispatching would double-send."""
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7), (2, 7)]), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
+             patch(f"{_RS}.get_engagement_preferences",
+                   return_value=_prefs(max_catchup_touches_per_day=5)), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=5), \
+             patch(f"{_RS}.count_catchup_touches_sent_today", return_value=0), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.update_catchup_touch_status", side_effect=[False, True]), \
+             patch(f"{_RS}.send_catchup_touch") as task:
+            out = auto_check_catchup_touches()
+        assert task.apply_async.call_count == 1
+        assert task.apply_async.call_args.kwargs["kwargs"] == {"touch_id": 2}
+        assert "Dispatched 1" in out
+
     def test_send_scanner_short_circuits_when_throttled(self):
         from cqc_lem.app.run_scheduler import auto_check_catchup_touches
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \

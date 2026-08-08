@@ -118,6 +118,7 @@ class TestPartialUpdateKeepsTheRest:
         "feed_fallback_when_empty": 0, "link_in_first_comment": 0,
         "max_catchup_touches_per_day": 4, "catchup_touch_mode": "auto_approve",
         "catchup_event_types": '["promotion"]', "catchup_message_source": "ai",
+        "min_catchup_contact_interval_days": 14, "max_catchup_touches_per_contact_days": 3,
         "posts_per_week": 5, "posting_days": '[0, 2, 4, 6]',
         "text_post_images": 0,
         "roster_auto_follow": 1, "max_follows_per_day": 4, "roster_auto_connect": 1,

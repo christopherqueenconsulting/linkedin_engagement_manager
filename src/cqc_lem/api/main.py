@@ -5087,12 +5087,6 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
     # Read-only: bounds for the per-contact catch-up frequency guard (issue #1078).
-    from cqc_lem.utilities.db import (
-        CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
-        CATCHUP_MAX_PER_CONTACT_DAYS_MIN,
-        CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
-        CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
-    )
     prefs["catchup_contact_interval_bounds"] = {
         "min_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
         "max_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,

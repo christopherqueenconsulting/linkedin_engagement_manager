@@ -1375,6 +1375,43 @@ class TestCatchupContactFrequency:
             mock_database_connection["cursor"].fetchone.return_value = (42,)
             assert count_existing_double_sent_catchups() == 42
 
+    def test_count_existing_double_sent_catchups_zero_on_db_error(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import count_existing_double_sent_catchups
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+            assert count_existing_double_sent_catchups() == 0
+
+    def test_marking_a_touch_sent_stamps_last_sent_at(self, mock_database_connection):
+        """The cooldown reads `last_sent_at`, so the status move is what has to write it."""
+        from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch_status
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert update_catchup_touch_status(3, CatchupTouchStatus.SENT) is True
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        assert "last_sent_at = NOW()" in sql
+
+    def test_a_non_sent_status_move_leaves_last_sent_at_alone(self, mock_database_connection):
+        from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch_status
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert update_catchup_touch_status(3, CatchupTouchStatus.SENDING) is True
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        assert "last_sent_at" not in sql
+
+    def test_patching_a_touch_to_sent_also_stamps_last_sent_at(self, mock_database_connection):
+        from cqc_lem.utilities.db import CatchupTouchStatus, update_catchup_touch
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert update_catchup_touch(3, message="ty", status=CatchupTouchStatus.SENT) is True
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        assert "last_sent_at = NOW()" in sql and "message = %s" in sql
+
 
 @pytest.mark.unit
 class TestEngagementPreferencesDefaults1078:
@@ -1450,3 +1487,22 @@ class TestEngagementPreferencesDefaults1078:
         params = mock_database_connection["cursor"].execute.call_args[0][1]
         assert params[40] == 0
         assert params[41] == 0
+
+    def test_unparseable_values_fall_back_to_the_defaults(self, mock_database_connection):
+        """A junk value must not reach the column — the guard falls back rather than raising."""
+        from cqc_lem.utilities.db import (
+            CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
+            CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+            update_engagement_preferences,
+        )
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            mock_database_connection["cursor"].rowcount = 1
+            update_engagement_preferences(1, {
+                "min_catchup_contact_interval_days": "soon",
+                "max_catchup_touches_per_contact_days": ["nope"],
+            })
+        params = mock_database_connection["cursor"].execute.call_args[0][1]
+        assert params[40] == CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+        assert params[41] == CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
