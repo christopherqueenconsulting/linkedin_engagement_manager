@@ -20,6 +20,12 @@ import tldextract
 
 DEBUG_LEVEL = 3
 
+# (connect, read) seconds for outbound asset downloads. A generous read budget because render hosts
+# hand back multi-MB files, but a bounded one: `requests` defaults to waiting forever, and no task in
+# this tree sets a Celery time limit, so an unanswered socket parks a worker slot until the process
+# is recycled.
+DOWNLOAD_TIMEOUT = (5, 60)
+
 
 def debug_function(func):
     """Trace a call against the module-level `DEBUG_LEVEL`, read at CALL time not at decoration time.
@@ -228,22 +234,35 @@ def save_video_url_to_dir(video_url: str, dir_path):
     `ai_helper.generate_post_image`), not just Runway video.
 
     `dir_path` must already exist; callers pair this with `create_folder_if_not_exists`. A non-2xx
-    response raises rather than writing, so a failed render never leaves a truncated file that later
-    stages would treat as media. The query string is dropped, so two URLs whose paths end in the same
-    file name overwrite each other in one directory.
+    response raises rather than writing, and the body streams to a `.part` file that is renamed only
+    once it is complete — so neither a failed render nor an interrupted download leaves a truncated
+    file that later stages would treat as media. The query string is dropped, so two URLs whose paths
+    end in the same file name overwrite each other in one directory.
+
+    The timeout is not optional: a render host that accepts the connection and then stalls would
+    otherwise hold a Celery slot forever, since no task in this tree sets a time limit.
     """
     # Extract the original file name from the URL
     parsed_url = urlparse(video_url)
     file_name = os.path.basename(parsed_url.path)
 
-    # Fetch the content from the URL
-    response = requests.get(video_url)
-    response.raise_for_status()  # Ensure we notice bad responses
-
-    # Save the video to the directory with the original file name
     video_path = os.path.join(dir_path, file_name)
-    with open(video_path, 'wb') as f:
-        f.write(response.content)
+    partial_path = video_path + '.part'
+
+    # Fetch the content from the URL. Streamed rather than buffered because these assets run to tens
+    # of MB and a Celery child holds them entirely in memory otherwise.
+    with requests.get(video_url, timeout=DOWNLOAD_TIMEOUT, stream=True) as response:
+        response.raise_for_status()  # Ensure we notice bad responses
+        try:
+            with open(partial_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1 << 16):
+                    f.write(chunk)
+            os.replace(partial_path, video_path)
+        except BaseException:
+            # Never leave a half-written .part for the next run to mistake for media.
+            if os.path.exists(partial_path):
+                os.remove(partial_path)
+            raise
 
     return video_path
 
