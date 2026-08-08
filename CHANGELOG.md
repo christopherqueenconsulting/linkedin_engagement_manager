@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.137.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.136.1...v0.137.0) (2026-08-08)
+
+
+### Features
+
+* **content:** occasion/milestone drafts published natively (closes [#1074](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1074)) ([#1122](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1122)) ([d1cb73a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d1cb73a3882a2b998111ddc1b236f1f72eeca44c))
+
+
+### Bug Fixes
+
+* **ci:** exclude vendored skills from CodeQL ([#1156](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1156)) ([f1daa2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f1daa2a2813e8021867aa18ccd13138e8cdaa7f0))
+* **db:** one binding for the MYSQL_* settings, and declare the constants db.py exports ([#1159](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1159)) ([cc364b5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cc364b5bd85c8c13e0c5c9c8a2849207a84a9de9))
+* **restructure:** verify the constants that travel, not just the function bodies ([#1166](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1166)) ([de49093](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/de49093e1efd5df37a3d1a8dc0832cc458b0f5d8))
+
+
+### Documentation
+
+* **pexels:** a 401 from Pexels does not mean the key is bad ([#1164](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1164)) ([78034ea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/78034ea9db1890b8ca4f35869da39d7c6cd27356))
+
 ## [0.136.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.136.0...v0.136.1) (2026-08-08)
 
 
