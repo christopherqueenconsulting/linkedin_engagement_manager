@@ -6,7 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_M = "cqc_lem.integrations.linkedin.notification_email"  # lgtm[py/unused-global-variable]
 
 
 class TestAddress:
