@@ -2968,7 +2968,7 @@ def _handle_inbound_parse(form) -> ResponseModel:
     # SendGrid Inbound Parse routes ALL mail for the parse host to this ONE URL, so this endpoint
     # must also handle the reply+<token> traffic (Gmail forwarding confirmations + comment
     # notifications), not only pin+<token> PIN replies. Dispatch by the address prefix.
-    from cqc_lem.utilities.linkedin.notification_email import extract_reply_token_from_address
+    from cqc_lem.integrations.linkedin.notification_email import extract_reply_token_from_address
     if extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope):
         return _process_reply_inbound(form)
     text = str(form.get("text") or form.get("html") or "")
@@ -3042,7 +3042,7 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
     and stash the numeric code + status so the UI can show it as a fallback if the auto-click didn't
     take. Always 200.
     """
-    from cqc_lem.utilities.linkedin.notification_email import (
+    from cqc_lem.integrations.linkedin.notification_email import (
         extract_gmail_confirmation_code,
         extract_gmail_confirmation_url,
     )
@@ -3153,7 +3153,7 @@ def _process_reply_inbound(form) -> ResponseModel:
     from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL.
     """
     from cqc_lem.utilities.db import get_user_id_by_reply_token
-    from cqc_lem.utilities.linkedin.notification_email import (
+    from cqc_lem.integrations.linkedin.notification_email import (
         extract_reply_token_from_address,
         is_comment_notification,
         is_gmail_forwarding_confirmation,
@@ -5089,7 +5089,7 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
         prefs["has_saved_preferences"] = True
     # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
     try:
-        from cqc_lem.utilities.linkedin.notification_email import reply_inbound_address
+        from cqc_lem.integrations.linkedin.notification_email import reply_inbound_address
         token = get_or_create_reply_inbound_token(user_id)
         prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
     except Exception:
