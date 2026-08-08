@@ -17,7 +17,7 @@ import hashlib
 import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, NamedTuple, Optional, Union
+from typing import Any, Optional, Union
 
 import mysql.connector
 from dotenv import load_dotenv
@@ -169,6 +169,22 @@ from cqc_lem.platform.db.repositories.newsletter import (
     update_newsletter_edition,
     update_newsletter_settings,
 )
+from cqc_lem.platform.db.shared import (
+    _FEEDBACK_COLUMNS,
+    AUTH_FACTOR_PASSKEY,
+    AVATAR_APPROVAL_PENDING,
+    DEFAULT_CONTENT_BUFFER_DAYS,
+    DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+    ENGAGEMENT_TARGET_CONNECT_STATUSES,
+    ENGAGEMENT_TARGET_FOLLOW_STATUSES,
+    ENGAGEMENT_TARGET_WEEKLY_DEFAULT,
+    MAX_CONTENT_BUFFER_DAYS,
+    ONBOARDING_STEPS,
+    SESSION_SCOPE_FULL,
+    VALID_VIDEO_QUALITIES,
+    BlockedVisit,
+    OwnershipUnprovable,
+)
 from cqc_lem.utilities.crypto import (
     decrypt_secret,
     encrypt_secret,
@@ -190,6 +206,20 @@ from cqc_lem.utilities.utils import get_top_level_domain
 # a per-line ruff directive is invisible to CodeQL and an lgtm marker is invisible to ruff, so
 # either one alone leaves whichever tool is blind free to flag or delete these.
 __all__ = [
+    "AUTH_FACTOR_PASSKEY",
+    "AVATAR_APPROVAL_PENDING",
+    "BlockedVisit",
+    "DEFAULT_CONTENT_BUFFER_DAYS",
+    "DEFAULT_CONTENT_BUFFER_MAX_POSTS",
+    "ENGAGEMENT_TARGET_CONNECT_STATUSES",
+    "ENGAGEMENT_TARGET_FOLLOW_STATUSES",
+    "ENGAGEMENT_TARGET_WEEKLY_DEFAULT",
+    "MAX_CONTENT_BUFFER_DAYS",
+    "ONBOARDING_STEPS",
+    "OwnershipUnprovable",
+    "SESSION_SCOPE_FULL",
+    "VALID_VIDEO_QUALITIES",
+    "_FEEDBACK_COLUMNS",
     "COST_ROLLUP_COLUMNS",
     "accrue_monthly_fixed_costs",
     "convert_affiliate_referral",
@@ -415,8 +445,6 @@ MAX_WAIT_RETRY = 3
 
 
 
-# Ordered checklist + the onboarding_state column that timestamps each step's first completion.
-ONBOARDING_STEPS: tuple = tuple(OnboardingStep)
 _ONBOARDING_COLS: tuple = tuple(f"{step.value}_at" for step in ONBOARDING_STEPS)
 
 
@@ -1470,15 +1498,6 @@ def get_post_user_id(post_id: int):
     return post['user_id'] if post else None
 
 
-class OwnershipUnprovable(Exception):
-    """The ownership query did not run, so nothing was proved either way (issue #914).
-
-    Distinct from `user_owns_posts` answering False, which means the query DID run and disproved
-    ownership. Both refuse the action — that is the fail-closed half and it is not negotiable — but
-    they are not the same fact and must not be reported as the same one: "Forbidden" tells a user
-    they lack permission to their own drafts, and sends on-call hunting an authorisation bug while
-    the database is the thing that is down.
-    """
 
 
 def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
@@ -2340,14 +2359,6 @@ def get_post_type_counts(user_id: int):
     return post_counts
 
 
-# Rolling forward buffer of ready posts (issue #544). Generation is bounded on purpose: a user
-# always has a few days of approve-able content ahead, but we never generate a large forward
-# batch, so a cancelling user leaves at most ~content_buffer_max_posts of wasted LLM/video spend.
-DEFAULT_CONTENT_BUFFER_DAYS = 5
-DEFAULT_CONTENT_BUFFER_MAX_POSTS = 5
-# Hard ceilings on the per-user knobs — the planning horizon is 30 days, and the ceiling is what
-# actually caps forward generation spend, so it is not user-raisable past this.
-MAX_CONTENT_BUFFER_DAYS = 30
 MAX_CONTENT_BUFFER_POSTS = 30
 # A post counts against the buffer once its content exists: pending (awaiting approval), approved
 # (queued) and scheduled (dispatched, not yet posted) are all "ready" and must not be re-generated.
@@ -3040,19 +3051,6 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
 # Session management
 # ---------------------------------------------------------------------------
 
-# What a session token is allowed to do (issue #745, 2c). A `full` session is the browser's; an
-# `extension` session belongs to the LinkedIn Connect extension, which can never run a passkey
-# ceremony — its step-up happened once, in the SPA, when the token was minted.
-#
-# A `recovery` session signed in with a recovery code. It is an ordinary session in every way except
-# one: it may enrol a factor without first proving one, because its owner is by definition the
-# person who no longer has a factor to prove.
-#
-# An `enroll` session (2c.1, issue #905) is a PIN login that landed after REQUIRE_STRONG_FACTOR_AFTER
-# on an account holding no strong factor. It is signed in — the PIN is still a valid bootstrap, so
-# nobody is locked out — but it may reach only the enrolment surface until it adds a factor, at
-# which point `release_enrollment_scope` promotes it to `full`.
-SESSION_SCOPE_FULL = "full"
 SESSION_SCOPE_EXTENSION = "extension"
 SESSION_SCOPE_RECOVERY = "recovery"
 SESSION_SCOPE_ENROLL = "enroll"
@@ -3366,7 +3364,6 @@ def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
 # `utilities/auth_factors.py`, and the ceremony wrappers are `utilities/webauthn_util.py`.
 # ---------------------------------------------------------------------------
 
-AUTH_FACTOR_PASSKEY = "passkey"
 AUTH_FACTOR_TOTP = "totp"
 
 # `secret` is the TOTP seed at rest. The field name is the encryption AAD (see crypto.py) —
@@ -4614,7 +4611,6 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect")
 
-VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
@@ -4882,19 +4878,16 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
 # guard so the same account never absorbs a run's whole comment budget.
 ENGAGEMENT_TARGET_CATEGORIES = ("peer", "icp", "creator")
 ENGAGEMENT_TARGET_SOURCES = ("user", "suggested")
-ENGAGEMENT_TARGET_WEEKLY_DEFAULT = 2
 ENGAGEMENT_TARGET_WEEKLY_MAX = 14
 
 
 
 
-ENGAGEMENT_TARGET_CONNECT_STATUSES = frozenset(ConnectStatus)
 # TERMINAL for AUTOMATION: one shot per target. 'requested' and 'failed' both mean LinkedIn has our
 # one invite (or refused it), and re-inviting someone who declined is the pattern that gets accounts
 # restricted — the user decides manually from there. 'connected' is the ladder finishing.
 ENGAGEMENT_TARGET_CONNECT_TERMINAL = frozenset({ConnectStatus.REQUESTED, ConnectStatus.CONNECTED,
                                                 ConnectStatus.FAILED})
-ENGAGEMENT_TARGET_FOLLOW_STATUSES = frozenset(FollowStatus)
 # TERMINAL for CLICKING: the roster pass never spends another follow click on a target that reached
 # either. 'follow_failed' is still re-READ on later visits (a read-only correction costs nothing and
 # a follow that landed but could not be verified must not be retired forever) — see
@@ -5052,13 +5045,6 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
         return False
 
 
-class BlockedVisit(NamedTuple):
-    """What one recorded blocked visit left behind: the new streak, and the target's connect state
-    AFTER the escalation check ran. Both come out of the same statement, so a caller can never
-    report a streak the escalation disagrees with.
-    """
-    streak: int
-    connect_status: str
 
 
 def record_target_comment_blocked(user_id: int, profile_url: str) -> BlockedVisit:
@@ -8200,9 +8186,6 @@ def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
 # Avatar training records
 # ---------------------------------------------------------------------------
 
-# avatar_trainings.approval_status — the preview/approval gate (issue #744). A freshly trained
-# avatar is 'pending' until the user has seen its sample renders and said yes.
-AVATAR_APPROVAL_PENDING = "pending"
 AVATAR_APPROVAL_APPROVED = "approved"
 AVATAR_APPROVAL_REJECTED = "rejected"
 
@@ -8796,12 +8779,6 @@ def insert_feedback(body: str, user_id: int = None,
         return None
 
 
-# Clustering convention (issue #498): a cluster is identified by the `feedback.id` of its SEED row —
-# the first report that got an issue filed. The seed carries `cluster_id = id`; every later duplicate
-# copies that cluster_id and the seed's github_issue_number. No extra table, so "one recurring
-# problem = one issue" is a self-join instead of a schema change.
-_FEEDBACK_COLUMNS = ("id, user_id, source, type_hint, body, context_json, embedding, cluster_id, "
-                     "github_issue_number, status, sentiment, reviewed_by, reviewed_at, created_at")
 
 
 def get_feedback_by_id(feedback_id: int) -> Optional[dict]:
