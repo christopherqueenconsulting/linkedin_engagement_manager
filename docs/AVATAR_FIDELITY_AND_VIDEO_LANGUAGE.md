@@ -3,8 +3,9 @@
 Issues: [#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)
 (research + item 1) · [#744](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/744)
 (items 2–4)
-Date: 2026-07-25, updated 2026-07-31 · Status: **owner signed off `1A 2A 3A 4A` (§5); all four
-Phase 2 items implemented — one supervised live avatar render still outstanding**
+Date: 2026-07-25, updated 2026-08-07 · Status: **DONE** — owner signed off `1A 2A 3A 4A` (§5), all
+four Phase 2 items shipped, and the supervised live avatar render passed on the owner's account
+(2026-08-07, §4). #744 closed on it.
 
 This document root-causes the four reported defects against the code as it existed on `main`,
 records what the underlying models can and cannot be conditioned on, and lays out the Phase 2
@@ -155,12 +156,12 @@ wrong-gender avatar can be caught before publication.
 **Language source of truth.** The codebase has no user language field. The nearest existing signal is
 `geocoding._locale_for(country_code)` surfaced through `db.get_user_geo(user_id)` (used today to make
 the browser locale match the proxy IP). That is a reasonable *default* but is location-derived, not a
-stated preference — a US-based user whose content is in Spanish would be mis-served. Phase 2 should
-add an explicit setting defaulted from that locale.
+stated preference — a US-based user whose content is in Spanish would be mis-served. *(Shipped —
+§4 item 1 added `users.content_language`, defaulted from that locale and overridable in the SPA.)*
 
 ---
 
-## 4. Proposed Phase 2 implementation plan
+## 4. Phase 2 implementation — all four items as built
 
 Ordered by risk-reduction per unit of work. Items 1–2 are the reported production defects.
 
@@ -265,9 +266,19 @@ the avatar-image disclosure, and the new endpoints
 `tests/unit/utilities/test_db_avatar_fidelity.py`,
 `tests/integration/test_avatar_preview_api.py`).
 
-**Still outstanding:** one supervised avatar render on the owner's account after deploy — declare
-attributes, review the three samples, approve, opt a content type in, generate. That is a human
-step and is why #744 stays open until it is done.
+**Live validation — done 2026-08-07 (owner, supervised).** Attributes were declared *before* the
+first sample render fired, the previews were re-rolled, and the three images were approved: the
+likeness reads as the author. That was the last acceptance box on #744, which closed on it. The
+ordering matters and is the one thing to repeat when validating a new avatar — the automatic first
+render is free but fires on the page's first status poll, so an avatar whose `gender_presentation` /
+`age_band` are still blank renders with an **empty subject clause**, which exercises none of the
+fidelity work above. Declare the attributes first, then spend a re-roll.
+
+**When a later preview set stops looking like the user** (owner's standing call, 2026-08-07): treat
+it as a **training-data problem first**, not a code bug. Declare or refresh the attributes, re-roll
+the samples, and only if the subject clause is provably landing in the Replicate prompt while the
+face is still wrong is it worth filing against this code path — the usual answer is a fresh LoRA
+trained on a better photo set, which costs a training credit and changes nothing here.
 
 ---
 
@@ -281,7 +292,7 @@ step and is why #744 stays open until it is done.
    language. *(Shipped — §4 item 1.)*
 3. **How avatar attributes are captured** → **A. The user self-declares** gender presentation and an
    optional age band in the Avatars SPA; stored on the avatar row and **never inferred** — no model
-   ever classifies the user's face. *(Phase 2 — §4 item 2.)*
+   ever classifies the user's face. *(Shipped — §4 item 2.)*
 4. **Guardrail strictness** → **A. Full set:** approval gate before activation, per-content-type
    opt-in (default off), disclosure + C2PA on *all* avatar media, and an explicit "don't use my
-   avatar" switch. *(Phase 2 — §4 items 3–4.)*
+   avatar" switch. *(Shipped — §4 items 3–4.)*

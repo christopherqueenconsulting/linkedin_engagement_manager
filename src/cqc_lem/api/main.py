@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 import requests
 from celery import chain as celery_chain
+from celery import states as celery_states
 from fastapi import (
     APIRouter,
     Depends,
@@ -39,6 +40,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from linkedin_api.clients.auth.client import AuthClient
@@ -58,6 +60,7 @@ from cqc_lem.app.run_automation import (
     send_lead_response,
     send_private_dm,
     sweep_reply_comments,
+    update_stale_profile,
 )
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.auth_factors import (
@@ -87,6 +90,12 @@ from cqc_lem.utilities.content_generation_status import clear_generation_status,
 from cqc_lem.utilities.db import (
     AVATAR_APPROVAL_APPROVED,
     AVATAR_APPROVAL_REJECTED,
+    CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
+    CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+    CATCHUP_MAX_PER_CONTACT_DAYS_MIN,
+    CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+    CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+    CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
     CATCHUP_TOUCHES_MAX,
     CATCHUP_TOUCHES_MAX_STANDARD,
     CATCHUP_TOUCHES_MIN,
@@ -353,6 +362,7 @@ from cqc_lem.utilities.post_image import (
     remove_post_image_file,
     save_post_image_bytes,
 )
+from cqc_lem.utilities.profile_refresh import claim_profile_refresh, refresh_claimed_seconds
 from cqc_lem.utilities.quality_gates import (
     AUTHENTICITY_SCORE_MIN_BOUNDS,
     SIMILARITY_MAX_PCT_BOUNDS,
@@ -1969,6 +1979,9 @@ class EngagementPreferencesRequest(BaseModel):
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
     catchup_event_types: List[str] = list(DEFAULT_CATCHUP_EVENT_TYPES)
     catchup_message_source: str = "linkedin"  # 'linkedin' (LinkedIn's own draft) | 'ai'
+    # Per-contact catch-up frequency guard (issue #1078). 0 disables the guard.
+    min_catchup_contact_interval_days: int = CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+    max_catchup_touches_per_contact_days: int = CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
 
     @field_validator("comment_length")
     @classmethod
@@ -2090,6 +2103,24 @@ class EngagementPreferencesRequest(BaseModel):
     def _clean_catchup_event_types(cls, v: List[str]) -> List[str]:
         # Drop unknown milestone types at the boundary — the ledger column is a MySQL ENUM.
         return [t for t in (v or []) if t in tuple(CatchupEventType)]
+
+    @field_validator("min_catchup_contact_interval_days")
+    @classmethod
+    def _clamp_catchup_contact_interval(cls, v: int) -> int:
+        try:
+            return min(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+                       max(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN, int(v)))
+        except (TypeError, ValueError):
+            return CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+
+    @field_validator("max_catchup_touches_per_contact_days")
+    @classmethod
+    def _clamp_catchup_per_contact_cap(cls, v: int) -> int:
+        try:
+            return min(CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+                       max(CATCHUP_MAX_PER_CONTACT_DAYS_MIN, int(v)))
+        except (TypeError, ValueError):
+            return CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
 
 
 class DmTemplateItem(BaseModel):
@@ -2924,6 +2955,15 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
         form = await request.form()
     except Exception:
         return ResponseModel(status_code=200, detail="ignored")
+    # Everything past the form parse is blocking — MySQL and Redis on every path, and on the
+    # Gmail-confirmation branch two 15s `requests.get` plus an SMTP send. This handler has to stay
+    # `async def` to await the form, so the blocking span goes to the threadpool that a plain `def`
+    # endpoint would have got for free, instead of stalling the event loop for up to 30s.
+    return await run_in_threadpool(_handle_inbound_parse, form)
+
+
+def _handle_inbound_parse(form) -> ResponseModel:
+    """The synchronous body of the SendGrid Inbound Parse webhook (see the route above)."""
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
     # SendGrid Inbound Parse routes ALL mail for the parse host to this ONE URL, so this endpoint
@@ -3169,7 +3209,8 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
         form = await request.form()
     except Exception:
         return ResponseModel(status_code=200, detail="ignored")
-    return _process_reply_inbound(form)
+    # Same reasoning as the shared parse route: _process_reply_inbound is blocking.
+    return await run_in_threadpool(_process_reply_inbound, form)
 
 
 @router.put("/user/", responses={
@@ -5059,6 +5100,15 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
+    # Read-only: bounds for the per-contact catch-up frequency guard (issue #1078).
+    prefs["catchup_contact_interval_bounds"] = {
+        "min_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
+        "max_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+    }
+    prefs["catchup_per_contact_cap_bounds"] = {
+        "min": CATCHUP_MAX_PER_CONTACT_DAYS_MIN,
+        "max": CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+    }
     # Read-only: the deploy-wide gate thresholds, so the UI can show what "default" actually means
     # for a user who hasn't overridden them (issue #421).
     from cqc_lem.utilities.ai.content_alignment import authenticity_score_min
@@ -6692,12 +6742,54 @@ def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
 
 @router.get("/user/linkedin-profile")
 def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
-    """The caller's connected LinkedIn profile URL. None when no LinkedIn account is attached yet."""
+    """The caller's connected LinkedIn profile URL. None when no LinkedIn account is attached yet.
+
+    `refresh_available_in_seconds` reports the on-demand re-scrape window (issue #1076) so the SPA
+    renders the same disabled state after a reload that it showed right after the press — a peek,
+    never a claim.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return ResponseModel(status_code=200, detail={
         "linkedin_profile_url": get_linkedin_profile_url_by_user_id(user_id),
+        "refresh_available_in_seconds": refresh_claimed_seconds(user_id),
+    })
+
+
+@router.post("/user/linkedin-profile/refresh", status_code=202, responses={
+    202: {"description": "Refresh queued, or already claimed for today"},
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
+})
+def refresh_user_linkedin_profile_endpoint(request: SessionOnlyRequest) -> ResponseModel:
+    """Re-scrape the caller's OWN LinkedIn profile now and regenerate the voice synthesis from it.
+
+    Without this, a profile edit reaches LEM's writing only when the weekly staleness beat
+    (`run_scheduler.auto_refresh_profile_syntheses`) catches up — up to 7 days of content generated
+    from the old headline, old skills, old experience.
+
+    Always 202, never 429: pressing the button a second time in the same day is a person pressing a
+    button twice, not an error, so the answer says `queued: false` and names the window instead of
+    reading as a failure. The claim is taken BEFORE dispatch — a double-click must cost one Chrome
+    session, not two — and the task's own `QueueOnce` lock is the second line against a duplicate
+    that slips past a failed-open limiter.
+
+    An `agent`-scoped session never reaches here: this path is absent from
+    `_AGENT_SESSION_SURFACE`, so `_scope_allows` refuses it before the handler runs. Spending a
+    Selenium slot is exactly the kind of capacity a headless token must not be able to draw on
+    (same posture as `agent_may_not_configure`).
+    """
+    user_id = require_session_user_id(request.session_token)
+    claim = claim_profile_refresh(user_id)
+    if claim.queued:
+        update_stale_profile.apply_async(kwargs={"user_id": user_id, "force_refresh": True},
+                                         retry=True, retry_policy={"max_retries": 1})
+        log_info("Queued an on-demand LinkedIn profile refresh", user_id=user_id,
+                 task_name="update_stale_profile")
+    return ResponseModel(status_code=202, detail={
+        "queued": claim.queued,
+        "reason": claim.reason,
+        "retry_after_seconds": claim.retry_after_seconds,
     })
 
 
@@ -7551,6 +7643,14 @@ async def start_avatar_training_endpoint(
     if not zip_bytes:
         raise HTTPException(status_code=400, detail="No file data received")
 
+    # The zip scan and the multi-MB Replicate upload are both blocking, and the upload is the
+    # slowest thing any route in this file does. Off the event loop — a plain `def` endpoint would
+    # have got this threadpool for free, and only the `await photos.read()` above forces `async`.
+    return await run_in_threadpool(_start_avatar_training, user_id, zip_bytes, trigger_word)
+
+
+def _start_avatar_training(user_id: int, zip_bytes: bytes, trigger_word: str) -> ResponseModel:
+    """Validate the upload, start the Replicate job, then charge for it (see the route above)."""
     _MAX_ZIP_BYTES = 50 * 1024 * 1024  # 50 MB compressed
     _MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB uncompressed guard
     if len(zip_bytes) > _MAX_ZIP_BYTES:
@@ -8089,10 +8189,27 @@ def admin_generate_media_variants(
 # bearer API token AND X-Admin-Secret are required (see _require_api_and_admin).
 # ---------------------------------------------------------------------------
 
+def _queued(result, task: str, **detail) -> ResponseModel:
+    """Report a QueueOnce dispatch honestly — 409 when nothing was actually queued.
+
+    Every task behind these endpoints is a QueueOnce task with `once={'graceful': True}`, and a
+    graceful rejection does not raise: celery-once answers `EagerResult(None, None, REJECTED)`
+    (celery_once/tasks.py:104) because a run for the same key is already in flight. Reporting that
+    as a 200 with `"task_id": null` told the operator a run had started and handed them an id that
+    `/admin/task-status/{task_id}` can never resolve — the one thing these endpoints exist to let
+    you watch.
+    """
+    if result.state == celery_states.REJECTED or result.id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {task} run is already queued or in progress for this target")
+    return ResponseModel(status_code=200, detail={"task_id": result.id, "task": task, **detail})
+
 @router.post("/admin/test/comment", responses={
     200: {"description": "Commenting test run queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_comment(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8105,9 +8222,7 @@ def admin_test_comment(
         "user_id": user_id, "loop_for_duration": loop_for_duration,
     }, queue="se_engage")
     myprint(f"admin/test/comment: queued task={result.id} user_id={user_id}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "automate_commenting", "user_id": user_id,
-    })
+    return _queued(result, "automate_commenting", user_id=user_id)
 
 
 @router.post("/admin/test/reply", responses={
@@ -8115,6 +8230,7 @@ def admin_test_comment(
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
     404: {"description": "User for post not found"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_reply(
     post_id: int = Query(..., description="Id of an already-posted post to reply on", examples=[42]),
@@ -8132,16 +8248,14 @@ def admin_test_reply(
         "loop_for_duration": loop_for_duration, "future_forward": future_forward,
     }, queue="se_engage")
     myprint(f"admin/test/reply: queued task={result.id} post_id={post_id}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "automate_reply_commenting",
-        "post_id": post_id, "user_id": user_id,
-    })
+    return _queued(result, "automate_reply_commenting", post_id=post_id, user_id=user_id)
 
 
 @router.post("/admin/consolidate-duplicate-comments", responses={
     200: {"description": "Consolidation run queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_consolidate_duplicate_comments(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8157,16 +8271,15 @@ def admin_consolidate_duplicate_comments(
         "user_id": user_id, "dry_run": dry_run, "hours": hours,
     }, queue="se_engage")
     myprint(f"admin/consolidate-duplicate-comments: queued task={result.id} user_id={user_id} dry_run={dry_run}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "consolidate_duplicate_comments_for_user",
-        "user_id": user_id, "dry_run": dry_run, "hours": hours,
-    })
+    return _queued(result, "consolidate_duplicate_comments_for_user",
+                   user_id=user_id, dry_run=dry_run, hours=hours)
 
 
 @router.post("/admin/test/dm", responses={
     200: {"description": "DM test run queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_dm(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8179,16 +8292,14 @@ def admin_test_dm(
         "user_id": user_id, "loop_for_duration": loop_for_duration,
     }, queue="se_outreach")
     myprint(f"admin/test/dm: queued task={result.id} user_id={user_id}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "automate_appreciation_dms_for_user",
-        "user_id": user_id,
-    })
+    return _queued(result, "automate_appreciation_dms_for_user", user_id=user_id)
 
 
 @router.post("/admin/test/dm-direct", responses={
     200: {"description": "Direct DM queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_dm_direct(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8204,10 +8315,7 @@ def admin_test_dm_direct(
         "user_id": user_id, "profile_url": profile_url, "message": message,
     }, queue="se_outreach")
     myprint(f"admin/test/dm-direct: queued task={result.id} user_id={user_id} -> {profile_url}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "send_private_dm",
-        "user_id": user_id, "profile_url": profile_url,
-    })
+    return _queued(result, "send_private_dm", user_id=user_id, profile_url=profile_url)
 
 
 @router.get("/admin/task-status/{task_id}", responses={

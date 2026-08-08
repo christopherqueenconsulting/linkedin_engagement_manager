@@ -10,6 +10,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The zero-walk grading moved to its own module (#1021) so scrapper/company_page_inviter can
+# share it; the logger it calls lives there now.
+_ZW = "cqc_lem.utilities.linkedin.zero_walk"
 
 
 @pytest.fixture(autouse=True)
@@ -418,13 +421,13 @@ class TestFeedZeroWalkTripwire:
         driver = MagicMock()
 
         driver.find_elements.return_value = [MagicMock()] * 3
-        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
             assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "drift"
         warn.assert_called_once()
         debug.assert_not_called()
 
         driver.find_elements.return_value = []
-        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
             assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "empty"
         warn.assert_not_called()
         debug.assert_called_once()
@@ -432,7 +435,7 @@ class TestFeedZeroWalkTripwire:
         # "We could not ask the page" is not "the page said zero", and is never a defect.
         from selenium.common.exceptions import WebDriverException
         driver.find_elements.side_effect = WebDriverException("session gone")
-        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
             assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "unknown"
         warn.assert_not_called()
         debug.assert_called_once()

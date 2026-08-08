@@ -18,6 +18,8 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
@@ -185,6 +187,51 @@ def get_db_connection() -> DbConnection:
             log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
 
     return mysql.connector.connect(**config)
+
+
+@contextmanager
+def db_cursor(*, dictionary: bool = False, commit: bool = False) -> Iterator[MySQLCursorAbstract]:
+    """Check out a connection, hand back a cursor, and always give both back.
+
+    This owns the RESOURCE half of a database call and nothing else. It deliberately does NOT catch
+    `mysql.connector.Error`: every caller in this module answers a read failure with its own
+    fallback — False, None, `[]`, 0 — and a context manager that swallowed the error would have to
+    invent one. Callers keep their own `except`, and what they lose is the four lines of ceremony
+    this replaces, repeated 417 times.
+
+    It also closes a hole that shape had. Those 417 blocks build the cursor BETWEEN
+    `get_db_connection()` and their `try:`, so a failure in `.cursor()` itself skipped the `finally`
+    — and `PooledMySQLConnection` has no `__del__`, so that connection never returned to the pool.
+    One statement wide, but it drained a pool slot permanently every time it happened. Building the
+    cursor inside this function fixes it for every migrated caller at once, which is the point of
+    having one place.
+
+    `commit=True` commits only when the body completed. An uncommitted transaction left by a raising
+    body is not leaked to the next user of the connection: the pool is built with the connector's
+    default `pool_reset_session=True`, so `close()` resets the session (mysql/connector/pooling.py
+    :409), and the unpooled fallback connection drops the transaction when its socket closes.
+
+    Args:
+        dictionary: Rows come back as dicts keyed by column instead of positional tuples.
+        commit: Commit after the body succeeds. Required for writes; a no-op cost for reads.
+
+    Yields:
+        The cursor — including its `rowcount` and `lastrowid`, which callers read after `execute`.
+    """
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(dictionary=dictionary)
+    except BaseException:
+        # The one path the old shape leaked: no cursor was created, so no `finally` below can run.
+        connection.close()
+        raise
+    try:
+        yield cursor
+        if commit:
+            connection.commit()
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -702,56 +749,43 @@ def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = N
 
 def has_linkedin_session(user_id: int) -> bool:
     """True if the user has a stored LinkedIn session cookie (li_at) to log in with."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT 1 FROM cookies WHERE user_id = %s AND name = 'li_at' LIMIT 1",
-            (user_id,),
-        )
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM cookies WHERE user_id = %s AND name = 'li_at' LIMIT 1",
+                (user_id,),
+            )
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         myprint(f"Could not check linkedin session for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_linkedin_session_email_sent_at(user_id: int):
     """Return the datetime the last session notification email was sent, or None."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT linkedin_session_email_sent_at FROM users WHERE id = %s", (user_id,)
-        )
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT linkedin_session_email_sent_at FROM users WHERE id = %s", (user_id,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not read session email timestamp for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_linkedin_session_email_sent_at(user_id: int) -> bool:
     """Stamp now() as the last session notification email time (throttle)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE users SET linkedin_session_email_sent_at = NOW() WHERE id = %s", (user_id,)
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET linkedin_session_email_sent_at = NOW() WHERE id = %s", (user_id,)
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not set session email timestamp for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def add_user(email: str, password: str):
@@ -761,25 +795,19 @@ def add_user(email: str, password: str):
     hands out once the row exists. A duplicate email is logged and swallowed, and nothing is returned
     either way — the caller learns the outcome by looking the user up.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
+        with db_cursor(commit=True) as cursor:
         # The row has to exist before the password can be encrypted — the ciphertext is bound to
         # users.id (AAD), which auto-increment only hands out on INSERT.
-        cursor.execute("INSERT INTO users (email) VALUES (%s)", (email,))
-        user_id = cursor.lastrowid
-        cursor.execute("UPDATE users SET password = %s WHERE id = %s",
-                       (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
-        connection.commit()
+            cursor.execute("INSERT INTO users (email) VALUES (%s)", (email,))
+            user_id = cursor.lastrowid
+            cursor.execute("UPDATE users SET password = %s WHERE id = %s",
+                           (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
     except mysql.connector.Error as e:
         if e.errno == errorcode.ER_DUP_ENTRY:
             myprint(f"User with email {email} already exists.")
         else:
             myprint(f"An error occurred: {e}")
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str, access_token_expires_in: str,
@@ -859,19 +887,14 @@ def get_user_linked_sub_id(user_id: int):
 
     None covers both "no such user" and a failed read.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT linked_sub_id FROM users WHERE id = %s", (user_id,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT linked_sub_id FROM users WHERE id = %s", (user_id,))
 
-        linked_sub_id = cursor.fetchone()
+            linked_sub_id = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user linked sub id | Error: {err}")
         linked_sub_id = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return linked_sub_id['linked_sub_id'] if linked_sub_id else None
 
@@ -883,26 +906,21 @@ def get_user_access_token(user_id: int):
     than as a token that will 401 later; a row with no recorded created_at/expires_in is treated as still
     valid. A token that will not decrypt also comes back None.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute(
-            "SELECT access_token FROM users WHERE id = %s AND ("
-            "access_token_created_at IS NULL "
-            "OR access_token_expires_in IS NULL "
-            "OR DATE_ADD(access_token_created_at, INTERVAL access_token_expires_in SECOND) > NOW()"
-            ")",
-            (user_id,),
-        )
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT access_token FROM users WHERE id = %s AND ("
+                "access_token_created_at IS NULL "
+                "OR access_token_expires_in IS NULL "
+                "OR DATE_ADD(access_token_created_at, INTERVAL access_token_expires_in SECOND) > NOW()"
+                ")",
+                (user_id,),
+            )
 
-        access_token = cursor.fetchone()
+            access_token = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user access token | Error: {err}")
         access_token = None
-    finally:
-        cursor.close()
-        connection.close()
 
     if not access_token:
         return None
@@ -915,19 +933,14 @@ def get_user_id(email: str):
     None conflates "no such address" with "the lookup failed", so it is never on its own proof that an
     account does not exist.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
 
-        user_id = cursor.fetchone()
+            user_id = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user id | Error: {err}")
         user_id = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return user_id['id'] if user_id else None
 
@@ -950,31 +963,25 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
         myprint(f"User with email {email} not found.")
         return success
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        scheduled_time = to_naive_utc(scheduled_time)
+        with db_cursor(commit=True) as cursor:
+            scheduled_time = to_naive_utc(scheduled_time)
 
-        slides_json = json.dumps(carousel_slides) if carousel_slides else None
+            slides_json = json.dumps(carousel_slides) if carousel_slides else None
 
-        # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
-        # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
-        cursor.execute("""
-            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
-              video_quality or "standard", status.value,
-              None if use_avatar is None else int(bool(use_avatar)), image_url))
+            # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
+            # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
+            cursor.execute("""
+                INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar, image_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
+                  video_quality or "standard", status.value,
+                  None if use_avatar is None else int(bool(use_avatar)), image_url))
 
-        connection.commit()
-        success = cursor.rowcount == 1
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Count not insert post. An error occurred: {e}")
-    finally:
-        cursor.close()
-        connection.close()
 
     return success
 
@@ -1055,23 +1062,17 @@ def update_db_post_content(post_id: int, content: str) -> bool:
     changed rather than matched rows unless the connection sets `CLIENT.FOUND_ROWS`, and
     `_get_mysql_config` does not — so re-saving identical content answers False.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "UPDATE posts SET content = %s WHERE id = %s",
-            (content, post_id)
-        )
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET content = %s WHERE id = %s",
+                (content, post_id)
+            )
 
-        connection.commit()
-        success = cursor.rowcount == 1
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Count not update post content. An error occurred: {e}")
-    finally:
-        cursor.close()
-        connection.close()
 
     return success
 
@@ -1081,23 +1082,17 @@ def update_db_post_video_url(post_id: int, video_url: str) -> bool:
 
     False when the write failed or no row matched.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "UPDATE posts SET video_url = %s WHERE id = %s",
-            (video_url, post_id)
-        )
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET video_url = %s WHERE id = %s",
+                (video_url, post_id)
+            )
 
-        connection.commit()
-        success = cursor.rowcount == 1
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Count not update post video url. An error occurred: {e}")
-    finally:
-        cursor.close()
-        connection.close()
 
     return success
 
@@ -1347,27 +1342,23 @@ def get_dashboard_counts(user_id: int, week_start) -> dict:
     """
     if week_start is not None and getattr(week_start, "tzinfo", None) is not None:
         week_start = week_start.astimezone(timezone.utc).replace(tzinfo=None)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT "
-            "  COALESCE(SUM(status IN (%s,%s) AND scheduled_time >= %s), 0) AS scheduled_this_week, "
-            "  COALESCE(SUM(status = %s), 0) AS pending_review, "
-            "  COALESCE(SUM(status = %s), 0) AS posted_total "
-            "FROM posts WHERE user_id = %s",
-            (PostStatus.APPROVED.value, PostStatus.PENDING.value, week_start,
-             PostStatus.PENDING.value, PostStatus.POSTED.value, user_id))
-        row = cursor.fetchone()
-        return {"scheduled_this_week": int(row[0] or 0),
-                "pending_review": int(row[1] or 0),
-                "posted_total": int(row[2] or 0)}
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT "
+                "  COALESCE(SUM(status IN (%s,%s) AND scheduled_time >= %s), 0) AS scheduled_this_week, "
+                "  COALESCE(SUM(status = %s), 0) AS pending_review, "
+                "  COALESCE(SUM(status = %s), 0) AS posted_total "
+                "FROM posts WHERE user_id = %s",
+                (PostStatus.APPROVED.value, PostStatus.PENDING.value, week_start,
+                 PostStatus.PENDING.value, PostStatus.POSTED.value, user_id))
+            row = cursor.fetchone()
+            return {"scheduled_this_week": int(row[0] or 0),
+                    "pending_review": int(row[1] or 0),
+                    "posted_total": int(row[2] or 0)}
     except mysql.connector.Error as err:
         myprint(f"Could not get dashboard counts for user {user_id} | Error: {err}")
         return {"scheduled_this_week": 0, "pending_review": 0, "posted_total": 0}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
@@ -1442,21 +1433,17 @@ def get_default_video_quality(user_id: int) -> str:
     Falls back to 'standard' when unset/invalid — premium is only ever honored when credits exist,
     which is enforced separately at render time.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT default_video_quality FROM engagement_preferences WHERE user_id = %s",
-            (user_id,))
-        row = cursor.fetchone()
-        quality = row.get("default_video_quality") if row else None
-        return quality if quality in VALID_VIDEO_QUALITIES else "standard"
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT default_video_quality FROM engagement_preferences WHERE user_id = %s",
+                (user_id,))
+            row = cursor.fetchone()
+            quality = row.get("default_video_quality") if row else None
+            return quality if quality in VALID_VIDEO_QUALITIES else "standard"
     except mysql.connector.Error as err:
         myprint(f"Could not get default video quality for user {user_id} | Error: {err}")
         return "standard"
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_default_video_quality(user_id: int, quality: str) -> bool:
@@ -1473,21 +1460,16 @@ def get_posted_posts(user_id: int):
 
     None (not []) when the read failed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute(
-            "SELECT id, content, scheduled_time, post_type, status FROM posts WHERE user_id = %s AND status = 'posted' ORDER BY scheduled_time asc",
-            (user_id,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, content, scheduled_time, post_type, status FROM posts WHERE user_id = %s AND status = 'posted' ORDER BY scheduled_time asc",
+                (user_id,))
 
-        posts = cursor.fetchall()
+            posts = cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get posted posts for user id: {user_id} | Error: {err}")
         posts = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return posts
 
@@ -1500,19 +1482,14 @@ def get_posted_posts(user_id: int):
 
 def get_post_content(post_id: int):
     """A post's body text, or None when the post does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT content FROM posts WHERE id = %s", (post_id,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT content FROM posts WHERE id = %s", (post_id,))
 
-        post = cursor.fetchone()
+            post = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get post content for post id: {post_id} | Error: {err}")
         post = False
-    finally:
-        cursor.close()
-        connection.close()
 
     return post['content'] if post else None
 
@@ -1523,19 +1500,14 @@ def get_post_user_id(post_id: int):
     None conflates "no such post" with a failed read, so this is not by itself an authorisation answer —
     `user_owns_posts` is the fail-closed one (issue #914).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT user_id FROM posts WHERE id = %s", (post_id,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT user_id FROM posts WHERE id = %s", (post_id,))
 
-        post = cursor.fetchone()
+            post = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get post user id for post id: {post_id} | Error: {err}")
         post = False
-    finally:
-        cursor.close()
-        connection.close()
 
     return post['user_id'] if post else None
 
@@ -1564,24 +1536,19 @@ def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
         return False
 
     unique_ids = list({int(pid) for pid in post_ids})
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        placeholders = ', '.join(['%s'] * len(unique_ids))
-        cursor.execute(
-            f"SELECT COUNT(DISTINCT id) FROM posts WHERE user_id = %s AND id IN ({placeholders})",
-            [user_id, *unique_ids],
-        )
-        row = cursor.fetchone()
-        return bool(row) and row[0] == len(unique_ids)
+        with db_cursor() as cursor:
+            placeholders = ', '.join(['%s'] * len(unique_ids))
+            cursor.execute(
+                f"SELECT COUNT(DISTINCT id) FROM posts WHERE user_id = %s AND id IN ({placeholders})",
+                [user_id, *unique_ids],
+            )
+            row = cursor.fetchone()
+            return bool(row) and row[0] == len(unique_ids)
     except mysql.connector.Error as err:
         from cqc_lem.utilities.logger import log_error
         log_error("Could not verify post ownership", exc=err, user_id=user_id)
         raise OwnershipUnprovable(str(err)) from err
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
@@ -1590,74 +1557,54 @@ def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
     Returns True whenever the statement ran, including when no row matched — unlike the sibling
     content/video setters, which report `rowcount`.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "UPDATE posts SET image_url = %s WHERE id = %s",
-            (image_url, post_id)
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET image_url = %s WHERE id = %s",
+                (image_url, post_id)
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not update post image_url for post id: {post_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_image_url(post_id: int) -> Optional[str]:
     """A post's stored image path, or None when unset, absent or unreadable."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT image_url FROM posts WHERE id = %s", (post_id,))
-        post = cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT image_url FROM posts WHERE id = %s", (post_id,))
+            post = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get post image_url for post id: {post_id} | Error: {err}")
         post = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return post['image_url'] if post else None
 
 
 def get_post_video_url(post_id: int):
     """A post's stored video URL, or None when unset, absent or unreadable."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT video_url FROM posts WHERE id = %s", (post_id,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT video_url FROM posts WHERE id = %s", (post_id,))
 
-        post = cursor.fetchone()
+            post = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get post video_url for post id: {post_id} | Error: {err}")
         post = False
-    finally:
-        cursor.close()
-        connection.close()
 
     return post['video_url'] if post else None
 
 
 def get_post_buyer_stage(post_id: int) -> Optional[str]:
     """The buyer-journey stage the content plan assigned this post, or None when unset or unreadable."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT buyer_stage FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT buyer_stage FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get buyer_stage for post id: {post_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
     return row['buyer_stage'] if row else None
 
 
@@ -1665,17 +1612,13 @@ def get_post_content_mix(post_id: int) -> Optional[str]:
     """This post's 70/20/10 mix class as assigned by the content-plan governor (issue #618).
     None for a post planned before the governor existed (or created by hand).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT content_mix FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT content_mix FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get content_mix for post id: {post_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
     return row['content_mix'] if row else None
 
 
@@ -1686,23 +1629,19 @@ def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
     scheduled_time (None = every post).
     """
     counts = {"unclassified": 0}
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        window = "AND scheduled_time >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
-        params = (user_id, days) if days is not None else (user_id,)
-        cursor.execute(
-            "SELECT content_mix, COUNT(*) FROM posts "
-            "WHERE user_id = %s AND status <> 'rejected' " + window +
-            "GROUP BY content_mix", params)
-        for mix, count in (cursor.fetchall() or []):
-            key = str(mix).strip().lower() if mix else "unclassified"
-            counts[key] = counts.get(key, 0) + int(count or 0)
+        with db_cursor() as cursor:
+            window = "AND scheduled_time >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
+            params = (user_id, days) if days is not None else (user_id,)
+            cursor.execute(
+                "SELECT content_mix, COUNT(*) FROM posts "
+                "WHERE user_id = %s AND status <> 'rejected' " + window +
+                "GROUP BY content_mix", params)
+            for mix, count in (cursor.fetchall() or []):
+                key = str(mix).strip().lower() if mix else "unclassified"
+                counts[key] = counts.get(key, 0) + int(count or 0)
     except mysql.connector.Error as err:
         myprint(f"Could not get content mix counts for user {user_id} | Error: {err}")
-    finally:
-        cursor.close()
-        connection.close()
     return counts
 
 
@@ -1713,18 +1652,13 @@ def get_post_type(post_id: int) -> Optional[PostType]:
     is not a member of this build's enum — the last is what a MySQL ENUM the code has not caught up to
     looks like from here.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT post_type FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT post_type FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get post_type for post id: {post_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
 
     if row:
         try:
@@ -1741,18 +1675,13 @@ def get_carousel_slides(post_id: int) -> list[str]:
     collapses to []. Empty is always safe to iterate, so a malformed row degrades to "no slides" instead
     of raising into the poster. `get_post_carousel_slides` hands back the RAW column instead.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT carousel_slides FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT carousel_slides FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get carousel_slides for post id: {post_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
 
     if row and row['carousel_slides']:
         try:
@@ -1851,45 +1780,36 @@ def update_db_post_rejection_reason(post_id: int, rejection_reason: Optional[str
     (issue #914) — every sibling write on this table carries it.
     """
     from cqc_lem.utilities.logger import log_error
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        params: list = [(rejection_reason or "").strip() or None, post_id]
-        owner_clause = ""
-        if user_id is not None:
-            owner_clause = " AND user_id = %s"
-            params.append(user_id)
+        with db_cursor(commit=True) as cursor:
+            params: list = [(rejection_reason or "").strip() or None, post_id]
+            owner_clause = ""
+            if user_id is not None:
+                owner_clause = " AND user_id = %s"
+                params.append(user_id)
 
-        cursor.execute(
-            f"UPDATE posts SET rejection_reason = %s WHERE id = %s{owner_clause}",
-            params
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+            cursor.execute(
+                f"UPDATE posts SET rejection_reason = %s WHERE id = %s{owner_clause}",
+                params
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         log_error(f"Could not update rejection reason for post {post_id}", exc=e, post_id=post_id)
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
 def get_post_rejection_reason(post_id: int) -> Optional[str]:
     """The persisted rejection reason for a post (issue #713), or None when it has none."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT rejection_reason FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT rejection_reason FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         from cqc_lem.utilities.logger import log_error
         log_error(f"Could not get rejection reason for post {post_id}", exc=err, post_id=post_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
@@ -1897,21 +1817,16 @@ def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
 
     False when the write failed or no row matched.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET carousel_slides = %s WHERE id = %s",
-            (json.dumps(slides), post_id)
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET carousel_slides = %s WHERE id = %s",
+                (json.dumps(slides), post_id)
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Could not update carousel_slides for post {post_id}. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
@@ -1921,21 +1836,16 @@ def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Opt
     the rotation history that keeps a user's next post from reusing a recently used shape (V51), and
     the topic attribution the feedback loop reads back off each captured stat row (#386).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET archetype = %s, hook_style = %s, topic = %s WHERE id = %s",
-            (archetype, hook_style, topic, post_id)
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET archetype = %s, hook_style = %s, topic = %s WHERE id = %s",
+                (archetype, hook_style, topic, post_id)
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Could not update shape for post {post_id}. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
@@ -1944,38 +1854,29 @@ def update_db_post_authenticity_score(post_id: int, score: Optional[int]) -> boo
     gives the previously dead post-quality column a purpose (issue #382, V57 authenticity_score). The
     content-plan status-setter reads this back to demote a low-scoring auto-approve to PENDING.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET authenticity_score = %s WHERE id = %s",
-            (score, post_id)
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET authenticity_score = %s WHERE id = %s",
+                (score, post_id)
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Could not update authenticity score for post {post_id}. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
 def get_post_authenticity_score(post_id: int) -> Optional[int]:
     """The authenticity gate's persisted score for a post (0-100), or None when unscored (issue #382)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT authenticity_score FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] is not None else None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT authenticity_score FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
     except mysql.connector.Error as err:
         myprint(f"Could not get authenticity score for post {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_db_post_gate_reason(post_id: int, findings: Optional[list]) -> bool:
@@ -1983,39 +1884,30 @@ def update_db_post_gate_reason(post_id: int, findings: Optional[list]) -> bool:
     (see utilities/quality_gates.py) as a JSON array on posts.gate_reason. An empty/None list clears
     the column, so a post that passes on re-score stops showing a stale reason.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET gate_reason = %s WHERE id = %s",
-            (json.dumps(findings) if findings else None, post_id)
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET gate_reason = %s WHERE id = %s",
+                (json.dumps(findings) if findings else None, post_id)
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Could not update gate reason for post {post_id}. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
 def get_post_gate_reason(post_id: int) -> list:
     """The persisted quality-gate findings for a post (issue #421), or [] when it has none."""
     from cqc_lem.utilities.quality_gates import parse_gate_findings
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT gate_reason FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return parse_gate_findings(row[0] if row else None)
+        with db_cursor() as cursor:
+            cursor.execute("SELECT gate_reason FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return parse_gate_findings(row[0] if row else None)
     except mysql.connector.Error as err:
         myprint(f"Could not get gate reason for post {post_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
@@ -2023,38 +1915,29 @@ def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
     Advisory metric stored next to authenticity_score — it is never read back to gate a status, so a
     failed write only costs the datapoint.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET dwell_score = %s WHERE id = %s",
-            (score, post_id)
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET dwell_score = %s WHERE id = %s",
+                (score, post_id)
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Could not update dwell score for post {post_id}. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
 def get_post_dwell_score(post_id: int) -> Optional[int]:
     """The persisted dwell-proxy score for a post (0-100), or None when unscored (issue #391)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT dwell_score FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] is not None else None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT dwell_score FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
     except mysql.connector.Error as err:
         myprint(f"Could not get dwell score for post {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_db_post_first_comment_link(post_id: int, link: Optional[str]) -> bool:
@@ -2062,38 +1945,29 @@ def update_db_post_first_comment_link(post_id: int, link: Optional[str]) -> bool
     seed-comment task can deliver them in the author's first comment. Newline-separated for multiple
     links; None clears it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET first_comment_link = %s WHERE id = %s",
-            (link, post_id)
-        )
-        connection.commit()
-        success = cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET first_comment_link = %s WHERE id = %s",
+                (link, post_id)
+            )
+            success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
         myprint(f"Could not update first comment link for post {post_id}. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
 def get_post_first_comment_link(post_id: int) -> Optional[str]:
     """The link(s) held back from a post's body for its first comment, or None (issue #392)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT first_comment_link FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return row[0] if row and row[0] else None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT first_comment_link FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
     except mysql.connector.Error as err:
         myprint(f"Could not get first comment link for post {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
@@ -2101,20 +1975,16 @@ def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
     shared content framework so a new post rotates away from recently used archetypes/hooks (the
     post-side twin of get_recent_newsletter_blueprint_history).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT archetype, hook_style FROM posts "
-            "WHERE user_id = %s AND archetype IS NOT NULL "
-            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
-        return cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT archetype, hook_style FROM posts "
+                "WHERE user_id = %s AND archetype IS NOT NULL "
+                "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get post shape history for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_archetype(post_id: int) -> Optional[str]:
@@ -2122,18 +1992,14 @@ def get_post_archetype(post_id: int) -> Optional[str]:
     it back so the archetype-specific checks (the no-fabrication guard on a build receipt, issue
     #619) know which contract this draft was written to.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT archetype FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT archetype FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not get archetype for post {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_post_texts(user_id: int, limit: int = 20,
@@ -2145,25 +2011,21 @@ def get_recent_post_texts(user_id: int, limit: int = 20,
     from the history — needed when re-scoring an ALREADY-SAVED post (issue #421), which would
     otherwise match itself at 100%.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        exclude_sql = " AND id <> %s" if exclude_post_id is not None else ""
-        params = ((user_id, exclude_post_id, int(limit)) if exclude_post_id is not None
-                  else (user_id, int(limit)))
-        cursor.execute(
-            "SELECT content FROM posts "
-            "WHERE user_id = %s AND content IS NOT NULL AND content <> '' "
-            "AND status IN ('pending', 'approved', 'posted')"
-            f"{exclude_sql} "
-            "ORDER BY id DESC LIMIT %s", params)
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            exclude_sql = " AND id <> %s" if exclude_post_id is not None else ""
+            params = ((user_id, exclude_post_id, int(limit)) if exclude_post_id is not None
+                      else (user_id, int(limit)))
+            cursor.execute(
+                "SELECT content FROM posts "
+                "WHERE user_id = %s AND content IS NOT NULL AND content <> '' "
+                "AND status IN ('pending', 'approved', 'posted')"
+                f"{exclude_sql} "
+                "ORDER BY id DESC LIMIT %s", params)
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get recent post texts for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] = None) -> int:
@@ -2171,33 +2033,34 @@ def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] 
 
     Scoped to user_id when provided. Returns count of updated rows.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if user_id is not None:
-            cursor.execute(
-                "UPDATE posts SET video_url = REPLACE(video_url, %s, %s) "
-                "WHERE video_url LIKE %s AND user_id = %s",
-                (old_base, new_base, f"{old_base}%", user_id)
-            )
-        else:
-            cursor.execute(
-                "UPDATE posts SET video_url = REPLACE(video_url, %s, %s) WHERE video_url LIKE %s",
-                (old_base, new_base, f"{old_base}%")
-            )
-        connection.commit()
-        updated = cursor.rowcount
+        with db_cursor(commit=True) as cursor:
+            if user_id is not None:
+                cursor.execute(
+                    "UPDATE posts SET video_url = REPLACE(video_url, %s, %s) "
+                    "WHERE video_url LIKE %s AND user_id = %s",
+                    (old_base, new_base, f"{old_base}%", user_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE posts SET video_url = REPLACE(video_url, %s, %s) WHERE video_url LIKE %s",
+                    (old_base, new_base, f"{old_base}%")
+                )
+            updated = cursor.rowcount
     except mysql.connector.Error as e:
         updated = 0
         myprint(f"Could not replace video URL base. Error: {e}")
-    finally:
-        cursor.close()
-        connection.close()
     return updated
 
 
 def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minutes=20) -> list:
-    """Query the database for any pending posts that are scheduled to post now or earlier"""
+    """Query the database for any pending posts that are scheduled to post now or earlier.
+
+    Answers `[]` — never None — on a read failure, because the single caller (`run_scheduler`'s
+    every-10-minutes publishing beat) iterates the result directly and a None crashed it with a
+    TypeError that masked the real mysql error. No post is lost by answering empty: the query's own
+    24h lookback plus `get_orphaned_scheduled_posts` recover anything missed on the next tick.
+    """
     now = datetime.now(timezone.utc)
     if pre_post_time is None:
         # Get time for post_time_delta after now
@@ -2207,32 +2070,28 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
 
     myprint(f"Getting post between : {yesterday} and {pre_post_time} (UTC)")
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
+        with db_cursor() as cursor:
         # Get posts that have scheduled time between 24 hours ago and the pre_post_time
-        cursor.execute(
-            """SELECT p.id, p.scheduled_time, p.user_id 
-                FROM posts AS p
-                WHERE status = 'approved' AND scheduled_time BETWEEN %s AND %s 
-                ORDER BY scheduled_time ASC 
-                """,
-            (yesterday, pre_post_time,))
-        posts = cursor.fetchall()
-        # A non-empty poll is a real state transition worth keeping at INFO; an empty one is the
-        # scheduler idling and was 220 identical rows in 48h of PostHog Logs.
-        ready = [post[0] for post in posts]
-        if ready:
-            log_info(f"Posts ready to post: {ready}")
-        else:
-            log_debug("Posts ready to post: []")
+            cursor.execute(
+                """SELECT p.id, p.scheduled_time, p.user_id 
+                    FROM posts AS p
+                    WHERE status = 'approved' AND scheduled_time BETWEEN %s AND %s 
+                    ORDER BY scheduled_time ASC 
+                    """,
+                (yesterday, pre_post_time,))
+            posts = cursor.fetchall()
+            # A non-empty poll is a real state transition worth keeping at INFO; an empty one is the
+            # scheduler idling and was 220 identical rows in 48h of PostHog Logs.
+            ready = [post[0] for post in posts]
+            if ready:
+                log_info(f"Posts ready to post: {ready}")
+            else:
+                log_debug("Posts ready to post: []")
     except mysql.connector.Error as err:
-        myprint(f"Could not get ready to post posts| Error: {err}")
-        posts = None
-    finally:
-        cursor.close()
-        connection.close()
+        log_error("Could not read the ready-to-post queue", exc=err,
+                  task_name="auto_check_scheduled_posts")
+        posts = []
 
     return posts
 
@@ -2247,31 +2106,27 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=lookback_hours)
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            """SELECT p.id, p.scheduled_time, p.user_id
-               FROM posts AS p
-               WHERE status = 'scheduled'
-                 AND scheduled_time <= %s
-               ORDER BY scheduled_time ASC""",
-            (cutoff,),
-        )
-        posts = cursor.fetchall()
-        # Orphans found means the queue lost work — that stays at INFO. Finding none is the healthy
-        # case and was 221 identical rows in 48h.
-        orphaned = [p[0] for p in posts]
-        if orphaned:
-            log_info(f"Orphaned scheduled posts to re-queue: {orphaned}")
-        else:
-            log_debug("Orphaned scheduled posts to re-queue: []")
+        with db_cursor() as cursor:
+            cursor.execute(
+                """SELECT p.id, p.scheduled_time, p.user_id
+                   FROM posts AS p
+                   WHERE status = 'scheduled'
+                     AND scheduled_time <= %s
+                   ORDER BY scheduled_time ASC""",
+                (cutoff,),
+            )
+            posts = cursor.fetchall()
+            # Orphans found means the queue lost work — that stays at INFO. Finding none is the healthy
+            # case and was 221 identical rows in 48h.
+            orphaned = [p[0] for p in posts]
+            if orphaned:
+                log_info(f"Orphaned scheduled posts to re-queue: {orphaned}")
+            else:
+                log_debug("Orphaned scheduled posts to re-queue: []")
     except mysql.connector.Error as err:
         myprint(f"Could not get orphaned scheduled posts | Error: {err}")
         posts = []
-    finally:
-        cursor.close()
-        connection.close()
 
     return posts
 
@@ -2282,19 +2137,14 @@ def get_user_password_pair_by_id(user_id: int):
     Always a two-tuple: a missing row or a failed read is `(None, None)`, never a bare None, so the unpack
     at every call site holds. A password that will not decrypt comes back None with the email intact.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT email, password FROM users WHERE id = %s", (user_id,))
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT email, password FROM users WHERE id = %s", (user_id,))
 
-        user_password_pair = cursor.fetchone()
+            user_password_pair = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user password pair for user id: {user_id} | Error: {err}")
         user_password_pair = None
-    finally:
-        cursor.close()
-        connection.close()
 
     if user_password_pair:
         return (user_password_pair['email'],
@@ -2327,28 +2177,23 @@ def add_linkedin_profile(profile: LinkedInProfile, user_id: Optional[int] = None
     `user_id` is COALESCEd rather than overwritten, so re-scraping a profile with no account attached
     never unlinks a row that was already tied to one.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("""
-            INSERT INTO profiles (profile_url, email, data, user_id)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                    profile_url = VALUES(profile_url),
-                    email = VALUES(email),
-                    data = VALUES(data),
-                    user_id = COALESCE(VALUES(user_id), user_id)
-            """,
-                       (str(profile.profile_url), profile.email, profile.model_dump_json(), user_id))
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO profiles (profile_url, email, data, user_id)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                        profile_url = VALUES(profile_url),
+                        email = VALUES(email),
+                        data = VALUES(data),
+                        user_id = COALESCE(VALUES(user_id), user_id)
+                """,
+                           (str(profile.profile_url), profile.email, profile.model_dump_json(), user_id))
 
-        connection.commit()
-        success = True
+            success = True
     except mysql.connector.Error as err:
         myprint(f"Could not add linkedin profile | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
@@ -2386,19 +2231,14 @@ def get_linked_in_profile_by_email(profile_email: str, updated_less_than_days_ag
     Same freshness window as `get_linked_in_profile_by_url` — a row older than
     `updated_less_than_days_ago` reads as absent rather than stale.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("SELECT data FROM profiles WHERE email = %s AND updated_at > NOW() - INTERVAL %s DAY",
-                       (profile_email, updated_less_than_days_ago))
-        profile_data = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT data FROM profiles WHERE email = %s AND updated_at > NOW() - INTERVAL %s DAY",
+                           (profile_email, updated_less_than_days_ago))
+            profile_data = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get linkedin profile data by email | Error: {err}")
         profile_data = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return profile_data
 
@@ -2409,19 +2249,14 @@ def get_linked_in_profile_by_user_id(user_id: int, updated_less_than_days_ago: i
     Same freshness window as `get_linked_in_profile_by_url` — a row older than
     `updated_less_than_days_ago` reads as absent rather than stale.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("SELECT data FROM profiles WHERE user_id = %s AND updated_at > NOW() - INTERVAL %s DAY",
-                       (user_id, updated_less_than_days_ago))
-        profile_data = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT data FROM profiles WHERE user_id = %s AND updated_at > NOW() - INTERVAL %s DAY",
+                           (user_id, updated_less_than_days_ago))
+            profile_data = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get linkedin profile data by user_id | Error: {err}")
         profile_data = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return profile_data
 
@@ -2431,18 +2266,14 @@ def get_profile_synthesis(user_id: int) -> Optional[tuple]:
     profile row / no synthesis yet. Kept separate from the profile-JSON getters so the small, stable
     voice brief can be read cheaply on every generation call without pulling the full profile blob.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT synthesis, synthesis_generated_at FROM profiles WHERE user_id = %s", (user_id,))
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT synthesis, synthesis_generated_at FROM profiles WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get profile synthesis for user_id={user_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
 
     if not row or row[0] is None:
         return None
@@ -2453,20 +2284,15 @@ def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
     """Persist a freshly generated voice synthesis and stamp synthesis_generated_at = NOW() (drives
     the weekly staleness selector). No-op-safe: returns False if the profile row doesn't exist yet.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE profiles SET synthesis = %s, synthesis_generated_at = NOW() WHERE user_id = %s",
-            (synthesis, user_id))
-        connection.commit()
-        success = cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE profiles SET synthesis = %s, synthesis_generated_at = NOW() WHERE user_id = %s",
+                (synthesis, user_id))
+            success = cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not set profile synthesis for user_id={user_id} | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
@@ -2474,21 +2300,17 @@ def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
     """User IDs whose cached profile synthesis is MISSING or older than `stale_days` — the work list
     for the weekly refresh task. Only rows that actually have a profile (user_id NOT NULL) qualify.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT user_id FROM profiles WHERE user_id IS NOT NULL AND ("
-            "synthesis IS NULL OR synthesis_generated_at IS NULL "
-            "OR synthesis_generated_at < NOW() - INTERVAL %s DAY)",
-            (stale_days,))
-        rows = cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM profiles WHERE user_id IS NOT NULL AND ("
+                "synthesis IS NULL OR synthesis_generated_at IS NULL "
+                "OR synthesis_generated_at < NOW() - INTERVAL %s DAY)",
+                (stale_days,))
+            rows = cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get user_ids needing profile synthesis | Error: {err}")
         rows = []
-    finally:
-        cursor.close()
-        connection.close()
     return [row[0] for row in rows]
 
 
@@ -2497,19 +2319,13 @@ def remove_linked_in_profile_by_user_id(user_id: int):
 
     True means the DELETE ran, not that a row existed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("DELETE FROM profiles WHERE user_id = %s", (user_id,))
-        connection.commit()
-        success = True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM profiles WHERE user_id = %s", (user_id,))
+            success = True
     except mysql.connector.Error as err:
         myprint(f"Could not remove linkedin profile by user_id | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
@@ -2518,19 +2334,13 @@ def remove_linked_in_profile_by_url(profile_url: str):
 
     True means the DELETE ran, not that a row existed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("DELETE FROM profiles WHERE profile_url = %s", (profile_url,))
-        connection.commit()
-        success = True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM profiles WHERE profile_url = %s", (profile_url,))
+            success = True
     except mysql.connector.Error as err:
         myprint(f"Could not remove linkedin profile by url | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
@@ -2539,37 +2349,26 @@ def remove_linked_in_profile_by_email(profile_email: str):
 
     True means the DELETE ran, not that a row existed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("DELETE FROM profiles WHERE email = %s", (profile_email,))
-        connection.commit()
-        success = True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM profiles WHERE email = %s", (profile_email,))
+            success = True
     except mysql.connector.Error as err:
         myprint(f"Could not remove linkedin profile by email | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
     return success
 
 
 def get_post_type_counts(user_id: int):
     """Query the database to get the count of each post_type in the 'posts' table for the given user id."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute("SELECT post_type, COUNT(*) AS count FROM posts WHERE user_id = %s GROUP BY post_type",
-                       (user_id,))
-        post_counts = {row['post_type']: row['count'] for row in cursor.fetchall()}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT post_type, COUNT(*) AS count FROM posts WHERE user_id = %s GROUP BY post_type",
+                           (user_id,))
+            post_counts = {row['post_type']: row['count'] for row in cursor.fetchall()}
     except mysql.connector.Error as err:
         myprint(f"Could not get post type counts | Error: {err}")
         post_counts = {}
-    finally:
-        cursor.close()
-        connection.close()
 
     return post_counts
 
@@ -2590,24 +2389,20 @@ READY_POST_STATUSES = ('pending', 'approved', 'scheduled')
 
 def count_ready_posts_within_buffer(user_id: int, days: int = DEFAULT_CONTENT_BUFFER_DAYS) -> int:
     """Count posts that already have generated content due within the next `days` days."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM posts"
-            " WHERE user_id = %s"
-            f" AND status IN ({', '.join(['%s'] * len(READY_POST_STATUSES))})"
-            " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY",
-            (user_id, *READY_POST_STATUSES, int(days)),
-        )
-        row = cursor.fetchone()
-        return int(row[0]) if row else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM posts"
+                " WHERE user_id = %s"
+                f" AND status IN ({', '.join(['%s'] * len(READY_POST_STATUSES))})"
+                " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY",
+                (user_id, *READY_POST_STATUSES, int(days)),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count ready posts within buffer for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_planned_posts_within_buffer(user_id: int,
@@ -2623,25 +2418,21 @@ def get_planned_posts_within_buffer(user_id: int,
     if limit <= 0:
         return []
 
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            # scheduled_time rides along so the generator can resolve the slot's day type
-            # (issue #621) — the weekday IS the calendar key.
-            "SELECT user_id, id, post_type, buyer_stage, content_mix, scheduled_time FROM posts"
-            " WHERE status = 'planning' AND user_id = %s"
-            " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
-            " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
-            (user_id, int(days), limit),
-        )
-        planned_content = cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                # scheduled_time rides along so the generator can resolve the slot's day type
+                # (issue #621) — the weekday IS the calendar key.
+                "SELECT user_id, id, post_type, buyer_stage, content_mix, scheduled_time FROM posts"
+                " WHERE status = 'planning' AND user_id = %s"
+                " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
+                " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
+                (user_id, int(days), limit),
+            )
+            planned_content = cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get planned posts within buffer for user_id {user_id} | Error: {err}")
         planned_content = []
-    finally:
-        cursor.close()
-        connection.close()
 
     return planned_content
 
@@ -2659,23 +2450,19 @@ def get_next_planned_posts_after_buffer(user_id: int, days: int, limit: int) -> 
     if limit <= 0:
         return []
 
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT user_id, id, post_type, buyer_stage, content_mix, scheduled_time FROM posts"
-            " WHERE status = 'planning' AND user_id = %s"
-            " AND scheduled_time > NOW() + INTERVAL %s DAY"
-            " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
-            (user_id, int(days), limit),
-        )
-        planned_content = cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT user_id, id, post_type, buyer_stage, content_mix, scheduled_time FROM posts"
+                " WHERE status = 'planning' AND user_id = %s"
+                " AND scheduled_time > NOW() + INTERVAL %s DAY"
+                " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
+                (user_id, int(days), limit),
+            )
+            planned_content = cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get planned posts after buffer for user_id {user_id} | Error: {err}")
         planned_content = []
-    finally:
-        cursor.close()
-        connection.close()
 
     return planned_content
 
@@ -2686,22 +2473,18 @@ def get_next_planned_post_date(user_id: int) -> Optional[datetime]:
     Feeds the "nothing to generate right now" explanation (issue #719) — without a date the SPA
     can only say a run produced nothing, which reads as a broken feature.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT MIN(scheduled_time) FROM posts"
-            " WHERE status = 'planning' AND user_id = %s AND scheduled_time > NOW()",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT MIN(scheduled_time) FROM posts"
+                " WHERE status = 'planning' AND user_id = %s AND scheduled_time > NOW()",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not get next planned post date for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER_DAYS) -> list[int]:
@@ -2710,77 +2493,59 @@ def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER
     Defaults to the max window so a user with a longer configured buffer is never missed by the
     beat's user discovery; the per-user window is applied by get_planned_posts_within_buffer.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT DISTINCT user_id FROM posts"
-            " WHERE status = 'planning'"
-            " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
-            " ORDER BY user_id",
-            (int(days),),
-        )
-        return [row[0] for row in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT user_id FROM posts"
+                " WHERE status = 'planning'"
+                " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
+                " ORDER BY user_id",
+                (int(days),),
+            )
+            return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get user ids with planned posts within buffer | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_last_planned_post_date_for_user(user_id: int):
     """Query the database to get the last planned post date for the given user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "SELECT MAX(scheduled_time) AS last_planned_date FROM posts WHERE user_id = %s AND status != 'rejected'",
-            (user_id,))
-        last_planned_date = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(scheduled_time) AS last_planned_date FROM posts "
+                "WHERE user_id = %s AND status != 'rejected'",
+                (user_id,))
+            last_planned_date = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get last planned post date for user | Error: {err}")
         last_planned_date = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return last_planned_date[0] if last_planned_date else None
 
 
 def get_user_blog_url(user_id: int):
     """Query the database to get the blog URL for the given user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("SELECT blog_url FROM users WHERE id = %s", (user_id,))
-        blog_url = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT blog_url FROM users WHERE id = %s", (user_id,))
+            blog_url = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user blog url | Error: {err}")
         blog_url = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return blog_url[0] if blog_url else None
 
 
 def get_user_sitemap_url(user_id: int):
     """Query the database to get the sitemap URL for the given user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("SELECT sitemap_url FROM users WHERE id = %s", (user_id,))
-        sitemap_url = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT sitemap_url FROM users WHERE id = %s", (user_id,))
+            sitemap_url = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user sitemap url | Error: {err}")
         sitemap_url = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return sitemap_url[0] if sitemap_url else None
 
@@ -2789,18 +2554,13 @@ def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
     """Return the user's own LinkedIn profile URL (e.g. https://www.linkedin.com/in/<vanity>/).
     Only the user's own scraped profile carries a non-null user_id in the profiles table.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("SELECT profile_url FROM profiles WHERE user_id = %s LIMIT 1", (user_id,))
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT profile_url FROM profiles WHERE user_id = %s LIMIT 1", (user_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user linkedin profile url | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return row[0] if row else None
 
@@ -2858,43 +2618,39 @@ def get_active_user_ids():
       3. Has logged in within their configured inactivate delay
          (NULL delay = never auto-inactivate)
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("""
-            SELECT id FROM users
-            WHERE
-                -- Must have a live LinkedIn token
-                linkedin_connection_status = 'connected'
-                AND access_token IS NOT NULL
-                AND access_token_created_at IS NOT NULL
-                AND access_token_created_at + INTERVAL access_token_expires_in SECOND > NOW()
+        with db_cursor() as cursor:
+            cursor.execute("""
+                SELECT id FROM users
+                WHERE
+                    -- Must have a live LinkedIn token
+                    linkedin_connection_status = 'connected'
+                    AND access_token IS NOT NULL
+                    AND access_token_created_at IS NOT NULL
+                    AND access_token_created_at + INTERVAL access_token_expires_in SECOND > NOW()
 
-                -- Must have an active or unexpired trial subscription
-                AND (
-                    subscription_status = 'active'
-                    OR (
-                        subscription_status = 'trial'
-                        AND (trial_ends_at IS NULL OR trial_ends_at > NOW())
+                    -- Must have an active or unexpired trial subscription
+                    AND (
+                        subscription_status = 'active'
+                        OR (
+                            subscription_status = 'trial'
+                            AND (trial_ends_at IS NULL OR trial_ends_at > NOW())
+                        )
                     )
-                )
 
-                -- Must have logged in within their configured inactivity window.
-                -- NULL last_login (pre-session-migration users) is treated as active
-                -- so existing connected users are not silently dropped.
-                AND (
-                    last_login_inactivate_delay IS NULL
-                    OR last_login IS NULL
-                    OR last_login >= NOW() - INTERVAL last_login_inactivate_delay DAY
-                )
-        """)
-        active_user_ids = [row[0] for row in cursor.fetchall()]
+                    -- Must have logged in within their configured inactivity window.
+                    -- NULL last_login (pre-session-migration users) is treated as active
+                    -- so existing connected users are not silently dropped.
+                    AND (
+                        last_login_inactivate_delay IS NULL
+                        OR last_login IS NULL
+                        OR last_login >= NOW() - INTERVAL last_login_inactivate_delay DAY
+                    )
+            """)
+            active_user_ids = [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get active user ids | Error: {err}")
         active_user_ids = []
-    finally:
-        cursor.close()
-        connection.close()
 
     return active_user_ids
 
@@ -2906,28 +2662,24 @@ def get_linkedin_token_user_ids() -> list[int]:
     renewal pass most needs to reach — the ones whose authorization already lapsed — are exactly
     the ones it filters out.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("""
-            SELECT id FROM users
-            WHERE linkedin_connection_status = 'connected'
-              AND access_token IS NOT NULL
-              AND (
-                    subscription_status = 'active'
-                    OR (
-                        subscription_status = 'trial'
-                        AND (trial_ends_at IS NULL OR trial_ends_at > NOW())
-                    )
-              )
-        """)
-        return [row[0] for row in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("""
+                SELECT id FROM users
+                WHERE linkedin_connection_status = 'connected'
+                  AND access_token IS NOT NULL
+                  AND (
+                        subscription_status = 'active'
+                        OR (
+                            subscription_status = 'trial'
+                            AND (trial_ends_at IS NULL OR trial_ends_at > NOW())
+                        )
+                  )
+            """)
+            return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get linkedin token user ids | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_location(user_id: int) -> tuple[float, float] | None:
@@ -2936,17 +2688,13 @@ def get_user_location(user_id: int) -> tuple[float, float] | None:
     A missing row, a failed read and a stored 0 all read as None: 0/0 is a point in the Atlantic, not a
     place anyone logs in from, so it must never reach the proxy/geo logic as a real coordinate.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT latitude, longitude FROM users WHERE id = %s", (user_id,))
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT latitude, longitude FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user location | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
     return (float(row[0]), float(row[1])) if row and row[0] and row[1] else None
 
 
@@ -2958,23 +2706,17 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
     logged, returns False, never raises — is an action the account has already spent but will not see
     when it next checks its remaining budget.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("""
-            INSERT INTO logs (user_id, action_type, post_id, post_url, message, result)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (user_id, action_type.value, post_id, post_url, message, result.value))
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO logs (user_id, action_type, post_id, post_url, message, result)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (user_id, action_type.value, post_id, post_url, message, result.value))
 
-        connection.commit()
-        success = cursor.rowcount == 1
+            success = cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not insert new log | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
 
     return success
 
@@ -2984,20 +2726,15 @@ def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
     (LogActionType.REPLY) are deliberately not counted — the self-comment cap (issue #622) is about
     seeding our own thread, not about answering the people in it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s AND result = %s",
-            (user_id, post_url, LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
-        count = cursor.fetchone()[0]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s AND result = %s",
+                (user_id, post_url, LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
+            count = cursor.fetchone()[0]
     except mysql.connector.Error as err:
         myprint(f"Could not count user comments on post url | Error: {err}")
         count = 0
-    finally:
-        cursor.close()
-        connection.close()
 
     return int(count or 0)
 
@@ -3021,23 +2758,18 @@ def get_post_age_minutes(user_id: int, post_id: int):
     written in the DB session's zone (`TZ`, not UTC), so comparing it to a Python UTC clock would
     skew every latency by the offset.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("""SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) FROM logs
-            WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
-            ORDER BY created_at DESC
-            LIMIT 1""",
-                       (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
-        row = cursor.fetchone()
-        seconds = row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute("""SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) FROM logs
+                WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
+                ORDER BY created_at DESC
+                LIMIT 1""",
+                           (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
+            row = cursor.fetchone()
+            seconds = row[0] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not get post age from log for user | Error: {err}")
         seconds = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return None if seconds is None else max(0.0, float(seconds) / 60.0)
 
@@ -3049,24 +2781,19 @@ def get_post_url_from_log_for_user(user_id: int, post_id: int) -> Optional[str]:
     the read that turns a post id into something the browser can open. None when the post never published
     successfully, or when the read failed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("""SELECT post_url FROM logs
-            WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
-            ORDER BY created_at DESC
-            LIMIT 1""",
-                       (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
-        row = cursor.fetchone()
-        post_url = row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute("""SELECT post_url FROM logs
+                WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
+                ORDER BY created_at DESC
+                LIMIT 1""",
+                           (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
+            row = cursor.fetchone()
+            post_url = row[0] if row else None
     except mysql.connector.Error as err:
         log_warning("Could not get post url from log for user", exc=err,
                     user_id=user_id, post_id=post_id)
         post_url = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return post_url
 
@@ -3077,24 +2804,19 @@ def get_post_message_from_log_for_user(user_id: int, post_id: int) -> Optional[s
     The fallback for grounding replies and seed comments in what actually went out when
     `get_post_content` has nothing (issue #344). None when the post never published, or the read failed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("""SELECT message FROM logs
-            WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
-            ORDER BY created_at DESC
-            LIMIT 1""",
-                       (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
-        row = cursor.fetchone()
-        message = row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute("""SELECT message FROM logs
+                WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
+                ORDER BY created_at DESC
+                LIMIT 1""",
+                           (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
+            row = cursor.fetchone()
+            message = row[0] if row else None
     except mysql.connector.Error as err:
         log_warning("Could not get post message from log for user", exc=err,
                     user_id=user_id, post_id=post_id)
         message = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return message
 
@@ -3105,56 +2827,43 @@ def has_engaged_url_with_x_days(user_id: int, post_url: str, days: int):
     The dedup that stops a flow re-touching the same person day after day. A failed read counts zero,
     i.e. reads as "not engaged" and lets the action through.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s AND result = %s AND created_at > NOW() - INTERVAL %s DAY",
-            (user_id, post_url, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value, days))
-        count = cursor.fetchone()[0]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s AND result = %s AND created_at > NOW() - INTERVAL %s DAY",
+                (user_id, post_url, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value, days))
+            count = cursor.fetchone()[0]
     except mysql.connector.Error as err:
         myprint(f"Could not determine if user engaged with url with x days | Error: {err}")
         count = 0
-    finally:
-        cursor.close()
-        connection.close()
 
     return count > 0
 
 
 def get_dm_history_for_profile(user_id: int, profile_url: str) -> list[str]:
     """Return all DM messages previously sent by user_id to profile_url, oldest first."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT message FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s ORDER BY created_at ASC",
-            (user_id, profile_url, LogActionType.DM.value),
-        )
-        rows = cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT message FROM logs WHERE user_id = %s AND post_url = %s AND action_type = %s ORDER BY created_at ASC",
+                (user_id, profile_url, LogActionType.DM.value),
+            )
+            rows = cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get DM history for profile | Error: {err}")
         rows = []
-    finally:
-        cursor.close()
-        connection.close()
     return [row[0] for row in rows if row[0]]
 
 
 def get_post_status(post_id: int) -> str | None:
     """Return the current status string of a post, or None if not found."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT status FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT status FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get post status | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
     return row[0] if row else None
 
 
@@ -3163,18 +2872,13 @@ def get_company_linked_in_url_for_user(user_id: int):
 
     None when it was never set or the read failed — the invite drip has no page to open in either case.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute("SELECT company_linked_in_url FROM users WHERE id = %s", (user_id,))
-        company_linked_in_url = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT company_linked_in_url FROM users WHERE id = %s", (user_id,))
+            company_linked_in_url = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user company linked in url | Error: {err}")
         company_linked_in_url = None
-    finally:
-        cursor.close()
-        connection.close()
 
     return company_linked_in_url[0] if company_linked_in_url else None
 
@@ -3183,21 +2887,16 @@ def update_company_linked_in_url_for_user(user_id: int, company_linked_in_url: O
     """Set (or clear, when None/empty) the user's LinkedIn company page URL used by the
     monthly company-page invite automation.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE users SET company_linked_in_url = %s WHERE id = %s",
-            (company_linked_in_url or None, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET company_linked_in_url = %s WHERE id = %s",
+                (company_linked_in_url or None, user_id),
+            )
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update company linked in url for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_logs(user_id: int, limit: int = 20) -> list:
@@ -3205,22 +2904,17 @@ def get_recent_logs(user_id: int, limit: int = 20) -> list:
 
     [] on a read error, so the feed renders empty rather than erroring.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
     try:
-        cursor.execute(
-            """SELECT id, action_type, result, post_id, post_url, message, created_at
-               FROM logs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s""",
-            (user_id, limit)
-        )
-        rows = cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT id, action_type, result, post_id, post_url, message, created_at
+                   FROM logs WHERE user_id = %s ORDER BY created_at DESC LIMIT %s""",
+                (user_id, limit)
+            )
+            rows = cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get recent logs | Error: {err}")
         rows = []
-    finally:
-        cursor.close()
-        connection.close()
 
     return rows
 
@@ -3231,38 +2925,29 @@ def get_user_linkedin_display_name(user_id: int) -> Optional[str]:
     This is what reply detection compares the last sender against, so it is stored per user rather
     than re-derived from a scrape that may be stale or unavailable.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT linkedin_display_name FROM users WHERE id = %s", (user_id,))
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT linkedin_display_name FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get LinkedIn display name for user {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
     name = (row[0] if row else None) or ""
     return name.strip() or None
 
 
 def update_user_linkedin_display_name(user_id: int, display_name: Optional[str]) -> bool:
     """Set (or clear, when None/empty) the user's LinkedIn display name."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE users SET linkedin_display_name = %s WHERE id = %s",
-            ((display_name or "").strip() or None, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET linkedin_display_name = %s WHERE id = %s",
+                ((display_name or "").strip() or None, user_id),
+            )
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update LinkedIn display name for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_user_linkedin_password(user_id: int, password: str) -> bool:
@@ -3274,21 +2959,16 @@ def update_user_linkedin_password(user_id: int, password: str) -> bool:
     draining the column via clear_user_linkedin_password is the actual fix. Only call this from
     authenticated API endpoints — never expose the value in any response payload.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE users SET password = %s WHERE id = %s",
-            (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id),
-        )
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET password = %s WHERE id = %s",
+                (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id),
+            )
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update LinkedIn password for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def clear_user_linkedin_password(user_id: int) -> bool:
@@ -3298,39 +2978,30 @@ def clear_user_linkedin_password(user_id: int) -> bool:
     approved end state is to stop holding one at all. Called from the cookie-migration path, not
     on every cookie save — a user who has no li_at yet must keep their only working login.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE users SET password = NULL WHERE id = %s", (user_id,))
-        connection.commit()
-        log_info("Cleared stored LinkedIn password after cookie migration", user_id=user_id)
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET password = NULL WHERE id = %s", (user_id,))
+            log_info("Cleared stored LinkedIn password after cookie migration", user_id=user_id)
+            return True
     except mysql.connector.Error as err:
         log_error(f"Could not clear LinkedIn password | Error: {err}", user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_linkedin_password(user_id: int) -> bool:
     """True when a LinkedIn password is still stored for this user — the signal that drives the
     one-time 'paste a cookie instead' prompt (design §5.4 item 3).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT 1 FROM users WHERE id = %s AND password IS NOT NULL AND password <> '' LIMIT 1",
-            (user_id,),
-        )
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM users WHERE id = %s AND password IS NOT NULL AND password <> '' LIMIT 1",
+                (user_id,),
+            )
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error(f"Could not check stored LinkedIn password | Error: {err}", user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
@@ -3435,22 +3106,16 @@ def update_user_settings(user_id: int, blog_url: str = None, sitemap_url: str = 
     That is what separates it from `update_user`, which only touches the fields it was given: calling
     this with one URL CLEARS the other.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     try:
-        cursor.execute(
-            "UPDATE users SET blog_url = %s, sitemap_url = %s WHERE id = %s",
-            (blog_url, sitemap_url, user_id)
-        )
-        connection.commit()
-        success = cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET blog_url = %s, sitemap_url = %s WHERE id = %s",
+                (blog_url, sitemap_url, user_id)
+            )
+            success = cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update user settings | Error: {err}")
         success = False
-    finally:
-        cursor.close()
-        connection.close()
 
     return success
 
@@ -3466,59 +3131,45 @@ def create_pin_for_email(email: str, pin_hash: str) -> bool:
     resend invalidates the code in the earlier email instead of leaving two live at once. The caller
     passes the HASH; the plaintext PIN never reaches this table.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM email_pin_auth WHERE email = %s AND used = 0", (email,))
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-        cursor.execute(
-            "INSERT INTO email_pin_auth (email, pin, expires_at) VALUES (%s, %s, %s)",
-            (email, pin_hash, expires_at),
-        )
-        connection.commit()
-        return cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM email_pin_auth WHERE email = %s AND used = 0", (email,))
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            cursor.execute(
+                "INSERT INTO email_pin_auth (email, pin, expires_at) VALUES (%s, %s, %s)",
+                (email, pin_hash, expires_at),
+            )
+            return cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not create PIN for {email} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def delete_pin_for_email(email: str) -> None:
     """Remove all unused PINs for an email — called when email send fails after DB write."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM email_pin_auth WHERE email = %s AND used = 0", (email,))
-        connection.commit()
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM email_pin_auth WHERE email = %s AND used = 0", (email,))
     except mysql.connector.Error as err:
         myprint(f"Could not delete PIN for {email} | Error: {err}")
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_pin_lockout(email: str) -> Optional[datetime]:
     """When this email's PIN entry is locked until, or None. Read by the API so a locked account
     gets a 429 with a wait time instead of an indistinguishable 401.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT MAX(locked_until) AS locked_until FROM email_pin_auth
-               WHERE email = %s AND used = 0 AND locked_until > %s""",
-            (email, datetime.now(timezone.utc)),
-        )
-        row = cursor.fetchone()
-        return row.get('locked_until') if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT MAX(locked_until) AS locked_until FROM email_pin_auth
+                   WHERE email = %s AND used = 0 AND locked_until > %s""",
+                (email, datetime.now(timezone.utc)),
+            )
+            row = cursor.fetchone()
+            return row.get('locked_until') if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not read PIN lockout for {email} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def verify_pin_for_email(email: str, pin_hash: str) -> bool:
@@ -3621,29 +3272,24 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
     token = secrets.token_hex(32)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
-            "last_seen_at, label, scope, last_verified_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (hash_session_token(token), user_id, expires_at, (user_agent or None),
-             hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
-             now if verified else None),
-        )
-        cursor.execute(
-            "UPDATE users SET last_login = %s WHERE id = %s",
-            (now, user_id),
-        )
-        connection.commit()
-        return token
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
+                "last_seen_at, label, scope, last_verified_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (hash_session_token(token), user_id, expires_at, (user_agent or None),
+                 hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
+                 now if verified else None),
+            )
+            cursor.execute(
+                "UPDATE users SET last_login = %s WHERE id = %s",
+                (now, user_id),
+            )
+            return token
     except mysql.connector.Error as err:
         myprint(f"Could not create session for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def _device_label(user_agent: Optional[str]) -> str:
@@ -3751,21 +3397,17 @@ def get_session_id(token: str) -> Optional[int]:
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id FROM sessions WHERE session_token = %s AND revoked_at IS NULL",
-            (token_hash,),
-        )
-        row = cursor.fetchone()
-        return row['id'] if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id FROM sessions WHERE session_token = %s AND revoked_at IS NULL",
+                (token_hash,),
+            )
+            row = cursor.fetchone()
+            return row['id'] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not resolve session id | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def delete_session(token: str) -> bool:
@@ -3775,18 +3417,13 @@ def delete_session(token: str) -> bool:
     means the statement ran, NOT that a session existed — a caller cannot use it to probe whether a token
     was valid.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM sessions WHERE session_token = %s", (hash_session_token(token),))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM sessions WHERE session_token = %s", (hash_session_token(token),))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not delete session | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> list[dict]:
@@ -3795,54 +3432,45 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
     so the SPA never has to compare tokens.
     """
     current_hash = hash_session_token(current_token)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, session_token, label, user_agent, created_at, last_seen_at, expires_at "
-            "FROM sessions WHERE user_id = %s AND revoked_at IS NULL AND expires_at > %s "
-            "ORDER BY COALESCE(last_seen_at, created_at) DESC",
-            (user_id, datetime.now(timezone.utc)),
-        )
-        sessions = []
-        for row in cursor.fetchall():
-            sessions.append({
-                "id": row["id"],
-                "label": row.get("label") or _device_label(row.get("user_agent")),
-                "created_at": row.get("created_at"),
-                "last_seen_at": row.get("last_seen_at"),
-                "expires_at": row.get("expires_at"),
-                "is_current": bool(current_hash) and row.get("session_token") == current_hash,
-            })
-        return sessions
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, session_token, label, user_agent, created_at, last_seen_at, expires_at "
+                "FROM sessions WHERE user_id = %s AND revoked_at IS NULL AND expires_at > %s "
+                "ORDER BY COALESCE(last_seen_at, created_at) DESC",
+                (user_id, datetime.now(timezone.utc)),
+            )
+            sessions = []
+            for row in cursor.fetchall():
+                sessions.append({
+                    "id": row["id"],
+                    "label": row.get("label") or _device_label(row.get("user_agent")),
+                    "created_at": row.get("created_at"),
+                    "last_seen_at": row.get("last_seen_at"),
+                    "expires_at": row.get("expires_at"),
+                    "is_current": bool(current_hash) and row.get("session_token") == current_hash,
+                })
+            return sessions
     except mysql.connector.Error as err:
         myprint(f"Could not list sessions for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def revoke_session(user_id: int, session_id: int) -> bool:
     """Revoke ONE session. Scoped by user_id on purpose — a session id from another account must
     never be revocable by guessing the number.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE sessions SET revoked_at = %s WHERE id = %s AND user_id = %s "
-            "AND revoked_at IS NULL",
-            (datetime.now(timezone.utc), session_id, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE sessions SET revoked_at = %s WHERE id = %s AND user_id = %s "
+                "AND revoked_at IS NULL",
+                (datetime.now(timezone.utc), session_id, user_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not revoke session {session_id} for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int:
@@ -3850,29 +3478,24 @@ def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int
     many rows were revoked — "sign out everywhere", and what an email change triggers.
     """
     keep_hash = hash_session_token(keep_token)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        now = datetime.now(timezone.utc)
-        if keep_hash:
-            cursor.execute(
-                "UPDATE sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL "
-                "AND session_token <> %s",
-                (now, user_id, keep_hash),
-            )
-        else:
-            cursor.execute(
-                "UPDATE sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL",
-                (now, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount or 0
+        with db_cursor(commit=True) as cursor:
+            now = datetime.now(timezone.utc)
+            if keep_hash:
+                cursor.execute(
+                    "UPDATE sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL "
+                    "AND session_token <> %s",
+                    (now, user_id, keep_hash),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL",
+                    (now, user_id),
+                )
+            return cursor.rowcount or 0
     except mysql.connector.Error as err:
         myprint(f"Could not revoke sessions for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -3919,46 +3542,37 @@ def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
     """Append one row to `auth_audit_log`. Best effort — an audit write must never fail a login,
     but a failure is logged so a silently blind audit trail is visible.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO auth_audit_log (user_id, email, event, ip_hash, user_agent, session_id, "
-            "success, details) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (user_id, email, str(event), hash_client_ip(ip),
-             user_agent[:512] if user_agent else None, session_id, 1 if success else 0,
-             json.dumps(details) if details else None),
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO auth_audit_log (user_id, email, event, ip_hash, user_agent, session_id, "
+                "success, details) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (user_id, email, str(event), hash_client_ip(ip),
+                 user_agent[:512] if user_agent else None, session_id, 1 if success else 0,
+                 json.dumps(details) if details else None),
+            )
+            return True
     except mysql.connector.Error as err:
         log_warning(f"Could not write auth audit row for {event}", user_id=user_id)
         myprint(f"Could not write auth audit row | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
     """Recent auth history for the account page — what a user needs to spot a login they didn't
     make. Returns no IP hash: it is stored for forensics, not for display.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT event, success, user_agent, created_at FROM auth_audit_log "
-            "WHERE user_id = %s ORDER BY id DESC LIMIT %s",
-            (user_id, int(limit)),
-        )
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT event, success, user_agent, created_at FROM auth_audit_log "
+                "WHERE user_id = %s ORDER BY id DESC LIMIT %s",
+                (user_id, int(limit)),
+            )
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not read auth audit for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -3992,30 +3606,25 @@ def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_c
     """Store a verified passkey. Confirmed on insert — a registration response only reaches here
     after `verify_registration_response` accepted it, so there is no unproven state to hold.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        now = datetime.now(timezone.utc)
-        cursor.execute(
-            """INSERT INTO user_auth_factors
-               (user_id, kind, label, credential_id, credential_id_hash, public_key, sign_count,
-                transports, confirmed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (user_id, AUTH_FACTOR_PASSKEY, (label or "Passkey")[:120], credential_id,
-             _credential_id_hash(credential_id), public_key, int(sign_count),
-             (transports or None), now),
-        )
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            now = datetime.now(timezone.utc)
+            cursor.execute(
+                """INSERT INTO user_auth_factors
+                   (user_id, kind, label, credential_id, credential_id_hash, public_key, sign_count,
+                    transports, confirmed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, AUTH_FACTOR_PASSKEY, (label or "Passkey")[:120], credential_id,
+                 _credential_id_hash(credential_id), public_key, int(sign_count),
+                 (transports or None), now),
+            )
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         if err.errno == errorcode.ER_DUP_ENTRY:
             log_warning("Passkey already registered", user_id=user_id)
             return None
         myprint(f"Could not store passkey for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
@@ -4023,43 +3632,35 @@ def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
     discoverable-credential login resolves WHO is signing in — the assertion names the credential,
     not the account.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT id, user_id, credential_id, public_key, sign_count, label
-               FROM user_auth_factors
-               WHERE credential_id_hash = %s AND kind = %s AND confirmed_at IS NOT NULL""",
-            (_credential_id_hash(credential_id), AUTH_FACTOR_PASSKEY),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT id, user_id, credential_id, public_key, sign_count, label
+                   FROM user_auth_factors
+                   WHERE credential_id_hash = %s AND kind = %s AND confirmed_at IS NOT NULL""",
+                (_credential_id_hash(credential_id), AUTH_FACTOR_PASSKEY),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not look up passkey | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_passkey_credential_ids(user_id: int) -> list[str]:
     """Credential ids already enrolled — passed to the browser as `excludeCredentials` so the same
     authenticator cannot be registered twice, and as `allowCredentials` for a non-discoverable one.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT credential_id FROM user_auth_factors
-               WHERE user_id = %s AND kind = %s AND confirmed_at IS NOT NULL""",
-            (user_id, AUTH_FACTOR_PASSKEY),
-        )
-        return [row["credential_id"] for row in cursor.fetchall() if row.get("credential_id")]
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT credential_id FROM user_auth_factors
+                   WHERE user_id = %s AND kind = %s AND confirmed_at IS NOT NULL""",
+                (user_id, AUTH_FACTOR_PASSKEY),
+            )
+            return [row["credential_id"] for row in cursor.fetchall() if row.get("credential_id")]
     except mysql.connector.Error as err:
         myprint(f"Could not list passkeys for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_factor_counter(factor_id: int, counter: int) -> bool:
@@ -4070,21 +3671,16 @@ def update_factor_counter(factor_id: int, counter: int) -> bool:
     what makes a cloned authenticator (a counter that went backwards) and a re-typed TOTP code
     (the same 30-second step twice) fail instead of pass.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE user_auth_factors SET sign_count = %s, last_used_at = %s WHERE id = %s",
-            (int(counter), datetime.now(timezone.utc), factor_id),
-        )
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE user_auth_factors SET sign_count = %s, last_used_at = %s WHERE id = %s",
+                (int(counter), datetime.now(timezone.utc), factor_id),
+            )
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update counter for factor {factor_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -> Optional[int]:
@@ -4097,27 +3693,22 @@ def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -
     silently deleting the working one to start an enrolment nobody may finish would hand a stolen
     session a way to take the factor off the account.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "DELETE FROM user_auth_factors WHERE user_id = %s AND kind = %s AND confirmed_at IS NULL",
-            (user_id, AUTH_FACTOR_TOTP),
-        )
-        cursor.execute(
-            """INSERT INTO user_auth_factors (user_id, kind, label, secret)
-               VALUES (%s, %s, %s, %s)""",
-            (user_id, AUTH_FACTOR_TOTP, (label or "Authenticator app")[:120],
-             encrypt_secret(secret, user_id, TOTP_SECRET_FIELD)),
-        )
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "DELETE FROM user_auth_factors WHERE user_id = %s AND kind = %s AND confirmed_at IS NULL",
+                (user_id, AUTH_FACTOR_TOTP),
+            )
+            cursor.execute(
+                """INSERT INTO user_auth_factors (user_id, kind, label, secret)
+                   VALUES (%s, %s, %s, %s)""",
+                (user_id, AUTH_FACTOR_TOTP, (label or "Authenticator app")[:120],
+                 encrypt_secret(secret, user_id, TOTP_SECRET_FIELD)),
+            )
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not start TOTP enrolment for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]:
@@ -4125,49 +3716,40 @@ def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]
     be opened — a caller that got the raw envelope back would compare a code against ciphertext and
     reject every valid one silently.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        sql = """SELECT id, secret, label, confirmed_at, sign_count FROM user_auth_factors
-                 WHERE user_id = %s AND kind = %s"""
-        if confirmed_only:
-            sql += " AND confirmed_at IS NOT NULL"
-        sql += " ORDER BY id DESC LIMIT 1"
-        cursor.execute(sql, (user_id, AUTH_FACTOR_TOTP))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        row["secret"] = decrypt_secret(row.get("secret"), user_id, TOTP_SECRET_FIELD)
-        return row if row["secret"] else None
+        with db_cursor(dictionary=True) as cursor:
+            sql = """SELECT id, secret, label, confirmed_at, sign_count FROM user_auth_factors
+                     WHERE user_id = %s AND kind = %s"""
+            if confirmed_only:
+                sql += " AND confirmed_at IS NOT NULL"
+            sql += " ORDER BY id DESC LIMIT 1"
+            cursor.execute(sql, (user_id, AUTH_FACTOR_TOTP))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            row["secret"] = decrypt_secret(row.get("secret"), user_id, TOTP_SECRET_FIELD)
+            return row if row["secret"] else None
     except mysql.connector.Error as err:
         myprint(f"Could not read TOTP factor for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def confirm_totp_factor(factor_id: int, user_id: int) -> bool:
     """Mark a TOTP seed proven. Scoped by user_id so a guessed factor id cannot confirm someone
     else's enrolment, and idempotent-safe: only an unconfirmed row is touched.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        now = datetime.now(timezone.utc)
-        cursor.execute(
-            """UPDATE user_auth_factors SET confirmed_at = %s, last_used_at = %s
-               WHERE id = %s AND user_id = %s AND confirmed_at IS NULL""",
-            (now, now, factor_id, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            now = datetime.now(timezone.utc)
+            cursor.execute(
+                """UPDATE user_auth_factors SET confirmed_at = %s, last_used_at = %s
+                   WHERE id = %s AND user_id = %s AND confirmed_at IS NULL""",
+                (now, now, factor_id, user_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not confirm TOTP factor {factor_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def touch_auth_factor(factor_id: int) -> bool:
@@ -4176,105 +3758,96 @@ def touch_auth_factor(factor_id: int) -> bool:
     Reports True whenever the UPDATE ran, matched or not: this is bookkeeping alongside a verification
     that already succeeded, and a vanished factor id must not turn that into a failure.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE user_auth_factors SET last_used_at = %s WHERE id = %s",
-                       (datetime.now(timezone.utc), factor_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE user_auth_factors SET last_used_at = %s WHERE id = %s",
+                           (datetime.now(timezone.utc), factor_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not touch auth factor {factor_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
     """The account's strong factors for the Security card. Never returns a secret or a public key —
     only what a person needs to recognise a factor before removing it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        sql = """SELECT id, kind, label, created_at, last_used_at, confirmed_at
-                 FROM user_auth_factors WHERE user_id = %s"""
-        if confirmed_only:
-            sql += " AND confirmed_at IS NOT NULL"
-        sql += " ORDER BY id"
-        cursor.execute(sql, (user_id,))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            sql = """SELECT id, kind, label, created_at, last_used_at, confirmed_at
+                     FROM user_auth_factors WHERE user_id = %s"""
+            if confirmed_only:
+                sql += " AND confirmed_at IS NOT NULL"
+            sql += " ORDER BY id"
+            cursor.execute(sql, (user_id,))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not list auth factors for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_auth_factors(user_id: int) -> int:
     """How many CONFIRMED strong factors the account holds. The one question the login path and the
     step-up gate both ask, so it is one indexed COUNT rather than a list the caller measures.
+
+    Raises:
+        mysql.connector.Error: the count could not be read. It deliberately does NOT answer 0, which
+            is the same answer as "this account enrolled nothing" — and `has_strong_factor` is the
+            sole gate deciding whether an email PIN alone may mint a full session (issue #745
+            phase 2c), so a swallowed error demoted an enrolled account's second factor exactly
+            while the database was unhappy. The sibling `count_challenge_attempts` fails closed on
+            a sentinel because its ONE caller tests `spent < 0`; this has 11, so the honest move is
+            to refuse to answer and let the request surface as a server error — no session is
+            minted either way, and that is what failing closed means here. Returning a truthy
+            sentinel instead would be worse than the bug: `list_auth_factors` answers `[]` on this
+            same fault, so the account would be handed a second-factor challenge offering no
+            methods at all.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT COUNT(*) AS n FROM user_auth_factors
-               WHERE user_id = %s AND confirmed_at IS NOT NULL""",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        return int(row["n"]) if row else 0
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT COUNT(*) AS n FROM user_auth_factors
+                   WHERE user_id = %s AND confirmed_at IS NOT NULL""",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return int(row["n"]) if row else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count auth factors for user_id {user_id} | Error: {err}")
-        return 0
-    finally:
-        cursor.close()
-        connection.close()
+        log_error("Could not count auth factors — refusing to answer rather than report zero",
+                  exc=err, user_id=user_id)
+        raise
 
 
 def delete_auth_factor(user_id: int, factor_id: int) -> bool:
     """Remove ONE factor. Scoped by user_id — a factor id from another account must never be
     removable by guessing the number.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM user_auth_factors WHERE id = %s AND user_id = %s",
-                       (factor_id, user_id))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM user_auth_factors WHERE id = %s AND user_id = %s",
+                           (factor_id, user_id))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not delete auth factor {factor_id} for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def replace_recovery_codes(user_id: int, code_hashes: list[str]) -> bool:
     """Install a fresh set of recovery codes, invalidating every previous one — including the ones
     already spent, since a regenerate is the user saying "the old sheet is gone".
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM user_recovery_codes WHERE user_id = %s", (user_id,))
-        if code_hashes:
-            cursor.executemany(
-                "INSERT INTO user_recovery_codes (user_id, code_hash) VALUES (%s, %s)",
-                [(user_id, h) for h in code_hashes],
-            )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM user_recovery_codes WHERE user_id = %s", (user_id,))
+            if code_hashes:
+                cursor.executemany(
+                    "INSERT INTO user_recovery_codes (user_id, code_hash) VALUES (%s, %s)",
+                    [(user_id, h) for h in code_hashes],
+                )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not store recovery codes for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_unused_recovery_codes(user_id: int) -> list[dict]:
@@ -4284,62 +3857,49 @@ def get_unused_recovery_codes(user_id: int) -> list[dict]:
     `consume_recovery_code`, which is where the single-use guarantee lives. [] on a read error, which
     fails closed (no code can be verified).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, code_hash FROM user_recovery_codes WHERE user_id = %s AND used_at IS NULL",
-            (user_id,),
-        )
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, code_hash FROM user_recovery_codes WHERE user_id = %s AND used_at IS NULL",
+                (user_id,),
+            )
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not read recovery codes for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def consume_recovery_code(user_id: int, code_id: int) -> bool:
     """Spend one code. The `used_at IS NULL` predicate is the single-use guarantee: two requests
     racing the same code produce one winner, because MySQL only lets one UPDATE match.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            """UPDATE user_recovery_codes SET used_at = %s
-               WHERE id = %s AND user_id = %s AND used_at IS NULL""",
-            (datetime.now(timezone.utc), code_id, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                """UPDATE user_recovery_codes SET used_at = %s
+                   WHERE id = %s AND user_id = %s AND used_at IS NULL""",
+                (datetime.now(timezone.utc), code_id, user_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not consume recovery code {code_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_recovery_codes(user_id: int) -> tuple[int, int]:
     """(unused, total) — what the account page shows so a user knows when to regenerate."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT COUNT(*) AS total, SUM(used_at IS NULL) AS unused
-               FROM user_recovery_codes WHERE user_id = %s""",
-            (user_id,),
-        )
-        row = cursor.fetchone() or {}
-        return int(row.get("unused") or 0), int(row.get("total") or 0)
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT COUNT(*) AS total, SUM(used_at IS NULL) AS unused
+                   FROM user_recovery_codes WHERE user_id = %s""",
+                (user_id,),
+            )
+            row = cursor.fetchone() or {}
+            return int(row.get("unused") or 0), int(row.get("total") or 0)
     except mysql.connector.Error as err:
         myprint(f"Could not count recovery codes for user_id {user_id} | Error: {err}")
         return 0, 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[int] = None,
@@ -4356,26 +3916,21 @@ def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[
     """
     import secrets as _secrets
     handle = _secrets.token_urlsafe(24)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM auth_challenges WHERE expires_at < %s",
-                       (datetime.now(timezone.utc) - timedelta(hours=1),))
-        cursor.execute(
-            """INSERT INTO auth_challenges (handle_hash, user_id, purpose, challenge, expires_at,
-                                            attempts)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (hash_session_token(handle), user_id, purpose, challenge, expires_at,
-             max(0, int(initial_attempts))),
-        )
-        connection.commit()
-        return handle
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM auth_challenges WHERE expires_at < %s",
+                           (datetime.now(timezone.utc) - timedelta(hours=1),))
+            cursor.execute(
+                """INSERT INTO auth_challenges (handle_hash, user_id, purpose, challenge, expires_at,
+                                                attempts)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (hash_session_token(handle), user_id, purpose, challenge, expires_at,
+                 max(0, int(initial_attempts))),
+            )
+            return handle
     except mysql.connector.Error as err:
         myprint(f"Could not create auth challenge ({purpose}) | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
@@ -4477,24 +4032,20 @@ def count_challenge_attempts(user_id: int, purpose: str, since: datetime) -> int
     PIN bypass, or a compromised mailbox — threat T2, the one 2c exists to defeat) otherwise gets
     five guesses per round with nothing accumulating.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            """SELECT COALESCE(SUM(attempts), 0) FROM auth_challenges
-                WHERE user_id = %s AND purpose = %s AND created_at >= %s""",
-            (user_id, purpose, since),
-        )
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] is not None else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                """SELECT COALESCE(SUM(attempts), 0) FROM auth_challenges
+                    WHERE user_id = %s AND purpose = %s AND created_at >= %s""",
+                (user_id, purpose, since),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count auth challenge attempts ({purpose}) | Error: {err}")
         # Fail CLOSED: an unreadable counter must not read as an empty one, or the bound it exists
         # to enforce disappears exactly when the database is unhappy.
         return -1
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def clear_challenge_attempts(user_id: int, purpose: str) -> bool:
@@ -4502,21 +4053,16 @@ def clear_challenge_attempts(user_id: int, purpose: str) -> bool:
     code is proof, and the same proof is what clears the Redis buckets on every other login path;
     without it a user who fat-fingered a code stays part-throttled into their next sign-in.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE auth_challenges SET attempts = 0 WHERE user_id = %s AND purpose = %s",
-            (user_id, purpose),
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE auth_challenges SET attempts = 0 WHERE user_id = %s AND purpose = %s",
+                (user_id, purpose),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not clear auth challenge attempts ({purpose}) | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def finish_auth_challenge(handle: str) -> bool:
@@ -4526,22 +4072,17 @@ def finish_auth_challenge(handle: str) -> bool:
     handle_hash = hash_session_token(handle)
     if not handle_hash:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE auth_challenges SET consumed_at = %s "
-            "WHERE handle_hash = %s AND consumed_at IS NULL",
-            (datetime.now(timezone.utc), handle_hash),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE auth_challenges SET consumed_at = %s "
+                "WHERE handle_hash = %s AND consumed_at IS NULL",
+                (datetime.now(timezone.utc), handle_hash),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not finish auth challenge | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_session_verified(token: str) -> bool:
@@ -4551,22 +4092,17 @@ def mark_session_verified(token: str) -> bool:
     token_hash = hash_session_token(token)
     if not token_hash:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE sessions SET last_verified_at = %s WHERE session_token = %s "
-            "AND revoked_at IS NULL",
-            (datetime.now(timezone.utc), token_hash),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE sessions SET last_verified_at = %s WHERE session_token = %s "
+                "AND revoked_at IS NULL",
+                (datetime.now(timezone.utc), token_hash),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark session verified | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_session_auth_state(token: str) -> Optional[dict]:
@@ -4576,21 +4112,17 @@ def get_session_auth_state(token: str) -> Optional[dict]:
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT user_id, last_verified_at, scope FROM sessions "
-            "WHERE session_token = %s AND revoked_at IS NULL AND expires_at > %s",
-            (token_hash, datetime.now(timezone.utc)),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT user_id, last_verified_at, scope FROM sessions "
+                "WHERE session_token = %s AND revoked_at IS NULL AND expires_at > %s",
+                (token_hash, datetime.now(timezone.utc)),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not read session auth state | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def release_enrollment_scope(token: str) -> bool:
@@ -4604,21 +4136,16 @@ def release_enrollment_scope(token: str) -> bool:
     token_hash = hash_session_token(token)
     if not token_hash:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE sessions SET scope = %s WHERE session_token = %s AND scope = %s",
-            (SESSION_SCOPE_FULL, token_hash, SESSION_SCOPE_ENROLL),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE sessions SET scope = %s WHERE session_token = %s AND scope = %s",
+                (SESSION_SCOPE_FULL, token_hash, SESSION_SCOPE_ENROLL),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not release enrollment scope | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_session_scope(token: str, scope: str) -> bool:
@@ -4630,18 +4157,13 @@ def set_session_scope(token: str, scope: str) -> bool:
     token_hash = hash_session_token(token)
     if not token_hash:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE sessions SET scope = %s WHERE session_token = %s", (scope, token_hash))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE sessions SET scope = %s WHERE session_token = %s", (scope, token_hash))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not set session scope | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -4725,37 +4247,28 @@ def get_user_id_by_public_uid(public_uid: str) -> Optional[int]:
 
     None when it matches nothing or the read failed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT id FROM users WHERE public_uid = %s", (public_uid,))
-        row = cursor.fetchone()
-        return row['id'] if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT id FROM users WHERE public_uid = %s", (public_uid,))
+            row = cursor.fetchone()
+            return row['id'] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not resolve public_uid | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_email_verified(user_id: int) -> bool:
     """Stamp `users.email_verified_at` — the email is an attribute of the account, and this is the
     proof that the current value was actually reached.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE users SET email_verified_at = %s WHERE id = %s",
-                       (datetime.now(timezone.utc), user_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET email_verified_at = %s WHERE id = %s",
+                           (datetime.now(timezone.utc), user_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark email verified for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def change_user_email(user_id: int, new_email: str,
@@ -4804,18 +4317,14 @@ def change_user_email(user_id: int, new_email: str,
 
 def get_user_email(user_id: int) -> Optional[str]:
     """The account's current email address — an attribute of the account, not its identity (issue #745)."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT email FROM users WHERE id = %s", (user_id,))
-        row = cursor.fetchone()
-        return row['email'] if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+            return row['email'] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not get email for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_analytics_profile(user_id: int) -> dict:
@@ -4830,26 +4339,22 @@ def get_user_analytics_profile(user_id: int) -> dict:
     `status='approved'`: an approved post moves on to scheduled and then posted, so counting the
     current status alone would reset the tally the moment automation ran.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT u.subscription_tier, u.subscription_status, u.timezone, "
-            "COALESCE(u.trial_started_at, u.updated_at) AS created_at, "
-            "o.activated_at AS onboarding_completed_at, "
-            "(SELECT COUNT(*) FROM posts p WHERE p.user_id = u.id "
-            " AND p.status IN (%s, %s, %s)) AS posts_approved "
-            "FROM users u LEFT JOIN onboarding_state o ON o.user_id = u.id "
-            "WHERE u.id = %s",
-            (str(PostStatus.APPROVED), str(PostStatus.SCHEDULED), str(PostStatus.POSTED), user_id))
-        row = cursor.fetchone()
-        return row or {}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT u.subscription_tier, u.subscription_status, u.timezone, "
+                "COALESCE(u.trial_started_at, u.updated_at) AS created_at, "
+                "o.activated_at AS onboarding_completed_at, "
+                "(SELECT COUNT(*) FROM posts p WHERE p.user_id = u.id "
+                " AND p.status IN (%s, %s, %s)) AS posts_approved "
+                "FROM users u LEFT JOIN onboarding_state o ON o.user_id = u.id "
+                "WHERE u.id = %s",
+                (str(PostStatus.APPROVED), str(PostStatus.SCHEDULED), str(PostStatus.POSTED), user_id))
+            row = cursor.fetchone()
+            return row or {}
     except mysql.connector.Error as err:
         myprint(f"Could not get analytics profile for user_id {user_id} | Error: {err}")
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_token_info(user_id: int) -> Optional[dict]:
@@ -4859,28 +4364,24 @@ def get_user_token_info(user_id: int) -> Optional[dict]:
     expiry decision (`resolve_token_status`), so an expired token has to come back for the SPA countdown
     and the renewal beat to be able to see it at all.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT access_token, access_token_expires_in, access_token_created_at,
-                      refresh_token, refresh_token_expires_in, refresh_token_created_at
-               FROM users WHERE id = %s""",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        if row:
-            row['access_token'] = decrypt_secret(
-                row.get('access_token'), user_id, SECRET_FIELD_ACCESS_TOKEN)
-            row['refresh_token'] = decrypt_secret(
-                row.get('refresh_token'), user_id, SECRET_FIELD_REFRESH_TOKEN)
-        return row
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT access_token, access_token_expires_in, access_token_created_at,
+                          refresh_token, refresh_token_expires_in, refresh_token_created_at
+                   FROM users WHERE id = %s""",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                row['access_token'] = decrypt_secret(
+                    row.get('access_token'), user_id, SECRET_FIELD_ACCESS_TOKEN)
+                row['refresh_token'] = decrypt_secret(
+                    row.get('refresh_token'), user_id, SECRET_FIELD_REFRESH_TOKEN)
+            return row
     except mysql.connector.Error as err:
         myprint(f"Could not get token info for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_user_access_token(
@@ -4897,42 +4398,37 @@ def update_user_access_token(
     60-day cap. False when no row matched.
     """
     now = datetime.now(timezone.utc)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if refresh_token:
-            cursor.execute(
-                """UPDATE users SET
-                       access_token = %s,
-                       access_token_expires_in = %s,
-                       access_token_created_at = %s,
-                       refresh_token = %s,
-                       refresh_token_expires_in = %s,
-                       refresh_token_created_at = %s
-                   WHERE id = %s""",
-                (encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
-                 expires_in, now,
-                 encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
-                 refresh_token_expires_in, now, user_id),
-            )
-        else:
-            cursor.execute(
-                """UPDATE users SET
-                       access_token = %s,
-                       access_token_expires_in = %s,
-                       access_token_created_at = %s
-                   WHERE id = %s""",
-                (encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
-                 expires_in, now, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if refresh_token:
+                cursor.execute(
+                    """UPDATE users SET
+                           access_token = %s,
+                           access_token_expires_in = %s,
+                           access_token_created_at = %s,
+                           refresh_token = %s,
+                           refresh_token_expires_in = %s,
+                           refresh_token_created_at = %s
+                       WHERE id = %s""",
+                    (encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                     expires_in, now,
+                     encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
+                     refresh_token_expires_in, now, user_id),
+                )
+            else:
+                cursor.execute(
+                    """UPDATE users SET
+                           access_token = %s,
+                           access_token_expires_in = %s,
+                           access_token_created_at = %s
+                       WHERE id = %s""",
+                    (encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                     expires_in, now, user_id),
+                )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update access token for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_user_linkedin_token(
@@ -4950,90 +4446,76 @@ def update_user_linkedin_token(
     logged-in user, regardless of which email LinkedIn returns.
     """
     now = datetime.now(timezone.utc)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if refresh_token:
-            cursor.execute(
-                """UPDATE users SET
-                       linked_sub_id = %s,
-                       linkedin_email = %s,
-                       access_token = %s,
-                       access_token_expires_in = %s,
-                       access_token_created_at = %s,
-                       refresh_token = %s,
-                       refresh_token_expires_in = %s,
-                       refresh_token_created_at = %s,
-                       linkedin_connection_status = 'connected'
-                   WHERE id = %s""",
-                (linked_sub_id, linkedin_email or None,
-                 encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
-                 expires_in, now,
-                 encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
-                 refresh_token_expires_in, now, user_id),
-            )
-        else:
-            cursor.execute(
-                """UPDATE users SET
-                       linked_sub_id = %s,
-                       linkedin_email = %s,
-                       access_token = %s,
-                       access_token_expires_in = %s,
-                       access_token_created_at = %s,
-                       linkedin_connection_status = 'connected'
-                   WHERE id = %s""",
-                (linked_sub_id, linkedin_email or None,
-                 encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
-                 expires_in, now, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if refresh_token:
+                cursor.execute(
+                    """UPDATE users SET
+                           linked_sub_id = %s,
+                           linkedin_email = %s,
+                           access_token = %s,
+                           access_token_expires_in = %s,
+                           access_token_created_at = %s,
+                           refresh_token = %s,
+                           refresh_token_expires_in = %s,
+                           refresh_token_created_at = %s,
+                           linkedin_connection_status = 'connected'
+                       WHERE id = %s""",
+                    (linked_sub_id, linkedin_email or None,
+                     encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                     expires_in, now,
+                     encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
+                     refresh_token_expires_in, now, user_id),
+                )
+            else:
+                cursor.execute(
+                    """UPDATE users SET
+                           linked_sub_id = %s,
+                           linkedin_email = %s,
+                           access_token = %s,
+                           access_token_expires_in = %s,
+                           access_token_created_at = %s,
+                           linkedin_connection_status = 'connected'
+                       WHERE id = %s""",
+                    (linked_sub_id, linkedin_email or None,
+                     encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                     expires_in, now, user_id),
+                )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update LinkedIn token for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_linkedin_connection_status(user_id: int, status: str) -> bool:
     """Set linkedin_connection_status to 'connected', 'expired', or 'disconnected'."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE users SET linkedin_connection_status = %s WHERE id = %s",
-            (status, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET linkedin_connection_status = %s WHERE id = %s",
+                (status, user_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update linkedin_connection_status for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_subscription_info(user_id: int) -> Optional[dict]:
     """Return subscription fields for the given user."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT subscription_status, subscription_tier,
-                      trial_started_at, trial_ends_at,
-                      stripe_customer_id, stripe_subscription_id
-               FROM users WHERE id = %s""",
-            (user_id,),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT subscription_status, subscription_tier,
+                          trial_started_at, trial_ends_at,
+                          stripe_customer_id, stripe_subscription_id
+                   FROM users WHERE id = %s""",
+                (user_id,),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get subscription info for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_subscription_from_stripe(
@@ -5048,58 +4530,49 @@ def update_subscription_from_stripe(
     When tier is None (e.g. subscription deleted) we preserve the existing tier so
     historical data is retained. Pass an explicit empty string to clear it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if tier is not None:
-            cursor.execute(
-                """UPDATE users
-                   SET subscription_status = %s,
-                       subscription_tier = %s,
-                       stripe_subscription_id = %s,
-                       subscription_current_period_end = %s
-                   WHERE stripe_customer_id = %s""",
-                (status, tier, subscription_id, current_period_end, stripe_customer_id),
-            )
-        else:
-            # Don't overwrite the tier — preserve it for historical reference
-            cursor.execute(
-                """UPDATE users
-                   SET subscription_status = %s,
-                       stripe_subscription_id = %s,
-                       subscription_current_period_end = %s
-                   WHERE stripe_customer_id = %s""",
-                (status, subscription_id, current_period_end, stripe_customer_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if tier is not None:
+                cursor.execute(
+                    """UPDATE users
+                       SET subscription_status = %s,
+                           subscription_tier = %s,
+                           stripe_subscription_id = %s,
+                           subscription_current_period_end = %s
+                       WHERE stripe_customer_id = %s""",
+                    (status, tier, subscription_id, current_period_end, stripe_customer_id),
+                )
+            else:
+                # Don't overwrite the tier — preserve it for historical reference
+                cursor.execute(
+                    """UPDATE users
+                       SET subscription_status = %s,
+                           stripe_subscription_id = %s,
+                           subscription_current_period_end = %s
+                       WHERE stripe_customer_id = %s""",
+                    (status, subscription_id, current_period_end, stripe_customer_id),
+                )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update subscription from Stripe for customer {stripe_customer_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_users_with_stripe_subscriptions() -> list[dict]:
     """Return all users that have a Stripe subscription ID (for periodic sync)."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT id, stripe_customer_id, stripe_subscription_id,
-                      subscription_status, subscription_tier
-               FROM users
-               WHERE stripe_subscription_id IS NOT NULL
-                 AND subscription_status IN ('active', 'past_due')"""
-        )
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT id, stripe_customer_id, stripe_subscription_id,
+                          subscription_status, subscription_tier
+                   FROM users
+                   WHERE stripe_subscription_id IS NOT NULL
+                     AND subscription_status IN ('active', 'past_due')"""
+            )
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not fetch Stripe subscribers | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_preferences(user_id: int) -> dict:
@@ -5112,22 +4585,18 @@ def get_user_preferences(user_id: int) -> dict:
                        "content_buffer_days": DEFAULT_CONTENT_BUFFER_DAYS,
                        "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS,
                        "content_language": None}
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT last_login_inactivate_delay, auto_schedule_posts,"
-            " content_buffer_days, content_buffer_max_posts, content_language FROM users WHERE id = %s",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        return row if row is not None else _defaults
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT last_login_inactivate_delay, auto_schedule_posts,"
+                " content_buffer_days, content_buffer_max_posts, content_language FROM users WHERE id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return row if row is not None else _defaults
     except mysql.connector.Error as err:
         myprint(f"Could not get preferences for user_id {user_id} | Error: {err}")
         return _defaults
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_user_preferences(
@@ -5157,22 +4626,17 @@ def update_user_preferences(
         params.append(content_language.strip()[:16] or None)
     params.append(user_id)
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            f"UPDATE users SET {', '.join(sets)} WHERE id = %s",
-            tuple(params),
-        )
-        connection.commit()
-        # rowcount==0 means the row existed but values were unchanged — still a success
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = %s",
+                tuple(params),
+            )
+            # rowcount==0 means the row existed but values were unchanged — still a success
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update preferences for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # Catch-up milestone types eligible for a congratulations touch out of the box (issue #482): the two
@@ -5190,6 +4654,26 @@ CATCHUP_TOUCHES_MAX_STANDARD = 5
 CATCHUP_TOUCHES_MAX_PREMIUM = 10
 # Absolute ceiling accepted at the API boundary — the per-user allowance is applied on top of it.
 CATCHUP_TOUCHES_MAX = CATCHUP_TOUCHES_MAX_PREMIUM
+# Per-contact cooldown across ALL catch-up event types (issue #1078). A new congratulations to the
+# same person is held until at least this many days have passed since the last one.
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT = 7
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN = 0
+CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX = 365
+# Per-contact rolling cap (issue #1078). At most this many catch-up messages may reach the same
+# person within CATCHUP_CONTACT_CAP_WINDOW_DAYS. 0 means no cap.
+#
+# The cap window is deliberately NOT the cooldown window: the cooldown already blocks every send
+# inside its own window, so a cap measured over the same span could never be reached (the first
+# message would trip the cooldown long before the second reached the cap), and disabling the
+# cooldown would silently disable the cap too. A month-long window makes the cap the second,
+# independent bound the reporter asked for — "no more than N catch-ups to this person, ever, in a
+# rolling month" — regardless of how the cooldown is set.
+CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT = 2
+CATCHUP_MAX_PER_CONTACT_DAYS_MIN = 0
+CATCHUP_MAX_PER_CONTACT_DAYS_MAX = 365
+# The rolling window the per-contact cap is measured over. Fixed, not a preference: the cap and the
+# cooldown are two different questions, and one knob answering both is how the cap became unreachable.
+CATCHUP_CONTACT_CAP_WINDOW_DAYS = 30
 # Paid plans that unlock the premium catch-up allowance (see stripe_util.TIER_PRICE_MAP).
 PREMIUM_SUBSCRIPTION_TIERS = ("professional", "enterprise")
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trial")
@@ -5299,6 +4783,13 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "max_catchup_touches_per_day": CATCHUP_TOUCHES_MAX_STANDARD, "catchup_touch_mode": "pre_review",
     "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
     "catchup_message_source": "linkedin",
+    # Per-contact catch-up frequency guard (issue #1078). A new congratulations to the same person is
+    # held until `min_catchup_contact_interval_days` have passed since the last one, and at most
+    # `max_catchup_touches_per_contact_days` may land per rolling CATCHUP_CONTACT_CAP_WINDOW_DAYS.
+    # Both default to small, safe values that rarely block normal usage but stop a burst across
+    # multiple milestone types.
+    "min_catchup_contact_interval_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+    "max_catchup_touches_per_contact_days": CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
     "posts_per_week": DEFAULT_POSTS_PER_WEEK,
     "posting_days": list(DEFAULT_POSTING_DAYS),
     # AI image on generated TEXT posts (image-generation overhaul). ON by default — a bare text
@@ -5334,7 +4825,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
-                    "catchup_message_source", "posts_per_week", "posting_days",
+                    "catchup_message_source", "min_catchup_contact_interval_days",
+                    "max_catchup_touches_per_contact_days", "posts_per_week", "posting_days",
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect")
 
@@ -5448,18 +4940,14 @@ def engagement_preferences_are_configured(user_id: int) -> Optional[bool]:
     (issue #639). A caller that would otherwise write policy defaults over settings the user chose
     has to be able to tell those two apart (issue #952).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT 1 FROM engagement_preferences WHERE user_id = %s LIMIT 1", (user_id,))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT 1 FROM engagement_preferences WHERE user_id = %s LIMIT 1", (user_id,))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error("Could not read engagement prefs — configured state unknown",
                   exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
@@ -5563,6 +5051,24 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     # Drop unknown milestone types before they hit the ENUM-validated ledger.
     merged["catchup_event_types"] = [t for t in (merged.get("catchup_event_types") or [])
                                      if t in tuple(CatchupEventType)]
+    # Per-contact catch-up frequency guard (issue #1078). 0 disables the guard; otherwise clamp to
+    # a sensible band so a malformed value can't lock the lane for a year or make it negative.
+    _interval = merged.get("min_catchup_contact_interval_days")
+    try:
+        merged["min_catchup_contact_interval_days"] = (
+            min(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+                max(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN, int(_interval)))
+            if _interval is not None else CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        merged["min_catchup_contact_interval_days"] = CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+    _per_contact = merged.get("max_catchup_touches_per_contact_days")
+    try:
+        merged["max_catchup_touches_per_contact_days"] = (
+            min(CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+                max(CATCHUP_MAX_PER_CONTACT_DAYS_MIN, int(_per_contact)))
+            if _per_contact is not None else CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_catchup_touches_per_contact_days"] = CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
 
     def _val(col):
         v = merged[col]
@@ -5575,20 +5081,15 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     values = [user_id] + [_val(c) for c in _ENGAGEMENT_COLS]
     placeholders = ", ".join(["%s"] * (len(_ENGAGEMENT_COLS) + 1))
     updates = ", ".join(f"{c}=VALUES({c})" for c in _ENGAGEMENT_COLS)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            f"INSERT INTO engagement_preferences (user_id, {', '.join(_ENGAGEMENT_COLS)}) "
-            f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"INSERT INTO engagement_preferences (user_id, {', '.join(_ENGAGEMENT_COLS)}) "
+                f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update engagement prefs for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Target-creator engagement roster (issue #616) ---
@@ -5694,22 +5195,18 @@ def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
     category. `comments_this_week` is already week-aware (0 once the stored week_start is not the
     current week).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        sql = (f"SELECT {', '.join(_ENGAGEMENT_TARGET_COLS)} FROM engagement_targets "
-               f"WHERE user_id=%s")
-        if active_only:
-            sql += " AND active=1"
-        sql += " ORDER BY category, id"
-        cursor.execute(sql, (user_id,))
-        return [_clean_target_row(r) for r in (cursor.fetchall() or [])]
+        with db_cursor(dictionary=True) as cursor:
+            sql = (f"SELECT {', '.join(_ENGAGEMENT_TARGET_COLS)} FROM engagement_targets "
+                   f"WHERE user_id=%s")
+            if active_only:
+                sql += " AND active=1"
+            sql += " ORDER BY category, id"
+            cursor.execute(sql, (user_id,))
+            return [_clean_target_row(r) for r in (cursor.fetchall() or [])]
     except mysql.connector.Error as err:
         log_error("Could not list engagement targets", exc=err, user_id=user_id)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_engagement_targets(user_id: int, targets: list) -> bool:
@@ -5736,23 +5233,18 @@ def upsert_engagement_targets(user_id: int, targets: list) -> bool:
             source if source in ENGAGEMENT_TARGET_SOURCES else "user"))
     if not rows:
         return True
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.executemany(
-            "INSERT INTO engagement_targets (user_id, profile_url, name, category, "
-            "max_comments_per_week, active, source) VALUES (%s,%s,%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), "
-            "max_comments_per_week=VALUES(max_comments_per_week), active=VALUES(active), "
-            "source=VALUES(source)", rows)
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.executemany(
+                "INSERT INTO engagement_targets (user_id, profile_url, name, category, "
+                "max_comments_per_week, active, source) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), "
+                "max_comments_per_week=VALUES(max_comments_per_week), active=VALUES(active), "
+                "source=VALUES(source)", rows)
+            return True
     except mysql.connector.Error as err:
         log_error("Could not upsert engagement targets", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def delete_engagement_target(user_id: int, profile_url: str) -> bool:
@@ -5760,19 +5252,14 @@ def delete_engagement_target(user_id: int, profile_url: str) -> bool:
 
     True means the DELETE ran, not that the target existed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM engagement_targets WHERE user_id=%s AND profile_url=%s",
-                       (user_id, str(profile_url or "").strip()))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM engagement_targets WHERE user_id=%s AND profile_url=%s",
+                           (user_id, str(profile_url or "").strip()))
+            return True
     except mysql.connector.Error as err:
         log_error("Could not delete engagement target", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_target_engagement(user_id: int, profile_url: str) -> bool:
@@ -5790,24 +5277,19 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
     LinkedIn that a comment landing does not undo.
     """
     week = engagement_week_start()
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE engagement_targets SET "
-            "comments_this_week = IF(week_start = %s, comments_this_week + 1, 1), "
-            "week_start = %s, last_engaged_at = NOW(), comment_blocked_streak = 0, "
-            f"connect_status = IF(connect_status = '{ConnectStatus.NEEDS_CONNECTION.value}', "
-            f"'{ConnectStatus.UNKNOWN.value}', connect_status) "
-            "WHERE user_id=%s AND profile_url=%s", (week, week, user_id, str(profile_url or "").strip()))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE engagement_targets SET "
+                "comments_this_week = IF(week_start = %s, comments_this_week + 1, 1), "
+                "week_start = %s, last_engaged_at = NOW(), comment_blocked_streak = 0, "
+                f"connect_status = IF(connect_status = '{ConnectStatus.NEEDS_CONNECTION.value}', "
+                f"'{ConnectStatus.UNKNOWN.value}', connect_status) "
+                "WHERE user_id=%s AND profile_url=%s", (week, week, user_id, str(profile_url or "").strip()))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error("Could not record target engagement", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 class BlockedVisit(NamedTuple):
@@ -5879,26 +5361,21 @@ def set_target_follow_status(user_id: int, profile_url: str, status: FollowStatu
         log_error(f"Refusing to write unknown follow status {status!r}", user_id=user_id)
         return False
     status = FollowStatus(status)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if status is FollowStatus.FOLLOWING:
-            cursor.execute(
-                "UPDATE engagement_targets SET follow_status=%s, followed_at=NOW(), "
-                "follow_attempts=0 WHERE user_id=%s AND profile_url=%s",
-                (status.value, user_id, str(profile_url or "").strip()))
-        else:
-            cursor.execute(
-                "UPDATE engagement_targets SET follow_status=%s WHERE user_id=%s AND profile_url=%s",
-                (status.value, user_id, str(profile_url or "").strip()))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if status is FollowStatus.FOLLOWING:
+                cursor.execute(
+                    "UPDATE engagement_targets SET follow_status=%s, followed_at=NOW(), "
+                    "follow_attempts=0 WHERE user_id=%s AND profile_url=%s",
+                    (status.value, user_id, str(profile_url or "").strip()))
+            else:
+                cursor.execute(
+                    "UPDATE engagement_targets SET follow_status=%s WHERE user_id=%s AND profile_url=%s",
+                    (status.value, user_id, str(profile_url or "").strip()))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error("Could not set roster target follow status", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_target_follow_failure(user_id: int, profile_url: str) -> int:
@@ -6023,40 +5500,32 @@ def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
     """The user's story bank, least-recently-used first — the rotation order the selector consumes
     directly (never-used entries sort ahead of used ones, oldest use next).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
-        if active_only:
-            sql += " AND active=1"
-        sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
-        cursor.execute(sql, (user_id,))
-        return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
+        with db_cursor(dictionary=True) as cursor:
+            sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
+            if active_only:
+                sql += " AND active=1"
+            sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
+            cursor.execute(sql, (user_id,))
+            return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
     except mysql.connector.Error as err:
         log_error("Could not list story bank entries", exc=err, user_id=user_id)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_story_bank_entries(user_id: int, active_only: bool = True) -> int:
     """How many entries the user has seeded — what the onboarding nudge decides on."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        sql = "SELECT COUNT(*) FROM story_bank WHERE user_id=%s"
-        if active_only:
-            sql += " AND active=1"
-        cursor.execute(sql, (user_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row else 0
+        with db_cursor() as cursor:
+            sql = "SELECT COUNT(*) FROM story_bank WHERE user_id=%s"
+            if active_only:
+                sql += " AND active=1"
+            cursor.execute(sql, (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
     except mysql.connector.Error as err:
         log_error("Could not count story bank entries", exc=err, user_id=user_id)
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_story_bank_entries(user_id: int, entries: list) -> bool:
@@ -6082,25 +5551,20 @@ def upsert_story_bank_entries(user_id: int, entries: list) -> bool:
             inserts.append((user_id, kind, title, body, happened_at, active))
     if not inserts and not updates:
         return True
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if inserts:
-            cursor.executemany(
-                "INSERT INTO story_bank (user_id, kind, title, body, happened_at, active) "
-                "VALUES (%s,%s,%s,%s,%s,%s)", inserts)
-        if updates:
-            cursor.executemany(
-                "UPDATE story_bank SET kind=%s, title=%s, body=%s, happened_at=%s, active=%s "
-                "WHERE id=%s AND user_id=%s", updates)
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            if inserts:
+                cursor.executemany(
+                    "INSERT INTO story_bank (user_id, kind, title, body, happened_at, active) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)", inserts)
+            if updates:
+                cursor.executemany(
+                    "UPDATE story_bank SET kind=%s, title=%s, body=%s, happened_at=%s, active=%s "
+                    "WHERE id=%s AND user_id=%s", updates)
+            return True
     except mysql.connector.Error as err:
         log_error("Could not upsert story bank entries", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def delete_story_bank_entry(user_id: int, entry_id: int) -> bool:
@@ -6108,36 +5572,26 @@ def delete_story_bank_entry(user_id: int, entry_id: int) -> bool:
 
     True means the DELETE ran, not that a row matched.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM story_bank WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM story_bank WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
+            return True
     except mysql.connector.Error as err:
         log_error("Could not delete story bank entry", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_story_bank_use(user_id: int, entry_id: int) -> bool:
     """Count one use against an entry so the next post rotates to different raw material."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE story_bank SET used_count = used_count + 1, last_used_at = NOW() "
-            "WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE story_bank SET used_count = used_count + 1, last_used_at = NOW() "
+                "WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error("Could not record story bank use", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
@@ -6168,53 +5622,41 @@ def get_user_id_by_reply_token(token: str) -> Optional[int]:
     """Reverse lookup for the comment-notification webhook: token → user_id (unique index)."""
     if not token:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT id FROM users WHERE reply_inbound_token = %s", (token,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT id FROM users WHERE reply_inbound_token = %s", (token,))
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not look up user by reply token | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_users_with_reply_mode(mode: str) -> list:
     """user_ids whose engagement prefs set reply_check_mode = mode (drives the scheduled sweep
     dispatcher). Users with no prefs row default to 'event', so they never appear for 'scheduled'.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT user_id FROM engagement_preferences WHERE reply_check_mode = %s", (mode,))
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("SELECT user_id FROM engagement_preferences WHERE reply_check_mode = %s", (mode,))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get users with reply mode {mode} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def _count_actions_today(user_id: int, action_type: "LogActionType") -> int:
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
-            "AND created_at >= CURDATE()",
-            (user_id, str(action_type), str(LogResultType.SUCCESS)))
-        r = cursor.fetchone()
-        return int(r[0]) if r else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+                "AND created_at >= CURDATE()",
+                (user_id, str(action_type), str(LogResultType.SUCCESS)))
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count actions for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_comments_today(user_id: int) -> int:
@@ -6259,22 +5701,17 @@ def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
     the mechanic that drafted it ('nurture', 'artifact'; NULL means a person wrote it by hand), and that
     is what lets each mechanic carry its own daily draft cap while sharing the one-open-draft rule.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
-            "source, scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, recipient_profile_url, recipient_name, message,
-             str(source) if source else None, to_naive_utc(scheduled_time), str(status)))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
+                "source, scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, recipient_profile_url, recipient_name, message,
+                 str(source) if source else None, to_naive_utc(scheduled_time), str(status)))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not insert scheduled DM for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str = None) -> bool:
@@ -6290,19 +5727,15 @@ def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str 
         where += " AND source=%s"
         params.append(str(source))
     placeholders = ", ".join(["%s"] * len(_OPEN_SCHED_DM_STATUSES))
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"SELECT 1 FROM scheduled_dms WHERE {where} "
-                       f"AND status IN ({placeholders}) LIMIT 1",
-                       tuple(params + [str(s) for s in _OPEN_SCHED_DM_STATUSES]))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT 1 FROM scheduled_dms WHERE {where} "
+                           f"AND status IN ({placeholders}) LIMIT 1",
+                           tuple(params + [str(s) for s in _OPEN_SCHED_DM_STATUSES]))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         myprint(f"Could not check open scheduled DMs for user {user_id} | Error: {err}")
         return True
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
@@ -6315,33 +5748,25 @@ def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
     if source:
         where += " AND source=%s"
         params.append(str(source))
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"SELECT COUNT(*) FROM scheduled_dms WHERE {where}", tuple(params))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] else 0
+        with db_cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM scheduled_dms WHERE {where}", tuple(params))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count today's scheduled DMs for user {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_scheduled_dm(dm_id: int) -> Optional[dict]:
     """One scheduled-DM row, or None when it does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms WHERE id = %s", (dm_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms WHERE id = %s", (dm_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get scheduled DM {dm_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_scheduled_dm_user_id(dm_id: int) -> Optional[int]:
@@ -6364,29 +5789,25 @@ def get_scheduled_dms(user_id: int, status_filter: str = None, page: int = 1,
         where += " AND status = %s"
         params.append(status_filter)
     offset = max(0, (max(1, page) - 1) * page_size)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS c FROM scheduled_dms {where}", tuple(params))
-        total = int(cursor.fetchone()["c"])
-        cursor.execute(
-            f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms {where} "
-            f"ORDER BY scheduled_time {order} LIMIT %s OFFSET %s",
-            tuple(params + [page_size, offset]))
-        rows = cursor.fetchall()
-        for r in rows:
-            if isinstance(r.get("scheduled_time"), datetime):
-                r["scheduled_time"] = r["scheduled_time"].isoformat()
-            for k in ("created_at", "updated_at"):
-                if isinstance(r.get(k), datetime):
-                    r[k] = r[k].isoformat()
-        return {"dms": rows, "total": total, "page": page, "page_size": page_size}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS c FROM scheduled_dms {where}", tuple(params))
+            total = int(cursor.fetchone()["c"])
+            cursor.execute(
+                f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms {where} "
+                f"ORDER BY scheduled_time {order} LIMIT %s OFFSET %s",
+                tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            for r in rows:
+                if isinstance(r.get("scheduled_time"), datetime):
+                    r["scheduled_time"] = r["scheduled_time"].isoformat()
+                for k in ("created_at", "updated_at"):
+                    if isinstance(r.get(k), datetime):
+                        r[k] = r[k].isoformat()
+            return {"dms": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         myprint(f"Could not list scheduled DMs for user_id {user_id} | Error: {err}")
         return {"dms": [], "total": 0, "page": page, "page_size": page_size}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
@@ -6397,21 +5818,17 @@ def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
     """
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(minutes=post_time_delta_minutes)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id, scheduled_time, user_id FROM scheduled_dms "
-            "WHERE status = 'approved' AND scheduled_time <= %s "
-            "ORDER BY scheduled_time ASC",
-            (window_end,))
-        return cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, scheduled_time, user_id FROM scheduled_dms "
+                "WHERE status = 'approved' AND scheduled_time <= %s "
+                "ORDER BY scheduled_time ASC",
+                (window_end,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get due scheduled DMs | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
@@ -6420,21 +5837,17 @@ def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
     avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id, scheduled_time, user_id FROM scheduled_dms "
-            "WHERE status = 'scheduled' AND scheduled_time <= %s "
-            "ORDER BY scheduled_time ASC",
-            (cutoff,))
-        return cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, scheduled_time, user_id FROM scheduled_dms "
+                "WHERE status = 'scheduled' AND scheduled_time <= %s "
+                "ORDER BY scheduled_time ASC",
+                (cutoff,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get orphaned scheduled DMs | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
@@ -6442,18 +5855,13 @@ def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
 
     True whenever the UPDATE ran — a status write against an id that no longer exists is not reported.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE scheduled_dms SET status = %s WHERE id = %s", (str(status), dm_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE scheduled_dms SET status = %s WHERE id = %s", (str(status), dm_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update scheduled DM {dm_id} status | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient_name: str = None,
@@ -6476,18 +5884,13 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
     if not fields:
         return False
     params.append(dm_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE scheduled_dms SET {', '.join(fields)} WHERE id = %s", tuple(params))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE scheduled_dms SET {', '.join(fields)} WHERE id = %s", tuple(params))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update scheduled DM {dm_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_invites_sent_today(user_id: int) -> int:
@@ -6497,22 +5900,18 @@ def count_invites_sent_today(user_id: int) -> int:
     those immutable logs (by created_at) covers both flows without double-counting a proactive send (which
     also has a connection_requests row) and avoids the mutable connection_requests.updated_at clock.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
-            "AND message=%s AND created_at >= CURDATE()",
-            (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
-             CONNECTION_REQUEST_SENT_MESSAGE))
-        r = cursor.fetchone()
-        return int(r[0]) if r else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+                "AND message=%s AND created_at >= CURDATE()",
+                (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
+                 CONNECTION_REQUEST_SENT_MESSAGE))
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count invites for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_invite_withdrawals_today(user_id: int) -> int:
@@ -6524,21 +5923,17 @@ def count_invite_withdrawals_today(user_id: int) -> int:
     Redis) is what keeps a second run the same day, or a worker restart, from re-spending the day's
     allowance.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND message=%s "
-            "AND created_at >= CURDATE()",
-            (user_id, LogActionType.ENGAGED.value, STALE_INVITE_WITHDRAWN_MESSAGE))
-        r = cursor.fetchone()
-        return max(0, int(r[0])) if r and r[0] is not None else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND message=%s "
+                "AND created_at >= CURDATE()",
+                (user_id, LogActionType.ENGAGED.value, STALE_INVITE_WITHDRAWN_MESSAGE))
+            r = cursor.fetchone()
+            return max(0, int(r[0])) if r and r[0] is not None else 0
     except (mysql.connector.Error, TypeError, ValueError) as err:
         myprint(f"Could not count invite withdrawals for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_company_page_invites_sent_today(user_id: int) -> int:
@@ -6549,23 +5944,19 @@ def count_company_page_invites_sent_today(user_id: int) -> int:
     summed instead of the rows being counted. Reading it back out of the immutable logs (not Redis)
     is what makes a second run the same day idempotent across worker restarts.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COALESCE(SUM(CAST(REGEXP_SUBSTR(message, '[0-9]+') AS UNSIGNED)), 0) FROM logs "
-            "WHERE user_id=%s AND action_type=%s AND result=%s AND message LIKE %s "
-            "AND created_at >= CURDATE()",
-            (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
-             f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}:%"))
-        r = cursor.fetchone()
-        return max(0, int(r[0])) if r and r[0] is not None else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COALESCE(SUM(CAST(REGEXP_SUBSTR(message, '[0-9]+') AS UNSIGNED)), 0) FROM logs "
+                "WHERE user_id=%s AND action_type=%s AND result=%s AND message LIKE %s "
+                "AND created_at >= CURDATE()",
+                (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
+                 f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}:%"))
+            r = cursor.fetchone()
+            return max(0, int(r[0])) if r and r[0] is not None else 0
     except (mysql.connector.Error, TypeError, ValueError) as err:
         myprint(f"Could not count company page invites for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Proactive connection requests (issue #398) — approval-gated, daily-capped; reuses invite_to_connect ---
@@ -6586,38 +5977,29 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
     Nothing is sent from here — the default status is PENDING. `source` / `icp_score` / `reasons` carry
     the targeting provenance (issue #486) so the person approving can see WHY the row exists.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
-            "message, status, source, icp_score, reasons) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, recipient_profile_url, recipient_name, message, str(status),
-             source, icp_score, (reasons or None)))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
+                "message, status, source, icp_score, reasons) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, recipient_profile_url, recipient_name, message, str(status),
+                 source, icp_score, (reasons or None)))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not insert connection request for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_connection_request(request_id: int) -> Optional[dict]:
     """One connection-request row, or None when it does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests WHERE id = %s", (request_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests WHERE id = %s", (request_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get connection request {request_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_connection_request_user_id(request_id: int) -> Optional[int]:
@@ -6639,46 +6021,38 @@ def get_connection_requests(user_id: int, status_filter: str = None, page: int =
         where += " AND status = %s"
         params.append(status_filter)
     offset = max(0, (max(1, page) - 1) * page_size)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS c FROM connection_requests {where}", tuple(params))
-        total = int(cursor.fetchone()["c"])
-        cursor.execute(
-            f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests {where} "
-            f"ORDER BY created_at {order} LIMIT %s OFFSET %s",
-            tuple(params + [page_size, offset]))
-        rows = cursor.fetchall()
-        for r in rows:
-            for k in ("created_at", "updated_at"):
-                if isinstance(r.get(k), datetime):
-                    r[k] = r[k].isoformat()
-        return {"requests": rows, "total": total, "page": page, "page_size": page_size}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS c FROM connection_requests {where}", tuple(params))
+            total = int(cursor.fetchone()["c"])
+            cursor.execute(
+                f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests {where} "
+                f"ORDER BY created_at {order} LIMIT %s OFFSET %s",
+                tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            for r in rows:
+                for k in ("created_at", "updated_at"):
+                    if isinstance(r.get(k), datetime):
+                        r[k] = r[k].isoformat()
+            return {"requests": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         myprint(f"Could not list connection requests for user_id {user_id} | Error: {err}")
         return {"requests": [], "total": 0, "page": page, "page_size": page_size}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_approved_connection_requests() -> list:
     """Approved connection requests waiting to be sent, oldest first. Returns (id, user_id) tuples.
     The daily cap is enforced by the scanner/send task, not here.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id, user_id FROM connection_requests WHERE status = 'approved' "
-            "ORDER BY created_at ASC")
-        return cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, user_id FROM connection_requests WHERE status = 'approved' "
+                "ORDER BY created_at ASC")
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get approved connection requests | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
@@ -6687,20 +6061,16 @@ def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
     Returns (id, user_id) tuples.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id, user_id FROM connection_requests WHERE status = 'sending' "
-            "AND updated_at <= %s ORDER BY updated_at ASC",
-            (cutoff,))
-        return cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, user_id FROM connection_requests WHERE status = 'sending' "
+                "AND updated_at <= %s ORDER BY updated_at ASC",
+                (cutoff,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get orphaned connection requests | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus",
@@ -6709,20 +6079,15 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
     written on every call, so a request that later succeeds or is deferred clears the stale reason
     instead of showing yesterday's failure next to today's status.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE connection_requests SET status = %s, failure_reason = %s WHERE id = %s",
-                       (str(status), (str(failure_reason)[:512] if failure_reason else None),
-                        request_id))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE connection_requests SET status = %s, failure_reason = %s WHERE id = %s",
+                           (str(status), (str(failure_reason)[:512] if failure_reason else None),
+                            request_id))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update connection request {request_id} status | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
@@ -6745,18 +6110,13 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
     if not fields:
         return False
     params.append(request_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE connection_requests SET {', '.join(fields)} WHERE id = %s", tuple(params))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE connection_requests SET {', '.join(fields)} WHERE id = %s", tuple(params))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update connection request {request_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Smart connection targeting (issue #486) — sourcing + dedup for the #398 send path ---
@@ -6766,20 +6126,16 @@ def count_open_connection_requests(user_id: int) -> int:
     subtracts these from the daily invite budget so it can't pile up a backlog that would spend
     tomorrow's cap the moment it opens.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM connection_requests WHERE user_id=%s "
-            "AND status IN ('pending','approved','sending')", (user_id,))
-        r = cursor.fetchone()
-        return int(r[0]) if r else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM connection_requests WHERE user_id=%s "
+                "AND status IN ('pending','approved','sending')", (user_id,))
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count open connection requests for user {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_requested_person_keys(user_id: int) -> set:
@@ -6788,24 +6144,20 @@ def get_requested_person_keys(user_id: int) -> set:
     night, and someone already invited must never be invited twice.
     """
     from cqc_lem.utilities.lead_scoring import person_key
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT recipient_name, recipient_profile_url FROM connection_requests WHERE user_id=%s",
-            (user_id,))
-        keys = set()
-        for name, url in cursor.fetchall():
-            key = person_key(name, url)
-            if key:
-                keys.add(key)
-        return keys
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT recipient_name, recipient_profile_url FROM connection_requests WHERE user_id=%s",
+                (user_id,))
+            keys = set()
+            for name, url in cursor.fetchall():
+                key = person_key(name, url)
+                if key:
+                    keys.add(key)
+            return keys
     except mysql.connector.Error as err:
         myprint(f"Could not read requested person keys for user {user_id} | Error: {err}")
         return set()
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_engager_candidates(user_id: int, days: int = 30) -> list:
@@ -6814,22 +6166,18 @@ def get_engager_candidates(user_id: int, days: int = 30) -> list:
     profile URL — without one there is nobody to invite. Read from post_engagers, so this costs no
     scraping. `connection_degree` lets the caller drop people we're already connected to (#623).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT engager_name AS person_name, engager_profile_url AS person_profile_url, "
-            "connection_degree, last_engaged_at AS occurred_at FROM post_engagers "
-            "WHERE user_id=%s AND engager_profile_url IS NOT NULL "
-            "AND last_engaged_at >= (NOW() - INTERVAL %s DAY) ORDER BY last_engaged_at DESC",
-            (user_id, days))
-        return cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT engager_name AS person_name, engager_profile_url AS person_profile_url, "
+                "connection_degree, last_engaged_at AS occurred_at FROM post_engagers "
+                "WHERE user_id=%s AND engager_profile_url IS NOT NULL "
+                "AND last_engaged_at >= (NOW() - INTERVAL %s DAY) ORDER BY last_engaged_at DESC",
+                (user_id, days))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not read engager candidates for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
@@ -6846,37 +6194,28 @@ def insert_outreach_target(user_id: int, target_profile_url: str, target_name: s
     Starts at the COMMENT stage, PENDING: the funnel is approval-gated end to end, so this only queues.
     None when the insert failed — including when the (user, profile) pair is already in the funnel.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO outreach_funnel_targets (user_id, target_profile_url, target_name, stage, "
-            "status, context_url, draft_text) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, target_profile_url, target_name, str(stage), str(status), context_url, draft_text))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO outreach_funnel_targets (user_id, target_profile_url, target_name, stage, "
+                "status, context_url, draft_text) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, target_profile_url, target_name, str(stage), str(status), context_url, draft_text))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not insert outreach target for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_outreach_target(target_id: int) -> Optional[dict]:
     """One outreach-funnel row, or None when it does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets WHERE id = %s", (target_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets WHERE id = %s", (target_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get outreach target {target_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_outreach_target_user_id(target_id: int) -> Optional[int]:
@@ -6894,19 +6233,15 @@ def get_outreach_target_by_url(user_id: int, target_profile_url: str) -> Optiona
     The dedup lookup: `(user_id, target_profile_url)` is UNIQUE, so one person is only ever in the funnel
     once and this is how a sourcing pass finds out.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
-            "WHERE user_id = %s AND target_profile_url = %s", (user_id, target_profile_url))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
+                "WHERE user_id = %s AND target_profile_url = %s", (user_id, target_profile_url))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not look up outreach target for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: str = None,
@@ -6922,47 +6257,39 @@ def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: 
         where += " AND stage = %s"
         params.append(stage_filter)
     offset = max(0, (max(1, page) - 1) * page_size)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS c FROM outreach_funnel_targets {where}", tuple(params))
-        total = int(cursor.fetchone()["c"])
-        cursor.execute(
-            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets {where} "
-            f"ORDER BY updated_at {order} LIMIT %s OFFSET %s",
-            tuple(params + [page_size, offset]))
-        rows = cursor.fetchall()
-        for r in rows:
-            for k in ("created_at", "updated_at"):
-                if isinstance(r.get(k), datetime):
-                    r[k] = r[k].isoformat()
-        return {"targets": rows, "total": total, "page": page, "page_size": page_size}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS c FROM outreach_funnel_targets {where}", tuple(params))
+            total = int(cursor.fetchone()["c"])
+            cursor.execute(
+                f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets {where} "
+                f"ORDER BY updated_at {order} LIMIT %s OFFSET %s",
+                tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            for r in rows:
+                for k in ("created_at", "updated_at"):
+                    if isinstance(r.get(k), datetime):
+                        r[k] = r[k].isoformat()
+            return {"targets": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         myprint(f"Could not list outreach targets for user_id {user_id} | Error: {err}")
         return {"targets": [], "total": 0, "page": page, "page_size": page_size}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_approved_outreach_targets(user_id: int) -> list:
     """Approved, not-yet-completed funnel targets for a user — the rows the processor may fire.
     Oldest-updated first so a backlog drains in order. Returns dict rows.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
-            "WHERE user_id = %s AND status = 'approved' AND stage <> 'completed' "
-            "ORDER BY updated_at ASC", (user_id,))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
+                "WHERE user_id = %s AND status = 'approved' AND stage <> 'completed' "
+                "ORDER BY updated_at ASC", (user_id,))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not get approved outreach targets for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_open_outreach_targets(user_id: int) -> int:
@@ -6970,37 +6297,29 @@ def count_open_outreach_targets(user_id: int) -> int:
     The sourcing scan (issue #623) stops adding once this backlog is deep enough — a review queue
     nobody works through is the same as no queue at all.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM outreach_funnel_targets WHERE user_id=%s "
-            "AND status IN ('pending','approved') AND stage <> 'completed'", (user_id,))
-        r = cursor.fetchone()
-        return int(r[0]) if r else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM outreach_funnel_targets WHERE user_id=%s "
+                "AND status IN ('pending','approved') AND stage <> 'completed'", (user_id,))
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count open outreach targets for user {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_users_with_approved_outreach() -> list:
     """Distinct user_ids that have at least one approved, non-completed funnel target (dispatcher)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT DISTINCT user_id FROM outreach_funnel_targets "
-            "WHERE status = 'approved' AND stage <> 'completed'")
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT user_id FROM outreach_funnel_targets "
+                "WHERE status = 'approved' AND stage <> 'completed'")
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get users with approved outreach | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> bool:
@@ -7008,19 +6327,14 @@ def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> b
 
     True whenever the UPDATE ran, matched or not.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE outreach_funnel_targets SET status = %s WHERE id = %s",
-                       (str(status), target_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE outreach_funnel_targets SET status = %s WHERE id = %s",
+                           (str(status), target_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update outreach target {target_id} status | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_outreach_target(target_id: int, target_profile_url: str = None, target_name: str = None,
@@ -7044,19 +6358,14 @@ def update_outreach_target(target_id: int, target_profile_url: str = None, targe
     if not fields:
         return False
     params.append(target_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE outreach_funnel_targets SET {', '.join(fields)} WHERE id = %s",
-                       tuple(params))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE outreach_funnel_targets SET {', '.join(fields)} WHERE id = %s",
+                           tuple(params))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update outreach target {target_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- LinkedIn Catch-up touches (issue #482) — approval-gated, deduped milestone congratulations ---
@@ -7072,38 +6381,29 @@ def insert_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEve
     the (user, profile, event_type, event_period) unique key is the dedup guarantee, so a moment that
     stays in the feed for days can never be messaged twice.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO catchup_touches (user_id, profile_url, person_name, event_type, "
-            "event_detail, event_period, score, message, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, profile_url, person_name, str(event_type), event_detail, event_period,
-             int(score), message, str(status)))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO catchup_touches (user_id, profile_url, person_name, event_type, "
+                "event_detail, event_period, score, message, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, profile_url, person_name, str(event_type), event_detail, event_period,
+                 int(score), message, str(status)))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not insert catchup touch for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_catchup_touch(touch_id: int) -> Optional[dict]:
     """One catch-up touch row, or None when it does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches WHERE id = %s",
-                       (touch_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches WHERE id = %s",
+                           (touch_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get catchup touch {touch_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_catchup_touch_user_id(touch_id: int) -> Optional[int]:
@@ -7120,20 +6420,16 @@ def has_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventT
     """True if this exact milestone has already been drafted/sent — checked before drafting so we
     don't spend an LLM call on a moment the unique key would reject anyway.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT 1 FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
-            "AND event_type = %s AND event_period = %s LIMIT 1",
-            (user_id, profile_url, str(event_type), event_period))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
+                "AND event_type = %s AND event_period = %s LIMIT 1",
+                (user_id, profile_url, str(event_type), event_period))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         myprint(f"Could not check catchup touch for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filter: str = None,
@@ -7149,46 +6445,38 @@ def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filt
         where += " AND event_type = %s"
         params.append(event_type_filter)
     offset = max(0, (max(1, page) - 1) * page_size)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS c FROM catchup_touches {where}", tuple(params))
-        total = int(cursor.fetchone()["c"])
-        cursor.execute(
-            f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches {where} "
-            f"ORDER BY score DESC, created_at {order} LIMIT %s OFFSET %s",
-            tuple(params + [page_size, offset]))
-        rows = cursor.fetchall()
-        for r in rows:
-            for k in ("created_at", "updated_at"):
-                if isinstance(r.get(k), datetime):
-                    r[k] = r[k].isoformat()
-        return {"touches": rows, "total": total, "page": page, "page_size": page_size}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS c FROM catchup_touches {where}", tuple(params))
+            total = int(cursor.fetchone()["c"])
+            cursor.execute(
+                f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches {where} "
+                f"ORDER BY score DESC, created_at {order} LIMIT %s OFFSET %s",
+                tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            for r in rows:
+                for k in ("created_at", "updated_at"):
+                    if isinstance(r.get(k), datetime):
+                        r[k] = r[k].isoformat()
+            return {"touches": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         myprint(f"Could not list catchup touches for user_id {user_id} | Error: {err}")
         return {"touches": [], "total": 0, "page": page, "page_size": page_size}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_approved_catchup_touches() -> list:
     """Approved touches waiting to be sent, highest-scoring first so the best moments go out within
     the daily cap. Returns (id, user_id) tuples; the cap is enforced by the scanner/send task.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id, user_id FROM catchup_touches WHERE status = 'approved' "
-            "ORDER BY score DESC, created_at ASC")
-        return cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, user_id FROM catchup_touches WHERE status = 'approved' "
+                "ORDER BY score DESC, created_at ASC")
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get approved catchup touches | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_pending_catchup_touches() -> int:
@@ -7196,20 +6484,16 @@ def count_pending_catchup_touches() -> int:
     queue that exists but was never approved cannot read as an empty one (issue #792) — the drafts
     land 'pending' unless the user opted into catchup_touch_mode='auto_approve'.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT COUNT(*) FROM catchup_touches WHERE status = 'pending'")
-        r = cursor.fetchone()
-        return int(r[0]) if r else 0
+        with db_cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM catchup_touches WHERE status = 'pending'")
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         # ERROR, not myprint (which logs at INFO): a failed count returns 0, which reads on the beat
         # as `nothing_to_send` — the exact silence issue #792 exists to remove. It has to be visible.
         log_error("Could not count pending catchup touches", exc=err)
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
@@ -7217,65 +6501,59 @@ def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
     Mirrors get_orphaned_connection_requests. Returns (id, user_id) tuples.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id, user_id FROM catchup_touches WHERE status = 'sending' "
-            "AND updated_at <= %s ORDER BY updated_at ASC", (cutoff,))
-        return cursor.fetchall()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, user_id FROM catchup_touches WHERE status = 'sending' "
+                "AND updated_at <= %s ORDER BY updated_at ASC", (cutoff,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get orphaned catchup touches | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_catchup_touches_sent_today(user_id: int) -> int:
     """Catch-up DMs sent today (UTC) — the per-day cap is on top of the overall DM cap."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM catchup_touches WHERE user_id = %s AND status = 'sent' "
-            "AND updated_at >= CURDATE()", (user_id,))
-        r = cursor.fetchone()
-        return int(r[0]) if r else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM catchup_touches WHERE user_id = %s AND status = 'sent' "
+                "AND updated_at >= CURDATE()", (user_id,))
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count catchup touches for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> bool:
     """Move a catch-up touch's status.
 
-    True whenever the UPDATE ran, matched or not.
+    When the new status is `sent`, `last_sent_at` is stamped as well so the per-contact cooldown
+    guard can see real delivery history. True whenever the UPDATE ran, matched or not.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE catchup_touches SET status = %s WHERE id = %s",
-                       (str(status), touch_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            if str(status) == str(CatchupTouchStatus.SENT):
+                cursor.execute(
+                    "UPDATE catchup_touches SET status = %s, last_sent_at = NOW() WHERE id = %s",
+                    (str(status), touch_id))
+            else:
+                cursor.execute("UPDATE catchup_touches SET status = %s WHERE id = %s",
+                               (str(status), touch_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update catchup touch {touch_id} status | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_catchup_touch(touch_id: int, message: str = None, person_name: str = None,
                          status: "CatchupTouchStatus" = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
 
-    Omitted arguments are left alone rather than nulled. True means the UPDATE ran, not that a row
-    matched.
+    Omitted arguments are left alone rather than nulled. An explicit `status='sent'` also stamps
+    `last_sent_at` so the per-contact cooldown sees the real delivery time. True means the UPDATE ran,
+    not that a row matched.
     """
     fields, params = [], []
     for col, val in (("message", message), ("person_name", person_name)):
@@ -7285,21 +6563,57 @@ def update_catchup_touch(touch_id: int, message: str = None, person_name: str = 
     if status is not None:
         fields.append("status = %s")
         params.append(str(status))
+        if str(status) == str(CatchupTouchStatus.SENT):
+            fields.append("last_sent_at = NOW()")
     if not fields:
         return False
     params.append(touch_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE catchup_touches SET {', '.join(fields)} WHERE id = %s", tuple(params))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE catchup_touches SET {', '.join(fields)} WHERE id = %s", tuple(params))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update catchup touch {touch_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
+
+
+def last_catchup_sent_at(user_id: int, profile_url: str) -> Optional[datetime]:
+    """The most recent `last_sent_at` for this contact, or None when no catch-up has been sent.
+
+    Returns None on DB error so a broken read can't block the lane.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(last_sent_at) FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
+                "AND status = 'sent'", (user_id, profile_url))
+            r = cursor.fetchone()
+            return r[0] if r and r[0] else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not read last catch-up sent at for user_id {user_id} | Error: {err}")
+        return None
+
+
+def count_catchup_touches_for_contact_in_window(user_id: int, profile_url: str,
+                                                days: int) -> int:
+    """How many catch-up DMs this user has sent to this contact in the last `days` days.
+
+    A non-positive `days` returns 0; a DB error returns 0 so it never caps by itself.
+    """
+    days = max(0, int(days or 0))
+    if days <= 0:
+        return 0
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
+                "AND status = 'sent' AND last_sent_at >= DATE_SUB(NOW(), INTERVAL %s DAY)",
+                (user_id, profile_url, days))
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count catch-up touches for contact (user_id {user_id}) | Error: {err}")
+        return 0
 
 
 def has_scheduled_post_today(user_id: int) -> bool:
@@ -7307,20 +6621,16 @@ def has_scheduled_post_today(user_id: int) -> bool:
     pre-post commenting trigger, so the standalone daily engagement run should skip them. Fails
     safe to True (skip the standalone run) so an error never causes double-commenting.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM posts WHERE user_id=%s AND DATE(scheduled_time)=UTC_DATE() "
-            "AND status IN ('approved','scheduled','posted')", (user_id,))
-        r = cursor.fetchone()
-        return bool(r and r[0])
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM posts WHERE user_id=%s AND DATE(scheduled_time)=UTC_DATE() "
+                "AND status IN ('approved','scheduled','posted')", (user_id,))
+            r = cursor.fetchone()
+            return bool(r and r[0])
     except mysql.connector.Error as err:
         myprint(f"Could not check today's posts for user {user_id} | Error: {err}")
         return True
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = None,
@@ -7332,44 +6642,35 @@ def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = N
     """
     if not engager_name or not engager_name.strip():
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO post_engagers (user_id, engager_name, engager_profile_url, "
-            "connection_degree, last_engaged_at) VALUES (%s,%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE "
-            "engager_profile_url=COALESCE(VALUES(engager_profile_url), engager_profile_url), "
-            "connection_degree=COALESCE(VALUES(connection_degree), connection_degree), "
-            "last_engaged_at=NOW()",
-            (user_id, engager_name.strip()[:255], (engager_profile_url or None),
-             (connection_degree or None)))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO post_engagers (user_id, engager_name, engager_profile_url, "
+                "connection_degree, last_engaged_at) VALUES (%s,%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE "
+                "engager_profile_url=COALESCE(VALUES(engager_profile_url), engager_profile_url), "
+                "connection_degree=COALESCE(VALUES(connection_degree), connection_degree), "
+                "last_engaged_at=NOW()",
+                (user_id, engager_name.strip()[:255], (engager_profile_url or None),
+                 (connection_degree or None)))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not upsert engager for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_engagers(user_id: int, days: int = 14) -> set:
     """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
     targets to prioritize commenting back on. Empty set if the tracking table isn't present yet.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT LOWER(engager_name) FROM post_engagers "
-            "WHERE user_id=%s AND last_engaged_at >= (NOW() - INTERVAL %s DAY)",
-            (user_id, days))
-        return {r[0] for r in cursor.fetchall() if r and r[0]}
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT LOWER(engager_name) FROM post_engagers "
+                "WHERE user_id=%s AND last_engaged_at >= (NOW() - INTERVAL %s DAY)",
+                (user_id, days))
+            return {r[0] for r in cursor.fetchall() if r and r[0]}
     except mysql.connector.Error:
         return set()
-    finally:
-        cursor.close()
-        connection.close()
 
 
 CLAIM_STALE_MINUTES = 60
@@ -7429,40 +6730,30 @@ def mark_post_commented(user_id: int, post_key: str) -> bool:
     """Promote a won claim to 'commented' once the comment has actually posted."""
     if not post_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE commented_posts SET status='commented' WHERE user_id=%s AND post_key=%s",
-            (user_id, str(post_key)[:255]))
-        connection.commit()
-        return cursor.rowcount >= 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE commented_posts SET status='commented' WHERE user_id=%s AND post_key=%s",
+                (user_id, str(post_key)[:255]))
+            return cursor.rowcount >= 1
     except mysql.connector.Error as err:
         myprint(f"Could not mark post commented for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_post_reacted(user_id: int, post_key: str) -> bool:
     """Record that we also left a reaction on this post (audit + 'react at most once' tracking)."""
     if not post_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE commented_posts SET reacted=1 WHERE user_id=%s AND post_key=%s",
-            (user_id, str(post_key)[:255]))
-        connection.commit()
-        return cursor.rowcount >= 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE commented_posts SET reacted=1 WHERE user_id=%s AND post_key=%s",
+                (user_id, str(post_key)[:255]))
+            return cursor.rowcount >= 1
     except mysql.connector.Error as err:
         myprint(f"Could not mark post reacted for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def release_post_claim(user_id: int, post_key: str) -> bool:
@@ -7471,20 +6762,15 @@ def release_post_claim(user_id: int, post_key: str) -> bool:
     """
     if not post_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "DELETE FROM commented_posts WHERE user_id=%s AND post_key=%s AND status='claimed'",
-            (user_id, str(post_key)[:255]))
-        connection.commit()
-        return cursor.rowcount >= 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "DELETE FROM commented_posts WHERE user_id=%s AND post_key=%s AND status='claimed'",
+                (user_id, str(post_key)[:255]))
+            return cursor.rowcount >= 1
     except mysql.connector.Error as err:
         myprint(f"Could not release post claim for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_commented_post(user_id: int, post_key: str) -> bool:
@@ -7493,19 +6779,15 @@ def has_commented_post(user_id: int, post_key: str) -> bool:
     """
     if not post_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM commented_posts WHERE user_id=%s AND post_key=%s",
-            (user_id, str(post_key)[:255]))
-        row = cursor.fetchone()
-        return bool(row and row[0])
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM commented_posts WHERE user_id=%s AND post_key=%s",
+                (user_id, str(post_key)[:255]))
+            row = cursor.fetchone()
+            return bool(row and row[0])
     except mysql.connector.Error:
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_navigable_commented_posts(user_id: int, days: int = 3) -> list:
@@ -7514,20 +6796,16 @@ def get_recent_navigable_commented_posts(user_id: int, days: int = 3) -> list:
     handle replies to our comment (issue #478). Pre-#474 'feedpost://' hash keys aren't navigable
     and are excluded.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT post_key, created_at FROM commented_posts "
-            "WHERE user_id=%s AND status='commented' AND post_key LIKE 'feedurn://%%' "
-            "AND created_at >= (NOW() - INTERVAL %s DAY) ORDER BY created_at DESC",
-            (user_id, int(days)))
-        return list(cursor.fetchall() or [])
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT post_key, created_at FROM commented_posts "
+                "WHERE user_id=%s AND status='commented' AND post_key LIKE 'feedurn://%%' "
+                "AND created_at >= (NOW() - INTERVAL %s DAY) ORDER BY created_at DESC",
+                (user_id, int(days)))
+            return list(cursor.fetchall() or [])
     except mysql.connector.Error:
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_commented_rows_with_text(user_id: int, days: int = 3) -> list:
@@ -7535,25 +6813,21 @@ def get_recent_commented_rows_with_text(user_id: int, days: int = 3) -> list:
     SUCCESS comment log), for the URN reconcile backfill. Includes legacy 'feedpost://' rows so
     they can be matched by text and upgraded (issue #478).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT cp.post_key, cp.created_at, "
-            "  (SELECT l.message FROM logs l WHERE l.user_id=cp.user_id AND l.post_url=cp.post_key "
-            "   AND l.action_type='comment' AND l.result='success' "
-            "   ORDER BY l.created_at DESC LIMIT 1) AS comment_text "
-            "FROM commented_posts cp "
-            "WHERE cp.user_id=%s AND cp.status='commented' "
-            "  AND cp.created_at >= (NOW() - INTERVAL %s DAY) "
-            "ORDER BY cp.created_at DESC",
-            (user_id, int(days)))
-        return list(cursor.fetchall() or [])
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT cp.post_key, cp.created_at, "
+                "  (SELECT l.message FROM logs l WHERE l.user_id=cp.user_id AND l.post_url=cp.post_key "
+                "   AND l.action_type='comment' AND l.result='success' "
+                "   ORDER BY l.created_at DESC LIMIT 1) AS comment_text "
+                "FROM commented_posts cp "
+                "WHERE cp.user_id=%s AND cp.status='commented' "
+                "  AND cp.created_at >= (NOW() - INTERVAL %s DAY) "
+                "ORDER BY cp.created_at DESC",
+                (user_id, int(days)))
+            return list(cursor.fetchall() or [])
     except mysql.connector.Error:
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_comment_followup(user_id: int, reply_key: str) -> "dict | None":
@@ -7562,18 +6836,14 @@ def get_comment_followup(user_id: int, reply_key: str) -> "dict | None":
     """
     if not reply_key:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT reacted, replied FROM comment_followups WHERE user_id=%s AND reply_key=%s",
-            (user_id, str(reply_key)[:255]))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT reacted, replied FROM comment_followups WHERE user_id=%s AND reply_key=%s",
+                (user_id, str(reply_key)[:255]))
+            return cursor.fetchone()
     except mysql.connector.Error:
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_comment_followup(user_id: int, post_key: str, reply_key: str,
@@ -7584,40 +6854,31 @@ def record_comment_followup(user_id: int, post_key: str, reply_key: str,
     """
     if not reply_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO comment_followups (user_id, post_key, reply_key, reacted, replied) "
-            "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-            "reacted=GREATEST(reacted, VALUES(reacted)), replied=GREATEST(replied, VALUES(replied))",
-            (user_id, str(post_key)[:255], str(reply_key)[:255], int(bool(reacted)), int(bool(replied))))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO comment_followups (user_id, post_key, reply_key, reacted, replied) "
+                "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "reacted=GREATEST(reacted, VALUES(reacted)), replied=GREATEST(replied, VALUES(replied))",
+                (user_id, str(post_key)[:255], str(reply_key)[:255], int(bool(reacted)), int(bool(replied))))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record comment followup for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_followup_replies_today(user_id: int) -> int:
     """Auto-replies posted to comment-replies today — the daily cap for the follow-up feature."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM comment_followups "
-            "WHERE user_id=%s AND replied=1 AND updated_at >= CURDATE()",
-            (user_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM comment_followups "
+                "WHERE user_id=%s AND replied=1 AND updated_at >= CURDATE()",
+                (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] else 0
     except mysql.connector.Error:
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_commented_post_key(user_id: int, old_key: str, new_key: str) -> bool:
@@ -7628,27 +6889,22 @@ def update_commented_post_key(user_id: int, old_key: str, new_key: str) -> bool:
     """
     if not old_key or not new_key or old_key == new_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM commented_posts WHERE user_id=%s AND post_key=%s",
-            (user_id, str(new_key)[:255]))
-        exists = bool((cursor.fetchone() or [0])[0])
-        if exists:
-            cursor.execute("DELETE FROM commented_posts WHERE user_id=%s AND post_key=%s",
-                           (user_id, str(old_key)[:255]))
-        else:
-            cursor.execute("UPDATE commented_posts SET post_key=%s WHERE user_id=%s AND post_key=%s",
-                           (str(new_key)[:255], user_id, str(old_key)[:255]))
-        connection.commit()
-        return cursor.rowcount >= 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM commented_posts WHERE user_id=%s AND post_key=%s",
+                (user_id, str(new_key)[:255]))
+            exists = bool((cursor.fetchone() or [0])[0])
+            if exists:
+                cursor.execute("DELETE FROM commented_posts WHERE user_id=%s AND post_key=%s",
+                               (user_id, str(old_key)[:255]))
+            else:
+                cursor.execute("UPDATE commented_posts SET post_key=%s WHERE user_id=%s AND post_key=%s",
+                               (str(new_key)[:255], user_id, str(old_key)[:255]))
+            return cursor.rowcount >= 1
     except mysql.connector.Error as err:
         myprint(f"Could not update commented post key for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_hours: int = 168,
@@ -7662,28 +6918,24 @@ def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_h
     instead of silently dropping it, and the LEFT JOIN is what makes the check at-most-once —
     including for a comment whose check was SKIPPED (that row exists too).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT l.id AS log_id, l.post_url, l.message, l.created_at "
-            "FROM logs l LEFT JOIN comment_outcomes co "
-            "  ON co.log_id = l.id AND co.user_id = l.user_id "
-            "WHERE l.user_id=%s AND l.action_type=%s AND l.result=%s "
-            "  AND l.post_url LIKE 'feedurn://%%' "
-            "  AND l.created_at <= (NOW() - INTERVAL %s HOUR) "
-            "  AND l.created_at >= (NOW() - INTERVAL %s HOUR) "
-            "  AND co.id IS NULL "
-            "ORDER BY l.created_at ASC LIMIT %s",
-            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value,
-             int(min_age_hours), int(max_age_hours), max(1, int(limit))))
-        return list(cursor.fetchall() or [])
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT l.id AS log_id, l.post_url, l.message, l.created_at "
+                "FROM logs l LEFT JOIN comment_outcomes co "
+                "  ON co.log_id = l.id AND co.user_id = l.user_id "
+                "WHERE l.user_id=%s AND l.action_type=%s AND l.result=%s "
+                "  AND l.post_url LIKE 'feedurn://%%' "
+                "  AND l.created_at <= (NOW() - INTERVAL %s HOUR) "
+                "  AND l.created_at >= (NOW() - INTERVAL %s HOUR) "
+                "  AND co.id IS NULL "
+                "ORDER BY l.created_at ASC LIMIT %s",
+                (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value,
+                 int(min_age_hours), int(max_age_hours), max(1, int(limit))))
+            return list(cursor.fetchall() or [])
     except mysql.connector.Error as err:
         myprint(f"Could not get comment outcome targets for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
@@ -7701,51 +6953,42 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
     if not log_id:
         return False
     visible = None if visible_most_relevant is None else int(bool(visible_most_relevant))
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO comment_outcomes (user_id, log_id, post_key, author_replied, reply_count, "
-            "  like_count, visible_most_relevant, our_reply_sent, status, skip_reason) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-            "  post_key=VALUES(post_key), checked_at=CURRENT_TIMESTAMP, "
-            "  author_replied=VALUES(author_replied), reply_count=VALUES(reply_count), "
-            "  like_count=VALUES(like_count), visible_most_relevant=VALUES(visible_most_relevant), "
-            "  our_reply_sent=VALUES(our_reply_sent), status=VALUES(status), "
-            "  skip_reason=VALUES(skip_reason)",
-            (user_id, int(log_id), (str(post_key)[:255] if post_key else None),
-             int(bool(author_replied)), max(0, int(reply_count or 0)), max(0, int(like_count or 0)),
-             visible, int(bool(our_reply_sent)), str(status or "checked")[:20],
-             (str(skip_reason)[:255] if skip_reason else None)))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO comment_outcomes (user_id, log_id, post_key, author_replied, reply_count, "
+                "  like_count, visible_most_relevant, our_reply_sent, status, skip_reason) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "  post_key=VALUES(post_key), checked_at=CURRENT_TIMESTAMP, "
+                "  author_replied=VALUES(author_replied), reply_count=VALUES(reply_count), "
+                "  like_count=VALUES(like_count), visible_most_relevant=VALUES(visible_most_relevant), "
+                "  our_reply_sent=VALUES(our_reply_sent), status=VALUES(status), "
+                "  skip_reason=VALUES(skip_reason)",
+                (user_id, int(log_id), (str(post_key)[:255] if post_key else None),
+                 int(bool(author_replied)), max(0, int(reply_count or 0)), max(0, int(like_count or 0)),
+                 visible, int(bool(our_reply_sent)), str(status or "checked")[:20],
+                 (str(skip_reason)[:255] if skip_reason else None)))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record comment outcome for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_comment_outcomes(user_id: int, days: int = 7) -> list:
     """Comment-outcome rows checked in the last `days`, newest first — the input to the weekly
     quality score (`utilities/comment_outcomes.py`).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT log_id, post_key, checked_at, author_replied, reply_count, like_count, "
-            "  visible_most_relevant, our_reply_sent, status, skip_reason "
-            "FROM comment_outcomes WHERE user_id=%s AND checked_at >= (NOW() - INTERVAL %s DAY) "
-            "ORDER BY checked_at DESC",
-            (user_id, max(1, int(days))))
-        return list(cursor.fetchall() or [])
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT log_id, post_key, checked_at, author_replied, reply_count, like_count, "
+                "  visible_most_relevant, our_reply_sent, status, skip_reason "
+                "FROM comment_outcomes WHERE user_id=%s AND checked_at >= (NOW() - INTERVAL %s DAY) "
+                "ORDER BY checked_at DESC",
+                (user_id, max(1, int(days))))
+            return list(cursor.fetchall() or [])
     except mysql.connector.Error:
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_duplicate_comment_posts(user_id: int, hours: int = 24):
@@ -7753,22 +6996,18 @@ def get_duplicate_comment_posts(user_id: int, hours: int = 24):
     SUCCESS comment logs. Returns list of (post_url, comment_count, first_at, last_at) ordered by
     most-duplicated first. Used to size/verify the multiple-comment bug and drive consolidation.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT post_url, COUNT(*) AS c, MIN(created_at) AS first_at, MAX(created_at) AS last_at "
-            "FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
-            "AND post_url IS NOT NULL AND created_at >= (NOW() - INTERVAL %s HOUR) "
-            "GROUP BY post_url HAVING c > 1 ORDER BY c DESC, last_at DESC",
-            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, hours))
-        return [tuple(r) for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT post_url, COUNT(*) AS c, MIN(created_at) AS first_at, MAX(created_at) AS last_at "
+                "FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+                "AND post_url IS NOT NULL AND created_at >= (NOW() - INTERVAL %s HOUR) "
+                "GROUP BY post_url HAVING c > 1 ORDER BY c DESC, last_at DESC",
+                (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, hours))
+            return [tuple(r) for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get duplicate comment posts for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
@@ -7777,22 +7016,18 @@ def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
     stored embeddings: `logs.message` already holds the exact text of every successful comment, so
     the gate recomputes from the log.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT message FROM logs "
-            "WHERE user_id=%s AND action_type=%s AND result=%s "
-            "AND message IS NOT NULL AND message <> '' "
-            "ORDER BY id DESC LIMIT %s",
-            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, int(limit)))
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT message FROM logs "
+                "WHERE user_id=%s AND action_type=%s AND result=%s "
+                "AND message IS NOT NULL AND message <> '' "
+                "ORDER BY id DESC LIMIT %s",
+                (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, int(limit)))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get recent comment texts for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
@@ -7885,41 +7120,36 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
     ref_id = str(score.get("ref_id") or "").strip()
     if not ref_id:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO content_quality_scores (user_id, surface, ref_id, shipped_on, slop_hard, "
-            "  slop_warn, slop_score, similarity, similarity_measure, authenticity_score, "
-            "  hook_chars, hook_within_budget, engagement_rate, impressions, detector_score, "
-            "  detector_provider, checks) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE shipped_on=VALUES(shipped_on), slop_hard=VALUES(slop_hard), "
-            "  slop_warn=VALUES(slop_warn), slop_score=VALUES(slop_score), "
-            "  similarity=VALUES(similarity), similarity_measure=VALUES(similarity_measure), "
-            "  authenticity_score=VALUES(authenticity_score), hook_chars=VALUES(hook_chars), "
-            "  hook_within_budget=VALUES(hook_within_budget), "
-            "  engagement_rate=VALUES(engagement_rate), impressions=VALUES(impressions), "
-            "  detector_score=VALUES(detector_score), detector_provider=VALUES(detector_provider), "
-            "  checks=VALUES(checks), scored_at=CURRENT_TIMESTAMP",
-            (user_id, str(score.get("surface") or "")[:20], ref_id[:64], score.get("shipped_on"),
-             score.get("slop_hard"), score.get("slop_warn"), score.get("slop_score"),
-             score.get("similarity"),
-             (str(score.get("similarity_measure"))[:16] if score.get("similarity_measure") else None),
-             score.get("authenticity_score"), score.get("hook_chars"),
-             (None if score.get("hook_within_budget") is None
-              else int(bool(score.get("hook_within_budget")))),
-             score.get("engagement_rate"), score.get("impressions"), score.get("detector_score"),
-             (str(score.get("detector_provider"))[:32] if score.get("detector_provider") else None),
-             json.dumps(score.get("slop_checks") or [])))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO content_quality_scores (user_id, surface, ref_id, shipped_on, slop_hard, "
+                "  slop_warn, slop_score, similarity, similarity_measure, authenticity_score, "
+                "  hook_chars, hook_within_budget, engagement_rate, impressions, detector_score, "
+                "  detector_provider, checks) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE shipped_on=VALUES(shipped_on), slop_hard=VALUES(slop_hard), "
+                "  slop_warn=VALUES(slop_warn), slop_score=VALUES(slop_score), "
+                "  similarity=VALUES(similarity), similarity_measure=VALUES(similarity_measure), "
+                "  authenticity_score=VALUES(authenticity_score), hook_chars=VALUES(hook_chars), "
+                "  hook_within_budget=VALUES(hook_within_budget), "
+                "  engagement_rate=VALUES(engagement_rate), impressions=VALUES(impressions), "
+                "  detector_score=VALUES(detector_score), detector_provider=VALUES(detector_provider), "
+                "  checks=VALUES(checks), scored_at=CURRENT_TIMESTAMP",
+                (user_id, str(score.get("surface") or "")[:20], ref_id[:64], score.get("shipped_on"),
+                 score.get("slop_hard"), score.get("slop_warn"), score.get("slop_score"),
+                 score.get("similarity"),
+                 (str(score.get("similarity_measure"))[:16] if score.get("similarity_measure") else None),
+                 score.get("authenticity_score"), score.get("hook_chars"),
+                 (None if score.get("hook_within_budget") is None
+                  else int(bool(score.get("hook_within_budget")))),
+                 score.get("engagement_rate"), score.get("impressions"), score.get("detector_score"),
+                 (str(score.get("detector_provider"))[:32] if score.get("detector_provider") else None),
+                 json.dumps(score.get("slop_checks") or [])))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record content quality score for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_content_quality_scores(user_id: int, days: int = 14) -> list:
@@ -7927,30 +7157,26 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
     and the analytics panel (issue #630). The rollup needs TWO periods, so callers pass twice their
     comparison window.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT surface, ref_id, shipped_on, slop_hard, slop_warn, slop_score, similarity, "
-            "  similarity_measure, authenticity_score, hook_chars, hook_within_budget, "
-            "  engagement_rate, impressions, detector_score, detector_provider, scored_at "
-            "FROM content_quality_scores "
-            "WHERE user_id=%s AND shipped_on >= (CURDATE() - INTERVAL %s DAY) "
-            "ORDER BY shipped_on DESC, id DESC",
-            (user_id, max(1, int(days))))
-        return [
-            {**r,
-             "slop_score": float(r["slop_score"]) if r.get("slop_score") is not None else None,
-             "similarity": float(r["similarity"]) if r.get("similarity") is not None else None,
-             "engagement_rate": (float(r["engagement_rate"])
-                                 if r.get("engagement_rate") is not None else None)}
-            for r in (cursor.fetchall() or [])
-        ]
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT surface, ref_id, shipped_on, slop_hard, slop_warn, slop_score, similarity, "
+                "  similarity_measure, authenticity_score, hook_chars, hook_within_budget, "
+                "  engagement_rate, impressions, detector_score, detector_provider, scored_at "
+                "FROM content_quality_scores "
+                "WHERE user_id=%s AND shipped_on >= (CURDATE() - INTERVAL %s DAY) "
+                "ORDER BY shipped_on DESC, id DESC",
+                (user_id, max(1, int(days))))
+            return [
+                {**r,
+                 "slop_score": float(r["slop_score"]) if r.get("slop_score") is not None else None,
+                 "similarity": float(r["similarity"]) if r.get("similarity") is not None else None,
+                 "engagement_rate": (float(r["engagement_rate"])
+                                     if r.get("engagement_rate") is not None else None)}
+                for r in (cursor.fetchall() or [])
+            ]
     except mysql.connector.Error:
         return []  # table not created yet (or unreadable) — the rollup reports an empty window
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
@@ -7959,22 +7185,17 @@ def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bo
     """
     if not group_id:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO user_groups (user_id, group_id, group_name, enabled, last_synced_at) "
-            "VALUES (%s,%s,%s,1,NOW()) ON DUPLICATE KEY UPDATE "
-            "group_name=COALESCE(VALUES(group_name), group_name), last_synced_at=NOW()",
-            (user_id, str(group_id), group_name))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO user_groups (user_id, group_id, group_name, enabled, last_synced_at) "
+                "VALUES (%s,%s,%s,1,NOW()) ON DUPLICATE KEY UPDATE "
+                "group_name=COALESCE(VALUES(group_name), group_name), last_synced_at=NOW()",
+                (user_id, str(group_id), group_name))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not upsert group for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_groups(user_id: int) -> list:
@@ -7983,26 +7204,22 @@ def get_user_groups(user_id: int) -> list:
     `enabled` and `post_enabled` are independent switches on purpose — being in a group is not permission
     to publish into it. [] on a read error.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT group_id, group_name, enabled, post_enabled, last_posted_at "
-            "FROM user_groups WHERE user_id=%s ORDER BY group_name",
-            (user_id,))
-        rows = cursor.fetchall() or []
-        for r in rows:
-            r["enabled"] = bool(r.get("enabled"))
-            r["post_enabled"] = bool(r.get("post_enabled"))
-            posted = r.get("last_posted_at")
-            r["last_posted_at"] = posted.isoformat() if hasattr(posted, "isoformat") else posted
-        return rows
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT group_id, group_name, enabled, post_enabled, last_posted_at "
+                "FROM user_groups WHERE user_id=%s ORDER BY group_name",
+                (user_id,))
+            rows = cursor.fetchall() or []
+            for r in rows:
+                r["enabled"] = bool(r.get("enabled"))
+                r["post_enabled"] = bool(r.get("post_enabled"))
+                posted = r.get("last_posted_at")
+                r["last_posted_at"] = posted.isoformat() if hasattr(posted, "isoformat") else posted
+            return rows
     except mysql.connector.Error as err:
         myprint(f"Could not list groups for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_enabled_group_ids(user_id: int) -> list:
@@ -8011,16 +7228,12 @@ def get_enabled_group_ids(user_id: int) -> list:
     Swallows the error without logging and returns [], so a database blip reads as "no groups" and skips
     the group pass instead of failing the run.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1", (user_id,))
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1", (user_id,))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error:
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_next_group_for_post(user_id: int) -> Optional[dict]:
@@ -8034,43 +7247,34 @@ def get_next_group_for_post(user_id: int) -> Optional[dict]:
     on it left that group "next" every week forever and starved the rest (issue #858). The COALESCE
     covers any row stamped before `last_post_run_at` existed.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT group_id, group_name FROM user_groups "
-            "WHERE user_id=%s AND post_enabled=1 "
-            "ORDER BY COALESCE(last_post_run_at, last_posted_at) IS NULL DESC, "
-            "         COALESCE(last_post_run_at, last_posted_at) ASC, group_name ASC LIMIT 1",
-            (user_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT group_id, group_name FROM user_groups "
+                "WHERE user_id=%s AND post_enabled=1 "
+                "ORDER BY COALESCE(last_post_run_at, last_posted_at) IS NULL DESC, "
+                "         COALESCE(last_post_run_at, last_posted_at) ASC, group_name ASC LIMIT 1",
+                (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not resolve next post group for user {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_group_post(user_id: int, group_id: str) -> bool:
     """Stamp a group as just-posted-in so the rotation moves on to the next one. A successful post
     is also a run, so both columns advance together.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE user_groups SET last_posted_at=NOW(), last_post_run_at=NOW() "
-                       "WHERE user_id=%s AND group_id=%s",
-                       (user_id, str(group_id)))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE user_groups SET last_posted_at=NOW(), last_post_run_at=NOW() "
+                           "WHERE user_id=%s AND group_id=%s",
+                           (user_id, str(group_id)))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record group post for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_group_post_run(user_id: int, group_id: str) -> bool:
@@ -8080,13 +7284,11 @@ def record_group_post_run(user_id: int, group_id: str) -> bool:
     announcement groups). A run that never reached the group stamps neither column, so a transient
     session failure still leaves that group next in line.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE user_groups SET last_post_run_at=NOW() WHERE user_id=%s AND group_id=%s",
-                       (user_id, str(group_id)))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE user_groups SET last_post_run_at=NOW() WHERE user_id=%s AND group_id=%s",
+                           (user_id, str(group_id)))
+            return True
     except mysql.connector.Error as err:
         # A lost stamp is exactly the starvation this function exists to prevent — the group stays
         # least-recently-tried and is "next" again next week — and the caller has nothing to do
@@ -8095,9 +7297,6 @@ def record_group_post_run(user_id: int, group_id: str) -> bool:
         log_error("Could not record group post run", exc=err, user_id=user_id,
                   task_name="record_group_post_run")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_groups_enabled(user_id: int, group_states: dict) -> bool:
@@ -8105,26 +7304,21 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
     the pre-#769 SPA bundle still sends) or {"enabled": bool, "post_enabled": bool}; only the keys
     present are written, so a partial payload never silently resets the other flag.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        for gid, state in group_states.items():
-            flags = state if isinstance(state, dict) else {"enabled": state}
-            updates = [(col, 1 if flags[col] else 0) for col in ("enabled", "post_enabled") if col in flags]
-            if not updates:
-                continue
-            cursor.execute(
-                f"UPDATE user_groups SET {', '.join(f'{c}=%s' for c, _ in updates)} "
-                "WHERE user_id=%s AND group_id=%s",
-                (*(v for _, v in updates), user_id, str(gid)))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            for gid, state in group_states.items():
+                flags = state if isinstance(state, dict) else {"enabled": state}
+                updates = [(col, 1 if flags[col] else 0) for col in ("enabled", "post_enabled") if col in flags]
+                if not updates:
+                    continue
+                cursor.execute(
+                    f"UPDATE user_groups SET {', '.join(f'{c}=%s' for c, _ in updates)} "
+                    "WHERE user_id=%s AND group_id=%s",
+                    (*(v for _, v in updates), user_id, str(gid)))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not update group states for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
@@ -8135,17 +7329,13 @@ def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
     could not tell": the weekly publish run cancels a reviewed draft on the former, and a read error
     that answered [] would silently cancel every user's approved group post (issue #932).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND post_enabled=1", (user_id,))
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND post_enabled=1", (user_id,))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not list post-enabled groups", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def _group_post_draft_row(row: dict) -> dict:
@@ -8161,62 +7351,49 @@ def create_group_post_draft(user_id: int, group_id: str, content: str,
     """Store the coming week's group post for review (issue #932). Returns the new draft id."""
     if not group_id or not (content or "").strip():
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO group_post_drafts (user_id, group_id, group_name, content, status) "
-            "VALUES (%s,%s,%s,%s,%s)",
-            (user_id, str(group_id), group_name, content.strip(), str(GroupPostDraftStatus.READY)))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO group_post_drafts (user_id, group_id, group_name, content, status) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (user_id, str(group_id), group_name, content.strip(), str(GroupPostDraftStatus.READY)))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not create group post draft", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_open_group_post_draft(user_id: int) -> Optional[dict]:
     """The user's ONE open group-post draft — the row the SPA previews and the weekly publish run
     consumes. None when nothing is waiting.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
-            "published_at FROM group_post_drafts WHERE user_id=%s AND status=%s "
-            "ORDER BY id DESC LIMIT 1",
-            (user_id, str(GroupPostDraftStatus.READY)))
-        row = cursor.fetchone()
-        return _group_post_draft_row(row) if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
+                "published_at FROM group_post_drafts WHERE user_id=%s AND status=%s "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id, str(GroupPostDraftStatus.READY)))
+            row = cursor.fetchone()
+            return _group_post_draft_row(row) if row else None
     except mysql.connector.Error as err:
         log_error("Could not read the open group post draft", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_group_post_draft(draft_id: int) -> Optional[dict]:
     """One group-post draft by id, normalised for the API, or None when missing or unreadable."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
-            "published_at FROM group_post_drafts WHERE id=%s",
-            (draft_id,))
-        row = cursor.fetchone()
-        return _group_post_draft_row(row) if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
+                "published_at FROM group_post_drafts WHERE id=%s",
+                (draft_id,))
+            row = cursor.fetchone()
+            return _group_post_draft_row(row) if row else None
     except mysql.connector.Error as err:
         log_error("Could not read group post draft", exc=err, task_name="get_group_post_draft")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_group_post_draft(draft_id: int, content: str = None,
@@ -8236,18 +7413,13 @@ def update_group_post_draft(draft_id: int, content: str = None,
     if not fields:
         return False
     params.append(draft_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE group_post_drafts SET {', '.join(fields)} WHERE id = %s", tuple(params))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE group_post_drafts SET {', '.join(fields)} WHERE id = %s", tuple(params))
+            return True
     except mysql.connector.Error as err:
         log_error("Could not update group post draft", exc=err, task_name="update_group_post_draft")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
@@ -8260,31 +7432,26 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
     That SELECT is scoped to `(post_id, user_id)`; when it matches nothing the stats row is still written,
     with those columns NULL.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
+        with db_cursor(commit=True) as cursor:
         # Snapshot the post's content attributes at capture time so the feedback loop (#386) can
         # learn which shape/topic earned engagement even if the post is later edited.
-        cursor.execute(
-            "SELECT archetype, hook_style, post_type, topic, buyer_stage "
-            "FROM posts WHERE id=%s AND user_id=%s",
-            (post_id, user_id))
-        row = cursor.fetchone()
-        archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
-        cursor.execute(
-            "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions, "
-            "saves, archetype, hook_style, `format`, topic, buyer_stage) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0),
-             impressions, int(saves or 0), archetype, hook_style, fmt, topic, buyer_stage))
-        connection.commit()
-        return True
+            cursor.execute(
+                "SELECT archetype, hook_style, post_type, topic, buyer_stage "
+                "FROM posts WHERE id=%s AND user_id=%s",
+                (post_id, user_id))
+            row = cursor.fetchone()
+            archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
+            cursor.execute(
+                "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions, "
+                "saves, archetype, hook_style, `format`, topic, buyer_stage) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0),
+                 impressions, int(saves or 0), archetype, hook_style, fmt, topic, buyer_stage))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record post stats for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
@@ -8293,20 +7460,16 @@ def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
     `impressions` stays NULL when the capture never read one — the API probe (#645) grades a
     signal it cannot compare as ungraded rather than as a disagreement.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT reactions, comments, reposts, impressions, saves, captured_at "
-            "FROM post_stats WHERE user_id=%s AND post_id=%s ORDER BY id DESC LIMIT 1",
-            (user_id, post_id))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT reactions, comments, reposts, impressions, saves, captured_at "
+                "FROM post_stats WHERE user_id=%s AND post_id=%s ORDER BY id DESC LIMIT 1",
+                (user_id, post_id))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not read post stats for user {user_id} post {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
@@ -8315,20 +7478,16 @@ def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
     The ordering is the budget policy, not a display choice — see the note in the body. [] on a read
     error, silently.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
+        with db_cursor() as cursor:
         # Freshest first: the reply sweep prioritizes golden-hour posts, so a rate-limited or
         # capped session spends its budget on the posts still being distributed (#401).
-        cursor.execute(
-            "SELECT id FROM posts WHERE user_id=%s AND status='posted' "
-            "AND scheduled_time >= (NOW() - INTERVAL %s DAY) ORDER BY scheduled_time DESC", (user_id, days))
-        return [r[0] for r in cursor.fetchall()]
+            cursor.execute(
+                "SELECT id FROM posts WHERE user_id=%s AND status='posted' "
+                "AND scheduled_time >= (NOW() - INTERVAL %s DAY) ORDER BY scheduled_time DESC", (user_id, days))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error:
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5) -> list:
@@ -8345,27 +7504,23 @@ def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5)
     the head of the window would otherwise hold every slot of the cap on every run — the backfill
     would report as working while never reaching a post it could actually capture.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT p.id FROM posts p "
-            "LEFT JOIN post_stats s ON s.post_id = p.id AND s.user_id = p.user_id "
-            "WHERE p.user_id = %s AND p.status = %s "
-            "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) AND s.id IS NULL "
-            "AND EXISTS (SELECT 1 FROM logs l WHERE l.user_id = p.user_id AND l.post_id = p.id "
-            "AND l.action_type = %s AND l.result = %s "
-            "AND l.post_url IS NOT NULL AND l.post_url <> '') "
-            "ORDER BY p.scheduled_time DESC LIMIT %s",
-            (user_id, PostStatus.POSTED.value, days, LogActionType.POST.value,
-             LogResultType.SUCCESS.value, max(0, int(limit))))
-        return [r[0] for r in (cursor.fetchall() or [])]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT p.id FROM posts p "
+                "LEFT JOIN post_stats s ON s.post_id = p.id AND s.user_id = p.user_id "
+                "WHERE p.user_id = %s AND p.status = %s "
+                "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) AND s.id IS NULL "
+                "AND EXISTS (SELECT 1 FROM logs l WHERE l.user_id = p.user_id AND l.post_id = p.id "
+                "AND l.action_type = %s AND l.result = %s "
+                "AND l.post_url IS NOT NULL AND l.post_url <> '') "
+                "ORDER BY p.scheduled_time DESC LIMIT %s",
+                (user_id, PostStatus.POSTED.value, days, LogActionType.POST.value,
+                 LogResultType.SUCCESS.value, max(0, int(limit))))
+            return [r[0] for r in (cursor.fetchall() or [])]
     except mysql.connector.Error as err:
         myprint(f"Could not get uncaptured posted post ids for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_coverage_counts(user_id: int, days: int = 90) -> dict:
@@ -8378,22 +7533,18 @@ def get_post_coverage_counts(user_id: int, days: int = 90) -> dict:
     reading as broken. The measured count stays with the stats read (`get_post_performance_rows`),
     so the panel can never contradict its own sample size.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COALESCE(SUM(status = %s), 0), "
-            "COALESCE(SUM(status = %s AND scheduled_time >= (NOW() - INTERVAL %s DAY)), 0) "
-            "FROM posts WHERE user_id = %s",
-            (PostStatus.POSTED.value, PostStatus.POSTED.value, days, user_id))
-        row = cursor.fetchone() or (0, 0)
-        return {"posted_total": int(row[0] or 0), "posted_in_window": int(row[1] or 0)}
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COALESCE(SUM(status = %s), 0), "
+                "COALESCE(SUM(status = %s AND scheduled_time >= (NOW() - INTERVAL %s DAY)), 0) "
+                "FROM posts WHERE user_id = %s",
+                (PostStatus.POSTED.value, PostStatus.POSTED.value, days, user_id))
+            row = cursor.fetchone() or (0, 0)
+            return {"posted_total": int(row[0] or 0), "posted_in_window": int(row[1] or 0)}
     except mysql.connector.Error as err:
         myprint(f"Could not get post coverage counts for user {user_id} | Error: {err}")
         return {"posted_total": 0, "posted_in_window": 0}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_engagement_rows(user_id: int) -> list:
@@ -8405,23 +7556,19 @@ def get_post_engagement_rows(user_id: int) -> list:
     trails the tuple so index-based readers of the older shape keep working, and it lets
     `post_stats` score by engagement RATE when coverage is complete (#388).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts, "
-            "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage, s.impressions "
-            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
-            "WHERE p.user_id=%s AND s.id IN "
-            "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
-            (user_id, user_id))
-        return cursor.fetchall() or []
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts, "
+                "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage, s.impressions "
+                "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+                "WHERE p.user_id=%s AND s.id IN "
+                "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+                (user_id, user_id))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not get post engagement rows for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_shape_performance(user_id: int, days: int = 90) -> dict:
@@ -8437,38 +7584,34 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
     The engagement-metric/weighting policy lives in ``content_framework``; this stays pure access.
     """
     result = {"format": {}, "hook": {}}
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        for column, bucket in (("archetype", "format"), ("hook_style", "hook")):
-            cursor.execute(
-                f"SELECT p.{column}, COUNT(*), "
-                "COALESCE(SUM(s.reactions),0), COALESCE(SUM(s.comments),0), "
-                "COALESCE(SUM(s.reposts),0), COALESCE(SUM(s.impressions),0), "
-                "SUM(CASE WHEN s.impressions IS NOT NULL THEN 1 ELSE 0 END) "
-                "FROM posts p JOIN post_stats s "
-                "ON s.post_id=p.id AND s.user_id=p.user_id "
-                f"WHERE p.user_id=%s AND p.status='posted' AND p.{column} IS NOT NULL "
-                "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
-                "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
-                f"GROUP BY p.{column}",
-                (user_id, days, user_id))
-            for key, samples, reactions, comments, reposts, impressions, imp_samples in cursor.fetchall():
-                result[bucket][key] = {
-                    "samples": int(samples or 0),
-                    "reactions": int(reactions or 0),
-                    "comments": int(comments or 0),
-                    "reposts": int(reposts or 0),
-                    "impressions": int(impressions or 0),
-                    "impression_samples": int(imp_samples or 0),
-                }
-        return result
+        with db_cursor() as cursor:
+            for column, bucket in (("archetype", "format"), ("hook_style", "hook")):
+                cursor.execute(
+                    f"SELECT p.{column}, COUNT(*), "
+                    "COALESCE(SUM(s.reactions),0), COALESCE(SUM(s.comments),0), "
+                    "COALESCE(SUM(s.reposts),0), COALESCE(SUM(s.impressions),0), "
+                    "SUM(CASE WHEN s.impressions IS NOT NULL THEN 1 ELSE 0 END) "
+                    "FROM posts p JOIN post_stats s "
+                    "ON s.post_id=p.id AND s.user_id=p.user_id "
+                    f"WHERE p.user_id=%s AND p.status='posted' AND p.{column} IS NOT NULL "
+                    "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
+                    "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                    f"GROUP BY p.{column}",
+                    (user_id, days, user_id))
+                for key, samples, reactions, comments, reposts, impressions, imp_samples in cursor.fetchall():
+                    result[bucket][key] = {
+                        "samples": int(samples or 0),
+                        "reactions": int(reactions or 0),
+                        "comments": int(comments or 0),
+                        "reposts": int(reposts or 0),
+                        "impressions": int(impressions or 0),
+                        "impression_samples": int(imp_samples or 0),
+                    }
+            return result
     except mysql.connector.Error as err:
         myprint(f"Could not get shape performance for user {user_id} | Error: {err}")
         return {"format": {}, "hook": {}}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
@@ -8480,32 +7623,28 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
     exposes it). ``days`` optionally windows to posts scheduled within the last N days (None = all),
     newest first.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        window = "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
-        params = (user_id, user_id, days) if days is not None else (user_id, user_id)
-        cursor.execute(
-            "SELECT p.id, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions, "
-            "s.saves, s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage "
-            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
-            "WHERE p.user_id=%s AND p.status='posted' "
-            "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
-            + window +
-            "ORDER BY p.scheduled_time DESC",
-            params)
-        return [
-            {"post_id": r[0], "scheduled_time": r[1], "reactions": r[2], "comments": r[3],
-             "reposts": r[4], "impressions": r[5], "saves": r[6], "archetype": r[7],
-             "hook_style": r[8], "format": r[9], "topic": r[10], "buyer_stage": r[11]}
-            for r in (cursor.fetchall() or [])
-        ]
+        with db_cursor() as cursor:
+            window = "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
+            params = (user_id, user_id, days) if days is not None else (user_id, user_id)
+            cursor.execute(
+                "SELECT p.id, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions, "
+                "s.saves, s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage "
+                "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+                "WHERE p.user_id=%s AND p.status='posted' "
+                "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                + window +
+                "ORDER BY p.scheduled_time DESC",
+                params)
+            return [
+                {"post_id": r[0], "scheduled_time": r[1], "reactions": r[2], "comments": r[3],
+                 "reposts": r[4], "impressions": r[5], "saves": r[6], "archetype": r[7],
+                 "hook_style": r[8], "format": r[9], "topic": r[10], "buyer_stage": r[11]}
+                for r in (cursor.fetchall() or [])
+            ]
     except mysql.connector.Error as err:
         myprint(f"Could not get post performance rows for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
@@ -8515,24 +7654,19 @@ def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
     `post_stats` can be attributed back to that variant when picking winners. One row per post —
     re-recording overwrites. `combo` is stored as JSON for provenance.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO post_variants (user_id, post_id, batch_id, variant_index, variant_key, combo) "
-            "VALUES (%s,%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE batch_id=VALUES(batch_id), variant_index=VALUES(variant_index), "
-            "variant_key=VALUES(variant_key), combo=VALUES(combo), shipped_at=CURRENT_TIMESTAMP",
-            (user_id, post_id, batch_id, variant_index, variant_key,
-             json.dumps(combo, default=str) if combo is not None else None))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO post_variants (user_id, post_id, batch_id, variant_index, variant_key, combo) "
+                "VALUES (%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE batch_id=VALUES(batch_id), variant_index=VALUES(variant_index), "
+                "variant_key=VALUES(variant_key), combo=VALUES(combo), shipped_at=CURRENT_TIMESTAMP",
+                (user_id, post_id, batch_id, variant_index, variant_key,
+                 json.dumps(combo, default=str) if combo is not None else None))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record shipped variant for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_shipped_variant_keys(user_id: int) -> dict:
@@ -8542,17 +7676,13 @@ def get_shipped_variant_keys(user_id: int) -> dict:
     (issue #652) — the per-post alternative would be one query per post inside the Selenium loop.
     An empty dict on any DB error: a missing experiment label must never cost us the outcome.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT post_id, variant_key FROM post_variants WHERE user_id=%s", (user_id,))
-        return {r[0]: r[1] for r in (cursor.fetchall() or []) if r[1]}
+        with db_cursor() as cursor:
+            cursor.execute("SELECT post_id, variant_key FROM post_variants WHERE user_id=%s", (user_id,))
+            return {r[0]: r[1] for r in (cursor.fetchall() or []) if r[1]}
     except mysql.connector.Error as err:
         myprint(f"Could not get shipped variant keys for user {user_id} | Error: {err}")
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_variant_outcome_rows(user_id: int) -> list:
@@ -8562,28 +7692,24 @@ def get_variant_outcome_rows(user_id: int) -> list:
     ``post_stats.select_variant_winners``. `impressions` may be NULL (only the author's own view
     exposes it), so winner selection falls back to raw counts until coverage is complete.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT v.variant_key, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions "
-            "FROM post_variants v "
-            "JOIN posts p ON p.id=v.post_id AND p.user_id=v.user_id "
-            "JOIN post_stats s ON s.post_id=v.post_id AND s.user_id=v.user_id "
-            "WHERE v.user_id=%s AND s.id IN "
-            "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
-            (user_id, user_id))
-        return [
-            {"variant_key": r[0], "scheduled_time": r[1], "reactions": r[2],
-             "comments": r[3], "reposts": r[4], "impressions": r[5]}
-            for r in (cursor.fetchall() or [])
-        ]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT v.variant_key, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions "
+                "FROM post_variants v "
+                "JOIN posts p ON p.id=v.post_id AND p.user_id=v.user_id "
+                "JOIN post_stats s ON s.post_id=v.post_id AND s.user_id=v.user_id "
+                "WHERE v.user_id=%s AND s.id IN "
+                "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+                (user_id, user_id))
+            return [
+                {"variant_key": r[0], "scheduled_time": r[1], "reactions": r[2],
+                 "comments": r[3], "reposts": r[4], "impressions": r[5]}
+                for r in (cursor.fetchall() or [])
+            ]
     except mysql.connector.Error as err:
         myprint(f"Could not get variant outcome rows for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 _LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
@@ -8595,21 +7721,17 @@ def get_lead_magnet_settings(user_id: int) -> dict:
     A missing row AND a failed read both return a copy of `_LEAD_MAGNET_DEFAULTS` (disabled), so the
     "is this mechanic on?" check fails CLOSED and no caller needs a None branch.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT enabled, keyword, message FROM lead_magnet_settings WHERE user_id=%s", (user_id,))
-        row = cursor.fetchone()
-        if row is None:
-            return dict(_LEAD_MAGNET_DEFAULTS)
-        row["enabled"] = bool(row.get("enabled"))
-        return row
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT enabled, keyword, message FROM lead_magnet_settings WHERE user_id=%s", (user_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return dict(_LEAD_MAGNET_DEFAULTS)
+            row["enabled"] = bool(row.get("enabled"))
+            return row
     except mysql.connector.Error as err:
         myprint(f"Could not get lead magnet for user {user_id} | Error: {err}")
         return dict(_LEAD_MAGNET_DEFAULTS)
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
@@ -8617,21 +7739,16 @@ def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
 
     True whenever the statement ran.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO lead_magnet_settings (user_id, enabled, keyword, message) VALUES (%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), keyword=VALUES(keyword), message=VALUES(message)",
-            (user_id, 1 if settings.get("enabled") else 0, settings.get("keyword"), settings.get("message")))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO lead_magnet_settings (user_id, enabled, keyword, message) VALUES (%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), keyword=VALUES(keyword), message=VALUES(message)",
+                (user_id, 1 if settings.get("enabled") else 0, settings.get("keyword"), settings.get("message")))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update lead magnet for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
@@ -8640,17 +7757,13 @@ def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
     Fails CLOSED, and that is the whole point: a read error returns True, so a database blip skips the
     send rather than DMing someone the same asset a second time.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT 1 FROM lead_magnet_sent WHERE user_id=%s AND recipient_profile=%s LIMIT 1",
-                       (user_id, recipient_profile))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT 1 FROM lead_magnet_sent WHERE user_id=%s AND recipient_profile=%s LIMIT 1",
+                           (user_id, recipient_profile))
+            return cursor.fetchone() is not None
     except mysql.connector.Error:
         return True   # fail safe: assume sent (don't double-DM on error)
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int = None) -> bool:
@@ -8658,20 +7771,15 @@ def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int =
 
     INSERT IGNORE, so a repeat is a no-op rather than an error; True only means the statement ran.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT IGNORE INTO lead_magnet_sent (user_id, recipient_profile, post_id) VALUES (%s,%s,%s)",
-            (user_id, recipient_profile, post_id))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO lead_magnet_sent (user_id, recipient_profile, post_id) VALUES (%s,%s,%s)",
+                (user_id, recipient_profile, post_id))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not record lead magnet sent for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- inbound hot-lead signals (issue #483) ----------------------------------------------------
@@ -8691,24 +7799,19 @@ def insert_lead_signal(user_id: int, source: "LeadSignalSource", thread_key: str
     """
     if not thread_key:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT IGNORE INTO lead_signals (user_id, source, channel, person_name, "
-            "person_profile_url, thread_key, snippet, score, matched_signals, post_id, context_url, "
-            "draft_response) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, str(source), str(channel), person_name, person_profile_url,
-             str(thread_key)[:255], snippet, max(0, min(255, int(score or 0))), matched_signals,
-             post_id, context_url, draft_response))
-        connection.commit()
-        return cursor.lastrowid or None
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO lead_signals (user_id, source, channel, person_name, "
+                "person_profile_url, thread_key, snippet, score, matched_signals, post_id, context_url, "
+                "draft_response) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, str(source), str(channel), person_name, person_profile_url,
+                 str(thread_key)[:255], snippet, max(0, min(255, int(score or 0))), matched_signals,
+                 post_id, context_url, draft_response))
+            return cursor.lastrowid or None
     except mysql.connector.Error as err:
         myprint(f"Could not insert lead signal for user {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_lead_signal(user_id: int, thread_key: str) -> bool:
@@ -8717,32 +7820,24 @@ def has_lead_signal(user_id: int, thread_key: str) -> bool:
     """
     if not thread_key:
         return True
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT 1 FROM lead_signals WHERE user_id=%s AND thread_key=%s LIMIT 1",
-                       (user_id, str(thread_key)[:255]))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT 1 FROM lead_signals WHERE user_id=%s AND thread_key=%s LIMIT 1",
+                           (user_id, str(thread_key)[:255]))
+            return cursor.fetchone() is not None
     except mysql.connector.Error:
         return True
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_lead_signal(signal_id: int) -> Optional[dict]:
     """One inbound lead-signal row, or None when it does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals WHERE id=%s", (signal_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals WHERE id=%s", (signal_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get lead signal {signal_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, page_size: int = 25,
@@ -8757,27 +7852,23 @@ def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, pag
         where += " AND status = %s"
         params.append(status_filter)
     offset = max(0, (max(1, page) - 1) * page_size)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS c FROM lead_signals {where}", tuple(params))
-        total = int(cursor.fetchone()["c"])
-        cursor.execute(
-            f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals {where} "
-            f"ORDER BY created_at {order}, score DESC LIMIT %s OFFSET %s",
-            tuple(params + [page_size, offset]))
-        rows = cursor.fetchall()
-        for r in rows:
-            for k in ("created_at", "updated_at"):
-                if isinstance(r.get(k), datetime):
-                    r[k] = r[k].isoformat()
-        return {"signals": rows, "total": total, "page": page, "page_size": page_size}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS c FROM lead_signals {where}", tuple(params))
+            total = int(cursor.fetchone()["c"])
+            cursor.execute(
+                f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals {where} "
+                f"ORDER BY created_at {order}, score DESC LIMIT %s OFFSET %s",
+                tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            for r in rows:
+                for k in ("created_at", "updated_at"):
+                    if isinstance(r.get(k), datetime):
+                        r[k] = r[k].isoformat()
+            return {"signals": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         myprint(f"Could not list lead signals for user {user_id} | Error: {err}")
         return {"signals": [], "total": 0, "page": page, "page_size": page_size}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_lead_signal(signal_id: int, draft_response: str = None,
@@ -8795,33 +7886,24 @@ def update_lead_signal(signal_id: int, draft_response: str = None,
     if not fields:
         return False
     params.append(signal_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE lead_signals SET {', '.join(fields)} WHERE id = %s", tuple(params))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE lead_signals SET {', '.join(fields)} WHERE id = %s", tuple(params))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update lead signal {signal_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_new_lead_signals(user_id: int) -> int:
     """Unactioned hot leads — the inbox badge count."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT COUNT(*) FROM lead_signals WHERE user_id=%s AND status='new'", (user_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] else 0
+        with db_cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM lead_signals WHERE user_id=%s AND status='new'", (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] else 0
     except mysql.connector.Error:
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- lead scoring & CRM-lite pipeline (issue #484) ---------------------------------------------
@@ -8913,23 +7995,19 @@ def get_profile_facts(profile_urls: list) -> dict:
                               for v in _profile_url_variants(u)))
     if not urls:
         return {}
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        placeholders = ", ".join(["%s"] * len(urls))
-        cursor.execute(
-            "SELECT profile_url, "
-            "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
-            "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
-            "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry "
-            f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
-        return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
+        with db_cursor(dictionary=True) as cursor:
+            placeholders = ", ".join(["%s"] * len(urls))
+            cursor.execute(
+                "SELECT profile_url, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry "
+                f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
+            return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
     except mysql.connector.Error as err:
         myprint(f"Could not read profile facts | Error: {err}")
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def reset_lead_scores(user_id: int) -> bool:
@@ -8939,20 +8017,15 @@ def reset_lead_scores(user_id: int) -> bool:
     to cold is worse than no recommendation. Operator columns (manual_stage, notes, dismissed) are
     untouched.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE leads SET score=0, engagement_score=0, stage='cold', signal_count=0, "
-            "signals=NULL, reasons=NULL, next_action=NULL WHERE user_id=%s", (user_id,))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE leads SET score=0, engagement_score=0, stage='cold', signal_count=0, "
+                "signals=NULL, reasons=NULL, next_action=NULL WHERE user_id=%s", (user_id,))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not reset lead scores for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_lead(user_id: int, person_key: str, person_name: str = None,
@@ -8967,52 +8040,43 @@ def upsert_lead(user_id: int, person_key: str, person_name: str = None,
     """
     if not person_key:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO leads (user_id, person_key, person_name, person_profile_url, score, "
-            "icp_score, engagement_score, stage, signals, signal_count, reasons, next_action, "
-            "first_signal_at, last_signal_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE "
-            "person_name=COALESCE(VALUES(person_name), person_name), "
-            "person_profile_url=COALESCE(VALUES(person_profile_url), person_profile_url), "
-            "score=VALUES(score), icp_score=VALUES(icp_score), "
-            "engagement_score=VALUES(engagement_score), stage=VALUES(stage), "
-            "signals=VALUES(signals), signal_count=VALUES(signal_count), "
-            "reasons=VALUES(reasons), next_action=VALUES(next_action), "
-            "first_signal_at=LEAST(COALESCE(first_signal_at, VALUES(first_signal_at)), "
-            "                      COALESCE(VALUES(first_signal_at), first_signal_at)), "
-            "last_signal_at=GREATEST(COALESCE(last_signal_at, VALUES(last_signal_at)), "
-            "                        COALESCE(VALUES(last_signal_at), last_signal_at))",
-            (user_id, str(person_key)[:255], (person_name or None), (person_profile_url or None),
-             max(0, min(255, int(score or 0))), max(0, min(255, int(icp_score or 0))),
-             max(0, min(255, int(engagement_score or 0))), str(stage),
-             (signals or None), max(0, int(signal_count or 0)), (reasons or None),
-             (next_action or None), first_signal_at, last_signal_at))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO leads (user_id, person_key, person_name, person_profile_url, score, "
+                "icp_score, engagement_score, stage, signals, signal_count, reasons, next_action, "
+                "first_signal_at, last_signal_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE "
+                "person_name=COALESCE(VALUES(person_name), person_name), "
+                "person_profile_url=COALESCE(VALUES(person_profile_url), person_profile_url), "
+                "score=VALUES(score), icp_score=VALUES(icp_score), "
+                "engagement_score=VALUES(engagement_score), stage=VALUES(stage), "
+                "signals=VALUES(signals), signal_count=VALUES(signal_count), "
+                "reasons=VALUES(reasons), next_action=VALUES(next_action), "
+                "first_signal_at=LEAST(COALESCE(first_signal_at, VALUES(first_signal_at)), "
+                "                      COALESCE(VALUES(first_signal_at), first_signal_at)), "
+                "last_signal_at=GREATEST(COALESCE(last_signal_at, VALUES(last_signal_at)), "
+                "                        COALESCE(VALUES(last_signal_at), last_signal_at))",
+                (user_id, str(person_key)[:255], (person_name or None), (person_profile_url or None),
+                 max(0, min(255, int(score or 0))), max(0, min(255, int(icp_score or 0))),
+                 max(0, min(255, int(engagement_score or 0))), str(stage),
+                 (signals or None), max(0, int(signal_count or 0)), (reasons or None),
+                 (next_action or None), first_signal_at, last_signal_at))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not upsert lead for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_lead(lead_id: int) -> Optional[dict]:
     """One lead row from the pipeline board, or None when it does not exist or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE id=%s", (lead_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE id=%s", (lead_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get lead {lead_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = False,
@@ -9028,64 +8092,52 @@ def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = 
         where += " AND COALESCE(manual_stage, stage) = %s"
         params.append(stage_filter)
     offset = max(0, (max(1, page) - 1) * page_size)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT COUNT(*) AS c FROM leads {where}", tuple(params))
-        total = int(cursor.fetchone()["c"])
-        cursor.execute(
-            f"SELECT {', '.join(_LEAD_COLS)} FROM leads {where} "
-            "ORDER BY score DESC, last_signal_at DESC, id DESC LIMIT %s OFFSET %s",
-            tuple(params + [page_size, offset]))
-        rows = cursor.fetchall()
-        for r in rows:
-            for k in ("first_signal_at", "last_signal_at", "created_at", "updated_at"):
-                if isinstance(r.get(k), datetime):
-                    r[k] = r[k].isoformat()
-            r["dismissed"] = bool(r.get("dismissed"))
-        return {"leads": rows, "total": total, "page": page, "page_size": page_size}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS c FROM leads {where}", tuple(params))
+            total = int(cursor.fetchone()["c"])
+            cursor.execute(
+                f"SELECT {', '.join(_LEAD_COLS)} FROM leads {where} "
+                "ORDER BY score DESC, last_signal_at DESC, id DESC LIMIT %s OFFSET %s",
+                tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            for r in rows:
+                for k in ("first_signal_at", "last_signal_at", "created_at", "updated_at"):
+                    if isinstance(r.get(k), datetime):
+                        r[k] = r[k].isoformat()
+                r["dismissed"] = bool(r.get("dismissed"))
+            return {"leads": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         myprint(f"Could not list leads for user {user_id} | Error: {err}")
         return {"leads": [], "total": 0, "page": page, "page_size": page_size}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_hot_leads(user_id: int, limit: int = 10) -> list:
     """Today's hot list — the leads worth acting on now, with the WHY and the suggested action."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE user_id=%s AND dismissed=0 "
-            "AND COALESCE(manual_stage, stage) IN ('hot','in_conversation','opportunity') "
-            "ORDER BY score DESC, last_signal_at DESC LIMIT %s", (user_id, max(1, int(limit))))
-        return cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE user_id=%s AND dismissed=0 "
+                "AND COALESCE(manual_stage, stage) IN ('hot','in_conversation','opportunity') "
+                "ORDER BY score DESC, last_signal_at DESC LIMIT %s", (user_id, max(1, int(limit))))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get hot leads for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_hot_leads(user_id: int) -> int:
     """Board badge: how many leads are hot or further along."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM leads WHERE user_id=%s AND dismissed=0 "
-            "AND COALESCE(manual_stage, stage) IN ('hot','in_conversation','opportunity')",
-            (user_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM leads WHERE user_id=%s AND dismissed=0 "
+                "AND COALESCE(manual_stage, stage) IN ('hot','in_conversation','opportunity')",
+                (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] else 0
     except mysql.connector.Error:
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = None,
@@ -9106,18 +8158,13 @@ def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = Non
     if not fields:
         return False
     params.append(lead_id)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE leads SET {', '.join(fields)} WHERE id = %s", tuple(params))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE leads SET {', '.join(fields)} WHERE id = %s", tuple(params))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update lead {lead_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 _NEWSLETTER_DEFAULTS: dict = {
@@ -9135,34 +8182,30 @@ _NEWSLETTER_BOOL_COLS = ("enabled", "align_with_blog", "invite_connections_enabl
 
 def get_newsletter_settings(user_id: int) -> dict:
     """Return the user's newsletter config with defaults (disabled) when no row exists."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
-            "publish_day, publish_hour, generate_lead_days, max_queued_drafts, "
-            "invite_connections_enabled, max_invites_per_run, cover_image_auto "
-            "FROM newsletter_settings WHERE user_id = %s", (user_id,))
-        row = cursor.fetchone()
-        if row is None:
-            return dict(_NEWSLETTER_DEFAULTS)
-        for col in _NEWSLETTER_BOOL_COLS:
-            row[col] = bool(row.get(col))
-        row["publish_day"] = int(row.get("publish_day") if row.get("publish_day") is not None else 1)
-        row["publish_hour"] = int(row.get("publish_hour") if row.get("publish_hour") is not None else 9)
-        row["generate_lead_days"] = int(
-            row.get("generate_lead_days") if row.get("generate_lead_days") is not None else 3)
-        row["max_queued_drafts"] = int(
-            row.get("max_queued_drafts") if row.get("max_queued_drafts") is not None else 1)
-        row["max_invites_per_run"] = int(
-            row.get("max_invites_per_run") if row.get("max_invites_per_run") is not None else 50)
-        return row
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
+                "publish_day, publish_hour, generate_lead_days, max_queued_drafts, "
+                "invite_connections_enabled, max_invites_per_run, cover_image_auto "
+                "FROM newsletter_settings WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return dict(_NEWSLETTER_DEFAULTS)
+            for col in _NEWSLETTER_BOOL_COLS:
+                row[col] = bool(row.get(col))
+            row["publish_day"] = int(row.get("publish_day") if row.get("publish_day") is not None else 1)
+            row["publish_hour"] = int(row.get("publish_hour") if row.get("publish_hour") is not None else 9)
+            row["generate_lead_days"] = int(
+                row.get("generate_lead_days") if row.get("generate_lead_days") is not None else 3)
+            row["max_queued_drafts"] = int(
+                row.get("max_queued_drafts") if row.get("max_queued_drafts") is not None else 1)
+            row["max_invites_per_run"] = int(
+                row.get("max_invites_per_run") if row.get("max_invites_per_run") is not None else 50)
+            return row
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter settings for user {user_id} | Error: {err}")
         return dict(_NEWSLETTER_DEFAULTS)
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_newsletter_settings(user_id: int, settings: dict) -> bool:
@@ -9176,20 +8219,15 @@ def update_newsletter_settings(user_id: int, settings: dict) -> bool:
         for c in _NEWSLETTER_COLS]
     placeholders = ", ".join(["%s"] * (len(_NEWSLETTER_COLS) + 1))
     updates = ", ".join(f"{c}=VALUES({c})" for c in _NEWSLETTER_COLS)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            f"INSERT INTO newsletter_settings (user_id, {', '.join(_NEWSLETTER_COLS)}) "
-            f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"INSERT INTO newsletter_settings (user_id, {', '.join(_NEWSLETTER_COLS)}) "
+                f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update newsletter settings for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
@@ -9198,22 +8236,17 @@ def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
     `newsletter_url` is only written when supplied: a publish run that could not scrape the edition's
     link must not blank the link we already had. True whenever the statement ran.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if newsletter_url:
-            cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW(), newsletter_url=%s "
-                           "WHERE user_id=%s", (newsletter_url, user_id))
-        else:
-            cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW() WHERE user_id=%s", (user_id,))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            if newsletter_url:
+                cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW(), newsletter_url=%s "
+                               "WHERE user_id=%s", (newsletter_url, user_id))
+            else:
+                cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW() WHERE user_id=%s", (user_id,))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark newsletter published for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | None" = None,
@@ -9222,59 +8255,46 @@ def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | Non
     the page couldn't be read) and how many connections were invited on this run. One row per
     tracking run so growth can be charted over time (issue #400).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO newsletter_subscriber_stats (user_id, subscriber_count, invites_sent) "
-            "VALUES (%s, %s, %s)",
-            (user_id, subscriber_count, int(invites_sent or 0)))
-        connection.commit()
-        return cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO newsletter_subscriber_stats (user_id, subscriber_count, invites_sent) "
+                "VALUES (%s, %s, %s)",
+                (user_id, subscriber_count, int(invites_sent or 0)))
+            return cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not record newsletter subscriber stat for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_newsletter_subscriber_stats(user_id: int, limit: int = 52) -> list:
     """Return the user's subscriber-growth snapshots, most recent first (default last 52 runs — a
     year of weekly tracking). Each item: subscriber_count, invites_sent, captured_at.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT subscriber_count, invites_sent, captured_at FROM newsletter_subscriber_stats "
-            "WHERE user_id = %s ORDER BY captured_at DESC, id DESC LIMIT %s", (user_id, limit))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT subscriber_count, invites_sent, captured_at FROM newsletter_subscriber_stats "
+                "WHERE user_id = %s ORDER BY captured_at DESC, id DESC LIMIT %s", (user_id, limit))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter subscriber stats for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
     """Most recent non-NULL subscriber_count for the user, or None if never captured."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT subscriber_count FROM newsletter_subscriber_stats "
-            "WHERE user_id = %s AND subscriber_count IS NOT NULL "
-            "ORDER BY captured_at DESC, id DESC LIMIT 1", (user_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] is not None else None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT subscriber_count FROM newsletter_subscriber_stats "
+                "WHERE user_id = %s AND subscriber_count IS NOT NULL "
+                "ORDER BY captured_at DESC, id DESC LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
     except mysql.connector.Error as err:
         myprint(f"Could not get latest newsletter subscriber count for user {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def _like_literal(value: str, escape: str = "!") -> str:
@@ -9306,32 +8326,28 @@ def count_artifact_cta_deliveries(user_id: int, days: int = 90,
     """
     window = max(1, int(days or 1))
     out: dict = {"window_days": window, "lead_magnet_dms": 0, "newsletter_links": None}
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM scheduled_dms WHERE user_id = %s AND source = %s "
-            "AND created_at >= (NOW() - INTERVAL %s DAY)",
-            (user_id, SCHEDULED_DM_SOURCE_ARTIFACT, window))
-        row = cursor.fetchone()
-        out["lead_magnet_dms"] = int(row[0]) if row and row[0] else 0
-        url = str(newsletter_url or "").strip()
-        if url:
-            pattern = f"%{_like_literal(url)}%"
+        with db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM posts WHERE user_id = %s AND status = %s "
-                "AND (content LIKE %s ESCAPE '!' OR first_comment_link LIKE %s ESCAPE '!') "
-                "AND updated_at >= (NOW() - INTERVAL %s DAY)",
-                (user_id, PostStatus.POSTED.value, pattern, pattern, window))
+                "SELECT COUNT(*) FROM scheduled_dms WHERE user_id = %s AND source = %s "
+                "AND created_at >= (NOW() - INTERVAL %s DAY)",
+                (user_id, SCHEDULED_DM_SOURCE_ARTIFACT, window))
             row = cursor.fetchone()
-            out["newsletter_links"] = int(row[0]) if row and row[0] else 0
-        return out
+            out["lead_magnet_dms"] = int(row[0]) if row and row[0] else 0
+            url = str(newsletter_url or "").strip()
+            if url:
+                pattern = f"%{_like_literal(url)}%"
+                cursor.execute(
+                    "SELECT COUNT(*) FROM posts WHERE user_id = %s AND status = %s "
+                    "AND (content LIKE %s ESCAPE '!' OR first_comment_link LIKE %s ESCAPE '!') "
+                    "AND updated_at >= (NOW() - INTERVAL %s DAY)",
+                    (user_id, PostStatus.POSTED.value, pattern, pattern, window))
+                row = cursor.fetchone()
+                out["newsletter_links"] = int(row[0]) if row and row[0] else 0
+            return out
     except mysql.connector.Error as err:
         myprint(f"Could not count artifact CTA deliveries for user {user_id} | Error: {err}")
         return out
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
@@ -9345,21 +8361,16 @@ def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
     """
     if all(v is None for v in (follower_count, connection_count, profile_views, search_appearances)):
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO follower_stats (user_id, follower_count, connection_count, profile_views, "
-            "search_appearances) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, follower_count, connection_count, profile_views, search_appearances))
-        connection.commit()
-        return cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO follower_stats (user_id, follower_count, connection_count, profile_views, "
+                "search_appearances) VALUES (%s, %s, %s, %s, %s)",
+                (user_id, follower_count, connection_count, profile_views, search_appearances))
+            return cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not record follower stat for user {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 400) -> list:
@@ -9367,22 +8378,18 @@ def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 40
     captures within the last N days. Each item:
     id, follower_count, connection_count, profile_views, search_appearances, captured_at.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        window = "AND captured_at >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
-        params = (user_id, days, limit) if days is not None else (user_id, limit)
-        cursor.execute(
-            "SELECT id, follower_count, connection_count, profile_views, search_appearances, "
-            "captured_at FROM follower_stats WHERE user_id = %s " + window +
-            "ORDER BY captured_at DESC, id DESC LIMIT %s", params)
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            window = "AND captured_at >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
+            params = (user_id, days, limit) if days is not None else (user_id, limit)
+            cursor.execute(
+                "SELECT id, follower_count, connection_count, profile_views, search_appearances, "
+                "captured_at FROM follower_stats WHERE user_id = %s " + window +
+                "ORDER BY captured_at DESC, id DESC LIMIT %s", params)
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not get follower stats for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_daily_action_counts(user_id: int, days: int = 90,
@@ -9395,59 +8402,47 @@ def get_daily_action_counts(user_id: int, days: int = 90,
              LogActionType.DM.value] if action_types is None else list(action_types)
     if not types:
         return []
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        placeholders = ",".join(["%s"] * len(types))
-        cursor.execute(
-            "SELECT DATE(created_at) AS `date`, action_type, COUNT(*) AS `count` FROM logs "
-            f"WHERE user_id = %s AND result = %s AND action_type IN ({placeholders}) "
-            "AND created_at >= (NOW() - INTERVAL %s DAY) "
-            "GROUP BY DATE(created_at), action_type ORDER BY `date` ASC",
-            (user_id, LogResultType.SUCCESS.value, *types, days))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            placeholders = ",".join(["%s"] * len(types))
+            cursor.execute(
+                "SELECT DATE(created_at) AS `date`, action_type, COUNT(*) AS `count` FROM logs "
+                f"WHERE user_id = %s AND result = %s AND action_type IN ({placeholders}) "
+                "AND created_at >= (NOW() - INTERVAL %s DAY) "
+                "GROUP BY DATE(created_at), action_type ORDER BY `date` ASC",
+                (user_id, LogResultType.SUCCESS.value, *types, days))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not get daily action counts for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_newsletter_due_user_ids(now) -> list:
     """User IDs whose newsletter is enabled and due per its cadence (weekly/biweekly/monthly)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT user_id FROM newsletter_settings WHERE enabled=1 AND ("
-            "last_published_at IS NULL "
-            "OR (cadence='weekly'   AND last_published_at <= %s - INTERVAL 7 DAY) "
-            "OR (cadence='biweekly' AND last_published_at <= %s - INTERVAL 14 DAY) "
-            "OR (cadence='monthly'  AND last_published_at <= %s - INTERVAL 1 MONTH))",
-            (now, now, now))
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM newsletter_settings WHERE enabled=1 AND ("
+                "last_published_at IS NULL "
+                "OR (cadence='weekly'   AND last_published_at <= %s - INTERVAL 7 DAY) "
+                "OR (cadence='biweekly' AND last_published_at <= %s - INTERVAL 14 DAY) "
+                "OR (cadence='monthly'  AND last_published_at <= %s - INTERVAL 1 MONTH))",
+                (now, now, now))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter-due users | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_enabled_newsletter_user_ids() -> list:
     """User IDs whose newsletter is enabled (regardless of cadence timing)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT user_id FROM newsletter_settings WHERE enabled=1")
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("SELECT user_id FROM newsletter_settings WHERE enabled=1")
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get enabled newsletter users | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str,
@@ -9459,17 +8454,15 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
     edition's assigned SHAPE, so the planner can rotate formats/hooks/openers (not just subjects)
     against prior editions across runs.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO newsletter_editions (user_id, title, subtitle, subject, `format`, "
-            "hook_style, opening_line, blueprint, body, scheduled_for) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (user_id, title, subtitle, subject, edition_format, hook_style, opening_line,
-             json.dumps(blueprint) if blueprint else None, body, to_naive_utc(scheduled_for)))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO newsletter_editions (user_id, title, subtitle, subject, `format`, "
+                "hook_style, opening_line, blueprint, body, scheduled_for) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (user_id, title, subtitle, subject, edition_format, hook_style, opening_line,
+                 json.dumps(blueprint) if blueprint else None, body, to_naive_utc(scheduled_for)))
+            return cursor.lastrowid
     except mysql.connector.IntegrityError as err:
         # errno 1062 = ER_DUP_ENTRY: uq_user_slot already covers this user+slot — expected, not an
         # error. Other integrity failures (e.g. FK on user_id) are real problems worth surfacing.
@@ -9479,83 +8472,64 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
     except mysql.connector.Error as err:
         myprint(f"Could not create newsletter edition for user {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_pending_newsletter_edition(user_id: int) -> "dict | None":
     """The most recent edition still under review (status draft/approved) for this user."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for "
-            "FROM newsletter_editions "
-            "WHERE user_id = %s AND status IN ('draft', 'approved') "
-            "ORDER BY id DESC LIMIT 1", (user_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for "
+                "FROM newsletter_editions "
+                "WHERE user_id = %s AND status IN ('draft', 'approved') "
+                "ORDER BY id DESC LIMIT 1", (user_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get pending newsletter edition for user {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_pending_newsletter_editions(user_id: int) -> int:
     """How many editions are still queued (status draft/approved) for this user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM newsletter_editions "
-            "WHERE user_id = %s AND status IN ('draft', 'approved')", (user_id,))
-        row = cursor.fetchone()
-        return int(row[0]) if row else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM newsletter_editions "
+                "WHERE user_id = %s AND status IN ('draft', 'approved')", (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count pending newsletter editions for user {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_pending_newsletter_editions(user_id: int) -> list:
     """All editions still under review (status draft/approved), soonest slot first — the review queue."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for, "
-            "cover_image_path, cover_image_source, cover_image_status "
-            "FROM newsletter_editions "
-            "WHERE user_id = %s AND status IN ('draft', 'approved') "
-            "ORDER BY scheduled_for ASC", (user_id,))
-        return cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for, "
+                "cover_image_path, cover_image_source, cover_image_status "
+                "FROM newsletter_editions "
+                "WHERE user_id = %s AND status IN ('draft', 'approved') "
+                "ORDER BY scheduled_for ASC", (user_id,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get pending newsletter editions for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_latest_edition_scheduled_for(user_id: int) -> "datetime | None":
     """The latest slot already covered by ANY edition (any status), so the next slot never re-covers it."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT MAX(scheduled_for) FROM newsletter_editions WHERE user_id = %s", (user_id,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(scheduled_for) FROM newsletter_editions WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not get latest edition slot for user {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
@@ -9565,30 +8539,25 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
                               opening_line: str = None, blueprint: dict = None,
                               scheduled_for=None) -> bool:
     """Update only the provided fields on an edition, scoped to its owner (COALESCE-style)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        scheduled_for = to_naive_utc(scheduled_for)
-        cursor.execute(
-            "UPDATE newsletter_editions SET "
-            "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "
-            "subject = COALESCE(%s, subject), "
-            "`format` = COALESCE(%s, `format`), hook_style = COALESCE(%s, hook_style), "
-            "opening_line = COALESCE(%s, opening_line), blueprint = COALESCE(%s, blueprint), "
-            "body = COALESCE(%s, body), status = COALESCE(%s, status), "
-            "scheduled_for = COALESCE(%s, scheduled_for) "
-            "WHERE id = %s AND user_id = %s",
-            (title, subtitle, subject, edition_format, hook_style, opening_line,
-             json.dumps(blueprint) if blueprint else None, body, status, scheduled_for,
-             edition_id, user_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            scheduled_for = to_naive_utc(scheduled_for)
+            cursor.execute(
+                "UPDATE newsletter_editions SET "
+                "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "
+                "subject = COALESCE(%s, subject), "
+                "`format` = COALESCE(%s, `format`), hook_style = COALESCE(%s, hook_style), "
+                "opening_line = COALESCE(%s, opening_line), blueprint = COALESCE(%s, blueprint), "
+                "body = COALESCE(%s, body), status = COALESCE(%s, status), "
+                "scheduled_for = COALESCE(%s, scheduled_for) "
+                "WHERE id = %s AND user_id = %s",
+                (title, subtitle, subject, edition_format, hook_style, opening_line,
+                 json.dumps(blueprint) if blueprint else None, body, status, scheduled_for,
+                 edition_id, user_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update newsletter edition {edition_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_edition_cover_image(edition_id: int, user_id: int, cover_image_path: str,
@@ -9599,62 +8568,47 @@ def set_edition_cover_image(edition_id: int, user_id: int, cover_image_path: str
     together on purpose — a generated cover that arrived without its pending status would be
     indistinguishable from artwork the author chose, and the publish flow only reads `status`.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE newsletter_editions SET cover_image_path=%s, cover_image_source=%s, "
-            "cover_image_status=%s WHERE id=%s AND user_id=%s",
-            (cover_image_path, source, status, edition_id, user_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE newsletter_editions SET cover_image_path=%s, cover_image_source=%s, "
+                "cover_image_status=%s WHERE id=%s AND user_id=%s",
+                (cover_image_path, source, status, edition_id, user_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not set cover image on edition {edition_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_edition_cover_status(edition_id: int, user_id: int, status: str) -> bool:
     """Move an edition's cover between 'pending_review' and 'approved' — the human half of the
     cover gate. Only an edition that HAS a cover can change its status.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE newsletter_editions SET cover_image_status=%s "
-            "WHERE id=%s AND user_id=%s AND cover_image_path IS NOT NULL",
-            (status, edition_id, user_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE newsletter_editions SET cover_image_status=%s "
+                "WHERE id=%s AND user_id=%s AND cover_image_path IS NOT NULL",
+                (status, edition_id, user_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not set cover status on edition {edition_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def clear_edition_cover_image(edition_id: int, user_id: int) -> bool:
     """Drop an edition's cover entirely. `update_newsletter_edition` is COALESCE-based and so can
     never null a column — removing a cover needs its own statement.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE newsletter_editions SET cover_image_path=NULL, cover_image_source=NULL, "
-            "cover_image_status=NULL WHERE id=%s AND user_id=%s", (edition_id, user_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE newsletter_editions SET cover_image_path=NULL, cover_image_source=NULL, "
+                "cover_image_status=NULL WHERE id=%s AND user_id=%s", (edition_id, user_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not clear cover image on edition {edition_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
@@ -9662,21 +8616,17 @@ def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
     history fed to the topic planner so a new edition never repeats a subject already covered or
     recently rejected. Most-recent first; NULL/blank subjects excluded.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT subject FROM newsletter_editions "
-            "WHERE user_id = %s AND subject IS NOT NULL AND subject <> '' "
-            "AND status IN ('draft', 'approved', 'published', 'skipped') "
-            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
-        return [r[0] for r in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT subject FROM newsletter_editions "
+                "WHERE user_id = %s AND subject IS NOT NULL AND subject <> '' "
+                "AND status IN ('draft', 'approved', 'published', 'skipped') "
+                "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get recent newsletter subjects for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> list:
@@ -9685,93 +8635,71 @@ def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> li
     editions rotate away from recently used formats, hook styles, AND actual opening lines (the
     'every edition opens the same way' bug), not just subjects.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT subject, `format`, hook_style, opening_line FROM newsletter_editions "
-            "WHERE user_id = %s AND status IN ('draft', 'approved', 'published', 'skipped') "
-            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
-        return cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT subject, `format`, hook_style, opening_line FROM newsletter_editions "
+                "WHERE user_id = %s AND status IN ('draft', 'approved', 'published', 'skipped') "
+                "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter blueprint history for user {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_editions_due_to_publish(now) -> list:
     """Editions whose scheduled slot has arrived and are still awaiting publish (draft/approved)."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, title, subtitle, body FROM newsletter_editions "
-            "WHERE scheduled_for <= %s AND status IN ('draft', 'approved')", (now,))
-        return cursor.fetchall()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, title, subtitle, body FROM newsletter_editions "
+                "WHERE scheduled_for <= %s AND status IN ('draft', 'approved')", (now,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get editions due to publish | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_newsletter_edition(edition_id: int) -> "dict | None":
     """Fetch a single newsletter edition by id."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, title, subtitle, subject, `format`, hook_style, opening_line, "
-            "body, status, scheduled_for, published_url, "
-            "cover_image_path, cover_image_source, cover_image_status "
-            "FROM newsletter_editions WHERE id = %s", (edition_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, title, subtitle, subject, `format`, hook_style, opening_line, "
+                "body, status, scheduled_for, published_url, "
+                "cover_image_path, cover_image_source, cover_image_status "
+                "FROM newsletter_editions WHERE id = %s", (edition_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter edition {edition_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_edition_published(edition_id: int, url: str) -> bool:
     """Mark an edition published and roll the user's newsletter cadence forward."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE newsletter_editions SET status='published', published_at=NOW(), published_url=%s "
-            "WHERE id=%s", (url, edition_id))
-        cursor.execute(
-            "UPDATE newsletter_settings SET last_published_at=NOW() "
-            "WHERE user_id = (SELECT user_id FROM newsletter_editions WHERE id=%s)", (edition_id,))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE newsletter_editions SET status='published', published_at=NOW(), published_url=%s "
+                "WHERE id=%s", (url, edition_id))
+            cursor.execute(
+                "UPDATE newsletter_settings SET last_published_at=NOW() "
+                "WHERE user_id = (SELECT user_id FROM newsletter_editions WHERE id=%s)", (edition_id,))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark edition {edition_id} published | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_edition_failed(edition_id: int) -> bool:
     """Mark an edition as failed to publish."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE newsletter_editions SET status='failed' WHERE id=%s", (edition_id,))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE newsletter_editions SET status='failed' WHERE id=%s", (edition_id,))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark edition {edition_id} failed | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
@@ -9819,21 +8747,17 @@ def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[di
     """Return {template_text, delay_hours, step} for (user, event, step). Falls back to the
     code default for step 0; None for higher steps that aren't configured.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT template_text, delay_hours, step FROM dm_templates "
-            "WHERE user_id=%s AND event_type=%s AND step=%s AND is_active=1",
-            (user_id, str(event_type), step))
-        row = cursor.fetchone()
-        if row:
-            return row
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT template_text, delay_hours, step FROM dm_templates "
+                "WHERE user_id=%s AND event_type=%s AND step=%s AND is_active=1",
+                (user_id, str(event_type), step))
+            row = cursor.fetchone()
+            if row:
+                return row
     except mysql.connector.Error as err:
         myprint(f"Could not get dm template for user_id {user_id} | Error: {err}")
-    finally:
-        cursor.close()
-        connection.close()
     if step == 0 and event_type in _DM_DEFAULT_TEMPLATES:
         return {"template_text": _DM_DEFAULT_TEMPLATES[event_type], "delay_hours": 0, "step": 0}
     return None
@@ -9845,44 +8769,35 @@ def get_dm_templates(user_id: int) -> list:
     [] on a read error, which reads as "no custom templates" — the defaults in `_DM_DEFAULT_TEMPLATES`
     are what a step-0 lookup falls back to.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT event_type, step, delay_hours, template_text, is_active "
-            "FROM dm_templates WHERE user_id=%s ORDER BY event_type, step", (user_id,))
-        rows = cursor.fetchall() or []
-        for r in rows:
-            r["is_active"] = bool(r.get("is_active"))
-        return rows
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT event_type, step, delay_hours, template_text, is_active "
+                "FROM dm_templates WHERE user_id=%s ORDER BY event_type, step", (user_id,))
+            rows = cursor.fetchall() or []
+            for r in rows:
+                r["is_active"] = bool(r.get("is_active"))
+            return rows
     except mysql.connector.Error as err:
         myprint(f"Could not list dm templates for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_dm_templates(user_id: int, templates: list) -> bool:
     """Upsert a list of {event_type, step, delay_hours, template_text, is_active} for a user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        for t in templates:
-            cursor.execute(
-                "INSERT INTO dm_templates (user_id, event_type, step, delay_hours, template_text, is_active) "
-                "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-                "delay_hours=VALUES(delay_hours), template_text=VALUES(template_text), is_active=VALUES(is_active)",
-                (user_id, str(t.get("event_type")), int(t.get("step", 0)), int(t.get("delay_hours", 0)),
-                 t.get("template_text", ""), 1 if t.get("is_active", True) else 0))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            for t in templates:
+                cursor.execute(
+                    "INSERT INTO dm_templates (user_id, event_type, step, delay_hours, template_text, is_active) "
+                    "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                    "delay_hours=VALUES(delay_hours), template_text=VALUES(template_text), is_active=VALUES(is_active)",
+                    (user_id, str(t.get("event_type")), int(t.get("step", 0)), int(t.get("delay_hours", 0)),
+                     t.get("template_text", ""), 1 if t.get("is_active", True) else 0))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not upsert dm templates for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # The appreciation triggers that share `_dispatch_appreciation_dms` — and therefore the ledger below.
@@ -9901,21 +8816,90 @@ def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
     Claim BEFORE dispatch, never after: a thank-you that fails to send is recoverable by a human,
     one sent twenty times is not. A DB error therefore returns False — no claim, no DM.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT IGNORE INTO appreciation_touches (user_id, profile_url, person_name, event_type) "
-            "VALUES (%s,%s,%s,%s)",
-            (user_id, profile_url, person_name, str(event_type)))
-        connection.commit()
-        return cursor.rowcount == 1
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO appreciation_touches (user_id, profile_url, person_name, event_type) "
+                "VALUES (%s,%s,%s,%s)",
+                (user_id, profile_url, person_name, str(event_type)))
+            return cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not claim appreciation touch for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
+
+
+def count_existing_double_sent_catchups() -> int:
+    """Count contacts who were sent the SAME catch-up congratulations more than once.
+
+    Measured off `logs`, not `catchup_touches`: the ledger carries a UNIQUE key on
+    (user, profile_url, event_type, event_period), so grouping IT by that key can never return a
+    duplicate — the historical double-send this issue is about came from ONE touch row being sent
+    twice (a retry or an orphan re-queue after the status update was lost), which shows up only as
+    two `success` DM log rows carrying the same body to the same person.
+
+    Read-only, run once at deploy time to report the historical duplicate surface on the issue
+    (#1078). Returns 0 when nothing is double-sent or the read fails.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT l.user_id, l.post_url, l.message FROM logs l "
+                "WHERE l.action_type = 'dm' AND l.result = 'success' "
+                # EXISTS rather than a JOIN: two milestones can share one body (the deterministic
+                # fallback congratulations), and a join would multiply ONE log row into a fake duplicate.
+                "AND EXISTS (SELECT 1 FROM catchup_touches c WHERE c.user_id = l.user_id "
+                "AND c.profile_url = l.post_url AND c.message = l.message) "
+                "GROUP BY l.user_id, l.post_url, l.message HAVING COUNT(*) > 1"
+                ") dupes")
+            r = cursor.fetchone()
+            return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count existing double-sent catch-ups | Error: {err}")
+        return 0
+
+
+def claim_catchup_send_attempt(touch_id: int, user_id: int, profile_url: str,
+                             event_type: "CatchupEventType", event_period: str) -> bool:
+    """Claim the right to send ONE catch-up DM for this milestone (issue #1078).
+
+    True only when THIS call inserted the `catchup_send_attempts` row. The unique key is on the
+    milestone identity (user, profile_url, event_type, event_period), so a retry, a worker restart,
+    or a lost status update can never produce a second send. A failed claim means either the touch was
+    already sent or the ledger is unreadable — either way, do not send.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO catchup_send_attempts (touch_id, user_id, profile_url, event_type, "
+                "event_period) VALUES (%s,%s,%s,%s,%s)",
+                (touch_id, user_id, profile_url, str(event_type), event_period))
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not claim catch-up send attempt for touch_id {touch_id} | Error: {err}")
+        return False
+
+
+def release_catchup_send_attempt(user_id: int, profile_url: str, event_type: "CatchupEventType",
+                                 event_period: str) -> bool:
+    """Give the claim back when NOTHING was sent (issue #1078).
+
+    Only call this where the send provably never reached LinkedIn — the 429 breaker refusing before a
+    composer was ever opened. A send whose outcome is unknown must KEEP its claim: the whole point of
+    the ledger is that an ambiguous attempt is treated as sent. Without this the throttle deferral,
+    which puts the touch back to `approved` for the next scan, would leave a claim no later attempt
+    could ever beat — so the retry would mark the touch `sent` having sent nothing.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "DELETE FROM catchup_send_attempts WHERE user_id = %s AND profile_url = %s "
+                "AND event_type = %s AND event_period = %s",
+                (user_id, profile_url, str(event_type), event_period))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not release catch-up send claim for user_id {user_id} | Error: {err}")
+        return False
 
 
 def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> bool:
@@ -9923,56 +8907,43 @@ def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> b
     the decision (see claim_appreciation_touch); this exists so a scraper can skip parsing work and
     so the live probe can report what production would do without writing a row.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT 1 FROM appreciation_touches WHERE user_id = %s AND profile_url = %s "
-            "AND event_type = %s LIMIT 1", (user_id, profile_url, str(event_type)))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM appreciation_touches WHERE user_id = %s AND profile_url = %s "
+                "AND event_type = %s LIMIT 1", (user_id, profile_url, str(event_type)))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         myprint(f"Could not check appreciation touch for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type: str,
                      next_step: int, due_at) -> bool:
     """Schedule a follow-up DM touch. `due_at` is a datetime."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
-            "VALUES (%s,%s,%s,%s,%s,%s,'pending')",
-            (user_id, profile_url, first_name, str(event_type), next_step, due_at))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
+                "VALUES (%s,%s,%s,%s,%s,%s,'pending')",
+                (user_id, profile_url, first_name, str(event_type), next_step, due_at))
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not enqueue followup for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_due_followups(now) -> list:
     """Pending follow-ups whose due_at has passed. `now` is a datetime."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, profile_url, first_name, event_type, next_step "
-            "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, profile_url, first_name, event_type, next_step "
+                "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not get due followups | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_followup(followup_id: int, status: str) -> bool:
@@ -9980,36 +8951,26 @@ def mark_followup(followup_id: int, status: str) -> bool:
 
     True whenever the UPDATE ran, matched or not.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark followup {followup_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE dm_followups SET status='stopped' "
-                       "WHERE user_id=%s AND profile_url=%s AND status='pending'",
-                       (user_id, profile_url))
-        connection.commit()
-        return cursor.rowcount
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE dm_followups SET status='stopped' "
+                           "WHERE user_id=%s AND profile_url=%s AND status='pending'",
+                           (user_id, profile_url))
+            return cursor.rowcount
     except mysql.connector.Error as err:
         myprint(f"Could not stop followups for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_geo(user_id: int) -> Optional[dict]:
@@ -10018,20 +8979,16 @@ def get_user_geo(user_id: int) -> Optional[dict]:
     Keys: latitude, longitude (floats or None), timezone, locale, city, country.
     Returns None only if the user row is missing.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT latitude, longitude, timezone, locale, city, country FROM users WHERE id = %s",
-            (user_id,),
-        )
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT latitude, longitude, timezone, locale, city, country FROM users WHERE id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get user geo for user_id {user_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
     if not row:
         return None
     return {
@@ -10083,29 +9040,24 @@ def update_user_location(user_id: int, latitude: float, longitude: float,
     """Persist the user's location. timezone is updated only when provided so the
     user's display-timezone preference is preserved unless autocapture supplies one.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if timezone:
-            cursor.execute(
-                "UPDATE users SET latitude=%s, longitude=%s, city=%s, country=%s, "
-                "locale=%s, timezone=%s, location_source=%s WHERE id=%s",
-                (latitude, longitude, city, country, locale, timezone, source, user_id),
-            )
-        else:
-            cursor.execute(
-                "UPDATE users SET latitude=%s, longitude=%s, city=%s, country=%s, "
-                "locale=%s, location_source=%s WHERE id=%s",
-                (latitude, longitude, city, country, locale, source, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            if timezone:
+                cursor.execute(
+                    "UPDATE users SET latitude=%s, longitude=%s, city=%s, country=%s, "
+                    "locale=%s, timezone=%s, location_source=%s WHERE id=%s",
+                    (latitude, longitude, city, country, locale, timezone, source, user_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE users SET latitude=%s, longitude=%s, city=%s, country=%s, "
+                    "locale=%s, location_source=%s WHERE id=%s",
+                    (latitude, longitude, city, country, locale, source, user_id),
+                )
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update location for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_proxy(user_id: int) -> Optional[str]:
@@ -10115,17 +9067,13 @@ def get_user_proxy(user_id: int) -> Optional[str]:
     normally log in, reducing LinkedIn "new location" challenges. None = egress from
     the host directly.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT proxy_url FROM users WHERE id = %s", (user_id,))
-        row = cursor.fetchone()
+        with db_cursor() as cursor:
+            cursor.execute("SELECT proxy_url FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get proxy for user_id {user_id} | Error: {err}")
         row = None
-    finally:
-        cursor.close()
-        connection.close()
     if not row or not row[0]:
         return None
     return row[0]
@@ -10133,55 +9081,41 @@ def get_user_proxy(user_id: int) -> Optional[str]:
 
 def update_user_proxy(user_id: int, proxy_url: Optional[str]) -> bool:
     """Set (or clear, when proxy_url is None/empty) the user's egress proxy URL."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE users SET proxy_url = %s WHERE id = %s",
-            (proxy_url or None, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE users SET proxy_url = %s WHERE id = %s",
+                (proxy_url or None, user_id),
+            )
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update proxy for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_timezone(user_id: int) -> str:
     """Return the IANA timezone string for the user. Defaults to America/New_York to match the
     users.timezone column default and the UI default (not UTC, which would misrender local times).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT timezone FROM users WHERE id = %s", (user_id,))
-        row = cursor.fetchone()
-        return row[0] if row and row[0] else 'America/New_York'
+        with db_cursor() as cursor:
+            cursor.execute("SELECT timezone FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else 'America/New_York'
     except mysql.connector.Error as err:
         myprint(f"Could not get timezone for user_id {user_id} | Error: {err}")
         return 'America/New_York'
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_user_timezone(user_id: int, tz: str) -> bool:
     """Persist the user's preferred IANA timezone string."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE users SET timezone = %s WHERE id = %s", (tz, user_id))
-        connection.commit()
-        return cursor.rowcount >= 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET timezone = %s WHERE id = %s", (tz, user_id))
+            return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update timezone for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -10190,38 +9124,31 @@ def update_user_timezone(user_id: int, tz: str) -> bool:
 
 def get_user_by_stripe_customer_id(stripe_customer_id: str) -> Optional[dict]:
     """Return the user row matching a Stripe customer ID, regardless of subscription status."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, stripe_customer_id FROM users WHERE stripe_customer_id = %s LIMIT 1",
-            (stripe_customer_id,),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, stripe_customer_id FROM users WHERE stripe_customer_id = %s LIMIT 1",
+                (stripe_customer_id,),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not look up user by stripe_customer_id={stripe_customer_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_avatar_credit_ledger_entry_by_session(stripe_session_id: str) -> Optional[dict]:
     """Return an existing credit ledger entry for a Stripe session (idempotency check)."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, delta FROM avatar_credit_ledger WHERE stripe_session_id = %s AND delta > 0 LIMIT 1",
-            (stripe_session_id,),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, delta FROM avatar_credit_ledger "
+                "WHERE stripe_session_id = %s AND delta > 0 LIMIT 1",
+                (stripe_session_id,),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not look up ledger entry for session={stripe_session_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_avatar_credit_balance(user_id: int) -> int:
@@ -10231,21 +9158,17 @@ def get_avatar_credit_balance(user_id: int) -> int:
     stays visible instead of disappearing into an overwritten total. A read error returns 0, which blocks
     spending rather than granting it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT COALESCE(SUM(delta), 0) AS balance FROM avatar_credit_ledger WHERE user_id = %s",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        return int(row["balance"]) if row else 0
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT COALESCE(SUM(delta), 0) AS balance FROM avatar_credit_ledger WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return int(row["balance"]) if row else 0
     except mysql.connector.Error as err:
         myprint(f"Could not fetch avatar credit balance for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def add_avatar_credits(
@@ -10259,22 +9182,17 @@ def add_avatar_credits(
     Nothing here deduplicates: `stripe_session_id` is only recorded, so the idempotency check against a
     replayed webhook is `get_avatar_credit_ledger_entry_by_session`, and it has to run first.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO avatar_credit_ledger (user_id, delta, reason, stripe_session_id)
-               VALUES (%s, %s, %s, %s)""",
-            (user_id, amount, reason, stripe_session_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO avatar_credit_ledger (user_id, delta, reason, stripe_session_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (user_id, amount, reason, stripe_session_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not add avatar credits for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def deduct_avatar_credit(user_id: int, training_id: str) -> bool:
@@ -10282,22 +9200,17 @@ def deduct_avatar_credit(user_id: int, training_id: str) -> bool:
 
     The training id is what lets `refund_avatar_credit` reverse exactly this spend later.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO avatar_credit_ledger (user_id, delta, reason, training_id)
-               VALUES (%s, -1, 'training_start', %s)""",
-            (user_id, training_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO avatar_credit_ledger (user_id, delta, reason, training_id)
+                   VALUES (%s, -1, 'training_start', %s)""",
+                (user_id, training_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not deduct avatar credit for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def refund_avatar_credit(user_id: int, training_id: str) -> bool:
@@ -10307,22 +9220,17 @@ def refund_avatar_credit(user_id: int, training_id: str) -> bool:
     `update_avatar_training_status`). Nothing checks whether a refund was already recorded — two calls
     write two +1 rows.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO avatar_credit_ledger (user_id, delta, reason, training_id)
-               VALUES (%s, 1, 'training_refund', %s)""",
-            (user_id, training_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO avatar_credit_ledger (user_id, delta, reason, training_id)
+                   VALUES (%s, 1, 'training_refund', %s)""",
+                (user_id, training_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not refund avatar credit for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -10335,39 +9243,31 @@ def get_video_credit_balance(user_id: int) -> int:
     Same shape as the avatar ledger: no balance column, and a read error returns 0 so a fault blocks
     spending rather than granting it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT COALESCE(SUM(delta), 0) AS balance FROM video_credit_ledger WHERE user_id = %s",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        return int(row["balance"]) if row else 0
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT COALESCE(SUM(delta), 0) AS balance FROM video_credit_ledger WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return int(row["balance"]) if row else 0
     except mysql.connector.Error as err:
         myprint(f"Could not get video credit balance for user_id {user_id} | Error: {err}")
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_video_credit_ledger_entry_by_session(stripe_session_id: str) -> Optional[dict]:
     """Return an existing purchase ledger entry for a Stripe session (idempotency check)."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, delta FROM video_credit_ledger WHERE stripe_session_id = %s AND delta > 0 LIMIT 1",
-            (stripe_session_id,),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, delta FROM video_credit_ledger WHERE stripe_session_id = %s AND delta > 0 LIMIT 1",
+                (stripe_session_id,),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not look up video credit ledger by session | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def add_video_credits(user_id: int, amount: int, reason: str,
@@ -10377,22 +9277,17 @@ def add_video_credits(user_id: int, amount: int, reason: str,
     Nothing here deduplicates — `get_video_credit_ledger_entry_by_session` is the replay check, and it
     has to run first.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO video_credit_ledger (user_id, delta, reason, stripe_session_id)
-               VALUES (%s, %s, %s, %s)""",
-            (user_id, amount, reason, stripe_session_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO video_credit_ledger (user_id, delta, reason, stripe_session_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (user_id, amount, reason, stripe_session_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not add video credits for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def deduct_video_credits(user_id: int, amount: int, post_id: Optional[int] = None,
@@ -10402,22 +9297,17 @@ def deduct_video_credits(user_id: int, amount: int, post_id: Optional[int] = Non
     The amount is written as `-abs(amount)`, so passing it already-negative cannot accidentally GRANT
     credits.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO video_credit_ledger (user_id, delta, reason, post_id)
-               VALUES (%s, %s, %s, %s)""",
-            (user_id, -abs(amount), reason, post_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO video_credit_ledger (user_id, delta, reason, post_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (user_id, -abs(amount), reason, post_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not deduct video credits for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def refund_video_credits(user_id: int, amount: int, post_id: Optional[int] = None,
@@ -10426,22 +9316,17 @@ def refund_video_credits(user_id: int, amount: int, post_id: Optional[int] = Non
 
     Nothing checks whether the same spend was already refunded.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO video_credit_ledger (user_id, delta, reason, post_id)
-               VALUES (%s, %s, %s, %s)""",
-            (user_id, abs(amount), reason, post_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO video_credit_ledger (user_id, delta, reason, post_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (user_id, abs(amount), reason, post_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not refund video credits for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_video_quality(post_id: int) -> str:
@@ -10450,18 +9335,14 @@ def get_post_video_quality(post_id: int) -> str:
     Every unknown answer — column unset, no such post, failed read — is 'standard': the tier that costs
     credits is never something we assume.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT video_quality FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return (row["video_quality"] if row and row.get("video_quality") else "standard")
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT video_quality FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return (row["video_quality"] if row and row.get("video_quality") else "standard")
     except mysql.connector.Error as err:
         myprint(f"Could not get video_quality for post {post_id} | Error: {err}")
         return "standard"
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_post_video_quality(post_id: int, quality: str) -> bool:
@@ -10469,18 +9350,13 @@ def update_post_video_quality(post_id: int, quality: str) -> bool:
 
     False when no row matched or the value stored was already this one.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("UPDATE posts SET video_quality = %s WHERE id = %s", (quality, post_id))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute("UPDATE posts SET video_quality = %s WHERE id = %s", (quality, post_id))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update video_quality for post {post_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_carousel_slides(post_id: int):
@@ -10489,18 +9365,14 @@ def get_post_carousel_slides(post_id: int):
     `get_carousel_slides` is the parsed reader; this one hands back whatever the column holds (or None),
     so a caller that iterates it will walk a JSON string character by character.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT carousel_slides FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return row["carousel_slides"] if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT carousel_slides FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return row["carousel_slides"] if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not get carousel_slides for post {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
@@ -10508,38 +9380,34 @@ def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
     missing: video posts with no video_url, or carousel posts with no slides. Used by the
     backfill safety net. Returns (id, user_id, post_type, buyer_stage, scheduled_time).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
+        with db_cursor() as cursor:
         # Include 'error' so failed posts get a regeneration attempt. A carousel needs
         # regeneration when its slides are empty OR are plain text titles with no real image
         # reference — real slides are stored as URLs (https .../api/assets/...png), so the
         # absence of any image marker means generation never produced images.
-        cursor.execute("""
-            SELECT id, user_id, post_type, buyer_stage, scheduled_time
-            FROM posts
-            WHERE status IN ('approved', 'pending', 'scheduled', 'error')
-              AND scheduled_time > NOW()
-              AND scheduled_time <= NOW() + INTERVAL %s DAY
-              AND (
-                    (post_type = 'video'    AND (video_url IS NULL OR video_url = ''))
-                 OR (post_type IN ('carousel', 'document') AND (
-                        carousel_slides IS NULL OR carousel_slides = '' OR carousel_slides = '[]'
-                        OR (carousel_slides NOT LIKE '%%http%%'
-                            AND carousel_slides NOT LIKE '%%/assets%%'
-                            AND carousel_slides NOT LIKE '%%.png%%'
-                            AND carousel_slides NOT LIKE '%%.jpg%%')
-                    ))
-              )
-            ORDER BY scheduled_time
-        """, (within_days,))
-        return cursor.fetchall()
+            cursor.execute("""
+                SELECT id, user_id, post_type, buyer_stage, scheduled_time
+                FROM posts
+                WHERE status IN ('approved', 'pending', 'scheduled', 'error')
+                  AND scheduled_time > NOW()
+                  AND scheduled_time <= NOW() + INTERVAL %s DAY
+                  AND (
+                        (post_type = 'video'    AND (video_url IS NULL OR video_url = ''))
+                     OR (post_type IN ('carousel', 'document') AND (
+                            carousel_slides IS NULL OR carousel_slides = '' OR carousel_slides = '[]'
+                            OR (carousel_slides NOT LIKE '%%http%%'
+                                AND carousel_slides NOT LIKE '%%/assets%%'
+                                AND carousel_slides NOT LIKE '%%.png%%'
+                                AND carousel_slides NOT LIKE '%%.jpg%%')
+                        ))
+                  )
+                ORDER BY scheduled_time
+            """, (within_days,))
+            return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get unposted posts missing assets | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -10555,22 +9423,17 @@ AVATAR_APPROVAL_REJECTED = "rejected"
 
 def insert_avatar_training(user_id: int, training_id: str, trigger_word: str) -> Optional[int]:
     """Record a started avatar training and return its row id; None when the insert failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """INSERT INTO avatar_trainings (user_id, training_id, trigger_word)
-               VALUES (%s, %s, %s)""",
-            (user_id, training_id, trigger_word),
-        )
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO avatar_trainings (user_id, training_id, trigger_word)
+                   VALUES (%s, %s, %s)""",
+                (user_id, training_id, trigger_word),
+            )
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not insert avatar training for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_avatar_training_status(
@@ -10584,40 +9447,35 @@ def update_avatar_training_status(
     already trained. A 'failed' or 'canceled' status ALSO refunds the credit the training spent, and that
     refund is not deduplicated — calling this twice with the same terminal status pays out twice.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        if model_ref:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET status = %s, model_ref = %s
-                   WHERE training_id = %s""",
-                (status, model_ref, training_id),
-            )
-        else:
-            cursor.execute(
-                "UPDATE avatar_trainings SET status = %s WHERE training_id = %s",
-                (status, training_id),
-            )
-        connection.commit()
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            if model_ref:
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET status = %s, model_ref = %s
+                       WHERE training_id = %s""",
+                    (status, model_ref, training_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE avatar_trainings SET status = %s WHERE training_id = %s",
+                    (status, training_id),
+                )
 
-        # Auto-refund credit if training failed or was canceled
-        if status in ("failed", "canceled"):
-            cursor.execute(
-                "SELECT user_id FROM avatar_trainings WHERE training_id = %s",
-                (training_id,),
-            )
-            row = cursor.fetchone()
-            if row:
-                refund_avatar_credit(row["user_id"], training_id)
+            # Auto-refund credit if training failed or was canceled
+            if status in ("failed", "canceled"):
+                cursor.execute(
+                    "SELECT user_id FROM avatar_trainings WHERE training_id = %s",
+                    (training_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    refund_avatar_credit(row["user_id"], training_id)
 
-        return cursor.rowcount > 0
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update avatar training status for {training_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_active_avatar(user_id: int, avatar_id: int) -> bool:
@@ -10702,67 +9560,55 @@ def _avatar_row_to_dict(row: dict) -> dict:
 
 def get_avatar_trainings(user_id: int) -> list[dict]:
     """Every avatar this user has trained, newest first, normalised for the API. [] on a read error."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"""SELECT {_AVATAR_COLUMNS}
-                FROM avatar_trainings
-                WHERE user_id = %s
-                ORDER BY created_at DESC""",
-            (user_id,),
-        )
-        return [_avatar_row_to_dict(r) for r in cursor.fetchall()]
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"""SELECT {_AVATAR_COLUMNS}
+                    FROM avatar_trainings
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC""",
+                (user_id,),
+            )
+            return [_avatar_row_to_dict(r) for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not fetch avatar trainings for user_id {user_id} | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_avatar_training(user_id: int, avatar_id: int) -> Optional[dict]:
     """One avatar row, scoped to its owner so an id from another account can never be read."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"""SELECT {_AVATAR_COLUMNS}
-                FROM avatar_trainings
-                WHERE id = %s AND user_id = %s
-                LIMIT 1""",
-            (avatar_id, user_id),
-        )
-        row = cursor.fetchone()
-        return _avatar_row_to_dict(row) if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"""SELECT {_AVATAR_COLUMNS}
+                    FROM avatar_trainings
+                    WHERE id = %s AND user_id = %s
+                    LIMIT 1""",
+                (avatar_id, user_id),
+            )
+            row = cursor.fetchone()
+            return _avatar_row_to_dict(row) if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not fetch avatar {avatar_id} for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_active_avatar(user_id: int) -> Optional[dict]:
     """The account's active avatar row, or None when nothing is active or the read failed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"""SELECT {_AVATAR_COLUMNS}
-                FROM avatar_trainings
-                WHERE user_id = %s AND is_active = 1
-                LIMIT 1""",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        return _avatar_row_to_dict(row) if row else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"""SELECT {_AVATAR_COLUMNS}
+                    FROM avatar_trainings
+                    WHERE user_id = %s AND is_active = 1
+                    LIMIT 1""",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return _avatar_row_to_dict(row) if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not fetch active avatar for user_id {user_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_avatar_attributes(user_id: int, avatar_id: int,
@@ -10777,23 +9623,18 @@ def update_avatar_attributes(user_id: int, avatar_id: int,
     gender = normalize_gender_presentation(gender_presentation)
     band = normalize_age_band(age_band)
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            """UPDATE avatar_trainings
-               SET gender_presentation = %s, age_band = %s, attributes_confirmed_at = UTC_TIMESTAMP()
-               WHERE id = %s AND user_id = %s""",
-            (gender, band, avatar_id, user_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET gender_presentation = %s, age_band = %s, attributes_confirmed_at = UTC_TIMESTAMP()
+                   WHERE id = %s AND user_id = %s""",
+                (gender, band, avatar_id, user_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update avatar attributes for avatar {avatar_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
@@ -10806,31 +9647,26 @@ def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
         myprint(f"set_avatar_approval: refusing unknown approval status {status!r}")
         return False
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if status == AVATAR_APPROVAL_APPROVED:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET approval_status = %s, approved_at = UTC_TIMESTAMP()
-                   WHERE id = %s AND user_id = %s""",
-                (status, avatar_id, user_id),
-            )
-        else:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET approval_status = %s, approved_at = NULL, is_active = 0
-                   WHERE id = %s AND user_id = %s""",
-                (status, avatar_id, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if status == AVATAR_APPROVAL_APPROVED:
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET approval_status = %s, approved_at = UTC_TIMESTAMP()
+                       WHERE id = %s AND user_id = %s""",
+                    (status, avatar_id, user_id),
+                )
+            else:
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET approval_status = %s, approved_at = NULL, is_active = 0
+                       WHERE id = %s AND user_id = %s""",
+                    (status, avatar_id, user_id),
+                )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not set approval {status} on avatar {avatar_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_avatar_samples(avatar_id: int, sample_paths: list[dict]) -> bool:
@@ -10839,24 +9675,19 @@ def update_avatar_samples(avatar_id: int, sample_paths: list[dict]) -> bool:
     The regeneration counter is NOT touched here — it is reserved before any inference is paid
     for by :func:`claim_avatar_sample_render`.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        payload = json.dumps(sample_paths or [])
-        cursor.execute(
-            """UPDATE avatar_trainings
-               SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP()
-               WHERE id = %s""",
-            (payload, avatar_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            payload = json.dumps(sample_paths or [])
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP()
+                   WHERE id = %s""",
+                (payload, avatar_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not store avatar samples for avatar {avatar_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def claim_avatar_sample_render(user_id: int, avatar_id: int, *, regeneration: bool = False,
@@ -10869,34 +9700,29 @@ def claim_avatar_sample_render(user_id: int, avatar_id: int, *, regeneration: bo
     regeneration limit exists to be was not one. Reserving inside the UPDATE makes the decision
     atomic: exactly one caller can win.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if regeneration:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET sample_regen_count = sample_regen_count + 1
-                   WHERE id = %s AND user_id = %s AND sample_regen_count < %s""",
-                (avatar_id, user_id, max_regenerations),
-            )
-        else:
-            # The FIRST render after a training succeeds: samples_generated_at is the claim marker,
-            # so a second poll arriving mid-render finds it set and stands down.
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET samples_generated_at = UTC_TIMESTAMP()
-                   WHERE id = %s AND user_id = %s
-                     AND samples_generated_at IS NULL AND sample_paths IS NULL""",
-                (avatar_id, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if regeneration:
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET sample_regen_count = sample_regen_count + 1
+                       WHERE id = %s AND user_id = %s AND sample_regen_count < %s""",
+                    (avatar_id, user_id, max_regenerations),
+                )
+            else:
+                # The FIRST render after a training succeeds: samples_generated_at is the claim marker,
+                # so a second poll arriving mid-render finds it set and stands down.
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET samples_generated_at = UTC_TIMESTAMP()
+                       WHERE id = %s AND user_id = %s
+                         AND samples_generated_at IS NULL AND sample_paths IS NULL""",
+                    (avatar_id, user_id),
+                )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not claim a sample render for avatar {avatar_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def release_avatar_sample_render(user_id: int, avatar_id: int, *,
@@ -10906,31 +9732,26 @@ def release_avatar_sample_render(user_id: int, avatar_id: int, *,
     A user must not lose a regeneration to a render that shipped no images, and a failed first
     render must leave the automatic path able to try again.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        if regeneration:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET sample_regen_count = GREATEST(sample_regen_count - 1, 0)
-                   WHERE id = %s AND user_id = %s""",
-                (avatar_id, user_id),
-            )
-        else:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET samples_generated_at = NULL
-                   WHERE id = %s AND user_id = %s AND sample_paths IS NULL""",
-                (avatar_id, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            if regeneration:
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET sample_regen_count = GREATEST(sample_regen_count - 1, 0)
+                       WHERE id = %s AND user_id = %s""",
+                    (avatar_id, user_id),
+                )
+            else:
+                cursor.execute(
+                    """UPDATE avatar_trainings
+                       SET samples_generated_at = NULL
+                       WHERE id = %s AND user_id = %s AND sample_paths IS NULL""",
+                    (avatar_id, user_id),
+                )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not release the sample-render claim for avatar {avatar_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_avatar_preferences(user_id: int) -> dict:
@@ -10941,25 +9762,21 @@ def get_avatar_preferences(user_id: int) -> dict:
     """
     from cqc_lem.utilities.avatar.guardrails import DEFAULT_AVATAR_PREFERENCES
     prefs = dict(DEFAULT_AVATAR_PREFERENCES)
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT avatar_disabled, avatar_use_post_image, avatar_use_carousel,
-                      avatar_use_video, avatar_use_newsletter
-               FROM users WHERE id = %s""",
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        if row:
-            prefs = {key: bool(row.get(key)) for key in prefs}
-        return prefs
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT avatar_disabled, avatar_use_post_image, avatar_use_carousel,
+                          avatar_use_video, avatar_use_newsletter
+                   FROM users WHERE id = %s""",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                prefs = {key: bool(row.get(key)) for key in prefs}
+            return prefs
     except mysql.connector.Error as err:
         myprint(f"Could not fetch avatar preferences for user_id {user_id} | Error: {err}")
         return prefs
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_avatar_preferences(user_id: int, prefs: dict) -> bool:
@@ -10970,63 +9787,49 @@ def update_avatar_preferences(user_id: int, prefs: dict) -> bool:
     if not updates:
         return False
 
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        assignments = ", ".join(f"{key} = %s" for key in updates)
-        cursor.execute(
-            f"UPDATE users SET {assignments} WHERE id = %s",
-            (*[int(v) for v in updates.values()], user_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            assignments = ", ".join(f"{key} = %s" for key in updates)
+            cursor.execute(
+                f"UPDATE users SET {assignments} WHERE id = %s",
+                (*[int(v) for v in updates.values()], user_id),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not update avatar preferences for user_id {user_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_use_avatar(post_id: Optional[int]) -> Optional[bool]:
     """The compose-time avatar choice for a post — None when the user made no choice."""
     if not post_id:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT use_avatar FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        if not row or row[0] is None:
-            return None
-        return bool(row[0])
+        with db_cursor() as cursor:
+            cursor.execute("SELECT use_avatar FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return None
+            return bool(row[0])
     except mysql.connector.Error as err:
         myprint(f"Could not fetch use_avatar for post_id {post_id} | Error: {err}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_post_use_avatar(post_id: int, use_avatar: Optional[bool]) -> bool:
     """Set the compose-time avatar choice on an existing post. None clears it back to
     "follow my preferences" — the field is three-valued everywhere it is read.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE posts SET use_avatar = %s WHERE id = %s",
-            (None if use_avatar is None else int(bool(use_avatar)), post_id),
-        )
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET use_avatar = %s WHERE id = %s",
+                (None if use_avatar is None else int(bool(use_avatar)), post_id),
+            )
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update use_avatar for post_id {post_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_post_avatar_media(post_id: Optional[int]) -> bool:
@@ -11038,18 +9841,13 @@ def mark_post_avatar_media(post_id: Optional[int]) -> bool:
     """
     if not post_id:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE posts SET avatar_media = 1 WHERE id = %s", (post_id,))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE posts SET avatar_media = 1 WHERE id = %s", (post_id,))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not mark avatar media on post_id {post_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def post_used_avatar_media(post_id: Optional[int]) -> bool:
@@ -11060,18 +9858,14 @@ def post_used_avatar_media(post_id: Optional[int]) -> bool:
     """
     if not post_id:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT avatar_media FROM posts WHERE id = %s", (post_id,))
-        row = cursor.fetchone()
-        return bool(row and row[0])
+        with db_cursor() as cursor:
+            cursor.execute("SELECT avatar_media FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+            return bool(row and row[0])
     except mysql.connector.Error as err:
         myprint(f"Could not read avatar_media for post_id {post_id} | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Cost ledger writers (issue #490) ------------------------------------------------------
@@ -11089,25 +9883,20 @@ def insert_cost_ledger_entry(feature: str, category: str, usd: float,
                              task_name: Optional[str] = None,
                              incurred_on: Optional[date] = None) -> bool:
     """Append one spend row. `user_id` None means system/shared cost; `incurred_on` defaults to today (UTC)."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            """INSERT INTO cost_ledger
-                   (user_id, feature, category, provider, model_tier, usd, qty, post_id, task_name, incurred_on)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (user_id, str(feature), str(category), provider, model_tier, round(float(usd), 6),
-             round(float(qty), 4) if qty is not None else None,
-             post_id, task_name, incurred_on or datetime.now(timezone.utc).date()),
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                """INSERT INTO cost_ledger
+                       (user_id, feature, category, provider, model_tier, usd, qty, post_id, task_name, incurred_on)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, str(feature), str(category), provider, model_tier, round(float(usd), 6),
+                 round(float(qty), 4) if qty is not None else None,
+                 post_id, task_name, incurred_on or datetime.now(timezone.utc).date()),
+            )
+            return True
     except mysql.connector.Error as err:
         myprint(f"Could not insert cost_ledger entry ({category}/{feature}) | Error: {err}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
@@ -11162,24 +9951,20 @@ def get_users_proxy_config(user_ids: list) -> list:
     if not user_ids:
         return []
 
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        placeholders = ", ".join(["%s"] * len(user_ids))
-        cursor.execute(
-            f"SELECT id, proxy_url, country FROM users WHERE id IN ({placeholders})",
-            tuple(int(uid) for uid in user_ids),
-        )
-        return [
-            {"user_id": row["id"], "proxy_url": row.get("proxy_url"), "country": row.get("country")}
-            for row in (cursor.fetchall() or [])
-        ]
+        with db_cursor(dictionary=True) as cursor:
+            placeholders = ", ".join(["%s"] * len(user_ids))
+            cursor.execute(
+                f"SELECT id, proxy_url, country FROM users WHERE id IN ({placeholders})",
+                tuple(int(uid) for uid in user_ids),
+            )
+            return [
+                {"user_id": row["id"], "proxy_url": row.get("proxy_url"), "country": row.get("country")}
+                for row in (cursor.fetchall() or [])
+            ]
     except mysql.connector.Error as err:
         myprint(f"Could not fetch proxy config for users | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # Cost/margin reporting (docs/cost-performance-margin-plan.md §A.3/§C.1). These are READ-ONLY over
@@ -11202,16 +9987,12 @@ def cost_ledger_available() -> bool:
     """True when the durable cost_ledger table exists. The margin report uses this to say whether a
     $0 spend figure means "nothing spent" or "not capturing yet".
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SHOW TABLES LIKE 'cost_ledger'")
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute("SHOW TABLES LIKE 'cost_ledger'")
+            return cursor.fetchone() is not None
     except mysql.connector.Error:
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_cost_rollup(start_date, end_date, group_by: str = "feature",
@@ -11227,22 +10008,18 @@ def get_cost_rollup(start_date, end_date, group_by: str = "feature",
     if not column:
         myprint(f"Unsupported cost rollup dimension '{group_by}'")
         return {}
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        sql = (f"SELECT COALESCE(CAST({column} AS CHAR), 'unknown') AS rollup_key, "
-               "COALESCE(SUM(usd), 0) FROM cost_ledger WHERE incurred_on BETWEEN %s AND %s")
-        params = [start_date, end_date]
-        if user_id is not None:
-            sql += " AND user_id = %s"
-            params.append(user_id)
-        cursor.execute(sql + " GROUP BY rollup_key", tuple(params))
-        return {str(key): float(usd or 0) for key, usd in cursor.fetchall()}
+        with db_cursor() as cursor:
+            sql = (f"SELECT COALESCE(CAST({column} AS CHAR), 'unknown') AS rollup_key, "
+                   "COALESCE(SUM(usd), 0) FROM cost_ledger WHERE incurred_on BETWEEN %s AND %s")
+            params = [start_date, end_date]
+            if user_id is not None:
+                sql += " AND user_id = %s"
+                params.append(user_id)
+            cursor.execute(sql + " GROUP BY rollup_key", tuple(params))
+            return {str(key): float(usd or 0) for key, usd in cursor.fetchall()}
     except mysql.connector.Error:
         return {}  # table not created yet (or unreadable) — caller reports it as unavailable
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_user_cost(user_id: int, start_date, end_date) -> dict:
@@ -11256,21 +10033,17 @@ def get_daily_cost_totals(start_date, end_date) -> dict:
     than 0.0 so a ledger that only started capturing mid-window can't manufacture a zero baseline
     (and then flag the first real day of spend as an anomaly).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT incurred_on, COALESCE(SUM(usd), 0) FROM cost_ledger "
-            "WHERE incurred_on BETWEEN %s AND %s GROUP BY incurred_on ORDER BY incurred_on",
-            (start_date, end_date),
-        )
-        return {day.isoformat() if hasattr(day, "isoformat") else str(day): float(usd or 0)
-                for day, usd in cursor.fetchall()}
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT incurred_on, COALESCE(SUM(usd), 0) FROM cost_ledger "
+                "WHERE incurred_on BETWEEN %s AND %s GROUP BY incurred_on ORDER BY incurred_on",
+                (start_date, end_date),
+            )
+            return {day.isoformat() if hasattr(day, "isoformat") else str(day): float(usd or 0)
+                    for day, usd in cursor.fetchall()}
     except mysql.connector.Error:
         return {}  # table not created yet (or unreadable) — caller reports the check as skipped
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_post_quality_rows(start_date, end_date) -> list:
@@ -11282,37 +10055,33 @@ def get_post_quality_rows(start_date, end_date) -> list:
     Read-only and cross-user by design — the A/B arms are cohorts of users, so the comparison has to
     see every user's posts, unlike the per-user `get_post_engagement_rows`.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT p.user_id, p.id AS post_id, DATE(p.scheduled_time) AS day, "
-            "p.authenticity_score, s.reactions, s.comments, s.reposts, s.impressions "
-            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
-            "WHERE p.status='posted' AND p.scheduled_time BETWEEN %s AND %s "
-            "AND s.id IN (SELECT MAX(id) FROM post_stats GROUP BY post_id)",
-            (start_date, end_date))
-        rows = cursor.fetchall() or []
-        return [
-            {
-                "user_id": r["user_id"],
-                "post_id": r["post_id"],
-                "day": r["day"].isoformat() if hasattr(r.get("day"), "isoformat") else r.get("day"),
-                "reactions": int(r["reactions"] or 0),
-                "comments": int(r["comments"] or 0),
-                "reposts": int(r["reposts"] or 0),
-                "impressions": int(r["impressions"]) if r.get("impressions") else None,
-                "authenticity_score": (int(r["authenticity_score"])
-                                       if r.get("authenticity_score") is not None else None),
-            }
-            for r in rows
-        ]
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT p.user_id, p.id AS post_id, DATE(p.scheduled_time) AS day, "
+                "p.authenticity_score, s.reactions, s.comments, s.reposts, s.impressions "
+                "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+                "WHERE p.status='posted' AND p.scheduled_time BETWEEN %s AND %s "
+                "AND s.id IN (SELECT MAX(id) FROM post_stats GROUP BY post_id)",
+                (start_date, end_date))
+            rows = cursor.fetchall() or []
+            return [
+                {
+                    "user_id": r["user_id"],
+                    "post_id": r["post_id"],
+                    "day": r["day"].isoformat() if hasattr(r.get("day"), "isoformat") else r.get("day"),
+                    "reactions": int(r["reactions"] or 0),
+                    "comments": int(r["comments"] or 0),
+                    "reposts": int(r["reposts"] or 0),
+                    "impressions": int(r["impressions"]) if r.get("impressions") else None,
+                    "authenticity_score": (int(r["authenticity_score"])
+                                           if r.get("authenticity_score") is not None else None),
+                }
+                for r in rows
+            ]
     except mysql.connector.Error as err:
         myprint(f"Could not get post quality rows | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_margin_users() -> list:
@@ -11321,22 +10090,18 @@ def get_margin_users() -> list:
     margin instead of vanishing. `cohort` is the signup month — `users` has no created_at, so
     trial_started_at is the signup timestamp, falling back to updated_at for pre-trial rows.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            """SELECT id, subscription_tier, subscription_status,
-                      DATE_FORMAT(COALESCE(trial_started_at, updated_at), '%Y-%m') AS cohort
-               FROM users
-               WHERE subscription_status IN ('active', 'past_due', 'trial')"""
-        )
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """SELECT id, subscription_tier, subscription_status,
+                          DATE_FORMAT(COALESCE(trial_started_at, updated_at), '%Y-%m') AS cohort
+                   FROM users
+                   WHERE subscription_status IN ('active', 'past_due', 'trial')"""
+            )
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         myprint(f"Could not fetch margin users | Error: {err}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def insert_feedback(body: str, user_id: int = None,
@@ -11349,23 +10114,18 @@ def insert_feedback(body: str, user_id: int = None,
     """
     if not body or not str(body).strip():
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO feedback (user_id, source, type_hint, body, context_json, sentiment) "
-            "VALUES (%s,%s,%s,%s,%s,%s)",
-            (user_id, str(source), str(type_hint)[:32] if type_hint else None, str(body),
-             json.dumps(context) if context else None,
-             str(sentiment)[:16] if sentiment else None))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO feedback (user_id, source, type_hint, body, context_json, sentiment) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
+                (user_id, str(source), str(type_hint)[:32] if type_hint else None, str(body),
+                 json.dumps(context) if context else None,
+                 str(sentiment)[:16] if sentiment else None))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not insert feedback", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # Clustering convention (issue #498): a cluster is identified by the `feedback.id` of its SEED row —
@@ -11378,17 +10138,13 @@ _FEEDBACK_COLUMNS = ("id, user_id, source, type_hint, body, context_json, embedd
 
 def get_feedback_by_id(feedback_id: int) -> Optional[dict]:
     """One feedback row, or None when it does not exist (issue #498)."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT {_FEEDBACK_COLUMNS} FROM feedback WHERE id=%s", (feedback_id,))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {_FEEDBACK_COLUMNS} FROM feedback WHERE id=%s", (feedback_id,))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error(f"Could not fetch feedback {feedback_id}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def _prefixed_feedback_columns(alias: str = "f") -> str:
@@ -11424,22 +10180,18 @@ def get_unprocessed_feedback(limit: int = 25, statuses: tuple = (FeedbackStatus.
         return []
     join, join_params = _admin_reporter_join() if admin_only else ("", ())
     admin_filter = "AND au.id IS NOT NULL " if admin_only else ""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {_prefixed_feedback_columns()} FROM feedback f {join} "
-            f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
-            f"{admin_filter}"
-            "ORDER BY f.created_at ASC, f.id ASC LIMIT %s",
-            (*join_params, *wanted, int(limit)))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_prefixed_feedback_columns()} FROM feedback f {join} "
+                f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
+                f"{admin_filter}"
+                "ORDER BY f.created_at ASC, f.id ASC LIMIT %s",
+                (*join_params, *wanted, int(limit)))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not fetch unprocessed feedback", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_pending_admin_review(statuses: tuple = (FeedbackStatus.NEW,)) -> int:
@@ -11452,22 +10204,18 @@ def count_pending_admin_review(statuses: tuple = (FeedbackStatus.NEW,)) -> int:
     if not wanted:
         return 0
     join, join_params = _admin_reporter_join()
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            f"SELECT COUNT(*) FROM feedback f {join} "
-            f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
-            "AND au.id IS NULL",
-            (*join_params, *wanted))
-        row = cursor.fetchone()
-        return int(row[0]) if row else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM feedback f {join} "
+                f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
+                "AND au.id IS NULL",
+                (*join_params, *wanted))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
     except mysql.connector.Error as err:
         log_error("Could not count feedback pending admin review", exc=err)
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_open_feedback_clusters(limit: int = 100) -> list:
@@ -11477,27 +10225,23 @@ def get_open_feedback_clusters(limit: int = 100) -> list:
     issue it was filed as, plus `item_count` and `reporter_count` (DISTINCT non-null user_id) — the
     demand signal that decides whether a *feature* cluster is allowed to auto-work.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT s.id AS cluster_id, s.body AS body, s.embedding AS embedding, "
-            "       s.github_issue_number AS github_issue_number, s.type_hint AS type_hint, "
-            "       COUNT(m.id) AS item_count, "
-            "       COUNT(DISTINCT m.user_id) AS reporter_count, "
-            "       MAX(m.created_at) AS last_seen_at "
-            "FROM feedback s JOIN feedback m ON m.cluster_id = s.cluster_id "
-            "WHERE s.cluster_id = s.id AND s.status IN ('clustered','issue_created') "
-            "GROUP BY s.id, s.body, s.embedding, s.github_issue_number, s.type_hint "
-            "ORDER BY last_seen_at DESC LIMIT %s",
-            (int(limit),))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT s.id AS cluster_id, s.body AS body, s.embedding AS embedding, "
+                "       s.github_issue_number AS github_issue_number, s.type_hint AS type_hint, "
+                "       COUNT(m.id) AS item_count, "
+                "       COUNT(DISTINCT m.user_id) AS reporter_count, "
+                "       MAX(m.created_at) AS last_seen_at "
+                "FROM feedback s JOIN feedback m ON m.cluster_id = s.cluster_id "
+                "WHERE s.cluster_id = s.id AND s.status IN ('clustered','issue_created') "
+                "GROUP BY s.id, s.body, s.embedding, s.github_issue_number, s.type_hint "
+                "ORDER BY last_seen_at DESC LIMIT %s",
+                (int(limit),))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not fetch open feedback clusters", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def count_feedback_filed_by_user(user_id: int, hours: int = 24) -> int:
@@ -11506,21 +10250,17 @@ def count_feedback_filed_by_user(user_id: int, hours: int = 24) -> int:
     """
     if user_id is None:
         return 0
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM feedback WHERE user_id=%s AND github_issue_number IS NOT NULL "
-            "AND created_at >= (NOW() - INTERVAL %s HOUR)",
-            (user_id, int(hours)))
-        row = cursor.fetchone()
-        return int(row[0]) if row and row[0] is not None else 0
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM feedback WHERE user_id=%s AND github_issue_number IS NOT NULL "
+                "AND created_at >= (NOW() - INTERVAL %s HOUR)",
+                (user_id, int(hours)))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
     except mysql.connector.Error as err:
         log_error("Could not count filed feedback for user", exc=err, user_id=user_id)
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def update_feedback_triage(feedback_id: int,
@@ -11563,21 +10303,16 @@ def update_feedback_triage(feedback_id: int,
         params.append(str(sentiment)[:16])
     if not updates:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        params.append(feedback_id)
-        cursor.execute(f"UPDATE feedback SET {', '.join(updates)} WHERE id=%s", tuple(params))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            params.append(feedback_id)
+            cursor.execute(f"UPDATE feedback SET {', '.join(updates)} WHERE id=%s", tuple(params))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         columns = ", ".join(u.split("=")[0] for u in updates)
         log_error(f"Could not update feedback triage for {feedback_id} (columns: {columns})",
                   exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def admin_email_allowlist() -> set:
@@ -11597,22 +10332,18 @@ def is_user_admin(user_id: int) -> bool:
     """
     if user_id is None:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT is_admin, email FROM users WHERE id = %s", (int(user_id),))
-        row = cursor.fetchone()
-        if not row:
-            return False
-        if row.get("is_admin"):
-            return True
-        return (row.get("email") or "").strip().lower() in admin_email_allowlist()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT is_admin, email FROM users WHERE id = %s", (int(user_id),))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            if row.get("is_admin"):
+                return True
+            return (row.get("email") or "").strip().lower() in admin_email_allowlist()
     except mysql.connector.Error as err:
         log_error(f"Could not check admin status for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
@@ -11653,23 +10384,19 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
         f"FROM feedback f LEFT JOIN users u ON u.id = f.user_id "
         f"{where} ORDER BY f.created_at DESC LIMIT %s OFFSET %s"
     )
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(sql, (*params, int(limit), int(offset)))
-        rows = cursor.fetchall() or []
-        allow = admin_email_allowlist()
-        for row in rows:
-            if allow and not row.get("is_admin") and \
-                    (row.get("email") or "").strip().lower() in allow:
-                row["is_admin"] = 1
-        return rows
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(sql, (*params, int(limit), int(offset)))
+            rows = cursor.fetchall() or []
+            allow = admin_email_allowlist()
+            for row in rows:
+                if allow and not row.get("is_admin") and \
+                        (row.get("email") or "").strip().lower() in allow:
+                    row["is_admin"] = 1
+            return rows
     except mysql.connector.Error as err:
         log_error("Could not list feedback for admin panel", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_feedback_review(feedback_id: int, reviewer_user_id: int,
@@ -11696,19 +10423,14 @@ def record_feedback_review(feedback_id: int, reviewer_user_id: int,
         updates.append("status=%s")
         params.append(str(status))
     params.append(int(feedback_id))
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(f"UPDATE feedback SET {', '.join(updates)} WHERE id=%s", tuple(params))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE feedback SET {', '.join(updates)} WHERE id=%s", tuple(params))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record feedback review for {feedback_id}", exc=err,
                   user_id=reviewer_user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- NPS/CSAT + review surveys (issue #501) -----------------------------------------
@@ -11716,73 +10438,56 @@ def get_latest_feedback_at(user_id: int, source: "FeedbackSource") -> Optional[d
     """When this user last answered a survey of the given source, or None if they never have.
     Drives both "don't ask again" suppression and the review gate on the extended trial.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT MAX(created_at) FROM feedback WHERE user_id = %s AND source = %s",
-            (user_id, str(source)))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(created_at) FROM feedback WHERE user_id = %s AND source = %s",
+                (user_id, str(source)))
+            row = cursor.fetchone()
+            return row[0] if row else None
     except mysql.connector.Error as err:
         log_error(f"Could not get latest {source} feedback for user_id {user_id}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_review_feedback(user_id: int) -> bool:
     """The extended-trial gate (issue #499 consumes this): True once the user has submitted a
     review. Fails CLOSED — a DB error never hands out a trial extension.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT 1 FROM feedback WHERE user_id = %s AND source = %s LIMIT 1",
-                       (user_id, str(FeedbackSource.REVIEW)))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute("SELECT 1 FROM feedback WHERE user_id = %s AND source = %s LIMIT 1",
+                           (user_id, str(FeedbackSource.REVIEW)))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error(f"Could not check review feedback for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_survey_prompts_sent(user_id: int) -> dict:
     """survey_key -> sent_at for every survey prompt already shown/emailed to this user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT survey_key, sent_at FROM survey_prompts WHERE user_id = %s",
-                       (user_id,))
-        return {row[0]: row[1] for row in cursor.fetchall()}
+        with db_cursor() as cursor:
+            cursor.execute("SELECT survey_key, sent_at FROM survey_prompts WHERE user_id = %s",
+                           (user_id,))
+            return {row[0]: row[1] for row in cursor.fetchall()}
     except mysql.connector.Error as err:
         log_error(f"Could not get survey prompts for user_id {user_id}", exc=err)
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_survey_prompt(user_id: int, survey_key: str) -> bool:
     """Record that a survey was asked. Returns False when it was already asked (the PK makes each
     survey one-shot per user, whether it went out in-app or by email).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("INSERT IGNORE INTO survey_prompts (user_id, survey_key) VALUES (%s, %s)",
-                       (user_id, str(survey_key)[:32]))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT IGNORE INTO survey_prompts (user_id, survey_key) VALUES (%s, %s)",
+                           (user_id, str(survey_key)[:32]))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record survey prompt {survey_key} for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_survey_candidate_user_ids() -> list:
@@ -11790,22 +10495,18 @@ def get_survey_candidate_user_ids() -> list:
     candidates this does NOT exclude activated users — activation is exactly what makes someone
     worth asking (the day-3 NPS fires off their activation timestamp).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("""
-            SELECT id FROM users
-            WHERE subscription_status = 'active'
-               OR (subscription_status = 'trial'
-                   AND (trial_ends_at IS NULL OR trial_ends_at > NOW()))
-        """)
-        return [row[0] for row in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("""
+                SELECT id FROM users
+                WHERE subscription_status = 'active'
+                   OR (subscription_status = 'trial'
+                       AND (trial_ends_at IS NULL OR trial_ends_at > NOW()))
+            """)
+            return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not get survey candidate user ids", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Shipped-fix changelog + reporter notification (issue #502) ---------------------
@@ -11819,22 +10520,18 @@ def get_feedback_reporters_for_issue(github_issue_number: int) -> list:
     """
     if not github_issue_number:
         return []
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT DISTINCT f.user_id FROM feedback f "
-            "LEFT JOIN feedback s ON s.id = f.cluster_id "
-            "WHERE f.user_id IS NOT NULL "
-            "  AND (f.github_issue_number = %s OR s.github_issue_number = %s)",
-            (int(github_issue_number), int(github_issue_number)))
-        return [row[0] for row in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT f.user_id FROM feedback f "
+                "LEFT JOIN feedback s ON s.id = f.cluster_id "
+                "WHERE f.user_id IS NOT NULL "
+                "  AND (f.github_issue_number = %s OR s.github_issue_number = %s)",
+                (int(github_issue_number), int(github_issue_number)))
+            return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error(f"Could not get feedback reporters for issue {github_issue_number}", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_feedback_resolved_for_issue(github_issue_number: int) -> int:
@@ -11848,42 +10545,33 @@ def mark_feedback_resolved_for_issue(github_issue_number: int) -> int:
     """
     if not github_issue_number:
         return 0
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE feedback f "
-            "LEFT JOIN feedback s ON s.id = f.cluster_id "
-            "SET f.status = %s "
-            "WHERE (f.github_issue_number = %s OR s.github_issue_number = %s) "
-            "  AND f.status NOT IN (%s, %s)",
-            (str(FeedbackStatus.RESOLVED), int(github_issue_number), int(github_issue_number),
-             str(FeedbackStatus.RESOLVED), str(FeedbackStatus.DISMISSED)))
-        connection.commit()
-        return cursor.rowcount or 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE feedback f "
+                "LEFT JOIN feedback s ON s.id = f.cluster_id "
+                "SET f.status = %s "
+                "WHERE (f.github_issue_number = %s OR s.github_issue_number = %s) "
+                "  AND f.status NOT IN (%s, %s)",
+                (str(FeedbackStatus.RESOLVED), int(github_issue_number), int(github_issue_number),
+                 str(FeedbackStatus.RESOLVED), str(FeedbackStatus.DISMISSED)))
+            return cursor.rowcount or 0
     except mysql.connector.Error as err:
         log_error(f"Could not resolve feedback for issue {github_issue_number}", exc=err)
         return 0
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_shipped_notice_by_issue(github_issue_number: int) -> Optional[dict]:
     """The changelog notice already recorded for this issue, or None."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, github_issue_number, pr_number, title, changelog_line, shipped_at "
-            "FROM shipped_notices WHERE github_issue_number = %s", (int(github_issue_number),))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, github_issue_number, pr_number, title, changelog_line, shipped_at "
+                "FROM shipped_notices WHERE github_issue_number = %s", (int(github_issue_number),))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error(f"Could not get shipped notice for issue {github_issue_number}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_shipped_notice(github_issue_number: int, changelog_line: str, pr_number: int = None,
@@ -11894,27 +10582,22 @@ def record_shipped_notice(github_issue_number: int, changelog_line: str, pr_numb
     """
     if not github_issue_number or not (changelog_line or "").strip():
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT IGNORE INTO shipped_notices "
-            "(github_issue_number, pr_number, title, changelog_line) VALUES (%s,%s,%s,%s)",
-            (int(github_issue_number), int(pr_number) if pr_number else None,
-             str(title)[:255] if title else None, str(changelog_line)[:512]))
-        connection.commit()
-        if cursor.lastrowid:
-            return int(cursor.lastrowid)
-        cursor.execute("SELECT id FROM shipped_notices WHERE github_issue_number = %s",
-                       (int(github_issue_number),))
-        row = cursor.fetchone()
-        return int(row[0]) if row else None
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO shipped_notices "
+                "(github_issue_number, pr_number, title, changelog_line) VALUES (%s,%s,%s,%s)",
+                (int(github_issue_number), int(pr_number) if pr_number else None,
+                 str(title)[:255] if title else None, str(changelog_line)[:512]))
+            if cursor.lastrowid:
+                return int(cursor.lastrowid)
+            cursor.execute("SELECT id FROM shipped_notices WHERE github_issue_number = %s",
+                           (int(github_issue_number),))
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
     except mysql.connector.Error as err:
         log_error(f"Could not record shipped notice for issue {github_issue_number}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_shipped_notice_recipient(notice_id: int, user_id: int) -> bool:
@@ -11923,21 +10606,16 @@ def record_shipped_notice_recipient(notice_id: int, user_id: int) -> bool:
     """
     if not notice_id or not user_id:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT IGNORE INTO shipped_notice_recipients (notice_id, user_id) VALUES (%s,%s)",
-            (int(notice_id), int(user_id)))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO shipped_notice_recipients (notice_id, user_id) VALUES (%s,%s)",
+                (int(notice_id), int(user_id)))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record shipped notice recipient for notice {notice_id}", exc=err,
                   user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_shipped_notice_recipient_ids(notice_id: int) -> list:
@@ -11946,18 +10624,14 @@ def get_shipped_notice_recipient_ids(notice_id: int) -> list:
     """
     if not notice_id:
         return []
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT user_id FROM shipped_notice_recipients WHERE notice_id = %s",
-                       (int(notice_id),))
-        return [row[0] for row in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("SELECT user_id FROM shipped_notice_recipients WHERE notice_id = %s",
+                           (int(notice_id),))
+            return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error(f"Could not get shipped notice recipients for notice {notice_id}", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_unseen_shipped_notices(user_id: int, delay_hours: int = 0, limit: int = 5) -> list:
@@ -11967,62 +10641,49 @@ def get_unseen_shipped_notices(user_id: int, delay_hours: int = 0, limit: int = 
     that long with the fix, so "did this fix it?" is asked after they could have used it rather than
     in the same minute the email went out.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT n.id, n.github_issue_number, n.pr_number, n.title, n.changelog_line, "
-            "       n.shipped_at, r.notified_at "
-            "FROM shipped_notice_recipients r JOIN shipped_notices n ON n.id = r.notice_id "
-            "WHERE r.user_id = %s AND r.seen_at IS NULL "
-            "  AND r.notified_at <= (NOW() - INTERVAL %s HOUR) "
-            "ORDER BY r.notified_at ASC LIMIT %s",
-            (int(user_id), max(0, int(delay_hours)), int(limit)))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT n.id, n.github_issue_number, n.pr_number, n.title, n.changelog_line, "
+                "       n.shipped_at, r.notified_at "
+                "FROM shipped_notice_recipients r JOIN shipped_notices n ON n.id = r.notice_id "
+                "WHERE r.user_id = %s AND r.seen_at IS NULL "
+                "  AND r.notified_at <= (NOW() - INTERVAL %s HOUR) "
+                "ORDER BY r.notified_at ASC LIMIT %s",
+                (int(user_id), max(0, int(delay_hours)), int(limit)))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not get unseen shipped notices", exc=err, user_id=user_id)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_shipped_notice_seen(notice_id: int, user_id: int) -> bool:
     """The user answered or dismissed the notice — stop surfacing it. Idempotent: only the first
     acknowledgement writes a timestamp.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE shipped_notice_recipients SET seen_at = NOW() "
-            "WHERE notice_id = %s AND user_id = %s AND seen_at IS NULL",
-            (int(notice_id), int(user_id)))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE shipped_notice_recipients SET seen_at = NOW() "
+                "WHERE notice_id = %s AND user_id = %s AND seen_at IS NULL",
+                (int(notice_id), int(user_id)))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark shipped notice {notice_id} seen", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_recent_shipped_notices(limit: int = 10) -> list:
     """The user-facing changelog: what shipped, newest first."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, github_issue_number, pr_number, title, changelog_line, shipped_at "
-            "FROM shipped_notices ORDER BY shipped_at DESC, id DESC LIMIT %s", (int(limit),))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, github_issue_number, pr_number, title, changelog_line, shipped_at "
+                "FROM shipped_notices ORDER BY shipped_at DESC, id DESC LIMIT %s", (int(limit),))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not get recent shipped notices", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Public FAQ (issue #506) --------------------------------------------------------
@@ -12064,39 +10725,31 @@ def get_faq_entries(statuses: tuple = (FaqStatus.PUBLISHED, FaqStatus.DRAFT),
     wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FaqStatus)]
     if not wanted:
         return []
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {_FAQ_COLUMNS} FROM faq_entries "
-            f"WHERE status IN ({','.join(['%s'] * len(wanted))}) "
-            "ORDER BY sort_order ASC, id ASC LIMIT %s",
-            (*wanted, int(limit)))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_FAQ_COLUMNS} FROM faq_entries "
+                f"WHERE status IN ({','.join(['%s'] * len(wanted))}) "
+                "ORDER BY sort_order ASC, id ASC LIMIT %s",
+                (*wanted, int(limit)))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not get FAQ entries", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_faq_entry_by_cluster(cluster_id: int) -> Optional[dict]:
     """The FAQ entry a feedback cluster already produced, or None (issue #507)."""
     if cluster_id is None:
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(f"SELECT {_FAQ_COLUMNS} FROM faq_entries WHERE cluster_id=%s "
-                       "ORDER BY id ASC LIMIT 1", (int(cluster_id),))
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(f"SELECT {_FAQ_COLUMNS} FROM faq_entries WHERE cluster_id=%s "
+                           "ORDER BY id ASC LIMIT 1", (int(cluster_id),))
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error(f"Could not get FAQ entry for cluster {cluster_id}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def upsert_faq_entry(question: str, answer: str, cluster_id: int = None,
@@ -12110,24 +10763,19 @@ def upsert_faq_entry(question: str, answer: str, cluster_id: int = None,
     """
     if not question or not str(question).strip() or not answer or not str(answer).strip():
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO faq_entries (question, answer, cluster_id, status, sort_order) "
-            "VALUES (%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), answer=VALUES(answer), "
-            "cluster_id=COALESCE(VALUES(cluster_id), cluster_id), status=VALUES(status)",
-            (str(question)[:512], str(answer), int(cluster_id) if cluster_id is not None else None,
-             str(status), int(sort_order) if sort_order is not None else 0))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO faq_entries (question, answer, cluster_id, status, sort_order) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), answer=VALUES(answer), "
+                "cluster_id=COALESCE(VALUES(cluster_id), cluster_id), status=VALUES(status)",
+                (str(question)[:512], str(answer), int(cluster_id) if cluster_id is not None else None,
+                 str(status), int(sort_order) if sort_order is not None else 0))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not upsert FAQ entry", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_faq_entry_version(faq_entry_id: int, question: str, answer: str,
@@ -12138,41 +10786,32 @@ def record_faq_entry_version(faq_entry_id: int, question: str, answer: str,
     """
     if faq_entry_id is None or not answer or not str(answer).strip():
         return None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO faq_entry_versions (faq_entry_id, question, answer, status, source) "
-            "VALUES (%s,%s,%s,%s,%s)",
-            (int(faq_entry_id), str(question)[:512], str(answer), str(status), str(source)[:32]))
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO faq_entry_versions (faq_entry_id, question, answer, status, source) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (int(faq_entry_id), str(question)[:512], str(answer), str(status), str(source)[:32]))
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error(f"Could not record FAQ version for entry {faq_entry_id}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_faq_entry_versions(faq_entry_id: int, limit: int = 20) -> list:
     """An FAQ entry's answer history, newest first (issue #507)."""
     if faq_entry_id is None:
         return []
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, faq_entry_id, question, answer, status, source, created_at "
-            "FROM faq_entry_versions WHERE faq_entry_id=%s ORDER BY id DESC LIMIT %s",
-            (int(faq_entry_id), int(limit)))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, faq_entry_id, question, answer, status, source, created_at "
+                "FROM faq_entry_versions WHERE faq_entry_id=%s ORDER BY id DESC LIMIT %s",
+                (int(faq_entry_id), int(limit)))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error(f"Could not get FAQ versions for entry {faq_entry_id}", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def apply_faq_entry_version(faq_entry_id: int, version_id: int) -> Optional[dict]:
@@ -12212,20 +10851,16 @@ def get_faq_candidate_feedback(limit: int = 50) -> list:
     review free-text. Rows still in `new` are deliberately excluded: the filer classifies first, so
     the FAQ pass can never claim a report that was going to become an issue.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT {_FEEDBACK_COLUMNS} FROM feedback "
-            "WHERE status=%s AND cluster_id IS NULL ORDER BY created_at ASC, id ASC LIMIT %s",
-            (str(FeedbackStatus.TRIAGED), int(limit)))
-        return cursor.fetchall() or []
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_FEEDBACK_COLUMNS} FROM feedback "
+                "WHERE status=%s AND cluster_id IS NULL ORDER BY created_at ASC, id ASC LIMIT %s",
+                (str(FeedbackStatus.TRIAGED), int(limit)))
+            return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not fetch FAQ candidate feedback", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # --- Onboarding / activation checklist (issue #500) ---------------------------------
@@ -12233,39 +10868,30 @@ def ensure_onboarding_state(user_id: int) -> bool:
     """Create the user's onboarding row if it doesn't exist. `started_at` is the trial start when we
     know it, so the nudge clock measures time-since-signup rather than time-since-first-scan.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT IGNORE INTO onboarding_state (user_id, started_at) "
-            "SELECT id, COALESCE(trial_started_at, NOW()) FROM users WHERE id = %s", (user_id,))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO onboarding_state (user_id, started_at) "
+                "SELECT id, COALESCE(trial_started_at, NOW()) FROM users WHERE id = %s", (user_id,))
+            return True
     except mysql.connector.Error as err:
         log_error(f"Could not ensure onboarding state for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_onboarding_state(user_id: int) -> dict:
     """The persisted checklist row (started_at + one completion timestamp per step). Empty dict when
     the user has no row yet.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            f"SELECT user_id, started_at, {', '.join(_ONBOARDING_COLS)} "
-            f"FROM onboarding_state WHERE user_id = %s", (user_id,))
-        return cursor.fetchone() or {}
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT user_id, started_at, {', '.join(_ONBOARDING_COLS)} "
+                f"FROM onboarding_state WHERE user_id = %s", (user_id,))
+            return cursor.fetchone() or {}
     except mysql.connector.Error as err:
         log_error(f"Could not get onboarding state for user_id {user_id}", exc=err)
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def mark_onboarding_step(user_id: int, step: "OnboardingStep") -> bool:
@@ -12273,55 +10899,41 @@ def mark_onboarding_step(user_id: int, step: "OnboardingStep") -> bool:
     returned only then — so the caller emits its PostHog event exactly once.
     """
     column = f"{OnboardingStep(step).value}_at"
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            f"UPDATE onboarding_state SET {column} = NOW() "
-            f"WHERE user_id = %s AND {column} IS NULL", (user_id,))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"UPDATE onboarding_state SET {column} = NOW() "
+                f"WHERE user_id = %s AND {column} IS NULL", (user_id,))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark onboarding step {step} for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_onboarding_nudges_sent(user_id: int) -> dict:
     """nudge_key -> sent_at for every nudge already delivered to this user."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT nudge_key, sent_at FROM onboarding_nudges WHERE user_id = %s",
-                       (user_id,))
-        return {row[0]: row[1] for row in cursor.fetchall()}
+        with db_cursor() as cursor:
+            cursor.execute("SELECT nudge_key, sent_at FROM onboarding_nudges WHERE user_id = %s",
+                           (user_id,))
+            return {row[0]: row[1] for row in cursor.fetchall()}
     except mysql.connector.Error as err:
         log_error(f"Could not get onboarding nudges for user_id {user_id}", exc=err)
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_onboarding_nudge(user_id: int, nudge_key: str) -> bool:
     """Record that a nudge was sent. Returns False when this nudge was already sent (the PK makes
     each nudge one-shot per user).
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("INSERT IGNORE INTO onboarding_nudges (user_id, nudge_key) VALUES (%s, %s)",
-                       (user_id, str(nudge_key)[:32]))
-        connection.commit()
-        return cursor.rowcount > 0
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT IGNORE INTO onboarding_nudges (user_id, nudge_key) VALUES (%s, %s)",
+                           (user_id, str(nudge_key)[:32]))
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record onboarding nudge {nudge_key} for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_onboarding_candidate_user_ids() -> list:
@@ -12329,27 +10941,23 @@ def get_onboarding_candidate_user_ids() -> list:
     Deliberately NOT get_active_user_ids() — that requires a live LinkedIn connection, which is the
     very step most stalled users are stuck on.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("""
-            SELECT u.id
-            FROM users u
-            LEFT JOIN onboarding_state o ON o.user_id = u.id
-            WHERE (
-                    u.subscription_status = 'active'
-                    OR (u.subscription_status = 'trial'
-                        AND (u.trial_ends_at IS NULL OR u.trial_ends_at > NOW()))
-                  )
-              AND o.activated_at IS NULL
-        """)
-        return [row[0] for row in cursor.fetchall()]
+        with db_cursor() as cursor:
+            cursor.execute("""
+                SELECT u.id
+                FROM users u
+                LEFT JOIN onboarding_state o ON o.user_id = u.id
+                WHERE (
+                        u.subscription_status = 'active'
+                        OR (u.subscription_status = 'trial'
+                            AND (u.trial_ends_at IS NULL OR u.trial_ends_at > NOW()))
+                      )
+                  AND o.activated_at IS NULL
+            """)
+            return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not get onboarding candidate user ids", exc=err)
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_engagement_preferences(user_id: int) -> bool:
@@ -12367,41 +10975,33 @@ def has_post_with_status(user_id: int, statuses: tuple) -> bool:
     """True when the user has at least one post in any of the given statuses."""
     if not statuses:
         return False
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        placeholders = ", ".join(["%s"] * len(statuses))
-        cursor.execute(
-            f"SELECT 1 FROM posts WHERE user_id = %s AND status IN ({placeholders}) LIMIT 1",
-            (user_id, *[str(s) for s in statuses]))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            placeholders = ", ".join(["%s"] * len(statuses))
+            cursor.execute(
+                f"SELECT 1 FROM posts WHERE user_id = %s AND status IN ({placeholders}) LIMIT 1",
+                (user_id, *[str(s) for s in statuses]))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error(f"Could not check posts for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def has_automated_engagement(user_id: int) -> bool:
     """True once automation has successfully commented, replied, or DM'd on the user's behalf —
     the engagement half of the activation ("aha") moment.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT 1 FROM logs WHERE user_id = %s AND result = %s "
-            "AND action_type IN (%s, %s, %s, %s) LIMIT 1",
-            (user_id, str(LogResultType.SUCCESS), str(LogActionType.COMMENT),
-             str(LogActionType.REPLY), str(LogActionType.DM), str(LogActionType.FOLLOWUP)))
-        return cursor.fetchone() is not None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM logs WHERE user_id = %s AND result = %s "
+                "AND action_type IN (%s, %s, %s, %s) LIMIT 1",
+                (user_id, str(LogResultType.SUCCESS), str(LogActionType.COMMENT),
+                 str(LogActionType.REPLY), str(LogActionType.DM), str(LogActionType.FOLLOWUP)))
+            return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error(f"Could not check automated engagement for user_id {user_id}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -12432,57 +11032,45 @@ def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
     """The most recent `feedback` row this user filed with source='review' — the gate the
     early-adopter extension is traded for. None when they haven't left a review yet.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT id FROM feedback WHERE user_id=%s AND source=%s ORDER BY created_at DESC, id DESC LIMIT 1",
-            (user_id, str(FeedbackSource.REVIEW)),
-        )
-        row = cursor.fetchone()
-        return int(row[0]) if row else None
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM feedback WHERE user_id=%s AND source=%s ORDER BY created_at DESC, id DESC LIMIT 1",
+                (user_id, str(FeedbackSource.REVIEW)),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
     except mysql.connector.Error as err:
         log_error("Could not look up review feedback", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_early_adopter_grant(user_id: int) -> Optional[dict]:
     """The user's early-adopter grant, or None. Read by the checkout flow so the extension mirrors
     into Stripe on conversion.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, user_id, cohort, trial_days, feedback_id, trial_ends_at, granted_at "
-            "FROM early_adopter_grants WHERE user_id=%s",
-            (user_id,),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, cohort, trial_days, feedback_id, trial_ends_at, granted_at "
+                "FROM early_adopter_grants WHERE user_id=%s",
+                (user_id,),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error("Could not fetch early-adopter grant", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_early_adopter_slot_usage() -> dict:
     """`{cohort: used}` for every cohort row — what the caps are measured against."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT cohort, used FROM early_adopter_slots")
-        return {str(cohort): int(used or 0) for cohort, used in cursor.fetchall()}
+        with db_cursor() as cursor:
+            cursor.execute("SELECT cohort, used FROM early_adopter_slots")
+            return {str(cohort): int(used or 0) for cohort, used in cursor.fetchall()}
     except mysql.connector.Error as err:
         log_error("Could not read early-adopter slot usage", exc=err)
         return {}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> dict:
@@ -12619,22 +11207,18 @@ def get_affiliate_enrollment(user_id: int) -> Optional[dict]:
     The row here carries columns only — no `created` key. That flag exists solely on what
     `ensure_affiliate_enrollment` returns, because only the call that wrote the row can know it.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT user_id, status, referral_code, enrolled_at, opted_out_at, notice_seen_at, "
-            "promo_content_opt_in, promo_consent_at, promo_consent_version "
-            "FROM affiliate_enrollments WHERE user_id=%s",
-            (user_id,),
-        )
-        return _affiliate_row(cursor.fetchone())
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT user_id, status, referral_code, enrolled_at, opted_out_at, notice_seen_at, "
+                "promo_content_opt_in, promo_consent_at, promo_consent_version "
+                "FROM affiliate_enrollments WHERE user_id=%s",
+                (user_id,),
+            )
+            return _affiliate_row(cursor.fetchone())
     except mysql.connector.Error as err:
         log_error("Could not read affiliate enrollment", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
@@ -12686,21 +11270,17 @@ def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:
     """
     status = AffiliateStatus.ENROLLED if enrolled else AffiliateStatus.OPTED_OUT
     now = datetime.now(timezone.utc)
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE affiliate_enrollments SET status=%s, enrolled_at=IF(%s, COALESCE(enrolled_at,%s), enrolled_at), "
-            "opted_out_at=IF(%s, opted_out_at, %s) WHERE user_id=%s",
-            (str(status), enrolled, now, enrolled, now, user_id),
-        )
-        connection.commit()
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE affiliate_enrollments SET status=%s, "
+                "enrolled_at=IF(%s, COALESCE(enrolled_at,%s), enrolled_at), "
+                "opted_out_at=IF(%s, opted_out_at, %s) WHERE user_id=%s",
+                (str(status), enrolled, now, enrolled, now, user_id),
+            )
     except mysql.connector.Error as err:
         log_error("Could not update affiliate status", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
     return get_affiliate_enrollment(user_id)
 
 
@@ -12710,21 +11290,16 @@ def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str
     disabling clears both, so a re-enable can never inherit an old consent record.
     """
     now = datetime.now(timezone.utc) if enabled else None
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE affiliate_enrollments SET promo_content_opt_in=%s, promo_consent_at=%s, "
-            "promo_consent_version=%s WHERE user_id=%s",
-            (1 if enabled else 0, now, str(consent_version) if enabled else None, user_id),
-        )
-        connection.commit()
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE affiliate_enrollments SET promo_content_opt_in=%s, promo_consent_at=%s, "
+                "promo_consent_version=%s WHERE user_id=%s",
+                (1 if enabled else 0, now, str(consent_version) if enabled else None, user_id),
+            )
     except mysql.connector.Error as err:
         log_error("Could not update affiliate promo consent", exc=err, user_id=user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
     return get_affiliate_enrollment(user_id)
 
 
@@ -12732,21 +11307,16 @@ def mark_affiliate_notice_seen(user_id: int) -> bool:
     """Record that the user has actually SEEN the enrollment notice. Default-enrollment is only
     honest if the notice was delivered, so this timestamp is the evidence — not a UI nicety.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE affiliate_enrollments SET notice_seen_at=COALESCE(notice_seen_at,%s) WHERE user_id=%s",
-            (datetime.now(timezone.utc), user_id),
-        )
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE affiliate_enrollments SET notice_seen_at=COALESCE(notice_seen_at,%s) WHERE user_id=%s",
+                (datetime.now(timezone.utc), user_id),
+            )
+            return True
     except mysql.connector.Error as err:
         log_error("Could not mark affiliate notice seen", exc=err, user_id=user_id)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_affiliate_reward_totals(user_id: int) -> dict:
@@ -12754,67 +11324,55 @@ def get_affiliate_reward_totals(user_id: int) -> dict:
     revocations included as negatives — it is what the per-user cap is measured against, so a user
     who opts out and back in cannot use the round trip to mint days.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT kind, COALESCE(SUM(trial_days),0) AS days FROM affiliate_rewards "
-            "WHERE user_id=%s GROUP BY kind",
-            (user_id,),
-        )
-        by_kind = {str(r["kind"]): int(r["days"] or 0) for r in cursor.fetchall()}
-        return {
-            "total": sum(by_kind.values()),
-            "enrollment": by_kind.get(str(AffiliateRewardKind.ENROLLMENT), 0),
-            "referral": by_kind.get(str(AffiliateRewardKind.REFERRAL), 0),
-            "revoked": by_kind.get(str(AffiliateRewardKind.REVOKED), 0),
-        }
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT kind, COALESCE(SUM(trial_days),0) AS days FROM affiliate_rewards "
+                "WHERE user_id=%s GROUP BY kind",
+                (user_id,),
+            )
+            by_kind = {str(r["kind"]): int(r["days"] or 0) for r in cursor.fetchall()}
+            return {
+                "total": sum(by_kind.values()),
+                "enrollment": by_kind.get(str(AffiliateRewardKind.ENROLLMENT), 0),
+                "referral": by_kind.get(str(AffiliateRewardKind.REFERRAL), 0),
+                "revoked": by_kind.get(str(AffiliateRewardKind.REVOKED), 0),
+            }
     except mysql.connector.Error as err:
         log_error("Could not read affiliate reward totals", exc=err, user_id=user_id)
         return {"total": 0, "enrollment": 0, "referral": 0, "revoked": 0}
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_affiliate_referral_counts(user_id: int) -> dict:
     """`{pending, converted, rejected}` referrals this member has driven."""
     counts = {str(s): 0 for s in ReferralStatus}
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT status, COUNT(*) AS n FROM affiliate_referrals WHERE referrer_user_id=%s GROUP BY status",
-            (user_id,),
-        )
-        for row in cursor.fetchall():
-            counts[str(row["status"])] = int(row["n"] or 0)
-        return counts
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT status, COUNT(*) AS n FROM affiliate_referrals WHERE referrer_user_id=%s GROUP BY status",
+                (user_id,),
+            )
+            for row in cursor.fetchall():
+                counts[str(row["status"])] = int(row["n"] or 0)
+            return counts
     except mysql.connector.Error as err:
         log_error("Could not read affiliate referral counts", exc=err, user_id=user_id)
         return counts
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_affiliate_referral_for_referred(referred_user_id: int) -> Optional[dict]:
     """The one referral row a referred user can have, or None."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, referrer_user_id, referred_user_id, referral_code, status, reject_reason, "
-            "created_at, converted_at FROM affiliate_referrals WHERE referred_user_id=%s",
-            (referred_user_id,),
-        )
-        return cursor.fetchone()
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, referrer_user_id, referred_user_id, referral_code, status, reject_reason, "
+                "created_at, converted_at FROM affiliate_referrals WHERE referred_user_id=%s",
+                (referred_user_id,),
+            )
+            return cursor.fetchone()
     except mysql.connector.Error as err:
         log_error("Could not read affiliate referral", exc=err, user_id=referred_user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, referral_code: str,
@@ -12828,25 +11386,20 @@ def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, refe
     self-referral we dropped is nothing. The UNIQUE key on referred_user_id is what makes a replayed
     signup a no-op rather than a second attribution.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO affiliate_referrals (referrer_user_id, referred_user_id, referral_code, "
-            "status, reject_reason) VALUES (%s,%s,%s,%s,%s)",
-            (referrer_user_id, referred_user_id, str(referral_code), str(status), reject_reason),
-        )
-        connection.commit()
-        return cursor.lastrowid
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO affiliate_referrals (referrer_user_id, referred_user_id, referral_code, "
+                "status, reject_reason) VALUES (%s,%s,%s,%s,%s)",
+                (referrer_user_id, referred_user_id, str(referral_code), str(status), reject_reason),
+            )
+            return cursor.lastrowid
     except mysql.connector.Error as err:
         if err.errno == errorcode.ER_DUP_ENTRY:
             log_info("Referral already attributed — ignoring duplicate", user_id=referred_user_id)
             return None
         log_error("Could not record affiliate referral", exc=err, user_id=referred_user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def convert_affiliate_referral(referred_user_id: int) -> Optional[dict]:
@@ -12854,24 +11407,19 @@ def convert_affiliate_referral(referred_user_id: int) -> Optional[dict]:
     convert — no referral, already converted, or rejected — so the caller's reward grant is driven
     by the rowcount rather than by a re-read that a concurrent activation could race.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "UPDATE affiliate_referrals SET status=%s, converted_at=%s "
-            "WHERE referred_user_id=%s AND status=%s",
-            (str(ReferralStatus.CONVERTED), datetime.now(timezone.utc), referred_user_id,
-             str(ReferralStatus.PENDING)),
-        )
-        connection.commit()
-        if cursor.rowcount != 1:
-            return None
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE affiliate_referrals SET status=%s, converted_at=%s "
+                "WHERE referred_user_id=%s AND status=%s",
+                (str(ReferralStatus.CONVERTED), datetime.now(timezone.utc), referred_user_id,
+                 str(ReferralStatus.PENDING)),
+            )
+            if cursor.rowcount != 1:
+                return None
     except mysql.connector.Error as err:
         log_error("Could not convert affiliate referral", exc=err, user_id=referred_user_id)
         return None
-    finally:
-        cursor.close()
-        connection.close()
     return get_affiliate_referral_for_referred(referred_user_id)
 
 
@@ -13060,51 +11608,38 @@ def get_app_credential(name: str) -> Optional[str]:
     """The stored value for `name`, or None when unset/unreadable. A DB problem returns None so the
     caller falls back to its env seed rather than losing the credential entirely.
     """
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT value FROM app_credentials WHERE name=%s", (name,))
-        row = cursor.fetchone()
-        value = (row or {}).get("value")
-        return str(value) if value else None
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT value FROM app_credentials WHERE name=%s", (name,))
+            row = cursor.fetchone()
+            value = (row or {}).get("value")
+            return str(value) if value else None
     except mysql.connector.Error as err:
         log_warning(f"Could not read app credential {name}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def set_app_credential(name: str, value: Optional[str], note: Optional[str] = None) -> bool:
     """Upsert a named app credential. Returns True when it was stored."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO app_credentials (name, value, note) VALUES (%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE value=VALUES(value), note=VALUES(note)",
-            (name, value, note))
-        connection.commit()
-        return True
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO app_credentials (name, value, note) VALUES (%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE value=VALUES(value), note=VALUES(note)",
+                (name, value, note))
+            return True
     except mysql.connector.Error as err:
         log_error(f"Could not store app credential {name}", exc=err)
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_app_credential_updated_at(name: str) -> Optional[datetime]:
     """When `name` was last written, or None when it has never been stored here."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT updated_at FROM app_credentials WHERE name=%s", (name,))
-        row = cursor.fetchone()
-        return (row or {}).get("updated_at")
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT updated_at FROM app_credentials WHERE name=%s", (name,))
+            row = cursor.fetchone()
+            return (row or {}).get("updated_at")
     except mysql.connector.Error as err:
         log_warning(f"Could not read app credential timestamp for {name}", exc=err)
         return None
-    finally:
-        cursor.close()
-        connection.close()

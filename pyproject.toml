@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "linkedin-engagement-manager"
-version = "0.133.1"
+version = "0.135.0"
 description = ""
 authors = ["gitchrisqueen <christopher.queen@gmail.com>"]
 readme = "README.md"
@@ -32,8 +32,9 @@ mysql-connector-python = "^9.1"
 # --- LinkedIn automation ---
 selenium = "^4.25"
 linkedin-api-client = "^0.3.0"
-bs4 = "^0.0.2"
-pycurl = "^7.45.4"
+# `bs4` is a stub package that only depends on the real one; depend on it directly so the
+# constraint applies to the library we actually import.
+beautifulsoup4 = "^4.12"
 
 # --- AI / external APIs ---
 openai = ">=1.52.2,<3.0.0"
@@ -57,12 +58,8 @@ argon2-cffi = "^25.1"
 # --- Content processing ---
 markdownify = ">=0.13.1,<1.3.0"
 tldextract = "^5.1.2"
-nltk = "^3.9.1"
-fpdf = "^1.7.2"
 pillow = ">=10.0,<13.0"
 python-pptx = "^1.0.2"
-mammoth = "^1.8.0"
-docx = "^0.2.4"
 dateparser = "^1.2.0"
 
 # --- Observability ---
@@ -94,6 +91,8 @@ extra-streamlit-components = "^0.1"
 streamlit-aggrid = "^1.0"
 # pandas is only imported in src/cqc_lem/streamlit/ — keep here, not in main
 pandas = ">=2.2.3,<4.0.0"
+# Same reasoning: the only `import mammoth` in the tree is src/cqc_lem/streamlit/utils.py.
+mammoth = "^1.8.0"
 
 [tool.poetry.group.dev]
 optional = true

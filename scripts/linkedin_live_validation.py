@@ -26,9 +26,10 @@ Answers, against a REAL logged-in session, the two questions
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
 attaching or posting anything; ``--permalink-comment`` does the same for a POST's comment composer
-(#966) — it clicks Comment so the box mounts, describes it, and Escapes, typing and submitting
-nothing; ``--comment-outcome-url`` and ``--feed-sort`` flip a sort control, exactly as the
-production readers they are grounding do.
+(#966) and ``--group-feed-composer`` for every sampled card of a GROUP feed (#928) — each clicks
+Comment so the box mounts, describes it, and Escapes, typing and submitting nothing;
+``--comment-outcome-url`` and ``--feed-sort`` flip a sort control, exactly as the production readers
+they are grounding do.
 
 Run it from inside a Selenium worker so the login/cookie/proxy stack is the production one
 (``scripts/`` is not baked into the image, so pipe the file in on stdin, the same way
@@ -153,6 +154,12 @@ SURFACES = (
     {"key": "group_composer", "surface": "Group share box / post editor",
      "code": "run_automation.auto_post_to_group", "flag": "--group-composer",
      "arg": "<group-id>", "sweep": False},
+    {"key": "group_membership", "surface": "Groups directory + a group page's membership controls",
+     "code": "run_automation._enumerate_joined_groups / auto_comment_in_groups",
+     "flag": "--group-membership", "sweep": True},
+    {"key": "group_feed_composer", "surface": "Group feed post card → Comment → inline composer",
+     "code": "run_automation._post_composer_for_card / _single_post_scope / auto_comment_in_groups",
+     "flag": "--group-feed-composer", "sweep": True},
     {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
      "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
      "sweep": True},
@@ -1901,19 +1908,26 @@ def _page_owner_name(driver) -> str:
 
 
 # ─────────────────────────────── profile header scrape (#1013) ───────────────────────────────
-# The degree badge, page-natively. `_PROFILE_DEGREE_LOCATORS` is class-based (`span.dist-value` /
-# `span.distance-badge`) and was confirmed dead on 2026-08-03, so the cross-check has to come from
-# the page's own words: the top card still writes the degree as TEXT.
+# The degree badge, page-natively. The class half of `_PROFILE_DEGREE_LOCATORS` (`span.dist-value` /
+# `span.distance-badge`) was confirmed dead on 2026-08-03 and the chain now leads with the badge's
+# TEXT (#1021) — but the cross-check must stay independent of whatever the chain currently does, so
+# it keeps coming from the page's own words rather than from a locator.
 _DEGREE_TEXT_RE = re.compile(r"\b(1st|2nd|3rd)\b", re.IGNORECASE)
 
 # Candidate re-grounding anchors: leaf nodes under <main> whose whole text IS a degree badge.
+# The dump must be able to report EVERY shape the shipped chain leads with, or a re-grounding run
+# comes back empty on exactly the profile it was pointed at: the separator is optional because the
+# SDUI top card writes the badge as "· 2nd", and the `+` is matched on its own because a 3rd-degree
+# badge renders as the bare token "3rd+" (`_DEGREE_TOKENS`). Keeping `+` inside the `degree` group
+# made a 3rd-degree profile — one of the two this probe is meant to be run against — dump nothing.
+# `tests/unit/test_linkedin_live_validation.py` holds this pattern against `_DEGREE_TOKENS`.
 _DEGREE_ANCHOR_JS = """
 const out = [];
 const root = document.querySelector('main') || document.body;
 for (const el of root.querySelectorAll('span,div,p,li')) {
   if (el.children.length) { continue; }
   const t = (el.textContent || '').trim();
-  if (/^(1st|2nd|3rd)(\\s*\\+?\\s*degree.*)?$/i.test(t)) {
+  if (/^[·•]?\\s*(1st|2nd|3rd)\\s*\\+?(\\s*degree.*)?$/i.test(t)) {
     out.push({tag: el.tagName.toLowerCase(), cls: el.getAttribute('class') || '',
               testid: el.getAttribute('data-testid') || '',
               aria: el.getAttribute('aria-label') || '', text: t});
@@ -1966,9 +1980,9 @@ def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
     degree-badge locator chain against a real profile, and cross-check both against what the page
     itself says. Read-only — it navigates and reads.
 
-    `degree_anchors` is the point: `span.dist-value` / `span.distance-badge` are class anchors and
-    CLAUDE.md says class anchors are gone, so this hands back the leaf nodes that DO carry the
-    badge today, which is what the replacement chain gets written from."""
+    `degree_anchors` is the point: class anchors are gone from the SDUI profile, so this hands back
+    the leaf nodes that DO carry the badge today. #1021's chain was written from that reading, and
+    the next rotation gets re-grounded from it the same way."""
     from cqc_lem.app.run_automation import _PROFILE_DEGREE_LOCATORS
     from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
     from bs4 import BeautifulSoup
@@ -2177,6 +2191,709 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
         # anchors this probe exists to report.
         pass
     return graded(reading, group_composer_state(reading), group_composer_verdict(reading))
+
+
+# ──────────────────────────── group membership (issue #1052) ─────────────────────────────────
+# The page's OWN words for whether we are in this group. Text and aria-label only, never class
+# names. This is the reading the reporter's bug is about: production walked onto a group feed that
+# was offering to let it JOIN and commented anyway, because nothing ever asked the page.
+_GROUP_JOIN_MARKERS = ("join", "request to join")
+_GROUP_PENDING_MARKERS = ("requested", "pending", "withdraw")
+_GROUP_MEMBER_MARKERS = ("leave",)
+# Headings under which a group anchor is an OFFER, not a membership. The 2026-08-07 live directory
+# rendered "Groups you might be interested in" on the same page as the joined list, and the sync
+# reads both.
+_GROUP_RECOMMENDATION_MARKERS = ("might be interested", "may like", "you might like", "recommend",
+                                 "suggested", "discover")
+
+# Controls scoped to the group's OWN header, plus every control on the page for comparison.
+# The scoping is the point: LinkedIn renders a "Join" button per card in the groups-you-may-like
+# rail, so keying membership off any Join on the page is exactly the #1012 hazard — a control whose
+# label names a different entity than the target. The probe reports both so the live run says
+# whether the scope is doing any work.
+_GROUP_HEADER_JS = """
+const out = {h1: '', levels: 0, header_controls: [], all_controls: []};
+const label = (b) => ((b.getAttribute('aria-label') || b.innerText || '').trim()).slice(0, 80);
+const seen = new Set();
+for (const b of document.querySelectorAll('button')) {
+  const l = label(b);
+  if (l && !seen.has(l)) { seen.add(l); out.all_controls.push(l); }
+  if (out.all_controls.length >= 40) break;
+}
+const h1 = document.querySelector('main h1') || document.querySelector('h1');
+if (h1) {
+  out.h1 = (h1.innerText || '').trim().slice(0, 120);
+  let node = h1;
+  for (let i = 0; i < 6 && node.parentElement; i++) {
+    node = node.parentElement;
+    out.levels = i + 1;
+    if (node.querySelectorAll('button').length) break;
+  }
+  const hseen = new Set();
+  for (const b of node.querySelectorAll('button')) {
+    const l = label(b);
+    if (l && !hseen.has(l)) { hseen.add(l); out.header_controls.push(l); }
+    if (out.header_controls.length >= 20) break;
+  }
+}
+return out;
+"""
+
+# Every /groups/<id> anchor on the directory with the heading it sits under. `_enumerate_joined_groups`
+# takes every one of these as a JOINED group, so the headings are the evidence for whether that is
+# true — a "Groups you may like" anchor is a recommendation, not a membership.
+#
+# The section is the NEAREST PRECEDING heading in document order, not a heading found by walking the
+# anchor's ancestors: the 2026-08-07 live run attributed a section to none of its 40 anchors because
+# the directory's own section headings ("Your groups", "Requested") are neither h1–h3 nor ancestors
+# of the cards beneath them. A probe whose one discriminating reading comes back empty everywhere is
+# not reporting "no recommendations", it is reporting nothing.
+#
+# The anchor cap matches `_enumerate_joined_groups`' own `slice(0,60)` for the same reason: that run
+# capped anchors at 40 against 55 enumerated ids, which reads as 15 ids the sync invented when it is
+# only the probe's own ceiling. `anchor_total` keeps the truncation visible either way.
+_GROUP_DIRECTORY_JS = """
+const out = {headings: [], anchors: [], anchor_total: 0};
+const headingNodes = [];
+for (const h of document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')) {
+  const t = (h.innerText || '').trim();
+  if (!t) continue;
+  headingNodes.push([h, t.slice(0, 80)]);
+  if (out.headings.length < 12) out.headings.push(t.slice(0, 80));
+}
+const seen = new Set();
+for (const a of document.querySelectorAll("a[href*='/groups/']")) {
+  const m = (a.getAttribute('href') || '').match(/\\/groups\\/(\\d+)/);
+  if (!m) continue;
+  const id = m[1];
+  if (seen.has(id)) continue;
+  seen.add(id);
+  out.anchor_total += 1;
+  if (out.anchors.length >= 60) continue;
+  let section = '';
+  for (const [node, text] of headingNodes) {
+    if (node.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) section = text;
+    else break;
+  }
+  out.anchors.push({id: id, text: (a.innerText || '').trim().split('\\n')[0].slice(0, 80),
+                    section: section});
+}
+return out;
+"""
+
+
+def _first_few(values: Optional[list], limit: int = 5) -> str:
+    """A verdict lists evidence, so a list it cut short has to say so — the 2026-08-07 run's verdict
+    named 5 of 6 stale ids and read like the whole set."""
+    values = [str(v) for v in (values or [])]
+    shown = ", ".join(values[:limit])
+    return f"{shown}, +{len(values) - limit} more" if len(values) > limit else shown
+
+
+def _labels_matching(labels: Optional[list], markers: tuple) -> list:
+    """Every label whose own text carries one of these markers, kept verbatim as evidence."""
+    out = []
+    for label in labels or []:
+        text = str(label or "")
+        if any(marker in text.lower() for marker in markers):
+            out.append(text[:80])
+    return out
+
+
+def _control_labels_matching(labels: Optional[list], markers: tuple) -> list:
+    """Controls whose label LEADS with one of these action words, not merely contains it.
+
+    A control label often carries the group's own NAME — the 2026-08-07 header rendered
+    `More options for <group>` — so a substring match makes the membership answer depend on what the
+    group is called: a group named "Join the Data Guild" would read `not_member` while its share box
+    was sitting right there. That is the #1012 hazard one layer down, in the reading rather than the
+    click, and it flips the answer to the one direction that must never be wrong. LinkedIn's real
+    membership controls all lead with the verb ("Join", "Request to join", "Leave", "Requested",
+    "Withdraw request"), so anchoring at the start keeps every live reading and fails to `unknown`
+    (re-ground it) instead of to a confident wrong answer."""
+    out = []
+    for label in labels or []:
+        text = str(label or "")
+        stripped = text.strip().lower()
+        if any(stripped.startswith(marker) for marker in markers):
+            out.append(text[:80])
+    return out
+
+
+def group_membership_signal(header_controls: Optional[list], share_box_present: bool = False) -> str:
+    """WHICH reading decided the answer — the fix is written against the signal, not the word.
+
+    The 2026-08-07 live run answered `member` for a group whose header carried no membership control
+    at all: every marker missed and the share box carried it. Reporting only the word made that read
+    as "the header says member", which would have sent the fix looking for a Leave button that this
+    surface does not render."""
+    if _control_labels_matching(header_controls, _GROUP_PENDING_MARKERS):
+        return "pending_control"
+    if _control_labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
+        return "leave_control"
+    if _control_labels_matching(header_controls, _GROUP_JOIN_MARKERS):
+        return "join_control"
+    return "share_box" if share_box_present else "none"
+
+
+_MEMBERSHIP_BY_SIGNAL = {"pending_control": "pending", "leave_control": "member",
+                         "join_control": "not_member", "share_box": "member", "none": "unknown"}
+
+
+def group_membership_answer(header_controls: Optional[list], share_box_present: bool = False) -> str:
+    """The three-valued answer a membership check would key on, read from the group HEADER only.
+
+    `unknown` is a real answer and the one that must never be actioned: a page that will not say
+    whether we belong is not evidence that we left, so a fix reading `unknown` has to leave the
+    stored membership exactly as it was."""
+    return _MEMBERSHIP_BY_SIGNAL[group_membership_signal(header_controls, share_box_present)]
+
+
+def group_enumeration_findings(directory: Optional[dict]) -> dict:
+    """What the directory read says about `_enumerate_joined_groups` ITSELF, rather than about any
+    one membership.
+
+    The sync takes every `/groups/<id>` anchor on the page as a joined group, so an id it returned
+    that sits under "Groups you might be interested in" is a membership the DB will invent — and
+    LEM will then comment in a group the user never joined, which is #1052 pointing the other way.
+    `sections_readable` is what keeps that honest: no attributed section means the question was not
+    answered, never that the answer was no."""
+    directory = dict(directory or {})
+    anchors = [dict(a or {}) for a in (directory.get("anchors") or [])]
+    enumerated = [str(row[0]) for row in (directory.get("enumerated") or []) if row]
+    by_id = {str(a.get("id")): str(a.get("section") or "") for a in anchors}
+    anchor_total = directory.get("anchor_total")
+    anchor_total = len(anchors) if anchor_total in (None, "") else int(anchor_total)
+    recommended = [gid for gid in enumerated
+                   if _labels_matching([by_id.get(gid)], _GROUP_RECOMMENDATION_MARKERS)]
+    return {"anchor_total": anchor_total,
+            "anchors_truncated": anchor_total > len(anchors),
+            "sections_readable": any(by_id.values()),
+            "enumerated_under_recommendation": recommended,
+            # Only meaningful when the anchor list was not cut short — otherwise every id past the
+            # cap looks invented.
+            "enumerated_not_anchored": ([gid for gid in enumerated if gid not in by_id]
+                                        if anchor_total <= len(anchors) else [])}
+
+
+def stale_set_grounded(reading: Optional[dict]) -> bool:
+    """Whether `stored_not_live` is evidence of anything at all.
+
+    It is a set difference, so it inherits the enumeration's blind spots: if the sync matched none of
+    the page's anchors, EVERY enabled group lands in it and the list says the probe couldn't see the
+    directory, not that the user left six groups. Same when the DB list was unreadable — an empty
+    enabled set makes an empty difference, which would otherwise read as a clean bill of health."""
+    reading = dict(reading or {})
+    directory = dict(reading.get("directory") or {})
+    if not reading.get("enabled_ids_readable", True):
+        return False
+    if not str(directory.get("page_text") or "").strip():
+        return False
+    return not (directory.get("anchors") and not directory.get("enumerated"))
+
+
+def group_membership_state(reading: Optional[dict]) -> str:
+    """`drift` is reserved for the finding that blocks the fix: the group page RENDERED and still
+    said nothing either way. `not_member` is not drift — it is the probe working, and it is the
+    reporter's own symptom showing up in the report.
+
+    A directory whose anchors could be attributed to NO section is drift for the same reason: this
+    surface is swept weekly, and the sweep only ever looks at `drift`, so grading an unanswerable
+    reading `ok` is how the enumeration question stays open forever with a green report over it."""
+    reading = dict(reading or {})
+    group = dict(reading.get("group_page") or {})
+    directory = dict(reading.get("directory") or {})
+    findings = group_enumeration_findings(directory)
+    states = []
+    if str(directory.get("page_text") or "").strip():
+        blind = directory.get("anchors") and not directory.get("enumerated")
+        unattributed = directory.get("anchors") and not findings["sections_readable"]
+        states.append(STATE_DRIFT if (blind or unattributed
+                                      or findings["enumerated_under_recommendation"]
+                                      or findings["enumerated_not_anchored"]) else STATE_OK)
+    else:
+        states.append(STATE_UNKNOWN)
+    if not group.get("group_id"):
+        states.append(STATE_UNKNOWN)
+    elif not str(group.get("page_text") or "").strip():
+        states.append(STATE_UNKNOWN)
+    else:
+        states.append(STATE_OK if group.get("membership") != "unknown" else STATE_DRIFT)
+    return worst_state(states)
+
+
+def group_membership_verdict(reading: Optional[dict]) -> str:
+    """The prose half of the grade: what each half of the read established, and what it did NOT."""
+    reading = dict(reading or {})
+    group = dict(reading.get("group_page") or {})
+    directory = dict(reading.get("directory") or {})
+    stale = [str(g) for g in (reading.get("stored_not_live") or [])]
+    findings = group_enumeration_findings(directory)
+    parts = []
+    if not str(directory.get("page_text") or "").strip():
+        parts.append("the groups directory did not render — re-run")
+    elif directory.get("anchors") and not directory.get("enumerated"):
+        parts.append("the directory rendered group anchors that `_enumerate_joined_groups` matched "
+                     "none of — the sync is blind and every stored membership is unverifiable")
+    else:
+        parts.append(f"the directory enumerated {len(directory.get('enumerated') or [])} group(s) "
+                     f"from {findings['anchor_total']} anchor(s)")
+        if findings["enumerated_under_recommendation"]:
+            parts.append(f"{len(findings['enumerated_under_recommendation'])} enumerated id(s) sit "
+                         f"under a recommendation heading "
+                         f"({_first_few(findings['enumerated_under_recommendation'])}) — the sync "
+                         f"stores groups the user never joined")
+        elif not findings["sections_readable"]:
+            parts.append("no anchor could be attributed to a section heading, so whether the sync "
+                         "counts recommendation cards as joins is UNANSWERED — re-ground "
+                         "`_GROUP_DIRECTORY_JS`'s heading walk before trusting the enumeration")
+        if findings["enumerated_not_anchored"]:
+            parts.append(f"{len(findings['enumerated_not_anchored'])} enumerated id(s) are on no "
+                         f"anchor the probe read ({_first_few(findings['enumerated_not_anchored'])})")
+    if not group.get("group_id"):
+        parts.append("no group to probe — pass a group id")
+    elif not str(group.get("page_text") or "").strip():
+        parts.append("the group page did not render — re-run")
+    elif group.get("membership") == "unknown":
+        parts.append("the group page rendered but its header carried no join/leave control — "
+                     "membership is unreadable, so a membership check would have nothing to key on "
+                     "and must change nothing; re-ground from `header_controls`")
+    elif group.get("membership_signal") == "share_box":
+        parts.append("the group header carried NO membership control — `member` comes only from the "
+                     f"share box resolving, next to {group.get('header_controls') or []}; a fix must "
+                     "read presence-of-share-box + absence-of-Join, not a Leave button")
+    else:
+        parts.append(f"the group header reads `{group.get('membership')}` from "
+                     f"`{group.get('membership_signal')}` in {group.get('header_controls') or []}")
+    if group.get("group_id") and reading.get("target_source") == "directory":
+        parts.append("that group came from the live directory, NOT from the DB — its membership is "
+                     "not the #1052 symptom whatever it says")
+    if not reading.get("enabled_ids_readable", True):
+        parts.append("the enabled-group list could not be read from the DB, so nothing here says "
+                     "which groups production actually comments in")
+    elif stale and stale_set_grounded(reading):
+        parts.append(f"{len(stale)} group(s) enabled in the DB were not enumerated live "
+                     f"({_first_few(stale)}) — the #1052 symptom")
+    elif stale:
+        parts.append(f"the {len(stale)} enabled group(s) the directory did not list "
+                     f"({_first_few(stale)}) are UNVERIFIABLE, not stale — the enumeration this set "
+                     f"is differenced against saw nothing")
+    return "; ".join(parts)
+
+
+def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = None,
+                           enabled_ids: Optional[list] = None,
+                           enumerate_groups: Optional[Callable] = None,
+                           sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#1052: report whether LinkedIn will tell us that a user has LEFT a group we still comment in.
+
+    Two reads, because the bug has two halves. The directory read runs the SHIPPED
+    `_enumerate_joined_groups` against `/groups/` and puts its output next to the page's own anchors
+    and section headings — that is what says whether the weekly sync can see a membership ending, or
+    is picking up recommendation cards as joins. The group read opens ONE group the DB has enabled
+    and reports what its header says about us.
+
+    STRICTLY read-only: it navigates and reads. No control is clicked, so nothing is joined, left or
+    posted, and no stored membership is changed."""
+    if enumerate_groups is None:
+        from cqc_lem.app.run_automation import _enumerate_joined_groups as enumerate_groups
+    # An unreadable DB list is not an empty one: it makes `stored_not_live` empty, which is the exact
+    # shape of "nothing is stale". Say which happened.
+    enabled_ids_readable = True
+    enabled_ids_error = ""
+    if enabled_ids is None:
+        try:
+            from cqc_lem.utilities.db import get_enabled_group_ids
+            enabled_ids = [str(g) for g in (get_enabled_group_ids(user_id) or [])]
+        except Exception as e:
+            enabled_ids, enabled_ids_readable = [], False
+            enabled_ids_error = f"{type(e).__name__}: {e}"[:200]
+    enabled_ids = [str(g) for g in (enabled_ids or [])]
+
+    enumerated = [(str(gid), name) for gid, name in (enumerate_groups(driver) or [])]
+    directory = driver.execute_script(_GROUP_DIRECTORY_JS) or {}
+    directory = {"url": "https://www.linkedin.com/groups/",
+                 "page_text": page_text_sample(driver),
+                 "enumerated": [list(row) for row in enumerated],
+                 "headings": list(directory.get("headings") or []),
+                 "anchors": list(directory.get("anchors") or []),
+                 "anchor_total": directory.get("anchor_total")}
+    directory.update(group_enumeration_findings(directory))
+
+    live_ids = {gid for gid, _ in enumerated}
+    reading = {"user_id": user_id,
+               "enabled_group_ids": enabled_ids,
+               "enabled_ids_readable": enabled_ids_readable,
+               # The reporter's symptom, as a set difference: production comments in these, the
+               # directory does not list them.
+               "stored_not_live": [gid for gid in enabled_ids if gid not in live_ids],
+               "directory": directory}
+    if enabled_ids_error:
+        reading["enabled_ids_error"] = enabled_ids_error
+    reading["stored_not_live_grounded"] = stale_set_grounded(reading)
+
+    target = str(group_id) if group_id else (enabled_ids[0] if enabled_ids
+                                             else (sorted(live_ids)[0] if live_ids else ""))
+    reading["target_source"] = ("argument" if group_id else
+                                "db_enabled" if enabled_ids else
+                                "directory" if live_ids else "none")
+    group_page = {"group_id": target}
+    if target:
+        from cqc_lem.app.run_automation import _GROUP_SHARE_BOX_LOCATORS
+        from cqc_lem.utilities.selenium_util import find_first
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        url = f"https://www.linkedin.com/groups/{target}/"
+        driver.get(url)
+        sleep(6)
+        header = driver.execute_script(_GROUP_HEADER_JS) or {}
+        share_box = find_first(driver, WebDriverWait(driver, 10), _GROUP_SHARE_BOX_LOCATORS,
+                               "Group share box", required=False, warn_on_miss=False, max_try=1,
+                               visible_only=True)
+        group_page.update({
+            "url": getattr(driver, "current_url", url),
+            "page_text": page_text_sample(driver),
+            "group_name": str(header.get("h1") or ""),
+            "header_scope_levels": header.get("levels") or 0,
+            "header_controls": list(header.get("header_controls") or []),
+            "page_controls": list(header.get("all_controls") or []),
+            "share_box_present": share_box is not None,
+        })
+        group_page["join_controls_in_header"] = _control_labels_matching(
+            group_page["header_controls"], _GROUP_JOIN_MARKERS)
+        group_page["join_controls_on_page"] = _control_labels_matching(
+            group_page["page_controls"], _GROUP_JOIN_MARKERS)
+        group_page["membership_signal"] = group_membership_signal(group_page["header_controls"],
+                                                                   group_page["share_box_present"])
+        group_page["membership"] = group_membership_answer(group_page["header_controls"],
+                                                           group_page["share_box_present"])
+    reading["group_page"] = group_page
+    return graded(reading, group_membership_state(reading), group_membership_verdict(reading))
+
+
+# ──────────────────── group-feed comment composer (issues #916 / #928) ────────────────────────
+# #916 widened the composer lookup from the post CARD to `_single_post_scope`, because the
+# card-scoped one missed on every post of every run — 408 misses in 18h, every one on a `/groups/`
+# URL — and it downgraded that miss to DEBUG, because a miss is a skip production already handles.
+# Both are right, and together they made the lane SILENT whether or not the widening works: the
+# three days before #916 examined 2,515 group posts and landed ONE comment.
+#
+# Nothing grounded this surface. `--group-composer` grounds the group SHARE BOX (posting INTO a
+# group, #932) and `--probe-composer` the home feed's; neither touches the per-post COMMENT composer
+# on a group feed, which is what `auto_comment_in_groups` reaches through `comment_on_feed_inline`.
+#
+# The home feed rides along as the CONTROL on every run. "No composer in the group" is only a
+# statement about groups next to a feed where the SAME chain, in the SAME session, resolves one.
+_GROUP_FEED_URL = "https://www.linkedin.com/groups/{group_id}/"
+
+
+def _locator_hits(scope, locators) -> dict:
+    """How many elements each rung of a shipped locator chain matches inside ONE scope.
+
+    Every rung is a different route to the same control and LinkedIn keeps several alive at once, so
+    WHICH rung is carrying the surface is the reading a re-grounding pass is written from — that is
+    what the `live count:` comments beside `_COMMENT_ACTION_LOCATORS` record, and they were taken on
+    the HOME feed (#816). A rung that raises is reported as its exception rather than as a zero: a
+    zero is evidence, an unreadable rung is not.
+    """
+    hits = {}
+    for by, selector in locators or []:
+        key = f"{by}={selector}"
+        try:
+            hits[key] = len(scope.find_elements(by, selector))
+        except Exception as e:
+            hits[key] = f"<{type(e).__name__}>"
+    return hits
+
+
+def merge_locator_hits(per_card) -> dict:
+    """Sum per-card locator hits into one chain-wide tally, keeping the chain's own order.
+
+    A rung that raised on some card contributes nothing to the sum but keeps its own count of
+    unreadable cards, so a chain that looks like a clean zero can still say it was never read.
+    """
+    totals: dict = {}
+    errors: dict = {}
+    for hits in per_card or []:
+        for key, value in (hits or {}).items():
+            if isinstance(value, int):
+                totals[key] = totals.get(key, 0) + value
+            else:
+                totals.setdefault(key, 0)
+                errors[key] = errors.get(key, 0) + 1
+    for key, count in errors.items():
+        totals[f"{key} (unreadable on {count} card(s))"] = totals.pop(key)
+    return totals
+
+
+def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
+                         sleep: Callable[[float], None] = time.sleep) -> dict:
+    """Walk ONE feed and report, per card, whether a comment composer resolves — and from WHERE.
+
+    Read-only in the sense `--permalink-comment` already is: it clicks each card's own Comment
+    button so the composer mounts, describes what mounted, and presses Escape. Nothing is typed and
+    nothing is submitted, so no comment can be left.
+
+    It calls the SHIPPED chain (`_card_for_textbox` → `_COMMENT_ACTION_LOCATORS` →
+    `_post_composer_for_card`), never a copy of it: an inlined duplicate grounds whatever the
+    probe's author last pasted, which is how the reaction probe once reported `cards_found: 0`
+    against a build whose walk was already fixed.
+    """
+    from selenium.webdriver import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.run_automation import (
+        _COMMENT_ACTION_LOCATORS,
+        _FEED_CARD_CROSSCHECK_SEL,
+        _FEED_POST_TEXT_SEL,
+        _card_for_textbox,
+        _is_post_comment_box,
+        _post_composer_for_card,
+        _single_post_scope,
+        _visible_composers,
+    )
+    from cqc_lem.utilities.selenium_util import click_first, find_first
+
+    wait = WebDriverWait(driver, 10)
+    reading: dict = {"feed": feed, "url": url, "cards": []}
+    try:
+        driver.get(url)
+        sleep(5)
+        # Both feeds lazy-load: on the first paint a group feed can carry no post cards at all, and
+        # "found nothing" would be indistinguishable from "the anchors are gone".
+        for _ in range(2):
+            driver.execute_script("window.scrollBy(0, 900);")
+            sleep(2)
+    except Exception as e:
+        reading["error"] = f"{type(e).__name__}: {e}"[:200]
+        return reading
+    reading["url"] = str(getattr(driver, "current_url", url) or url)[:200]
+    reading["page_text"] = page_text_sample(driver)
+
+    try:
+        boxes = list(driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL))
+    except Exception as e:
+        reading["error"] = f"card enumeration failed: {type(e).__name__}: {e}"[:200]
+        return reading
+    reading["post_text_nodes"] = len(boxes)
+    # The page's OWN count of posts, on an anchor the walk does not use — the zero-walk cross-check
+    # (#1013/#1021). Without it, a group feed the walk is blind to and a group feed with nothing in
+    # it are the same `cards_found: 0`.
+    try:
+        reading["page_post_markers"] = len(
+            driver.find_elements(By.CSS_SELECTOR, _FEED_CARD_CROSSCHECK_SEL))
+    except Exception:
+        reading["page_post_markers"] = 0
+
+    cards = []
+    for box in boxes:
+        if len(cards) >= max_cards:
+            break
+        try:
+            card = _card_for_textbox(driver, box)
+        except Exception:
+            card = None
+        if card is not None:
+            cards.append(card)
+    reading["cards_found"] = len(cards)
+
+    for index, card in enumerate(cards):
+        entry: dict = {"index": index, "locator_hits": _locator_hits(card, _COMMENT_ACTION_LOCATORS)}
+        action = find_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Comment action",
+                            parent_element=card, required=False, visible_only=True, max_try=1,
+                            warn_on_miss=False)
+        entry["comment_action"] = element_evidence(action) if action is not None else None
+        composer = None
+        if action is not None:
+            click_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Open comment composer",
+                        parent_element=card, required=False, max_try=1, warn_on_miss=False)
+            sleep(2)
+            composer = _post_composer_for_card(driver, card)
+        in_card = [box for box, _rect in _visible_composers(card)]
+        entry["textboxes_in_card"] = len(in_card)
+        # The #916 question itself: the card is only the NEAREST ancestor carrying the comment
+        # action, so whether the scope widened at all — and whether the box lives in the widened
+        # part — is what says if the fix reaches this surface or merely could.
+        scope = _single_post_scope(driver, card)
+        entry["scope_widened"] = bool(scope is not None and scope != card)
+        entry["textboxes_in_scope"] = len(_visible_composers(scope)) if scope is not None else 0
+        entry["composer"] = element_evidence(composer) if composer is not None else None
+        entry["composer_source"] = ("none" if composer is None else
+                                    "in_card" if any(composer == box for box in in_card) else
+                                    "widened_scope")
+        entry["composer_labelled"] = bool(composer is not None and _is_post_comment_box(composer))
+        if action is not None:
+            # Counted HERE, before the Escape below, because Escape closes the very box this number
+            # exists to see. Read once after the walk instead, a successful Escape zeroes it, and the
+            # two zero-shapes that need OPPOSITE fixes — "a composer mounted that the card-scoped
+            # resolver claimed for no card" (re-ground the resolver) and "nothing mounts anywhere"
+            # (the surface has no inline composer, #1084) — collapse into the second one.
+            try:
+                entry["page_textboxes_open"] = len(_visible_composers(driver))
+            except Exception:
+                entry["page_textboxes_open"] = 0
+        try:
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        except Exception:
+            # Closing is courtesy only — nothing was typed, and a failed Escape must not cost the
+            # evidence this probe exists to report.
+            pass
+        reading["cards"].append(entry)
+
+    reading["composers_resolved"] = sum(1 for c in reading["cards"] if c.get("composer"))
+    reading["composers_from_widening"] = sum(1 for c in reading["cards"]
+                                             if c.get("composer_source") == "widened_scope")
+    reading["locator_hits"] = merge_locator_hits(c.get("locator_hits") for c in reading["cards"])
+    # Page-native cross-check for the case that matters: a composer DID mount and the card-scoped
+    # resolver claimed none of them. That is drift; nothing mounting at all is a surface with no
+    # inline composer, which is a different finding and needs the opposite fix. The MOST any card's
+    # click had open at once, so one card's evidence survives the next card's Escape; the trailing
+    # page read only ever adds a box the Escapes left behind.
+    try:
+        page_after = len(_visible_composers(driver))
+    except Exception:
+        page_after = 0
+    reading["page_textboxes_after_click"] = max(
+        [page_after] + [c.get("page_textboxes_open") or 0 for c in reading["cards"]])
+    reading["visible_controls"] = visible_button_labels(driver, limit=30)
+    return graded(reading, feed_composer_state(reading), feed_composer_verdict(reading))
+
+
+def feed_composer_state(feed: Optional[dict]) -> str:
+    """Three-state grade for ONE feed's composer walk.
+
+    `drift` needs the page's own evidence, never an empty result: posts the page renders that the
+    card walk reached none of, or cards whose Comment action mounted a composer the card-scoped
+    resolver would not claim. A feed carrying no posts at all is `unknown` — a quiet group is not a
+    defect, and filing it weekly would bury the run where the composer really is gone.
+    """
+    feed = dict(feed or {})
+    if feed.get("error") or not str(feed.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if not feed.get("cards_found"):
+        return STATE_DRIFT if (feed.get("post_text_nodes") or feed.get("page_post_markers")) \
+            else STATE_UNKNOWN
+    return STATE_OK if feed.get("composers_resolved") else STATE_DRIFT
+
+
+def feed_composer_verdict(feed: Optional[dict]) -> str:
+    """What one feed's walk proves about `auto_comment_in_groups`' ability to post anything.
+
+    The three ways a walk can end at zero comments need three different fixes, and a bare
+    `composers_resolved: 0` reads the same for all of them: no Comment action at all (re-ground the
+    chain), a composer that mounted somewhere the card-scoped resolver would not claim (widen /
+    re-ground the resolver), and no composer mounting anywhere (the surface has none, so stop
+    generating a comment for it).
+    """
+    state = feed_composer_state(feed)
+    feed = dict(feed or {})
+    name = feed.get("feed") or "feed"
+    if feed.get("error"):
+        return f"the {name} feed could not be read ({feed['error']}) — re-run"
+    if not str(feed.get("page_text") or "").strip():
+        return f"the {name} feed did not render — this reading grounds nothing; re-run it"
+    if not feed.get("cards_found"):
+        if state == STATE_UNKNOWN:
+            return (f"the {name} feed rendered no posts at all — there was nothing to resolve a "
+                    f"composer on")
+        return (f"{feed.get('post_text_nodes') or 0} post text node(s) and "
+                f"{feed.get('page_post_markers') or 0} post marker(s) rendered on the {name} feed "
+                f"and the card walk reached NONE of them — production comments on nothing here")
+    if state == STATE_OK:
+        head = (f"{feed.get('composers_resolved')} of {feed.get('cards_found')} card(s) on the "
+                f"{name} feed resolved a comment composer")
+        widened = feed.get("composers_from_widening") or 0
+        if widened:
+            return (f"{head}, {widened} of them ONLY after `_single_post_scope` widened past the "
+                    f"card — the #916 widening is what carries this surface")
+        return f"{head}, every one from inside the card itself"
+    if not any(c.get("comment_action") for c in (feed.get("cards") or [])):
+        return (f"{feed.get('cards_found')} card(s) walked on the {name} feed and not one carried a "
+                f"Comment action — re-ground `_COMMENT_ACTION_LOCATORS` from `locator_hits`")
+    if feed.get("page_textboxes_after_click"):
+        return (f"Comment was clicked on {feed.get('cards_found')} card(s) of the {name} feed and "
+                f"{feed.get('page_textboxes_after_click')} composer(s) are mounted on the page, but "
+                f"`_post_composer_for_card` claimed none of them for their card — the #916 widening "
+                f"does not reach this surface")
+    return (f"Comment was clicked on {feed.get('cards_found')} card(s) of the {name} feed and NO "
+            f"composer mounted anywhere on the page — this surface has no inline composer, so "
+            f"production can never post here and must stop generating a comment per post (#1084)")
+
+
+def group_feed_composer_state(reading: Optional[dict]) -> str:
+    """Worst-wins across the group feed and its home-feed control.
+
+    With no group to probe the whole reading is `unknown` on purpose: the home half alone says
+    nothing about this surface, and grading it would let a home-feed finding file as a group one.
+    """
+    reading = dict(reading or {})
+    if not reading.get("group_id"):
+        return STATE_UNKNOWN
+    return worst_state([feed_composer_state(reading.get("group")),
+                        feed_composer_state(reading.get("home"))])
+
+
+def group_feed_composer_verdict(reading: Optional[dict]) -> str:
+    """Both halves, plus the comparison that makes the group half mean something."""
+    reading = dict(reading or {})
+    if not reading.get("group_id"):
+        return ("no group to probe — pass a group id, or enable one for this user; nothing here "
+                "grounds the group comment composer")
+    group_state = feed_composer_state(reading.get("group"))
+    home_state = feed_composer_state(reading.get("home"))
+    parts = [f"group {reading['group_id']}: {feed_composer_verdict(reading.get('group'))}",
+             f"home feed (control): {feed_composer_verdict(reading.get('home'))}"]
+    if group_state == STATE_DRIFT and home_state == STATE_OK:
+        parts.append("the SAME chain resolved a composer on the home feed in this session, so the "
+                     "group surface is what differs — not the chain")
+    elif group_state == STATE_DRIFT and home_state == STATE_DRIFT:
+        parts.append("the home-feed control failed the same way, so this is the comment chain "
+                     "itself and nothing to do with groups")
+    elif group_state == STATE_OK and home_state != STATE_OK:
+        parts.append("the group half resolved and the control did not, so the control grounds "
+                     "nothing this run — the group reading stands on its own")
+    return "; ".join(parts)
+
+
+def probe_group_feed_composer(driver, user_id: int = 1, group_id: Optional[str] = None,
+                              max_cards: int = 3, enabled_ids: Optional[list] = None,
+                              sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#928: does the composer `auto_comment_in_groups` needs resolve on a GROUP feed?
+
+    And is #916's widening what resolves it? Walks a group feed and then the home feed as a
+    control, running the SHIPPED card → Comment-action → composer chain on each card and reporting
+    per-locator hit counts, whether the box lived inside the card or only inside the widened
+    `_single_post_scope`, and the page's own post/composer counts to grade the zeros against.
+
+    Read-only: it clicks each card's own Comment button so the composer mounts, then Escapes.
+    Nothing is typed, no submit control is ever clicked, and no comment can be left.
+    """
+    enabled_ids_readable = True
+    enabled_ids_error = ""
+    if enabled_ids is None:
+        try:
+            from cqc_lem.utilities.db import get_enabled_group_ids
+            enabled_ids = [str(g) for g in (get_enabled_group_ids(user_id) or [])]
+        except Exception as e:
+            enabled_ids, enabled_ids_readable = [], False
+            enabled_ids_error = f"{type(e).__name__}: {e}"[:200]
+    enabled_ids = [str(g) for g in (enabled_ids or [])]
+
+    target = str(group_id) if group_id else (enabled_ids[0] if enabled_ids else "")
+    reading: dict = {"user_id": user_id, "group_id": target, "max_cards": max_cards,
+                     "enabled_group_ids": enabled_ids,
+                     "enabled_ids_readable": enabled_ids_readable,
+                     "target_source": ("argument" if group_id else
+                                       "db_enabled" if enabled_ids else "none")}
+    if enabled_ids_error:
+        reading["enabled_ids_error"] = enabled_ids_error
+    if target:
+        reading["group"] = _walk_feed_composers(driver, "group",
+                                                _GROUP_FEED_URL.format(group_id=target),
+                                                max_cards=max_cards, sleep=sleep)
+        reading["home"] = _walk_feed_composers(driver, "home", FEED_URL, max_cards=max_cards,
+                                               sleep=sleep)
+    return graded(reading, group_feed_composer_state(reading), group_feed_composer_verdict(reading))
 
 
 # ─────────────────────────── company-page invite modal (#732) ────────────────────────────────
@@ -2548,6 +3265,8 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "profile_experiences": lambda: probe_profile_experiences(
             driver, profile_url or _sweep_own_profile(driver, user_id)),
         "catchup_cards": lambda: probe_catchup_cards(driver),
+        "group_membership": lambda: probe_group_membership(driver, user_id),
+        "group_feed_composer": lambda: probe_group_feed_composer(driver, user_id),
         "company_invite": lambda: probe_company_invite(driver, user_id),
         "sent_invites": lambda: probe_sent_invites(driver),
         "appreciation_sources": lambda: probe_appreciation_sources(driver, user_id),
@@ -2675,6 +3394,21 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--group-composer", metavar="GROUP_ID",
                         help="open this group's share box and report whether the editor and Post "
                              "button resolve (#932). Types nothing and NEVER clicks Post.")
+    parser.add_argument("--group-membership", metavar="GROUP_ID", nargs="?", const="", default=None,
+                        help="report whether LinkedIn says this user is still IN the groups LEM "
+                             "comments in (#1052): the groups directory as the shipped sync reads "
+                             "it, plus one group page's own join/leave controls. Defaults to the "
+                             "first group enabled in the DB. Read-only: nothing is clicked, no "
+                             "group is joined or left.")
+    parser.add_argument("--group-feed-composer", metavar="GROUP_ID", nargs="?", const="",
+                        default=None,
+                        help="walk a GROUP feed and report, per card, whether the comment composer "
+                             "`auto_comment_in_groups` needs resolves — and whether #916's widening "
+                             "is what resolved it (#928). Runs the home feed as a control. Defaults "
+                             "to the first group enabled in the DB. Opens each card's composer and "
+                             "Escapes it; nothing is typed and no comment is left.")
+    parser.add_argument("--group-feed-cards", type=int, default=3,
+                        help="how many cards per feed to sample for --group-feed-composer")
     parser.add_argument("--company-invite", action="store_true",
                         help="open the company page's invite panel and report the credit counter, "
                              "invitee rows and checkboxes the invite lane reads (#732). Ticks no "
@@ -2708,13 +3442,17 @@ def main(argv: Optional[list] = None) -> int:
             or args.roster_follow or args.roster_connect or args.appreciation_sources
             or args.sent_invites or args.profile_views or args.connect_dialog
             or args.profile_scrape or args.profile_experiences or args.catchup_cards
-            or args.group_composer or args.company_invite or args.permalink_comment
+            or args.group_composer or args.group_membership is not None
+            or args.group_feed_composer is not None
+            or args.company_invite or args.permalink_comment
             or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --profile-experiences, "
                      "--connect-dialog, --catchup-cards, "
-                     "--group-composer, --company-invite, --reaction-probe, --roster-follow, "
+                     "--group-composer, --group-membership, --group-feed-composer, "
+                     "--company-invite, --reaction-probe, "
+                     "--roster-follow, "
                      "--roster-connect, --appreciation-sources, --sent-invites, "
                      "--permalink-comment and/or "
                      "--probe-composer")
@@ -2771,6 +3509,13 @@ def main(argv: Optional[list] = None) -> int:
             report["catchup_cards"] = probe_catchup_cards(driver)
         if args.group_composer:
             report["group_composer"] = probe_group_composer(driver, args.group_composer)
+        if args.group_membership is not None:
+            report["group_membership"] = probe_group_membership(
+                driver, args.user_id, group_id=args.group_membership or None)
+        if args.group_feed_composer is not None:
+            report["group_feed_composer"] = probe_group_feed_composer(
+                driver, args.user_id, group_id=args.group_feed_composer or None,
+                max_cards=args.group_feed_cards)
         if args.company_invite:
             report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
         if args.permalink_comment:

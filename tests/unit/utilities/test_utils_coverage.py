@@ -82,17 +82,58 @@ class TestCreateFolderIfNotExists:
 
 
 class TestSaveVideoUrlToDir:
+    @staticmethod
+    def _response(chunks, raise_on=None):
+        """A streamed `requests` response usable as a context manager."""
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+
+        def _iter(chunk_size=None):
+            for chunk in chunks:
+                yield chunk
+            if raise_on is not None:
+                raise raise_on
+
+        resp.iter_content.side_effect = _iter
+        return resp
+
     def test_downloads_and_keeps_original_filename(self, tmp_path):
         from cqc_lem.utilities.utils import save_video_url_to_dir
-        resp = MagicMock()
-        resp.content = b"\x00video-bytes"
+        resp = self._response([b"\x00video", b"-bytes"])
         with patch(f"{_U}.requests.get", return_value=resp) as rget:
             path = save_video_url_to_dir("https://cdn.example.com/media/clip.mp4?sig=abc",
                                          str(tmp_path))
-        rget.assert_called_once_with("https://cdn.example.com/media/clip.mp4?sig=abc")
+        assert rget.call_args.args[0] == "https://cdn.example.com/media/clip.mp4?sig=abc"
         resp.raise_for_status.assert_called_once()
         assert path == str(tmp_path / "clip.mp4")
         assert (tmp_path / "clip.mp4").read_bytes() == b"\x00video-bytes"
+
+    def test_the_download_is_bounded_and_streamed(self, tmp_path):
+        """A render host that accepts the connection then stalls must not park a worker forever."""
+        from cqc_lem.utilities.utils import DOWNLOAD_TIMEOUT, save_video_url_to_dir
+        resp = self._response([b"x"])
+        with patch(f"{_U}.requests.get", return_value=resp) as rget:
+            save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
+        assert rget.call_args.kwargs["timeout"] == DOWNLOAD_TIMEOUT
+        assert rget.call_args.kwargs["stream"] is True
+
+    def test_an_interrupted_download_leaves_no_file_at_all(self, tmp_path):
+        """The documented invariant: never leave a truncated file later stages read as media."""
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        resp = self._response([b"partial"], raise_on=OSError("connection reset"))
+        with patch(f"{_U}.requests.get", return_value=resp):
+            with pytest.raises(OSError):
+                save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_non_2xx_response_writes_nothing(self, tmp_path):
+        from cqc_lem.utilities.utils import save_video_url_to_dir
+        resp = self._response([])
+        resp.raise_for_status.side_effect = RuntimeError("404")
+        with patch(f"{_U}.requests.get", return_value=resp):
+            with pytest.raises(RuntimeError):
+                save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestFileExtension:

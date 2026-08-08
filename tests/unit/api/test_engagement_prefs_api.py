@@ -387,3 +387,47 @@ class TestRosterAutoFollow:
                                   json={"session_token": _SESSION, "max_follows_per_day": given})
             assert resp.status_code == 200
             assert upd.call_args[0][1]["max_follows_per_day"] == expected
+
+
+class TestCatchupContactFrequencyPrefs:
+    """Issue #1078 — the per-contact cooldown and cap ride the one-shot PUT.
+
+    A bad number must clamp rather than 422 the other 40 settings out of the save.
+    """
+
+    def test_the_bounds_ride_along_on_the_read(self, client):
+        from cqc_lem.utilities.db import (
+            CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+            CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+        )
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.has_engagement_preferences", return_value=True), \
+             patch("cqc_lem.api.main.get_engagement_preferences", return_value={"tone": "wry"}):
+            resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        prefs = resp.json()["detail"]
+        assert prefs["catchup_contact_interval_bounds"]["max_days"] == \
+            CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX
+        assert prefs["catchup_per_contact_cap_bounds"]["max"] == CATCHUP_MAX_PER_CONTACT_DAYS_MAX
+
+    def test_the_interval_clamps_instead_of_422ing_the_whole_save(self, client):
+        from cqc_lem.utilities.db import CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX
+        for given, expected in ((0, 0), (14, 14), (-3, 0), (99999, CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX)):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                resp = client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION,
+                                        "min_catchup_contact_interval_days": given})
+            assert resp.status_code == 200
+            assert upd.call_args[0][1]["min_catchup_contact_interval_days"] == expected
+
+    def test_the_per_contact_cap_clamps_instead_of_422ing_the_whole_save(self, client):
+        from cqc_lem.utilities.db import CATCHUP_MAX_PER_CONTACT_DAYS_MAX
+        for given, expected in ((0, 0), (2, 2), (-1, 0), (99999, CATCHUP_MAX_PER_CONTACT_DAYS_MAX)):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                resp = client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION,
+                                        "max_catchup_touches_per_contact_days": given})
+            assert resp.status_code == 200
+            assert upd.call_args[0][1]["max_catchup_touches_per_contact_days"] == expected

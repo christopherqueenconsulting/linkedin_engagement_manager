@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.135.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.134.0...v0.135.0) (2026-08-08)
+
+
+### Features
+
+* **api:** on-demand LinkedIn profile re-scrape + synthesis refresh endpoint (closes [#1076](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1076)) ([#1123](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1123)) ([e36f276](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e36f276495bc3e0685aaa3fdb8c1c2555f3c960a))
+* **dms:** durable catchup send claim + per-contact frequency guard ([#1078](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1078)) ([#1111](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1111)) ([a629669](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a6296696583e904d5892982f516d1814c4cafa2e))
+* **live-validation:** read-only group-feed comment composer probe to ground [#928](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/928) ([#1106](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1106)) ([5c226af](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5c226afd1d7561bb0912a4bec9ebd7cb13f6fb14))
+* **ui:** dedicated group post drafts tab in Content Studio with scheduling info (closes [#1069](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1069)) ([#1121](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1121)) ([d96f7b9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d96f7b96d121d2ee02e1de368ba48a90bf40999e))
+
+
+### Bug Fixes
+
+* **ci:** make the CodeQL gate's line-shift tolerance visible (closes [#1087](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1087)) ([#1109](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1109)) ([6aa8b76](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6aa8b763d5ff89e25d4a13707540af82de2892fd))
+* **feedback:** add regression test for issue_created triage persistence (closes [#1070](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1070)) ([#1112](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1112)) ([601597b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/601597be782c912f903b0616235060ce7d0e2cfd))
+* **ops:** stop sourcing raw .env in backup.sh and add backup freshness watchdog (closes [#1090](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1090)) ([#1114](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1114)) ([0a9b23d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0a9b23dd4663f7afa47c94a5284cb1eab678b27f))
+* **outbound:** confirm company-page invite clicks before spending budget (closes [#1102](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1102)) ([#1115](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1115)) ([8928163](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8928163ca28e49b8611d1eff9e390cc2ff990d9c))
+* **reliability:** bound every unbounded call and stop three paths reporting success they cannot back ([#1124](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1124)) ([3beed86](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3beed867ec9c1f4bef64c5550e5705bc2c16717a))
+
+
+### Documentation
+
+* **avatar:** record the supervised live-render validation for [#744](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/744) ([#1104](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1104)) ([a6b3d56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a6b3d5672057ef1ebdce40ed3f595107c75469be))
+
+## [0.134.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.133.1...v0.134.0) (2026-08-07)
+
+
+### Features
+
+* **ci:** Google-docstring standard behind a lint gate that can actually fail ([#1100](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1100)) ([5819693](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/58196937423d8c61d8507667d3176899366a16a7))
+* **live-validation:** read-only group-membership probe to ground [#1052](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1052) ([#1060](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1060)) ([bb1fb26](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bb1fb26673d2228798fdf4daff167750dd832792))
+
+
+### Bug Fixes
+
+* **dm:** recommendations-received card read rebuilt on the live SDUI DOM (closes [#1007](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1007)) ([#1019](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1019)) ([d5f9c5d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d5f9c5deefdca1df5743915a73ebdf6218ff9480))
+* **invites:** rebuild the sent-invite row anchors on the live control shape (refs [#1006](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1006)) ([#1097](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1097)) ([9c94196](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9c941960c377be9e953269b8470052b3c5371ee7))
+* **selenium:** zero-walk tripwires for the last three SDUI surfaces (closes [#1021](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1021)) ([#1025](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1025)) ([e1de9d6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e1de9d656b86cd41a2e1defb05ac9aaee6a312d0))
+
+
+### Documentation
+
+* record the [#965](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/965) token rotation and make the grid buy trigger-driven ([#974](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/974)) ([#1098](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1098)) ([3b568a3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b568a32fab8fbe2b2df9cb8aaa04db2d4fae88c))
+* record the token rotation and make the grid buy trigger-driven ([3b568a3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b568a32fab8fbe2b2df9cb8aaa04db2d4fae88c))
+
 ## [0.133.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.133.0...v0.133.1) (2026-08-07)
 
 

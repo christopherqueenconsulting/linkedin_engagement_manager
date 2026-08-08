@@ -13,6 +13,7 @@ import OutreachFunnel from './review/OutreachFunnel'
 import LeadsInbox from './review/LeadsInbox'
 import LeadsPipeline from './review/LeadsPipeline'
 import CatchupTouches from './review/CatchupTouches'
+import GroupPostQueue from './review/GroupPostQueue'
 import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezoneState } from '../hooks/useUserTimezone'
@@ -23,7 +24,7 @@ import { EVENTS, capture, maskProps, recordPostApproval } from '../utils/analyti
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
 // existing content — one page, four tabs, synced to ?tab= for deep-linking.
-type View = 'posts' | 'dms' | 'connections' | 'catchup' | 'outreach' | 'leads' | 'pipeline' | 'newsletters' | 'review'
+type View = 'posts' | 'dms' | 'connections' | 'catchup' | 'outreach' | 'leads' | 'pipeline' | 'newsletters' | 'groups' | 'review'
 const VIEWS: { key: View; label: string }[] = [
   { key: 'posts', label: 'Posts' },
   { key: 'dms', label: 'DMs' },
@@ -33,6 +34,7 @@ const VIEWS: { key: View; label: string }[] = [
   { key: 'leads', label: 'Leads' },
   { key: 'pipeline', label: 'Pipeline' },
   { key: 'newsletters', label: 'Newsletters' },
+  { key: 'groups', label: 'Groups' },
   { key: 'review', label: 'Review & Edit' },
 ]
 const VIEW_KEYS = VIEWS.map((v) => v.key) as string[]
@@ -716,6 +718,8 @@ export default function ContentStudio() {
       {view === 'newsletters' && (
         <NewsletterQueue userTimezone={userTimezone} timezoneResolved={timezoneResolved} />
       )}
+
+      {view === 'groups' && <GroupPostQueue userTimezone={userTimezone} />}
 
       {view === 'dms' && <ScheduledDMs userTimezone={userTimezone} timezoneResolved={timezoneResolved} />}
 

@@ -32,18 +32,20 @@ code is missing from this table.
 | Feed card walk + reactions | `_card_for_textbox` / `react_to_post_inline` | `--reaction-probe` | yes | `feed_walk` / `textboxes_seen` on the funnel (#1013) |
 | Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876) |
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
-| Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | **none — see Gaps** |
+| Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | no name vs the page's `/in/` links; no badge vs the page's own degree LINE (#1021) |
 | Profile experience rows (`/details/experience/`) | `parse_profile_experiences` | `--profile-experiences` | yes | dated rows the parser cannot read is drift; an entity with no date range yields nothing rather than a guessed company (#970) |
 | Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | no (needs a target) | dialog controls must be present before Send (#1012); a missing note affordance is graded against the bare-send control, never warned (#1039) |
 | Catch-up moment cards | `_CATCHUP_CARD_LOCATORS` | `--catchup-cards` | yes | zero cards vs `main div[role='listitem']` (#1013) |
 | Group share box / editor | `auto_post_to_group` | `--group-composer` | no (needs a group) | `_unpostable` rotates past the group (#858) |
-| Company-page invite modal | `automate_invitations` | `--company-invite` | yes | **none — see Gaps** |
+| Groups directory + a group's membership controls | `_enumerate_joined_groups` / `auto_comment_in_groups` | `--group-membership` | yes | directory anchors the sync matched none of, or that no section heading could be attributed to (the reading that says whether the sync counts recommendation cards as joins — unanswered is drift, never `ok`); a group header carrying no join/leave control (#1052) |
+| Group feed post card → Comment → inline composer | `_post_composer_for_card` / `_single_post_scope` | `--group-feed-composer` | yes | per-card miss is a DEBUG no-op by design, so the walk itself is the tripwire: posts the page renders that the card walk reached none of, or a composer mounted on the page that the card-scoped resolver claimed for no card, is drift; the home feed is the control (#916/#928) |
+| Company-page invite modal | `automate_invitations` | `--company-invite` | yes | zero ticked boxes vs the picker's own rows → `drift` ≠ `no_candidates` (#1021) |
 | Invitation manager → Sent | `read_pending_invites` | `--sent-invites` | yes | zero rows vs the page's own empty-state copy (#969) |
 | Roster activity Follow control | `_resolve_follow_control` | `--roster-follow` | no (needs a target) | `unknown` clicks nothing; blocked visits recorded (#962) |
 | Roster activity connection state | `_resolve_connect_state` | `--roster-connect` | no (needs a target) | `unknown` never escalates; read-only advancement only moves forward (#979) |
 | Recommendations + mentions | `_RECOMMENDATION_CARD_LOCATORS` / `_MENTION_CARD_LOCATORS` | `--appreciation-sources` | yes | undated card is SKIPPED, never thanked (#968) |
 | Newsletter/article editor | `find_article_editor_elements` | `--article-editor-url` | yes | `editor_ready` gates the publish walk (#771/#804) |
-| Own post detail + analytics counts | `_post_social_counts` | `--post-url` | no (needs a post) | **none — see Gaps** |
+| Own post detail + analytics counts | `_post_social_counts` | `--post-url` | no (needs a post) | all-zero vs a non-zero count beside the page's own label; drift leaves the post uncaptured (#1021) |
 | Post media render (document vs image) | media anchors | `--post-url` | no (needs a post) | n/a — a diagnostic, not a lane |
 | Comment thread + sort | `_comment_items` / `_switch_comment_sort` | `--comment-outcome-url` | no (needs a post) | `visible_most_relevant` is three-valued; NULL excluded (#628) |
 | Message-thread ladder | `open_message_thread` | `--dm-thread-url` | no (needs a target) | `ThreadState.UNKNOWN` skips (#731) |
@@ -112,28 +114,33 @@ composer and close it with Escape without typing.
 
 ## Gaps (tracked, not silent)
 
-Four production paths still lack a zero-result tripwire. They are named here rather than left to
-be rediscovered:
+Every walk in the matrix now carries a production tripwire (#1021 closed the last three). What is
+deliberately left, and why:
 
 - **Connect-dialog note affordance** — a missing `Add a note` button is the expected quota-spent
   fallback (`_add_connect_note` sends the invite bare and logs DEBUG, #1039) and is also what a
   rotated label would look like, and production cannot tell them apart: the dialog renders exactly
   the same way once a free account's personalized invites are spent. Warning on it filed a
-  fingerprinted defect per lost note, so the reading moved here — `--connect-dialog` reports
+  fingerprinted defect per lost note, so the reading moved to the probe — `--connect-dialog` reports
   `note_affordance_present` / `bare_send_present` and says so in its verdict. It is deliberately
-  NOT graded `drift`: the probe account's own quota state is not knowable from the page.
+  NOT graded `drift`: the probe account's own quota state is not knowable from the page. This is the
+  one reading that exists only when somebody runs the probe, since `--connect-dialog` needs a target
+  and so is not in the weekly sweep.
+- **Feed share-box composer** — a per-card composer miss stays a DEBUG no-op (#876). The card walk
+  above it is what has the tripwire; warning per card would file a defect for a post that legitimately
+  renders no composer.
+- **Post media render** — a diagnostic, not a lane. Nothing in production reads it, so there is no
+  zero to misread.
+- **Target-needing surfaces** (`--connect-dialog`, `--group-composer`, `--roster-follow`,
+  `--comment-outcome-url`, `--dm-thread-url`) are not in the weekly sweep, because each needs a URL a
+  human picks. Their production paths fail CLOSED instead (`unknown` skips, a blocked visit is
+  recorded), which is the tripwire in a shape a sweep cannot provide.
 
-- **Profile header scrape** — `parse_profile_header` raises `ProfileUnavailableError` on an error
-  page, but a page that renders with no `<h1>` and no usable `<title>` yields no name and no
-  cross-check. The degree badge has no tripwire at all: `_profile_is_first_degree` fails OPEN, and
-  `profile.is_1st_connection` (which routes every profile viewer down the DM/comment branch) reads
-  the same dead `span.dist-value` anchor.
-- **Company-page invite modal** — `select_connection_checkboxes` returning zero is reported as
-  `no_candidates`, indistinguishable from a rotated invitee-row XPath.
-- **Own post stats** — `_post_social_counts` scoring every signal 0 is indistinguishable from a post
-  with no engagement.
+The tripwires and the sweep answer different questions and both are kept: the sweep grades a surface
+once a week from a read-only session; the tripwire grades the read production actually made, per run.
 
-The weekly sweep grades the last three, so it catches them there; the tripwires would catch them in
-production, per run, which is stronger. The connect-dialog note affordance is the odd one out and
-deliberately so: `--connect-dialog` needs a target profile, so it is NOT in the weekly sweep, and it
-reports the affordance without grading it. That reading only exists when somebody runs the probe.
+### The one thing a tripwire cannot do
+
+A tripwire says a locator went blind; it cannot say what the replacement is. That still takes a live
+`--profile-scrape` / `--company-invite` run and the `degree_anchors` / `page_text` it hands back —
+which is why every re-grounding PR carries `risk:live-linkedin` and merges by the owner.

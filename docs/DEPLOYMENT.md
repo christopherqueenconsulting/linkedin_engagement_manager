@@ -175,7 +175,11 @@ A deploy recreates the app containers, which SIGTERMs the workers. Three layers 
    global, so an un-finished task is re-delivered instead of dropped. Re-runs are safe:
    `post_to_linkedin` short-circuits on `PostStatus.POSTED`, comments go through the
    `commented_posts` claim ledger (a claim abandoned by a killed worker is taken over after
-   `CLAIM_STALE_MINUTES`), and the dispatchers are `QueueOnce`-locked. `CELERY_VISIBILITY_TIMEOUT`
+   `CLAIM_STALE_MINUTES`), group posts and newsletter editions gate on a durable DB status, and
+   appreciation claims each recipient in `appreciation_touches` before dispatch.
+   **`QueueOnce` is not part of that guarantee** — it locks in `apply_async`, on the PRODUCER
+   side, and `Task.__call__` only clears a lock rather than checking one, so it stops two
+   dispatchers racing but does nothing about a broker redelivery. `CELERY_VISIBILITY_TIMEOUT`
    (default: longest task + 15m) must stay above the longest task so acks_late can't hand a
    still-running task to a second worker.
 

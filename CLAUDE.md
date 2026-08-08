@@ -162,6 +162,7 @@ Browser capacity is a **fixed pool of Chrome session slots shared by the Celery 
 - **Targeting:** include/exclude topics/keywords/authors, `min_reactions`, `max_post_age_hours`, plus LLM topic-relevance scoring.
 - **Voice:** tone, `comment_length` (short/medium/long; default short), style, emoji/hashtag toggles.
 - **Caps:** `max_comments_per_day`, `max_dms_per_day`; DM template editor with follow-up steps; Login Location (city/state geocoding via `utilities/geocoding.py`, admin-overridable).
+- **Profile freshness** (`utilities/profile_refresh.py`, #1076): `POST /user/linkedin-profile/refresh` is the ONE on-demand re-scrape — `claim_profile_refresh` (Redis window, 1/user/day, fails OPEN) is taken BEFORE dispatch, then `update_stale_profile(force_refresh=True)` bypasses **both** profile caches (by-user AND by-URL) and re-distils the voice brief. Always **202**, never 429: a second press the same day is an expected no-op (DEBUG). Absent from `_AGENT_SESSION_SURFACE` — a headless token may never spend a Chrome slot. Without it a profile edit waits for the ≤7-day `auto_refresh_profile_syntheses` beat.
 
 ### Marketing video tutorials (`utilities/marketing/video_tutorials.py`, beat `produce-feature-tutorial`)
 - One declarative `TutorialFlow` per feature (routes + CSS anchors proving the screen rendered) → headless SPA capture → grounded script (`lem-medium`) → TTS → ffmpeg MP4 + `.srt` → 9:16 clip → YouTube upload. **Fail-closed, cheapest-first**: a missing anchor, an unparseable script, profanity, an over-cap narration, or a fabricated number aborts BEFORE any TTS/publish spend. Re-filmed only when the captured UI fingerprint changes (`assets/videos/tutorials/manifest.json`). OFF unless `TUTORIAL_VIDEOS_ENABLED`. Full: `docs/marketing-video-tutorials.md`.
@@ -178,6 +179,20 @@ Browser capacity is a **fixed pool of Chrome session slots shared by the Celery 
 - **The docs surface is INSIDE `/api`** (#1020): `/api/docs`, `/api/redoc`, `/api/openapi.json` (old paths 301), re-opened as leaf entries in `_PUBLIC_API_PREFIXES`; `_hide_admin_routes_from_schema()` keeps every `/api/admin/*` operation OUT of the published schema, derived from the route table so a new admin route inherits it. Hidden ≠ gated — their auth is unchanged, Swagger just can't drive them (curl/Postman per `docs/TESTING_ENGAGEMENT_API.md`). The unauthenticated `GET /health/deep` returns COUNTS only, `"status":"healthy"` first — a monitor contract (`docs/stack-watchdog.md`). Mechanism: `docs/identity-and-sessions.md`.
 - **Strong auth + step-up** (#745 phase 2c, `docs/strong-authentication.md`): `utilities/auth_factors.py` is the ONE place factor state is decided (`webauthn_util.py` holds the ceremonies). Once an account enrols a passkey or TOTP the email PIN is a **bootstrap** only; a **passkey** login is the only path arriving already stepped up, a **recovery code** never does. `sessions.last_verified_at` gates every credential-touching write — refusal is **403 `step_up_required`**, never 401. **The FIRST factor is free, every one after it is gated, removing one always is.** Second-factor attempts are durable (`auth_challenges.attempts`), counted **per account** over `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` and carried into the next handle: **401 = wrong code, retry; 400 = handle gone; 429 = budget spent**. `STRONG_AUTH_ENABLED=false` reverts to 2b.
 - **Session scopes are SURFACES** (#905 / #1026, `docs/identity-and-sessions.md`): the same resolver enforces scope everywhere; refusal is 403 + audited `session_scope_denied`. `extension` reaches only the ONE path the extension calls; `enroll` — a PIN login past `REQUIRE_STRONG_FACTOR_AFTER` on a factor-less account — reaches only enrolment, which promotes it to `full` (**a hold is never a lockout:** the PIN still signs you in, every read goes through `enrollment_hold_active()`; empty date = 2c behaviour exactly). **`agent`** is the headless credential — minted once by a human, `_AGENT_SESSION_SURFACE` (queueing) only, TTL fixed at mint (the ONE scope `resolve_session` never slides). It may queue but NEVER approve — THREE guards, because a row reaches APPROVED three ways: `action="approve"`, `status="approved"` at create, the `auto_approve` account default. Surfaces match on PATH not method, so granting a read grants its writes — hence `PUT /user/engagement-preferences` is separately refused (`agent_may_not_configure`).
+
+## Agent Working Method
+
+Two cross-cutting practices bookend `ship-issue`'s branch → build → PR flow — one before code, one before the PR:
+
+- **Before writing code on a non-trivial issue** (`docs/spec-verifier-environment.md`, Karpathy's
+  Spec/Verifier/Environment framework mapped onto this repo): nail testable acceptance criteria, name
+  the specific check that proves success, and locate the owning docs/skill/module — BEFORE `ship-issue`
+  step 1. Skill: `spec-first`.
+- **Agent quality gate — Gauntlet Loop** (`docs/gauntlet-loop.md`): optional pre-PR pass for any
+  deliverable that needs a REAL bar, not just review — builder/critic pairs blind-compare against a
+  named reference exemplar, loop until the build wins (capped at 3 rounds, then `needs-human`).
+  First-class for `ui/`-touching or UX-sensitive issues (screenshot critique against this project's
+  stated UX goals). Slots into `ship-issue` step 4, before drafting the PR. Skill: `gauntlet-loop`.
 
 ## Testing Standards
 

@@ -12,13 +12,16 @@ chmod +x "$DEST/tick.sh"
 touch "$DEST/PAUSED"   # start paused — nothing runs until you remove this file
 echo "Installed to $DEST (PAUSED)."
 
-# Add hourly cron for lem if not already present
-LINE="0 * * * * /home/lem/agent-pipeline/tick.sh >/dev/null 2>&1"
+# Add the tick cron for lem if not already present.
+# Every 5 minutes, matching what the box actually runs — this said hourly while the installed
+# crontab was `*/5`, so the documented cadence was 12x slower than the real one, and anyone
+# reasoning about how long a pause takes to bite (or how much work a tick can start) got it wrong.
+LINE="*/5 * * * * /home/lem/agent-pipeline/tick.sh >/dev/null 2>&1"
 if crontab -l 2>/dev/null | grep -qF "/home/lem/agent-pipeline/tick.sh"; then
   echo "cron entry already present."
 else
   ( crontab -l 2>/dev/null; echo "$LINE" ) | crontab -
-  echo "cron entry added (hourly)."
+  echo "cron entry added (every 5 minutes)."
 fi
 
 cat <<'EOF'

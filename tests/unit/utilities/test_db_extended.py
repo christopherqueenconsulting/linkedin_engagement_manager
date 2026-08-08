@@ -595,7 +595,12 @@ class TestGetReadyToPostPosts:
             call_params = mock_database_connection["cursor"].execute.call_args[0][1]
             assert pre_post_time in call_params
 
-    def test_returns_none_on_db_error(self, mock_database_connection):
+    def test_returns_empty_list_on_db_error(self, mock_database_connection):
+        """A `-> list` reader must answer a list.
+
+        This used to answer None, and the publishing beat iterates the result directly — so a
+        read failure raised TypeError from run_scheduler and masked the mysql error underneath.
+        """
         from cqc_lem.utilities.db import get_ready_to_post_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
@@ -604,7 +609,9 @@ class TestGetReadyToPostPosts:
 
             result = get_ready_to_post_posts()
 
-            assert result is None
+            assert result == []
+            # The caller's actual usage must not raise on the failure path.
+            assert [p for p in result] == []
 
 
 # ---------------------------------------------------------------------------
@@ -795,3 +802,179 @@ class TestInsertPostDbError:
             )
 
             assert result is True
+
+
+# ---------------------------------------------------------------------------
+# count_auth_factors
+# ---------------------------------------------------------------------------
+
+class TestCountAuthFactors:
+    """An unreadable factor count must never read as an un-enrolled account."""
+
+    def test_counts_confirmed_factors(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"n": 2}
+
+            assert count_auth_factors(7) == 2
+
+    def test_no_rows_is_zero(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = None
+
+            assert count_auth_factors(7) == 0
+
+    def test_a_read_failure_refuses_to_answer_rather_than_reporting_zero(
+            self, mock_database_connection):
+        """The 2FA gate is `count_auth_factors(user_id) > 0`.
+
+        Answering 0 on a mysql error is the same answer as "this account enrolled nothing", which
+        demoted an enrolled account's second factor to an email PIN alone exactly while the
+        database was unhappy. Raising fails CLOSED: the request surfaces as a server error and no
+        session is minted.
+        """
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            with pytest.raises(mysql.connector.Error):
+                count_auth_factors(7)
+
+    def test_the_connection_is_returned_even_when_it_raises(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            with pytest.raises(mysql.connector.Error):
+                count_auth_factors(7)
+
+            mock_database_connection["cursor"].close.assert_called_once()
+            mock_database_connection["connection"].close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# db_cursor
+# ---------------------------------------------------------------------------
+
+class TestDbCursor:
+    """The resource half of every DB call in this module."""
+
+    def test_yields_a_cursor_and_returns_both_on_success(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with db_cursor() as cursor:
+                assert cursor is mock_database_connection["cursor"]
+
+        mock_database_connection["cursor"].close.assert_called_once()
+        mock_database_connection["connection"].close.assert_called_once()
+
+    def test_does_not_commit_by_default(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with db_cursor() as cursor:
+                cursor.execute("SELECT 1")
+
+        mock_database_connection["connection"].commit.assert_not_called()
+
+    def test_commits_after_a_successful_body(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with db_cursor(commit=True) as cursor:
+                cursor.execute("UPDATE t SET a = 1")
+
+        mock_database_connection["connection"].commit.assert_called_once()
+
+    def test_a_raising_body_does_not_commit(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        # The raise lives in a helper rather than trailing the `with pytest.raises` body: CodeQL
+        # does not model pytest.raises as suppressing, so a trailing raise makes it read every
+        # following assertion as unreachable (py/unreachable-statement).
+        def write_then_fail():
+            with db_cursor(commit=True):
+                raise mysql.connector.Error("write failed")
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with pytest.raises(mysql.connector.Error):
+                write_then_fail()
+
+        mock_database_connection["connection"].commit.assert_not_called()
+
+    def test_the_error_reaches_the_caller(self, mock_database_connection):
+        """It owns resources, not fallbacks — each caller answers a failure its own way."""
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with pytest.raises(mysql.connector.Error):
+                with db_cursor() as cursor:
+                    cursor.execute("SELECT bad")
+                    raise mysql.connector.Error("boom")
+
+    def test_both_are_returned_even_when_the_body_raises(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        # Helper for the same reason as above — a trailing raise reads as unreachable to CodeQL.
+        def blow_up():
+            with db_cursor():
+                raise RuntimeError("body blew up")
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with pytest.raises(RuntimeError):
+                blow_up()
+
+        mock_database_connection["cursor"].close.assert_called_once()
+        mock_database_connection["connection"].close.assert_called_once()
+
+    def test_a_failing_cursor_creation_still_returns_the_connection(self, mock_database_connection):
+        """The pool-slot leak the old hand-written shape had.
+
+        Those 417 blocks built the cursor between get_db_connection() and their `try:`, so a
+        failure in .cursor() skipped the `finally` — and PooledMySQLConnection has no __del__, so
+        the connection never went back to the pool. One statement wide, permanent every time.
+        """
+        from cqc_lem.utilities.db import db_cursor
+
+        connection = mock_database_connection["connection"]
+        connection.cursor.side_effect = mysql.connector.Error("cannot allocate cursor")
+        with patch("cqc_lem.utilities.db.get_db_connection", return_value=connection):
+            with pytest.raises(mysql.connector.Error):
+                with db_cursor():
+                    pass
+
+        connection.close.assert_called_once()
+
+    def test_dictionary_flag_is_forwarded(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        connection = mock_database_connection["connection"]
+        with patch("cqc_lem.utilities.db.get_db_connection", return_value=connection):
+            with db_cursor(dictionary=True):
+                pass
+        connection.cursor.assert_called_once_with(dictionary=True)
+
+    def test_is_keyword_only_so_a_positional_cannot_mean_commit(self):
+        """`db_cursor(True)` must not silently become a commit — or a read starts writing."""
+        import inspect
+
+        from cqc_lem.utilities.db import db_cursor
+
+        params = inspect.signature(db_cursor.__wrapped__).parameters
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())

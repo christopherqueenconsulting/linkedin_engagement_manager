@@ -82,6 +82,8 @@ renders on a non-connection.
 
 A 3rd-degree profile for manual runs, when you want to exercise the other badge:
 `https://www.linkedin.com/in/kimberly-maurer-bas-lpn-b35b87215/`
+**⚠️ Still owed by you:** set `SDUI_PROBE_PROFILE_URL` in `/opt/lem/.env` to a **2nd/3rd-degree**
+profile, or the degree badge stays ungrounded (`docs/sdui-probe-coverage.md:99-101`). One line.
 
 ### 2.3 The perf/margin snapshot cron — ✅ REPOINTED 2026-08-07
 
@@ -252,6 +254,9 @@ the env-var defaults, since `utilities/flags.py` fails open to the env var.
 - **Stripe is in TEST mode.** Worth remembering before the early-adopter program opens —
   `EARLY_ADOPTER_TRIAL_ENABLED` is `False` and `EARLY_ADOPTER_COUPON_ID` is empty, so nothing can
   transact by accident today.
+- **The supervised avatar render is done** — attributes declared first, previews re-rolled, likeness
+  approved. It closed #744 and is off the §7 list; the ordering that made it a real test is written
+  down in `docs/AVATAR_FIDELITY_AND_VIDEO_LANGUAGE.md` §4.
 
 ## 10. Maintenance windows — when it is safe to bounce production
 

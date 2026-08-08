@@ -24,11 +24,11 @@ import math
 import os
 import random
 import re
-import sys
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Callable, List, NamedTuple, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
@@ -101,6 +101,7 @@ from cqc_lem.utilities.connection_targeting import (
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import (
     ALREADY_CONNECTED_MESSAGE,
+    CATCHUP_CONTACT_CAP_WINDOW_DAYS,
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
     ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK,
@@ -127,7 +128,9 @@ from cqc_lem.utilities.db import (
     PostType,
     ScheduledDmStatus,
     claim_appreciation_touch,
+    claim_catchup_send_attempt,
     claim_post_for_comment,
+    count_catchup_touches_for_contact_in_window,
     count_catchup_touches_sent_today,
     count_comments_today,
     count_dms_sent_today,
@@ -195,6 +198,7 @@ from cqc_lem.utilities.db import (
     insert_new_log,
     insert_outreach_target,
     insert_scheduled_dm,
+    last_catchup_sent_at,
     mark_edition_failed,
     mark_edition_published,
     mark_followup,
@@ -214,6 +218,7 @@ from cqc_lem.utilities.db import (
     record_target_comment_blocked,
     record_target_engagement,
     record_target_follow_failure,
+    release_catchup_send_attempt,
     release_post_claim,
     resolve_weekly_cap,
     set_profile_synthesis,
@@ -247,6 +252,7 @@ from cqc_lem.utilities.human_pacing import (
     remaining_actions,
 )
 from cqc_lem.utilities.lead_scoring import person_key
+from cqc_lem.utilities.linkedin import zero_walk as _zw
 from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
 from cqc_lem.utilities.linkedin.company_page_inviter import (
     INVITE_STATUS_FAILED,
@@ -335,51 +341,6 @@ from cqc_lem.utilities.selenium_util import (
 # Load .env file
 load_dotenv()
 
-# Global flag to indicate when to stop the thread
-stop_all_thread = threading.Event()
-time_remaining_seconds = 0
-
-
-def countdown_timer(seconds):
-    """Legacy in-process countdown from the pre-Celery script era; nothing in the task graph calls it.
-
-    Counts down on stdout with a carriage return, then SETS the module-global `stop_all_thread` —
-    the flag the old threaded runner used to stop its workers. Unconditionally, on every exit path:
-    a call that returns early because the flag was ALREADY set still sets it again. It is a global,
-    so a second call cannot run independently of the first, and once the flag is set it stays set
-    for the life of the process.
-    """
-    global stop_all_thread
-    global time_remaining_seconds
-    time_remaining_seconds = seconds
-    while seconds > 0 and not stop_all_thread.is_set():
-        mins, secs = divmod(seconds, 60)
-        timer = f'Time left: {mins:02d}:{secs:02d}'
-        sys.stdout.write('\r' + timer)
-        sys.stdout.flush()
-        time.sleep(1)
-        seconds -= 1
-        time_remaining_seconds = seconds
-    sys.stdout.write('\rTime left: 00:00\n')
-    sys.stdout.flush()
-    stop_all_thread.set()  # Set the flag to stop other threads
-
-
-def get_time_remaining_seconds():
-    """Whatever `countdown_timer` last wrote to the process-global counter — 0 if it never ran.
-
-    Not a clock: nothing decrements this except a running `countdown_timer`, so in a Celery worker
-    (where that timer is never started) it reads 0 forever.
-    """
-    global time_remaining_seconds
-    return time_remaining_seconds
-
-
-def get_time_remaining_minutes():
-    """`get_time_remaining_seconds()` floored to whole minutes — under 60 seconds left reads as 0."""
-    return get_time_remaining_seconds() // 60
-
-
 def navigate_to_feed(driver, wait):
     """Put the session on the home feed and ask `_switch_feed_to_recent` to sort it.
 
@@ -401,65 +362,8 @@ def navigate_to_feed(driver, wait):
     _switch_feed_to_recent(driver, wait)
 
 
-def get_feed_posts(driver, wait, num_posts=10):
-    """Legacy feed reader: scroll until `num_posts` cards are present, return `{'link': ...}` dicts.
-
-    Superseded by the SDUI card walk in `comment_on_feed_inline` and no longer on any live path — it
-    still keys off `data-id="urn:li:activity"`, and the scroll loop gives up as soon as a scroll adds
-    no cards, so it can return FEWER than `num_posts` (or none at all) without saying so.
-    """
-    posts = []
-
-    # Find the posts in the feed
-    post_element_xpath = '//div[contains(@data-id, "urn:li:activity")]'
-    post_elements = get_elements_as_list_wait_stale(wait, post_element_xpath, "Finding Posts in Feed")
-
-    if len(post_elements) == 0:
-        print(" No posts found in feed.")
-
-    while len(post_elements) < num_posts:
-        # Scroll to the bottom of the page to load more posts
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-
-        # Wait for the posts to load
-        time.sleep(5)
-
-        # Find the posts in the feed
-        new_post_elements = get_elements_as_list_wait_stale(wait, post_element_xpath, "Finding New Posts in Feed")
-
-        if len(new_post_elements) == len(post_elements):
-            # No new posts. Exit the loop
-            break
-
-        post_elements = new_post_elements
-
-    # Limit to the number of posts we want
-    for post in post_elements[:num_posts]:
-        # Get the link to the post
-        post_link = 'https://www.linkedin.com/feed/update/' + post.get_attribute('data-id')
-
-        posts.append({
-            'link': post_link,
-
-        })
-
-    return posts
-
-
-# Reading/thinking delays now come from utilities/human_pacing.py (issue #626) — one engine, with a
-# floor no human beats and a ceiling that keeps the sleep inline-safe.
-
-
-def simulate_writing_time(content):
-    """Seconds a human would take to type `content` at ~5 chars/sec — an estimate, it does not sleep.
-
-    Superseded on every live path by `utilities/human_pacing.py` (issue #626), which is the ONE
-    cadence engine and, unlike this, is seeded per (user, action, date) so a retry never re-rolls.
-    """
-    # Simulate a human writing time (around 5 characters per second)
-    char_count = len(content)
-    writing_time = char_count / 5
-    return round(writing_time)
+# Reading/thinking/typing delays all come from utilities/human_pacing.py (issue #626) — one engine,
+# with a floor no human beats and a ceiling that keeps the sleep inline-safe.
 
 
 def emoji_to_ue_string(emoji):
@@ -819,54 +723,16 @@ return null;
 # renders two text nodes inside one card still widens. Issue #916.
 _POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by']"]
 
-# ── zero-walk tripwires (issue #1013) ────────────────────────────────────────────────────────
-# A walk that returns zero items is ambiguous, and every silent SDUI outage of Aug 2026 lived in
-# that ambiguity: #964's catch-up scan logged `no_moments` daily while the feed showed ten moments,
-# and #1009's viewer walk engaged nobody for weeks. The fix is the same everywhere — before a zero
-# is treated as "nothing to do", ask the PAGE, through an anchor the walk itself does not depend on.
-# The independence is the whole point: cross-checking a chain against its own selector proves
-# nothing, since a rotated anchor answers zero to both questions.
+# ── zero-walk tripwires (issues #1013, #1021) ────────────────────────────────────────────────
+# The grading itself lives in utilities/linkedin/zero_walk.py, because scrapper and
+# company_page_inviter need it too and both are imported BY this module. Re-exported under the
+# names this module already used so every call site (and its tests) keeps one spelling.
 _FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
 _CATCHUP_CARD_CROSSCHECK_SEL = "main div[role='listitem']"
 
-
-def _page_native_count(driver, selector: str) -> "int | None":
-    """How many of `selector` the page renders, or None when the read itself failed. None is
-    load-bearing: "we could not ask the page" must never be recorded as "the page said zero".
-    """
-    try:
-        return len(driver.find_elements(By.CSS_SELECTOR, selector))
-    except WebDriverException:
-        return None
-
-
-def zero_walk_verdict(page_native: "int | None") -> str:
-    """What a zero-item walk means, given the page's own count of an INDEPENDENT anchor.
-
-    'drift'   — the page renders items the walk could not see. A real defect.
-    'empty'   — the page renders none either. An ordinary quiet day, and a no-op.
-    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect.
-    """
-    if page_native is None:
-        return "unknown"
-    return "drift" if page_native > 0 else "empty"
-
-
-def _report_zero_walk(driver, selector: str, what: str, **context) -> str:
-    """Cross-check a zero-item walk and log at the level the answer deserves.
-
-    Drift is a WARNING on purpose — once is a warning, repeatedly is a defect, and repeated selector
-    rot is exactly the defect that should file itself. An empty page and an unreadable cross-check
-    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md).
-    """
-    count = _page_native_count(driver, selector)
-    verdict = zero_walk_verdict(count)
-    if verdict == "drift":
-        log_warning(f"{what} matched nothing while the page still renders cards — selector drift",
-                    **context)
-    else:
-        log_debug(f"{what} matched nothing and the page shows none either ({verdict})", **context)
-    return verdict
+zero_walk_verdict = _zw.zero_walk_verdict
+_grade_zero_walk = _zw.grade_zero_walk
+_report_zero_walk = _zw.report_zero_walk
 
 
 _SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
@@ -1191,6 +1057,42 @@ def _post_social_counts(card) -> dict:
     return {"reactions": _num(_REACTIONS_RE, "reactions"), "comments": _num(_COMMENTS_RE, "comments"),
             "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
             "saves": _num(_SAVES_RE, "saves")}
+
+
+# The zero-walk cross-check for a stats read that scored EVERY signal 0 (issue #1021): a post with
+# no engagement and a post whose layout the parser no longer matches look identical in the numbers.
+# Deliberately a DIFFERENT vocabulary from _STACKED_LABEL_FIRST — a cross-check that only knows the
+# labels the parser maps could never see the rename that broke it — and it demands a NON-ZERO count
+# beside the label, so a genuinely quiet post ("Impressions / 0") reads `empty`, never drift.
+_CROSSCHECK_LABEL_RE = re.compile(
+    r"^(?:reaction|like|comment|repost|share|save|impression|view|member[s]?\s+reached)s?$",
+    re.IGNORECASE)
+
+
+def _rendered_count_signals(text: str) -> int:
+    """How many engagement counts the PAGE renders as a non-zero number beside its own label.
+
+    Shares the parser's adjacency assumption but not its label map: a layout that moves a value away
+    from its label counts 0 here, which grades `empty` — the fail-safe direction for a tripwire.
+    """
+    lines = [line.strip() for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    found = 0
+    for i, line in enumerate(lines):
+        if not _CROSSCHECK_LABEL_RE.match(line.rstrip(":")):
+            continue
+        neighbours = ([lines[i - 1]] if i else []) + ([lines[i + 1]] if i + 1 < len(lines) else [])
+        if any(_BARE_COUNT_RE.match(n) and _parse_count(n) > 0 for n in neighbours):
+            found += 1
+    return found
+
+
+def _main_text(driver) -> "str | None":
+    """The rendered <main> text, or None when it cannot be read at all."""
+    try:
+        return driver.find_element(By.TAG_NAME, "main").text or ""
+    except Exception:
+        return None
 
 
 # Feed-post prioritization weights — defaults below, each overridable per-deploy via the matching
@@ -3907,6 +3809,7 @@ def auto_scrape_post_stats(self, user_id: int):
                 container = driver.find_element(By.TAG_NAME, "main")
             except Exception:
                 container = None
+            detail_text = _main_text(driver) if container is not None else None
             counts = _post_social_counts(container) if container is not None else {}
             # The detail page's social bar carries reactions/comments/reposts; saves and a reliable
             # impression count exist ONLY on the author's analytics page — merge by max so a signal
@@ -3922,6 +3825,16 @@ def auto_scrape_post_stats(self, user_id: int):
                 log_debug("Post page unreadable — leaving it uncaptured", user_id=user_id,
                           post_id=pid, task_name="auto_scrape_post_stats")
                 continue
+            # An all-zero read is the OTHER fabricated row (#1021): a quiet post and a rotated
+            # layout score identically. Ask the page — the analytics view is the one on screen now,
+            # so both texts are cross-checked — and leave a drifted read uncaptured for the same
+            # reason an unreadable one is left: a written zero is permanent for a backfilled post.
+            if not any(counts.values()):
+                texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
+                native = sum(_rendered_count_signals(text) for text in texts) if texts else None
+                if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
+                                    post_id=pid, task_name="auto_scrape_post_stats") == "drift":
+                    continue
             record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
                               reposts=counts.get("reposts") or 0,
                               impressions=counts.get("impressions") or None,
@@ -4233,8 +4146,6 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     a report can confirm the warm-up before that post actually happened (issue #547). It rides the
     self-requeue kwargs, so every pass in the window accumulates onto the same marker.
     """
-    global stop_all_thread
-
     myprint("Starting Automate Commenting Thread...")
 
     # Comment-quality hold (issue #628): when the weekly outcome report finds our comments are being
@@ -6850,8 +6761,6 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
     `lookback_days`. The default matches the daily cadence; a catch-up run passes a larger
     window once, then the cadence sticks to the delta.
     """
-    global stop_all_thread
-
     myprint("Starting Profile Viewer DMs")
 
     try:
@@ -7470,27 +7379,87 @@ def _send_lead_response(signal_id: int) -> str:
         quit_gracefully(driver)
 
 
-# The connection-degree badge on a profile page. Only used to ABORT a pointless invite, so a
-# selector that stops matching costs nothing but the old behaviour (issue #623).
+# The connection-degree badge on a profile page. `span.dist-value` / `span.distance-badge` are
+# CLASS anchors, and class anchors are gone from the SDUI profile — both were confirmed dead on
+# 2026-08-03, which left this read (and, through `profile.is_1st_connection`, the whole
+# profile-viewer 1st-vs-other branch) blind. The chain now leads with what the page still WRITES:
+# the badge is its own leaf node whose entire text is the degree. Class anchors stay last, as a
+# legacy tail that costs nothing if a pre-SDUI layout is ever served (issues #623, #1021).
+#
+# The two text shapes are ONE union expression, not two locators, because a union comes back in
+# DOCUMENT order — and document order is the only thing that attributes a badge to THIS profile.
+# `<main>` carries other people's badges too (mutual-connection highlights, "More profiles for
+# you"), so the top card's badge is the FIRST one and every later one names a different entity —
+# the #1012 rule read backwards. Two separate locators would let a highlight's bare "1st" outrank
+# the top card's "2nd degree connection" purely because its locator came first in the list.
+_DEGREE_TOKENS = ("1st", "2nd", "3rd", "3rd+")
+_DEGREE_LEAF_XPATH = (
+    "//main//*[self::span or self::div or self::li or self::p][not(*)]["
+    + " or ".join(f"normalize-space()='{t}' or normalize-space()='· {t}'" for t in _DEGREE_TOKENS)
+    + "]"
+    " | //main//*[not(*)][contains(normalize-space(),'degree connection')]")
 _PROFILE_DEGREE_LOCATORS = [
+    (By.XPATH, _DEGREE_LEAF_XPATH),
     (By.CSS_SELECTOR, "main span.dist-value"),
     (By.CSS_SELECTOR, "main span.distance-badge"),
     (By.XPATH, "//main//span[contains(@class,'distance-badge')]"),
 ]
 
+# The cross-check for a chain that matched NOTHING: the page's own degree line, read out of the
+# rendered text rather than through a locator. Whole-line on purpose — a loose `\b1st\b` would
+# fire on a headline ("1st place, 2026 awards") and warn on a healthy profile forever.
+_DEGREE_LINE_RE = re.compile(r"^(?:·\s*)?(1st|2nd|3rd)\+?(?:\s+degree(?:\s+connection)?)?$",
+                             re.IGNORECASE)
 
-def _profile_is_first_degree(driver) -> bool:
-    """True only when the profile page SAYS 1st degree. Fails open (False) on any read problem —
-    a missed badge just means we try the invite, which is the old behaviour.
+
+def _degree_lines_on_page(driver) -> "int | None":
+    """How many degree-badge LINES the page renders, or None when the read itself failed."""
+    try:
+        text = driver.find_element(By.TAG_NAME, "main").text or ""
+    except Exception:
+        return None
+    return sum(1 for line in text.splitlines() if _DEGREE_LINE_RE.match(line.strip()))
+
+
+def _degree_badge_texts(driver) -> "list[str] | None":
+    """Every degree-badge text the locator chain can READ, in chain-then-document order, or None
+    when the read itself failed. None and [] are different answers: an unreadable page grounds
+    nothing, an empty chain on a readable page is the zero worth cross-checking. A matched node with
+    no text counts as neither — a locator that resolves to an empty element is as blind as one that
+    resolves to nothing.
     """
+    texts: "list[str]" = []
     try:
         for by, selector in _PROFILE_DEGREE_LOCATORS:
             for element in driver.find_elements(by, selector):
-                if is_first_degree(element.text or ""):
-                    return True
+                if (element.text or "").strip():
+                    texts.append(element.text)
     except Exception as e:
         log_warning("Could not read the connection-degree badge; attempting the invite anyway",
                     exc=e, action_type="invite_connect")
+        return None
+    return texts
+
+
+def _profile_is_first_degree(driver) -> bool:
+    """True only when THIS profile's own badge says 1st degree. Fails open (False) on any read
+    problem — a missed badge just means we try the invite, which is the old behaviour. A chain that
+    matched NO badge at all is cross-checked against the page's own degree line first, so the blind
+    read that #1012 paid for cannot recur silently (issue #1021).
+
+    Only the FIRST badge is judged, never "any of them": the top card is the first thing under
+    <main>, and every badge below it — a mutual-connection highlight, a "More profiles for you"
+    card — belongs to somebody else. Reading those would abort the invite to a 2nd-degree target
+    just because one of their mutuals is a 1st, which is #1012's mistake in a read instead of a
+    click.
+    """
+    texts = _degree_badge_texts(driver)
+    if texts is None:
+        return False
+    if texts:
+        return is_first_degree(texts[0])
+    _grade_zero_walk(_degree_lines_on_page(driver), "Profile degree-badge chain",
+                     action_type="invite_connect")
     return False
 
 
@@ -8403,6 +8372,9 @@ CATCHUP_STATUS_FAILED = "failed"                    # send_dm_now could not deli
 CATCHUP_STATUS_DM_CAPPED = "dm_capped"              # the ACCOUNT-wide DM cap, not the catch-up one
 CATCHUP_STATUS_NO_MESSAGE = "no_message"            # approved with an empty body
 CATCHUP_STATUS_NOT_SENDABLE = "not_sendable"        # row missing or no longer approved/sending
+CATCHUP_STATUS_CONTACT_COOLDOWN = "contact_cooldown"  # per-contact interval hasn't elapsed (issue #1078)
+CATCHUP_STATUS_CONTACT_CAP = "contact_cap"            # per-contact window cap reached (issue #1078)
+CATCHUP_STATUS_ALREADY_SENT = "already_sent"          # durable claim row already exists (issue #1078)
 
 # Ordered fallback chain for the catch-up cards. Live-grounded 2026-08-03 on a real session: the
 # surface is full SDUI — every card is a div[role='listitem'] (with a componentkey UUID) inside the
@@ -8564,6 +8536,35 @@ def _catchup_excluded(moment: dict, prefs: dict) -> bool:
         if str(term).strip() and str(term).strip().lower() in haystack:
             return True
     return False
+
+
+def _catchup_contact_cooldown_active(user_id: int, profile_url: str, cooldown_days: int) -> bool:
+    """True when this contact already received a catch-up within `cooldown_days` (issue #1078).
+
+    A non-positive cooldown disables the guard. Read failures return False so a broken query never
+    blocks the lane.
+    """
+    if cooldown_days <= 0:
+        return False
+    last_sent = last_catchup_sent_at(user_id, profile_url)
+    if last_sent is None:
+        return False
+    return datetime.now(timezone.utc) - last_sent.replace(tzinfo=timezone.utc) < timedelta(
+        days=cooldown_days)
+
+
+def _catchup_contact_cap_reached(user_id: int, profile_url: str, max_touches: int,
+                                 window_days: int = CATCHUP_CONTACT_CAP_WINDOW_DAYS) -> bool:
+    """True when this contact has already received `max_touches` catch-ups in `window_days` (issue #1078).
+
+    The window is the fixed rolling month, NOT the cooldown: a cap measured over the cooldown window
+    can never be reached, because the cooldown blocks the second message long before the cap counts
+    it — and a user who sets the cooldown to 0 would lose the cap with it. A non-positive
+    `max_touches` disables the guard. Read failures return False.
+    """
+    if window_days <= 0 or max_touches <= 0:
+        return False
+    return count_catchup_touches_for_contact_in_window(user_id, profile_url, window_days) >= max_touches
 
 
 def _score_catchup_moment(moment: dict, prefs: dict) -> int:
@@ -8805,7 +8806,8 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
 _CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
                                      CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED,
                                      CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE,
-                                     CATCHUP_STATUS_AWAITING_APPROVAL})
+                                     CATCHUP_STATUS_AWAITING_APPROVAL, CATCHUP_STATUS_CONTACT_COOLDOWN,
+                                     CATCHUP_STATUS_CONTACT_CAP, CATCHUP_STATUS_ALREADY_SENT})
 
 
 def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> None:
@@ -8837,9 +8839,11 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     NOTHING is sent here. Qualifying moments become 'pending' rows in catchup_touches for human
     approval (or 'approved' when the user opted into catchup_touch_mode='auto_approve'), and the
     capped scanner sends them later. Only milestone types the user enabled are drafted, each
-    milestone is deduped on (person, event_type, period), and moments scoring below CATCHUP_MIN_SCORE
-    are tombstoned as 'skipped' so we neither draft nor re-score them. The message itself is
-    LinkedIn's own pre-drafted response unless the user opted into catchup_message_source='ai'.
+    milestone is deduped on (person, event_type, period), moments scoring below CATCHUP_MIN_SCORE
+    are tombstoned as 'skipped' so we neither draft nor re-score them, and the per-contact frequency
+    guard (issue #1078) holds back any new event for a contact that already received a catch-up in
+    the configured window. The message itself is LinkedIn's own pre-drafted response unless the user
+    opted into catchup_message_source='ai'.
 
     EVERY run reports (issue #792) — including the ones that draft nothing — with the per-stage
     funnel counts, because a quiet lane and a broken one are otherwise the same silence.
@@ -8888,7 +8892,10 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     finally:
         quit_gracefully(driver)
 
-    funnel = {"classified": 0, "enabled_type": 0, "excluded": 0, "duplicate": 0, "below_bar": 0}
+    cooldown_days = int(prefs.get("min_catchup_contact_interval_days") or 0)
+    max_per_contact = int(prefs.get("max_catchup_touches_per_contact_days") or 0)
+    funnel = {"classified": 0, "enabled_type": 0, "excluded": 0, "duplicate": 0, "below_bar": 0,
+              "contact_cooldown": 0, "contact_cap": 0}
     for moment in moments:
         if drafted >= max_drafts:
             break
@@ -8906,6 +8913,14 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         period = _catchup_event_period(event_type)
         if has_catchup_touch(user_id, moment["profile_url"], event_type, period):
             funnel["duplicate"] += 1
+            continue
+        # Per-contact frequency guard (issue #1078): don't stack congratulations to the same person
+        # across different events within the configured window.
+        if _catchup_contact_cooldown_active(user_id, moment["profile_url"], cooldown_days):
+            funnel["contact_cooldown"] += 1
+            continue
+        if _catchup_contact_cap_reached(user_id, moment["profile_url"], max_per_contact):
+            funnel["contact_cap"] += 1
             continue
         score = _score_catchup_moment(moment, prefs)
         if score < CATCHUP_MIN_SCORE:
@@ -8947,6 +8962,10 @@ def send_catchup_touch(self, touch_id: int):
     the shared DM logging. A high-value milestone also enqueues the user's follow-up sequence, which is
     what routes a replying prospect into the BD nurture.
 
+    Issue #1078 adds two extra guards: a durable `catchup_send_attempts` claim written BEFORE the DM
+    goes out (so retries / worker restarts can never double-send the same milestone), and a per-contact
+    cooldown/cap that defers a touch when the same person already received a catch-up within the window.
+
     EVERY outcome reports (issue #792). A deferral puts the touch back to 'approved' and the drip
     re-dispatches it 20 minutes later, so without this the send phase's `dispatched` count climbs all
     day on a lane that has never delivered a single message — which IS the reported symptom.
@@ -8983,11 +9002,42 @@ def send_catchup_touch(self, touch_id: int):
         _report(CATCHUP_STATUS_DM_CAPPED, user_id)
         return f"Catch-up touch {touch_id} deferred (daily DM cap reached)"
 
+    cooldown_days = int(prefs.get("min_catchup_contact_interval_days") or 0)
+    max_per_contact = int(prefs.get("max_catchup_touches_per_contact_days") or 0)
+    if _catchup_contact_cooldown_active(user_id, touch["profile_url"], cooldown_days):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        _report(CATCHUP_STATUS_CONTACT_COOLDOWN, user_id)
+        return f"Catch-up touch {touch_id} deferred (per-contact cooldown)"
+    if _catchup_contact_cap_reached(user_id, touch["profile_url"], max_per_contact):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        _report(CATCHUP_STATUS_CONTACT_CAP, user_id)
+        return f"Catch-up touch {touch_id} deferred (per-contact cap)"
+
+    # Durable send claim: only one worker can insert this milestone identity. If another already
+    # did, the row is already sent (or sending) and we must not call LinkedIn again.
+    event_period = touch.get("event_period") or _catchup_event_period(touch["event_type"])
+    if not claim_catchup_send_attempt(touch_id, user_id, touch["profile_url"], touch["event_type"],
+                                      event_period):
+        # A claim we did not write, on a row that never reached `sent`, means a send was lost between
+        # the claim and its status update — rare enough to be worth a defect, and never routine.
+        log_warning(f"Catch-up touch {touch_id} already has a send claim; skipping",
+                    user_id=user_id, action_type="catchup")
+        # Leave the row as SENT if the claim exists; a missing status update is the only reason we'd
+        # arrive here with the claim already present.
+        if touch["status"] != CatchupTouchStatus.SENT:
+            update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT)
+        _report(CATCHUP_STATUS_ALREADY_SENT, user_id)
+        return f"Catch-up touch {touch_id} already sent"
+
     try:
         sent = send_dm_now(user_id, touch["profile_url"], touch["message"],
                            person_name=touch.get("person_name"))
     except LinkedInRateLimited as e:
         myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
+        # The breaker refused before a composer was ever opened, so nothing was sent — give the claim
+        # back, or the deferral we are about to write could never be retried: the next attempt would
+        # lose the claim and mark this touch `sent` having sent nothing.
+        release_catchup_send_attempt(user_id, touch["profile_url"], touch["event_type"], event_period)
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
         _report(CATCHUP_STATUS_THROTTLED, user_id)
         return f"Catch-up touch {touch_id} deferred (LinkedIn throttled)"
@@ -9045,23 +9095,9 @@ def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
                     user_id=user_id, action_type="catchup")
 
 
-def final_method(drivers: List[WebDriver]):
-    """Legacy shutdown from the pre-Celery script era: stop the threads, quit every driver, EXIT.
-
-    It ends with `sys.exit(0)`, so it never returns to its caller — which is why nothing on the
-    Celery path calls it, and why nothing should: killing the interpreter inside a worker takes
-    every other task in that process with it. Tasks quit their own driver in a `finally` instead.
-    """
-    global stop_all_thread
-    stop_all_thread.set()  # Set the flag to stop other threads
-    for driver in drivers: quit_gracefully(driver)  # Quit all the drivers
-    myprint("All drivers stopped. Program has exited.")
-    sys.exit(0)
-
-
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='1/m', queue='se_outreach')
-def update_stale_profile(self, user_id: int):
+def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     """Re-scrape the user's OWN LinkedIn profile and refresh the voice synthesis distilled from it.
 
     The scrape is a side effect of `get_current_profile`; the session is closed immediately because
@@ -9069,11 +9105,18 @@ def update_stale_profile(self, user_id: int):
     lane wanted. A login failure returns a message string rather than raising, so one user's broken
     session shows up in that task's result instead of as a worker exception.
 
+    `force_refresh` is what makes this task an ON-DEMAND refresh (issue #1076) rather than a daily
+    sweep: without it a profile cached within the last day is simply read back, which is right for
+    the beat and wrong for a user who edited their profile a minute ago and pressed the button. It
+    also splits the `QueueOnce` key, so a manual refresh is deduped against other manual refreshes
+    and never swallowed by an in-flight sweep.
+
     The synthesis refresh is best-effort and never fails a scrape that already succeeded.
     """
     myprint(f"Updating Stale Profile. User ID: {user_id}")
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Update Stale Profile")
+        driver, wait, user_email, my_profile = get_current_profile(
+            user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
     except Exception as e:
         log_error("Error while updating stale profile", exc=e, user_id=user_id, task_name="update_stale_profile")
         return f"Failed to update profile: {e}"
@@ -9092,7 +9135,8 @@ def update_stale_profile(self, user_id: int):
 
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
-                        measurement_only: bool = False, debug: bool = False) -> Tuple[
+                        measurement_only: bool = False, debug: bool = False,
+                        force_refresh: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
@@ -9102,6 +9146,10 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
 
     `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
     back to the normal pool when the node is busy or absent.
+
+    `force_refresh` makes the scrape bypass the profile cache (issue #1076). The cached FALLBACK
+    below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
+    the caller learns from the synthesis it gets back, not from a missing profile.
     """
     myprint("Getting Updated Profile")
 
@@ -9123,7 +9171,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     # transient DOM change) even when the feed is reachable. Don't let that abort the
     # whole task — fall back to the user's cached profile so commenting can proceed.
     try:
-        my_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
+        my_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id,
+                                    force_refresh=force_refresh)
     except Exception as e:
         log_warning("Live profile refresh failed; falling back to cached profile", exc=e, user_id=user_id)
         my_profile = None
@@ -9139,27 +9188,50 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     return driver, wait, user_email, my_profile
 
 
-if __name__ == "__main__":
-    # Create the driver
-    # driver = create_driver()
-    # wait = get_driver_wait(driver)
-    # test_already_commented(driver, wait)
+class LinkedInSession(NamedTuple):
+    """The four values every browser-driven task carries around together.
 
-    # test_ai_responses()
-    # generate_ai_response_test
-    # test_dates()
-    # test_linked_in_profile()
-    # test_get_linkedin_profile_from_url()
-    # test_describe_profile()
-    # test_describe_summarize_interesting_activity()
-    # test_post_comment()
-    # test_send_dm()
-    # test_invite_to_connect()
-    # exit(0)
+    A NamedTuple on purpose: `driver, wait, user_email, my_profile = session` still unpacks exactly
+    as the bare tuple did, so this is additive for anything that already destructures the result of
+    `get_current_profile`.
+    """
 
-    # start_process()
-    # myprint("Process finished")
-    pass
+    driver: WebDriver
+    wait: WebDriverWait
+    user_email: str
+    my_profile: LinkedInProfile
+
+
+@contextmanager
+def browser_session(user_id: int, session_name: str, **kwargs) -> "Iterator[LinkedInSession]":
+    """Hold a logged-in LinkedIn session for the duration of a block, and always give it back.
+
+    Chrome capacity is a FIXED pool of session slots shared by the Selenium lanes
+    (`SE_NODE_MAX_SESSIONS`), so a driver that is acquired and not quit does not degrade
+    performance — it permanently removes one of about eight slots until the worker process is
+    recycled. That teardown is currently a `try/finally` written out by hand in 24 task bodies, and
+    nothing stops the 25th from forgetting it.
+
+    Deliberately does NOT catch the acquisition failure. `get_current_profile` raises on a 429, an
+    auth wall, or a profile that will not resolve, and each caller answers that differently — some
+    return a message string the beat records, some re-raise for a retry, one is a measurement-only
+    run that must stay quiet. Guessing one of those would be worse than the four lines it saves.
+
+    Args:
+        user_id: Whose stored credentials and proxy the session runs as.
+        session_name: The label the Grid session is tagged with, for VNC and logs.
+        **kwargs: Forwarded to `get_current_profile` — `measurement_only`, `debug`, `force_refresh`.
+
+    Yields:
+        A `LinkedInSession`, which also unpacks as the historical
+        `(driver, wait, user_email, my_profile)` 4-tuple.
+    """
+    driver, wait, user_email, my_profile = get_current_profile(
+        user_id=user_id, session_name=session_name, **kwargs)
+    try:
+        yield LinkedInSession(driver=driver, wait=wait, user_email=user_email, my_profile=my_profile)
+    finally:
+        quit_gracefully(driver)
 
 
 def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,

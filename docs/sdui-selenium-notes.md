@@ -20,7 +20,9 @@ proceed as if it were success.
 
 The same rule reads backwards for a walk that finds nothing: **zero items is not "nothing to do"
 until the page agrees.** Cross-check against an anchor the walk does not itself depend on
-(`_report_zero_walk` / `zero_walk_verdict` in `run_automation.py`), because a rotated selector
+(`report_zero_walk` / `zero_walk_verdict` in `utilities/linkedin/zero_walk.py` — the ONE grader,
+re-exported from `run_automation` under the `_`-prefixed names its call sites already used),
+because a rotated selector
 answers zero to both questions. `drift` there warns — once is a warning, repeatedly is a defect, and
 repeated selector rot is exactly the defect that should file itself. An empty page and an unreadable
 cross-check stay DEBUG.
@@ -165,6 +167,31 @@ leading run that already contains a date range stops the walk — that run belon
 role, not to a company header. A header without a total-duration line (a bare "Experience" heading)
 is never a company.
 
+## The degree badge is a leaf node's TEXT, never a class
+
+`span.dist-value` / `span.distance-badge` were confirmed dead on the same 2026-08-03 grab. Both are
+class anchors, and every class anchor on the profile is now hashed. What the top card still writes
+is the degree itself, as its own leaf node whose entire text is `1st` / `2nd` / `3rd+` (sometimes
+`· 2nd`, sometimes spelled out as `2nd degree connection`) — so `_PROFILE_DEGREE_LOCATORS` and
+`scrapper._degree_from_source` both key off that text, with the class anchors kept only as a legacy
+tail. This read is load-bearing twice over: `_profile_is_first_degree` aborts a pointless invite
+with it, and `LinkedInProfile.is_1st_connection` (fed by `parse_profile_header`) is what routes a
+profile viewer down the comment branch instead of the connection-request branch — a dead badge made
+**every** viewer look like a non-connection. A chain that matches no badge at all is cross-checked
+against the page's own degree LINE (whole-line, never `\b1st\b`, which would fire on
+"1st place, 2026 awards"); re-ground with `scripts/linkedin_live_validation.py --profile-scrape`
+against a 2nd/3rd-degree profile and read `degree_anchors` in the report.
+
+**The FIRST badge is the profile's; every later one names somebody else.** A text anchor is far
+broader than the class anchor it replaced, and a profile page is full of other people's badges —
+the "People also viewed" rail outside `<main>`, mutual-connection highlights inside it. So both
+reads take the first match in DOCUMENT order and nothing else: `_PROFILE_DEGREE_LOCATORS` leads
+with a single **union** XPath (a union returns nodes in document order, two locators would not) and
+`_profile_is_first_degree` judges `texts[0]`, while `_degree_from_source` is scoped to `<main>` and
+returns on the first hit. Reading "any badge on the page" is the #1012 rail hazard in a read
+instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
+1st.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).
@@ -197,6 +224,33 @@ A miss is an expected no-op and is logged DEBUG *inside* the resolver, like the 
 per-card `log_warning` it replaced escalated to ERROR and filed a defect for a post we skip by
 design. It polls `_COMPOSER_MOUNT_POLLS` times rather than burning
 `WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1)` (~35s) on a card that never opened one.
+
+### The group feed is the surface this was widened FOR, and it is the one nothing had grounded (#928)
+
+The DEBUG downgrade above is right and it is also why the group lane went quiet either way: with the
+warning gone, "the widening works" and "the widening still misses every post" print the same
+nothing. The three days before #916 examined **2,515** group posts and landed **one** comment.
+
+`scripts/linkedin_live_validation.py --group-feed-composer [<group-id>]` is what answers it. It
+walks a group feed with the SHIPPED chain (`_FEED_POST_TEXT_SEL` → `_card_for_textbox` →
+`_COMMENT_ACTION_LOCATORS` → `_post_composer_for_card`), clicks each sampled card's own Comment
+button so the box mounts, Escapes without typing, and reports per card:
+
+- **per-locator hit counts** for `_COMMENT_ACTION_LOCATORS` (the `live count:` rows beside that
+  chain were taken on the HOME feed in #816 and have never been re-taken on a group one),
+- `composer_source` — `in_card`, `widened_scope` (the box existed only inside `_single_post_scope`,
+  i.e. #916's widening is what found it) or `none`,
+- `textboxes_in_card` / `textboxes_in_scope` / `page_textboxes_after_click`.
+
+The **home feed runs as a control in the same session**, because "no composer in the group" is only
+a statement about groups next to a feed where the same chain does resolve one. The three zero-shapes
+are graded apart, since they need opposite fixes: no Comment action on any card (re-ground the
+chain), a composer mounted on the page that no card claimed (re-ground the resolver / widening), and
+nothing mounting anywhere (the surface has no inline composer at all, so the lane must stop
+generating an `lem-medium` comment per post it can never post — #1084).
+
+**Live counts: not yet taken.** The run is `risk:live-linkedin` and belongs to the owner (see the
+**linkedin-live-validation** skill); its per-locator numbers land here, replacing this line.
 
 ## A post PERMALINK runs the same engine as the feed — and is not a one-post page
 

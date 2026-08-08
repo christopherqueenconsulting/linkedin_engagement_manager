@@ -1,8 +1,10 @@
 """Unit tests for the live LinkedIn validation probe (scripts/linkedin_live_validation.py)."""
 
 import importlib.util
+import sys
+import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1089,6 +1091,25 @@ class TestProfileScrapeProbe:
         assert llv.profile_scrape_state(reading) == llv.STATE_DRIFT
         assert "blind" in llv.profile_scrape_verdict(reading)
 
+    def test_the_anchor_dump_reports_every_shape_the_shipped_chain_leads_with(self):
+        """`degree_anchors` is what a re-grounding PR is written from (#1021 → #1031).
+
+        A shape the shipped chain matches but the dump cannot report makes the probe come back
+        empty on exactly the profile it was pointed at — a 3rd-degree badge renders as the bare
+        token "3rd+", and the issue asks for a run against a 2nd/3rd-degree profile.
+        """
+        import re
+
+        from cqc_lem.app.run_automation import _DEGREE_TOKENS
+        pattern = re.search(r"/(\^.*\$)/i\.test", llv._DEGREE_ANCHOR_JS).group(1)
+        badge = re.compile(pattern, re.IGNORECASE)
+        for token in _DEGREE_TOKENS:
+            assert badge.match(token), token
+            assert badge.match(f"· {token}"), token
+            assert badge.match(f"{token} degree connection"), token
+        # Still a WHOLE-badge dump: a headline that merely contains a degree token is not an anchor.
+        assert not badge.match("1st place, 2026 Acme awards")
+
 
 @pytest.mark.unit
 class TestCatchupProbe:
@@ -1126,6 +1147,623 @@ class TestGroupComposerProbe:
         reading = {"page_text": "x", "share_box_present": True, "editor_present": True,
                    "post_button_present": True}
         assert llv.group_composer_state(reading) == llv.STATE_OK
+
+
+def _group_driver(page_text: str, scripts: list):
+    """A driver whose page says `page_text` and whose execute_script answers the probe's JS reads.
+
+    The answers come in order: the directory read, then the group-header read.
+    """
+    driver = MagicMock()
+    element = MagicMock()
+    element.text = page_text
+    driver.find_elements.return_value = [element]
+    driver.execute_script.side_effect = list(scripts)
+    return driver
+
+
+def _stubbed_group_modules(share_box):
+    """The two cqc_lem imports the group-page half makes, stubbed so the unit lane never drags in Celery.
+
+    `find_first` answers with the share box (or None).
+    """
+    package = types.ModuleType("cqc_lem")
+    app = types.ModuleType("cqc_lem.app")
+    utilities = types.ModuleType("cqc_lem.utilities")
+    run_automation = types.ModuleType("cqc_lem.app.run_automation")
+    run_automation._GROUP_SHARE_BOX_LOCATORS = [("xpath", "//button")]
+    selenium_util = types.ModuleType("cqc_lem.utilities.selenium_util")
+    selenium_util.find_first = lambda *a, **k: share_box
+    return {"cqc_lem": package, "cqc_lem.app": app, "cqc_lem.utilities": utilities,
+            "cqc_lem.app.run_automation": run_automation,
+            "cqc_lem.utilities.selenium_util": selenium_util}
+
+
+def _stubbed_group_modules_with_db(share_box, enabled_ids):
+    """Same stubs plus `cqc_lem.utilities.db`, whose `get_enabled_group_ids` returns or raises.
+
+    Pass an exception instance for `enabled_ids` to make the DB read fail.
+    """
+    modules = _stubbed_group_modules(share_box)
+    db = types.ModuleType("cqc_lem.utilities.db")
+
+    def get_enabled_group_ids(user_id):
+        if isinstance(enabled_ids, Exception):
+            raise enabled_ids
+        return enabled_ids
+
+    db.get_enabled_group_ids = get_enabled_group_ids
+    modules["cqc_lem.utilities.db"] = db
+    return modules
+
+
+@pytest.mark.unit
+class TestGroupMembershipProbe:
+    """#1052: production commented in a group whose page was offering to let it JOIN."""
+
+    def test_a_join_control_in_the_header_reads_not_member(self):
+        assert llv.group_membership_answer(["Join", "Share"]) == "not_member"
+
+    def test_a_leave_control_reads_member(self):
+        assert llv.group_membership_answer(["Leave", "Invite"]) == "member"
+
+    def test_a_requested_control_reads_pending_not_not_member(self):
+        """A sent request is not a membership AND not an invitation to send another one."""
+        assert llv.group_membership_answer(["Requested"]) == "pending"
+        assert llv.group_membership_answer(["Withdraw request"]) == "pending"
+
+    def test_a_header_that_says_neither_is_unknown_even_with_a_join_elsewhere(self):
+        """The #1012 hazard: the groups-you-may-like rail renders a Join per card.
+
+        None of them name THIS group, so only the header decides.
+        """
+        assert llv.group_membership_answer([]) == "unknown"
+        assert llv.group_membership_answer(["Sort by", "Show more"]) == "unknown"
+
+    def test_a_share_box_is_a_positive_membership_signal_only(self):
+        assert llv.group_membership_answer([], share_box_present=True) == "member"
+        assert llv.group_membership_answer(["Join"], share_box_present=True) == "not_member"
+
+    def test_a_rendered_group_page_that_says_nothing_either_way_is_drift(self):
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1"}]},
+                   "group_page": {"group_id": "1", "page_text": "Some group", "membership": "unknown"}}
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+        assert "nothing to key on" in llv.group_membership_verdict(reading)
+
+    def test_not_member_is_the_probe_working_not_drift(self):
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1", "section": "Your groups"}]},
+                   "group_page": {"group_id": "1", "page_text": "Some group",
+                                  "membership": "not_member", "header_controls": ["Join"]}}
+        assert llv.group_membership_state(reading) == llv.STATE_OK
+
+    def test_a_control_that_only_NAMES_the_group_never_decides_membership(self):
+        """The #1012 hazard inside the reading: the live header renders `More options for <group>`.
+
+        A substring match would let the group's own NAME answer the membership question, and it would
+        answer it `not_member` — the one direction that must never be wrong.
+        """
+        controls = ["Dismiss", "More options for Join the Data Guild", "Share"]
+        assert llv.group_membership_signal(controls, share_box_present=True) == "share_box"
+        assert llv.group_membership_answer(controls, share_box_present=True) == "member"
+        assert llv.group_membership_answer(["More options for Leave No Trace Marketing"]) == "unknown"
+        assert llv.group_membership_answer(["About Pending Innovations group"]) == "unknown"
+        # The real controls still read, verb-first, however they are suffixed.
+        assert llv.group_membership_answer(["Join group Data Guild"]) == "not_member"
+        assert llv.group_membership_answer(["Leave this group"]) == "member"
+        assert llv.group_membership_answer(["Request to join Data Guild"]) == "not_member"
+
+    def test_a_directory_the_sync_matched_nothing_on_is_drift(self):
+        reading = {"directory": {"page_text": "Groups", "enumerated": [],
+                                 "anchors": [{"id": "1"}, {"id": "2"}]},
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+        assert "blind" in llv.group_membership_verdict(reading)
+
+    def test_a_directory_that_never_rendered_grounds_nothing(self):
+        reading = {"directory": {"page_text": "", "enumerated": [], "anchors": []},
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_UNKNOWN
+
+    def test_the_probe_reports_groups_the_db_still_comments_in(self):
+        """The reporter's symptom as a set difference.
+
+        Enabled in the DB, absent from the live directory.
+        """
+        driver = _group_driver("Groups you manage", [
+            {"headings": ["Your groups"], "anchors": [{"id": "111", "text": "A", "section": "Your groups"}]},
+            {"h1": "A", "levels": 2, "header_controls": ["Leave"], "all_controls": ["Leave"]},
+        ])
+        with patch.dict(sys.modules, _stubbed_group_modules(None)):
+            reading = llv.probe_group_membership(driver, user_id=1, enabled_ids=["111", "222"],
+                                                 enumerate_groups=lambda d: [("111", "A")],
+                                                 sleep=lambda *_: None)
+        assert reading["stored_not_live"] == ["222"]
+        assert reading["target_source"] == "db_enabled"
+        assert "#1052 symptom" in reading["verdict"]
+
+    def test_the_group_page_half_reads_the_header_and_clicks_nothing(self):
+        driver = _group_driver("Some Group 1,200 members", [
+            {"headings": ["Your groups"], "anchors": []},
+            {"h1": "Some Group", "levels": 3, "header_controls": ["Join"],
+             "all_controls": ["Join", "Join", "Sort by"]},
+        ])
+        with patch.dict(sys.modules, _stubbed_group_modules(None)):
+            reading = llv.probe_group_membership(driver, user_id=1, group_id="777",
+                                                 enabled_ids=[], enumerate_groups=lambda d: [],
+                                                 sleep=lambda *_: None)
+        assert reading["group_page"]["membership"] == "not_member"
+        assert reading["group_page"]["join_controls_in_header"] == ["Join"]
+        assert reading["target_source"] == "argument"
+        driver.get.assert_called_once_with("https://www.linkedin.com/groups/777/")
+        # Read-only: the probe resolves controls, it never clicks one.
+        assert not any(c[0] == "click" for c in driver.method_calls)
+
+    def test_no_group_anywhere_leaves_the_group_half_ungraded(self):
+        driver = _group_driver("Groups", [{"headings": [], "anchors": []}])
+        reading = llv.probe_group_membership(driver, user_id=1, enabled_ids=[],
+                                             enumerate_groups=lambda d: [], sleep=lambda *_: None)
+        assert reading["target_source"] == "none"
+        assert llv.group_membership_state(reading) == llv.STATE_UNKNOWN
+        assert "no group to probe" in reading["verdict"]
+
+
+@pytest.mark.unit
+class TestGroupMembershipLiveGrounding:
+    """What the 2026-08-07 live run (`--group-membership`, user 1) said the probe was getting wrong.
+
+    Each case is a reading that run actually produced.
+    """
+
+    def test_a_member_page_with_no_membership_control_names_the_share_box_as_its_source(self):
+        """Live: header controls were ['Dismiss', 'Public group', …, 'More options for …'] — no Leave anywhere.
+
+        The answer `member` came entirely from the share box, and reporting only the word sends the
+        fix hunting for a control this surface does not render.
+        """
+        controls = ["Dismiss", "Public group", "Open about group", "Share", "Manage notifications"]
+        assert llv.group_membership_signal(controls, share_box_present=True) == "share_box"
+        assert llv.group_membership_answer(controls, share_box_present=True) == "member"
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1", "section": "Your groups"}]},
+                   "group_page": {"group_id": "1", "page_text": "Some group", "membership": "member",
+                                  "membership_signal": "share_box", "header_controls": controls}}
+        verdict = llv.group_membership_verdict(reading)
+        assert "carried NO membership control" in verdict
+        assert "not a Leave button" in verdict
+
+    def test_a_leave_control_is_still_reported_as_the_source_when_it_is_there(self):
+        assert llv.group_membership_signal(["Leave"]) == "leave_control"
+        assert llv.group_membership_signal(["Join"]) == "join_control"
+        assert llv.group_membership_signal(["Requested"]) == "pending_control"
+        assert llv.group_membership_signal([]) == "none"
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1", "section": "Your groups"}]},
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member",
+                                  "membership_signal": "leave_control", "header_controls": ["Leave"]}}
+        assert "`leave_control`" in llv.group_membership_verdict(reading)
+
+    def test_an_enumerated_id_under_a_recommendation_heading_is_drift(self):
+        """The sync takes every `/groups/<id>` anchor as a join.
+
+        The live directory renders 'Groups you might be interested in' on the same page, so an id
+        from that section becomes a membership the user never had, and LEM comments in it.
+        """
+        directory = {"page_text": "Groups listing",
+                     "enumerated": [["1", "Joined"], ["2", "Offered"]],
+                     "anchors": [{"id": "1", "section": "Your groups"},
+                                 {"id": "2", "section": "Groups you might be interested in"}]}
+        findings = llv.group_enumeration_findings(directory)
+        assert findings["enumerated_under_recommendation"] == ["2"]
+        assert findings["sections_readable"] is True
+        reading = {"directory": directory,
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+        assert "never joined" in llv.group_membership_verdict(reading)
+
+    def test_sections_no_anchor_could_be_attributed_to_are_reported_as_unanswered(self):
+        """Live: all 40 anchors came back with `section: ''`.
+
+        Silence there is not 'no recommendations', it is the discriminating reading having failed.
+        It also has to grade `drift`: this surface is swept weekly and the sweep only looks at
+        `drift`, so an unanswerable reading graded `ok` leaves the question open under a green report.
+        """
+        directory = {"page_text": "Groups listing", "enumerated": [["1", "A"], ["2", "B"]],
+                     "anchors": [{"id": "1", "section": ""}, {"id": "2", "section": ""}]}
+        findings = llv.group_enumeration_findings(directory)
+        assert findings["sections_readable"] is False
+        assert findings["enumerated_under_recommendation"] == []
+        reading = {"directory": directory,
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert "UNANSWERED" in llv.group_membership_verdict(reading)
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+
+    def test_a_stale_set_differenced_against_a_blind_enumeration_is_unverifiable(self):
+        """`stored_not_live` inherits the enumeration's blind spots.
+
+        If the sync matched none of the page's anchors, every enabled group falls into the difference
+        — which is the probe failing to see the directory, not six memberships ending.
+        """
+        reading = {"directory": {"page_text": "Groups", "enumerated": [],
+                                 "anchors": [{"id": "1", "section": "Your groups"}]},
+                   "stored_not_live": ["77427", "60878"],
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.stale_set_grounded(reading) is False
+        verdict = llv.group_membership_verdict(reading)
+        assert "UNVERIFIABLE, not stale" in verdict
+        assert "#1052 symptom" not in verdict
+
+    def test_a_db_list_that_could_not_be_read_never_reads_as_nothing_stale(self):
+        driver = _group_driver("Groups listing", [
+            {"headings": ["Your groups"], "anchor_total": 1,
+             "anchors": [{"id": "111", "text": "A", "section": "Your groups"}]},
+            {"h1": "A", "levels": 2, "header_controls": ["Leave"], "all_controls": ["Leave"]},
+        ])
+        modules = _stubbed_group_modules_with_db(None, RuntimeError("no db"))
+        with patch.dict(sys.modules, modules):
+            reading = llv.probe_group_membership(driver, user_id=1,
+                                                 enumerate_groups=lambda d: [("111", "A")],
+                                                 sleep=lambda *_: None)
+        assert reading["enabled_ids_readable"] is False
+        assert reading["stored_not_live"] == []
+        assert reading["stored_not_live_grounded"] is False
+        assert "could not be read from the DB" in reading["verdict"]
+        # The group half still has something to probe — the live directory named one.
+        assert reading["target_source"] == "directory"
+        assert "not the #1052 symptom" in reading["verdict"]
+
+    def test_a_readable_db_list_grounds_the_stale_set(self):
+        driver = _group_driver("Groups listing", [
+            {"headings": ["Your groups"], "anchor_total": 1,
+             "anchors": [{"id": "111", "text": "A", "section": "Your groups"}]},
+            {"h1": "A", "levels": 2, "header_controls": ["Leave"], "all_controls": ["Leave"]},
+        ])
+        with patch.dict(sys.modules, _stubbed_group_modules_with_db(None, ["111", "222"])):
+            reading = llv.probe_group_membership(driver, user_id=1,
+                                                 enumerate_groups=lambda d: [("111", "A")],
+                                                 sleep=lambda *_: None)
+        assert reading["enabled_ids_readable"] is True
+        assert reading["stored_not_live"] == ["222"]
+        assert reading["stored_not_live_grounded"] is True
+        assert "#1052 symptom" in reading["verdict"]
+
+    def test_a_truncated_anchor_list_is_never_read_as_ids_the_sync_invented(self):
+        """Live: 55 enumerated against an anchor list the probe itself capped at 40, which read as 15 invented ids.
+
+        Truncation is the probe's own ceiling, not a finding.
+        """
+        directory = {"page_text": "Groups listing",
+                     "enumerated": [["1", "A"], ["2", "B"], ["3", "C"]],
+                     "anchors": [{"id": "1", "section": "Your groups"}], "anchor_total": 3}
+        findings = llv.group_enumeration_findings(directory)
+        assert findings["anchors_truncated"] is True
+        assert findings["enumerated_not_anchored"] == []
+        assert llv.group_membership_state({"directory": directory,
+                                           "group_page": {"group_id": "1", "page_text": "x",
+                                                          "membership": "member"}}) == llv.STATE_OK
+        assert "from 3 anchor(s)" in llv.group_membership_verdict({"directory": directory})
+
+    def test_an_id_on_no_anchor_of_a_complete_list_is_drift(self):
+        directory = {"page_text": "Groups listing", "enumerated": [["1", "A"], ["9", "Ghost"]],
+                     "anchors": [{"id": "1", "section": "Your groups"}], "anchor_total": 1}
+        findings = llv.group_enumeration_findings(directory)
+        assert findings["enumerated_not_anchored"] == ["9"]
+        reading = {"directory": directory,
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert llv.group_membership_state(reading) == llv.STATE_DRIFT
+        assert "on no anchor" in llv.group_membership_verdict(reading)
+
+    def test_the_verdict_says_when_it_cut_the_evidence_short(self):
+        """Live: 6 stale ids, 5 named, and the verdict read like the whole set."""
+        reading = {"directory": {"page_text": "Groups", "enumerated": [["1", "A"]],
+                                 "anchors": [{"id": "1", "section": "Your groups"}]},
+                   "stored_not_live": ["1", "2", "3", "4", "5", "6"],
+                   "group_page": {"group_id": "1", "page_text": "x", "membership": "member"}}
+        assert "+1 more" in llv.group_membership_verdict(reading)
+
+    def test_the_probe_reports_its_own_enumeration_findings_in_the_reading(self):
+        driver = _group_driver("Groups listing Your groups", [
+            {"headings": ["Your groups", "Groups you might be interested in"],
+             "anchor_total": 2,
+             "anchors": [{"id": "111", "text": "A", "section": "Your groups"},
+                         {"id": "222", "text": "B",
+                          "section": "Groups you might be interested in"}]},
+            {"h1": "A", "levels": 2, "header_controls": [], "all_controls": ["Share"]},
+        ])
+        with patch.dict(sys.modules, _stubbed_group_modules(MagicMock())):
+            reading = llv.probe_group_membership(
+                driver, user_id=1, enabled_ids=["111"],
+                enumerate_groups=lambda d: [("111", "A"), ("222", "B")], sleep=lambda *_: None)
+        assert reading["directory"]["enumerated_under_recommendation"] == ["222"]
+        assert reading["directory"]["anchor_total"] == 2
+        assert reading["group_page"]["membership_signal"] == "share_box"
+        assert reading["state"] == llv.STATE_DRIFT
+
+
+def _composer_card(hits_on=("normalize-space",)):
+    """A feed card whose locator-chain rungs hit only for the selectors named in `hits_on`.
+
+    Defaults to the shape the #816 home-feed run found: the aria-label/data-testid rungs match
+    nothing and the visible-TEXT XPath rungs carry the surface.
+    """
+    card = MagicMock()
+    card.find_elements.side_effect = lambda by, selector: (
+        [MagicMock()] if any(token in selector for token in hits_on) else [])
+    return card
+
+
+def _composer_feed_driver(text_nodes: int = 1, markers: int = 1, page_text: str = "A group feed"):
+    """A driver whose feed renders `text_nodes` post-text nodes and `markers` `Hide post by` controls."""
+    driver = MagicMock()
+    body = MagicMock()
+    body.text = page_text
+    boxes = [MagicMock() for _ in range(text_nodes)]
+    marker_els = [MagicMock() for _ in range(markers)]
+
+    def find_elements(by, selector):
+        if selector in ("main", "body"):
+            return [body]
+        if "expandable-text-box" in selector:
+            return boxes
+        if "Hide post by" in selector:
+            return marker_els
+        return []
+
+    driver.find_elements.side_effect = find_elements
+    driver.current_url = "https://www.linkedin.com/groups/42/"
+    return driver
+
+
+def _patch_composer_chain(monkeypatch, *, card=None, composer=None, in_card=(), scope=None,
+                          clicks=None):
+    """Point the shipped chain at fakes: `_card_for_textbox`, the action locators, the resolver.
+
+    `in_card` is what `_visible_composers(card)` returns, so a composer NOT in it is one the widened
+    `_single_post_scope` found — the #916 question the probe exists to answer.
+    """
+    card = card if card is not None else _composer_card()
+    monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: card)
+    monkeypatch.setattr("cqc_lem.app.run_automation._post_composer_for_card",
+                        lambda d, c, user_id=None: composer)
+    monkeypatch.setattr("cqc_lem.app.run_automation._single_post_scope",
+                        lambda d, c: scope if scope is not None else c)
+    monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+                        lambda root: [(box, {"y": 0}) for box in
+                                      (in_card if root is card else [])])
+    monkeypatch.setattr("cqc_lem.app.run_automation._is_post_comment_box",
+                        lambda box: True)
+    monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                        lambda *a, **k: MagicMock())
+
+    def click_first(driver, wait, locators, label, **kwargs):
+        if clicks is not None:
+            clicks.append(label)
+        return MagicMock()
+
+    monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", click_first)
+    monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: ["Comment", "Like"])
+    return card
+
+
+@pytest.mark.unit
+class TestGroupFeedComposerProbe:
+    """#928: #916 widened the composer lookup FOR the group feed and made every outcome silent.
+
+    The lane posting nothing and the lane working look identical from the desk either way.
+    """
+
+    def test_locator_hits_are_summed_across_cards_in_chain_order(self):
+        merged = llv.merge_locator_hits([{"a": 0, "b": 1}, {"a": 0, "b": 2}])
+        assert merged == {"a": 0, "b": 3}
+        assert list(merged) == ["a", "b"]
+
+    def test_a_rung_that_could_not_be_read_says_so_instead_of_reading_as_zero(self):
+        """A clean zero is evidence to re-ground from; an unreadable rung is not.
+
+        The two must never print the same.
+        """
+        merged = llv.merge_locator_hits([{"a": 1}, {"a": "<StaleElementReferenceException>"}])
+        assert merged == {"a (unreadable on 1 card(s))": 1}
+
+    def test_a_composer_on_any_card_is_ok(self):
+        feed = {"feed": "group", "page_text": "posts", "cards_found": 2, "composers_resolved": 1,
+                "composers_from_widening": 1}
+        assert llv.feed_composer_state(feed) == llv.STATE_OK
+        assert "#916 widening is what carries this surface" in llv.feed_composer_verdict(feed)
+
+    def test_a_composer_that_came_from_inside_the_card_says_so(self):
+        feed = {"feed": "home", "page_text": "posts", "cards_found": 2, "composers_resolved": 2,
+                "composers_from_widening": 0}
+        assert "from inside the card itself" in llv.feed_composer_verdict(feed)
+
+    def test_posts_on_the_page_the_card_walk_reached_none_of_is_drift(self):
+        feed = {"feed": "group", "page_text": "posts", "post_text_nodes": 6, "page_post_markers": 6,
+                "cards_found": 0}
+        assert llv.feed_composer_state(feed) == llv.STATE_DRIFT
+        assert "reached NONE of them" in llv.feed_composer_verdict(feed)
+
+    def test_a_feed_with_no_posts_on_it_grounds_nothing(self):
+        """A quiet group is not a defect.
+
+        Filing it weekly would bury the run where the composer really is gone.
+        """
+        feed = {"feed": "group", "page_text": "No new posts", "post_text_nodes": 0,
+                "page_post_markers": 0, "cards_found": 0}
+        assert llv.feed_composer_state(feed) == llv.STATE_UNKNOWN
+        assert "no posts at all" in llv.feed_composer_verdict(feed)
+
+    def test_a_feed_that_never_rendered_grounds_nothing(self):
+        assert llv.feed_composer_state({"feed": "group", "page_text": ""}) == llv.STATE_UNKNOWN
+        assert llv.feed_composer_state({"feed": "group", "error": "TimeoutException: x"}) \
+            == llv.STATE_UNKNOWN
+        assert "could not be read" in llv.feed_composer_verdict(
+            {"feed": "group", "error": "TimeoutException: x"})
+
+    def test_the_three_zero_shapes_are_graded_apart(self):
+        """They need opposite fixes and a bare `composers_resolved: 0` reads the same for all three."""
+        no_action = {"feed": "group", "page_text": "posts", "cards_found": 3,
+                     "composers_resolved": 0, "cards": [{"comment_action": None}]}
+        assert llv.feed_composer_state(no_action) == llv.STATE_DRIFT
+        assert "_COMMENT_ACTION_LOCATORS" in llv.feed_composer_verdict(no_action)
+
+        unclaimed = {"feed": "group", "page_text": "posts", "cards_found": 3,
+                     "composers_resolved": 0, "page_textboxes_after_click": 2,
+                     "cards": [{"comment_action": {"text": "Comment"}}]}
+        assert "claimed none of them for their card" in llv.feed_composer_verdict(unclaimed)
+
+        none_mounted = {"feed": "group", "page_text": "posts", "cards_found": 3,
+                        "composers_resolved": 0, "page_textboxes_after_click": 0,
+                        "cards": [{"comment_action": {"text": "Comment"}}]}
+        verdict = llv.feed_composer_verdict(none_mounted)
+        assert "NO composer mounted anywhere" in verdict and "#1084" in verdict
+
+    def test_the_home_control_is_what_makes_a_group_finding_about_groups(self):
+        ok = {"feed": "home", "page_text": "posts", "cards_found": 2, "composers_resolved": 2}
+        drift = {"feed": "group", "page_text": "posts", "cards_found": 2, "composers_resolved": 0,
+                 "page_textboxes_after_click": 1, "cards": [{"comment_action": {"text": "C"}}]}
+        reading = {"group_id": "42", "group": drift, "home": ok}
+        assert llv.group_feed_composer_state(reading) == llv.STATE_DRIFT
+        assert "group surface is what differs" in llv.group_feed_composer_verdict(reading)
+
+    def test_a_control_that_failed_the_same_way_is_not_a_group_finding(self):
+        drift = {"feed": "x", "page_text": "posts", "cards_found": 2, "composers_resolved": 0,
+                 "page_textboxes_after_click": 1, "cards": [{"comment_action": {"text": "C"}}]}
+        reading = {"group_id": "42", "group": dict(drift, feed="group"),
+                   "home": dict(drift, feed="home")}
+        assert "nothing to do with groups" in llv.group_feed_composer_verdict(reading)
+
+    def test_no_group_to_probe_grades_unknown_and_opens_no_feed(self):
+        driver = MagicMock()
+        reading = llv.probe_group_feed_composer(driver, user_id=1, enabled_ids=[],
+                                                sleep=lambda *_: None)
+        assert reading["target_source"] == "none"
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "no group to probe" in reading["verdict"]
+        driver.get.assert_not_called()
+
+    def test_an_unreadable_enabled_list_is_not_an_empty_one(self):
+        db = types.ModuleType("cqc_lem.utilities.db")
+
+        def get_enabled_group_ids(user_id):
+            raise RuntimeError("no db")
+
+        db.get_enabled_group_ids = get_enabled_group_ids
+        with patch.dict(sys.modules, {"cqc_lem.utilities.db": db}):
+            reading = llv.probe_group_feed_composer(MagicMock(), user_id=1, sleep=lambda *_: None)
+        assert reading["enabled_ids_readable"] is False
+        assert "RuntimeError" in reading["enabled_ids_error"]
+        assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_a_box_only_the_widened_scope_holds_is_reported_as_the_widenings_work(self, monkeypatch):
+        """The #916 answer: the card carries no textbox, `_single_post_scope` is what found one."""
+        driver = _composer_feed_driver()
+        composer = MagicMock()
+        clicks: list = []
+        _patch_composer_chain(monkeypatch, composer=composer, in_card=(), clicks=clicks)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        assert reading["cards_found"] == 1
+        assert reading["cards"][0]["composer_source"] == "widened_scope"
+        assert reading["composers_from_widening"] == 1
+        assert reading["state"] == llv.STATE_OK
+        # Read-only: the ONE click is the card's own Comment button, and nothing is ever typed.
+        assert clicks == ["Open comment composer"]
+        composer.send_keys.assert_not_called()
+
+    def test_a_composer_the_escape_closes_still_counts_as_having_mounted(self, monkeypatch):
+        """The page-wide count is taken while the box is OPEN, never after the walk Escaped it.
+
+        Read afterwards, a working Escape zeroes it and the two zero-shapes that need OPPOSITE
+        fixes collapse: "a composer mounted that the card-scoped resolver claimed for no card"
+        (re-ground the resolver) reads as "nothing mounts here at all" (#1084 — stop the lane).
+        """
+        driver = _composer_feed_driver()
+        card = _patch_composer_chain(monkeypatch, composer=None)
+        mounted = [MagicMock()]
+        monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+                            lambda root: [] if root is card else
+                            [(box, {"y": 0}) for box in mounted])
+
+        class _EscapeClosesTheComposer:
+            def __init__(self, _driver):
+                pass
+
+            def send_keys(self, *_):
+                return self
+
+            def perform(self):
+                mounted.clear()
+
+        monkeypatch.setattr("selenium.webdriver.ActionChains", _EscapeClosesTheComposer)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        assert reading["composers_resolved"] == 0
+        assert reading["page_textboxes_after_click"] == 1
+        assert reading["state"] == llv.STATE_DRIFT
+        assert "claimed none of them for their card" in reading["verdict"]
+        assert "#1084" not in reading["verdict"]
+
+    def test_a_box_inside_the_card_is_not_credited_to_the_widening(self, monkeypatch):
+        driver = _composer_feed_driver()
+        composer = MagicMock()
+        _patch_composer_chain(monkeypatch, composer=composer, in_card=(composer,))
+
+        reading = llv._walk_feed_composers(driver, "home", llv.FEED_URL, max_cards=1,
+                                           sleep=lambda *_: None)
+
+        assert reading["cards"][0]["composer_source"] == "in_card"
+        assert reading["composers_from_widening"] == 0
+
+    def test_per_locator_hit_counts_ride_along_so_a_zero_is_re_groundable(self, monkeypatch):
+        driver = _composer_feed_driver()
+        _patch_composer_chain(monkeypatch, composer=MagicMock())
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        hits = reading["locator_hits"]
+        assert hits, "the chain's own hit counts are the reading a re-grounding pass is written from"
+        assert any(count for count in hits.values()), "the TEXT rungs should have matched"
+        assert any(count == 0 for count in hits.values()), "the aria-label rungs should not have"
+
+    def test_a_card_the_page_renders_that_the_walk_misses_is_drift(self, monkeypatch):
+        driver = _composer_feed_driver(text_nodes=4, markers=4)
+        _patch_composer_chain(monkeypatch)
+        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: None)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           sleep=lambda *_: None)
+
+        assert reading["cards_found"] == 0 and reading["post_text_nodes"] == 4
+        assert reading["page_post_markers"] == 4
+        assert reading["state"] == llv.STATE_DRIFT
+
+    def test_the_probe_walks_the_group_then_the_home_feed_as_a_control(self, monkeypatch):
+        driver = _composer_feed_driver()
+        _patch_composer_chain(monkeypatch, composer=MagicMock())
+
+        reading = llv.probe_group_feed_composer(driver, user_id=1, enabled_ids=["42", "43"],
+                                                max_cards=1, sleep=lambda *_: None)
+
+        assert reading["group_id"] == "42" and reading["target_source"] == "db_enabled"
+        assert [c.args[0] for c in driver.get.call_args_list] == [
+            "https://www.linkedin.com/groups/42/", llv.FEED_URL]
+        assert reading["group"]["feed"] == "group" and reading["home"]["feed"] == "home"
+        assert reading["state"] == llv.STATE_OK
+
+    def test_group_feed_composer_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_group_feed_composer",
+                            lambda d, uid, group_id=None, max_cards=3: {"verdict": "ok"})
+        assert llv.main(["--group-feed-composer"]) == 0
+        assert llv.main(["--group-feed-composer", "42", "--group-feed-cards", "5"]) == 0
 
 
 @pytest.mark.unit

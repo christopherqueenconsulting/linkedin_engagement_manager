@@ -60,9 +60,19 @@ task_acks_late = True
 # Re-queue a task whose worker process died mid-execution (the pool child was killed) rather
 # than marking it failed and losing the work. Several tasks already set this per-decorator;
 # making it global means every task — including new ones — survives a deploy the same way.
-# Safe here because the re-runnable tasks are idempotent: posting short-circuits on
-# PostStatus.POSTED, comments/DMs dedup on the commented_posts / dm ledgers, and the
-# high-volume dispatchers are QueueOnce-locked.
+#
+# Safe because the re-runnable tasks are idempotent against a SECOND delivery: posting
+# short-circuits on PostStatus.POSTED, comments/DMs dedup on the commented_posts / dm ledgers,
+# group posts and newsletter editions gate on a durable DB status, and appreciation claims every
+# recipient in appreciation_touches BEFORE dispatch.
+#
+# What does NOT belong in that list is celery-once, which this comment used to cite. QueueOnce
+# takes its lock in `apply_async` — the PRODUCER side (celery_once/tasks.py:100-107) — and
+# `Task.__call__` only ever CLEARS a lock, never checks one. It stops two dispatchers racing; it
+# is not a redelivery guard, which is the only failure mode this setting creates. The remaining
+# gap is `send_private_dm`, whose log row is written in a `finally` AFTER the send, so a kill in
+# that window can cost one duplicate DM. The deploy drain window (stop_grace_period 8m) is the
+# mitigation; a durable pre-send claim is the real fix and is tracked separately.
 task_reject_on_worker_lost = True
 
 # Celery 5 deprecation: leaving this unset warns on every boot. False keeps a task RUNNING
@@ -86,15 +96,40 @@ worker_prefetch_multiplier = 1
 # The maximum number of tasks a worker can execute before it’s replaced by a new process.
 worker_max_tasks_per_child = 10
 
-# Gets the max between all the parameters of timeout in the tasks
-max_timeout = 60 * 60  # This value must be bigger than the maximum soft timeout set for a task to prevent an infinity loop
+# The ceiling a task may actually RUN for. `max_timeout` was never a Celery setting name — it only
+# ever fed the visibility_timeout arithmetic below — so until now NOTHING bounded a task, and a call
+# that never returned parked a lane's only slot forever: worker_max_tasks_per_child recycles a child
+# BETWEEN tasks, so it never fires on the task that is stuck. Per-call `timeout=` (added alongside
+# this) is the first line of defence; this is the backstop for every call that still lacks one.
+# 60 min is ~4x the longest deliberate loop in the tree (the 15-min golden-hour / pre-post windows,
+# run_scheduler dispatch of `loop_for_duration`), so it bounds a hang without truncating real work.
+max_timeout = 60 * 60
+
+# The SOFT limit is the one that should ever fire: it raises SoftTimeLimitExceeded INSIDE the task,
+# which is what lets the Selenium lanes quit Chrome in the `finally` they already have. The HARD
+# limit sits above it and only matters for a task that swallowed the soft one (a broad
+# `except Exception` catches it — SoftTimeLimitExceeded derives from Exception, not BaseException).
+TASK_KILL_GRACE_SECONDS = 5 * 60
+task_soft_time_limit = int(os.getenv('CELERY_TASK_SOFT_TIME_LIMIT', str(max_timeout)))
+task_time_limit = int(os.getenv('CELERY_TASK_TIME_LIMIT', str(task_soft_time_limit + TASK_KILL_GRACE_SECONDS)))
+
+# Verified against celery 5.6.3 rather than assumed, because the interaction is a real footgun:
+# a hard time limit kills the pool child, and `task_reject_on_worker_lost = True` above REQUEUES a
+# lost worker's message. It is safe ONLY because `task_acks_on_failure_or_timeout` defaults to True
+# (celery/app/defaults.py:266) and `Request.on_timeout` ACKs on that path rather than rejecting
+# (celery/worker/request.py:547-548), and because a TimeLimitExceeded is rejected-with-requeue only
+# when that same setting is False (celery/worker/request.py:615-616).
+# DO NOT set task_acks_on_failure_or_timeout = False: it would turn every hard timeout into an
+# infinite redelivery of the task that timed out.
 
 # Redis visibility timeout — how long the broker waits for an ACK before handing the message to
 # ANOTHER worker. With task_acks_late this must stay comfortably ABOVE the longest task plus the
 # deploy drain window (stop_grace_period 8m), or a long task still running past the timeout gets
 # re-delivered and runs twice concurrently — the classic acks_late + Redis double-run trap.
 # 60s of margin was not enough once workers may take a full grace period to shut down.
-longest_task_seconds = int(os.getenv('CELERY_LONGEST_TASK_SECONDS', str(max_timeout)))
+# Derived from the HARD limit, not from max_timeout: that is now the true longest a task can run,
+# so the "comfortably above the longest task" claim above is arithmetic rather than aspiration.
+longest_task_seconds = int(os.getenv('CELERY_LONGEST_TASK_SECONDS', str(task_time_limit)))
 visibility_timeout = int(os.getenv('CELERY_VISIBILITY_TIMEOUT', str(longest_task_seconds + (15 * 60))))
 broker_transport_options = {'visibility_timeout': visibility_timeout,
                             'max_retries': 5}

@@ -22,6 +22,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 
 from cqc_lem.utilities.date import convert_datetime_to_start_of_day, convert_viewed_on_to_date
+from cqc_lem.utilities.linkedin.zero_walk import grade_zero_walk
 from cqc_lem.utilities.logger import log_debug, log_warning, myprint
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
@@ -146,6 +147,44 @@ def _name_from_title(source) -> str:
     return name
 
 
+# The degree badge as the SDUI page actually writes it: its own leaf node whose entire text is the
+# degree. `span.dist-value` is a CLASS anchor and was confirmed dead on 2026-08-03, which made
+# `LinkedInProfile.is_1st_connection` False for everybody — so every profile viewer read as a
+# non-connection and the 1st-degree branch of engage_with_profile_viewer never ran (issue #1021).
+_DEGREE_LEAF_RE = re.compile(r"^(?:·\s*)?(1st|2nd|3rd)\+?(?:\s+degree(?:\s+connection)?)?$",
+                             re.IGNORECASE)
+_PROFILE_SHELL_SELECTOR = "main a[href*='/in/'], a[href*='/recent-activity/']"
+
+
+def _degree_from_source(source) -> str:
+    """The degree badge from the page's own words.
+
+    Leaf nodes only — an ancestor's text would sweep up the whole top card and match on any headline
+    containing '1st'.
+
+    Scoped to <main> and first-match-only, because a profile page renders OTHER people's badges as
+    well: the "People also viewed" rail sits outside <main>, and mutual-connection highlights sit
+    below the top card inside it. A badge that names a different entity must never decide THIS
+    profile's degree — #1012's rule read backwards — and the top card is the first one in document
+    order.
+
+    No <main> means no scope, so it reads NO degree rather than falling back to the whole document:
+    the name still resolves off the <title> there, so a rail badge would have decided the degree of
+    a profile whose own card never rendered. Empty routes to the invite branch, which is the
+    documented fail-open — a wrong '1st' routes to the DM/comment branch, which is not.
+    """
+    root = source.find('main')
+    if root is None:
+        return ""
+    for element in root.find_all(['span', 'div', 'li', 'p']):
+        if element.find(True) is not None:
+            continue
+        text = element.get_text(" ", strip=True)
+        if _DEGREE_LEAF_RE.match(text):
+            return text
+    return ""
+
+
 def parse_profile_header(source, profile_url, company_name=None) -> dict:
     """Extract name/title/connection from a parsed profile page (pure, no Selenium).
 
@@ -166,17 +205,26 @@ def parse_profile_header(source, profile_url, company_name=None) -> dict:
     name_el = info.find('h1') or source.find('h1')
     full_name = name_el.get_text().strip() if name_el is not None else _name_from_title(source)
     if not full_name:
-        raise ProfileUnavailableError(f"Could not locate profile name (DOM changed?) for {profile_url}")
+        # A page with no <h1> and no usable <title> is either a shell that never rendered or a
+        # profile whose name anchors rotated, and those need opposite responses. The profile links
+        # the page renders are the cross-check — neither the <h1> nor the <title> read touches
+        # them — so the answer is graded rather than guessed (issue #1021).
+        verdict = grade_zero_walk(len(source.select(_PROFILE_SHELL_SELECTOR)),
+                                  "Profile-name read", action_type="profile_scrape")
+        raise ProfileUnavailableError(
+            f"Could not locate profile name (DOM changed?) for {profile_url} [{verdict}]")
 
     title_el = info.find('div', class_='text-body-medium') or source.select_one('div.text-body-medium')
-    connection = info.find('span', class_='dist-value') or source.find('span', class_='dist-value')
+    connection_el = info.find('span', class_='dist-value') or source.find('span', class_='dist-value')
+    connection = (connection_el.get_text().strip() if connection_el
+                  else _degree_from_source(source))
 
     profile = {'full_name': full_name}
     if company_name:
         profile['company_name'] = company_name
     profile['job_title'] = title_el.get_text().lstrip().strip() if title_el else ""
     if connection:
-        profile['connection'] = connection.get_text().strip()
+        profile['connection'] = connection
     profile['profile_url'] = profile_url
     return profile
 

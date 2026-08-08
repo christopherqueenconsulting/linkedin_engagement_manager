@@ -19,9 +19,9 @@ This playbook maps those items onto LEM (workstream 1), gives the profile update
 |---|---|---|
 | [#1074](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1074) | Occasion/milestone post drafts, phased. Phase 1: `occasion_milestone` archetype family + `posts.manual_publish` flag — LEM drafts, user publishes natively so the post carries the occasion entity (it has **no API entity**; `poster.py` is REST-only). Phase 2 (deferred): Selenium composer walk. | Video item 1. Phase 2 deferred: high SDUI drift risk for a ~1/month action that's cheap by hand. |
 | [#1075](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1075) | Skills↔keyword alignment first-class: skills-change detection on re-scrape, ~14-day "re-index window" directive weaving top-5 skill keywords into generated content, SPA overlap panel with one-click "adopt skills as focus topics". Builds on the existing fallback seam `profile_niche_anchors` (`content_alignment.py:591`). | Video item 4, automated for every future profile update. |
-| [#1076](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1076) | `POST /user/linkedin-profile/refresh` — on-demand profile re-scrape + `profile_synthesis` regen (today: 7-day staleness beat only). | Makes "edit profile → LEM reacts" immediate; items 2–4 hinge on LEM seeing the new skills. |
+| [#1076](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1076) **shipped** | `POST /user/linkedin-profile/refresh` — on-demand profile re-scrape + `profile_synthesis` regen. Settings → Setup → "Refresh my profile data"; one press per user per day (Redis window, fails open), queues `update_stale_profile(force_refresh=True)` on `se_outreach`. | Makes "edit profile → LEM reacts" immediate; items 2–4 hinge on LEM seeing the new skills. |
 
-Until #1074 ships, occasion posts are manual (see WS2). Until #1076 ships, a profile edit reaches LEM within ≤7 days via `auto_refresh_profile_syntheses`.
+Until #1074 ships, occasion posts are manual (see WS2). A profile edit now reaches LEM as soon as the owner presses **Refresh my profile data** (#1076); the ≤7-day `auto_refresh_profile_syntheses` beat remains the floor for anyone who does not.
 
 ---
 
@@ -79,7 +79,7 @@ First two lines carry the dual offer + top keywords (they're what search indexes
 
 ### Sequence — the two-week re-index play
 
-- **Week 1 (Monday):** apply all profile edits above + the WS3 config changes; trigger re-scrape (once #1076 exists — until then the ≤7-day beat covers it); send the endorsement asks.
+- **Week 1 (Monday):** apply all profile edits above + the WS3 config changes; trigger the re-scrape from Settings → Setup → "Refresh my profile data" (#1076) so the new skills reach the voice brief the same day; send the endorsement asks.
 - **Week 2:** keyword-echo content week — `focus_topics` (already updated in WS3) drives posts carrying the same top-5 keywords; native occasion post mid-week.
 
 ---
