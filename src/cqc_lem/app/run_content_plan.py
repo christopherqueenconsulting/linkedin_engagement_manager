@@ -160,7 +160,7 @@ from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_u
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
-from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.notifications import notify_content_generation_ready
 from cqc_lem.utilities.observability import FEATURE_CONTENT, attribute_llm_cost, llm_attribution, llm_pipeline, llm_step
 from cqc_lem.utilities.quality_gates import (
@@ -310,7 +310,7 @@ def plan_content_for_user(self, user_id: int):
     # Determine how many days are in this month
     now = datetime.now()
     days_in_month = calendar.monthrange(now.year, now.month)[1]
-    myprint(f"Days in Month: {days_in_month}")
+    log_info(f"Days in Month: {days_in_month}")
 
     # Determine the start date as the day after the last scheduled post in planning status
     last_planned_date = get_last_planned_post_date_for_user(user_id)
@@ -323,11 +323,11 @@ def plan_content_for_user(self, user_id: int):
 
         # If the start date is greate than 30 days from today just skip the process
         if start_date > datetime.now() + timedelta(days=30):
-            myprint(f"Content Plan | Start Date: {start_date} | >30 days out | Skipped")
+            log_info(f"Content Plan | Start Date: {start_date} | >30 days out | Skipped")
             return
     else:
         start_date = datetime.now() + timedelta(days=1)  # Start with the next day
-    myprint(f"Content Plan | Start Date: {start_date}")
+    log_info(f"Content Plan | Start Date: {start_date}")
 
 
 
@@ -336,11 +336,11 @@ def plan_content_for_user(self, user_id: int):
     end_of_month = _plan_window_end(start_date)
     slots = _cadence_slots(user_id, start_date, end_of_month)
     if not slots:
-        myprint(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
+        log_info(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
         return
 
     target_posts = len(slots)
-    myprint(f"Content Plan | {target_posts} slot(s) through {end_of_month.date()} "
+    log_info(f"Content Plan | {target_posts} slot(s) through {end_of_month.date()} "
             f"on weekdays {sorted({s.weekday() for s in slots})}")
 
     needed_posts = {post_type: target_posts // len(PLANNED_POST_TYPES) for post_type in PLANNED_POST_TYPES}
@@ -427,7 +427,7 @@ def plan_content_for_user(self, user_id: int):
 
     # Log the final content plan for the next 30 days
     # myprint(f"Generated content plan: {daily_plan}")
-    myprint("Generated content plan")
+    log_info("Generated content plan")
 
     # 4. Save the daily plan to the database for tracking and scheduling
     save_content_plan(user_id, daily_plan)
@@ -524,10 +524,10 @@ def _generate_text_post_image(user_id: int, text_content: str, post_id: "int | N
         if not api_image_url:
             return None
         update_db_post_image_url(post_id, api_image_url)
-        myprint(f"_generate_text_post_image: post_id={post_id} -> {api_image_url}")
+        log_info(f"_generate_text_post_image: post_id={post_id} -> {api_image_url}")
         return api_image_url
     except Exception as e:
-        myprint(f"_generate_text_post_image failed for post {post_id} "
+        log_info(f"_generate_text_post_image failed for post {post_id} "
                 f"({type(e).__name__}: {e}) — post ships without an image")
         return None
 
@@ -561,7 +561,7 @@ def _profile_synthesis_or_none(user_id: int) -> Optional[str]:
     try:
         return get_or_create_profile_synthesis(user_id, load_profile_for_user(user_id))
     except Exception as e:
-        myprint(f"No profile synthesis for user {user_id}: {e}")
+        log_info(f"No profile synthesis for user {user_id}: {e}")
         return None
 
 
@@ -580,7 +580,7 @@ def _fact_anchors(user_id: int) -> list:
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
-        myprint(f"Story bank unavailable (no verified fact anchors): {e}")
+        log_info(f"Story bank unavailable (no verified fact anchors): {e}")
         return []
     return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
 
@@ -608,12 +608,12 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
     try:
         shape_history = get_recent_post_shape_history(user_id)
     except Exception as e:
-        myprint(f"Could not load post shape history (rotating without it): {e}")
+        log_info(f"Could not load post shape history (rotating without it): {e}")
         shape_history = []
     try:
         performance = get_shape_performance(user_id)
     except Exception as e:
-        myprint(f"Could not load shape performance (selecting without it): {e}")
+        log_info(f"Could not load shape performance (selecting without it): {e}")
         performance = None
     return select_blueprint(
         "post",
@@ -644,7 +644,7 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
             user_id, prefer_save_targeted=bool(anchors),
             exclude_formats=None if anchors else fact_anchored_formats("post"))
     except Exception as e:
-        myprint(f"Could not select a carousel archetype (using generic slide guidance): {e}")
+        log_info(f"Could not select a carousel archetype (using generic slide guidance): {e}")
         return None
 
 
@@ -671,7 +671,7 @@ def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], bluepr
                         "images: " + ", ".join(report["placeholders"][:5]),
                         user_id=user_id, post_id=post_id, task_name="create_carousel_content")
     except Exception as e:
-        myprint(f"Could not grade carousel fact grounding for post {post_id}: {e}")
+        log_info(f"Could not grade carousel fact grounding for post {post_id}: {e}")
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
@@ -697,12 +697,12 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     try:
         prefs = get_engagement_preferences(user_id)
     except Exception as e:
-        myprint(f"Could not load engagement preferences for carousel: {e}")
+        log_info(f"Could not load engagement preferences for carousel: {e}")
         prefs = None
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id)
     except Exception as e:
-        myprint(f"Could not load profile synthesis for carousel: {e}")
+        log_info(f"Could not load profile synthesis for carousel: {e}")
         profile_synthesis = None
 
     # ONE story-bank anchor per piece (issue #728), the same split text posts have always had: the
@@ -714,7 +714,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     story_directive = _story_bank.story_directive(story)
     writer_anchors = _story_bank.fact_sources(story) if story else []
     if story:
-        myprint(f"Story bank anchor for carousel post_id={post_id}: "
+        log_info(f"Story bank anchor for carousel post_id={post_id}: "
                 f"[{story.get('kind')}] {story.get('title')}")
 
     # Carousels draw their SHAPE from the same shared post menu as text posts (issue #619 / G4) and
@@ -727,7 +727,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                                                          fact_anchors=writer_anchors,
                                                          story_directive=story_directive,
                                                          guidance=guidance)
-    myprint(f"Carousel AI content generated for user_id={user_id} stage={stage} "
+    log_info(f"Carousel AI content generated for user_id={user_id} stage={stage} "
             f"archetype={(blueprint or {}).get('format')}")
 
     # The verification half of the split: the SLIDES are checked against EVERY active bank entry,
@@ -745,7 +745,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         try:
             record_story_bank_use(user_id, int(story["id"]))
         except Exception as e:
-            myprint(f"Could not record story bank use for entry {story.get('id')}: {e}")
+            log_info(f"Could not record story bank use for entry {story.get('id')}: {e}")
 
     # Map stage to carousel model class
     stage_lower = (stage or "").lower()
@@ -775,7 +775,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     try:
         carousel_obj = model_cls(**carousel_dict)
     except Exception as e:
-        myprint(f"Could not parse carousel dict into {model_cls.__name__}: {e} — using raw slide texts")
+        log_info(f"Could not parse carousel dict into {model_cls.__name__}: {e} — using raw slide texts")
 
     slide_urls = []
     if carousel_obj is not None and post_id is not None:
@@ -789,7 +789,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                 for p in image_paths
             ]
             update_db_post_carousel_slides(post_id, slide_urls)
-            myprint(f"Carousel slides saved: {len(slide_urls)} images for post_id={post_id}")
+            log_info(f"Carousel slides saved: {len(slide_urls)} images for post_id={post_id}")
 
             # Also generate PPTX for user download
             try:
@@ -804,17 +804,17 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                     task_name="create_carousel_content",
                 )
         except Exception as img_err:
-            myprint(f"Carousel image generation failed: {img_err}")
+            log_info(f"Carousel image generation failed: {img_err}")
             # Do NOT fall back to text/placeholder images — that produced carousels of a
             # single repeated default image. Flag the post 'error' for manual/dev fix.
             if post_id is not None:
                 update_db_post_status(post_id, PostStatus.ERROR)
-                myprint(f"Post {post_id} flagged 'error' — carousel slide images could not be generated.")
+                log_info(f"Post {post_id} flagged 'error' — carousel slide images could not be generated.")
 
     elif carousel_obj is None and post_id is not None:
         # Couldn't build a valid carousel model — flag for manual fix rather than degrade.
         update_db_post_status(post_id, PostStatus.ERROR)
-        myprint(f"Post {post_id} flagged 'error' — could not generate a valid carousel model.")
+        log_info(f"Post {post_id} flagged 'error' — could not generate a valid carousel model.")
 
     # Same V51 shape history text posts write, so a carousel's archetype/hook is what the NEXT
     # piece rotates away from — one rotation across both, never two drifting ones.
@@ -823,7 +823,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
             update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
                                  topic=blueprint.get("subject"))
         except Exception as e:
-            myprint(f"Could not persist carousel shape for post {post_id}: {e}")
+            log_info(f"Could not persist carousel shape for post {post_id}: {e}")
 
     return post_text
 
@@ -917,7 +917,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                 deduct_video_credits(user_id, pcredits, post_id, reason=f"premium_video_{pmodel}"):
             model, audio, deducted = pmodel, paudio, pcredits
         else:
-            myprint(f"Premium video requested but no credits for user {user_id} — using standard")
+            log_info(f"Premium video requested but no credits for user {user_id} — using standard")
 
     try:
         # The avatar is resolved BEFORE the image prompt is authored: its declared subject clause
@@ -962,10 +962,10 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                                       user_id=user_id, post_id=post_id)
         if not src:
             raise RuntimeError("no video output")
-        myprint(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
+        log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
         return src
     except Exception as e:
-        myprint(f"_generate_video_src failed ({type(e).__name__}: {e}) — refunding any credits, trying Pexels")
+        log_info(f"_generate_video_src failed ({type(e).__name__}: {e}) — refunding any credits, trying Pexels")
         if deducted and user_id:
             refund_video_credits(user_id, deducted, post_id)
         try:
@@ -974,7 +974,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             create_folder_if_not_exists(videos_dir)
             return download_pexels_video(text_content[:50], videos_dir)
         except Exception as pe:
-            myprint(f"_generate_video_src: Pexels fallback failed ({type(pe).__name__}: {pe})")
+            log_info(f"_generate_video_src: Pexels fallback failed ({type(pe).__name__}: {pe})")
             return None
 
 
@@ -1010,7 +1010,7 @@ def _store_video_asset(post_id: int, video_src_url: str) -> str:
             from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
             add_ai_content_credentials(video_file_path)
         except Exception as e:
-            myprint(f"_store_video_asset: C2PA signing skipped for post {post_id}: {e}")
+            log_info(f"_store_video_asset: C2PA signing skipped for post {post_id}: {e}")
     video_file_name = os.path.basename(video_file_path)
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
     update_db_post_video_url(post_id, api_video_url)
@@ -1027,7 +1027,7 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     """
     text_content = get_post_content(post_id)
     if not text_content:
-        myprint(f"regenerate_video_for_post: no content for post_id={post_id}")
+        log_info(f"regenerate_video_for_post: no content for post_id={post_id}")
         return None
 
     user_id = None
@@ -1037,7 +1037,7 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
         user_id = get_post_user_id(post_id)
         user_profile = load_profile_for_user(user_id)
     except Exception as e:
-        myprint(f"regenerate_video_for_post: profile load skipped: {e}")
+        log_info(f"regenerate_video_for_post: profile load skipped: {e}")
 
     # Honors the post's video_quality tier + premium video credits (deduct/refund).
     video_src_url = _generate_video_src(user_id, text_content, user_profile, post_id)
@@ -1051,8 +1051,8 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     from cqc_lem.utilities.db import get_post_status
     if api_video_url and get_post_status(post_id) != PostStatus.POSTED.value:
         update_db_post_status(post_id, PostStatus.APPROVED)
-        myprint(f"regenerate_video_for_post: post {post_id} healed → approved")
-    myprint(f"regenerate_video_for_post: post_id={post_id} -> {api_video_url}")
+        log_info(f"regenerate_video_for_post: post {post_id} healed → approved")
+    log_info(f"regenerate_video_for_post: post_id={post_id} -> {api_video_url}")
     return api_video_url
 
 
@@ -1088,7 +1088,7 @@ def regenerate_post_carousel_task(post_id: int):
     )
     user_id = get_post_user_id(post_id)
     if not user_id:
-        myprint(f"regenerate_post_carousel_task: no user for post_id={post_id}")
+        log_info(f"regenerate_post_carousel_task: no user for post_id={post_id}")
         return None
     stage = get_post_buyer_stage(post_id) or "awareness"
     content = create_carousel_content(user_id, stage, post_id)
@@ -1100,7 +1100,7 @@ def regenerate_post_carousel_task(post_id: int):
     if _carousel_slides_are_real_images(get_post_carousel_slides(post_id)):
         if get_post_status(post_id) != PostStatus.POSTED.value:
             update_db_post_status(post_id, PostStatus.APPROVED)
-            myprint(f"regenerate_post_carousel_task: post {post_id} healed → approved")
+            log_info(f"regenerate_post_carousel_task: post {post_id} healed → approved")
     return content
 
 
@@ -1125,7 +1125,7 @@ def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
             content = ensure_lead_magnet_cta(content, get_lead_magnet_settings(user_id), post_id,
                                              use_emojis=bool((prefs or {}).get("use_emojis")))
     except Exception as e:
-        myprint(f"regenerate_post: guidance pass failed for post {post_id} ({e}); keeping base regen")
+        log_info(f"regenerate_post: guidance pass failed for post {post_id} ({e}); keeping base regen")
     return content
 
 
@@ -1137,7 +1137,7 @@ def _post_is_flagged_error(post_id: int) -> bool:
         from cqc_lem.utilities.db import get_post_status
         return get_post_status(post_id) == PostStatus.ERROR.value
     except Exception as e:
-        myprint(f"Could not read the status for post {post_id}: {e}")
+        log_info(f"Could not read the status for post {post_id}: {e}")
         return False
 
 
@@ -1160,7 +1160,7 @@ def _finish_regenerated_post(user_id: int, post_id: int, content: str,
     # that to PENDING would hide a deck carrying the PREVIOUS draft's slides behind a normal-looking
     # review row (the missing-asset gate reads those stale slides as present).
     if _post_is_flagged_error(post_id):
-        myprint(f"regenerate_post: post {post_id} left 'error' — its media could not be regenerated")
+        log_info(f"regenerate_post: post {post_id} left 'error' — its media could not be regenerated")
         return content
     update_db_post_status(post_id, PostStatus.PENDING)
     return content
@@ -1177,12 +1177,12 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
 
     user_id = get_post_user_id(post_id)
     if not user_id:
-        myprint(f"regenerate_post: no user for post_id={post_id}")
+        log_info(f"regenerate_post: no user for post_id={post_id}")
         return None
     post_type = get_post_type(post_id)
     pt_value = post_type.value if isinstance(post_type, PostType) else post_type
     if not pt_value:
-        myprint(f"regenerate_post: post {post_id} has no post_type — skipping regenerate")
+        log_info(f"regenerate_post: post {post_id} has no post_type — skipping regenerate")
         return None
 
     stage = get_post_buyer_stage(post_id) or "awareness"
@@ -1193,11 +1193,11 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id,
                                    content_mix=_post_content_mix(post_id))
         if not content:
-            myprint(f"regenerate_post: text generation produced nothing for post {post_id}")
+            log_info(f"regenerate_post: text generation produced nothing for post {post_id}")
             return None
         content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
         content = _finish_regenerated_post(user_id, post_id, content, pt_value)
-        myprint(f"regenerate_post: text post {post_id} regenerated → pending")
+        log_info(f"regenerate_post: text post {post_id} regenerated → pending")
         return content
 
     if pt_value in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
@@ -1206,17 +1206,17 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         # user's suggestions off the thing they were looking at.
         content = create_carousel_content(user_id, stage, post_id, guidance=guidance)
         if not content:
-            myprint(f"regenerate_post: carousel generation produced nothing for post {post_id}")
+            log_info(f"regenerate_post: carousel generation produced nothing for post {post_id}")
             return None
         content = _finish_regenerated_post(user_id, post_id, content, pt_value)
-        myprint(f"regenerate_post: carousel/document post {post_id} regenerated")
+        log_info(f"regenerate_post: carousel/document post {post_id} regenerated")
         return content
 
     if pt_value == PostType.VIDEO.value:
         content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id,
                                    content_mix=_post_content_mix(post_id))
         if not content:
-            myprint(f"regenerate_post: video caption generation produced nothing for post {post_id}")
+            log_info(f"regenerate_post: video caption generation produced nothing for post {post_id}")
             return None
         content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
 
@@ -1235,11 +1235,11 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         content = _finish_regenerated_post(
             user_id, post_id, content, pt_value, api_video_url,
             ai_media=bool(api_video_url) and str(video_src_url).startswith("http"))
-        myprint(f"regenerate_post: video post {post_id} regenerated"
+        log_info(f"regenerate_post: video post {post_id} regenerated"
                 f"{'' if api_video_url else ' (caption only — video asset failed)'}")
         return content
 
-    myprint(f"regenerate_post: post {post_id} has unsupported post_type '{pt_value}' — skipping")
+    log_info(f"regenerate_post: post {post_id} has unsupported post_type '{pt_value}' — skipping")
     return None
 
 
@@ -1284,7 +1284,7 @@ def draft_occasion_post(post_id: int, archetype: str, occasion: str) -> Optional
 
     user_id = get_post_user_id(post_id)
     if not user_id:
-        myprint(f"draft_occasion_post: no user for post_id={post_id}")
+        log_info(f"draft_occasion_post: no user for post_id={post_id}")
         return None
 
     # The occasion IS the anchor: a synthetic bank entry so the writer gets the bank's absolute
@@ -1327,7 +1327,7 @@ def _post_content_mix(post_id: int) -> Optional[str]:
     try:
         return get_post_content_mix(post_id)
     except Exception as e:
-        myprint(f"Could not read the content mix class for post {post_id}: {e}")
+        log_info(f"Could not read the content mix class for post {post_id}: {e}")
         return None
 
 
@@ -1392,7 +1392,7 @@ def _select_story_for_post(user_id: int, prefs: dict = None,
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
-        myprint(f"Story bank unavailable (writing without a fact anchor): {e}")
+        log_info(f"Story bank unavailable (writing without a fact anchor): {e}")
         return None
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
     return _story_bank.select_story(entries, subject=(blueprint or {}).get("subject"),
@@ -1423,7 +1423,7 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
             log_info(f"Post authenticity score {result.get('score')}",
                      user_id=user_id, post_id=post_id, task_name="create_text_post")
     except Exception as e:
-        myprint(f"Authenticity scoring skipped for post {post_id}: {e}")
+        log_info(f"Authenticity scoring skipped for post {post_id}: {e}")
 
 
 def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
@@ -1443,7 +1443,7 @@ def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
             return False
         return is_affiliate_content(content, user_id=owner)
     except Exception as e:
-        myprint(f"Could not evaluate affiliate promotion for post {post_id}: {e}")
+        log_info(f"Could not evaluate affiliate promotion for post {post_id}: {e}")
         return False
 
 
@@ -1539,7 +1539,7 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
     except Exception as e:
         # An unreadable score only silences THAT gate — the media check still has to run, or a
         # DB hiccup would let an assetless video post auto-approve.
-        myprint(f"Could not read the authenticity score for post {post_id}: {e}")
+        log_info(f"Could not read the authenticity score for post {post_id}: {e}")
         score = None
     archetype = _post_archetype_or_none(post_id)
     try:
@@ -1564,7 +1564,7 @@ def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
     try:
         lead_magnet = get_lead_magnet_settings(user_id)
     except Exception as e:
-        myprint(f"Could not read lead-magnet settings for user {user_id}: {e}")
+        log_info(f"Could not read lead-magnet settings for user {user_id}: {e}")
         return None
     if not lead_magnet or not should_include_lead_magnet_cta(lead_magnet, post_id):
         return None
@@ -1579,7 +1579,7 @@ def _post_archetype_or_none(post_id: int) -> Optional[str]:
         from cqc_lem.utilities.db import get_post_archetype
         return get_post_archetype(post_id)
     except Exception as e:
-        myprint(f"Could not read the archetype for post {post_id}: {e}")
+        log_info(f"Could not read the archetype for post {post_id}: {e}")
         return None
 
 
@@ -1590,7 +1590,7 @@ def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> 
     try:
         update_db_post_gate_reason(post_id, findings)
     except Exception as e:
-        myprint(f"Could not persist gate findings for post {post_id}: {e}")
+        log_info(f"Could not persist gate findings for post {post_id}: {e}")
 
 
 def _engagement_prefs_or_empty(user_id: int) -> dict:
@@ -1600,7 +1600,7 @@ def _engagement_prefs_or_empty(user_id: int) -> dict:
     try:
         return get_engagement_preferences(user_id) or {}
     except Exception as e:
-        myprint(f"Could not load engagement preferences for user {user_id}: {e}")
+        log_info(f"Could not load engagement preferences for user {user_id}: {e}")
         return {}
 
 
@@ -1629,7 +1629,7 @@ def rescore_post(post_id: int) -> dict:
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
     except Exception as e:
-        myprint(f"rescore_post: no profile synthesis for user {user_id}: {e}")
+        log_info(f"rescore_post: no profile synthesis for user {user_id}: {e}")
         profile_synthesis = None
 
     # Re-judge authenticity against the edited text — a stale score would let an unchanged hold
@@ -1693,7 +1693,7 @@ def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Option
                      user_id=user_id, post_id=post_id, task_name="create_content")
         return score
     except Exception as e:
-        myprint(f"Dwell scoring skipped for post {post_id}: {e}")
+        log_info(f"Dwell scoring skipped for post {post_id}: {e}")
         return None
 
 
@@ -1778,7 +1778,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                        + ", ".join(fact_report["unverified_values"][:5]) + ")")
     if slopped:
         reasons.append("trips the AI-slop lint (" + "; ".join(violation_reasons(slop["hard"])) + ")")
-    myprint(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
+    log_info(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
 
     retry_directive = history_avoidance_directive(
         recent_texts, offending_text=match if too_similar else None)
@@ -1867,14 +1867,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         except Exception as e:
-            myprint(f"Error getting user profile: {e}")
+            log_info(f"Error getting user profile: {e}")
             # Prefer the user's cached DB profile (no Selenium) — the old hardcoded "John Doe,
             # Software Developer at ABC Inc." dummy leaked a tech persona into generated posts
             # whenever the live profile load hiccupped. Neutral dummy only as a last resort.
             try:
                 user_profile = load_profile_for_user(user_id)
             except Exception as e2:
-                myprint(f"Cached profile unavailable: {e2}")
+                log_info(f"Cached profile unavailable: {e2}")
                 user_profile = None
             if user_profile is None:
                 user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
@@ -1901,7 +1901,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             recent_texts = get_recent_post_texts(user_id)
         except Exception as e:
-            myprint(f"Could not load recent post history (skipping dedup steering): {e}")
+            log_info(f"Could not load recent post history (skipping dedup steering): {e}")
     if history_directive is None:
         history_directive = history_avoidance_directive(recent_texts)
 
@@ -1918,10 +1918,10 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         story = _select_story_for_post(user_id, prefs, blueprint)
         story_directive = _story_bank.story_directive(story)
         if story:
-            myprint(f"Story bank anchor for post_id={post_id}: "
+            log_info(f"Story bank anchor for post_id={post_id}: "
                     f"[{story.get('kind')}] {story.get('title')}")
         else:
-            myprint("No story bank entry available — writing a non-story archetype")
+            log_info("No story bank entry available — writing a non-story archetype")
 
     # Integration seam (#618 x #620): the promo slot demands a case study built on ONE real outcome
     # number, but without a story-bank anchor the fabrication detector has no allow-list and is
@@ -1951,8 +1951,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             guidance="case_snapshot" if content_mix == ContentMix.PROMO.value else None,
             preferred_formats=day_type_formats(day_weekday) if day_type else None)
         if day_type:
-            myprint(f"Day type for weekday {day_weekday}: {day_type['label']}")
-    myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
+            log_info(f"Day type for weekday {day_weekday}: {day_type['label']}")
+    log_info(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 
     # The no-fabrication allow-list a fact-anchored archetype (#619) writes against is exactly the
@@ -1979,14 +1979,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             include_cta = should_include_lead_magnet_cta(lead_magnet, post_id)
             lead_magnet_cta = lead_magnet_cta_directive(lead_magnet, include_cta)
             if lead_magnet_cta:
-                myprint(f"Lead-magnet CTA included on post_id={post_id} "
+                log_info(f"Lead-magnet CTA included on post_id={post_id} "
                         f"(keyword '{lead_magnet.get('keyword')}')")
         except Exception as e:
-            myprint(f"Lead-magnet CTA skipped (settings unavailable): {e}")
+            log_info(f"Lead-magnet CTA skipped (settings unavailable): {e}")
             lead_magnet, include_cta, lead_magnet_cta = None, False, ""
 
     # Generate the post based on the selected type
-    myprint(f"Creating text post of type: {post_type} for stage: {stage}")
+    log_info(f"Creating text post of type: {post_type} for stage: {stage}")
     if post_type == "thought_leadership":
         final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs,
                                                             profile_synthesis=profile_synthesis,
@@ -2009,7 +2009,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                           story_directive=story_directive,
                                                           content_mix=content_mix)
         else:
-            myprint("No blog post found for this user. Generating another post type")
+            log_info("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
             post_types.remove("blog_summary")
             post_type = random.choice(post_types)
@@ -2031,7 +2031,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             if content:
                 final_content = content
             else:
-                myprint("No relevant content found in the sitemap. Generating another post type")
+                log_info("No relevant content found in the sitemap. Generating another post type")
                 # Chose another random post type that is not "website_content"
                 post_types.remove("website_content")
                 post_type = random.choice(post_types)
@@ -2041,7 +2041,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                              story_directive=story_directive,
                                              content_mix=content_mix)
         else:
-            myprint("No sitemap found for this user. Generating another post type")
+            log_info("No sitemap found for this user. Generating another post type")
             # Chose another random post type that is not "website_content"
             post_types.remove("website_content")
             post_type = random.choice(post_types)
@@ -2140,7 +2140,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             newsletter = get_newsletter_settings(user_id)
         except Exception as e:
-            myprint(f"Newsletter settings unavailable for artifact-CTA routing: {e}")
+            log_info(f"Newsletter settings unavailable for artifact-CTA routing: {e}")
             newsletter = None
         repaired = replace_meeting_ask_cta(
             final_content, lead_magnet=lead_magnet, newsletter=newsletter, post_id=post_id,
@@ -2171,7 +2171,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             record_story_bank_use(user_id, int(story["id"]))
         except Exception as e:
-            myprint(f"Could not record story bank use for entry {story.get('id')}: {e}")
+            log_info(f"Could not record story bank use for entry {story.get('id')}: {e}")
 
     # Persist the assigned shape so FUTURE posts rotate away from it (the newsletter's V50 shape
     # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
@@ -2180,7 +2180,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
                                  topic=blueprint.get("subject"))
         except Exception as e:
-            myprint(f"Could not persist post shape for post {post_id}: {e}")
+            log_info(f"Could not persist post shape for post {post_id}: {e}")
 
     return final_content
 
@@ -2211,24 +2211,24 @@ def get_main_blog_url_content(blog_url):
         if response.status_code == 200:
             # Use WordPress API to get recent posts
             recent_posts = response.json()
-            myprint("WordPress blog detected. Fetching posts via API...")
+            log_info("WordPress blog detected. Fetching posts via API...")
         else:
             # If the API is not available, fall back to web scraping
-            myprint("Non-WordPress blog detected or API unavailable. Fetching posts via web scraping...")
+            log_info("Non-WordPress blog detected or API unavailable. Fetching posts via web scraping...")
             recent_posts = scrape_recent_posts(blog_url)
 
     except requests.exceptions.HTTPError as http_err:
-        myprint(f"HTTP error occurred: {http_err}")
-        myprint("Falling back to web scraping...")
+        log_info(f"HTTP error occurred: {http_err}")
+        log_info("Falling back to web scraping...")
         # In case of any request failure, fall back to web scraping
         recent_posts = scrape_recent_posts(blog_url)
     except requests.exceptions.ConnectionError as conn_err:
-        myprint(f"Connection error occurred: {conn_err}")
+        log_info(f"Connection error occurred: {conn_err}")
     except requests.exceptions.Timeout as timeout_err:
-        myprint(f"Timeout error occurred: {timeout_err}")
+        log_info(f"Timeout error occurred: {timeout_err}")
     except requests.exceptions.RequestException as req_err:
-        myprint(f"Some other request error occurred: {req_err}")
-        myprint("Falling back to web scraping...")
+        log_info(f"Some other request error occurred: {req_err}")
+        log_info("Falling back to web scraping...")
         # In case of any request failure, fall back to web scraping
         recent_posts = scrape_recent_posts(blog_url)
 
@@ -2248,14 +2248,14 @@ def get_main_blog_url_content(blog_url):
 
         except (json.JSONDecodeError, TypeError):
             # If JSON decoding fails or another error occurs, return None
-            myprint(f"Error parsing post content: {post_content}")
+            log_info(f"Error parsing post content: {post_content}")
 
         # myprint(f"Randomly selected post content: {post_content}")
         post_url = selected_post.get("link", blog_url)
 
         return post_url, post_content
     else:
-        myprint("No recent posts found or unable to fetch posts.")
+        log_info("No recent posts found or unable to fetch posts.")
         return None, None
 
 
@@ -2293,12 +2293,12 @@ def scrape_recent_posts(blog_url):
                     "content": post_content
                 })
     except requests.RequestException as e:
-        myprint(f"Error fetching or parsing blog page: {e}")
+        log_info(f"Error fetching or parsing blog page: {e}")
 
     if len(recent_posts) == 0:
-        myprint(f"No recent posts found on the blog page: {blog_url}")
+        log_info(f"No recent posts found on the blog page: {blog_url}")
     else:
-        myprint(f"Found {len(recent_posts)} post(s) from: {blog_url}")
+        log_info(f"Found {len(recent_posts)} post(s) from: {blog_url}")
 
     return recent_posts
 
@@ -2323,11 +2323,11 @@ def process_selected_post(url, content):
         content = " ".join(content)
 
     # Placeholder for whatever processing needs to be done
-    myprint(f"Selected Post URL: {url}")
+    log_info(f"Selected Post URL: {url}")
     if content:
-        myprint(f"Selected Post Content: {content[:200]}...")  # Print the first 200 characters for preview
+        log_info(f"Selected Post Content: {content[:200]}...")  # Print the first 200 characters for preview
     else:
-        myprint("Selected Post Content: None")
+        log_info("Selected Post Content: None")
 
 
 @llm_step("draft")
@@ -2340,11 +2340,11 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
     """
     # 1. Fetch and parse the sitemap XML
     page_urls = fetch_sitemap_urls(sitemap_url)
-    myprint(f"Founds {len(page_urls)} URLs from sitemap {sitemap_url}")
+    log_info(f"Founds {len(page_urls)} URLs from sitemap {sitemap_url}")
 
     # 2. Filter URLs that are likely to contain shareable content
     relevant_urls = filter_relevant_urls(page_urls)
-    myprint(f"Found {len(relevant_urls)} relevant URLs in the sitemap.")
+    log_info(f"Found {len(relevant_urls)} relevant URLs in the sitemap.")
 
     # 3. Randomly select a URL to gather content from
     if relevant_urls:
@@ -2369,10 +2369,10 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
                                                                  content_mix=content_mix)
             return social_media_post
         else:
-            myprint("No content extracted from the selected URL.")
+            log_info("No content extracted from the selected URL.")
             return None
     else:
-        myprint("No relevant URLs found in the sitemap.")
+        log_info("No relevant URLs found in the sitemap.")
         return None
 
 
@@ -2442,13 +2442,13 @@ def fetch_content(url):
         content = response.content
 
     except requests.exceptions.HTTPError as http_err:
-        myprint(f"HTTP error occurred: {http_err}")
+        log_info(f"HTTP error occurred: {http_err}")
     except requests.exceptions.ConnectionError as conn_err:
-        myprint(f"Connection error occurred: {conn_err}")
+        log_info(f"Connection error occurred: {conn_err}")
     except requests.exceptions.Timeout as timeout_err:
-        myprint(f"Timeout error occurred: {timeout_err}")
+        log_info(f"Timeout error occurred: {timeout_err}")
     except requests.exceptions.RequestException as req_err:
-        myprint(f"Some other request error occurred: {req_err}")
+        log_info(f"Some other request error occurred: {req_err}")
 
     # Return the content
     return content
@@ -2498,9 +2498,9 @@ def fetch_sitemap_urls(sitemap_url):
             for sitemap in sitemap_elements:
                 sub_sitemap_url = sitemap.text
                 if any(text in sub_sitemap_url for text in skip_if_contains_text):
-                    myprint(f"Skipping sub-sitemap: {sub_sitemap_url}")
+                    log_info(f"Skipping sub-sitemap: {sub_sitemap_url}")
                     continue
-                myprint(f"Fetching sub-sitemap: {sub_sitemap_url}")
+                log_info(f"Fetching sub-sitemap: {sub_sitemap_url}")
                 urls.extend(fetch_sitemap_urls(sub_sitemap_url))  # Recursive call
 
     except requests.RequestException as e:
@@ -2548,7 +2548,7 @@ def extract_page_content(page_url):
 
         return title, main_content
     except requests.RequestException as e:
-        myprint(f"Error fetching page content: {e}")
+        log_info(f"Error fetching page content: {e}")
         return None, None
 
 
@@ -2588,7 +2588,7 @@ def auto_create_weekly_content(user_id: int = None):
     same bounded path the /create_weekly_content/ button runs, so it can't be spammed.
     """
     if user_id is not None:
-        myprint(f"Creating buffer content for user id: {user_id}")
+        log_info(f"Creating buffer content for user id: {user_id}")
         user_ids = [user_id]
     else:
         user_ids = get_user_ids_with_planned_posts_within_buffer() or []
@@ -2665,7 +2665,7 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
     lock_name = f"content_buffer_topup:{user_id}"
     lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
     if lock_token is None:
-        myprint(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
+        log_info(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
         _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.ALREADY_RUNNING)
         return
 
@@ -2674,7 +2674,7 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
         buffer_days, buffer_max = _content_buffer_settings(prefs)
         already_ready = count_ready_posts_within_buffer(user_id, buffer_days)
         if already_ready >= buffer_max:
-            myprint(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
+            log_info(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
                     f"within {buffer_days} days). Skipping content creation.")
             _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.BUFFER_FULL,
                                  buffer_days=buffer_days, ready_count=already_ready,
@@ -2692,20 +2692,20 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
                          f"{len(planned_posts)} upcoming post(s) forward on explicit request",
                          user_id=user_id, task_name="auto_create_weekly_content")
             elif ready_ahead >= buffer_max:
-                myprint(f"user_id {user_id}: {ready_ahead} post(s) already generated ahead "
+                log_info(f"user_id {user_id}: {ready_ahead} post(s) already generated ahead "
                         f"(cap {buffer_max}). Skipping content creation.")
                 _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.BUFFER_FULL,
                                      buffer_days=buffer_days, ready_count=ready_ahead,
                                      buffer_max=buffer_max)
                 return
         if not planned_posts:
-            myprint(f"user_id {user_id}: no planned posts within {buffer_days} days. "
+            log_info(f"user_id {user_id}: no planned posts within {buffer_days} days. "
                     f"Skipping content creation.")
             _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.NO_PLANNED_SLOTS,
                                  buffer_days=buffer_days)
             return
 
-        myprint(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "
+        log_info(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "
                 f"{buffer_max} ready within {buffer_days} days ({already_ready} already ready)")
         # Progress for the SPA (issue #545) — published for the beat run too, so a user who never
         # clicked Generate still sees why fresh drafts appeared.
@@ -2763,12 +2763,12 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         content, video_url = create_content(user_id, post_type, stage, post_id=post_id,
                                             content_mix=content_mix, day_weekday=day_weekday)
     except Exception as e:
-        myprint(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
+        log_info(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
         record_post_failed(user_id, post_id)
         return False
 
     if content is None:
-        myprint(f"Skipping post_id {post_id}: content generation returned None")
+        log_info(f"Skipping post_id {post_id}: content generation returned None")
         record_post_failed(user_id, post_id)
         return False
 
@@ -2785,20 +2785,20 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
             videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
             create_folder_if_not_exists(videos_dir)
             video_file_path = save_video_url_to_dir(video_url, videos_dir)
-            myprint(f"Video from url: {video_url} | Saved to: {video_file_path}")
+            log_info(f"Video from url: {video_url} | Saved to: {video_file_path}")
             # Attach AI Content Credentials to AI-generated video only (not stock).
             if ai_video:
                 try:
                     from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
                     add_ai_content_credentials(video_file_path)
                 except Exception as e:
-                    myprint(f"C2PA signing skipped for post_id={post_id}: {e}")
+                    log_info(f"C2PA signing skipped for post_id={post_id}: {e}")
             # Get the file name from the video file path
             video_file_name = os.path.basename(video_file_path)
 
             # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
             api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
-            myprint(f"Video URL: {api_video_url}")
+            log_info(f"Video URL: {api_video_url}")
 
             # Update the database with the video url
             update_db_post_video_url(post_id, api_video_url)
@@ -2816,7 +2816,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         _score_and_persist_dwell(user_id, post_id, content)
 
         # Update the database with the created content
-        myprint(f"Updating content for post_id: {post_id}")
+        log_info(f"Updating content for post_id: {post_id}")
         update_db_post_content(post_id, content)
 
         # Respect the user's auto_schedule_posts preference (fetched once per user by the caller):
@@ -2838,7 +2838,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                         user_id=user_id, post_id=post_id, task_name="create_content")
         _persist_gate_findings(user_id, post_id, gate_findings)
 
-        myprint(f"Updating post_id: {post_id} Status={new_status}")
+        log_info(f"Updating post_id: {post_id} Status={new_status}")
         update_db_post_status(post_id, new_status)
     except Exception as e:
         log_error(f"Skipping post_id {post_id}: storing generated content failed", exc=e,
@@ -2883,7 +2883,7 @@ def is_blog_post_by_metadata(url):
         if soup.find('meta', {'name': 'author'}):
             return True
     except Exception as e:
-        myprint(f"Error fetching URL: {e}")
+        log_info(f"Error fetching URL: {e}")
     return False
 
 
@@ -2902,8 +2902,8 @@ def is_blog_post_combined(url):
 
 
 if __name__ == '__main__':
-    myprint("Generating content plan for 30 days")
+    log_info("Generating content plan for 30 days")
     auto_generate_content()
-    myprint("Creating weekly content")
+    log_info("Creating weekly content")
     auto_create_weekly_content()
-    myprint("Process finished")
+    log_info("Process finished")

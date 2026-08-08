@@ -39,10 +39,7 @@ from cqc_lem.platform.db.shared import (
     ENGAGEMENT_TARGET_WEEKLY_DEFAULT,
     BlockedVisit,
 )
-from cqc_lem.utilities.logger import (
-    log_error,
-    myprint,
-)
+from cqc_lem.utilities.logger import log_error, log_info
 
 # --- Target-creator engagement roster (issue #616) ---
 # A curated list of accounts to comment on FIRST, ahead of the home feed. The blend the rotation
@@ -274,7 +271,7 @@ def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
                  str(source) if source else None, to_naive_utc(scheduled_time), str(status)))
             return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not insert scheduled DM for user_id {user_id} | Error: {err}")
+        log_info(f"Could not insert scheduled DM for user_id {user_id} | Error: {err}")
         return None
 def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str = None) -> bool:
     """True when this person already has a queued DM that hasn't gone out yet (issue #485 dedup —
@@ -296,7 +293,7 @@ def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str 
                            tuple(params + [str(s) for s in _OPEN_SCHED_DM_STATUSES]))
             return cursor.fetchone() is not None
     except mysql.connector.Error as err:
-        myprint(f"Could not check open scheduled DMs for user {user_id} | Error: {err}")
+        log_info(f"Could not check open scheduled DMs for user {user_id} | Error: {err}")
         return True
 def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
     """How many DMs were DRAFTED for this user today (optionally only from one source). The daily
@@ -314,7 +311,7 @@ def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count today's scheduled DMs for user {user_id} | Error: {err}")
+        log_info(f"Could not count today's scheduled DMs for user {user_id} | Error: {err}")
         return 0
 def get_scheduled_dm(dm_id: int) -> Optional[dict]:
     """One scheduled-DM row, or None when it does not exist or the read failed."""
@@ -323,7 +320,7 @@ def get_scheduled_dm(dm_id: int) -> Optional[dict]:
             cursor.execute(f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms WHERE id = %s", (dm_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get scheduled DM {dm_id} | Error: {err}")
+        log_info(f"Could not get scheduled DM {dm_id} | Error: {err}")
         return None
 def get_scheduled_dms(user_id: int, status_filter: str = None, page: int = 1,
                       page_size: int = 25, sort_order: str = "asc") -> dict:
@@ -352,7 +349,7 @@ def get_scheduled_dms(user_id: int, status_filter: str = None, page: int = 1,
                         r[k] = r[k].isoformat()
             return {"dms": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
-        myprint(f"Could not list scheduled DMs for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list scheduled DMs for user_id {user_id} | Error: {err}")
         return {"dms": [], "total": 0, "page": page, "page_size": page_size}
 def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
     """Approved DMs whose scheduled_time is at or before now+delta. Deliberately NO lower bound:
@@ -371,7 +368,7 @@ def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
                 (window_end,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get due scheduled DMs | Error: {err}")
+        log_info(f"Could not get due scheduled DMs | Error: {err}")
         return []
 def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
     """DMs stuck in 'scheduled' whose send task was lost (e.g. Celery queue purged on container
@@ -388,7 +385,7 @@ def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
                 (cutoff,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get orphaned scheduled DMs | Error: {err}")
+        log_info(f"Could not get orphaned scheduled DMs | Error: {err}")
         return []
 def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
     """Move a queued DM's status.
@@ -400,7 +397,7 @@ def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
             cursor.execute("UPDATE scheduled_dms SET status = %s WHERE id = %s", (str(status), dm_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update scheduled DM {dm_id} status | Error: {err}")
+        log_info(f"Could not update scheduled DM {dm_id} status | Error: {err}")
         return False
 def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient_name: str = None,
                         message: str = None, scheduled_time: datetime = None,
@@ -427,7 +424,7 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
             cursor.execute(f"UPDATE scheduled_dms SET {', '.join(fields)} WHERE id = %s", tuple(params))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update scheduled DM {dm_id} | Error: {err}")
+        log_info(f"Could not update scheduled DM {dm_id} | Error: {err}")
         return False
 # --- Proactive connection requests (issue #398) — approval-gated, daily-capped; reuses invite_to_connect ---
 # source/icp_score/reasons carry issue #486's targeting provenance (which engagement surfaced this
@@ -454,7 +451,7 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
                  source, icp_score, (reasons or None)))
             return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not insert connection request for user_id {user_id} | Error: {err}")
+        log_info(f"Could not insert connection request for user_id {user_id} | Error: {err}")
         return None
 def get_connection_request(request_id: int) -> Optional[dict]:
     """One connection-request row, or None when it does not exist or the read failed."""
@@ -464,7 +461,7 @@ def get_connection_request(request_id: int) -> Optional[dict]:
                 f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests WHERE id = %s", (request_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get connection request {request_id} | Error: {err}")
+        log_info(f"Could not get connection request {request_id} | Error: {err}")
         return None
 def get_connection_requests(user_id: int, status_filter: str = None, page: int = 1,
                             page_size: int = 25, sort_order: str = "desc") -> dict:
@@ -491,7 +488,7 @@ def get_connection_requests(user_id: int, status_filter: str = None, page: int =
                         r[k] = r[k].isoformat()
             return {"requests": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
-        myprint(f"Could not list connection requests for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list connection requests for user_id {user_id} | Error: {err}")
         return {"requests": [], "total": 0, "page": page, "page_size": page_size}
 def get_approved_connection_requests() -> list:
     """Approved connection requests waiting to be sent, oldest first. Returns (id, user_id) tuples.
@@ -504,7 +501,7 @@ def get_approved_connection_requests() -> list:
                 "ORDER BY created_at ASC")
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get approved connection requests | Error: {err}")
+        log_info(f"Could not get approved connection requests | Error: {err}")
         return []
 def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
     """Requests stuck in 'sending' whose send task was lost (e.g. Celery queue purged on restart).
@@ -520,7 +517,7 @@ def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
                 (cutoff,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get orphaned connection requests | Error: {err}")
+        log_info(f"Could not get orphaned connection requests | Error: {err}")
         return []
 def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus",
                                      failure_reason: str = None) -> bool:
@@ -535,7 +532,7 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
                             request_id))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update connection request {request_id} status | Error: {err}")
+        log_info(f"Could not update connection request {request_id} status | Error: {err}")
         return False
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
@@ -562,7 +559,7 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
             cursor.execute(f"UPDATE connection_requests SET {', '.join(fields)} WHERE id = %s", tuple(params))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update connection request {request_id} | Error: {err}")
+        log_info(f"Could not update connection request {request_id} | Error: {err}")
         return False
 def count_open_connection_requests(user_id: int) -> int:
     """Targets already queued but not yet sent (pending / approved / sending). The sourcing scan
@@ -577,7 +574,7 @@ def count_open_connection_requests(user_id: int) -> int:
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count open connection requests for user {user_id} | Error: {err}")
+        log_info(f"Could not count open connection requests for user {user_id} | Error: {err}")
         return 0
 def get_requested_person_keys(user_id: int) -> set:
     """person_key()s for everyone this user has EVER had a connection request row for, any status.
@@ -597,7 +594,7 @@ def get_requested_person_keys(user_id: int) -> set:
                     keys.add(key)
             return keys
     except mysql.connector.Error as err:
-        myprint(f"Could not read requested person keys for user {user_id} | Error: {err}")
+        log_info(f"Could not read requested person keys for user {user_id} | Error: {err}")
         return set()
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
 _OUTREACH_COLS = ("id", "user_id", "target_profile_url", "target_name", "stage", "status",
@@ -619,7 +616,7 @@ def insert_outreach_target(user_id: int, target_profile_url: str, target_name: s
                 (user_id, target_profile_url, target_name, str(stage), str(status), context_url, draft_text))
             return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not insert outreach target for user_id {user_id} | Error: {err}")
+        log_info(f"Could not insert outreach target for user_id {user_id} | Error: {err}")
         return None
 def get_outreach_target(target_id: int) -> Optional[dict]:
     """One outreach-funnel row, or None when it does not exist or the read failed."""
@@ -629,7 +626,7 @@ def get_outreach_target(target_id: int) -> Optional[dict]:
                 f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets WHERE id = %s", (target_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get outreach target {target_id} | Error: {err}")
+        log_info(f"Could not get outreach target {target_id} | Error: {err}")
         return None
 def get_outreach_target_by_url(user_id: int, target_profile_url: str) -> Optional[dict]:
     """This user's funnel row for a target profile, or None.
@@ -644,7 +641,7 @@ def get_outreach_target_by_url(user_id: int, target_profile_url: str) -> Optiona
                 "WHERE user_id = %s AND target_profile_url = %s", (user_id, target_profile_url))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not look up outreach target for user_id {user_id} | Error: {err}")
+        log_info(f"Could not look up outreach target for user_id {user_id} | Error: {err}")
         return None
 def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: str = None,
                          page: int = 1, page_size: int = 25, sort_order: str = "asc") -> dict:
@@ -674,7 +671,7 @@ def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: 
                         r[k] = r[k].isoformat()
             return {"targets": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
-        myprint(f"Could not list outreach targets for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list outreach targets for user_id {user_id} | Error: {err}")
         return {"targets": [], "total": 0, "page": page, "page_size": page_size}
 def get_approved_outreach_targets(user_id: int) -> list:
     """Approved, not-yet-completed funnel targets for a user — the rows the processor may fire.
@@ -688,7 +685,7 @@ def get_approved_outreach_targets(user_id: int) -> list:
                 "ORDER BY updated_at ASC", (user_id,))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not get approved outreach targets for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get approved outreach targets for user_id {user_id} | Error: {err}")
         return []
 def count_open_outreach_targets(user_id: int) -> int:
     """Funnel targets still awaiting a human or a stage fire (pending / approved, not completed).
@@ -703,7 +700,7 @@ def count_open_outreach_targets(user_id: int) -> int:
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count open outreach targets for user {user_id} | Error: {err}")
+        log_info(f"Could not count open outreach targets for user {user_id} | Error: {err}")
         return 0
 def get_users_with_approved_outreach() -> list:
     """Distinct user_ids that have at least one approved, non-completed funnel target (dispatcher)."""
@@ -714,7 +711,7 @@ def get_users_with_approved_outreach() -> list:
                 "WHERE status = 'approved' AND stage <> 'completed'")
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not get users with approved outreach | Error: {err}")
+        log_info(f"Could not get users with approved outreach | Error: {err}")
         return []
 def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> bool:
     """Move an outreach target's status.
@@ -727,7 +724,7 @@ def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> b
                            (str(status), target_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update outreach target {target_id} status | Error: {err}")
+        log_info(f"Could not update outreach target {target_id} status | Error: {err}")
         return False
 def update_outreach_target(target_id: int, target_profile_url: str = None, target_name: str = None,
                            context_url: str = None, draft_text: str = None, notes: str = None,
@@ -756,7 +753,7 @@ def update_outreach_target(target_id: int, target_profile_url: str = None, targe
                            tuple(params))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update outreach target {target_id} | Error: {err}")
+        log_info(f"Could not update outreach target {target_id} | Error: {err}")
         return False
 # --- LinkedIn Catch-up touches (issue #482) — approval-gated, deduped milestone congratulations ---
 _CATCHUP_COLS = ("id", "user_id", "profile_url", "person_name", "event_type", "event_detail",
@@ -778,7 +775,7 @@ def insert_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEve
                  int(score), message, str(status)))
             return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not insert catchup touch for user_id {user_id} | Error: {err}")
+        log_info(f"Could not insert catchup touch for user_id {user_id} | Error: {err}")
         return None
 def get_catchup_touch(touch_id: int) -> Optional[dict]:
     """One catch-up touch row, or None when it does not exist or the read failed."""
@@ -788,7 +785,7 @@ def get_catchup_touch(touch_id: int) -> Optional[dict]:
                            (touch_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get catchup touch {touch_id} | Error: {err}")
+        log_info(f"Could not get catchup touch {touch_id} | Error: {err}")
         return None
 def has_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventType",
                       event_period: str) -> bool:
@@ -803,7 +800,7 @@ def has_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventT
                 (user_id, profile_url, str(event_type), event_period))
             return cursor.fetchone() is not None
     except mysql.connector.Error as err:
-        myprint(f"Could not check catchup touch for user_id {user_id} | Error: {err}")
+        log_info(f"Could not check catchup touch for user_id {user_id} | Error: {err}")
         return False
 def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filter: str = None,
                         page: int = 1, page_size: int = 25, sort_order: str = "desc") -> dict:
@@ -833,7 +830,7 @@ def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filt
                         r[k] = r[k].isoformat()
             return {"touches": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
-        myprint(f"Could not list catchup touches for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list catchup touches for user_id {user_id} | Error: {err}")
         return {"touches": [], "total": 0, "page": page, "page_size": page_size}
 def get_approved_catchup_touches() -> list:
     """Approved touches waiting to be sent, highest-scoring first so the best moments go out within
@@ -846,7 +843,7 @@ def get_approved_catchup_touches() -> list:
                 "ORDER BY score DESC, created_at ASC")
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get approved catchup touches | Error: {err}")
+        log_info(f"Could not get approved catchup touches | Error: {err}")
         return []
 def count_pending_catchup_touches() -> int:
     """Drafted touches still waiting on human approval, fleet-wide. The send drip reports this so a
@@ -875,7 +872,7 @@ def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
                 "AND updated_at <= %s ORDER BY updated_at ASC", (cutoff,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get orphaned catchup touches | Error: {err}")
+        log_info(f"Could not get orphaned catchup touches | Error: {err}")
         return []
 def count_catchup_touches_sent_today(user_id: int) -> int:
     """Catch-up DMs sent today (UTC) — the per-day cap is on top of the overall DM cap."""
@@ -887,7 +884,7 @@ def count_catchup_touches_sent_today(user_id: int) -> int:
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count catchup touches for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count catchup touches for user_id {user_id} | Error: {err}")
         return 0
 def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> bool:
     """Move a catch-up touch's status.
@@ -906,7 +903,7 @@ def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> 
                                (str(status), touch_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update catchup touch {touch_id} status | Error: {err}")
+        log_info(f"Could not update catchup touch {touch_id} status | Error: {err}")
         return False
 def update_catchup_touch(touch_id: int, message: str = None, person_name: str = None,
                          status: "CatchupTouchStatus" = None) -> bool:
@@ -934,7 +931,7 @@ def update_catchup_touch(touch_id: int, message: str = None, person_name: str = 
             cursor.execute(f"UPDATE catchup_touches SET {', '.join(fields)} WHERE id = %s", tuple(params))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update catchup touch {touch_id} | Error: {err}")
+        log_info(f"Could not update catchup touch {touch_id} | Error: {err}")
         return False
 def last_catchup_sent_at(user_id: int, profile_url: str) -> Optional[datetime]:
     """The most recent `last_sent_at` for this contact, or None when no catch-up has been sent.
@@ -949,7 +946,7 @@ def last_catchup_sent_at(user_id: int, profile_url: str) -> Optional[datetime]:
             r = cursor.fetchone()
             return r[0] if r and r[0] else None
     except mysql.connector.Error as err:
-        myprint(f"Could not read last catch-up sent at for user_id {user_id} | Error: {err}")
+        log_info(f"Could not read last catch-up sent at for user_id {user_id} | Error: {err}")
         return None
 def count_catchup_touches_for_contact_in_window(user_id: int, profile_url: str,
                                                 days: int) -> int:
@@ -969,7 +966,7 @@ def count_catchup_touches_for_contact_in_window(user_id: int, profile_url: str,
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count catch-up touches for contact (user_id {user_id}) | Error: {err}")
+        log_info(f"Could not count catch-up touches for contact (user_id {user_id}) | Error: {err}")
         return 0
 _LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
 def get_lead_magnet_settings(user_id: int) -> dict:
@@ -987,7 +984,7 @@ def get_lead_magnet_settings(user_id: int) -> dict:
             row["enabled"] = bool(row.get("enabled"))
             return row
     except mysql.connector.Error as err:
-        myprint(f"Could not get lead magnet for user {user_id} | Error: {err}")
+        log_info(f"Could not get lead magnet for user {user_id} | Error: {err}")
         return dict(_LEAD_MAGNET_DEFAULTS)
 def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
     """Upsert the lead-magnet settings for a user.
@@ -1002,7 +999,7 @@ def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
                 (user_id, 1 if settings.get("enabled") else 0, settings.get("keyword"), settings.get("message")))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update lead magnet for user {user_id} | Error: {err}")
+        log_info(f"Could not update lead magnet for user {user_id} | Error: {err}")
         return False
 def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
     """Has this person already been sent this user's lead magnet?
@@ -1029,7 +1026,7 @@ def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int =
                 (user_id, recipient_profile, post_id))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record lead magnet sent for user {user_id} | Error: {err}")
+        log_info(f"Could not record lead magnet sent for user {user_id} | Error: {err}")
         return False
 # --- inbound hot-lead signals (issue #483) ----------------------------------------------------
 _LEAD_SIGNAL_COLS = ("id", "user_id", "source", "channel", "person_name", "person_profile_url",
@@ -1057,7 +1054,7 @@ def insert_lead_signal(user_id: int, source: "LeadSignalSource", thread_key: str
                  post_id, context_url, draft_response))
             return cursor.lastrowid or None
     except mysql.connector.Error as err:
-        myprint(f"Could not insert lead signal for user {user_id} | Error: {err}")
+        log_info(f"Could not insert lead signal for user {user_id} | Error: {err}")
         return None
 def has_lead_signal(user_id: int, thread_key: str) -> bool:
     """True if this conversation was already flagged. Checked BEFORE the expensive draft generation
@@ -1079,7 +1076,7 @@ def get_lead_signal(signal_id: int) -> Optional[dict]:
             cursor.execute(f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals WHERE id=%s", (signal_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get lead signal {signal_id} | Error: {err}")
+        log_info(f"Could not get lead signal {signal_id} | Error: {err}")
         return None
 def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, page_size: int = 25,
                      sort_order: str = "desc") -> dict:
@@ -1108,7 +1105,7 @@ def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, pag
                         r[k] = r[k].isoformat()
             return {"signals": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
-        myprint(f"Could not list lead signals for user {user_id} | Error: {err}")
+        log_info(f"Could not list lead signals for user {user_id} | Error: {err}")
         return {"signals": [], "total": 0, "page": page, "page_size": page_size}
 def update_lead_signal(signal_id: int, draft_response: str = None,
                        status: "LeadSignalStatus" = None,
@@ -1130,7 +1127,7 @@ def update_lead_signal(signal_id: int, draft_response: str = None,
             cursor.execute(f"UPDATE lead_signals SET {', '.join(fields)} WHERE id = %s", tuple(params))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update lead signal {signal_id} | Error: {err}")
+        log_info(f"Could not update lead signal {signal_id} | Error: {err}")
         return False
 def count_new_lead_signals(user_id: int) -> int:
     """Unactioned hot leads — the inbox badge count."""
@@ -1159,7 +1156,7 @@ def reset_lead_scores(user_id: int) -> bool:
                 "signals=NULL, reasons=NULL, next_action=NULL WHERE user_id=%s", (user_id,))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not reset lead scores for user {user_id} | Error: {err}")
+        log_info(f"Could not reset lead scores for user {user_id} | Error: {err}")
         return False
 def upsert_lead(user_id: int, person_key: str, person_name: str = None,
                 person_profile_url: str = None, score: int = 0, icp_score: int = 0,
@@ -1197,7 +1194,7 @@ def upsert_lead(user_id: int, person_key: str, person_name: str = None,
                  (next_action or None), first_signal_at, last_signal_at))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not upsert lead for user {user_id} | Error: {err}")
+        log_info(f"Could not upsert lead for user {user_id} | Error: {err}")
         return False
 def get_lead(lead_id: int) -> Optional[dict]:
     """One lead row from the pipeline board, or None when it does not exist or the read failed."""
@@ -1206,7 +1203,7 @@ def get_lead(lead_id: int) -> Optional[dict]:
             cursor.execute(f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE id=%s", (lead_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get lead {lead_id} | Error: {err}")
+        log_info(f"Could not get lead {lead_id} | Error: {err}")
         return None
 def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = False,
               page: int = 1, page_size: int = 100) -> dict:
@@ -1237,7 +1234,7 @@ def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = 
                 r["dismissed"] = bool(r.get("dismissed"))
             return {"leads": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
-        myprint(f"Could not list leads for user {user_id} | Error: {err}")
+        log_info(f"Could not list leads for user {user_id} | Error: {err}")
         return {"leads": [], "total": 0, "page": page, "page_size": page_size}
 def get_hot_leads(user_id: int, limit: int = 10) -> list:
     """Today's hot list — the leads worth acting on now, with the WHY and the suggested action."""
@@ -1249,7 +1246,7 @@ def get_hot_leads(user_id: int, limit: int = 10) -> list:
                 "ORDER BY score DESC, last_signal_at DESC LIMIT %s", (user_id, max(1, int(limit))))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get hot leads for user {user_id} | Error: {err}")
+        log_info(f"Could not get hot leads for user {user_id} | Error: {err}")
         return []
 def count_hot_leads(user_id: int) -> int:
     """Board badge: how many leads are hot or further along."""
@@ -1286,7 +1283,7 @@ def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = Non
             cursor.execute(f"UPDATE leads SET {', '.join(fields)} WHERE id = %s", tuple(params))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update lead {lead_id} | Error: {err}")
+        log_info(f"Could not update lead {lead_id} | Error: {err}")
         return False
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
@@ -1341,7 +1338,7 @@ def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[di
             if row:
                 return row
     except mysql.connector.Error as err:
-        myprint(f"Could not get dm template for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get dm template for user_id {user_id} | Error: {err}")
     if step == 0 and event_type in _DM_DEFAULT_TEMPLATES:
         return {"template_text": _DM_DEFAULT_TEMPLATES[event_type], "delay_hours": 0, "step": 0}
     return None
@@ -1361,7 +1358,7 @@ def get_dm_templates(user_id: int) -> list:
                 r["is_active"] = bool(r.get("is_active"))
             return rows
     except mysql.connector.Error as err:
-        myprint(f"Could not list dm templates for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list dm templates for user_id {user_id} | Error: {err}")
         return []
 def upsert_dm_templates(user_id: int, templates: list) -> bool:
     """Upsert a list of {event_type, step, delay_hours, template_text, is_active} for a user."""
@@ -1376,7 +1373,7 @@ def upsert_dm_templates(user_id: int, templates: list) -> bool:
                      t.get("template_text", ""), 1 if t.get("is_active", True) else 0))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not upsert dm templates for user_id {user_id} | Error: {err}")
+        log_info(f"Could not upsert dm templates for user_id {user_id} | Error: {err}")
         return False
 def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
                              person_name: str = None) -> bool:
@@ -1398,7 +1395,7 @@ def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
                 (user_id, profile_url, person_name, str(event_type)))
             return cursor.rowcount == 1
     except mysql.connector.Error as err:
-        myprint(f"Could not claim appreciation touch for user_id {user_id} | Error: {err}")
+        log_info(f"Could not claim appreciation touch for user_id {user_id} | Error: {err}")
         return False
 def claim_catchup_send_attempt(touch_id: int, user_id: int, profile_url: str,
                              event_type: "CatchupEventType", event_period: str) -> bool:
@@ -1417,7 +1414,7 @@ def claim_catchup_send_attempt(touch_id: int, user_id: int, profile_url: str,
                 (touch_id, user_id, profile_url, str(event_type), event_period))
             return cursor.rowcount == 1
     except mysql.connector.Error as err:
-        myprint(f"Could not claim catch-up send attempt for touch_id {touch_id} | Error: {err}")
+        log_info(f"Could not claim catch-up send attempt for touch_id {touch_id} | Error: {err}")
         return False
 def release_catchup_send_attempt(user_id: int, profile_url: str, event_type: "CatchupEventType",
                                  event_period: str) -> bool:
@@ -1437,7 +1434,7 @@ def release_catchup_send_attempt(user_id: int, profile_url: str, event_type: "Ca
                 (user_id, profile_url, str(event_type), event_period))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not release catch-up send claim for user_id {user_id} | Error: {err}")
+        log_info(f"Could not release catch-up send claim for user_id {user_id} | Error: {err}")
         return False
 def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> bool:
     """Whether this person was already thanked for this event. Read-only — the CLAIM is what makes
@@ -1451,7 +1448,7 @@ def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> b
                 "AND event_type = %s LIMIT 1", (user_id, profile_url, str(event_type)))
             return cursor.fetchone() is not None
     except mysql.connector.Error as err:
-        myprint(f"Could not check appreciation touch for user_id {user_id} | Error: {err}")
+        log_info(f"Could not check appreciation touch for user_id {user_id} | Error: {err}")
         return False
 def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type: str,
                      next_step: int, due_at) -> bool:
@@ -1464,7 +1461,7 @@ def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type
                 (user_id, profile_url, first_name, str(event_type), next_step, due_at))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not enqueue followup for user_id {user_id} | Error: {err}")
+        log_info(f"Could not enqueue followup for user_id {user_id} | Error: {err}")
         return False
 def get_due_followups(now) -> list:
     """Pending follow-ups whose due_at has passed. `now` is a datetime."""
@@ -1475,7 +1472,7 @@ def get_due_followups(now) -> list:
                 "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not get due followups | Error: {err}")
+        log_info(f"Could not get due followups | Error: {err}")
         return []
 def mark_followup(followup_id: int, status: str) -> bool:
     """Move one follow-up row to `status`.
@@ -1487,7 +1484,7 @@ def mark_followup(followup_id: int, status: str) -> bool:
             cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not mark followup {followup_id} | Error: {err}")
+        log_info(f"Could not mark followup {followup_id} | Error: {err}")
         return False
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""
@@ -1498,5 +1495,5 @@ def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
                            (user_id, profile_url))
             return cursor.rowcount
     except mysql.connector.Error as err:
-        myprint(f"Could not stop followups for user_id {user_id} | Error: {err}")
+        log_info(f"Could not stop followups for user_id {user_id} | Error: {err}")
         return 0

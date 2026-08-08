@@ -69,7 +69,7 @@ from cqc_lem.utilities.linkedin_formatter import (
     linkedin_post_format_directive,
     normalize_public_text,
 )
-from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 
@@ -1309,7 +1309,7 @@ def post_is_relevant(post_content: str, include_topics: list) -> bool:
         ans = (resp.choices[0].message.content or "").strip().lower()
         return ans.startswith("y")
     except Exception as e:
-        myprint(f"post_is_relevant classifier failed (allowing): {e}")
+        log_info(f"post_is_relevant classifier failed (allowing): {e}")
         return True
 
 
@@ -1888,7 +1888,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     industry = trends.get("industry") or getattr(linked_user_profile, "industry", None) or "Technology"
     analysis = trends.get("analysis", "")
 
-    myprint(
+    log_info(
         f'Generating Thought Leadership AI Response for {buyer_stage} buyer stage about the {industry} industry.\n\nAnalysis: {analysis} ')
 
     # Use json to output to string
@@ -2028,7 +2028,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
         where the subject falls back to industry-only.
     """
     my_industries = get_industries_of_profile_from_ai(linked_in_profile, 3)
-    myprint(f"Likely Industries: {my_industries}")
+    log_info(f"Likely Industries: {my_industries}")
 
     # Convert the industries into a list by splitting on comma
     my_industries_list = my_industries.split(', ')
@@ -2036,7 +2036,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
     # Get one of the industries by random choice
     industry = random.choice(my_industries_list)
 
-    myprint(f"Chosen Industry: {industry}")
+    log_info(f"Chosen Industry: {industry}")
 
     # SUBJECT anchoring (the topic-drift fix): trends used to come ONLY from the profile's industry,
     # so by the time the alignment directive steered the ANGLE the subject was already off the
@@ -2048,7 +2048,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
     # behavior is unchanged.
     focus_topic = _select_focus_topic(prefs, sequence_index, profile=linked_in_profile)
     if focus_topic:
-        myprint(f"Anchoring trends to focus topic: {focus_topic}")
+        log_info(f"Anchoring trends to focus topic: {focus_topic}")
         subject = (f"{focus_topic} in the {industry} industry: recent trends, developments, and "
                    f"news at that intersection. If little exists at the intersection, cover recent "
                    f"trends and news about {focus_topic} itself instead of generic {industry} news")
@@ -2075,17 +2075,17 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
     articles_dict = search_recent_news(focus_topic or industry, 7)
     articles = articles_dict.get('articles', [])
 
-    myprint(f"Articles Found: {len(articles)}")
+    log_info(f"Articles Found: {len(articles)}")
 
     if randomize:
         random.shuffle(articles)
-        myprint("Articles Shuffled")
+        log_info("Articles Shuffled")
 
     if limit_to and len(articles) > limit_to:
         articles = articles[:limit_to]
-        myprint(f"Limited to {limit_to} articles")
+        log_info(f"Limited to {limit_to} articles")
 
-    myprint(f"Articles: {articles}")
+    log_info(f"Articles: {articles}")
 
     # Get the trend analysis of the industry (scoped to the anchored focus topic when present)
     trend_analysis = get_industry_trend_from_ai(focus_topic or industry, articles)
@@ -3058,7 +3058,7 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
 
 """
 
-    myprint(
+    log_info(
         'Generating message to the recipient based on the given message history.')
 
 

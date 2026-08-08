@@ -42,7 +42,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
-from cqc_lem.utilities.logger import log_debug, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
 # Last-resort geolocation when a session has no user_id and therefore no stored Login Location.
@@ -59,9 +59,9 @@ def quit_gracefully(driver: WebDriver):
     """
     try:
         driver.quit()
-        myprint("Driver session closed.")
+        log_info("Driver session closed.")
     except Exception as e:
-        myprint(f"Error while quitting driver: {e}")
+        log_info(f"Error while quitting driver: {e}")
 
 
 # What the Grid says when the session a call names is gone. The exception type covers the normal
@@ -153,8 +153,8 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = 60) -> None:
         try:
             resp = requests.get(status_url, timeout=3)
             if resp.status_code == 200 and resp.json().get("value", {}).get("ready"):
-                myprint(f"Selenium ready at {status_url}")
-                myprint(f"VNC viewer available at http://{host}:7900")
+                log_info(f"Selenium ready at {status_url}")
+                log_info(f"VNC viewer available at http://{host}:7900")
                 return
         except Exception:
             pass
@@ -269,7 +269,7 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     try:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": stealth_js})
     except Exception as e:
-        myprint(f"Could not apply stealth init script | Error: {e}")
+        log_info(f"Could not apply stealth init script | Error: {e}")
 
     if coordinates is None:
         # lat/lng come from the user's stored Login Location (get_user_geo above). The constants are
@@ -294,7 +294,7 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
         driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {"timezoneId": user_timezone})
         driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": user_locale})
     except Exception as e:
-        myprint(f"Could not apply timezone/locale override | Error: {e}")
+        log_info(f"Could not apply timezone/locale override | Error: {e}")
 
     return driver
 
@@ -414,20 +414,20 @@ def apply_proxy(options: Options, proxy_url: str) -> None:
         scheme = parsed.scheme or "http"
         host = parsed.hostname or ""
         if not host:
-            myprint(f"Invalid proxy_url (no host) — ignoring: {proxy_url}")
+            log_info(f"Invalid proxy_url (no host) — ignoring: {proxy_url}")
             return
         hostport = f"{host}:{parsed.port}" if parsed.port else host
         options.add_argument(f"--proxy-server={scheme}://{hostport}")
-        myprint(f"Routing browser egress via proxy {scheme}://{hostport}")
+        log_info(f"Routing browser egress via proxy {scheme}://{hostport}")
         if parsed.username and parsed.password:
             options.add_encoded_extension(
                 _build_proxy_auth_extension_b64(parsed.username, parsed.password))
-            myprint("Loaded proxy auth extension for credentialed proxy")
+            log_info("Loaded proxy auth extension for credentialed proxy")
         elif parsed.username:
-            myprint("Proxy URL has a username but no password; sending host:port only. "
+            log_info("Proxy URL has a username but no password; sending host:port only. "
                     "Use user:pass or an IP-allowlisted proxy (see docs/PER_USER_PROXY.md).")
     except Exception as e:
-        myprint(f"Could not apply proxy '{proxy_url}': {e}")
+        log_info(f"Could not apply proxy '{proxy_url}': {e}")
 
 
 def add_headless_options(options: Options) -> Options:
@@ -550,7 +550,7 @@ def click_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_val
 
     except ElementNotInteractableException as se:
         if max_retry > 1:
-            myprint(wait_text + " | Not Interactable | .....retrying")
+            log_info(wait_text + " | Not Interactable | .....retrying")
             time.sleep(5)  # wait 5 seconds
             driver.implicitly_wait(5)  # wait on driver 5 seconds
             element = click_element_wait_retry(driver, wait, find_by_value, wait_text, find_by, max_retry - 1,
@@ -559,15 +559,15 @@ def click_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_val
 
             if element_always_expected:
                 # raise TimeoutException("Timeout while " + wait_text)
-                myprint(f"Failed to find or interact with element: {wait_text} | Error: {se}")
+                log_info(f"Failed to find or interact with element: {wait_text} | Error: {se}")
                 # return None
                 raise se
             else:
-                myprint(f"Failed to find or interact with element: {wait_text}")
+                log_info(f"Failed to find or interact with element: {wait_text}")
                 element = None
 
     except (StaleElementReferenceException, TimeoutException) as st:
-        myprint(wait_text + " | Stale or Timed out | ")
+        log_info(wait_text + " | Stale or Timed out | ")
         if element_always_expected:
             raise st
         else:
@@ -604,7 +604,7 @@ def get_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_value
 
     except (StaleElementReferenceException, TimeoutException) as se:
         if max_try > 1:
-            myprint(wait_text + " | Stale | .....retrying")
+            log_info(wait_text + " | Stale | .....retrying")
             time.sleep(5)  # wait 5 seconds
             driver.implicitly_wait(5)  # wait on driver 5 seconds
             element = get_element_wait_retry(driver, wait, find_by_value, wait_text, find_by, max_try - 1,
@@ -614,7 +614,7 @@ def get_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_value
             if element_always_expected:
                 raise se
             else:
-                myprint(f"Failed to find element: {wait_text}")
+                log_info(f"Failed to find element: {wait_text}")
                 element = None
 
     return element
@@ -649,13 +649,13 @@ def get_visible_element_wait_retry(driver: WebDriver, wait: WebDriverWait,
         return wait.until(_find_visible, wait_text)
     except (StaleElementReferenceException, TimeoutException) as se:
         if max_try > 1:
-            myprint(wait_text + " | Not visible | .....retrying")
+            log_info(wait_text + " | Not visible | .....retrying")
             time.sleep(5)
             return get_visible_element_wait_retry(driver, wait, locators, wait_text,
                                                   max_try - 1, element_always_expected)
         if element_always_expected:
             raise se
-        myprint(f"Failed to find visible element: {wait_text}")
+        log_info(f"Failed to find visible element: {wait_text}")
         return None
 
 
@@ -700,7 +700,7 @@ def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str,
         return wait.until(_find, label)
     except (StaleElementReferenceException, TimeoutException) as se:
         if max_try > 1:
-            myprint(label + " | not found | .....retrying")
+            log_info(label + " | not found | .....retrying")
             time.sleep(5)
             return find_first(driver, wait, locators, label, required=required,
                               parent_element=parent_element, max_try=max_try - 1,
@@ -780,7 +780,7 @@ def get_elements_as_list_wait_stale(wait: WebDriverWait, find_by_value: str, wai
         elements = wait.until(lambda d: d.find_elements(find_by, find_by_value), wait_text)
         # elements_list = list(map(lambda x: getText(x), elements))
     except (StaleElementReferenceException, TimeoutException) as se:
-        myprint(wait_text + " | Stale | .....retrying")
+        log_info(wait_text + " | Stale | .....retrying")
         time.sleep(5)  # wait 5 seconds
         if max_retry > 1:
             elements = get_elements_as_list_wait_stale(wait, find_by_value, wait_text, find_by, max_retry - 1)
@@ -862,13 +862,13 @@ def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
     try:
         driver.close()
     except WebDriverException:
-        myprint("Failed to close browser/tab. Retrying.....")
+        log_info("Failed to close browser/tab. Retrying.....")
         try:
             # Wait to close the new window or tab
             wait.until(EC.number_of_windows_to_be(len(handles) - 1), "Waiting for browser/tab to close.")
             pass
         except TimeoutException as te:
-            myprint(te)
+            log_info(te)
             if (max_retry > 0):
                 close_tab(driver, handles, max_retry - 1)
         
@@ -914,12 +914,12 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
 
     wait = get_driver_wait(driver)
 
-    myprint("Driver and Wait created. Waiting for one window handle")
+    log_info("Driver and Wait created. Waiting for one window handle")
 
     # Wait until at least one window handle is available (indicating that the browser has started)
     wait.until(lambda driver: len(driver.window_handles) > 0)
 
-    myprint("Window handle found. Returning driver and wait pair.")
+    log_info("Window handle found. Returning driver and wait pair.")
 
     # Give some time for multiple calls
     # time.sleep(2)
@@ -974,6 +974,6 @@ def load_cookies(driver: WebDriver, cookies: list[dict]):
                 'httpOnly': bool(cookie['http_only']) if cookie['http_only'] is not None else False,
             })
         except selenium.common.exceptions.InvalidArgumentException as e:
-            myprint(f"Error loading cookie: {cookie}")
-            myprint(f"Exception: {e}")
+            log_info(f"Error loading cookie: {cookie}")
+            log_info(f"Exception: {e}")
 

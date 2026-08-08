@@ -368,7 +368,7 @@ def purge_post_assets(post_id, video_url=None):
     from urllib.parse import parse_qs, urlparse
 
     from cqc_lem import assets_dir
-    from cqc_lem.utilities.logger import myprint
+    from cqc_lem.utilities.logger import log_info
 
     removed = []
     assets_real = os.path.realpath(assets_dir)
@@ -392,7 +392,7 @@ def purge_post_assets(post_id, video_url=None):
                     os.remove(candidate)
                     removed.append(candidate)
                 except OSError as e:
-                    myprint(f"purge_post_assets: could not remove {candidate}: {e}")
+                    log_info(f"purge_post_assets: could not remove {candidate}: {e}")
 
     for media_dir in (os.path.join(assets_dir, "images", "carousel", str(post_id)),
                       os.path.join(assets_dir, "images", "posts", str(post_id))):
@@ -401,8 +401,8 @@ def purge_post_assets(post_id, video_url=None):
                 shutil.rmtree(media_dir)
                 removed.append(media_dir)
             except OSError as e:
-                myprint(f"purge_post_assets: could not remove {media_dir}: {e}")
+                log_info(f"purge_post_assets: could not remove {media_dir}: {e}")
 
     if removed:
-        myprint(f"purge_post_assets: post_id={post_id} removed {len(removed)} asset path(s)")
+        log_info(f"purge_post_assets: post_id={post_id} removed {len(removed)} asset path(s)")
     return removed

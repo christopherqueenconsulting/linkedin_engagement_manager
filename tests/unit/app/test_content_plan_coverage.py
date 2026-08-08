@@ -464,7 +464,7 @@ class TestScrapeRecentPosts:
 class TestProcessSelectedPost:
     def test_handles_list_content_and_missing_values(self):
         from cqc_lem.app.run_content_plan import process_selected_post
-        with patch(f"{_RCP}.myprint") as log:
+        with patch(f"{_RCP}.log_info") as log:
             # List content is joined; a falsy url gets the placeholder.
             process_selected_post(None, ["part one", "part two"])
             logged = " | ".join(str(c.args[0]) for c in log.call_args_list)

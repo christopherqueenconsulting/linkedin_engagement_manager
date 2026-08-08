@@ -15,12 +15,7 @@ from cqc_lem.platform.db.enums import (
     LogActionType,
     LogResultType,
 )
-from cqc_lem.utilities.logger import (
-    log_error,
-    log_info,
-    log_warning,
-    myprint,
-)
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 # Marker message logged (as ENGAGED/SUCCESS) whenever a LinkedIn invite is actually sent — reactive
 # profile-viewer AND proactive (issue #398) sends both flow through invite_to_connect_now, so the
@@ -53,7 +48,7 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
 
             success = cursor.rowcount == 1
     except mysql.connector.Error as err:
-        myprint(f"Could not insert new log | Error: {err}")
+        log_info(f"Could not insert new log | Error: {err}")
         success = False
 
     return success
@@ -69,7 +64,7 @@ def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
                 (user_id, post_url, LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
             count = cursor.fetchone()[0]
     except mysql.connector.Error as err:
-        myprint(f"Could not count user comments on post url | Error: {err}")
+        log_info(f"Could not count user comments on post url | Error: {err}")
         count = 0
 
     return int(count or 0)
@@ -93,7 +88,7 @@ def get_post_age_minutes(user_id: int, post_id: int):
             row = cursor.fetchone()
             seconds = row[0] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get post age from log for user | Error: {err}")
+        log_info(f"Could not get post age from log for user | Error: {err}")
         seconds = None
 
     return None if seconds is None else max(0.0, float(seconds) / 60.0)
@@ -153,7 +148,7 @@ def has_engaged_url_with_x_days(user_id: int, post_url: str, days: int):
                 (user_id, post_url, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value, days))
             count = cursor.fetchone()[0]
     except mysql.connector.Error as err:
-        myprint(f"Could not determine if user engaged with url with x days | Error: {err}")
+        log_info(f"Could not determine if user engaged with url with x days | Error: {err}")
         count = 0
 
     return count > 0
@@ -167,7 +162,7 @@ def get_dm_history_for_profile(user_id: int, profile_url: str) -> list[str]:
             )
             rows = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get DM history for profile | Error: {err}")
+        log_info(f"Could not get DM history for profile | Error: {err}")
         rows = []
     return [row[0] for row in rows if row[0]]
 def get_recent_logs(user_id: int, limit: int = 20) -> list:
@@ -184,7 +179,7 @@ def get_recent_logs(user_id: int, limit: int = 20) -> list:
             )
             rows = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get recent logs | Error: {err}")
+        log_info(f"Could not get recent logs | Error: {err}")
         rows = []
 
     return rows
@@ -198,7 +193,7 @@ def _count_actions_today(user_id: int, action_type: "LogActionType") -> int:
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count actions for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count actions for user_id {user_id} | Error: {err}")
         return 0
 def count_comments_today(user_id: int) -> int:
     """Comments logged as SUCCESS since the database's own midnight — what the per-day cap is checked against.
@@ -224,7 +219,7 @@ def count_invites_sent_today(user_id: int) -> int:
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count invites for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count invites for user_id {user_id} | Error: {err}")
         return 0
 def count_invite_withdrawals_today(user_id: int) -> int:
     """Stale pending invites this user's account withdrew today (issue #969) — the durable half of
@@ -244,7 +239,7 @@ def count_invite_withdrawals_today(user_id: int) -> int:
             r = cursor.fetchone()
             return max(0, int(r[0])) if r and r[0] is not None else 0
     except (mysql.connector.Error, TypeError, ValueError) as err:
-        myprint(f"Could not count invite withdrawals for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count invite withdrawals for user_id {user_id} | Error: {err}")
         return 0
 def count_company_page_invites_sent_today(user_id: int) -> int:
     """Company-page invites sent today (issue #732) — the durable half of the daily cap.
@@ -265,7 +260,7 @@ def count_company_page_invites_sent_today(user_id: int) -> int:
             r = cursor.fetchone()
             return max(0, int(r[0])) if r and r[0] is not None else 0
     except (mysql.connector.Error, TypeError, ValueError) as err:
-        myprint(f"Could not count company page invites for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count company page invites for user_id {user_id} | Error: {err}")
         return 0
 CLAIM_STALE_MINUTES = 60
 def claim_post_for_comment(user_id: int, post_key: str, stale_after_minutes: int = CLAIM_STALE_MINUTES) -> bool:
@@ -327,7 +322,7 @@ def mark_post_commented(user_id: int, post_key: str) -> bool:
                 (user_id, str(post_key)[:255]))
             return cursor.rowcount >= 1
     except mysql.connector.Error as err:
-        myprint(f"Could not mark post commented for user {user_id} | Error: {err}")
+        log_info(f"Could not mark post commented for user {user_id} | Error: {err}")
         return False
 def mark_post_reacted(user_id: int, post_key: str) -> bool:
     """Record that we also left a reaction on this post (audit + 'react at most once' tracking)."""
@@ -340,7 +335,7 @@ def mark_post_reacted(user_id: int, post_key: str) -> bool:
                 (user_id, str(post_key)[:255]))
             return cursor.rowcount >= 1
     except mysql.connector.Error as err:
-        myprint(f"Could not mark post reacted for user {user_id} | Error: {err}")
+        log_info(f"Could not mark post reacted for user {user_id} | Error: {err}")
         return False
 def release_post_claim(user_id: int, post_key: str) -> bool:
     """Release an in-flight claim (comment never posted) so a later run can retry the post. Only
@@ -355,7 +350,7 @@ def release_post_claim(user_id: int, post_key: str) -> bool:
                 (user_id, str(post_key)[:255]))
             return cursor.rowcount >= 1
     except mysql.connector.Error as err:
-        myprint(f"Could not release post claim for user {user_id} | Error: {err}")
+        log_info(f"Could not release post claim for user {user_id} | Error: {err}")
         return False
 def has_commented_post(user_id: int, post_key: str) -> bool:
     """True if this post is already claimed or commented for the user (persistent, cross-run
@@ -439,7 +434,7 @@ def record_comment_followup(user_id: int, post_key: str, reply_key: str,
                 (user_id, str(post_key)[:255], str(reply_key)[:255], int(bool(reacted)), int(bool(replied))))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record comment followup for user {user_id} | Error: {err}")
+        log_info(f"Could not record comment followup for user {user_id} | Error: {err}")
         return False
 def count_followup_replies_today(user_id: int) -> int:
     """Auto-replies posted to comment-replies today — the daily cap for the follow-up feature."""
@@ -475,7 +470,7 @@ def update_commented_post_key(user_id: int, old_key: str, new_key: str) -> bool:
                                (str(new_key)[:255], user_id, str(old_key)[:255]))
             return cursor.rowcount >= 1
     except mysql.connector.Error as err:
-        myprint(f"Could not update commented post key for user {user_id} | Error: {err}")
+        log_info(f"Could not update commented post key for user {user_id} | Error: {err}")
         return False
 def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_hours: int = 168,
                                 limit: int = 15) -> list:
@@ -504,7 +499,7 @@ def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_h
                  int(min_age_hours), int(max_age_hours), max(1, int(limit))))
             return list(cursor.fetchall() or [])
     except mysql.connector.Error as err:
-        myprint(f"Could not get comment outcome targets for user {user_id} | Error: {err}")
+        log_info(f"Could not get comment outcome targets for user {user_id} | Error: {err}")
         return []
 def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
                            author_replied: bool = False, reply_count: int = 0,
@@ -538,7 +533,7 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
                  (str(skip_reason)[:255] if skip_reason else None)))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record comment outcome for user {user_id} | Error: {err}")
+        log_info(f"Could not record comment outcome for user {user_id} | Error: {err}")
         return False
 def get_comment_outcomes(user_id: int, days: int = 7) -> list:
     """Comment-outcome rows checked in the last `days`, newest first — the input to the weekly
@@ -570,7 +565,7 @@ def get_duplicate_comment_posts(user_id: int, hours: int = 24):
                 (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, hours))
             return [tuple(r) for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not get duplicate comment posts for user {user_id} | Error: {err}")
+        log_info(f"Could not get duplicate comment posts for user {user_id} | Error: {err}")
         return []
 def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
     """The bodies of the user's most recently POSTED comments, newest first — the history the
@@ -588,7 +583,7 @@ def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
                 (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, int(limit)))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not get recent comment texts for user {user_id} | Error: {err}")
+        log_info(f"Could not get recent comment texts for user {user_id} | Error: {err}")
         return []
 def get_daily_action_counts(user_id: int, days: int = 90,
                             action_types: Optional[list] = None) -> list:
@@ -611,7 +606,7 @@ def get_daily_action_counts(user_id: int, days: int = 90,
                 (user_id, LogResultType.SUCCESS.value, *types, days))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not get daily action counts for user {user_id} | Error: {err}")
+        log_info(f"Could not get daily action counts for user {user_id} | Error: {err}")
         return []
 def has_automated_engagement(user_id: int) -> bool:
     """True once automation has successfully commented, replied, or DM'd on the user's behalf —

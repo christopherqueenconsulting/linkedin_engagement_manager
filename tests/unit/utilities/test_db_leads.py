@@ -50,7 +50,7 @@ class TestGetLeadActivity:
     def test_one_broken_source_does_not_lose_the_others(self):
         conn, cursor = _mock_conn(fetch_all=[{"person_name": "Jane"}])
         cursor.execute.side_effect = [mysql.connector.Error("no such table")] + [None] * 10
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_info"):
             from cqc_lem.utilities.db import _LEAD_ACTIVITY_SOURCES, get_lead_activity
             rows = get_lead_activity(1)
         assert len(rows) == len(_LEAD_ACTIVITY_SOURCES) - 1
@@ -98,7 +98,7 @@ class TestGetProfileFacts:
 
     def test_db_error_returns_no_facts(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import get_profile_facts
             assert get_profile_facts(["u1"]) == {}
 
@@ -123,7 +123,7 @@ class TestResetLeadScores:
 
     def test_db_error_is_reported_not_raised(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import reset_lead_scores
             assert reset_lead_scores(3) is False
 
@@ -164,7 +164,7 @@ class TestUpsertLead:
 
     def test_db_error_returns_false(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import upsert_lead
             assert upsert_lead(2, "in:jane") is False
 
@@ -210,7 +210,7 @@ class TestGetLeads:
 
     def test_db_error_returns_an_empty_board(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import get_leads
             assert get_leads(2) == {"leads": [], "total": 0, "page": 1, "page_size": 100}
 
@@ -226,7 +226,7 @@ class TestHotLeads:
 
     def test_hot_list_db_error_is_empty(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import get_hot_leads
             assert get_hot_leads(2) == []
 
@@ -252,7 +252,7 @@ class TestGetAndUpdateLead:
 
     def test_get_lead_db_error_returns_none(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import get_lead
             assert get_lead(9) is None
 
@@ -288,6 +288,6 @@ class TestGetAndUpdateLead:
 
     def test_db_error_returns_false(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_info"):
             from cqc_lem.utilities.db import update_lead
             assert update_lead(9, notes="x") is False

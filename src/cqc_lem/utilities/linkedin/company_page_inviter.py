@@ -57,7 +57,7 @@ from cqc_lem.utilities.human_pacing import (
 )
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
 from cqc_lem.utilities.linkedin.zero_walk import report_zero_walk
-from cqc_lem.utilities.logger import log_info, myprint
+from cqc_lem.utilities.logger import log_info
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
     get_element_wait_retry,
@@ -178,9 +178,9 @@ def get_available_credits(driver, wait):
         credit_text = getText(credit_text_element)
         current_credits, total_credits = map(int, credit_text.split('/'))
     except TimeoutException:
-        myprint("No remaining invite credits")
+        log_info("No remaining invite credits")
 
-    myprint(f"Credits available: {current_credits}/{total_credits}")
+    log_info(f"Credits available: {current_credits}/{total_credits}")
     return current_credits, total_credits
 
 
@@ -199,7 +199,7 @@ def get_initial_selected_count(driver, wait):
                                                    "Finding Selected Text Element")
     selected_text = selected_text_element.text.strip()
     initial_selected_count = int(re.search(r'\d+', selected_text).group())
-    myprint(f"Initial selected count: {initial_selected_count}")
+    log_info(f"Initial selected count: {initial_selected_count}")
     return initial_selected_count
 
 
@@ -233,7 +233,7 @@ def scroll_invitee_list(driver, wait):
     wait_for_ajax(driver)  # Wait for the AJAX request to load more connections
     time.sleep(2)  # Sleep for a bit to let the AJAX request load more connections
 
-    myprint("Scrolled down to load more connections.")
+    log_info("Scrolled down to load more connections.")
 
 
 def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
@@ -281,7 +281,7 @@ def select_connection_checkboxes(driver, wait, limit):
                                                                "//div[contains(@class,'scaffold-finite-scroll__content')]//li",
                                                                "Finding Connections List", max_retry=0)
         except TimeoutException:
-            myprint("No invitee list rendered.")
+            log_info("No invitee list rendered.")
             connections_list = []
         new_connections_list_count = len(connections_list)
 
@@ -289,12 +289,12 @@ def select_connection_checkboxes(driver, wait, limit):
             checkboxes = get_elements_as_list_wait_stale(wait, "//input[@type='checkbox' and contains(@id, 'invitee')]",
                                                          "Finding Checkboxes", max_retry=0)
         except TimeoutException:
-            myprint("No checkboxes found.")
+            log_info("No checkboxes found.")
             checkboxes = []
 
         new_checkbox_count = len(checkboxes)
 
-        myprint(f"New connections list count: {new_connections_list_count}, New checkbox count: {new_checkbox_count}")
+        log_info(f"New connections list count: {new_connections_list_count}, New checkbox count: {new_checkbox_count}")
 
         if (new_checkbox_count != checkbox_count and new_checkbox_count < limit) and new_connections_list_count != connections_list_count:
             checkbox_count = new_checkbox_count
@@ -302,7 +302,7 @@ def select_connection_checkboxes(driver, wait, limit):
             # Scroll
             scroll_invitee_list(driver, wait)
         else:
-            myprint("No new checkboxes nor invitees after scrolling.")
+            log_info("No new checkboxes nor invitees after scrolling.")
             break  # Break the while loop
 
     if not checkboxes:
@@ -310,11 +310,11 @@ def select_connection_checkboxes(driver, wait, limit):
         # page with no invitee rows is exactly where it raises, which is the crash #1102 names. 0
         # hands the decision to the zero-walk cross-check, which is what tells `no_candidates`
         # (nobody left to invite) apart from `drift` (rows on screen we can no longer read).
-        myprint("No invitee checkboxes to select.")
+        log_info("No invitee checkboxes to select.")
         return 0
 
     selected_count = get_initial_selected_count(driver, wait)
-    myprint(f"Starting with selected_count = {selected_count}")
+    log_info(f"Starting with selected_count = {selected_count}")
 
     for checkbox in checkboxes:
         if selected_count >= limit:
@@ -325,9 +325,9 @@ def select_connection_checkboxes(driver, wait, limit):
             _pause_between_selections()
 
     if selected_count < limit:
-        myprint(f"Selected {selected_count} connections so far. Could not reach limit of {limit}.")
+        log_info(f"Selected {selected_count} connections so far. Could not reach limit of {limit}.")
 
-    myprint(f"Completed selecting checkboxes with selected_count = {selected_count}")
+    log_info(f"Completed selecting checkboxes with selected_count = {selected_count}")
     return selected_count
 
 
@@ -395,7 +395,7 @@ def _confirm_invite_sent(driver, wait, present_before: Optional[dict] = None) ->
                                               element_always_expected=False)
 
     confirmed = bool(modal_gone or list_gone or confirmation)
-    myprint(f"Invite outcome confirmation: modal_gone={modal_gone}, list_gone={list_gone}, "
+    log_info(f"Invite outcome confirmation: modal_gone={modal_gone}, list_gone={list_gone}, "
             f"confirmation={bool(confirmation)} -> {confirmed}")
     return confirmed
 
@@ -416,11 +416,11 @@ def invite_selected_connections(driver, wait):
     invite_button = click_element_wait_retry(driver, wait, _INVITE_BUTTON_XPATH, "Finding Invite Button",
                                              element_always_expected=False)
     if not invite_button:
-        myprint("Invite button not found.")
+        log_info("Invite button not found.")
         return INVITE_CLICK_NOT_CLICKED
 
     # invite_button.click()
-    myprint("Invite button clicked.")
+    log_info("Invite button clicked.")
     return (INVITE_CLICK_CONFIRMED if _confirm_invite_sent(driver, wait, present_before)
             else INVITE_CLICK_UNCONFIRMED)
 
@@ -438,9 +438,9 @@ def dismiss_prompt(driver, wait):
                                               "Finding Dismiss Button", element_always_expected=False,
                                               max_retry=0)
     if dismiss_button:
-        myprint('"No thanks" button clicked.')
+        log_info('"No thanks" button clicked.')
         return True
-    myprint("No 'No thanks' button found.")
+    log_info("No 'No thanks' button found.")
     return False
 
 
@@ -457,7 +457,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
     Returns the run report — the caller turns it into telemetry. `plan` lets the task reuse the
     allowance it already computed to decide whether opening a browser was worth it at all.
     """
-    myprint("Automate invitations to Company Page.")
+    log_info("Automate invitations to Company Page.")
 
     plan = plan if plan is not None else plan_daily_invites(user_id)
     allowance = max(0, int(plan.get("allowance") or 0))
@@ -503,7 +503,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
         # Zero ticked boxes is ambiguous, so ask the modal before calling it a quiet day (#1021).
         verdict = report_zero_walk(driver, _INVITEE_ROW_CROSSCHECK_SEL, "Company invitee-row walk",
                                    user_id=user_id, action_type="company_invite")
-        myprint("No more connections to invite or already selected. Exiting automate_invitations.")
+        log_info("No more connections to invite or already selected. Exiting automate_invitations.")
         return _report(INVITE_STATUS_DRIFT if verdict == "drift" else INVITE_STATUS_NO_CANDIDATES,
                        **base)
 
@@ -512,7 +512,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
         insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
                        post_url=li_company_page_url,
                        message="Failed to invite to company page: invite button not found")
-        myprint("No invite button found, stopping automate_invitations.")
+        log_info("No invite button found, stopping automate_invitations.")
         return _report(INVITE_STATUS_FAILED, **base)
 
     if invite_outcome == INVITE_CLICK_UNCONFIRMED:
@@ -522,7 +522,7 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
                        post_url=li_company_page_url,
                        message=(f"Company page invite click unconfirmed: "
                                 f"{selected_count} invitees selected"))
-        myprint("Invite click could not be confirmed, stopping automate_invitations.")
+        log_info("Invite click could not be confirmed, stopping automate_invitations.")
         return _report(INVITE_STATUS_UNCONFIRMED, **base)
 
     # The "<message>: <n>" shape is load-bearing — count_company_page_invites_sent_today SUMS that
@@ -535,9 +535,9 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
     record_action(user_id, ACTION_INVITE, selected_count)  # account-level governor (issue #626)
     time.sleep(2)  # Delay to ensure the prompt appears before checking for it
     if dismiss_prompt(driver, wait):
-        myprint("Prompt handled")
+        log_info("Prompt handled")
     else:
-        myprint("No prompt to handle.")
+        log_info("No prompt to handle.")
 
     # NO recursion: whatever is left of the monthly pool is tomorrow's drip, not this run's.
     return _report(INVITE_STATUS_SENT, invites_sent=selected_count, **base)

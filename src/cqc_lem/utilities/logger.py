@@ -1,9 +1,11 @@
 """The ONE logger: level helpers, structured context, handlers, and the OTLP hop into PostHog Logs.
 
-`print()` is never used in this codebase; `myprint` is the shim that predates these helpers. Context
-travels as keyword args (`user_id`, `post_id`, `task_name`, …) and is coerced to primitives before it
-leaves, because an exception or a WebElement passed as context would otherwise be dropped by the
-backend rather than logged.
+`print()` is never used in this codebase, and neither is the `myprint` shim that predated these
+helpers — it delegated to `logger.info`/`logger.debug` and was retired once every one of its 713 call
+sites had been rewritten to the level it already resolved to. Context travels as keyword args
+(`user_id`, `post_id`, `task_name`, …) and is coerced to primitives before it leaves, because an
+exception or a WebElement passed as context would otherwise be dropped by the backend rather than
+logged.
 
 **Once is a warning, repeatedly is a defect.** `log_warning` runs every message through
 `log_escalation`: past the threshold the SAME warning is re-emitted at ERROR and filed as one grouped
@@ -184,14 +186,6 @@ def _extra(**kwargs) -> dict:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-
-def myprint(message: str, debug: bool = False) -> None:
-    """Backward-compatible shim. Prefer log_info / log_debug for new code."""
-    if debug:
-        logger.debug(message)
-    else:
-        logger.info(message)
-
 
 def log_debug(message: str, **context) -> None:
     """Log at DEBUG level with optional structured context."""

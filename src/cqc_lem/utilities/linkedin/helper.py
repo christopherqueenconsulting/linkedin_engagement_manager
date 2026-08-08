@@ -46,7 +46,7 @@ from cqc_lem.utilities.linkedin.rate_limit import (
     rate_limit_cooldown_remaining,
 )
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
-from cqc_lem.utilities.logger import log_debug, log_error, log_warning, myprint
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import (
     get_element_wait_retry,
     get_visible_element_wait_retry,
@@ -256,7 +256,7 @@ def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
         except Exception:
             pass  # No submit button on this challenge page — token injection alone is sufficient
 
-        myprint("Arkose FunCaptcha solved via CapSolver")
+        log_info("Arkose FunCaptcha solved via CapSolver")
         return True
 
     except Exception as e:
@@ -411,7 +411,7 @@ def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
         log_error("Could not persist LinkedIn session cookies — the next run will have no li_at "
                   "and will fall back to a password login", action_type="login")
         return False
-    myprint("Cookies stored to DB!")
+    log_info("Cookies stored to DB!")
     return True
 
 
@@ -540,13 +540,13 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             time.sleep(5)
             current = driver.current_url
             if _is_logged_in(current):
-                myprint("Device-approval confirmed — login proceeding")
+                log_info("Device-approval confirmed — login proceeding")
                 return _approved()
             if not _is_challenge_url(current):
                 # Left the checkpoint; give the post-approval redirect a moment to settle
                 time.sleep(3)
                 if _is_logged_in(driver.current_url):
-                    myprint("Device-approval confirmed — login proceeding")
+                    log_info("Device-approval confirmed — login proceeding")
                     return _approved()
         return _gave_up()
 
@@ -557,14 +557,14 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         waiting for a manual mobile-app device approval.
         """
         if solve_arkose_challenge(driver, wait):
-            myprint(f"CAPTCHA solved at {label} — continuing login")
+            log_info(f"CAPTCHA solved at {label} — continuing login")
             time.sleep(2)
             return
         # Prefer the email verification-code path — the mobile-app "tap Yes" approval is
         # unreliable (often never prompts). Fall back to waiting for a manual approval.
         if os.getenv("LINKEDIN_EMAIL_PIN_ENABLED", "true").lower() != "false":
             if drive_email_pin_challenge(driver, user_email, _is_logged_in):
-                myprint(f"Email verification-code cleared challenge at {label}")
+                log_info(f"Email verification-code cleared challenge at {label}")
                 return
         if _wait_for_manual_approval():
             return
@@ -592,7 +592,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     cookies = get_cookies(linked_url, user_email)
 
     if cookies:
-        myprint("Found previous cookies. Loading them now!")
+        log_info("Found previous cookies. Loading them now!")
         load_cookies(driver, cookies)
         # Human-like jitter before hitting the feed. Rapid, perfectly-timed base→feed navigations
         # from a headless browser are an easy automation tell; a short randomized settle lets the
@@ -602,7 +602,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         # if invalid/expired it redirects to a login or challenge page
         driver.get(feed_url)
     else:
-        myprint("No previous cookies found.")
+        log_info("No previous cookies found.")
 
     # Wait for the redirect / page load to settle
     time.sleep(2)
@@ -616,7 +616,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # page also says "this page isn't working", which the rate-limit heuristic would
     # otherwise misclassify as a 429. Drop the cookies and do a fresh credential login.
     if cookies and _is_logged_in(driver.current_url) and _page_is_redirect_loop(driver):
-        myprint("Stored session unusable (redirect loop) — clearing cookies and re-authenticating")
+        log_info("Stored session unusable (redirect loop) — clearing cookies and re-authenticating")
         driver.delete_all_cookies()
         cookies = None
         driver.get(login_url)
@@ -636,7 +636,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # as a real rate limit when we arrived here WITHOUT cookies (nothing left to drop).
     if _is_logged_in(driver.current_url) and _page_is_rate_limited(driver):
         if cookies:
-            myprint("429 at feed with stored cookies — likely a stale-cookie/egress-IP "
+            log_info("429 at feed with stored cookies — likely a stale-cookie/egress-IP "
                     "mismatch; clearing cookies and re-authenticating fresh")
             driver.delete_all_cookies()
             cookies = None
@@ -657,7 +657,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             "tripping the rate-limit breaker.")
 
     if _is_logged_in(driver.current_url):
-        myprint(f"Already logged in! (current URL: {driver.current_url})")
+        log_info(f"Already logged in! (current URL: {driver.current_url})")
         clear_rate_limit()
         _persist_session_cookies(driver, user_email)
         return
@@ -675,7 +675,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             log_warning("Failed to send session re-validation email", exc=e, action_type="login")
 
     # Cookies missing or expired — do a full credential login
-    myprint(f"Logging in to LinkedIn as: {user_email}")
+    log_info(f"Logging in to LinkedIn as: {user_email}")
 
     # Go directly to the login page instead of clicking a "Sign in" link
     driver.get(login_url)
@@ -741,11 +741,11 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     wait.until(EC.title_contains("Feed"), "Waiting for Feed to load after login")
 
     if _is_logged_in(driver.current_url):
-        myprint("Login successful!")
+        log_info("Login successful!")
         clear_rate_limit()
         _persist_session_cookies(driver, user_email)
     else:
-        myprint("Login failed. Check your credentials.")
+        log_info("Login failed. Check your credentials.")
 
 
 def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None,
@@ -778,7 +778,7 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
         profile_json = get_linked_in_profile_by_email(user_email)
 
     if profile_json is None:
-        myprint(f"Previous Profile not found (or stale) in DB: {user_email}")
+        log_info(f"Previous Profile not found (or stale) in DB: {user_email}")
         login_to_linkedin(driver, wait, user_email, user_password)
 
         profile_url = "https://www.linkedin.com/in/"
@@ -798,17 +798,17 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
 
             # Add profile to DB for faster future retrieval
             if add_linkedin_profile(profile, user_id=user_id):
-                myprint(f"Profile saved to DB: {profile.full_name}")
+                log_info(f"Profile saved to DB: {profile.full_name}")
             else:
-                myprint(f"Failed to save profile to DB: {profile.full_name}")
+                log_info(f"Failed to save profile to DB: {profile.full_name}")
         else:
-            myprint("Failed to get my profile data")
+            log_info("Failed to get my profile data")
     else:
         # Ensure profile_json is a string
         profile_json_str = profile_json[0] if isinstance(profile_json, tuple) else profile_json
         # Create a LinkedInProfile object from json string data
         profile = LinkedInProfile.model_validate_json(profile_json_str)
-        myprint(f"Profile Restored from DB: {profile.full_name}")
+        log_info(f"Profile Restored from DB: {profile.full_name}")
 
     return profile
 
@@ -822,7 +822,7 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
     try:
         raw = get_linked_in_profile_by_user_id(user_id)
     except Exception as e:
-        myprint(f"load_profile_for_user: lookup failed for user_id={user_id}: {e}")
+        log_info(f"load_profile_for_user: lookup failed for user_id={user_id}: {e}")
         return None
     if not raw:
         return None
@@ -830,7 +830,7 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
     try:
         return LinkedInProfile.model_validate_json(profile_json_str)
     except Exception as e:
-        myprint(f"load_profile_for_user: could not parse profile for user_id={user_id}: {e}")
+        log_info(f"load_profile_for_user: could not parse profile for user_id={user_id}: {e}")
         return None
 
 
@@ -892,7 +892,7 @@ def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False,
 
             # Save the profile to the DB
             if add_linkedin_profile(profile):
-                myprint(f"Profile saved to DB: {profile.full_name}")
+                log_info(f"Profile saved to DB: {profile.full_name}")
 
         # Use json to output to string
         # myprint(json.dumps(profile_data, indent=4))
@@ -903,6 +903,6 @@ def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False,
         # Create a LinkedInProfile object from json string data
         profile = LinkedInProfile.model_validate_json(profile_json_str)
         profile_data = profile.model_dump()
-        myprint(f"Profile Restored from DB: {profile.full_name}")
+        log_info(f"Profile Restored from DB: {profile.full_name}")
 
     return profile_data

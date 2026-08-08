@@ -542,7 +542,7 @@ from cqc_lem.utilities.crypto import (
 from cqc_lem.utilities.env_constants import (
     SESSION_IDLE_HOURS,
 )
-from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 # Re-exported for the ~2,400 call sites that still say `from cqc_lem.utilities.db import X`.
 # `__all__` is the one declaration ruff (F401) and CodeQL (py/unused-import) both understand —
@@ -1202,7 +1202,7 @@ def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = N
     """
     email = get_user_email(user_id)
     if not email:
-        myprint(f"store_linkedin_li_at: no email for user_id {user_id}")
+        log_info(f"store_linkedin_li_at: no email for user_id {user_id}")
         return False
 
     import time
@@ -1225,7 +1225,7 @@ def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = N
             return False
         return True
     except Exception as e:
-        myprint(f"Could not store LinkedIn session cookie for user_id {user_id}: {e}")
+        log_info(f"Could not store LinkedIn session cookie for user_id {user_id}: {e}")
         return False
 
 
@@ -1260,7 +1260,7 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
     success = False
 
     if not user_id:
-        myprint(f"User with email {email} not found.")
+        log_info(f"User with email {email} not found.")
         return success
 
     try:
@@ -1281,7 +1281,7 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Count not insert post. An error occurred: {e}")
+        log_info(f"Count not insert post. An error occurred: {e}")
 
     return success
 
@@ -1489,7 +1489,7 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
         )
         posts = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get posts for user id: {user_id} | Error: {err}")
+        log_info(f"Could not get posts for user id: {user_id} | Error: {err}")
         posts = []
         total = 0
     finally:
@@ -1558,7 +1558,7 @@ def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
                 "status": row["status"],
             })
     except mysql.connector.Error as err:
-        myprint(f"Could not get planned tasks for user {user_id} | Error: {err}")
+        log_info(f"Could not get planned tasks for user {user_id} | Error: {err}")
         return []
     finally:
         cursor.close()
@@ -1838,7 +1838,7 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
             )
             return token
     except mysql.connector.Error as err:
-        myprint(f"Could not create session for user_id {user_id} | Error: {err}")
+        log_info(f"Could not create session for user_id {user_id} | Error: {err}")
         return None
 
 
@@ -1899,7 +1899,7 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
                 })
             return sessions
     except mysql.connector.Error as err:
-        myprint(f"Could not list sessions for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list sessions for user_id {user_id} | Error: {err}")
         return []
 
 
@@ -1960,7 +1960,7 @@ def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_c
         if err.errno == errorcode.ER_DUP_ENTRY:
             log_warning("Passkey already registered", user_id=user_id)
             return None
-        myprint(f"Could not store passkey for user_id {user_id} | Error: {err}")
+        log_info(f"Could not store passkey for user_id {user_id} | Error: {err}")
         return None
 
 
@@ -1979,7 +1979,7 @@ def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
             )
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not look up passkey | Error: {err}")
+        log_info(f"Could not look up passkey | Error: {err}")
         return None
 
 
@@ -2350,7 +2350,7 @@ def get_engagement_preferences(user_id: int) -> dict:
     try:
         row = _select_engagement_row(user_id)
     except mysql.connector.Error as err:
-        myprint(f"Could not get engagement prefs for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get engagement prefs for user_id {user_id} | Error: {err}")
         return _code_engagement_defaults(user_id)
     return _code_engagement_defaults(user_id) if row is None else row
 
@@ -2495,7 +2495,7 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                 f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update engagement prefs for user_id {user_id} | Error: {err}")
+        log_info(f"Could not update engagement prefs for user_id {user_id} | Error: {err}")
         return False
 
 
@@ -3048,7 +3048,7 @@ def get_lead_activity(user_id: int, days: int = 90) -> list:
                     row["kind"] = str(kind)
                     rows.append(row)
             except mysql.connector.Error as err:
-                myprint(f"Could not read {kind} lead activity for user {user_id} | Error: {err}")
+                log_info(f"Could not read {kind} lead activity for user {user_id} | Error: {err}")
         return rows
     finally:
         cursor.close()
@@ -3090,7 +3090,7 @@ def get_profile_facts(profile_urls: list) -> dict:
                 f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
             return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
     except mysql.connector.Error as err:
-        myprint(f"Could not read profile facts | Error: {err}")
+        log_info(f"Could not read profile facts | Error: {err}")
         return {}
 
 
@@ -3171,7 +3171,7 @@ def count_artifact_cta_deliveries(user_id: int, days: int = 90,
                 out["newsletter_links"] = int(row[0]) if row and row[0] else 0
             return out
     except mysql.connector.Error as err:
-        myprint(f"Could not count artifact CTA deliveries for user {user_id} | Error: {err}")
+        log_info(f"Could not count artifact CTA deliveries for user {user_id} | Error: {err}")
         return out
 
 
@@ -3256,7 +3256,7 @@ def count_existing_double_sent_catchups() -> int:
             r = cursor.fetchone()
             return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count existing double-sent catch-ups | Error: {err}")
+        log_info(f"Could not count existing double-sent catch-ups | Error: {err}")
         return 0
 
 
@@ -3387,7 +3387,7 @@ def get_avatar_trainings(user_id: int) -> list[dict]:
             )
             return [_avatar_row_to_dict(r) for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not fetch avatar trainings for user_id {user_id} | Error: {err}")
+        log_info(f"Could not fetch avatar trainings for user_id {user_id} | Error: {err}")
         return []
 
 
@@ -3405,7 +3405,7 @@ def get_avatar_training(user_id: int, avatar_id: int) -> Optional[dict]:
             row = cursor.fetchone()
             return _avatar_row_to_dict(row) if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not fetch avatar {avatar_id} for user_id {user_id} | Error: {err}")
+        log_info(f"Could not fetch avatar {avatar_id} for user_id {user_id} | Error: {err}")
         return None
 
 
@@ -3423,7 +3423,7 @@ def get_active_avatar(user_id: int) -> Optional[dict]:
             row = cursor.fetchone()
             return _avatar_row_to_dict(row) if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not fetch active avatar for user_id {user_id} | Error: {err}")
+        log_info(f"Could not fetch active avatar for user_id {user_id} | Error: {err}")
         return None
 
 

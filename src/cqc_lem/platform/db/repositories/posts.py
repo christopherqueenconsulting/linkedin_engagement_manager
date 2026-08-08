@@ -32,12 +32,7 @@ from cqc_lem.platform.db.shared import (
     MAX_CONTENT_BUFFER_DAYS,
     OwnershipUnprovable,
 )
-from cqc_lem.utilities.logger import (
-    log_debug,
-    log_error,
-    log_info,
-    myprint,
-)
+from cqc_lem.utilities.logger import log_debug, log_error, log_info
 
 
 def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostType, buyer_stage: str,
@@ -65,7 +60,7 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
         success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Count not insert planned post. An error occurred: {e}")
+        log_info(f"Count not insert planned post. An error occurred: {e}")
     finally:
         cursor.close()
         connection.close()
@@ -110,7 +105,7 @@ def get_post_manual_publish(post_id: int) -> bool:
         cursor.execute("SELECT manual_publish FROM posts WHERE id = %s", (post_id,))
         row = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not read manual_publish for post {post_id} | Error: {err}")
+        log_info(f"Could not read manual_publish for post {post_id} | Error: {err}")
         row = None
     finally:
         cursor.close()
@@ -144,7 +139,7 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
         success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Count not update post. An error occurred: {e}")
+        log_info(f"Count not update post. An error occurred: {e}")
     finally:
         cursor.close()
         connection.close()
@@ -168,7 +163,7 @@ def update_db_post_content(post_id: int, content: str) -> bool:
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Count not update post content. An error occurred: {e}")
+        log_info(f"Count not update post content. An error occurred: {e}")
 
     return success
 def update_db_post_video_url(post_id: int, video_url: str) -> bool:
@@ -186,7 +181,7 @@ def update_db_post_video_url(post_id: int, video_url: str) -> bool:
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Count not update post video url. An error occurred: {e}")
+        log_info(f"Count not update post video url. An error occurred: {e}")
 
     return success
 def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
@@ -208,7 +203,7 @@ def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
     try:
         status_str = post_status.value
     except Exception:
-        myprint(f"Error converting post_status to string: {post_status}")
+        log_info(f"Error converting post_status to string: {post_status}")
 
     try:
         cursor.execute(
@@ -220,7 +215,7 @@ def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
         success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Count not update post status. An error occurred: {e}")
+        log_info(f"Count not update post status. An error occurred: {e}")
     finally:
         cursor.close()
         connection.close()
@@ -249,7 +244,7 @@ def get_dashboard_counts(user_id: int, week_start) -> dict:
                     "pending_review": int(row[1] or 0),
                     "posted_total": int(row[2] or 0)}
     except mysql.connector.Error as err:
-        myprint(f"Could not get dashboard counts for user {user_id} | Error: {err}")
+        log_info(f"Could not get dashboard counts for user {user_id} | Error: {err}")
         return {"scheduled_this_week": 0, "pending_review": 0, "posted_total": 0}
 def get_posted_posts(user_id: int):
     """Every post this user actually published, oldest first.
@@ -264,7 +259,7 @@ def get_posted_posts(user_id: int):
 
             posts = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get posted posts for user id: {user_id} | Error: {err}")
+        log_info(f"Could not get posted posts for user id: {user_id} | Error: {err}")
         posts = None
 
     return posts
@@ -276,7 +271,7 @@ def get_post_content(post_id: int):
 
             post = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post content for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get post content for post id: {post_id} | Error: {err}")
         post = False
 
     return post['content'] if post else None
@@ -292,7 +287,7 @@ def get_post_user_id(post_id: int):
 
             post = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post user id for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get post user id for post id: {post_id} | Error: {err}")
         post = False
 
     return post['user_id'] if post else None
@@ -336,7 +331,7 @@ def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not update post image_url for post id: {post_id} | Error: {err}")
+        log_info(f"Could not update post image_url for post id: {post_id} | Error: {err}")
         return False
 def get_post_image_url(post_id: int) -> Optional[str]:
     """A post's stored image path, or None when unset, absent or unreadable."""
@@ -345,7 +340,7 @@ def get_post_image_url(post_id: int) -> Optional[str]:
             cursor.execute("SELECT image_url FROM posts WHERE id = %s", (post_id,))
             post = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post image_url for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get post image_url for post id: {post_id} | Error: {err}")
         post = None
 
     return post['image_url'] if post else None
@@ -357,7 +352,7 @@ def get_post_video_url(post_id: int):
 
             post = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post video_url for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get post video_url for post id: {post_id} | Error: {err}")
         post = False
 
     return post['video_url'] if post else None
@@ -368,7 +363,7 @@ def get_post_buyer_stage(post_id: int) -> Optional[str]:
             cursor.execute("SELECT buyer_stage FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get buyer_stage for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get buyer_stage for post id: {post_id} | Error: {err}")
         row = None
     return row['buyer_stage'] if row else None
 def get_post_content_mix(post_id: int) -> Optional[str]:
@@ -380,7 +375,7 @@ def get_post_content_mix(post_id: int) -> Optional[str]:
             cursor.execute("SELECT content_mix FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get content_mix for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get content_mix for post id: {post_id} | Error: {err}")
         row = None
     return row['content_mix'] if row else None
 def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
@@ -402,7 +397,7 @@ def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
                 key = str(mix).strip().lower() if mix else "unclassified"
                 counts[key] = counts.get(key, 0) + int(count or 0)
     except mysql.connector.Error as err:
-        myprint(f"Could not get content mix counts for user {user_id} | Error: {err}")
+        log_info(f"Could not get content mix counts for user {user_id} | Error: {err}")
     return counts
 def get_post_type(post_id: int) -> Optional[PostType]:
     """A post's `PostType`.
@@ -416,7 +411,7 @@ def get_post_type(post_id: int) -> Optional[PostType]:
             cursor.execute("SELECT post_type FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post_type for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get post_type for post id: {post_id} | Error: {err}")
         row = None
 
     if row:
@@ -437,7 +432,7 @@ def get_carousel_slides(post_id: int) -> list[str]:
             cursor.execute("SELECT carousel_slides FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get carousel_slides for post id: {post_id} | Error: {err}")
+        log_info(f"Could not get carousel_slides for post id: {post_id} | Error: {err}")
         row = None
 
     if row and row['carousel_slides']:
@@ -562,7 +557,7 @@ def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Could not update carousel_slides for post {post_id}. Error: {e}")
+        log_info(f"Could not update carousel_slides for post {post_id}. Error: {e}")
     return success
 def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Optional[str],
                          topic: Optional[str] = None) -> bool:
@@ -579,7 +574,7 @@ def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Opt
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Could not update shape for post {post_id}. Error: {e}")
+        log_info(f"Could not update shape for post {post_id}. Error: {e}")
     return success
 def update_db_post_authenticity_score(post_id: int, score: Optional[int]) -> bool:
     """Persist the authenticity gate's LLM-judged score (0-100, or NULL) for a post — the reader that
@@ -595,7 +590,7 @@ def update_db_post_authenticity_score(post_id: int, score: Optional[int]) -> boo
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Could not update authenticity score for post {post_id}. Error: {e}")
+        log_info(f"Could not update authenticity score for post {post_id}. Error: {e}")
     return success
 def get_post_authenticity_score(post_id: int) -> Optional[int]:
     """The authenticity gate's persisted score for a post (0-100), or None when unscored (issue #382)."""
@@ -605,7 +600,7 @@ def get_post_authenticity_score(post_id: int) -> Optional[int]:
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get authenticity score for post {post_id} | Error: {err}")
+        log_info(f"Could not get authenticity score for post {post_id} | Error: {err}")
         return None
 def update_db_post_gate_reason(post_id: int, findings: Optional[list]) -> bool:
     """Persist WHY a post is held for review (issue #421): the quality gates' structured findings
@@ -621,7 +616,7 @@ def update_db_post_gate_reason(post_id: int, findings: Optional[list]) -> bool:
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Could not update gate reason for post {post_id}. Error: {e}")
+        log_info(f"Could not update gate reason for post {post_id}. Error: {e}")
     return success
 def get_post_gate_reason(post_id: int) -> list:
     """The persisted quality-gate findings for a post (issue #421), or [] when it has none."""
@@ -632,7 +627,7 @@ def get_post_gate_reason(post_id: int) -> list:
             row = cursor.fetchone()
             return parse_gate_findings(row[0] if row else None)
     except mysql.connector.Error as err:
-        myprint(f"Could not get gate reason for post {post_id} | Error: {err}")
+        log_info(f"Could not get gate reason for post {post_id} | Error: {err}")
         return []
 def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
     """Persist the deterministic 0-100 dwell-proxy score for a post (issue #391, dwell_score column).
@@ -648,7 +643,7 @@ def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Could not update dwell score for post {post_id}. Error: {e}")
+        log_info(f"Could not update dwell score for post {post_id}. Error: {e}")
     return success
 def get_post_dwell_score(post_id: int) -> Optional[int]:
     """The persisted dwell-proxy score for a post (0-100), or None when unscored (issue #391)."""
@@ -658,7 +653,7 @@ def get_post_dwell_score(post_id: int) -> Optional[int]:
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get dwell score for post {post_id} | Error: {err}")
+        log_info(f"Could not get dwell score for post {post_id} | Error: {err}")
         return None
 def update_db_post_first_comment_link(post_id: int, link: Optional[str]) -> bool:
     """Stash the external link(s) stripped from a post body at publish time (issue #392, C3) so the
@@ -674,7 +669,7 @@ def update_db_post_first_comment_link(post_id: int, link: Optional[str]) -> bool
             success = cursor.rowcount == 1
     except mysql.connector.Error as e:
         success = False
-        myprint(f"Could not update first comment link for post {post_id}. Error: {e}")
+        log_info(f"Could not update first comment link for post {post_id}. Error: {e}")
     return success
 def get_post_first_comment_link(post_id: int) -> Optional[str]:
     """The link(s) held back from a post's body for its first comment, or None (issue #392)."""
@@ -684,7 +679,7 @@ def get_post_first_comment_link(post_id: int) -> Optional[str]:
             row = cursor.fetchone()
             return row[0] if row and row[0] else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get first comment link for post {post_id} | Error: {err}")
+        log_info(f"Could not get first comment link for post {post_id} | Error: {err}")
         return None
 def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
     """Recent posts' SHAPE history — {archetype, hook_style} dicts, most-recent first — fed to the
@@ -699,7 +694,7 @@ def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
                 "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post shape history for user {user_id} | Error: {err}")
+        log_info(f"Could not get post shape history for user {user_id} | Error: {err}")
         return []
 def get_post_archetype(post_id: int) -> Optional[str]:
     """The short-form ARCHETYPE assigned to one post (V51 `posts.archetype`). The quality gates read
@@ -712,7 +707,7 @@ def get_post_archetype(post_id: int) -> Optional[str]:
             row = cursor.fetchone()
             return row[0] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get archetype for post {post_id} | Error: {err}")
+        log_info(f"Could not get archetype for post {post_id} | Error: {err}")
         return None
 def get_recent_post_texts(user_id: int, limit: int = 20,
                           exclude_post_id: Optional[int] = None) -> list:
@@ -736,7 +731,7 @@ def get_recent_post_texts(user_id: int, limit: int = 20,
                 "ORDER BY id DESC LIMIT %s", params)
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not get recent post texts for user {user_id} | Error: {err}")
+        log_info(f"Could not get recent post texts for user {user_id} | Error: {err}")
         return []
 def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] = None) -> int:
     """Replace old_base URL prefix with new_base in video_url for all matching posts.
@@ -759,7 +754,7 @@ def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] 
             updated = cursor.rowcount
     except mysql.connector.Error as e:
         updated = 0
-        myprint(f"Could not replace video URL base. Error: {e}")
+        log_info(f"Could not replace video URL base. Error: {e}")
     return updated
 def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minutes=20) -> list:
     """Query the database for any pending posts that are scheduled to post now or earlier.
@@ -776,7 +771,7 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
 
     yesterday = now - timedelta(days=1)
 
-    myprint(f"Getting post between : {yesterday} and {pre_post_time} (UTC)")
+    log_info(f"Getting post between : {yesterday} and {pre_post_time} (UTC)")
 
     try:
         with db_cursor() as cursor:
@@ -840,7 +835,7 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
             else:
                 log_debug("Orphaned scheduled posts to re-queue: []")
     except mysql.connector.Error as err:
-        myprint(f"Could not get orphaned scheduled posts | Error: {err}")
+        log_info(f"Could not get orphaned scheduled posts | Error: {err}")
         posts = []
 
     return posts
@@ -852,7 +847,7 @@ def get_post_type_counts(user_id: int):
                            (user_id,))
             post_counts = {row['post_type']: row['count'] for row in cursor.fetchall()}
     except mysql.connector.Error as err:
-        myprint(f"Could not get post type counts | Error: {err}")
+        log_info(f"Could not get post type counts | Error: {err}")
         post_counts = {}
 
     return post_counts
@@ -873,7 +868,7 @@ def count_ready_posts_within_buffer(user_id: int, days: int = DEFAULT_CONTENT_BU
             row = cursor.fetchone()
             return int(row[0]) if row else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count ready posts within buffer for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count ready posts within buffer for user_id {user_id} | Error: {err}")
         return 0
 def get_planned_posts_within_buffer(user_id: int,
                                     days: int = DEFAULT_CONTENT_BUFFER_DAYS,
@@ -901,7 +896,7 @@ def get_planned_posts_within_buffer(user_id: int,
             )
             planned_content = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get planned posts within buffer for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get planned posts within buffer for user_id {user_id} | Error: {err}")
         planned_content = []
 
     return planned_content
@@ -929,7 +924,7 @@ def get_next_planned_posts_after_buffer(user_id: int, days: int, limit: int) -> 
             )
             planned_content = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get planned posts after buffer for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get planned posts after buffer for user_id {user_id} | Error: {err}")
         planned_content = []
 
     return planned_content
@@ -949,7 +944,7 @@ def get_next_planned_post_date(user_id: int) -> Optional[datetime]:
             row = cursor.fetchone()
             return row[0] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get next planned post date for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get next planned post date for user_id {user_id} | Error: {err}")
         return None
 def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER_DAYS) -> list[int]:
     """User IDs that have any status=planning post due within the next `days` days.
@@ -968,7 +963,7 @@ def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER
             )
             return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not get user ids with planned posts within buffer | Error: {err}")
+        log_info(f"Could not get user ids with planned posts within buffer | Error: {err}")
         return []
 def get_last_planned_post_date_for_user(user_id: int):
     """Query the database to get the last planned post date for the given user."""
@@ -980,7 +975,7 @@ def get_last_planned_post_date_for_user(user_id: int):
                 (user_id,))
             last_planned_date = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get last planned post date for user | Error: {err}")
+        log_info(f"Could not get last planned post date for user | Error: {err}")
         last_planned_date = None
 
     return last_planned_date[0] if last_planned_date else None
@@ -991,7 +986,7 @@ def get_post_status(post_id: int) -> str | None:
             cursor.execute("SELECT status FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not get post status | Error: {err}")
+        log_info(f"Could not get post status | Error: {err}")
         row = None
     return row[0] if row else None
 def get_engager_candidates(user_id: int, days: int = 30) -> list:
@@ -1010,7 +1005,7 @@ def get_engager_candidates(user_id: int, days: int = 30) -> list:
                 (user_id, days))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not read engager candidates for user {user_id} | Error: {err}")
+        log_info(f"Could not read engager candidates for user {user_id} | Error: {err}")
         return []
 def has_scheduled_post_today(user_id: int) -> bool:
     """True if the user has a post going out today (UTC) — those days are already covered by the
@@ -1025,7 +1020,7 @@ def has_scheduled_post_today(user_id: int) -> bool:
             r = cursor.fetchone()
             return bool(r and r[0])
     except mysql.connector.Error as err:
-        myprint(f"Could not check today's posts for user {user_id} | Error: {err}")
+        log_info(f"Could not check today's posts for user {user_id} | Error: {err}")
         return True
 def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = None,
                    connection_degree: str = None) -> bool:
@@ -1048,7 +1043,7 @@ def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = N
                  (connection_degree or None)))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not upsert engager for user {user_id} | Error: {err}")
+        log_info(f"Could not upsert engager for user {user_id} | Error: {err}")
         return False
 def get_recent_engagers(user_id: int, days: int = 14) -> set:
     """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
@@ -1134,7 +1129,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
             })
         return rows
     except mysql.connector.Error as err:
-        myprint(f"Could not get shipped content for user {user_id} | Error: {err}")
+        log_info(f"Could not get shipped content for user {user_id} | Error: {err}")
         return rows
     finally:
         cursor.close()
@@ -1179,7 +1174,7 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
                  json.dumps(score.get("slop_checks") or [])))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record content quality score for user {user_id} | Error: {err}")
+        log_info(f"Could not record content quality score for user {user_id} | Error: {err}")
         return False
 def get_content_quality_scores(user_id: int, days: int = 14) -> list:
     """Scored content rows shipped in the last `days`, newest first — the input to the weekly rollup
@@ -1234,7 +1229,7 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
                  impressions, int(saves or 0), archetype, hook_style, fmt, topic, buyer_stage))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record post stats for user {user_id} | Error: {err}")
+        log_info(f"Could not record post stats for user {user_id} | Error: {err}")
         return False
 def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
     """The most recent captured counts for one post, or None when nothing was ever captured.
@@ -1250,7 +1245,7 @@ def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
                 (user_id, post_id))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not read post stats for user {user_id} post {post_id} | Error: {err}")
+        log_info(f"Could not read post stats for user {user_id} post {post_id} | Error: {err}")
         return None
 def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
     """Ids of posts published in the last `days`, FRESHEST first.
@@ -1297,7 +1292,7 @@ def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5)
                  LogResultType.SUCCESS.value, max(0, int(limit))))
             return [r[0] for r in (cursor.fetchall() or [])]
     except mysql.connector.Error as err:
-        myprint(f"Could not get uncaptured posted post ids for user {user_id} | Error: {err}")
+        log_info(f"Could not get uncaptured posted post ids for user {user_id} | Error: {err}")
         return []
 def get_post_coverage_counts(user_id: int, days: int = 90) -> dict:
     """How much of the account the analytics dashboard is looking at (issue #809).
@@ -1319,7 +1314,7 @@ def get_post_coverage_counts(user_id: int, days: int = 90) -> dict:
             row = cursor.fetchone() or (0, 0)
             return {"posted_total": int(row[0] or 0), "posted_in_window": int(row[1] or 0)}
     except mysql.connector.Error as err:
-        myprint(f"Could not get post coverage counts for user {user_id} | Error: {err}")
+        log_info(f"Could not get post coverage counts for user {user_id} | Error: {err}")
         return {"posted_total": 0, "posted_in_window": 0}
 def get_post_engagement_rows(user_id: int) -> list:
     """Latest stats per post joined with when it was posted → rows of
@@ -1341,7 +1336,7 @@ def get_post_engagement_rows(user_id: int) -> list:
                 (user_id, user_id))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not get post engagement rows for user {user_id} | Error: {err}")
+        log_info(f"Could not get post engagement rows for user {user_id} | Error: {err}")
         return []
 def get_shape_performance(user_id: int, days: int = 90) -> dict:
     """Per-SHAPE engagement totals for a user's recently posted content — the outcomes side of the
@@ -1382,7 +1377,7 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
                     }
             return result
     except mysql.connector.Error as err:
-        myprint(f"Could not get shape performance for user {user_id} | Error: {err}")
+        log_info(f"Could not get shape performance for user {user_id} | Error: {err}")
         return {"format": {}, "hook": {}}
 def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
     """Latest captured stat per POSTED post as attribution-tagged dicts for the analytics
@@ -1413,7 +1408,7 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
                 for r in (cursor.fetchall() or [])
             ]
     except mysql.connector.Error as err:
-        myprint(f"Could not get post performance rows for user {user_id} | Error: {err}")
+        log_info(f"Could not get post performance rows for user {user_id} | Error: {err}")
         return []
 def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
                            combo: Optional[dict] = None, batch_id: Optional[str] = None,
@@ -1433,7 +1428,7 @@ def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
                  json.dumps(combo, default=str) if combo is not None else None))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record shipped variant for user {user_id} | Error: {err}")
+        log_info(f"Could not record shipped variant for user {user_id} | Error: {err}")
         return False
 def get_shipped_variant_keys(user_id: int) -> dict:
     """``{post_id: variant_key}`` for every A/B variant this user has SHIPPED (issue #396).
@@ -1447,7 +1442,7 @@ def get_shipped_variant_keys(user_id: int) -> dict:
             cursor.execute("SELECT post_id, variant_key FROM post_variants WHERE user_id=%s", (user_id,))
             return {r[0]: r[1] for r in (cursor.fetchall() or []) if r[1]}
     except mysql.connector.Error as err:
-        myprint(f"Could not get shipped variant keys for user {user_id} | Error: {err}")
+        log_info(f"Could not get shipped variant keys for user {user_id} | Error: {err}")
         return {}
 def get_variant_outcome_rows(user_id: int) -> list:
     """Realized outcomes for shipped A/B variants (issue #396 / D2). Joins each recorded shipped
@@ -1472,7 +1467,7 @@ def get_variant_outcome_rows(user_id: int) -> list:
                 for r in (cursor.fetchall() or [])
             ]
     except mysql.connector.Error as err:
-        myprint(f"Could not get variant outcome rows for user {user_id} | Error: {err}")
+        log_info(f"Could not get variant outcome rows for user {user_id} | Error: {err}")
         return []
 def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
                          connection_count: Optional[int] = None,
@@ -1493,7 +1488,7 @@ def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
                 (user_id, follower_count, connection_count, profile_views, search_appearances))
             return cursor.rowcount == 1
     except mysql.connector.Error as err:
-        myprint(f"Could not record follower stat for user {user_id} | Error: {err}")
+        log_info(f"Could not record follower stat for user {user_id} | Error: {err}")
         return False
 def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 400) -> list:
     """The user's audience snapshots, most recent first (issue #627). `days` optionally windows to
@@ -1510,7 +1505,7 @@ def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 40
                 "ORDER BY captured_at DESC, id DESC LIMIT %s", params)
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not get follower stats for user {user_id} | Error: {err}")
+        log_info(f"Could not get follower stats for user {user_id} | Error: {err}")
         return []
 def get_post_video_quality(post_id: int) -> str:
     """A post's video-quality tier.
@@ -1524,7 +1519,7 @@ def get_post_video_quality(post_id: int) -> str:
             row = cursor.fetchone()
             return (row["video_quality"] if row and row.get("video_quality") else "standard")
     except mysql.connector.Error as err:
-        myprint(f"Could not get video_quality for post {post_id} | Error: {err}")
+        log_info(f"Could not get video_quality for post {post_id} | Error: {err}")
         return "standard"
 def update_post_video_quality(post_id: int, quality: str) -> bool:
     """Set a post's video-quality tier.
@@ -1536,7 +1531,7 @@ def update_post_video_quality(post_id: int, quality: str) -> bool:
             cursor.execute("UPDATE posts SET video_quality = %s WHERE id = %s", (quality, post_id))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update video_quality for post {post_id} | Error: {err}")
+        log_info(f"Could not update video_quality for post {post_id} | Error: {err}")
         return False
 def get_post_carousel_slides(post_id: int):
     """The RAW `carousel_slides` column for a post — the stored JSON, not a list.
@@ -1550,7 +1545,7 @@ def get_post_carousel_slides(post_id: int):
             row = cursor.fetchone()
             return row["carousel_slides"] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get carousel_slides for post {post_id} | Error: {err}")
+        log_info(f"Could not get carousel_slides for post {post_id} | Error: {err}")
         return None
 def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
     """Posts not yet posted, due within `within_days`, whose required media asset is
@@ -1583,7 +1578,7 @@ def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
             """, (within_days,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get unposted posts missing assets | Error: {err}")
+        log_info(f"Could not get unposted posts missing assets | Error: {err}")
         return []
 def get_post_use_avatar(post_id: Optional[int]) -> Optional[bool]:
     """The compose-time avatar choice for a post — None when the user made no choice."""
@@ -1597,7 +1592,7 @@ def get_post_use_avatar(post_id: Optional[int]) -> Optional[bool]:
                 return None
             return bool(row[0])
     except mysql.connector.Error as err:
-        myprint(f"Could not fetch use_avatar for post_id {post_id} | Error: {err}")
+        log_info(f"Could not fetch use_avatar for post_id {post_id} | Error: {err}")
         return None
 def update_post_use_avatar(post_id: int, use_avatar: Optional[bool]) -> bool:
     """Set the compose-time avatar choice on an existing post. None clears it back to
@@ -1611,7 +1606,7 @@ def update_post_use_avatar(post_id: int, use_avatar: Optional[bool]) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update use_avatar for post_id {post_id} | Error: {err}")
+        log_info(f"Could not update use_avatar for post_id {post_id} | Error: {err}")
         return False
 def mark_post_avatar_media(post_id: Optional[int]) -> bool:
     """Record that generated media for this post came out of the avatar LoRA.
@@ -1627,7 +1622,7 @@ def mark_post_avatar_media(post_id: Optional[int]) -> bool:
             cursor.execute("UPDATE posts SET avatar_media = 1 WHERE id = %s", (post_id,))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not mark avatar media on post_id {post_id} | Error: {err}")
+        log_info(f"Could not mark avatar media on post_id {post_id} | Error: {err}")
         return False
 def post_used_avatar_media(post_id: Optional[int]) -> bool:
     """Did any generated media on this post come out of the avatar path (issue #744)?
@@ -1643,7 +1638,7 @@ def post_used_avatar_media(post_id: Optional[int]) -> bool:
             row = cursor.fetchone()
             return bool(row and row[0])
     except mysql.connector.Error as err:
-        myprint(f"Could not read avatar_media for post_id {post_id} | Error: {err}")
+        log_info(f"Could not read avatar_media for post_id {post_id} | Error: {err}")
         return False
 def get_post_quality_rows(start_date, end_date) -> list:
     """Per-post QUALITY observations across all users over [start_date, end_date] — the outcome side
@@ -1679,7 +1674,7 @@ def get_post_quality_rows(start_date, end_date) -> list:
                 for r in rows
             ]
     except mysql.connector.Error as err:
-        myprint(f"Could not get post quality rows | Error: {err}")
+        log_info(f"Could not get post quality rows | Error: {err}")
         return []
 def has_post_with_status(user_id: int, statuses: tuple) -> bool:
     """True when the user has at least one post in any of the given statuses."""
