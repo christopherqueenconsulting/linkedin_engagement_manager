@@ -56,6 +56,9 @@ vi.mock('./review/LeadsPipeline', () => ({
 vi.mock('./review/CatchupTouches', () => ({
   default: () => null,
 }))
+vi.mock('./review/GroupPostQueue', () => ({
+  default: () => null,
+}))
 
 const POST_BASE = {
   post_id: 1,
