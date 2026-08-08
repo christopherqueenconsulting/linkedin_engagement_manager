@@ -2722,6 +2722,16 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
                                     "in_card" if any(composer == box for box in in_card) else
                                     "widened_scope")
         entry["composer_labelled"] = bool(composer is not None and _is_post_comment_box(composer))
+        if action is not None:
+            # Counted HERE, before the Escape below, because Escape closes the very box this number
+            # exists to see. Read once after the walk instead, a successful Escape zeroes it, and the
+            # two zero-shapes that need OPPOSITE fixes — "a composer mounted that the card-scoped
+            # resolver claimed for no card" (re-ground the resolver) and "nothing mounts anywhere"
+            # (the surface has no inline composer, #1084) — collapse into the second one.
+            try:
+                entry["page_textboxes_open"] = len(_visible_composers(driver))
+            except Exception:
+                entry["page_textboxes_open"] = 0
         try:
             ActionChains(driver).send_keys(Keys.ESCAPE).perform()
         except Exception:
@@ -2736,11 +2746,15 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
     reading["locator_hits"] = merge_locator_hits(c.get("locator_hits") for c in reading["cards"])
     # Page-native cross-check for the case that matters: a composer DID mount and the card-scoped
     # resolver claimed none of them. That is drift; nothing mounting at all is a surface with no
-    # inline composer, which is a different finding and needs the opposite fix.
+    # inline composer, which is a different finding and needs the opposite fix. The MOST any card's
+    # click had open at once, so one card's evidence survives the next card's Escape; the trailing
+    # page read only ever adds a box the Escapes left behind.
     try:
-        reading["page_textboxes_after_click"] = len(_visible_composers(driver))
+        page_after = len(_visible_composers(driver))
     except Exception:
-        reading["page_textboxes_after_click"] = 0
+        page_after = 0
+    reading["page_textboxes_after_click"] = max(
+        [page_after] + [c.get("page_textboxes_open") or 0 for c in reading["cards"]])
     reading["visible_controls"] = visible_button_labels(driver, limit=30)
     return graded(reading, feed_composer_state(reading), feed_composer_verdict(reading))
 

@@ -1673,6 +1673,41 @@ class TestGroupFeedComposerProbe:
         assert clicks == ["Open comment composer"]
         composer.send_keys.assert_not_called()
 
+    def test_a_composer_the_escape_closes_still_counts_as_having_mounted(self, monkeypatch):
+        """The page-wide count is taken while the box is OPEN, never after the walk Escaped it.
+
+        Read afterwards, a working Escape zeroes it and the two zero-shapes that need OPPOSITE
+        fixes collapse: "a composer mounted that the card-scoped resolver claimed for no card"
+        (re-ground the resolver) reads as "nothing mounts here at all" (#1084 — stop the lane).
+        """
+        driver = _composer_feed_driver()
+        card = _patch_composer_chain(monkeypatch, composer=None)
+        mounted = [MagicMock()]
+        monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+                            lambda root: [] if root is card else
+                            [(box, {"y": 0}) for box in mounted])
+
+        class _EscapeClosesTheComposer:
+            def __init__(self, _driver):
+                pass
+
+            def send_keys(self, *_):
+                return self
+
+            def perform(self):
+                mounted.clear()
+
+        monkeypatch.setattr("selenium.webdriver.ActionChains", _EscapeClosesTheComposer)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        assert reading["composers_resolved"] == 0
+        assert reading["page_textboxes_after_click"] == 1
+        assert reading["state"] == llv.STATE_DRIFT
+        assert "claimed none of them for their card" in reading["verdict"]
+        assert "#1084" not in reading["verdict"]
+
     def test_a_box_inside_the_card_is_not_credited_to_the_widening(self, monkeypatch):
         driver = _composer_feed_driver()
         composer = MagicMock()
