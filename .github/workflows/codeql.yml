@@ -45,6 +45,8 @@ jobs:
             paths-ignore:
               - tests
               - src/cqc_lem/ui/dist
+              # Vendored third-party skills — see .github/codeql/codeql-config.yml
+              - .agents/skills
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3

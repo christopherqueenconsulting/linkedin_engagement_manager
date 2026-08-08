@@ -7,3 +7,7 @@ paths:
 paths-ignore:
   - tests
   - src/cqc_lem/ui/dist
+  # Vendored third-party skills, pinned by content hash in skills-lock.json. We cannot fix upstream
+  # code, so its alerts would block unrelated PRs forever. Redundant while `paths` is scoped to
+  # src/cqc_lem — kept so widening that later cannot silently pull vendored code back in.
+  - .agents/skills
