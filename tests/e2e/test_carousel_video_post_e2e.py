@@ -23,6 +23,7 @@ class TestCarouselPostE2E:
         with patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=mock_slides), \
              patch("cqc_lem.app.run_automation.get_post_content", return_value="Test carousel post #linkedin"), \
              patch("cqc_lem.app.run_automation.get_post_type") as mock_get_type, \
+             patch("cqc_lem.app.run_automation.get_post_manual_publish", return_value=False), \
              patch("cqc_lem.app.run_automation.update_db_post_status", return_value=True), \
              patch("cqc_lem.app.run_automation.insert_new_log", return_value=None), \
              patch("cqc_lem.app.run_automation.share_carousel_on_linkedin",
@@ -98,6 +99,7 @@ class TestVideoPostE2E:
         with patch("cqc_lem.app.run_automation.get_post_video_url", return_value=video_url), \
              patch("cqc_lem.app.run_automation.get_post_content", return_value="My video post #linkedin"), \
              patch("cqc_lem.app.run_automation.get_post_type") as mock_get_type, \
+             patch("cqc_lem.app.run_automation.get_post_manual_publish", return_value=False), \
              patch("cqc_lem.app.run_automation.update_db_post_status", return_value=True), \
              patch("cqc_lem.app.run_automation.insert_new_log", return_value=None), \
              patch("cqc_lem.app.run_automation.share_on_linkedin",
