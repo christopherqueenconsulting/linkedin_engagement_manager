@@ -902,11 +902,17 @@ class TestDbCursor:
     def test_a_raising_body_does_not_commit(self, mock_database_connection):
         from cqc_lem.utilities.db import db_cursor
 
+        # The raise lives in a helper rather than trailing the `with pytest.raises` body: CodeQL
+        # does not model pytest.raises as suppressing, so a trailing raise makes it read every
+        # following assertion as unreachable (py/unreachable-statement).
+        def write_then_fail():
+            with db_cursor(commit=True):
+                raise mysql.connector.Error("write failed")
+
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with pytest.raises(mysql.connector.Error):
-                with db_cursor(commit=True):
-                    raise mysql.connector.Error("write failed")
+                write_then_fail()
 
         mock_database_connection["connection"].commit.assert_not_called()
 
@@ -924,11 +930,15 @@ class TestDbCursor:
     def test_both_are_returned_even_when_the_body_raises(self, mock_database_connection):
         from cqc_lem.utilities.db import db_cursor
 
+        # Helper for the same reason as above — a trailing raise reads as unreachable to CodeQL.
+        def blow_up():
+            with db_cursor():
+                raise RuntimeError("body blew up")
+
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with pytest.raises(RuntimeError):
-                with db_cursor():
-                    raise RuntimeError("body blew up")
+                blow_up()
 
         mock_database_connection["cursor"].close.assert_called_once()
         mock_database_connection["connection"].close.assert_called_once()
