@@ -29,7 +29,7 @@ class TestStoreCookies:
             "httpOnly": True,
         }
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -54,7 +54,7 @@ class TestStoreCookies:
              "expiry": 2000, "secure": False, "httpOnly": True},
         ]
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -78,7 +78,7 @@ class TestStoreCookies:
             # no 'expiry' key
         }
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=10), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -95,7 +95,7 @@ class TestStoreCookies:
         cookie = {"name": "c", "value": "v", "domain": "d", "path": "/",
                   "expiry": 100, "secure": True, "httpOnly": True}
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -117,7 +117,7 @@ class TestGetCookies:
         from cqc_lem.utilities.db import get_cookies
 
         expected = [{"name": "li_at", "value": "token123"}]
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_top_level_domain", return_value="linkedin.com"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = expected
@@ -129,7 +129,7 @@ class TestGetCookies:
     def test_query_uses_tld_and_email(self, mock_database_connection):
         from cqc_lem.utilities.db import get_cookies
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_top_level_domain", return_value="linkedin.com"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = []
@@ -143,7 +143,7 @@ class TestGetCookies:
     def test_returns_none_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import get_cookies
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_top_level_domain", return_value="linkedin.com"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
@@ -161,7 +161,7 @@ class TestAddUser:
     def test_success_inserts_and_commits(self, mock_database_connection):
         from cqc_lem.utilities.db import add_user
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
 
             add_user("new@example.com", "secret")
@@ -180,7 +180,7 @@ class TestAddUser:
         err = mysql.connector.Error("Duplicate entry")
         err.errno = errorcode.ER_DUP_ENTRY
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = err
 
@@ -193,7 +193,7 @@ class TestAddUser:
         err = mysql.connector.Error("Some other DB error")
         err.errno = 9999  # Not ER_DUP_ENTRY
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = err
 
@@ -209,7 +209,7 @@ class TestAddUserWithAccessToken:
     def test_inserts_with_all_fields(self, mock_database_connection):
         from cqc_lem.utilities.db import add_user_with_access_token
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
 
             add_user_with_access_token(
@@ -235,7 +235,7 @@ class TestAddUserWithAccessToken:
     def test_inserts_without_refresh_token(self, mock_database_connection):
         from cqc_lem.utilities.db import add_user_with_access_token
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
 
             add_user_with_access_token(
@@ -256,7 +256,7 @@ class TestAddUserWithAccessToken:
         err = mysql.connector.Error("Duplicate entry")
         err.errno = errorcode.ER_DUP_ENTRY
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = err
 
@@ -269,7 +269,7 @@ class TestAddUserWithAccessToken:
         err = mysql.connector.Error("Generic error")
         err.errno = 9999
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = err
 
@@ -285,7 +285,7 @@ class TestGetUserLinkedSubId:
     def test_returns_linked_sub_id_when_found(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_linked_sub_id
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = {"linked_sub_id": "sub123"}
 
@@ -296,7 +296,7 @@ class TestGetUserLinkedSubId:
     def test_returns_none_when_not_found(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_linked_sub_id
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = None
 
@@ -307,7 +307,7 @@ class TestGetUserLinkedSubId:
     def test_returns_none_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_linked_sub_id
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -324,7 +324,7 @@ class TestInsertPlannedPost:
     def test_success_returns_true(self, mock_database_connection):
         from cqc_lem.utilities.db import PostType, insert_planned_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -344,7 +344,7 @@ class TestInsertPlannedPost:
     def test_tz_naive_datetime_is_handled(self, mock_database_connection):
         from cqc_lem.utilities.db import PostType, insert_planned_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -361,7 +361,7 @@ class TestInsertPlannedPost:
     def test_returns_false_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import PostType, insert_planned_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -383,7 +383,7 @@ class TestUpdateDbPost:
     def test_success_returns_true(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -402,7 +402,7 @@ class TestUpdateDbPost:
     def test_tz_naive_scheduled_time_is_handled(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -420,7 +420,7 @@ class TestUpdateDbPost:
     def test_returns_false_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, PostType, update_db_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -447,7 +447,7 @@ class TestGetPostedPosts:
         expected = [
             {"id": 1, "content": "Posted!", "scheduled_time": "2025-01-01", "post_type": "text", "status": "posted"},
         ]
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = expected
 
@@ -461,7 +461,7 @@ class TestGetPostedPosts:
     def test_returns_none_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import get_posted_posts
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -480,7 +480,7 @@ class TestUpdateDbPostCarouselSlides:
 
         slides = ["Slide 1 text", "Slide 2 text", "Slide 3 text"]
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -495,7 +495,7 @@ class TestUpdateDbPostCarouselSlides:
     def test_returns_false_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import update_db_post_carousel_slides
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -506,7 +506,7 @@ class TestUpdateDbPostCarouselSlides:
     def test_returns_false_when_no_row_updated(self, mock_database_connection):
         from cqc_lem.utilities.db import update_db_post_carousel_slides
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 0
 
@@ -523,7 +523,7 @@ class TestReplaceVideoUrlBase:
     def test_with_user_id_uses_scoped_query(self, mock_database_connection):
         from cqc_lem.utilities.db import replace_video_url_base
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 3
 
@@ -540,7 +540,7 @@ class TestReplaceVideoUrlBase:
     def test_without_user_id_uses_global_query(self, mock_database_connection):
         from cqc_lem.utilities.db import replace_video_url_base
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 5
 
@@ -553,7 +553,7 @@ class TestReplaceVideoUrlBase:
     def test_returns_zero_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import replace_video_url_base
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -571,7 +571,7 @@ class TestGetReadyToPostPosts:
         from cqc_lem.utilities.db import get_ready_to_post_posts
 
         rows = [(10, datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc), 42)]
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = rows
 
@@ -585,7 +585,7 @@ class TestGetReadyToPostPosts:
         from cqc_lem.utilities.db import get_ready_to_post_posts
 
         pre_post_time = datetime(2025, 6, 1, 14, 0, 0, tzinfo=timezone.utc)
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = []
 
@@ -603,7 +603,7 @@ class TestGetReadyToPostPosts:
         """
         from cqc_lem.utilities.db import get_ready_to_post_posts
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -622,7 +622,7 @@ class TestGetUserPasswordPairById:
     def test_returns_email_and_password_when_found(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_password_pair_by_id
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = {
                 "email": "user@example.com",
@@ -637,7 +637,7 @@ class TestGetUserPasswordPairById:
     def test_returns_none_pair_when_not_found(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_password_pair_by_id
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = None
 
@@ -649,7 +649,7 @@ class TestGetUserPasswordPairById:
     def test_returns_none_pair_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_password_pair_by_id
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -669,7 +669,7 @@ class TestBulkUpdatePostsExtended:
 
         new_time = datetime(2025, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 2
 
@@ -684,7 +684,7 @@ class TestBulkUpdatePostsExtended:
 
         new_time = datetime(2025, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -700,7 +700,7 @@ class TestBulkUpdatePostsExtended:
 
         naive_time = datetime(2025, 9, 1, 10, 0, 0)  # no tzinfo
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -712,7 +712,7 @@ class TestBulkUpdatePostsExtended:
     def test_returns_false_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, bulk_update_posts
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -729,7 +729,7 @@ class TestSoftDeletePostsDirect:
     def test_calls_bulk_update_with_rejected_status(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, soft_delete_posts
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 2
 
@@ -748,7 +748,7 @@ class TestInsertPostDbError:
     def test_returns_false_on_db_error(self, mock_database_connection):
         from cqc_lem.utilities.db import PostType, insert_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -767,7 +767,7 @@ class TestInsertPostDbError:
         from cqc_lem.utilities.db import PostType, insert_post
 
         slides = ["First slide", "Second slide"]
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -788,7 +788,7 @@ class TestInsertPostDbError:
     def test_tz_naive_scheduled_time_becomes_utc(self, mock_database_connection):
         from cqc_lem.utilities.db import PostType, insert_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
              patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
              patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
@@ -814,7 +814,7 @@ class TestCountAuthFactors:
     def test_counts_confirmed_factors(self, mock_database_connection):
         from cqc_lem.utilities.db import count_auth_factors
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = {"n": 2}
 
@@ -823,7 +823,7 @@ class TestCountAuthFactors:
     def test_no_rows_is_zero(self, mock_database_connection):
         from cqc_lem.utilities.db import count_auth_factors
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = None
 
@@ -840,7 +840,7 @@ class TestCountAuthFactors:
         """
         from cqc_lem.utilities.db import count_auth_factors
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
 
@@ -850,7 +850,7 @@ class TestCountAuthFactors:
     def test_the_connection_is_returned_even_when_it_raises(self, mock_database_connection):
         from cqc_lem.utilities.db import count_auth_factors
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
 
@@ -871,7 +871,7 @@ class TestDbCursor:
     def test_yields_a_cursor_and_returns_both_on_success(self, mock_database_connection):
         from cqc_lem.utilities.db import db_cursor
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with db_cursor() as cursor:
                 assert cursor is mock_database_connection["cursor"]
@@ -882,7 +882,7 @@ class TestDbCursor:
     def test_does_not_commit_by_default(self, mock_database_connection):
         from cqc_lem.utilities.db import db_cursor
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with db_cursor() as cursor:
                 cursor.execute("SELECT 1")
@@ -892,7 +892,7 @@ class TestDbCursor:
     def test_commits_after_a_successful_body(self, mock_database_connection):
         from cqc_lem.utilities.db import db_cursor
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with db_cursor(commit=True) as cursor:
                 cursor.execute("UPDATE t SET a = 1")
@@ -909,7 +909,7 @@ class TestDbCursor:
             with db_cursor(commit=True):
                 raise mysql.connector.Error("write failed")
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with pytest.raises(mysql.connector.Error):
                 write_then_fail()
@@ -920,7 +920,7 @@ class TestDbCursor:
         """It owns resources, not fallbacks — each caller answers a failure its own way."""
         from cqc_lem.utilities.db import db_cursor
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with pytest.raises(mysql.connector.Error):
                 with db_cursor() as cursor:
@@ -935,7 +935,7 @@ class TestDbCursor:
             with db_cursor():
                 raise RuntimeError("body blew up")
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             with pytest.raises(RuntimeError):
                 blow_up()
@@ -954,7 +954,7 @@ class TestDbCursor:
 
         connection = mock_database_connection["connection"]
         connection.cursor.side_effect = mysql.connector.Error("cannot allocate cursor")
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=connection):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=connection):
             with pytest.raises(mysql.connector.Error):
                 with db_cursor():
                     pass
@@ -965,7 +965,7 @@ class TestDbCursor:
         from cqc_lem.utilities.db import db_cursor
 
         connection = mock_database_connection["connection"]
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=connection):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=connection):
             with db_cursor(dictionary=True):
                 pass
         connection.cursor.assert_called_once_with(dictionary=True)

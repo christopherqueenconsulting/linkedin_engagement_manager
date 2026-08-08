@@ -20,7 +20,7 @@ def _mock_conn(fetch_one=None, fetch_all=None, dict_cursor=False):
 class TestCountReadyPostsWithinBuffer:
     def test_counts_generated_posts_due_in_window(self):
         conn, cur = _mock_conn(fetch_one=(3,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import READY_POST_STATUSES, count_ready_posts_within_buffer
             assert count_ready_posts_within_buffer(1, 5) == 3
         sql, params = cur.execute.call_args[0]
@@ -35,7 +35,7 @@ class TestCountReadyPostsWithinBuffer:
 
     def test_zero_when_no_row(self):
         conn, _ = _mock_conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_ready_posts_within_buffer
             assert count_ready_posts_within_buffer(1) == 0
 
@@ -43,7 +43,7 @@ class TestCountReadyPostsWithinBuffer:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_ready_posts_within_buffer
             assert count_ready_posts_within_buffer(1, 5) == 0
 
@@ -53,7 +53,7 @@ class TestGetPlannedPostsWithinBuffer:
 
     def test_selects_forward_window_ordered_soonest_first(self):
         conn, cur = _mock_conn(fetch_all=self._ROWS)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_posts_within_buffer
             assert get_planned_posts_within_buffer(1, 5, 5, 0) == self._ROWS
         sql, params = cur.execute.call_args[0]
@@ -66,7 +66,7 @@ class TestGetPlannedPostsWithinBuffer:
 
     def test_limit_is_only_the_delta_to_the_cap(self):
         conn, cur = _mock_conn(fetch_all=self._ROWS)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_posts_within_buffer
             get_planned_posts_within_buffer(1, 5, 5, 3)
         _, params = cur.execute.call_args[0]
@@ -75,7 +75,7 @@ class TestGetPlannedPostsWithinBuffer:
     @pytest.mark.parametrize("already_ready", [5, 6, 99])
     def test_full_buffer_queries_nothing(self, already_ready):
         conn, cur = _mock_conn(fetch_all=self._ROWS)
-        with patch(f"{_DB}.get_db_connection", return_value=conn) as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn) as get_conn:
             from cqc_lem.utilities.db import get_planned_posts_within_buffer
             assert get_planned_posts_within_buffer(1, 5, 5, already_ready) == []
         get_conn.assert_not_called()
@@ -85,7 +85,7 @@ class TestGetPlannedPostsWithinBuffer:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_posts_within_buffer
             assert get_planned_posts_within_buffer(1, 5, 5, 0) == []
 
@@ -96,7 +96,7 @@ class TestGetNextPlannedPostsAfterBuffer:
 
     def test_selects_only_slots_beyond_the_window(self):
         conn, cur = _mock_conn(fetch_all=self._ROWS)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_planned_posts_after_buffer
             assert get_next_planned_posts_after_buffer(1, 5, 4) == self._ROWS
         sql, params = cur.execute.call_args[0]
@@ -109,7 +109,7 @@ class TestGetNextPlannedPostsAfterBuffer:
     @pytest.mark.parametrize("limit", [0, -1])
     def test_no_budget_queries_nothing(self, limit):
         conn, cur = _mock_conn(fetch_all=self._ROWS)
-        with patch(f"{_DB}.get_db_connection", return_value=conn) as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn) as get_conn:
             from cqc_lem.utilities.db import get_next_planned_posts_after_buffer
             assert get_next_planned_posts_after_buffer(1, 5, limit) == []
         get_conn.assert_not_called()
@@ -119,7 +119,7 @@ class TestGetNextPlannedPostsAfterBuffer:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_planned_posts_after_buffer
             assert get_next_planned_posts_after_buffer(1, 5, 4) == []
 
@@ -129,7 +129,7 @@ class TestGetNextPlannedPostDate:
         import datetime as dt
         due = dt.datetime(2026, 8, 3, 13, 30)
         conn, cur = _mock_conn(fetch_one=(due,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_planned_post_date
             assert get_next_planned_post_date(1) == due
         sql, params = cur.execute.call_args[0]
@@ -140,7 +140,7 @@ class TestGetNextPlannedPostDate:
 
     def test_none_when_nothing_is_planned(self):
         conn, _ = _mock_conn(fetch_one=(None,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_planned_post_date
             assert get_next_planned_post_date(1) is None
 
@@ -148,7 +148,7 @@ class TestGetNextPlannedPostDate:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_planned_post_date
             assert get_next_planned_post_date(1) is None
 
@@ -156,7 +156,7 @@ class TestGetNextPlannedPostDate:
 class TestGetUserIdsWithPlannedPostsWithinBuffer:
     def test_returns_distinct_user_ids(self):
         conn, cur = _mock_conn(fetch_all=[(4,), (9,)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_ids_with_planned_posts_within_buffer
             assert get_user_ids_with_planned_posts_within_buffer(30) == [4, 9]
         sql, params = cur.execute.call_args[0]
@@ -165,7 +165,7 @@ class TestGetUserIdsWithPlannedPostsWithinBuffer:
 
     def test_defaults_to_the_max_window_so_long_buffers_are_not_missed(self):
         conn, cur = _mock_conn(fetch_all=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS, get_user_ids_with_planned_posts_within_buffer
             get_user_ids_with_planned_posts_within_buffer()
         assert cur.execute.call_args[0][1] == (MAX_CONTENT_BUFFER_DAYS,)
@@ -174,7 +174,7 @@ class TestGetUserIdsWithPlannedPostsWithinBuffer:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_ids_with_planned_posts_within_buffer
             assert get_user_ids_with_planned_posts_within_buffer() == []
 
@@ -182,7 +182,7 @@ class TestGetUserIdsWithPlannedPostsWithinBuffer:
 class TestUserPreferencesBufferColumns:
     def test_defaults_include_buffer_knobs(self):
         conn, _ = _mock_conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import (
                 DEFAULT_CONTENT_BUFFER_DAYS,
                 DEFAULT_CONTENT_BUFFER_MAX_POSTS,
@@ -196,7 +196,7 @@ class TestUserPreferencesBufferColumns:
         row = {"last_login_inactivate_delay": 90, "auto_schedule_posts": 1,
                "content_buffer_days": 7, "content_buffer_max_posts": 3}
         conn, cur = _mock_conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_preferences
             assert get_user_preferences(1) == row
         assert "content_buffer_days" in cur.execute.call_args[0][0]
@@ -204,7 +204,7 @@ class TestUserPreferencesBufferColumns:
     def test_update_leaves_buffer_untouched_when_not_supplied(self):
         conn, cur = _mock_conn()
         cur.rowcount = 1
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_preferences
             assert update_user_preferences(1, 90, True) is True
         sql, params = cur.execute.call_args[0]
@@ -214,7 +214,7 @@ class TestUserPreferencesBufferColumns:
     def test_update_persists_buffer_values(self):
         conn, cur = _mock_conn()
         cur.rowcount = 1
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_preferences
             assert update_user_preferences(1, None, False, content_buffer_days=7,
                                            content_buffer_max_posts=4) is True
@@ -225,7 +225,7 @@ class TestUserPreferencesBufferColumns:
     def test_update_clamps_out_of_range_buffer_values(self):
         conn, cur = _mock_conn()
         cur.rowcount = 1
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, update_user_preferences
             update_user_preferences(1, None, True, content_buffer_days=999,
                                     content_buffer_max_posts=0)
@@ -238,6 +238,6 @@ class TestUserPreferencesBufferColumns:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_preferences
             assert update_user_preferences(1, 90, True, content_buffer_days=5) is False

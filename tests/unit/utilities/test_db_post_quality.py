@@ -32,7 +32,7 @@ def _row(**overrides):
 class TestGetPostQualityRows:
     def test_returns_every_users_latest_stat_row(self):
         conn, cur = _mock_conn(fetch_all=[_row(), _row(user_id=2, post_id=10)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_quality_rows
             rows = get_post_quality_rows(date(2026, 7, 1), date(2026, 8, 1))
         assert [r["user_id"] for r in rows] == [1, 2]
@@ -49,7 +49,7 @@ class TestGetPostQualityRows:
         scoring it as 0 would drag an arm's mean down for a missing measurement.
         """
         conn, _ = _mock_conn(fetch_all=[_row(impressions=None, authenticity_score=None)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_quality_rows
             rows = get_post_quality_rows(date(2026, 7, 1), date(2026, 8, 1))
         assert rows[0]["impressions"] is None
@@ -57,19 +57,19 @@ class TestGetPostQualityRows:
 
     def test_zero_impressions_read_as_unknown(self):
         conn, _ = _mock_conn(fetch_all=[_row(impressions=0)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_quality_rows
             assert get_post_quality_rows(date(2026, 7, 1), date(2026, 8, 1))[0]["impressions"] is None
 
     def test_datetime_day_is_serialized(self):
         conn, _ = _mock_conn(fetch_all=[_row(day=datetime(2026, 7, 20, 9, 30))])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_quality_rows
             assert get_post_quality_rows(date(2026, 7, 1), date(2026, 8, 1))[0]["day"] \
                 .startswith("2026-07-20")
 
     def test_db_error_degrades_to_empty(self):
         conn, _ = _mock_conn(error="table missing")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_quality_rows
             assert get_post_quality_rows(date(2026, 7, 1), date(2026, 8, 1)) == []

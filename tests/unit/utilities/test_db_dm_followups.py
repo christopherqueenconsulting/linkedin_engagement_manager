@@ -21,7 +21,7 @@ def _mock_conn(fetch_all=None, rowcount=1):
 class TestFollowupQueue:
     def test_enqueue_inserts_pending(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             import datetime
 
             from cqc_lem.utilities.db import enqueue_followup
@@ -34,7 +34,7 @@ class TestFollowupQueue:
         rows = [{"id": 1, "user_id": 1, "profile_url": "p", "first_name": "Jane",
                  "event_type": "connection_accepted", "next_step": 1}]
         conn, cursor = _mock_conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             import datetime
 
             from cqc_lem.utilities.db import get_due_followups
@@ -44,14 +44,14 @@ class TestFollowupQueue:
 
     def test_mark_followup(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_followup
             assert mark_followup(5, "sent") is True
         assert cursor.execute.call_args[0][1] == ("sent", 5)
 
     def test_stop_followups_returns_count(self):
         conn, cursor = _mock_conn(rowcount=3)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import stop_followups_for_profile
             assert stop_followups_for_profile(1, "p") == 3
         assert "status='stopped'" in cursor.execute.call_args[0][0]

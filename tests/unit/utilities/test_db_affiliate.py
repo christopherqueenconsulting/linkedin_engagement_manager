@@ -91,7 +91,7 @@ def _connection(store):
 
 
 def _run(store, fn, *args, cap=90, **kwargs):
-    with patch(f"{_DB}.get_db_connection", return_value=_connection(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_connection(store)), \
          patch(f"{_AFF}.AFFILIATE_MAX_REWARD_DAYS", cap), \
          patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
          patch("cqc_lem.utilities.env_constants.FREE_TRIAL_DAYS", 14):

@@ -41,7 +41,7 @@ class TestGetShippedContentForQuality:
     def test_returns_all_three_surfaces_in_one_stream(self):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, cur = _mock_conn(fetch_batches=self._batches())
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             rows = get_shipped_content_for_quality(1, days=2)
         assert [r["surface"] for r in rows] == ["post", "comment", "newsletter"]
         assert cur.execute.call_count == 3
@@ -49,7 +49,7 @@ class TestGetShippedContentForQuality:
     def test_post_rows_carry_the_stats_and_the_stored_authenticity_score(self):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, _ = _mock_conn(fetch_batches=self._batches())
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             post = get_shipped_content_for_quality(1)[0]
         assert post["ref_id"] == "5" and post["text"] == "Post body"
         assert post["format_key"] == "build_receipt"
@@ -59,7 +59,7 @@ class TestGetShippedContentForQuality:
     def test_comment_and_newsletter_rows_have_no_per_item_engagement(self):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, _ = _mock_conn(fetch_batches=self._batches())
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             _post, comment, edition = get_shipped_content_for_quality(1)
         assert comment["impressions"] is None and comment["authenticity_score"] is None
         assert edition["format_key"] == "deep_dive"
@@ -68,21 +68,21 @@ class TestGetShippedContentForQuality:
     def test_posts_are_left_joined_so_an_unscraped_post_is_still_returned(self):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, cur = _mock_conn(fetch_batches=[[], [], []])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             get_shipped_content_for_quality(1)
         assert "LEFT JOIN post_stats" in cur.execute.call_args_list[0][0][0]
 
     def test_window_is_floored_at_one_day(self):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, cur = _mock_conn(fetch_batches=[[], [], []])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             get_shipped_content_for_quality(1, days=0)
         assert cur.execute.call_args_list[0][0][1][-1] == 1
 
     def test_only_successful_comment_logs_are_read(self):
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, cur = _mock_conn(fetch_batches=[[], [], []])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             get_shipped_content_for_quality(1)
         sql, params = cur.execute.call_args_list[1][0]
         assert "FROM logs" in sql
@@ -97,7 +97,7 @@ class TestGetShippedContentForQuality:
         batches = self._batches()
         conn, cur = _mock_conn(fetch_batches=[batches[0], batches[1]])
         cur.execute.side_effect = [None, None, mysql.connector.Error("boom")]
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             rows = get_shipped_content_for_quality(1)
         assert [r["surface"] for r in rows] == ["post", "comment"]
 
@@ -107,7 +107,7 @@ class TestGetShippedContentForQuality:
         from cqc_lem.utilities.db import get_shipped_content_for_quality
         conn, cur = _mock_conn(fetch_batches=[[], [], []])
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_shipped_content_for_quality(1) == []
 
 
@@ -125,7 +125,7 @@ class TestRecordContentQualityScore:
     def test_upserts_the_row(self):
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_content_quality_score(1, self._score()) is True
         sql, params = cur.execute.call_args[0]
         assert "ON DUPLICATE KEY UPDATE" in sql
@@ -135,7 +135,7 @@ class TestRecordContentQualityScore:
     def test_the_slop_checks_are_stored_as_json(self):
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             record_content_quality_score(1, self._score())
         assert cur.execute.call_args[0][1][-1] == '["tada_transition"]'
 
@@ -145,7 +145,7 @@ class TestRecordContentQualityScore:
         score = self._score(slop_hard=None, slop_warn=None, slop_score=None, similarity=None,
                             similarity_measure=None, authenticity_score=None,
                             hook_within_budget=None, engagement_rate=None, impressions=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             record_content_quality_score(1, score)
         params = cur.execute.call_args[0][1]
         # A 0 here would read as "clean" / "no reach" instead of "not scored".
@@ -155,14 +155,14 @@ class TestRecordContentQualityScore:
     def test_a_false_hook_budget_is_written_as_zero_not_null(self):
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             record_content_quality_score(1, self._score(hook_within_budget=False))
         assert 0 in cur.execute.call_args[0][1]
 
     def test_a_row_with_no_ref_id_is_refused(self):
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn) as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn) as get_conn:
             assert record_content_quality_score(1, self._score(ref_id="")) is False
         assert not get_conn.called and not cur.execute.called
 
@@ -172,7 +172,7 @@ class TestRecordContentQualityScore:
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_content_quality_score(1, self._score()) is False
 
 
@@ -185,7 +185,7 @@ class TestGetContentQualityScores:
                  "slop_score": Decimal("5.000"), "similarity": Decimal("0.4200"),
                  "engagement_rate": Decimal("0.02100000")}]
         conn, cur = _mock_conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             out = get_content_quality_scores(1, days=14)
         assert out[0]["slop_score"] == 5.0
         assert out[0]["similarity"] == 0.42
@@ -197,7 +197,7 @@ class TestGetContentQualityScores:
         rows = [{"surface": "comment", "slop_score": None, "similarity": None,
                  "engagement_rate": None}]
         conn, _ = _mock_conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             out = get_content_quality_scores(1)
         assert out[0]["slop_score"] is None and out[0]["engagement_rate"] is None
 
@@ -207,5 +207,5 @@ class TestGetContentQualityScores:
         from cqc_lem.utilities.db import get_content_quality_scores
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("no such table")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_content_quality_scores(1) == []

@@ -6,12 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from mysql.connector.errors import PoolError
 
-from cqc_lem.utilities import db
+from cqc_lem.platform.db import connection as db
 
 pytestmark = pytest.mark.unit
 
-_CONNECT = "cqc_lem.utilities.db.mysql.connector.connect"
-_POOL_CLASS = "cqc_lem.utilities.db.MySQLConnectionPool"
+_CONNECT = "cqc_lem.platform.db.connection.mysql.connector.connect"
+_POOL_CLASS = "cqc_lem.platform.db.connection.MySQLConnectionPool"
 # Held in a named constant (not inline) so secret scanners don't read the stub AWS
 # secret payload below as a hardcoded credential.
 _STUB_VALUE = "unused-by-assertions"
@@ -185,7 +185,7 @@ class TestPoolFallbacks:
 
     def test_pool_is_rebuilt_after_a_fork(self):
         with patch(_POOL_CLASS, FakePool), patch(_CONNECT), \
-                patch("cqc_lem.utilities.db.os.getpid", side_effect=[111, 222]):
+                patch("cqc_lem.platform.db.connection.os.getpid", side_effect=[111, 222]):
             db.get_db_connection()
             db.get_db_connection()
 
@@ -198,7 +198,7 @@ class TestPoolFallbacks:
                   "dbname": "rds-db", "port": 3306}
 
         with patch(_POOL_CLASS, FakePool), patch(_CONNECT), \
-                patch("cqc_lem.utilities.db.get_aws_ssm_secret", return_value=secret):
+                patch("cqc_lem.platform.db.connection.get_aws_ssm_secret", return_value=secret):
             db.get_db_connection()
 
         config = FakePool.instances[0].config

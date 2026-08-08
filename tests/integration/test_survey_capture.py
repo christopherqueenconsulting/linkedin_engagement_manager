@@ -114,7 +114,7 @@ def store():
 
 
 def _call(client, store, method, path, **kwargs):
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch("cqc_lem.api.main.get_session_user_id", return_value=4), \
          patch("cqc_lem.utilities.observability.posthog"):
         return getattr(client, method)(path, **kwargs)
@@ -143,7 +143,7 @@ class TestSurveyCapture:
     def test_review_lands_with_source_review_and_unlocks_the_trial_extension(self, client, store):
         from cqc_lem.utilities.db import has_review_feedback
 
-        with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)):
             assert has_review_feedback(4) is False  # gate closed before the review
 
         response = _call(client, store, "post", "/api/survey/review", json={
@@ -162,7 +162,7 @@ class TestSurveyCapture:
         assert "Saves me an hour a day" in row["body"]
         assert "Fewer clicks to approve" in row["body"]
 
-        with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)):
             assert has_review_feedback(4) is True  # gate now open for POST /trial/extend (#499)
 
     def test_the_due_survey_is_the_review_offer_and_it_clears_once_answered(self, client, store):

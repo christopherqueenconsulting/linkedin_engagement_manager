@@ -73,7 +73,7 @@ class TestFeedbackCapture:
     def test_widget_submission_is_persisted_with_its_context(self, client):
         rows: list = []
 
-        with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(rows)), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(rows)), \
              patch("cqc_lem.api.main.get_session_user_id", return_value=4):
             response = client.post("/api/feedback", json={
                 "session_token": "sess-abc",
@@ -103,7 +103,7 @@ class TestFeedbackCapture:
     def test_anonymous_submission_persists_with_null_user(self, client):
         rows: list = []
 
-        with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(rows)):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(rows)):
             response = client.post("/api/feedback", json={"body": "Love the new dashboard",
                                                           "type_hint": "praise"})
 

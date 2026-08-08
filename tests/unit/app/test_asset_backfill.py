@@ -20,13 +20,13 @@ class TestDbQueries:
     def test_missing_assets_query(self):
         rows = [(6, 1, 'video', 'awareness', 't'), (5, 1, 'carousel', 'awareness', 't')]
         conn, _ = _db(fetchall=rows)
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_unposted_posts_missing_assets
             assert get_unposted_posts_missing_assets() == rows
 
     def test_carousel_slides_getter(self):
         conn, _ = _db(fetchone={"carousel_slides": '["a"]'})
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_carousel_slides
             assert get_post_carousel_slides(5) == '["a"]'
 

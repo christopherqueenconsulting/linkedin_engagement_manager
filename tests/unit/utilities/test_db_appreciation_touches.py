@@ -26,7 +26,7 @@ def _conn(rowcount=1, fetch_row=None):
 class TestClaimAppreciationTouch:
     def test_first_claim_is_granted(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_appreciation_touch
             assert claim_appreciation_touch(1, "https://x/in/jane", "recommendation_received",
                                             person_name="Jane") is True
@@ -36,7 +36,7 @@ class TestClaimAppreciationTouch:
     def test_duplicate_claim_is_refused_without_raising(self):
         """INSERT IGNORE swallows the unique-key collision — rowcount 0 IS the dedup answer."""
         conn, _ = _conn(rowcount=0)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_appreciation_touch
             assert claim_appreciation_touch(1, "https://x/in/jane", "collaboration") is False
 
@@ -44,7 +44,7 @@ class TestClaimAppreciationTouch:
         """No claim, no DM — a thank-you missed is recoverable, one sent twenty times is not."""
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_appreciation_touch
             assert claim_appreciation_touch(1, "u", "connection_accepted") is False
 
@@ -52,20 +52,20 @@ class TestClaimAppreciationTouch:
 class TestHasAppreciationTouch:
     def test_true_when_a_row_exists(self):
         conn, _ = _conn(fetch_row=(1,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_appreciation_touch
             assert has_appreciation_touch(1, "https://x/in/jane", "collaboration") is True
 
     def test_false_when_absent(self):
         conn, _ = _conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_appreciation_touch
             assert has_appreciation_touch(1, "https://x/in/jane", "collaboration") is False
 
     def test_error_reads_as_not_thanked_so_the_claim_decides(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_appreciation_touch
             assert has_appreciation_touch(1, "u", "collaboration") is False
 

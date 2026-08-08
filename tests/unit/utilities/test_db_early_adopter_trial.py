@@ -87,7 +87,7 @@ def _user(status="trial", started=STARTED, ends=None):
 
 def _extend(cursor, user_id=5, feedback_id=99, p0=25, p1=100, days=60):
     conn = _Conn(cursor)
-    with patch(f"{_DB}.get_db_connection", return_value=conn), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
             patch(f"{_ENV}.EARLY_ADOPTER_P0_SLOTS", p0), \
             patch(f"{_ENV}.EARLY_ADOPTER_P1_SLOTS", p1), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_DAYS", days):
@@ -101,7 +101,7 @@ class TestGetLatestReviewFeedbackId:
         cur.fetchone.return_value = (17,)
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_latest_review_feedback_id
             assert get_latest_review_feedback_id(5) == 17
         sql, params = cur.execute.call_args[0]
@@ -112,7 +112,7 @@ class TestGetLatestReviewFeedbackId:
         cur.fetchone.return_value = None
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_latest_review_feedback_id
             assert get_latest_review_feedback_id(5) is None
 
@@ -122,7 +122,7 @@ class TestGetLatestReviewFeedbackId:
         cur.execute.side_effect = mysql.connector.Error("boom")
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import get_latest_review_feedback_id
             assert get_latest_review_feedback_id(5) is None
         cur.close.assert_called_once()
@@ -236,7 +236,7 @@ class TestExtendTrialForUser:
         cur.execute = _boom
         winner = {"cohort": "P0", "trial_days": 60, "trial_ends_at": STARTED + timedelta(days=60)}
         conn = _Conn(cur)
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
                 patch(f"{_DB}.get_early_adopter_grant", return_value=winner):
             from cqc_lem.utilities.db import extend_trial_for_user
             result = extend_trial_for_user(5, feedback_id=1)
@@ -248,7 +248,7 @@ class TestExtendTrialForUser:
         cur = _Cursor(user=_user())
         cur.execute = MagicMock(side_effect=mysql.connector.Error("boom"))
         conn = _Conn(cur)
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import extend_trial_for_user
             result = extend_trial_for_user(5)
         assert (result["granted"], result["reason"]) == (False, "error")
@@ -261,7 +261,7 @@ class TestGrantAndSlotReads:
         cur.fetchone.return_value = {"user_id": 5, "cohort": "P0"}
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_early_adopter_grant
             assert get_early_adopter_grant(5)["cohort"] == "P0"
 
@@ -271,7 +271,7 @@ class TestGrantAndSlotReads:
         cur.execute.side_effect = mysql.connector.Error("boom")
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import get_early_adopter_grant
             assert get_early_adopter_grant(5) is None
 
@@ -280,7 +280,7 @@ class TestGrantAndSlotReads:
         cur.fetchall.return_value = [("P0", 3), ("P1", 0)]
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_early_adopter_slot_usage
             assert get_early_adopter_slot_usage() == {"P0": 3, "P1": 0}
 
@@ -290,6 +290,6 @@ class TestGrantAndSlotReads:
         cur.execute.side_effect = mysql.connector.Error("boom")
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import get_early_adopter_slot_usage
             assert get_early_adopter_slot_usage() == {}

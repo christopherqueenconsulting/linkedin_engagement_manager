@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-
 @pytest.mark.integration
 class TestPlanContentForUser:
     def test_plan_content_fills_the_month_at_the_weekly_cadence(self, mock_database_connection):

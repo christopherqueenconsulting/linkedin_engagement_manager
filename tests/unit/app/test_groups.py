@@ -27,7 +27,7 @@ class TestUserGroupsDB:
 
     def test_upsert_and_enabled_and_bulk(self):
         conn, cur = self._conn(fetch_all=[("123",), ("456",)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_enabled_group_ids, set_groups_enabled, upsert_user_group
             assert upsert_user_group(1, "123", "Growth Group") is True
             assert get_enabled_group_ids(1) == ["123", "456"]
@@ -36,7 +36,7 @@ class TestUserGroupsDB:
     def test_bare_bool_payload_only_touches_engagement(self):
         """The pre-#769 SPA bundle still sends {group_id: bool} — that must not reset post_enabled."""
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": False}) is True
         sql = cur.execute.call_args[0][0]
@@ -45,7 +45,7 @@ class TestUserGroupsDB:
 
     def test_dict_payload_writes_both_flags(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": {"enabled": True, "post_enabled": False}}) is True
         sql, params = cur.execute.call_args[0][0], cur.execute.call_args[0][1]
@@ -54,7 +54,7 @@ class TestUserGroupsDB:
 
     def test_empty_group_state_writes_nothing(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": {}}) is True
         cur.execute.assert_not_called()
@@ -62,7 +62,7 @@ class TestUserGroupsDB:
     def test_next_group_for_post_is_least_recently_posted(self):
         conn, cur = self._conn()
         cur.fetchone.return_value = {"group_id": "456", "group_name": "Sales"}
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_group_for_post
             assert get_next_group_for_post(1) == {"group_id": "456", "group_name": "Sales"}
         sql = cur.execute.call_args[0][0]
@@ -76,14 +76,14 @@ class TestUserGroupsDB:
     def test_next_group_for_post_none_when_nothing_opted_in(self):
         conn, cur = self._conn()
         cur.fetchone.return_value = None
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_group_for_post
             assert get_next_group_for_post(1) is None
 
     def test_record_group_post_stamps_the_row(self):
         """A successful post is also a run, so both columns advance."""
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_group_post
             assert record_group_post(1, "123") is True
         sql = cur.execute.call_args[0][0]
@@ -93,7 +93,7 @@ class TestUserGroupsDB:
     def test_record_group_post_run_never_claims_a_post(self):
         """Issue #858: a try advances the rotation without pretending anything shipped."""
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_group_post_run
             assert record_group_post_run(1, "123") is True
         sql = cur.execute.call_args[0][0]
@@ -108,7 +108,7 @@ class TestUserGroupsDB:
         import mysql.connector
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error("connection gone")
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.log_error") as logged:
             from cqc_lem.utilities.db import record_group_post_run
             assert record_group_post_run(1, "123") is False
@@ -127,14 +127,14 @@ class TestGroupPostDraftDB:
 
     def test_create_returns_the_new_id(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_group_post_draft
             assert create_group_post_draft(1, "g1", "  An insight.  ", group_name="AI") == 7
         assert cur.execute.call_args[0][1] == (1, "g1", "AI", "An insight.", "ready")
 
     def test_create_refuses_empty_text(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_group_post_draft
             assert create_group_post_draft(1, "g1", "   ") is None
         cur.execute.assert_not_called()
@@ -144,20 +144,20 @@ class TestGroupPostDraftDB:
                                           "group_name": "AI", "content": "x", "status": "ready",
                                           "created_at": None, "updated_at": None,
                                           "published_at": None})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_open_group_post_draft
             assert get_open_group_post_draft(1)["id"] == 7
         assert cur.execute.call_args[0][1] == (1, "ready")
 
     def test_open_draft_is_none_when_nothing_is_queued(self):
         conn, _ = self._conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_open_group_post_draft
             assert get_open_group_post_draft(1) is None
 
     def test_publishing_stamps_the_ship_time_with_the_status(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import GroupPostDraftStatus, update_group_post_draft
             assert update_group_post_draft(7, status=GroupPostDraftStatus.PUBLISHED) is True
         sql = cur.execute.call_args[0][0]
@@ -166,21 +166,21 @@ class TestGroupPostDraftDB:
 
     def test_skipping_never_claims_a_ship_time(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import GroupPostDraftStatus, update_group_post_draft
             assert update_group_post_draft(7, status=GroupPostDraftStatus.SKIPPED) is True
         assert "published_at" not in cur.execute.call_args[0][0]
 
     def test_edit_writes_the_trimmed_text(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_group_post_draft
             assert update_group_post_draft(7, content="  my words  ") is True
         assert cur.execute.call_args[0][1] == ("my words", 7)
 
     def test_update_with_nothing_to_write_is_a_no_op(self):
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_group_post_draft
             assert update_group_post_draft(7) is False
         cur.execute.assert_not_called()
@@ -188,7 +188,7 @@ class TestGroupPostDraftDB:
     def test_post_enabled_ids_read_the_posting_flag_not_the_commenting_one(self):
         conn, cur = self._conn()
         cur.fetchall.return_value = [("g1",), ("g2",)]
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_enabled_group_ids
             assert get_post_enabled_group_ids(1) == ["g1", "g2"]
         assert "post_enabled=1" in cur.execute.call_args[0][0]
@@ -200,7 +200,7 @@ class TestGroupPostDraftDB:
         import mysql.connector
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error("db down")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_enabled_group_ids
             assert get_post_enabled_group_ids(1) is None
 

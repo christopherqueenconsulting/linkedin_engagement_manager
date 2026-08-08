@@ -88,7 +88,7 @@ def ledger():
     rows = []
     connection = MagicMock()
     connection.cursor.return_value = _FakeCursor(rows)
-    with patch(f"{_DB}.get_db_connection", return_value=connection):
+    with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=connection):
         yield rows
 
 

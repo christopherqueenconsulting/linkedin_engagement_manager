@@ -207,7 +207,7 @@ class TestFollowerStatDb:
     def test_record_persists_nullable_counts(self):
         from cqc_lem.utilities.db import record_follower_stat
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_follower_stat(1, follower_count=4312, connection_count=None,
                                         profile_views=48, search_appearances=None) is True
         assert "INSERT INTO follower_stats" in cur.execute.call_args[0][0]
@@ -216,7 +216,7 @@ class TestFollowerStatDb:
     def test_all_null_snapshot_is_not_written(self):
         from cqc_lem.utilities.db import record_follower_stat
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn) as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn) as get_conn:
             assert record_follower_stat(1) is False
         get_conn.assert_not_called()
         cur.execute.assert_not_called()
@@ -227,14 +227,14 @@ class TestFollowerStatDb:
         from cqc_lem.utilities.db import record_follower_stat
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_follower_stat(1, follower_count=5) is False
 
     def test_get_stats_windows_by_days(self):
         from cqc_lem.utilities.db import get_follower_stats
         rows = [{"id": 1, "follower_count": 10, "captured_at": datetime(2026, 7, 26)}]
         conn, cur = self._conn(fetchall=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_follower_stats(1, days=30) == rows
         sql, params = cur.execute.call_args[0]
         assert "INTERVAL %s DAY" in sql and params == (1, 30, 400)
@@ -242,7 +242,7 @@ class TestFollowerStatDb:
     def test_get_stats_without_window_omits_the_interval(self):
         from cqc_lem.utilities.db import get_follower_stats
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             get_follower_stats(1)
         sql, params = cur.execute.call_args[0]
         assert "INTERVAL" not in sql and params == (1, 400)
@@ -253,13 +253,13 @@ class TestFollowerStatDb:
         from cqc_lem.utilities.db import get_follower_stats
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_follower_stats(1) == []
 
     def test_daily_action_counts_only_counts_successes(self):
         from cqc_lem.utilities.db import get_daily_action_counts
         conn, cur = self._conn(fetchall=[{"date": "2026-07-26", "action_type": "comment", "count": 4}])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_daily_action_counts(1, days=30)[0]["count"] == 4
         sql, params = cur.execute.call_args[0]
         assert "GROUP BY DATE(created_at), action_type" in sql
@@ -268,13 +268,13 @@ class TestFollowerStatDb:
     def test_daily_action_counts_honours_explicit_types(self):
         from cqc_lem.utilities.db import get_daily_action_counts
         conn, cur = self._conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             get_daily_action_counts(1, days=7, action_types=["post"])
         assert cur.execute.call_args[0][1] == (1, "success", "post", 7)
 
     def test_daily_action_counts_with_no_types_hits_no_db(self):
         from cqc_lem.utilities.db import get_daily_action_counts
-        with patch(f"{_DB}.get_db_connection") as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as get_conn:
             assert get_daily_action_counts(1, action_types=[]) == []
         get_conn.assert_not_called()
 
@@ -284,7 +284,7 @@ class TestFollowerStatDb:
         from cqc_lem.utilities.db import get_daily_action_counts
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_daily_action_counts(1) == []
 
 

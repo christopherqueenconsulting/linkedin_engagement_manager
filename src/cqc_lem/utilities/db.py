@@ -31,6 +31,47 @@ from mysql.connector import errorcode
 from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
 from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
 
+from cqc_lem.platform.db import connection as _connection
+from cqc_lem.platform.db.connection import (
+    DbConnection,
+    _get_connection_pool,
+    _get_mysql_config,
+    _get_pooled_connection,
+    _PoolState,
+    db_cursor,
+    get_db_connection,
+    reset_connection_pool,
+    to_naive_utc,
+)
+from cqc_lem.platform.db.enums import (
+    AffiliateRewardKind,
+    AffiliateStatus,
+    AuthAuditEvent,
+    CatchupEventType,
+    CatchupTouchStatus,
+    ConnectionRequestStatus,
+    ConnectStatus,
+    CostCategory,
+    FaqStatus,
+    FeedbackSource,
+    FeedbackStatus,
+    FollowStatus,
+    GroupPostDraftStatus,
+    LeadSignalChannel,
+    LeadSignalKind,
+    LeadSignalSource,
+    LeadSignalStatus,
+    LeadStage,
+    LogActionType,
+    LogResultType,
+    OnboardingStep,
+    OutreachStage,
+    OutreachStatus,
+    PostStatus,
+    PostType,
+    ReferralStatus,
+    ScheduledDmStatus,
+)
 from cqc_lem.utilities.crypto import (
     decrypt_secret,
     encrypt_secret,
@@ -51,6 +92,49 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
 from cqc_lem.utilities.utils import get_aws_ssm_secret, get_top_level_domain
 
+# Re-exported for the ~2,400 call sites that still say `from cqc_lem.utilities.db import X`.
+# `__all__` is the one declaration ruff (F401) and CodeQL (py/unused-import) both understand —
+# a per-line ruff directive is invisible to CodeQL and an lgtm marker is invisible to ruff, so
+# either one alone leaves whichever tool is blind free to flag or delete these.
+__all__ = [
+    "AffiliateRewardKind",
+    "AffiliateStatus",
+    "AuthAuditEvent",
+    "CatchupEventType",
+    "CatchupTouchStatus",
+    "ConnectStatus",
+    "ConnectionRequestStatus",
+    "CostCategory",
+    "DbConnection",
+    "FaqStatus",
+    "FeedbackSource",
+    "FeedbackStatus",
+    "FollowStatus",
+    "GroupPostDraftStatus",
+    "LeadSignalChannel",
+    "LeadSignalKind",
+    "LeadSignalSource",
+    "LeadSignalStatus",
+    "LeadStage",
+    "LogActionType",
+    "LogResultType",
+    "OnboardingStep",
+    "OutreachStage",
+    "OutreachStatus",
+    "PostStatus",
+    "PostType",
+    "ReferralStatus",
+    "ScheduledDmStatus",
+    "_PoolState",
+    "_get_connection_pool",
+    "_get_mysql_config",
+    "_get_pooled_connection",
+    "db_cursor",
+    "get_db_connection",
+    "reset_connection_pool",
+    "to_naive_utc",
+]
+
 # Load .env file
 load_dotenv()
 
@@ -65,415 +149,67 @@ MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 MYSQL_PORT = os.getenv('MYSQL_PORT')
 
 
-DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
-
-@dataclass
-class _PoolState:
-    """Per-process pool bookkeeping, held on one mutable object rather than several module globals.
-
-    Rebinding module globals across calls reads as a dead store to static analysis (CodeQL
-    py/unused-global-variable) because each assignment is only consumed by a LATER invocation.
-    """
-
-    pool: Optional[MySQLConnectionPool] = None
-    pid: Optional[int] = None
-    config: Optional[dict[str, Any]] = None
-    opened: int = 0
-
-
-_POOL_LOCK = threading.Lock()
-_POOL_STATE = _PoolState()
-
-
-def _get_mysql_config() -> dict[str, Any]:
-    """Resolves the MySQL connection arguments, preferring the AWS secret when one is configured."""
-    global MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_PORT
-
-    # if MYSQL_USER and MYSQL_PASSWORD are empty try to get it from AWS using get_secret function
-    if AWS_MYSQL_SECRET_NAME is not None and AWS_REGION is not None:
-        secret_dict = get_aws_ssm_secret(AWS_MYSQL_SECRET_NAME, AWS_REGION)
-        MYSQL_HOST = secret_dict['host']
-        MYSQL_USER = secret_dict['username']
-        MYSQL_PASSWORD = secret_dict['password']
-        MYSQL_DATABASE = secret_dict['dbname']
-        MYSQL_PORT = secret_dict['port']
-
-    return {
-        'host': MYSQL_HOST,
-        'user': MYSQL_USER,
-        'password': MYSQL_PASSWORD,
-        'database': MYSQL_DATABASE,
-        'port': MYSQL_PORT,
-        'time_zone': '+00:00',
-    }
-
-
-def _get_connection_pool(config: dict[str, Any]) -> MySQLConnectionPool:
-    """Returns this PROCESS's pool, (re)building it when the pid or the DB config changed.
-
-    Keyed on pid because Celery prefork forks its workers: a pool built before the fork would hand
-    the same live socket to parent and child. The pool is created WITHOUT connection kwargs so it
-    opens nothing up front — connections are added on demand in _get_pooled_connection() — because
-    every app process would otherwise pre-open MYSQL_POOL_SIZE sockets at first use and the sum
-    across ~20 processes would blow past MySQL's max_connections.
-    """
-    pid = os.getpid()
-    if _POOL_STATE.pool is None or _POOL_STATE.pid != pid:
-        pool_size = max(1, min(MYSQL_POOL_SIZE, CNX_POOL_MAXSIZE))
-        _POOL_STATE.pool = MySQLConnectionPool(pool_name=f"cqc-lem-{pid}", pool_size=pool_size)
-        _POOL_STATE.pool.set_config(**config)
-        _POOL_STATE.pid = pid
-        _POOL_STATE.config = config
-        _POOL_STATE.opened = 0
-    elif config != _POOL_STATE.config:
-        # e.g. a rotated AWS secret — pooled connections reconnect with the new config on checkout
-        _POOL_STATE.pool.set_config(**config)
-        _POOL_STATE.config = config
-
-    return _POOL_STATE.pool
-
-
-def _get_pooled_connection(config: dict[str, Any]) -> Optional[DbConnection]:
-    """Checks a connection out of the process pool, growing it lazily up to its size.
-
-    Returns None when the pool is at capacity so the caller can fall back to an unpooled
-    connection instead of failing a task during a fan-out burst.
-    """
-    with _POOL_LOCK:
-        pool = _get_connection_pool(config)
-        try:
-            return pool.get_connection()
-        except mysql.connector.Error:
-            # pool exhausted: every connection it has opened is checked out
-            if _POOL_STATE.opened >= pool.pool_size:
-                log_debug(f"MySQL pool {pool.pool_name} at capacity ({pool.pool_size}) - "
-                          f"opening a direct connection for this call")
-                return None
-            pool.add_connection()
-            _POOL_STATE.opened += 1
-            return pool.get_connection()
-
-
-def reset_connection_pool() -> None:
-    """Drops this process's pool reference so the next call builds a fresh one (tests/diagnostics).
-
-    Deliberately does NOT close the pooled connections: after a fork those sockets belong to the
-    parent process, and closing them there would break the parent's in-flight queries.
-    """
-    with _POOL_LOCK:
-        _POOL_STATE.pool = None
-        _POOL_STATE.pid = None
-        _POOL_STATE.config = None
-        _POOL_STATE.opened = 0
-
 
-def get_db_connection() -> DbConnection:
-    """Establishes a connection to the MySQL database and returns the connection object.
-
-    Connections come from a per-process pool when MYSQL_POOL_ENABLED (the default); calling
-    .close() on the returned object returns it to the pool rather than dropping the socket.
-
-    Raises:
-        mysql.connector.Error: If there is an error connecting to the database.
-    """
-    config = _get_mysql_config()
-
-    if MYSQL_POOL_ENABLED:
-        try:
-            connection = _get_pooled_connection(config)
-            if connection is not None:
-                return connection
-        except mysql.connector.Error as e:
-            log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
-
-    return mysql.connector.connect(**config)
-
-
-@contextmanager
-def db_cursor(*, dictionary: bool = False, commit: bool = False) -> Iterator[MySQLCursorAbstract]:
-    """Check out a connection, hand back a cursor, and always give both back.
-
-    This owns the RESOURCE half of a database call and nothing else. It deliberately does NOT catch
-    `mysql.connector.Error`: every caller in this module answers a read failure with its own
-    fallback — False, None, `[]`, 0 — and a context manager that swallowed the error would have to
-    invent one. Callers keep their own `except`, and what they lose is the four lines of ceremony
-    this replaces, repeated 417 times.
-
-    It also closes a hole that shape had. Those 417 blocks build the cursor BETWEEN
-    `get_db_connection()` and their `try:`, so a failure in `.cursor()` itself skipped the `finally`
-    — and `PooledMySQLConnection` has no `__del__`, so that connection never returned to the pool.
-    One statement wide, but it drained a pool slot permanently every time it happened. Building the
-    cursor inside this function fixes it for every migrated caller at once, which is the point of
-    having one place.
-
-    `commit=True` commits only when the body completed. An uncommitted transaction left by a raising
-    body is not leaked to the next user of the connection: the pool is built with the connector's
-    default `pool_reset_session=True`, so `close()` resets the session (mysql/connector/pooling.py
-    :409), and the unpooled fallback connection drops the transaction when its socket closes.
-
-    Args:
-        dictionary: Rows come back as dicts keyed by column instead of positional tuples.
-        commit: Commit after the body succeeds. Required for writes; a no-op cost for reads.
-
-    Yields:
-        The cursor — including its `rowcount` and `lastrowid`, which callers read after `execute`.
-    """
-    connection = get_db_connection()
-    try:
-        cursor = connection.cursor(dictionary=dictionary)
-    except BaseException:
-        # The one path the old shape leaked: no cursor was created, so no `finally` below can run.
-        connection.close()
-        raise
-    try:
-        yield cursor
-        if commit:
-            connection.commit()
-    finally:
-        cursor.close()
-        connection.close()
-
-
-def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    """The one storage-side timezone conversion (see docs/timezone-contract.md).
-
-    Every scheduling column in this schema (posts.scheduled_time, scheduled_dms.scheduled_time,
-    newsletter_editions.scheduled_for, …) holds NAIVE UTC. An aware datetime is converted to UTC;
-    a naive one is assumed to already be UTC. Normalizing here rather than at each call site matters
-    because mysql-connector serializes a datetime from its wall-clock fields and silently DROPS
-    tzinfo — an aware non-UTC value would otherwise be stored as its local wall clock, i.e. off by
-    the sender's UTC offset, and the post/DM would fire hours away from what the user scheduled.
-    """
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-
-class PostType(StrEnum):
-    """The `posts.post_type` ENUM, mirrored in Python so post types are never raw strings.
-
-    `posts.post_type` is a MySQL ENUM, so adding a member here is only half the change — the column needs
-    a Flyway migration before anything can be written with the new value.
-    """
-    TEXT = 'text'
-    CAROUSEL = 'carousel'
-    VIDEO = 'video'
-    DOCUMENT = 'document'  # native PDF/document post — highest-reach 2026 format
-
-
-class PostStatus(StrEnum):
-    """The `posts.status` ENUM. `error` means generation or posting failed and the row needs a human.
-
-    Same rule as `PostType`: the column is a MySQL ENUM, so a new member lands in a Flyway migration
-    first.
-    """
-    PLANNING = 'planning'
-    PENDING = 'pending'
-    APPROVED = 'approved'
-    REJECTED = 'rejected'
-    SCHEDULED = 'scheduled'
-    POSTED = 'posted'
-    ERROR = 'error'  # generation/posting failed (e.g. no real carousel images) — needs manual/dev fix
-
-
-class ScheduledDmStatus(StrEnum):
-    """Status for a scheduled 1:1 DM (issue #306), mirroring PostStatus."""
-    PENDING = 'pending'      # draft awaiting approval
-    APPROVED = 'approved'    # approved, waiting for its scheduled_time
-    SCHEDULED = 'scheduled'  # scanner dispatched the send task
-    SENT = 'sent'            # delivered
-    FAILED = 'failed'        # send failed
-    CANCELED = 'canceled'    # canceled before send
-
-
-class ConnectionRequestStatus(StrEnum):
-    """Status for a proactive, approval-gated connection request (issue #398), mirroring ScheduledDmStatus."""
-    PENDING = 'pending'      # draft awaiting approval
-    APPROVED = 'approved'    # approved, waiting for the scanner
-    SENDING = 'sending'      # scanner dispatched the send task
-    SENT = 'sent'            # invitation sent
-    FAILED = 'failed'        # send failed
-    CANCELED = 'canceled'    # canceled before send
-
-
-class CatchupEventType(StrEnum):
-    """A LinkedIn Catch-up "moment" we can congratulate on (issue #482). Ordered most→least
-    BD-relevant: a new job or promotion is a real trigger event, a birthday is small talk.
-    """
-    JOB_CHANGE = 'job_change'
-    PROMOTION = 'promotion'
-    WORK_ANNIVERSARY = 'work_anniversary'
-    EDUCATION = 'education'
-    IN_THE_NEWS = 'in_the_news'
-    BIRTHDAY = 'birthday'
-
-
-class CatchupTouchStatus(StrEnum):
-    """Status of a drafted catch-up congratulations DM (issue #482), mirroring ConnectionRequestStatus."""
-    PENDING = 'pending'      # drafted, awaiting human approval
-    APPROVED = 'approved'    # approved, waiting for the capped scanner
-    SENDING = 'sending'      # scanner dispatched the send task
-    SENT = 'sent'            # DM sent
-    SKIPPED = 'skipped'      # scored below the bar / event type disabled — kept as a dedup tombstone
-    FAILED = 'failed'        # send failed
-    CANCELED = 'canceled'    # operator canceled before send
-
-
-class GroupPostDraftStatus(StrEnum):
-    """Status of the weekly group post's draft (issue #932). The draft is written days before the
-    publish slot so the user can read and revise it — silence ships it, which is why the resting
-    state is READY rather than a pending-approval one.
-    """
-    READY = 'ready'          # drafted (and editable) — publishes at the weekly slot unless skipped
-    SKIPPED = 'skipped'      # the user cancelled this week's post, or its group stopped taking posts
-    PUBLISHED = 'published'  # it shipped into the group
-    FAILED = 'failed'        # the run reached the group and the group would not take a member post
-
-
-class OutreachStage(StrEnum):
-    """Stage of a comment-first outreach funnel target (issue #399)."""
-    COMMENT = 'comment'      # leave a value-adding comment on the prospect's post
-    CONNECT = 'connect'      # send a connection request (with a note)
-    DM = 'dm'                # send the voice-aligned DM (must be a 1st-degree connection)
-    COMPLETED = 'completed'  # terminal: the DM fired
-
-
-class OutreachStatus(StrEnum):
-    """Status of the current funnel stage (issue #399), mirroring the approval-gated DM lifecycle."""
-    PENDING = 'pending'      # draft awaiting human approval
-    APPROVED = 'approved'    # human approved; the processor will fire this stage
-    ACTED = 'acted'          # terminal: the final (dm) stage fired
-    SKIPPED = 'skipped'      # current stage skipped without firing
-    FAILED = 'failed'        # firing the stage errored
-    CANCELED = 'canceled'    # operator canceled the whole funnel for this target
-
-
-class LeadSignalSource(StrEnum):
-    """Which existing read path caught an inbound buying signal (issue #483)."""
-    POST_COMMENT = 'post_comment'    # a comment on the user's OWN post
-    COMMENT_REPLY = 'comment_reply'  # a reply to a comment WE left on someone else's post
-    DM = 'dm'                        # an inbound DM reply in a thread we already open
-
-
-class LeadSignalChannel(StrEnum):
-    """How an approved hot-lead response is delivered (issue #483)."""
-    REPLY = 'reply'  # post the draft under their comment at context_url
-    DM = 'dm'        # send the draft as a private message
-
-
-class LeadSignalStatus(StrEnum):
-    """Lifecycle of a detected hot lead (issue #483), mirroring the approval-gated DM lifecycle."""
-    NEW = 'new'              # draft awaiting human approval
-    APPROVED = 'approved'    # human approved; the responder will deliver it
-    SENT = 'sent'            # response delivered
-    DISMISSED = 'dismissed'  # operator dismissed the signal
-    FAILED = 'failed'        # delivery errored
-
-
-class CostCategory(StrEnum):
-    """Kind of spend a `cost_ledger` row records (issue #490, docs/cost-performance-margin-plan.md §A.1)."""
-    LLM = 'llm'              # inference through LiteLLM (rolled up daily per user x feature x tier)
-    MEDIA = 'media'          # video renders (Runway) and generated images (gpt-image / FLUX)
-    PROXY = 'proxy'          # per-user residential / amortized regional egress proxy
-    INFRA = 'infra'          # VPS + containers, amortized across active users
-    EMAIL = 'email'          # transactional sends
-    GEOCODING = 'geocoding'  # location lookups
-    POSTHOG = 'posthog'      # our own analytics ingestion
-
-
-class LeadStage(StrEnum):
-    """Warmth of a scored lead in the CRM-lite pipeline (issue #484), coldest first."""
-    COLD = 'cold'                        # in our orbit, no meaningful recent signal
-    WARM = 'warm'                        # engaging often enough to be worth nurturing
-    HOT = 'hot'                          # strong ICP fit + heavy engagement, or an unanswered buying question
-    IN_CONVERSATION = 'in_conversation'  # a live DM thread with someone who also engages with us
-    OPPORTUNITY = 'opportunity'          # they asked a buying question and we are answering it
-
-
-class LeadSignalKind(StrEnum):
-    """The engagement signals a lead score is built from (issue #484). Every one is read from data
-    the automation already records — no new scraping.
-    """
-    ENGAGED = 'engaged'            # commented/reacted on one of our posts (post_engagers)
-    INTENT = 'intent'              # raised a buying signal (lead_signals, issue #483)
-    DM = 'dm'                      # we sent them a DM (scheduled_dms / dm_followups)
-    PROFILE_VIEW = 'profile_view'  # they viewed our profile (dm_followups, profile_viewer event)
-    CONNECT = 'connect'            # we sent them a connection request (connection_requests)
-    FUNNEL = 'funnel'              # they are in the comment->connect->DM funnel (issue #399)
-
-
-class FeedbackSource(StrEnum):
-    """Where a piece of user feedback came in from (issue #496). Only WIDGET is captured today —
-    the rest are the channels the feedback->auto-work loop will add later.
-    """
-    WIDGET = 'widget'    # the in-app feedback/bug widget
-    BUG = 'bug'          # a bug report raised outside the widget (e.g. support email)
-    NPS = 'nps'          # an NPS survey response
-    REVIEW = 'review'    # a public review (marketplace/G2/etc.)
-    PASSIVE = 'passive'  # inferred from behavior, not typed by the user
-    CSAT = 'csat'        # a "did this fix it?" answer after a shipped fix (issue #502)
-
-
-class FeedbackStatus(StrEnum):
-    """Lifecycle of a feedback item as it moves through the auto-work loop (issue #496)."""
-    NEW = 'new'                      # just captured, not looked at
-    TRIAGED = 'triaged'              # reviewed/classified
-    CLUSTERED = 'clustered'          # grouped with similar reports
-    ISSUE_CREATED = 'issue_created'  # a GitHub issue was opened for its cluster
-    RESOLVED = 'resolved'            # shipped/answered
-    DISMISSED = 'dismissed'          # not actionable
-
-
-class FaqStatus(StrEnum):
-    """Lifecycle of a public FAQ answer (issue #506). Only PUBLISHED rows are served on the front
-    page — an auto-generated answer lands as DRAFT until it is reviewed.
-    """
-    PUBLISHED = 'published'
-    DRAFT = 'draft'
-    ARCHIVED = 'archived'
-
-
-class AffiliateStatus(StrEnum):
-    """(A) affiliate STATUS (issue #737) — whether the user holds a referral link and earns trial
-    time for it. Default ENROLLED, one click to OPTED_OUT. This says nothing at all about (B),
-    whether LEM may publish promo content from their account; that is `promo_content_opt_in`, is
-    default-off, and is stored beside this column precisely so the two can never be conflated.
-    """
-    ENROLLED = 'enrolled'
-    OPTED_OUT = 'opted_out'
-
-
-class ReferralStatus(StrEnum):
-    """A referral's lifecycle. PENDING on signup through a member's link; CONVERTED only once the
-    referred user ACTIVATES (a real activated signup, not a click); REJECTED for self-referral and
-    the other fraud shapes — stored rather than dropped so the signal is countable.
-    """
-    PENDING = 'pending'
-    CONVERTED = 'converted'
-    REJECTED = 'rejected'
-
-
-class AffiliateRewardKind(StrEnum):
-    """What a `affiliate_rewards` row paid for. ENROLLMENT is the status-linked bonus (revoked on
-    opt-out via a negative REVOKED row); REFERRAL was earned by driving an activation and is never
-    clawed back.
-    """
-    ENROLLMENT = 'enrollment'
-    REFERRAL = 'referral'
-    REVOKED = 'revoked'
-
-
-class OnboardingStep(StrEnum):
-    """Steps of the activation checklist (issue #500), in the order a user completes them.
-    ACTIVATED is the "aha" moment: first AI post published AND first automated comment/DM sent.
-    """
-    LINKEDIN_CONNECTED = 'linkedin_connected'
-    VOICE_SET = 'voice_set'
-    FIRST_POST_APPROVED = 'first_post_approved'
-    CAPS_ENABLED = 'caps_enabled'
-    ACTIVATED = 'activated'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # Ordered checklist + the onboarding_state column that timestamps each step's first completion.
@@ -482,27 +218,9 @@ _ONBOARDING_COLS: tuple = tuple(f"{step.value}_at" for step in ONBOARDING_STEPS)
 
 
 # Enum for log actions types
-class LogActionType(StrEnum):
-    """The `logs.action_type` ENUM — what an automation run did, one row per attempt.
-
-    These rows are not only history: the per-day caps and the dedup checks are COUNTED off them
-    (`count_comments_today`, `count_invites_sent_today`, `has_engaged_url_with_x_days`), so an action
-    whose log row never landed is budget the account spent and will spend again. Extending this needs a
-    Flyway migration on the ENUM column (V16 and V37 are what that looks like).
-    """
-    COMMENT = 'comment'
-    DM = 'dm'
-    REPLY = 'reply'
-    POST = 'post'
-    ENGAGED = 'engaged'
-    FOLLOWUP = 'followup'
 
 
 # ENum for log result options
-class LogResultType(StrEnum):
-    """The `logs.result` ENUM. Every cap and dedup counter filters on SUCCESS, so a FAILURE row buys no budget."""
-    SUCCESS = 'success'
-    FAILURE = 'failure'
 
 
 # Marker message logged (as ENGAGED/SUCCESS) whenever a LinkedIn invite is actually sent — reactive
@@ -568,7 +286,7 @@ def store_cookies(user_email: str, cookies: list[dict]) -> bool:
     stored LinkedIn password once the session is "saved", so a swallowed per-row write error must
     not read as success — that would take away the only login they had left.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     user_id = get_user_id(user_email)
@@ -641,7 +359,7 @@ def prune_superseded_cookies(user_id: int) -> int:
     name exists for the same user, so it never removes the newest copy and never touches a
     uniquely-named cookie. Best-effort — a failure here never breaks the cookie write.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     deleted = 0
     try:
@@ -677,7 +395,7 @@ def get_cookies(url: str, user_email: str):
     Returns None (not []) when the query itself failed, so "nothing stored" and "could not read the
     cookie table" stay distinguishable.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     # Extract the top-level domain from the URL
@@ -824,7 +542,7 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
 
     Errors are logged, not raised, and nothing is returned either way.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     access_token_created_at = datetime.now(timezone.utc)
@@ -993,7 +711,7 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
     Lands at `PostStatus.PLANNING` with the literal body 'TBD', which is the placeholder the generation
     pass overwrites later.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     success = False
@@ -1021,7 +739,7 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
 def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_type: PostType, post_id: int,
                    post_status: PostStatus, user_id: Optional[int] = None) -> bool:
     """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`."""
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     success = False
@@ -1108,7 +826,7 @@ def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
     already holds answers False, because the connection does not set `CLIENT.FOUND_ROWS` and MySQL
     therefore counts changed rather than matched rows.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     # The MySQL connector can't bind a PostStatus enum directly — it binds the .value string.
@@ -1284,7 +1002,7 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
 
     A read error returns `([], 0)` — an empty page, never a partial one.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     order = 'ASC' if sort_order.lower() != 'desc' else 'DESC'
@@ -1367,7 +1085,7 @@ def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
     labeled by `kind` (Post / DM / Newsletter). Terminal states (posted/sent/published/etc.)
     are excluded, results are merged and sorted soonest-first, capped at `limit`.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     tasks: list[dict] = []
     try:
@@ -1710,7 +1428,7 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
     if not post_ids:
         return False
 
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     success = False
@@ -2204,7 +1922,7 @@ def get_linked_in_profile_by_url(profile_url: str, updated_less_than_days_ago: i
     reads as ABSENT so the caller re-scrapes instead of acting on stale headline/about text. Both slash
     spellings are queried because LinkedIn hands out both.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
 
     profile_url_without_end_slash = profile_url.rstrip('/')
@@ -2583,7 +2301,7 @@ def update_user(user_id: int, blog_url: Optional[str] = None,
     """
     if not any([blog_url, sitemap_url]):
         return False
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     fields, values = [], []
     if blog_url:
@@ -3026,7 +2744,7 @@ def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
         log_warning("Secret encryption backfill skipped — no LEM_SECRET_KEY configured")
         return stats
 
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute("SELECT id, password, access_token, refresh_token FROM users")
@@ -3180,7 +2898,7 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
     separately by the per-email request limiter in `utilities/auth_rate_limit.py`.
     """
     from cqc_lem.utilities.env_constants import PIN_LOCKOUT_MINUTES, PIN_MAX_ATTEMPTS
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
@@ -3329,7 +3047,7 @@ def resolve_session(token: str) -> Optional[dict]:
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
@@ -3502,37 +3220,6 @@ def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int
 # Auth audit log (issue #745, 2b)
 # ---------------------------------------------------------------------------
 
-class AuthAuditEvent(StrEnum):
-    """Every security-relevant thing that can happen to an account's identity."""
-    LOGIN_SUCCESS = "login_success"
-    LOGIN_FAILED = "login_failed"
-    LOGIN_RATE_LIMITED = "login_rate_limited"
-    PIN_LOCKED = "pin_locked"
-    LOGOUT = "logout"
-    SESSION_REVOKED = "session_revoked"
-    AGENT_TOKEN_MINTED = "agent_token_minted"
-    SESSIONS_REVOKED_ALL = "sessions_revoked_all"
-    EMAIL_CHANGE_REQUESTED = "email_change_requested"
-    EMAIL_CHANGED = "email_changed"
-    # Strong authentication (2c)
-    FACTOR_ADDED = "factor_added"
-    FACTOR_REMOVED = "factor_removed"
-    SECOND_FACTOR_REQUIRED = "second_factor_required"
-    SECOND_FACTOR_FAILED = "second_factor_failed"
-    RECOVERY_CODES_GENERATED = "recovery_codes_generated"
-    RECOVERY_CODE_USED = "recovery_code_used"
-    STEP_UP_VERIFIED = "step_up_verified"
-    STEP_UP_DENIED = "step_up_denied"
-    # A scoped session (extension / enroll) was used outside its surface (2c.1). For an extension
-    # token this is the clearest signal available that someone else is holding it — the extension
-    # itself only ever calls one path, so it can never produce this row by accident.
-    SESSION_SCOPE_DENIED = "session_scope_denied"
-    # A signed-in caller named ANOTHER account as the target of an /api call (#914). The SPA cannot
-    # produce this — it sends the caller's own address or nothing at all — so a row here is a broken
-    # client or somebody working the hole that issue closed, and it is the highest-signal thing this
-    # boundary emits. `details` carries the KIND of identifier and the path, never the value: the
-    # caller-supplied half is somebody else's address and the audit log is not where it accumulates.
-    FOREIGN_TARGET_DENIED = "foreign_target_denied"
 
 
 def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
@@ -3943,7 +3630,7 @@ def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
     handle_hash = hash_session_token(handle)
     if not handle_hash:
         return None
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
@@ -3988,7 +3675,7 @@ def claim_auth_challenge_attempt(handle: str, purpose: str,
     handle_hash = hash_session_token(handle)
     if not handle_hash:
         return None
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
@@ -4181,7 +3868,7 @@ def add_user_by_email(email: str) -> Optional[int]:
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
     now = datetime.now(timezone.utc)
     trial_ends = now + timedelta(days=FREE_TRIAL_DAYS)
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
@@ -4220,7 +3907,7 @@ def get_user_public_uid(user_id: int) -> Optional[str]:
     """The account's public identifier (issue #745, 2b). Lazily minted for a row that predates the
     column and somehow escaped the migration backfill, so callers never have to handle None.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute("SELECT public_uid FROM users WHERE id = %s", (user_id,))
@@ -4278,7 +3965,7 @@ def change_user_email(user_id: int, new_email: str,
     The account identity is `users.id` / `public_uid`, so nothing else has to move. Returns False
     when the new address already belongs to another account — the caller must not merge accounts.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
@@ -4862,7 +4549,7 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
     row, and `update_engagement_preferences` must be able to tell them apart before it rewrites
     every column (issue #639).
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
@@ -5100,32 +4787,8 @@ ENGAGEMENT_TARGET_CATEGORIES = ("peer", "icp", "creator")
 ENGAGEMENT_TARGET_SOURCES = ("user", "suggested")
 ENGAGEMENT_TARGET_WEEKLY_DEFAULT = 2
 ENGAGEMENT_TARGET_WEEKLY_MAX = 14
-class FollowStatus(StrEnum):
-    """Follow state of a roster target (issue #962) — the ONE vocabulary, shared by the MySQL ENUM,
-    the DOM reading the resolver returns, and every write site, so a typo is an import error instead
-    of a MySQL error at 3am. `StrEnum`, so a raw column value read back from the DB compares equal
-    to a member without a conversion at every boundary.
-    """
-    UNKNOWN = 'unknown'                # we could not read the card — never "there is nothing to follow"
-    NOT_FOLLOWING = 'not_following'
-    FOLLOWING = 'following'
-    FOLLOW_FAILED = 'follow_failed'    # the control never flipped, twice
 
 
-class ConnectStatus(StrEnum):
-    """Connect state of a roster target (issue #979) — the ONE vocabulary, shared by the MySQL ENUM,
-    the DOM reading `_resolve_connect_state` returns, and every write site, exactly as
-    `FollowStatus` is for the follow rung.
-
-    The rung above follow: it is only ever reached by a target that IS followed and is STILL
-    un-commentable, so 'needs_connection' is a claim backed by evidence rather than a guess about
-    someone's privacy settings.
-    """
-    UNKNOWN = 'unknown'                  # nothing known / nothing to do — the resting state
-    NEEDS_CONNECTION = 'needs_connection'
-    REQUESTED = 'requested'
-    CONNECTED = 'connected'
-    FAILED = 'failed'                    # the invite could not be sent — never auto-retried
 
 
 ENGAGEMENT_TARGET_CONNECT_STATUSES = frozenset(ConnectStatus)
@@ -5317,7 +4980,7 @@ def record_target_comment_blocked(user_id: int, profile_url: str) -> BlockedVisi
     visit is the SECOND post-follow block — one is a render race, two is the account telling us
     following was not the missing permission. A target that was never followed is never escalated.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     url = str(profile_url or "").strip()
     try:
@@ -5385,7 +5048,7 @@ def record_target_follow_failure(user_id: int, profile_url: str) -> int:
     same statement, which both badges the target for the user and stops the roster pass from
     spending a click on it every single run.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     url = str(profile_url or "").strip()
     try:
@@ -5427,7 +5090,7 @@ def set_target_connect_status(user_id: int, profile_url: str, status: ConnectSta
         log_error(f"Refusing to write unknown connect status {status!r}", user_id=user_id)
         return False
     status = ConnectStatus(status)
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     url = str(profile_url or "").strip()
     try:
@@ -5599,7 +5262,7 @@ def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
     (reply+<token>@parse-domain). Minted once and stored on the users row so the Gmail forward
     filter the user sets up keeps resolving to them. Returns None only on DB error.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute("SELECT reply_inbound_token FROM users WHERE id = %s", (user_id,))
@@ -6691,7 +6354,7 @@ def claim_post_for_comment(user_id: int, post_key: str, stale_after_minutes: int
     """
     if not post_key or not str(post_key).strip():
         return False
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
@@ -7043,7 +6706,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
     case the night it ships.
     """
     window = max(1, int(days))
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     rows: list = []
     try:
@@ -7953,7 +7616,7 @@ def get_lead_activity(user_id: int, days: int = 90) -> list:
     for the scorer. Each source is queried independently so one unavailable table degrades that
     signal instead of losing the whole pipeline.
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     rows: list = []
     try:
@@ -9014,7 +8677,7 @@ def get_user_content_language(user_id: Optional[int]) -> str:
     # Fail-soft on the connection too: callers sit inside media-generation try/except blocks that
     # degrade to stock footage, so a DB blip here must not cost the user their generated video.
     try:
-        connection = get_db_connection()
+        connection = _connection.get_db_connection()
     except Exception as err:
         myprint(f"Could not get content language for user_id {user_id} | Error: {err}")
         return DEFAULT_CONTENT_LANGUAGE
@@ -9485,7 +9148,7 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
     leaves the current active one exactly as it was — an account is never stranded with no active avatar
     by a failed switch. Activation requires `approval_status == approved` (issue #744).
     """
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         # Validate the target avatar BEFORE deactivating anything — a bad id must leave the
@@ -9910,7 +9573,7 @@ def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
     if not accruals:
         return 0
 
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     written = 0
     try:
@@ -10696,7 +10359,7 @@ def get_published_faq_entries(limit: int = 50) -> list:
     connection = None
     cursor = None
     try:
-        connection = get_db_connection()
+        connection = _connection.get_db_connection()
         cursor = connection.cursor(dictionary=True)
         cursor.execute(
             "SELECT id, question, answer, cluster_id, updated_at FROM faq_entries "
@@ -10822,7 +10485,7 @@ def apply_faq_entry_version(faq_entry_id: int, version_id: int) -> Optional[dict
     """
     if faq_entry_id is None or version_id is None:
         return None
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
@@ -11101,7 +10764,7 @@ def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> di
         return {"granted": granted, "reason": reason, "cohort": cohort,
                 "trial_days": trial_days, "trial_ends_at": trial_ends_at}
 
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         connection.start_transaction()
@@ -11239,7 +10902,7 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
     did not happen — the row will not exist either, and the next call re-inserts it.
     """
     code = str(referral_code or user_id)
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor()
     created = False
     try:
@@ -11468,7 +11131,7 @@ def grant_affiliate_trial_days(user_id: int, days: int, kind: str,
     if int(days) <= 0:
         return _result(False, "capped")
 
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         connection.start_transaction()
@@ -11552,7 +11215,7 @@ def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
                 ends_at: Optional[datetime] = None) -> dict:
         return {"revoked": revoked, "reason": why, "days": days, "trial_ends_at": ends_at}
 
-    connection = get_db_connection()
+    connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         connection.start_transaction()

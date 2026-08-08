@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_GET_CONN = "cqc_lem.utilities.db.get_db_connection"
+_GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
 
 class TestGetLatestPostStats:

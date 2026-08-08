@@ -87,16 +87,14 @@ class TestPlan:
     """The allowance is decided BEFORE a browser session opens — most runs must cost no Chrome slot."""
 
     def test_lane_is_off_by_default(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.stale_invites import (plan_withdrawals,
-                                                              WITHDRAW_STATUS_DISABLED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, plan_withdrawals
         monkeypatch.delenv("STALE_INVITE_WITHDRAWAL_ENABLED", raising=False)
         plan = plan_withdrawals(1, prefs={})
         assert plan["allowance"] == 0
         assert plan["status"] == WITHDRAW_STATUS_DISABLED
 
     def test_zero_threshold_disables_rather_than_withdrawing_everything(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.stale_invites import (plan_withdrawals,
-                                                              WITHDRAW_STATUS_DISABLED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, plan_withdrawals
         monkeypatch.setenv("STALE_INVITE_WITHDRAWAL_ENABLED", "true")
         monkeypatch.setenv("STALE_INVITE_AGE_DAYS", "0")
         assert plan_withdrawals(1, prefs={})["status"] == WITHDRAW_STATUS_DISABLED
@@ -117,16 +115,14 @@ class TestPlan:
         assert args[3] == 2                       # today's spend read from the DB, not Redis
 
     def test_budget_already_spent_reports_why(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.stale_invites import (plan_withdrawals,
-                                                              WITHDRAW_STATUS_BUDGET_REACHED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_BUDGET_REACHED, plan_withdrawals
         monkeypatch.setenv("STALE_INVITE_WITHDRAWAL_ENABLED", "true")
         with patch(f"{_SI}.count_invite_withdrawals_today", return_value=10), \
                 patch(f"{_SI}.remaining_actions", return_value=0):
             assert plan_withdrawals(1, prefs={})["status"] == WITHDRAW_STATUS_BUDGET_REACHED
 
     def test_a_bad_env_value_falls_back_to_the_default(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.stale_invites import (stale_after_days,
-                                                              STALE_INVITE_AGE_DAYS_DEFAULT)
+        from cqc_lem.utilities.linkedin.stale_invites import STALE_INVITE_AGE_DAYS_DEFAULT, stale_after_days
         monkeypatch.setenv("STALE_INVITE_AGE_DAYS", "three weeks")
         assert stale_after_days() == STALE_INVITE_AGE_DAYS_DEFAULT
 
@@ -166,8 +162,7 @@ class TestWithdrawWalk:
         assert record.call_args[0][1]["name"] == "Old"
 
     def test_undated_rows_are_never_withdrawn(self):
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_NONE_STALE)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_NONE_STALE, withdraw_stale_invites
         invites = [{"profile_url": "/in/x/", "name": "X", "text": "no stamp", "age_days": None,
                     "control": MagicMock()}]
         with patch(f"{_SI}._hold_reason", return_value=""), \
@@ -265,8 +260,7 @@ class TestWithdrawWalk:
     def test_an_unverified_withdrawal_is_still_recorded_and_never_counted_as_success(self):
         """The click already reached LinkedIn. A lane whose verification broke must not be free to
         click every row on the page, so the spend is recorded either way — but it is not a success."""
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_FAILED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_FAILED, withdraw_stale_invites
         invites = [{"profile_url": "/in/old/", "name": "Old", "text": "", "age_days": 60.0,
                     "control": MagicMock()}]
         with patch(f"{_SI}._hold_reason", return_value=""), \
@@ -284,8 +278,7 @@ class TestWithdrawWalk:
         assert warn.called
 
     def test_the_429_breaker_stands_the_run_down_before_any_navigation(self):
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_PAUSED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_PAUSED, withdraw_stale_invites
         driver = MagicMock()
         with patch(f"{_SI}._hold_reason", return_value="LinkedIn 429 breaker open"):
             report = withdraw_stale_invites(driver, MagicMock(), 1, plan=_plan(),
@@ -309,8 +302,7 @@ class TestWithdrawWalk:
         assert report["withdrawn"] == 1
 
     def test_zero_budget_never_opens_the_page(self):
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_DISABLED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, withdraw_stale_invites
         driver = MagicMock()
         report = withdraw_stale_invites(driver, MagicMock(), 1,
                                         plan={"allowance": 0, "status": WITHDRAW_STATUS_DISABLED,
@@ -320,8 +312,7 @@ class TestWithdrawWalk:
         driver.get.assert_not_called()
 
     def test_no_rows_is_a_status_not_a_warning(self):
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_NO_ROWS)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_NO_ROWS, withdraw_stale_invites
         with patch(f"{_SI}._hold_reason", return_value=""), \
                 patch(f"{_SI}._load_more_rows", return_value=0), \
                 patch(f"{_SI}.read_pending_invites", return_value=[]), \
@@ -362,8 +353,7 @@ class TestHardGates:
             assert _hold_reason(1) == ""
 
     def test_a_zero_daily_cap_disables_the_lane(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.stale_invites import (plan_withdrawals,
-                                                              WITHDRAW_STATUS_DISABLED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_DISABLED, plan_withdrawals
         monkeypatch.setenv("STALE_INVITE_WITHDRAWAL_ENABLED", "true")
         monkeypatch.setenv("STALE_INVITE_WITHDRAWALS_PER_DAY", "0")
         # No DB read either — the cap is decided before anything is looked up.
@@ -426,9 +416,11 @@ class TestListExpansion:
         """The first grounding run hit the old cap of 5 exactly — the one reading that cannot be
         told apart from the list running out. Scrolling is read-only, so the bound is config rather
         than code, and a run can say which of the two it hit."""
-        from cqc_lem.utilities.linkedin.stale_invites import (_load_more_rows,
-                                                              show_more_max_clicks,
-                                                              SHOW_MORE_MAX_CLICKS_DEFAULT)
+        from cqc_lem.utilities.linkedin.stale_invites import (
+            SHOW_MORE_MAX_CLICKS_DEFAULT,
+            _load_more_rows,
+            show_more_max_clicks,
+        )
         assert SHOW_MORE_MAX_CLICKS_DEFAULT >= 20
         monkeypatch.setenv("STALE_INVITE_SHOW_MORE_MAX_CLICKS", "3")
         assert show_more_max_clicks() == 3
@@ -529,8 +521,7 @@ class TestVerification:
 
 class TestWalkEdgeCases:
     def test_pending_but_none_old_enough_is_none_stale_without_a_warning(self):
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_NONE_STALE)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_NONE_STALE, withdraw_stale_invites
         invites = [{"profile_url": "/in/a/", "name": "A", "text": "Sent 2 days ago",
                     "age_days": 2.0, "control": MagicMock()}]
         with patch(f"{_SI}._hold_reason", return_value=""), \
@@ -547,8 +538,7 @@ class TestWalkEdgeCases:
 
     def test_a_stale_row_with_no_control_is_skipped_not_clicked(self):
         """A row we cannot resolve a Withdraw control on is left alone — the next run sees it again."""
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_FAILED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_FAILED, withdraw_stale_invites
         invites = [{"profile_url": "/in/old/", "name": "Old", "text": "", "age_days": 60.0,
                     "control": None}]
         with patch(f"{_SI}._hold_reason", return_value=""), \
@@ -580,8 +570,7 @@ class TestWalkEdgeCases:
     def test_a_breaker_that_trips_before_the_first_row_reports_paused_not_failed(self):
         """Nothing was clicked, so the run is held — calling it `failed` would send someone hunting
         for selector rot that is not there."""
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_PAUSED)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_PAUSED, withdraw_stale_invites
         invites = [{"profile_url": "/in/old/", "name": "Old", "text": "", "age_days": 60.0,
                     "control": MagicMock()}]
         holds = ["", "LinkedIn 429 breaker open"]
@@ -667,8 +656,7 @@ class TestControlNamesRow:
         assert control_names_row("ann   lee", "Ann Lee\nCEO\nSent 4 weeks ago")
 
     def test_a_mismatched_row_is_never_withdrawn(self):
-        from cqc_lem.utilities.linkedin.stale_invites import (withdraw_stale_invites,
-                                                              WITHDRAW_STATUS_NONE_STALE)
+        from cqc_lem.utilities.linkedin.stale_invites import WITHDRAW_STATUS_NONE_STALE, withdraw_stale_invites
         control = MagicMock()
         invites = [{"profile_url": "/in/ann/", "name": "Ann Lee", "text": "Sent 9 weeks ago",
                     "age_days": 63.0, "control": control, "label_name": "Bob Stone",
@@ -779,10 +767,9 @@ class TestDailySpendLedger:
         return conn, cursor
 
     def test_it_counts_todays_withdrawal_rows_for_this_user(self):
-        from cqc_lem.utilities.db import (count_invite_withdrawals_today,
-                                          STALE_INVITE_WITHDRAWN_MESSAGE, LogActionType)
+        from cqc_lem.utilities.db import STALE_INVITE_WITHDRAWN_MESSAGE, LogActionType, count_invite_withdrawals_today
         conn, cursor = self._conn((4,))
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 4
         sql, params = cursor.execute.call_args[0]
         assert "FROM logs" in sql and "created_at >= CURDATE()" in sql
@@ -794,7 +781,7 @@ class TestDailySpendLedger:
     def test_no_rows_today_is_zero(self):
         from cqc_lem.utilities.db import count_invite_withdrawals_today
         conn, _ = self._conn((None,))
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 0
 
     def test_a_db_failure_reads_zero_rather_than_losing_the_run(self):
@@ -805,15 +792,15 @@ class TestDailySpendLedger:
         cursor = MagicMock()
         cursor.execute.side_effect = ValueError("bad column")
         conn.cursor.return_value = cursor
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 0
         conn.close.assert_called_once()
 
 
 class TestRecording:
     def test_a_verified_withdrawal_logs_success_and_records_its_own_pacing_action(self):
-        from cqc_lem.utilities.human_pacing import ACTION_WITHDRAW_INVITE
         from cqc_lem.utilities.db import STALE_INVITE_WITHDRAWN_MESSAGE, LogResultType
+        from cqc_lem.utilities.human_pacing import ACTION_WITHDRAW_INVITE
         with patch(f"{_SI}.insert_new_log") as log, patch(f"{_SI}.record_action") as record:
             from cqc_lem.utilities.linkedin.stale_invites import _record_withdrawal
             _record_withdrawal(3, {"profile_url": "/in/ann/", "name": "Ann"}, True)

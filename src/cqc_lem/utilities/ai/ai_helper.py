@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import openai
+
 # Imported for its NAME, not its use: `get_flux_image_via_replicate` reaches Replicate through
 # `image_gen.run_replicate_bounded`, and the tests patch `ai_helper.replicate.run`, so this module
 # must expose the attribute. `noqa` rather than `lgtm` because the CI auto-fixer is ruff, which

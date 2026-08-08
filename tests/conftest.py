@@ -68,9 +68,15 @@ def _db_pool_disabled_by_default(monkeypatch):
     mock_database_connection fixture (it patches mysql.connector.connect) does NOT intercept — so a
     pooled unit test would try to open a REAL socket. Default the pool OFF for the suite so tests
     exercise the mocked direct-connect path; the pooling tests turn it back on explicitly.
+
+    Patched on `platform.db.connection`, which is where `get_db_connection` READS the flag.
+    Setting
+    it on `utilities.db` — where it used to live — now only rebinds the facade's copy and leaves the
+    real one untouched, which is the whole patch-seam hazard this split had to get right. It fails
+    loudly rather than silently: the pool has no mocked socket to hand out, so it exhausts.
     """
-    from cqc_lem.utilities import db
-    monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", False)
+    from cqc_lem.platform.db import connection
+    monkeypatch.setattr(connection, "MYSQL_POOL_ENABLED", False)
 
 
 @pytest.fixture

@@ -39,7 +39,7 @@ def _failing_conn():
 class TestGetFaqEntries:
     def test_returns_drafts_and_published_in_display_order(self):
         conn, cur = _conn(fetchall=[_ENTRY])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_faq_entries
             assert get_faq_entries() == [_ENTRY]
         sql, params = cur.execute.call_args[0]
@@ -48,14 +48,14 @@ class TestGetFaqEntries:
         conn.close.assert_called_once()
 
     def test_unknown_statuses_are_dropped_and_an_empty_set_short_circuits(self):
-        with patch(f"{_DB}.get_db_connection") as connect:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as connect:
             from cqc_lem.utilities.db import get_faq_entries
             assert get_faq_entries(statuses=("nonsense",)) == []
         connect.assert_not_called()
 
     def test_db_error_returns_an_empty_list(self):
         conn, _cur = _failing_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
             from cqc_lem.utilities.db import get_faq_entries
             assert get_faq_entries() == []
         log.assert_called_once()
@@ -64,20 +64,20 @@ class TestGetFaqEntries:
 class TestGetFaqEntryByCluster:
     def test_returns_the_entry_for_a_cluster(self):
         conn, cur = _conn(fetchone=_ENTRY)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_faq_entry_by_cluster
             assert get_faq_entry_by_cluster("42") == _ENTRY
         assert cur.execute.call_args[0][1] == (42,)
 
     def test_no_cluster_id_never_queries(self):
-        with patch(f"{_DB}.get_db_connection") as connect:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as connect:
             from cqc_lem.utilities.db import get_faq_entry_by_cluster
             assert get_faq_entry_by_cluster(None) is None
         connect.assert_not_called()
 
     def test_db_error_returns_none(self):
         conn, _cur = _failing_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import get_faq_entry_by_cluster
             assert get_faq_entry_by_cluster(42) is None
 
@@ -85,7 +85,7 @@ class TestGetFaqEntryByCluster:
 class TestUpsertFaqEntry:
     def test_insert_returns_the_new_id_and_keeps_the_existing_one_on_conflict(self):
         conn, cur = _conn(lastrowid=7)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import FaqStatus, upsert_faq_entry
             assert upsert_faq_entry("Q?", "A.", cluster_id=42, status=FaqStatus.PUBLISHED,
                                     sort_order=1000) == 7
@@ -97,7 +97,7 @@ class TestUpsertFaqEntry:
         conn.commit.assert_called_once()
 
     def test_empty_question_or_answer_is_never_written(self):
-        with patch(f"{_DB}.get_db_connection") as connect:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as connect:
             from cqc_lem.utilities.db import upsert_faq_entry
             assert upsert_faq_entry("  ", "A.") is None
             assert upsert_faq_entry("Q?", "") is None
@@ -105,7 +105,7 @@ class TestUpsertFaqEntry:
 
     def test_db_error_returns_none(self):
         conn, _cur = _failing_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
             from cqc_lem.utilities.db import upsert_faq_entry
             assert upsert_faq_entry("Q?", "A.") is None
         log.assert_called_once()
@@ -114,7 +114,7 @@ class TestUpsertFaqEntry:
 class TestFaqEntryVersions:
     def test_recording_a_version_appends_history(self):
         conn, cur = _conn(lastrowid=3)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import FaqStatus, record_faq_entry_version
             assert record_faq_entry_version(7, "Q?", "A.", status=FaqStatus.PUBLISHED) == 3
         sql, params = cur.execute.call_args[0]
@@ -122,7 +122,7 @@ class TestFaqEntryVersions:
         assert params == (7, "Q?", "A.", "published", "auto")
 
     def test_a_version_without_an_answer_is_not_recorded(self):
-        with patch(f"{_DB}.get_db_connection") as connect:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as connect:
             from cqc_lem.utilities.db import record_faq_entry_version
             assert record_faq_entry_version(7, "Q?", "   ") is None
             assert record_faq_entry_version(None, "Q?", "A.") is None
@@ -130,7 +130,7 @@ class TestFaqEntryVersions:
 
     def test_history_is_newest_first(self):
         conn, cur = _conn(fetchall=[_VERSION])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_faq_entry_versions
             assert get_faq_entry_versions(7) == [_VERSION]
         sql, params = cur.execute.call_args[0]
@@ -138,14 +138,14 @@ class TestFaqEntryVersions:
         assert params == (7, 20)
 
     def test_history_for_no_entry_is_empty(self):
-        with patch(f"{_DB}.get_db_connection") as connect:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as connect:
             from cqc_lem.utilities.db import get_faq_entry_versions
             assert get_faq_entry_versions(None) == []
         connect.assert_not_called()
 
     def test_history_db_error_returns_an_empty_list(self):
         conn, _cur = _failing_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import get_faq_entry_versions
             assert get_faq_entry_versions(7) == []
 
@@ -153,7 +153,7 @@ class TestFaqEntryVersions:
 class TestApplyFaqEntryVersion:
     def test_reapplies_the_stored_copy_and_status(self):
         conn, cur = _conn(fetchone=_VERSION)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(7, 3) == _VERSION
         update_sql, update_params = cur.execute.call_args_list[1][0]
@@ -163,14 +163,14 @@ class TestApplyFaqEntryVersion:
 
     def test_a_version_from_another_entry_changes_nothing(self):
         conn, cur = _conn(fetchone=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(7, 999) is None
         assert cur.execute.call_count == 1
         conn.commit.assert_not_called()
 
     def test_missing_ids_never_query(self):
-        with patch(f"{_DB}.get_db_connection") as connect:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as connect:
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(None, 3) is None
             assert apply_faq_entry_version(7, None) is None
@@ -178,7 +178,7 @@ class TestApplyFaqEntryVersion:
 
     def test_db_error_returns_none(self):
         conn, _cur = _failing_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(7, 3) is None
         log.assert_called_once()
@@ -188,7 +188,7 @@ class TestGetFaqCandidateFeedback:
     def test_only_triaged_unclustered_rows_are_offered_to_the_faq_pass(self):
         row = {"id": 1, "body": "How do I pause automation?"}
         conn, cur = _conn(fetchall=[row])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_faq_candidate_feedback
             assert get_faq_candidate_feedback(limit="10") == [row]
         sql, params = cur.execute.call_args[0]
@@ -199,7 +199,7 @@ class TestGetFaqCandidateFeedback:
 
     def test_db_error_returns_an_empty_list(self):
         conn, _cur = _failing_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error") as log:
             from cqc_lem.utilities.db import get_faq_candidate_feedback
             assert get_faq_candidate_feedback() == []
         log.assert_called_once()

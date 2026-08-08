@@ -23,7 +23,7 @@ def _conn(rows=None, error=None):
 class TestGetRecentPostTexts:
     def test_returns_contents_most_recent_first(self):
         conn, cur = _conn(rows=[("post three",), ("post two",), ("post one",)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             out = get_recent_post_texts(7)
         assert out == ["post three", "post two", "post one"]
@@ -32,7 +32,7 @@ class TestGetRecentPostTexts:
 
     def test_filters_to_pending_approved_posted_only(self):
         conn, cur = _conn(rows=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             get_recent_post_texts(7)
         sql = cur.execute.call_args[0][0]
@@ -42,7 +42,7 @@ class TestGetRecentPostTexts:
 
     def test_default_limit_and_override(self):
         conn, cur = _conn(rows=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             get_recent_post_texts(7)
             assert cur.execute.call_args[0][1] == (7, 20)
@@ -51,7 +51,7 @@ class TestGetRecentPostTexts:
 
     def test_excludes_empty_content_in_sql(self):
         conn, cur = _conn(rows=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             get_recent_post_texts(7)
         sql = cur.execute.call_args[0][0]
@@ -59,13 +59,13 @@ class TestGetRecentPostTexts:
 
     def test_db_error_returns_empty_list(self):
         conn, _ = _conn(error=mysql.connector.Error("boom"))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             assert get_recent_post_texts(7) == []
 
     def test_closes_cursor_and_connection(self):
         conn, cur = _conn(rows=[("a",)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             get_recent_post_texts(7)
         cur.close.assert_called_once()

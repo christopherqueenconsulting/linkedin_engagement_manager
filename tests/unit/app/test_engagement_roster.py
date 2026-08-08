@@ -475,7 +475,7 @@ class TestCommentBlockedDetection:
         conn, cursor = MagicMock(), MagicMock()
         cursor.rowcount = 1
         conn.cursor.return_value = cursor
-        with patch.object(db, "get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.record_target_engagement(1, "https://www.linkedin.com/in/jane") is True
         sql = cursor.execute.call_args[0][0]
         assert "comment_blocked_streak = 0" in sql

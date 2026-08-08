@@ -23,7 +23,7 @@ def _make_conn_and_cursor(dictionary: bool = False) -> tuple:
 
 def _patch_conn(conn):
     """Return a context-manager patch for get_db_connection."""
-    return patch("cqc_lem.utilities.db.get_db_connection", return_value=conn)
+    return patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn)
 
 
 def _sha256(token: str) -> str:

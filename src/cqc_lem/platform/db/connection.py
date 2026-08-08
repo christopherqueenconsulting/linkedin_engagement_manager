@@ -1,0 +1,217 @@
+"""Every MySQL connection and cursor in LEM comes from here.
+
+`db_cursor` is the one place a connection is checked out and given back. `utilities/db.py` re-exports
+this module's names, so both the historical `from cqc_lem.utilities.db import get_db_connection` and
+the direct import resolve to the same objects.
+"""
+
+import os
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Optional, Union
+
+import mysql.connector
+from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
+from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
+
+from cqc_lem.utilities.env_constants import (
+    AWS_MYSQL_SECRET_NAME,
+    AWS_REGION,
+    MYSQL_POOL_ENABLED,
+    MYSQL_POOL_SIZE,
+)
+from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.utils import get_aws_ssm_secret
+
+MYSQL_HOST = os.getenv('MYSQL_HOST')
+MYSQL_USER = os.getenv('MYSQL_USER')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
+MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
+MYSQL_PORT = os.getenv('MYSQL_PORT')
+DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
+
+@dataclass
+class _PoolState:
+    """Per-process pool bookkeeping, held on one mutable object rather than several module globals.
+
+    Rebinding module globals across calls reads as a dead store to static analysis (CodeQL
+    py/unused-global-variable) because each assignment is only consumed by a LATER invocation.
+    """
+
+    pool: Optional[MySQLConnectionPool] = None
+    pid: Optional[int] = None
+    config: Optional[dict[str, Any]] = None
+    opened: int = 0
+
+
+_POOL_LOCK = threading.Lock()
+_POOL_STATE = _PoolState()
+
+
+def _get_mysql_config() -> dict[str, Any]:
+    """Resolves the MySQL connection arguments, preferring the AWS secret when one is configured."""
+    global MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_PORT
+
+    # if MYSQL_USER and MYSQL_PASSWORD are empty try to get it from AWS using get_secret function
+    if AWS_MYSQL_SECRET_NAME is not None and AWS_REGION is not None:
+        secret_dict = get_aws_ssm_secret(AWS_MYSQL_SECRET_NAME, AWS_REGION)
+        MYSQL_HOST = secret_dict['host']
+        MYSQL_USER = secret_dict['username']
+        MYSQL_PASSWORD = secret_dict['password']
+        MYSQL_DATABASE = secret_dict['dbname']
+        MYSQL_PORT = secret_dict['port']
+
+    return {
+        'host': MYSQL_HOST,
+        'user': MYSQL_USER,
+        'password': MYSQL_PASSWORD,
+        'database': MYSQL_DATABASE,
+        'port': MYSQL_PORT,
+        'time_zone': '+00:00',
+    }
+
+
+def _get_connection_pool(config: dict[str, Any]) -> MySQLConnectionPool:
+    """Returns this PROCESS's pool, (re)building it when the pid or the DB config changed.
+
+    Keyed on pid because Celery prefork forks its workers: a pool built before the fork would hand
+    the same live socket to parent and child. The pool is created WITHOUT connection kwargs so it
+    opens nothing up front — connections are added on demand in _get_pooled_connection() — because
+    every app process would otherwise pre-open MYSQL_POOL_SIZE sockets at first use and the sum
+    across ~20 processes would blow past MySQL's max_connections.
+    """
+    pid = os.getpid()
+    if _POOL_STATE.pool is None or _POOL_STATE.pid != pid:
+        pool_size = max(1, min(MYSQL_POOL_SIZE, CNX_POOL_MAXSIZE))
+        _POOL_STATE.pool = MySQLConnectionPool(pool_name=f"cqc-lem-{pid}", pool_size=pool_size)
+        _POOL_STATE.pool.set_config(**config)
+        _POOL_STATE.pid = pid
+        _POOL_STATE.config = config
+        _POOL_STATE.opened = 0
+    elif config != _POOL_STATE.config:
+        # e.g. a rotated AWS secret — pooled connections reconnect with the new config on checkout
+        _POOL_STATE.pool.set_config(**config)
+        _POOL_STATE.config = config
+
+    return _POOL_STATE.pool
+
+
+def _get_pooled_connection(config: dict[str, Any]) -> Optional[DbConnection]:
+    """Checks a connection out of the process pool, growing it lazily up to its size.
+
+    Returns None when the pool is at capacity so the caller can fall back to an unpooled
+    connection instead of failing a task during a fan-out burst.
+    """
+    with _POOL_LOCK:
+        pool = _get_connection_pool(config)
+        try:
+            return pool.get_connection()
+        except mysql.connector.Error:
+            # pool exhausted: every connection it has opened is checked out
+            if _POOL_STATE.opened >= pool.pool_size:
+                log_debug(f"MySQL pool {pool.pool_name} at capacity ({pool.pool_size}) - "
+                          f"opening a direct connection for this call")
+                return None
+            pool.add_connection()
+            _POOL_STATE.opened += 1
+            return pool.get_connection()
+
+
+def reset_connection_pool() -> None:
+    """Drops this process's pool reference so the next call builds a fresh one (tests/diagnostics).
+
+    Deliberately does NOT close the pooled connections: after a fork those sockets belong to the
+    parent process, and closing them there would break the parent's in-flight queries.
+    """
+    with _POOL_LOCK:
+        _POOL_STATE.pool = None
+        _POOL_STATE.pid = None
+        _POOL_STATE.config = None
+        _POOL_STATE.opened = 0
+
+
+def get_db_connection() -> DbConnection:
+    """Establishes a connection to the MySQL database and returns the connection object.
+
+    Connections come from a per-process pool when MYSQL_POOL_ENABLED (the default); calling
+    .close() on the returned object returns it to the pool rather than dropping the socket.
+
+    Raises:
+        mysql.connector.Error: If there is an error connecting to the database.
+    """
+    config = _get_mysql_config()
+
+    if MYSQL_POOL_ENABLED:
+        try:
+            connection = _get_pooled_connection(config)
+            if connection is not None:
+                return connection
+        except mysql.connector.Error as e:
+            log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
+
+    return mysql.connector.connect(**config)
+
+
+@contextmanager
+def db_cursor(*, dictionary: bool = False, commit: bool = False) -> Iterator[MySQLCursorAbstract]:
+    """Check out a connection, hand back a cursor, and always give both back.
+
+    This owns the RESOURCE half of a database call and nothing else. It deliberately does NOT catch
+    `mysql.connector.Error`: every caller in this module answers a read failure with its own
+    fallback — False, None, `[]`, 0 — and a context manager that swallowed the error would have to
+    invent one. Callers keep their own `except`, and what they lose is the four lines of ceremony
+    this replaces, repeated 417 times.
+
+    It also closes a hole that shape had. Those 417 blocks build the cursor BETWEEN
+    `get_db_connection()` and their `try:`, so a failure in `.cursor()` itself skipped the `finally`
+    — and `PooledMySQLConnection` has no `__del__`, so that connection never returned to the pool.
+    One statement wide, but it drained a pool slot permanently every time it happened. Building the
+    cursor inside this function fixes it for every migrated caller at once, which is the point of
+    having one place.
+
+    `commit=True` commits only when the body completed. An uncommitted transaction left by a raising
+    body is not leaked to the next user of the connection: the pool is built with the connector's
+    default `pool_reset_session=True`, so `close()` resets the session (mysql/connector/pooling.py
+    :409), and the unpooled fallback connection drops the transaction when its socket closes.
+
+    Args:
+        dictionary: Rows come back as dicts keyed by column instead of positional tuples.
+        commit: Commit after the body succeeds. Required for writes; a no-op cost for reads.
+
+    Yields:
+        The cursor — including its `rowcount` and `lastrowid`, which callers read after `execute`.
+    """
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(dictionary=dictionary)
+    except BaseException:
+        # The one path the old shape leaked: no cursor was created, so no `finally` below can run.
+        connection.close()
+        raise
+    try:
+        yield cursor
+        if commit:
+            connection.commit()
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """The one storage-side timezone conversion (see docs/timezone-contract.md).
+
+    Every scheduling column in this schema (posts.scheduled_time, scheduled_dms.scheduled_time,
+    newsletter_editions.scheduled_for, …) holds NAIVE UTC. An aware datetime is converted to UTC;
+    a naive one is assumed to already be UTC. Normalizing here rather than at each call site matters
+    because mysql-connector serializes a datetime from its wall-clock fields and silently DROPS
+    tzinfo — an aware non-UTC value would otherwise be stored as its local wall clock, i.e. off by
+    the sender's UTC offset, and the post/DM would fire hours away from what the user scheduled.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)

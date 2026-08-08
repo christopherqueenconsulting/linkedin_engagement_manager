@@ -26,7 +26,7 @@ def _conn(fetch_row=None, fetchall=None):
 class TestInsertCostLedgerEntry:
     def test_inserts_row_with_defaults(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import CostCategory, insert_cost_ledger_entry
             assert insert_cost_ledger_entry("content", CostCategory.MEDIA, 0.25) is True
 
@@ -39,7 +39,7 @@ class TestInsertCostLedgerEntry:
     def test_keeps_sub_cent_precision(self):
         """A cheap LLM tier rounds to zero at 2dp — the ledger must keep the signal."""
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_cost_ledger_entry
             insert_cost_ledger_entry("comment", "llm", 0.0000123, user_id=4, qty=1234.5678)
 
@@ -52,14 +52,14 @@ class TestInsertCostLedgerEntry:
         import mysql.connector
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_cost_ledger_entry
             assert insert_cost_ledger_entry("content", "media", 1.0) is False
 
 
 class TestAccrueMonthlyFixedCosts:
     def test_no_accruals_is_noop(self):
-        with patch(f"{_DB}.get_db_connection") as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as get_conn:
             from cqc_lem.utilities.db import accrue_monthly_fixed_costs
             assert accrue_monthly_fixed_costs(date(2026, 7, 1), []) == 0
         get_conn.assert_not_called()
@@ -68,7 +68,7 @@ class TestAccrueMonthlyFixedCosts:
         conn, cur = _conn()
         # First accrual already present for this period, second is new.
         cur.fetchone.side_effect = [(1,), None]
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import CostCategory, accrue_monthly_fixed_costs
             written = accrue_monthly_fixed_costs(date(2026, 7, 1), [
                 {"user_id": 1, "category": CostCategory.PROXY, "usd": 3.0, "provider": "per_user_proxy"},
@@ -85,7 +85,7 @@ class TestAccrueMonthlyFixedCosts:
     def test_dedupe_check_is_null_safe(self):
         """System rows carry user_id NULL, which `=` never matches — `<=>` does."""
         conn, cur = _conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import accrue_monthly_fixed_costs
             accrue_monthly_fixed_costs(date(2026, 7, 1), [{"user_id": None, "category": "infra", "usd": 9.0}])
         assert "user_id <=> %s" in cur.execute.call_args_list[0][0][0]
@@ -94,14 +94,14 @@ class TestAccrueMonthlyFixedCosts:
         import mysql.connector
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import accrue_monthly_fixed_costs
             assert accrue_monthly_fixed_costs(date(2026, 7, 1), [{"user_id": 1, "category": "proxy", "usd": 1}]) == 0
 
 
 class TestGetUsersProxyConfig:
     def test_empty_input_skips_query(self):
-        with patch(f"{_DB}.get_db_connection") as get_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as get_conn:
             from cqc_lem.utilities.db import get_users_proxy_config
             assert get_users_proxy_config([]) == []
         get_conn.assert_not_called()
@@ -110,7 +110,7 @@ class TestGetUsersProxyConfig:
         rows = [{"id": 1, "proxy_url": "http://p:3128", "country": "US"},
                 {"id": 2, "proxy_url": None, "country": None}]
         conn, cur = _conn(fetchall=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_proxy_config
             got = get_users_proxy_config([1, 2])
 
@@ -123,6 +123,6 @@ class TestGetUsersProxyConfig:
         import mysql.connector
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_proxy_config
             assert get_users_proxy_config([1]) == []
