@@ -8,7 +8,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 _FEEDBACK = "cqc_lem.platform.db.repositories.feedback"
 
