@@ -118,7 +118,7 @@ class TestGetCookies:
 
         expected = [{"name": "li_at", "value": "token123"}]
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_top_level_domain", return_value="linkedin.com"):
+             patch("cqc_lem.platform.db.repositories.users.get_top_level_domain", return_value="linkedin.com"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = expected
 
@@ -130,7 +130,7 @@ class TestGetCookies:
         from cqc_lem.utilities.db import get_cookies
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_top_level_domain", return_value="linkedin.com"):
+             patch("cqc_lem.platform.db.repositories.users.get_top_level_domain", return_value="linkedin.com"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = []
 
@@ -144,7 +144,7 @@ class TestGetCookies:
         from cqc_lem.utilities.db import get_cookies
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_top_level_domain", return_value="linkedin.com"):
+             patch("cqc_lem.platform.db.repositories.users.get_top_level_domain", return_value="linkedin.com"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 

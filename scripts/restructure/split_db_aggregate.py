@@ -92,40 +92,72 @@ def tables_touched(node: ast.AST, known: set[str]) -> set[str]:
 def free_names(text: str, already_bound: set[str]) -> set[str]:
     """Names `text` reads but does not define, including those hidden in string annotations."""
     tree = ast.parse(text)
+
+    # TWO scopes, kept apart. Python has exactly this rule and both halves bit once when it was
+    # flattened into a single set:
+    #
+    #   * a function-LOCAL `from ... import log_error` binds inside that function only. Treated as a
+    #     module binding, it made the import block skip `log_error` entirely while other moved
+    #     functions still relied on db.py's module-level one -- NameError, on an error path only.
+    #   * a function PARAMETER named `timezone` binds inside that function only. Treated as a module
+    #     binding, it suppressed `from datetime import timezone` while six other functions called
+    #     `datetime.now(timezone.utc)` -- NameError again, and this one on the HAPPY path.
+    #
+    # So: `bound` is module-level names, and each function's own locals are subtracted only from
+    # what THAT function reads.
     bound = set(already_bound)
-    for node in ast.walk(tree):
-        # Lambda belongs here too: it binds parameters exactly like a def, but has no .name, so
-        # a def-only check leaves `lambda t: t["x"]` looking like a read of a global called `t`.
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            if not isinstance(node, ast.Lambda):
-                bound.add(node.name)
-            args = node.args
-            bound |= {a.arg for a in args.args + args.kwonlyargs + args.posonlyargs}
-            if args.vararg:
-                bound.add(args.vararg.arg)
-            if args.kwarg:
-                bound.add(args.kwarg.arg)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            bound.add(node.id)
-        if isinstance(node, ast.ExceptHandler) and node.name:
-            bound.add(node.name)
-    # ONLY module-level imports bind for the whole module. A function-local
-    # `from ... import log_error` binds inside THAT function and nowhere else -- treating it as a
-    # module binding made the import block skip `log_error` entirely, because four moved functions
-    # imported it locally while others relied on db.py's module-level one. The result raised
-    # NameError only on an error path, so nothing but a test could see it.
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                bound.add((alias.asname or alias.name).split(".")[0])
+            bound |= {(a.asname or a.name).split(".")[0] for a in node.names}
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+
+    def _locals_of(scope: ast.AST) -> set[str]:
+        """Everything `scope` binds for itself: params, assignments, excepts, local imports."""
+        local: set[str] = set()
+        for sub in ast.walk(scope):
+            # Lambda binds parameters exactly like a def but has no .name, so a def-only check
+            # leaves `lambda t: t["x"]` looking like a read of a global called `t`.
+            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                args = sub.args
+                local |= {a.arg for a in args.args + args.kwonlyargs + args.posonlyargs}
+                if args.vararg:
+                    local.add(args.vararg.arg)
+                if args.kwarg:
+                    local.add(args.kwarg.arg)
+                if not isinstance(sub, ast.Lambda) and sub is not scope:
+                    local.add(sub.name)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                local.add(sub.id)
+            if isinstance(sub, ast.ExceptHandler) and sub.name:
+                local.add(sub.name)
+            if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                local |= {(a.asname or a.name).split(".")[0] for a in sub.names}
+        return local
+
+    def _comprehension_targets(scope: ast.AST) -> set[str]:
+        """Names a comprehension binds. These have their own scope at ANY nesting level.
+
+        `ONBOARDING_STEPS = tuple(step for step in OnboardingStep)` sits at module level, so it is
+        not a function whose locals get subtracted, and `step` is not an assignment target -- it
+        read as a free global the tool then could not resolve.
+        """
+        names: set[str] = set()
+        for sub in ast.walk(scope):
+            if isinstance(sub, ast.comprehension):
+                names |= {n.id for n in ast.walk(sub.target)
+                          if isinstance(n, ast.Name)}
+        return names
+
     used = set()
     for node in tree.body:
-        scope_bound = set()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for sub in ast.walk(node):
-                if isinstance(sub, (ast.Import, ast.ImportFrom)) and sub is not node:
-                    for alias in sub.names:
-                        scope_bound.add((alias.asname or alias.name).split(".")[0])
+        scope_bound = _locals_of(node) if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else set()
+        scope_bound |= _comprehension_targets(node)
         for sub in ast.walk(node):
             if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
                 if sub.id not in scope_bound:
