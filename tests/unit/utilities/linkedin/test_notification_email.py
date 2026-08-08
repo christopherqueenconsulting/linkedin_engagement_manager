@@ -93,6 +93,66 @@ class TestIsLinkedInNotification:
         assert is_linkedin_notification("", "", "") is False
 
 
+class TestLinkedInSenderDomain:
+    """The sender half is a DOMAIN test, not a substring test.
+
+    `"linkedin.com" in sender` accepted any address that merely CONTAINED the string, so a lookalike
+    domain or a crafted local part passed as genuine LinkedIn mail.
+    """
+
+    @pytest.mark.parametrize("sender", [
+        "news@linkedin.com",                                    # plain address
+        '"LinkedIn" <notifications-noreply@linkedin.com>',      # display-name form
+        "LinkedIn Messages <messages-noreply@LinkedIn.COM>",    # case is not part of a domain
+        "no-reply@e.linkedin.com",                              # real subdomain sender
+        "bounces@bounce.linkedin.com",                          # bounce subdomain
+        "invitations@linkedin.com.",                            # absolute FQDN, same host
+    ])
+    def test_accepts_linkedin_domains(self, sender):
+        from cqc_lem.utilities.linkedin.notification_email import _is_linkedin_sender
+        assert _is_linkedin_sender(sender) is True
+
+    @pytest.mark.parametrize("sender", [
+        "bounce@linkedin.com.attacker.net",     # LinkedIn's domain as a LABEL of someone else's
+        "notlinkedin.com@evil.test",            # it in the local part
+        "news@notlinkedin.com",                 # suffix without the dot boundary
+        "news@linkedin.com.co",                 # lookalike TLD
+        "billing@vendor.com",
+        "linkedin.com",                         # not an address at all
+        "",
+    ])
+    def test_rejects_non_linkedin_domains(self, sender):
+        from cqc_lem.utilities.linkedin.notification_email import _is_linkedin_sender
+        assert _is_linkedin_sender(sender) is False
+
+    @pytest.mark.parametrize("sender", [
+        "bounce@linkedin.com.attacker.net",
+        "notlinkedin.com@evil.test",
+    ])
+    def test_spoofed_sender_is_not_forwarding_evidence(self, sender):
+        """A spoof with nothing LinkedIn-ish to say for itself is no longer proof of forwarding."""
+        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        assert is_linkedin_notification(sender, "Your invoice is ready",
+                                        "Payment due in 14 days") is False
+
+    def test_domain_extraction_takes_the_last_at(self):
+        """A quoted local part may itself contain an `@` — only the last one starts the domain."""
+        from cqc_lem.utilities.linkedin.notification_email import _sender_domain
+        assert _sender_domain('"news@linkedin.com"@evil.test') == "evil.test"
+        assert _sender_domain("notlinkedin.com@evil.test") == "evil.test"
+        assert _sender_domain('"LinkedIn" <notifications-noreply@linkedin.com>') == "linkedin.com"
+        assert _sender_domain("garbage") == ""
+
+    def test_unparseable_sender_fails_closed(self):
+        """A malformed address is rejected outright — an unreadable From is never evidence."""
+        from cqc_lem.utilities.linkedin.notification_email import (
+            _is_linkedin_sender,
+            _sender_domain,
+        )
+        assert _sender_domain("news@evil.test <news@linkedin.com>") == ""
+        assert _is_linkedin_sender("news@evil.test <news@linkedin.com>") is False
+
+
 _GMAIL_BODY = (
     "forwarding-noreply@google.com has requested to automatically forward mail to your address.\n"
     "Confirmation code: 987654321\n\n"
