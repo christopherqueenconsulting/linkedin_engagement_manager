@@ -36,6 +36,15 @@ compares against `docker compose config --services`, and flags anything not `run
   on nothing in the stack, so it still alerts when every container on the box is down.
   - PostHog: `stack_watchdog_report` (`down`, `healed`, `recovered`, `down_count`)
   - Email: only for a real outage or a heal. A pure recovery is worth an event, not an inbox.
+- **Backup freshness** (issue #1090) — the newest `db-*.sql.gz` in `BACKUP_DIR` must be younger
+  than `WATCHDOG_BACKUP_AGE_HOURS` (default 48; the cron runs at 03:00, so that is two missed runs
+  plus slack) **and** larger than `WATCHDOG_BACKUP_MIN_BYTES` (default 1024). Age alone is not
+  evidence: the failure this check exists for wrote a valid, fresh, *empty* 20-byte archive every
+  night. No dump, no backups directory, a stale dump, or a husk dump are all `down`.
+  The `chrome-profile-*.tar.gz` half **never alerts** — it is reported at WARN only. Cookies live
+  encrypted in the database now, `backup.sh` already exits non-zero when it cannot write the
+  archive, and a decommissioned chrome-profile volume would otherwise leave the last archive
+  permanently stale: an email every 5 minutes that no operator action could clear.
 - **Silent when healthy.** A watchdog that chats every 5 minutes gets filtered, and then it is not
   a watchdog.
 
@@ -66,7 +75,8 @@ It falls back to `COST_ALERT_EMAIL` when unset. `SENDGRID_API_KEY`, `SENDGRID_FR
 `POSTHOG_API_KEY` and `POSTHOG_HOST` are already present for other features.
 
 Overridable: `LEM_DIR`, `LEM_ENV_FILE`, `WATCHDOG_STATE_DIR`, `WATCHDOG_GRACE_SECONDS`,
-`WATCHDOG_HEAL`, `WATCHDOG_ALERT_EMAIL`.
+`WATCHDOG_HEAL`, `WATCHDOG_BACKUP_AGE_HOURS`, `WATCHDOG_BACKUP_MIN_BYTES`,
+`WATCHDOG_ALERT_EMAIL`.
 
 ### Exit codes
 

@@ -9,14 +9,14 @@
 #   static literal and never touches Celery. Automation was dead for four hours with nothing red.
 #
 # WHY IT LIVES ON THE HOST, NOT IN A BEAT TASK:
-#   celery_beat was itself among the dead. A watchdog inside the thing it watches cannot report its
-#   own outage. This runs from a systemd timer, outside the container set, and depends on nothing in
-#   the stack — it talks to PostHog and SendGrid over plain HTTPS so it still alerts when every
-#   container on the box is down.
+#   celery_beat was itself among the dead. A watchdog inside the thing it watches cannot report
+#   its own outage. This runs from a systemd timer, outside the container set, and depends on
+#   nothing in the stack — it talks to PostHog and SendGrid over plain HTTPS so it still alerts
+#   when every container on the box is down.
 #
 # Install: see docs/stack-watchdog.md (systemd units live in scripts/systemd/).
 # Overridable: LEM_DIR, LEM_ENV_FILE, WATCHDOG_STATE_DIR, WATCHDOG_GRACE_SECONDS, WATCHDOG_HEAL,
-#              WATCHDOG_ALERT_EMAIL.
+#              WATCHDOG_BACKUP_AGE_HOURS, WATCHDOG_ALERT_EMAIL.
 set -uo pipefail
 
 LEM_DIR="${LEM_DIR:-/opt/lem}"
@@ -30,140 +30,203 @@ GRACE="${WATCHDOG_GRACE_SECONDS:-600}"
 # Bounded on purpose: a container that needs starting twice is not a blip, and a watchdog that
 # retries forever silently papers over a real fault.
 HEAL="${WATCHDOG_HEAL:-1}"
+# How old the newest backup may be before it is treated as a fault. The nightly cron runs at 03:00,
+# so 48h gives two missed runs plus a little slack before we alert.
+BACKUP_AGE_HOURS="${WATCHDOG_BACKUP_AGE_HOURS:-48}"
+# Age alone cannot tell a backup from a husk: gzip of an empty stream is 20 bytes and it is FRESH.
+# A real dump of this database is ~380KB, so anything under a kilobyte is not a backup.
+BACKUP_MIN_BYTES="${WATCHDOG_BACKUP_MIN_BYTES:-1024}"
 
 log() { echo "[watchdog $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 now() { date -u +%s; }
 
 mkdir -p "$STATE_DIR" 2>/dev/null || { log "FATAL: cannot create $STATE_DIR"; exit 1; }
 
-env_value() {  # $1 = key
-  [[ -r "$ENVF" ]] || return 0
-  sed -nE "s/^[[:space:]]*$1=[\"']?([^\"'#[:space:]]*).*/\1/p" "$ENVF" | tail -n1
+env_value() {  # $1 = key, $2 = default
+  [[ -r "$ENVF" ]] || { echo "${2:-}"; return 0; }
+  local val
+  val="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ENVF" | tail -n1 | \
+    sed -E "s/^['\"](.*)['\"][[:space:]]*(#.*)?$/\1/; t; s/[[:space:]]+$//; s/[[:space:]](#.*)$//")"
+  echo "${val:-${2:-}}"
 }
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 TOPOLOGY="$(env_value SELENIUM_TOPOLOGY)"; TOPOLOGY="${TOPOLOGY:-grid}"
 [[ "${TOPOLOGY,,}" == "grid" ]] && COMPOSE="$COMPOSE -f docker-compose.grid.yml"
 
-cd "$LEM_DIR" 2>/dev/null || { log "FATAL: cannot cd $LEM_DIR"; exit 1; }
+# Arrays populated by the checks below and consumed by the report block.
+down=()
+healed=()
+recovered=()
 
-# ── Collect state ────────────────────────────────────────────────────────────────
-# `config --services` is profile-filtered, so a standalone service parked behind a disabled profile
-# is correctly absent. flyway is a one-shot (`compose run --rm`) and is never expected to be up.
-expected="$($COMPOSE config --services 2>/dev/null | awk '$1 != "flyway" {print}' | sort -u)"
-if [[ -z "$expected" ]]; then
-  log "FATAL: could not enumerate compose services — is Docker up?"
-  exit 1
-fi
+check_services() {
+  cd "$LEM_DIR" 2>/dev/null || { log "FATAL: cannot cd $LEM_DIR"; exit 1; }
 
-# ONE `ps -a` read. Space-separated: neither a service name nor a state contains a space.
-states="$($COMPOSE ps -a --format '{{.Service}} {{.State}}' 2>/dev/null)"
-
-# A replicated service (selenium-node-chrome runs 8) reports one row PER CONTAINER under the SAME
-# service name. Last-write-wins would let seven dead nodes hide behind one healthy one, so the
-# worst state a service has in the pool is the state we record for it.
-declare -A state_of
-while read -r svc state _; do
-  [[ -n "$svc" ]] || continue
-  state="${state,,}"
-  if [[ -z "${state_of[$svc]:-}" || "${state_of[$svc]}" == "running" ]]; then
-    state_of["$svc"]="$state"
+  # ── Collect state ────────────────────────────────────────────────────────────────
+  # `config --services` is profile-filtered, so a standalone service parked behind a disabled profile
+  # is correctly absent. flyway is a one-shot (`compose run --rm`) and is never expected to be up.
+  expected="$($COMPOSE config --services 2>/dev/null | awk '$1 != "flyway" {print}' | sort -u)"
+  if [[ -z "$expected" ]]; then
+    log "FATAL: could not enumerate compose services — is Docker up?"
+    exit 1
   fi
-done <<< "$states"
 
-# ── Classify ─────────────────────────────────────────────────────────────────────
-down=()          # services to alert about (down beyond the grace window)
-healed=()        # services this run tried to start
-recovered=()     # services that were down and are now fine
+  # ONE `ps -a` read. Space-separated: neither a service name nor a state contains a space.
+  states="$($COMPOSE ps -a --format '{{.Service}} {{.State}}' 2>/dev/null)"
 
-for svc in $expected; do
-  st="${state_of[$svc]:-absent}"
-  marker="$STATE_DIR/${svc//\//_}.down"
-
-  if [[ "$st" == "running" ]]; then
-    if [[ -f "$marker" ]]; then
-      recovered+=("$svc")
-      rm -f "$marker"
+  # A replicated service (selenium-node-chrome runs 8) reports one row PER CONTAINER under the SAME
+  # service name. Last-write-wins would let seven dead nodes hide behind one healthy one, so the
+  # worst state a service has in the pool is the state we record for it.
+  declare -A state_of
+  while read -r svc state _; do
+    [[ -n "$svc" ]] || continue
+    state="${state,,}"
+    if [[ -z "${state_of[$svc]:-}" || "${state_of[$svc]}" == "running" ]]; then
+      state_of["$svc"]="$state"
     fi
-    continue
-  fi
+  done <<< "$states"
 
-  # Not running. Record when we first saw it that way.
-  if [[ ! -f "$marker" ]]; then
-    echo "$(now) $st" > "$marker"
-    log "NOTICE: ${svc} is '${st}' — starting grace window (${GRACE}s)"
-    continue
-  fi
+  # ── Classify ─────────────────────────────────────────────────────────────────────
+  for svc in $expected; do
+    st="${state_of[$svc]:-absent}"
+    marker="$STATE_DIR/${svc//\//_}.down"
 
-  first_seen="$(awk '{print $1}' "$marker" 2>/dev/null)"
-  [[ "$first_seen" =~ ^[0-9]+$ ]] || first_seen="$(now)"
-  elapsed=$(( $(now) - first_seen ))
-  (( elapsed < GRACE )) && continue   # still inside the deploy window
-
-  # Past grace. One bounded self-heal, then alert either way.
-  if [[ "$HEAL" == "1" ]] && ! grep -q ' healed$' "$marker" 2>/dev/null; then
-    # `Created`/`Exited` is exactly what `docker start` fixes and what neither a healthcheck nor a
-    # restart policy will ever touch. `up -d` is deliberately NOT used: it could fight a deploy
-    # that is mid-converge.
-    if [[ "$st" == "created" || "$st" == "exited" ]]; then
-      log "HEAL: docker start ${svc} (down ${elapsed}s in state '${st}')"
-      if $COMPOSE start "$svc" >/dev/null 2>&1; then
-        healed+=("$svc")
-      else
-        log "HEAL FAILED: ${svc}"
+    if [[ "$st" == "running" ]]; then
+      if [[ -f "$marker" ]]; then
+        recovered+=("$svc")
+        rm -f "$marker"
       fi
-      echo "$first_seen $st healed" > "$marker"
-      sleep 5
-      # Re-read: a heal that worked still gets reported, but as recovered rather than down.
-      if [[ "$($COMPOSE ps -a --format '{{.Service}} {{.State}}' 2>/dev/null \
-              | awk -v s="$svc" '$1==s {print tolower($2)}')" == "running" ]]; then
-        continue
+      continue
+    fi
+
+    # Not running. Record when we first saw it that way.
+    if [[ ! -f "$marker" ]]; then
+      echo "$(now) $st" > "$marker"
+      log "NOTICE: ${svc} is '${st}' — starting grace window (${GRACE}s)"
+      continue
+    fi
+
+    first_seen="$(awk '{print $1}' "$marker" 2>/dev/null)"
+    [[ "$first_seen" =~ ^[0-9]+$ ]] || first_seen="$(now)"
+    elapsed=$(( $(now) - first_seen ))
+    (( elapsed < GRACE )) && continue   # still inside the deploy window
+
+    # Past grace. One bounded self-heal, then alert either way.
+    if [[ "$HEAL" == "1" ]] && ! grep -q ' healed$' "$marker" 2>/dev/null; then
+      # `Created`/`Exited` is exactly what `docker start` fixes and what neither a healthcheck nor
+      # a restart policy will ever touch. `up -d` is deliberately NOT used: it could fight a deploy
+      # that is mid-converge.
+      if [[ "$st" == "created" || "$st" == "exited" ]]; then
+        log "HEAL: docker start ${svc} (down ${elapsed}s in state '${st}')"
+        if $COMPOSE start "$svc" >/dev/null 2>&1; then
+          healed+=("$svc")
+        else
+          log "HEAL FAILED: ${svc}"
+        fi
+        echo "$first_seen $st healed" > "$marker"
+        sleep 5
+        # Re-read: a heal that worked still gets reported, but as recovered rather than down.
+        if [[ "$($COMPOSE ps -a --format '{{.Service}} {{.State}}' 2>/dev/null \
+                | awk -v s="$svc" '$1==s {print tolower($2)}')" == "running" ]]; then
+          continue
+        fi
       fi
     fi
+    down+=("$svc:${st}:${elapsed}s")
+  done
+}
+
+# The DB backup is the only one that alerts, and it has to pass BOTH tests: recent enough
+# (BACKUP_AGE_HOURS) and big enough (BACKUP_MIN_BYTES). Age alone is not evidence — the #1090
+# failure wrote a valid, fresh, empty .gz every night. No backups directory at all is the same
+# fault as no dump in it: absence of evidence is the thing being watched for.
+#
+# The chrome-profile half never alerts. It is reported at WARN only, because cookies now live
+# encrypted in the database, backup.sh already exits non-zero when it cannot write the archive,
+# and a decommissioned chrome-profile volume would otherwise leave the last archive permanently
+# stale — an email every 5 minutes that no operator action can ever clear.
+check_backup_freshness() {
+  local backup_dir db_file chrome_file db_age chrome_age db_size chrome_size now_epoch
+  backup_dir="$(env_value BACKUP_DIR "${LEM_DIR}/backups")"
+  if [[ ! -d "$backup_dir" ]]; then
+    log "WARN: backup directory ${backup_dir} does not exist"
+    down+=("backup:db:missing")
+    return 0
   fi
-  down+=("$svc:${st}:${elapsed}s")
-done
 
-# ── Report ───────────────────────────────────────────────────────────────────────
-# Nothing to say and nothing was wrong: stay silent. A watchdog that chats every 5 minutes gets
-# filtered, and then it is not a watchdog.
-if [[ ${#down[@]} -eq 0 && ${#healed[@]} -eq 0 && ${#recovered[@]} -eq 0 ]]; then
-  exit 0
-fi
+  now_epoch=$(now)
 
-summary=""
-[[ ${#down[@]} -gt 0 ]]      && summary+="DOWN: ${down[*]}. "
-[[ ${#healed[@]} -gt 0 ]]    && summary+="Auto-started: ${healed[*]}. "
-[[ ${#recovered[@]} -gt 0 ]] && summary+="Recovered: ${recovered[*]}. "
-log "$summary"
+  db_file="$(find "$backup_dir" -maxdepth 1 -name 'db-*.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+  if [[ -n "$db_file" ]]; then
+    db_age=$(( (now_epoch - $(stat -c %Y "$db_file" 2>/dev/null || echo 0)) / 3600 ))
+    db_size=$(stat -c %s "$db_file" 2>/dev/null || echo 0)
+    if (( db_age >= BACKUP_AGE_HOURS )); then
+      down+=("backup:db:stale:${db_age}h")
+    fi
+    if (( db_size < BACKUP_MIN_BYTES )); then
+      log "ERROR: newest DB backup (${db_file}) is only ${db_size} bytes — that is not a restorable dump"
+      down+=("backup:db:empty:${db_size}b")
+    fi
+  else
+    down+=("backup:db:missing")
+  fi
 
-# PostHog — direct capture, no app dependency.
-PH_KEY="$(env_value POSTHOG_API_KEY)"
-PH_HOST="$(env_value POSTHOG_HOST)"; PH_HOST="${PH_HOST:-https://us.i.posthog.com}"
-if [[ -n "$PH_KEY" ]]; then
-  payload=$(cat <<JSON
+  chrome_file="$(find "$backup_dir" -maxdepth 1 -name 'chrome-profile-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+  if [[ -n "$chrome_file" ]]; then
+    chrome_age=$(( (now_epoch - $(stat -c %Y "$chrome_file" 2>/dev/null || echo 0)) / 3600 ))
+    chrome_size=$(stat -c %s "$chrome_file" 2>/dev/null || echo 0)
+    if (( chrome_age >= BACKUP_AGE_HOURS )); then
+      log "WARN: newest chrome-profile backup (${chrome_file}) is ${chrome_age}h old — not alerting; the volume may have been decommissioned"
+    fi
+    if (( chrome_size < 200 )); then
+      log "WARN: newest chrome-profile backup (${chrome_file}) is only ${chrome_size} bytes — cookies now live encrypted in the database, a tiny archive may be expected"
+    fi
+  fi
+}
+
+# Only run the full service check when executed directly; sourcing the script loads the functions
+# so individual checks can be exercised in isolation.
+report() {
+  # ── Report ───────────────────────────────────────────────────────────────────────
+  # Nothing to say and nothing was wrong: stay silent. A watchdog that chats every 5 minutes gets
+  # filtered, and then it is not a watchdog.
+  if [[ ${#down[@]} -eq 0 && ${#healed[@]} -eq 0 && ${#recovered[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  summary=""
+  [[ ${#down[@]} -gt 0 ]]      && summary+="DOWN: ${down[*]}. "
+  [[ ${#healed[@]} -gt 0 ]]    && summary+="Auto-started: ${healed[*]}. "
+  [[ ${#recovered[@]} -gt 0 ]] && summary+="Recovered: ${recovered[*]}. "
+  log "$summary"
+
+  # PostHog — direct capture, no app dependency.
+  PH_KEY="$(env_value POSTHOG_API_KEY)"
+  PH_HOST="$(env_value POSTHOG_HOST)"; PH_HOST="${PH_HOST:-https://us.i.posthog.com}"
+  if [[ -n "$PH_KEY" ]]; then
+    payload=$(cat <<JSON
 {"api_key":"${PH_KEY}","event":"stack_watchdog_report","distinct_id":"lem-vps",
  "properties":{"down":"${down[*]:-}","healed":"${healed[*]:-}","recovered":"${recovered[*]:-}",
  "down_count":${#down[@]},"healed_count":${#healed[@]},"summary":"${summary}",
  "\$process_person_profile":false}}
 JSON
 )
-  curl -s -m 15 -X POST "${PH_HOST%/}/i/v0/e/" -H 'Content-Type: application/json' \
-    -d "$payload" >/dev/null 2>&1 \
-    || log "WARN: PostHog capture failed (alerting continues by email)"
-else
-  log "WARN: POSTHOG_API_KEY unset — skipping PostHog"
-fi
+    curl -s -m 15 -X POST "${PH_HOST%/}/i/v0/e/" -H 'Content-Type: application/json' \
+      -d "$payload" >/dev/null 2>&1 \
+      || log "WARN: PostHog capture failed (alerting continues by email)"
+  else
+    log "WARN: POSTHOG_API_KEY unset — skipping PostHog"
+  fi
 
-# Email — only for an actual outage or a heal. A pure recovery is worth an event, not an inbox.
-if [[ ${#down[@]} -gt 0 || ${#healed[@]} -gt 0 ]]; then
-  SG_KEY="$(env_value SENDGRID_API_KEY)"
-  FROM="$(env_value SENDGRID_FROM_EMAIL)"
-  TO="${WATCHDOG_ALERT_EMAIL:-$(env_value WATCHDOG_ALERT_EMAIL)}"
-  TO="${TO:-$(env_value COST_ALERT_EMAIL)}"
-  if [[ -n "$SG_KEY" && -n "$FROM" && -n "$TO" ]]; then
-    subject="[LEM] stack watchdog: ${#down[@]} down, ${#healed[@]} auto-started"
-    body="${summary}
+  # Email — only for an actual outage or a heal. A pure recovery is worth an event, not an inbox.
+  if [[ ${#down[@]} -gt 0 || ${#healed[@]} -gt 0 ]]; then
+    SG_KEY="$(env_value SENDGRID_API_KEY)"
+    FROM="$(env_value SENDGRID_FROM_EMAIL)"
+    TO="${WATCHDOG_ALERT_EMAIL:-$(env_value WATCHDOG_ALERT_EMAIL)}"
+    TO="${TO:-$(env_value COST_ALERT_EMAIL)}"
+    if [[ -n "$SG_KEY" && -n "$FROM" && -n "$TO" ]]; then
+      subject="[LEM] stack watchdog: ${#down[@]} down, ${#healed[@]} auto-started"
+      body="${summary}
 
 Host: $(hostname)
 Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -173,18 +236,27 @@ Docker healthchecks cannot catch this class of fault: a container in 'Created' n
 healthcheck never executes and its restart policy never fires. Check the last deploy first.
 
   cd ${LEM_DIR} && ${COMPOSE} ps -a"
-    curl -s -m 20 -X POST https://api.sendgrid.com/v3/mail/send \
-      -H "Authorization: Bearer ${SG_KEY}" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg to "$TO" --arg from "$FROM" --arg s "$subject" --arg b "$body" \
-            '{personalizations:[{to:[{email:$to}]}],from:{email:$from},
-              subject:$s,content:[{type:"text/plain",value:$b}]}')" >/dev/null 2>&1 \
-      || log "WARN: SendGrid send failed"
-  else
-    log "WARN: SendGrid not configured (need SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, WATCHDOG_ALERT_EMAIL)"
+      curl -s -m 20 -X POST https://api.sendgrid.com/v3/mail/send \
+        -H "Authorization: Bearer ${SG_KEY}" -H 'Content-Type: application/json' \
+        -d "$(jq -n --arg to "$TO" --arg from "$FROM" --arg s "$subject" --arg b "$body" \
+              '{personalizations:[{to:[{email:$to}]}],from:{email:$from},
+                subject:$s,content:[{type:"text/plain",value:$b}]}')" >/dev/null 2>&1 \
+        || log "WARN: SendGrid send failed"
+    else
+      log "WARN: SendGrid not configured (need SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, WATCHDOG_ALERT_EMAIL)"
+    fi
   fi
-fi
 
-# Non-zero only while something is still down, so `systemctl status` and any external check reflect
-# reality. A successful self-heal exits 0 — it reports, but it is not an outstanding fault.
-[[ ${#down[@]} -gt 0 ]] && exit 1
-exit 0
+  # Non-zero only while something is still down, so `systemctl status` and any external check reflect
+  # reality. A successful self-heal exits 0 — it reports, but it is not an outstanding fault.
+  [[ ${#down[@]} -gt 0 ]] && return 1
+  return 0
+}
+
+# Only run the full check/report cycle when executed directly; sourcing the script loads the
+# functions so individual checks can be exercised in isolation.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  check_services
+  check_backup_freshness
+  report
+fi
