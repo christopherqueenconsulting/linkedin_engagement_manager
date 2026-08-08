@@ -5,7 +5,6 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-
 BACKUP_SH = Path(__file__).resolve().parents[3] / "scripts" / "backup.sh"
 
 
@@ -133,7 +132,8 @@ class TestEnvParsing:
         result = _run(
             tmp_path,
             {"LEM_ENV_FILE": str(env_file)},
-            'source "$BACKUP_SH"; echo "host=$(env_value MYSQL_HOST)" "db=$(env_value MYSQL_DATABASE)" "pw=$(env_value MYSQL_ROOT_PASSWORD)"',
+            'source "$BACKUP_SH"; echo "host=$(env_value MYSQL_HOST)"'
+            ' "db=$(env_value MYSQL_DATABASE)" "pw=$(env_value MYSQL_ROOT_PASSWORD)"',
         )
         assert result.returncode == 0, result.stderr + result.stdout
         assert "host=mysql_db" in result.stdout
@@ -141,8 +141,10 @@ class TestEnvParsing:
         assert "pw=hunter2" in result.stdout
 
     def test_env_value_tolerates_unquoted_spaced_values(self, tmp_path: Path) -> None:
-        """An unquoted value containing spaces must be returned as a literal string,
-        never interpreted as a command."""
+        """An unquoted value containing spaces is returned as a literal string.
+
+        It must never be interpreted as a command.
+        """
         env_file = _write_env(tmp_path, password="secret")
         result = _run(
             tmp_path,
