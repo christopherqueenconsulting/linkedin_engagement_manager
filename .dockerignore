@@ -29,7 +29,7 @@ src/cqc_lem/aws/
 compose/local/linkedinpreview/
 # Streamlit UI replaced by React SPA — not run in Docker
 src/cqc_lem/streamlit/
-# React source is only needed by the ui-builder stage (node:22-slim).
+# React source is only needed by the ui-builder stage (node:24-slim).
 # The Python builder stage gets the compiled dist via COPY --from=ui-builder.
 # node_modules must be excluded to prevent gigabytes from leaking into the build context.
 src/cqc_lem/ui/node_modules/
