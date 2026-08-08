@@ -178,3 +178,73 @@ just pass/fail, and every generation writes something the next generation reads.
 piece to flag for redesign consideration is the retry-is-the-same-worker pattern in
 `_review_generated_post`: a failing deterministic check invoking the identical writer function
 again is not a second opinion, just a second attempt.
+
+## Gauntlet-loop redesign — WINS (3 rounds)
+
+Per `docs/gauntlet-loop.md`: builder proposes a redesign against this doc's Verifier, a fresh-context
+critic blind-judges it against the named reference exemplar, loop until it wins or hits the 3-round
+cap. This piece won on round 3.
+
+**Reference exemplar:** this graph's OWN `evaluate_post_gates` design — it already produces
+structured, explainable findings (not just pass/fail) that a human or a re-score can act on.
+
+**Round 1 → round 2:** critic found the fix was sound, but `ever_gate_demoted` unconditionally
+overrode a user's own `auto_schedule_posts=true` choice — silently taking away configured autonomy
+rather than exposing a control (per the corrected product-goal framing: LEM's engagement/content flows
+are supposed to be autonomous by default; the right criterion is user configurability, not mandatory
+review). Round 2 fix: added a per-user toggle, `hold_repaired_posts_for_review`, default ON.
+
+**Round 2 → round 3:** critic found `ever_gate_demoted` fired from ANY call to
+`_persist_gate_findings` — including the two *pre-existing* call sites (`_gate_findings_for_post` at
+generation time, `rescore_post`'s promote-on-pass path) — so the new toggle's default silently blocked
+already-shipped behavior for a much broader population than "posts that needed the new repair pass."
+Round 3 fix: a new `mark_repaired: bool = False` kwarg on `_persist_gate_findings`, passed `True` only
+from the new repair-path call sites; every pre-existing caller is untouched and defaults to `False`.
+
+**Final verdict (round 3): WINS.** The critic checked the live source and found a third pre-existing
+caller the proposal didn't enumerate (`_finish_regenerated_post`/`regenerate_post`) — but confirmed
+this doesn't break correctness: an unmentioned, unmodified call is exactly the case Python's
+default-argument semantics protect against.
+
+### Proposed redesign
+
+```mermaid
+flowchart TD
+  A["plan_content_for_user"] --> B["_top_up_buffer_for_user /\n_create_content_for_planned_post"]
+  B --> C["create_content"] --> D1["create_text_post"]
+  D1 --> E1["_select_post_blueprint / _select_story_for_post"]
+  E1 --> F1["writer LLM call\n(composes a NEW post)"]
+  F1 --> G1["refine + humanize\n(UNCHANGED first pass)"]
+  G1 --> H1["_score_and_persist_authenticity\n(UNCHANGED)"]
+  H1 --> I1a["_review_generated_post: deterministic checks\n(UNCHANGED)"]
+  I1a --> I1b{"any check fails?"}
+  I1b -->|no| J1
+  I1b -->|yes| I1c["NEW: structured findings via\nquality_gates.build_finding"]
+  I1c --> I1d["_persist_gate_findings(..., mark_repaired=True)\nNEW kwarg — pre-existing callers\nnever pass it, stay at default False"]
+  I1d --> I1e["NEW repair pass: get_ai_linked_post_refinement(\ncontent, repair_findings=findings)\n— DISTINCT prompt family from the writer,\nan editor revising a draft vs composing new"]
+  I1e --> I1f["humanize_text (reused)"]
+  I1f --> I1g["re-run checks ONCE; still failing →\nkeep repaired draft, persist findings again\n(mark_repaired=True), no loop"]
+  I1g --> J1["deterministic CTA repairs (UNCHANGED)"]
+  J1 --> K["update_db_post_content"]
+  K --> L["evaluate_post_gates (UNCHANGED)\n-> _persist_gate_findings, mark_repaired defaults False\n(pre-existing call site, UNTOUCHED)"]
+  L --> M{"_may_auto_approve():\nauto_schedule_posts + no demoting finding\n+ (ever_gate_demoted NOT set\n   OR hold_repaired_posts_for_review is False)"}
+  M -->|auto ON, clean, never repaired OR toggle off| N["status = approved"] --> Q["post_to_linkedin"]
+  M -->|else| O["status = pending"] --> R["Human review"]
+  R -->|edit| S["rescore_post — SAME pre-existing call,\nmark_repaired defaults False, UNTOUCHED"] --> M
+  R -->|regenerate| T["regenerate_post — full writer re-run,\nALSO untouched by mark_repaired"] --> K
+```
+
+**What changed:** the repair pass moves off the composer (`create_text_post`) onto the existing editor
+function (`get_ai_linked_post_refinement`, already used one step earlier for the first-pass refine) —
+a genuinely distinct prompt family. `ever_gate_demoted` now only fires from the new repair path, gated
+by a per-user toggle that defaults ON but is fully reversible.
+
+**What did not change:** the deterministic check functions, `evaluate_post_gates`, the authenticity
+score, carousel/video paths, `regenerate_post` — and critically, all pre-existing callers of
+`_persist_gate_findings` (step L, `rescore_post`, and `_finish_regenerated_post`) are byte-for-byte
+unchanged, since `mark_repaired` defaults to `False` and none of them pass it.
+
+**Residual caveats (non-blocking, noted by the final critic):** the doc undercounts pre-existing
+callers at two when there are three — doesn't affect correctness, worth correcting in the write-up.
+Add a one-line code comment on `_persist_gate_findings` warning future editors that a forgotten
+`mark_repaired=True` fails safe (under-protects) rather than over-triggers.

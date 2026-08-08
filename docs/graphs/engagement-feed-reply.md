@@ -194,3 +194,66 @@ directly narrows a specific lane (feed commenting for one user) rather than trig
 global pause. Any Phase 2 redesign of the pre-publish side of this graph (adding a real per-comment
 checker, or moving part of the suppression tripwire's job earlier) should keep this chain's shape —
 read-only measurement, durable per-item residue, a bounded-scope action — rather than replacing it.
+
+## Gauntlet-loop redesign — WINS (3 rounds)
+
+Per `docs/gauntlet-loop.md`: builder proposes a redesign against this doc's Verifier, a fresh-context
+critic blind-judges it against the named reference exemplar, loop until it wins or hits the 3-round
+cap. This piece won on round 3 — and the process caught something worth calling out on its own: the
+"gap" being fixed turned out to be partially already-solved by existing code the first two rounds
+never read.
+
+**Reference exemplar:** this graph's own T+24h `sweep_comment_outcomes` → `hold_commenting` chain —
+read-only, cheap, three-valued, bounded-scope.
+
+**Round 1 → round 2:** critic found the daily read had a vague window ("day-scale") and reused the
+weekly `min_visibility_sample()` floor (10) unmodified for a shorter window — meaning the new HOLD
+path would likely never fire. Round 2 fix: explicit 3-day window, a separately-scaled floor (5) via
+a new optional `min_sample` parameter defaulting to today's behavior.
+
+**Round 2 → round 3:** critic found the fix was sound in isolation but wired onto an **invented,
+parallel** edge — `src/cqc_lem/utilities/suppression.py` already has `auto_suppression_tripwire`
+reading a comment-demotion signal daily via `comment_history_days()` (default 7, tunable via
+`SUPPRESSION_COMMENT_DAYS`, zero code needed) and already folding it into `pause_automation()` — a
+BROADER action than `hold_commenting`, already running every day. Round 3 fix: dropped the invented
+edge entirely and applied round 2's real insight (shorter window needs a scaled floor) to the
+*existing* call site — `comment_history_days()`'s default moves 7→3, plus the same `min_sample`
+scaling, threaded into the one real call site.
+
+**Final verdict (round 3): WINS.** The critic independently verified every claim against the live
+source — `comment_history_days()`, its default, `auto_suppression_tripwire`'s real call chain into
+`pause_automation()` (not `hold_commenting`), and a specific existing test
+(`test_suppression.py:333`) that the proposal correctly flagged as needing an update.
+
+### Proposed redesign
+
+```mermaid
+flowchart TD
+  LOG["comment logged"] --> T24["sweep_comment_outcomes (T+24h, daily, read-only)"]
+  T24 --> WEEKLY["auto_weekly_comment_quality (Mon)\ncomment_quality_report(days=7), UNCHANGED floor=10"]
+  WEEKLY -->|demotion over threshold, weekly| HOLD["hold_commenting (this user's feed commenting only)"]
+
+  T24 -->|"EXISTING call, TUNED this round:\ndefault window 7d -> 3d,\nfloor scaled 10 -> 5 via comment_min_sample()"| SUP
+  TREND["build_engagement_trend"] --> SUP["auto_suppression_tripwire (daily, EXISTING)"]
+  SUP -->|either signal trips| PAUSE["pause_automation()\n(engagement only, CRITICAL, account-wide)"]
+  RESUME["POST /user/automation-resume (human)"] -.-> PAUSE
+```
+
+**What changed:** zero new edges — `T24 → SUP` already exists in shipped code; round 2's mistake was
+drawing a second one. `comment_history_days()`'s default moves from 7 to 3 (one constant); a new
+optional `min_sample` parameter on `quality_verdict()`/`comment_quality_report()` defaults to today's
+behavior when omitted (so the weekly call site is byte-for-byte unchanged); a new `comment_min_sample()`
+helper derives the scaled floor *from* `comment_history_days()` itself, so an operator who tunes
+`SUPPRESSION_COMMENT_DAYS` gets a correspondingly-scaled floor automatically instead of two
+independently-drifting knobs.
+
+**What did not change:** no pre-publish check, no new Celery task/module. `auto_weekly_comment_quality`'s
+`hold_commenting`/CRITICAL alert is untouched — still Monday-only, still the only caller of
+`hold_commenting`. The proposal never claims that narrower action fires from the daily path;
+`pause_automation()` (broader, account-wide) is what actually fires there, today and after this change.
+
+**Residual caveats (non-blocking, noted by the final critic):** `suppression.py`'s module comment and
+`comment_history_days()`'s docstring both narrate the current 7-day rationale and go stale once the
+default moves to 3 — update in the same diff. `tests/unit/utilities/test_suppression.py:333` asserts
+the literal `7` and needs updating alongside the change. The sensitivity/false-positive tradeoff of a
+lower `min_sample` should be stated explicitly in implementation, not just as a mechanic.

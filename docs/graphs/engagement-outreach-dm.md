@@ -206,3 +206,66 @@ direct-dispatch lanes (appreciation, profile-viewer, follow-up steps, roster-con
 stale-invite) sit right next to it without the same review step, for reasons that read as
 historical/incremental (each shipped as its own issue) rather than a deliberate judgment that those
 sends are cheaper mistakes.
+
+## Gauntlet-loop redesign — WINS (2 rounds)
+
+Per `docs/gauntlet-loop.md`: builder proposes a redesign against this doc's Verifier, a fresh-context
+critic blind-judges it against the named reference exemplar, loop until it wins or hits the 3-round
+cap. This piece won on round 2 — the fastest of the six, largely because round 2 caught and reverted
+a genuine misdiagnosis before it could compound.
+
+**Reference exemplar:** this graph's OWN nurture-reply → PENDING `scheduled_dms` → SPA approval →
+`send_dm_now` → `_dm_send_landed` chain — clean producer/checker separation, reuse of one existing
+table/beat/send-primitive.
+
+**Round 1 → round 2:** critic found round 1 gated BOTH profile-viewer DMs (T4) and roster-connect
+escalation (T6) unconditionally for every user — in tension with the corrected product-goal framing
+that LEM's outreach automation is supposed to be autonomous by default, with per-user configurability
+(mirroring `roster_auto_follow`/`roster_auto_connect`'s existing opt-in shape) as the operative
+criterion, not mandatory review. Worse: gating T6 actually **broke** `roster_auto_connect`'s existing
+autonomous-send semantics for users who had already opted in. Round 2 fix: added a new
+`profile_viewer_dm_auto_send` toggle for T4 (default OFF — a genuinely new intervention on a
+previously-ungated lane); **reverted T6 entirely** after verifying in the actual code
+(`queue_roster_connect_invite`) that `roster_auto_connect=false` already means zero exposure with no
+second dispatch path — the toggle already IS the human-in-the-loop decision this row asks for.
+
+**Final verdict (round 2): WINS.** The critic independently traced every caller of
+`queue_roster_connect_invite`/`send_roster_connect_invite` in `run_automation.py` and confirmed the
+toggle check is the literal first statement, with no path around it — reverting T6 was the *correct*
+call, not just the safe one.
+
+### Proposed redesign
+
+```mermaid
+flowchart TD
+  T4["Profile viewer"] --> BRANCH1{is_1st_connection?}
+  BRANCH1 -->|"yes, can't comment"| GATE4A{"profile_viewer_dm_auto_send\ntoggle ON? (NEW, default OFF)"}
+  GATE4A -->|yes| DISPATCH2["direct send (today's behavior, unchanged)"]
+  GATE4A -->|no, default| PEND3["scheduled_dms PENDING, source='profile_viewer' (NEW)"]
+  BRANCH1 -->|no| GATE4B{"SAME toggle"}
+  GATE4B -->|yes| DISPATCH3["direct invite (today's behavior, unchanged)"]
+  GATE4B -->|no, default| PENDC1["connection_requests PENDING, source='profile_viewer'\n(NEW value on EXISTING #398 table)"]
+
+  T6["Roster: blocked->follow->still blocked"] --> GATE6{"roster_auto_connect toggle ON?\n(EXISTING, UNCHANGED semantics)"}
+  GATE6 -->|yes| RQ["requested written BEFORE dispatch"] --> DISPATCH5["direct invite\n(IDENTICAL to current state)"]
+  GATE6 -->|no| NOOP6["No invite, no row written\n(already today's full behavior — REVERTED, no change)"]
+
+  PEND3 & PENDC1 --> HUMAN{{Human review — SPA / Connections review UI}}
+  HUMAN -->|approve| APPROVED --> BEAT["existing beats"] --> SENDCORE["existing send/invite primitives"]
+```
+
+**What changed:** one new boolean preference, `profile_viewer_dm_auto_send` (default `FALSE`,
+additive migration, same shape as `roster_auto_connect`/`roster_auto_follow`), gates T4's both
+branches through the existing `scheduled_dms`/`connection_requests` (#398) PENDING pattern when off,
+or today's direct-dispatch when on.
+
+**What did not change:** T6 (`queue_roster_connect_invite`, `advance_roster_connect`,
+`roster_connect_budget`) — byte-for-byte unchanged; this was a correction of round 1's misreading, not
+a redesign. T3 (appreciation), T5 (follow-up steps), T7 (company-page), T8 (stale-invite) — all remain
+deterministic-gated, same reasoning as round 1 (warm context, pre-approved content, non-personal
+recipient, or self-directed action).
+
+**Residual caveats (non-blocking, noted by the final critic):** the final diagram in the graph doc
+should be updated to add a `GATE4` node mirroring `GATE6`'s shape (this write-up was prose-only at
+the time of the win); worth adding a Verifier bullet for the new toggle mirroring the existing
+nurture-path bullet, so the new gate is checkable the same way.

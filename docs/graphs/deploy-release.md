@@ -238,3 +238,87 @@ Comment for risky work" pattern and ask whether an equivalently cheap, equivalen
 (not a per-PR reviewer requirement, which the review-count-0 setting and the fast lane both suggest
 this team has deliberately avoided) belongs somewhere between "release PR merged" and "edge flips to
 the new color."
+
+## Gauntlet-loop redesign — WINS (3 rounds)
+
+Per `docs/gauntlet-loop.md`: builder proposes a redesign against this doc's Verifier, a fresh-context
+critic blind-judges it against the named reference exemplar, loop until it wins or hits the 3-round
+cap. This piece won on round 3.
+
+**Reference exemplar:** LEM's own Agent/Issue-Shipping pipeline (`docs/graphs/agent-issue-shipping.md`)
+— specifically its `risk:*` label mechanism: work is built regardless, but a `risk:*` PR parks with
+`needs-human` + a Decision Comment for owner sign-off before merge, gated by *category of consequence*
+rather than pipeline stage.
+
+**Round 1 → round 2:** critic found the REPLY→dispatch bridge was hand-waved (nothing in this repo
+watches comments on a release-please PR — it carries no `agent:ready`/`needs-human` flow labels) and
+the diff-source (`.last_good_tag`) wasn't reachable from a GitHub Actions runner. Round 2 fix: made
+the unblock explicitly manual (owner runs `gh workflow run deploy-vps.yml` themselves — no automated
+reply-parsing claimed) and switched the diff source to `gh release list`.
+
+**Round 2 → round 3:** critic confirmed the manual-unblock fix was honest and real, but found
+`gh release list --limit 2` assumed list positions 0/1 were always "this tag" and "the previous
+one" — breaking under a race where a second release (a `release:now` fast-lane release, or the next
+scheduled window) publishes while this run's `build-and-push` job is still building. Round 3 fix:
+anchor the lookup to this run's own known tag (`needs.build-and-push.outputs.tag`, already wired
+through the pipeline today) rather than trusting list position.
+
+**Final verdict (round 3): WINS.** Confirmed `build-and-push.yml`'s `build-and-push` job already
+exposes `outputs.tag` and the `deploy` job already consumes it — the fix reuses a wire already
+proven in this exact pipeline, not a speculative mechanism.
+
+### Proposed redesign
+
+```mermaid
+flowchart TD
+  E["PR merges to main\n(unchanged: 6 CI gates,\nrequired_approving_review_count=0)"] --> F["release-please.yml"]
+  F --> G["Standing 'chore: release X.Y.Z' PR"]
+
+  subgraph BATCH["Batched release window — UNCHANGED"]
+    H["cron 05/11/17/23 UTC"] --> I["gh pr merge --auto"]
+    J["release:now label,\nverified via TRUSTED_LABELLERS"] --> I
+  end
+  G --> H
+  G --> J
+
+  I --> N["Release PR re-runs 6 CI gates"]
+  N --> O["Release PR merges:\nversion bump, tag vX.Y.Z,\nGitHub Release published"]
+
+  O --> P["build-and-push.yml"]
+  P --> R["build-and-push job:\ndocker build, push\nghcr.io/.../cqc-lem:tag + :latest\n— ALWAYS runs, unattended, unchanged"]
+
+  R --> RC{"NEW: release-risk-check job\n(reads the SAME risk:* label vocabulary\nas agent-issue-shipping, plus a path filter)\n\nDiff source: THIS run's own tag,\nnever list position 0/1 —\nneeds.build-and-push.outputs.tag\n(== github.ref_name off the release\nevent that triggered this workflow).\nFetch gh release list\n--json tagName,createdAt --limit 20,\nlocate the entry matching that tag,\ntake the NEXT-OLDER entry from THAT\nposition as 'previous release'\n(never .last_good_tag — VPS-local,\nunreachable from the Actions runner)\n\nDoes the commit range between that\nprevious tag and this run's own tag\ncontain EITHER:\n(a) a new file under\ncompose/local/database/migrations/, OR\n(b) a merged PR that closed an issue\nlabelled risk:security /\nrisk:live-linkedin / risk:product-decision?"}
+
+  RC -- "no — the common case" --> S["deploy job, environment: production\nfires immediately, unattended\n(EXACTLY today's behavior)"]
+
+  RC -- "yes" --> HOLD["Skip the automatic deploy job.\nPost a Decision Comment on the\nrelease PR: which migration file(s) /\nwhich risk:* PR(s), what's about to\ncut over, recommended action"]
+  HOLD --> NOTE["Decision Comment is AUDIT / NOTIFICATION\nONLY. No automation watches or parses\nreplies on this PR — release-please PRs\ncarry no agent:ready/needs-human labels\nand tick.sh never looks at them."]
+  NOTE --> MANUAL["Owner (@gitchrisqueen) manually runs\n(CLI or Actions 'Run workflow' UI):\ngh workflow run deploy-vps.yml\n-f tag=vX.Y.Z\n— the SAME existing manual entrypoint,\nno new workflow, no new label,\nno new verification code, no bot\nre-triggering anything"]
+  MANUAL --> T
+
+  S --> T["SSH to VPS, run scripts/deploy.sh <tag>\n— UNCHANGED: checkout, Flyway,\nstandby color, /health check"]
+  T --> W{"color_healthy?"}
+  W -->|no| X["Restore standby, abort\n— ZERO downtime, UNCHANGED"]
+  W -->|yes| Y["Flip edge, verify end-to-end\n— UNCHANGED"]
+  Y --> Z["Persist .last_good_tag /\n.active_color — UNCHANGED"]
+  Z --> AA["Maintenance mode, drain,\nconverge workers — UNCHANGED"]
+
+  R --> AF["Cloudflare purge — UNCHANGED"]
+  R --> AG["PostHog release annotation — UNCHANGED,\nstill fires at build time regardless\nof hold state"]
+```
+
+**What changed:** one new `release-risk-check` job between `build-and-push` and `deploy`, reusing the
+exact `risk:*` label vocabulary and a migration-path filter. On a flag, the automatic `deploy` job is
+skipped and a Decision Comment is posted; unblocking is a genuinely manual `gh workflow run
+deploy-vps.yml -f tag=vX.Y.Z` by the owner — stated plainly rather than dressed up as automated reply
+parsing, since nothing in this repo watches comments on a release-please PR.
+
+**What did not change:** the 4×/day batching cadence, `release:now`, `TRUSTED_LABELLERS`, and
+everything downstream of "deploy job fires" (`scripts/deploy.sh`, `/health`, blue/green flip,
+auto-rollback, drain) — all untouched. No new agent, no new comment-watching workflow.
+
+**Residual caveats (non-blocking, noted by the final critic):** the risk-check job needs `GH_TOKEN` in
+scope; `gh release list`'s ordering should be sorted explicitly (`sort_by(.createdAt) | reverse`)
+rather than trusted as API default order; `--limit 20` is a bound worth widening if release cadence
+ever spikes. For the flagged risky subset, the wait is now unbounded on owner availability rather than
+capped at the next batch window — a deliberate, stated trade, not an oversight.

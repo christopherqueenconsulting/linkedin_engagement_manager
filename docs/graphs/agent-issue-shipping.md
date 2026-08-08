@@ -196,3 +196,64 @@ by successfully coordinating one. The known, named gaps (self-review by the same
 common path; `risk:*` being advisory rather than code-enforced; shared identity between agent and
 owner) are real and worth carrying into Phase 2, but they are gaps the repo's own docs already
 identify and reason about — not blind spots this review is the first to notice.
+
+## Gauntlet-loop redesign — PARKED, needs-human (hit the 3-round cap)
+
+Per `docs/gauntlet-loop.md`: builder proposes a redesign against this doc's Verifier, a fresh-context
+critic blind-judges it against the named reference exemplar, loop until it wins or hits the 3-round
+cap. **This piece hit the cap without winning — per the skill's own discipline, the loser is not
+shipped.** What follows is the last (round 3) draft plus why it was parked, for a human to pick up.
+
+**Reference exemplar:** this graph's OWN `risk:*` lane, which already solves the same problem (an
+independent reviewer) for a subset of PRs via a GitHub Copilot second opinion — the redesign's goal
+was extending that same mechanism to the non-`risk:*` default lane.
+
+**Round 1 → round 2:** critic found the proposed `COPTRIGGER` mechanism (self-apply `review:copilot`
+on a large diff or self-flagged uncertainty) collided with `AGENT_WORKFLOW_PLAYBOOK.md`'s own written
+rule, "Never request Copilot review by hand on routine PRs," without ever amending that document.
+Round 2 fix: proposed a specific playbook amendment carving out a "policy-triggered exception."
+
+**Round 2 → round 3:** critic found the amendment invented an unstated `COPILOT_REVIEW_FILE_THRESHOLD`
+constant with no real value or config location, and broke the section's terse register (a
+five-sentence paragraph against a section of one-to-two-clause bullets). Round 3 fix: dropped the
+file-count trigger entirely, kept only a `PR body carries Uncertain: <reason>` self-flag, capped once
+per PR, written as one bulleted line matching the surrounding style.
+
+**Final verdict (round 3): STILL FAILS.** The style fix was real, but the critic independently
+`grep`-checked the repo for the literal `Uncertain:` convention the proposal cited as "spec-first's
+existing... convention, now grep-able" — **it does not exist anywhere in the repo.** `spec-first`
+actually says "state the assumption explicitly in the PR body" as free prose, with no literal tag
+format, and `RUNBOOK.md`'s real PR-body conventions (`Closes #N`, `Follow-up: #<n>`) don't include it
+either. The amendment never touches `spec-first` itself, so nothing in the pipeline actually produces
+the string the trigger depends on — as written, the exception is inert.
+
+### What a human needs to decide
+
+Two options, either is legitimate, but it needs a person to pick:
+
+1. **Ground the trigger for real** — add the literal `Uncertain: <reason>` format to `spec-first`'s
+   `SKILL.md` (or `RUNBOOK.md`'s PR-body conventions list) as a first-class step, so the claim becomes
+   true and something actually populates it.
+2. **Drop the self-flag trigger too** and accept this row stays at its current ⚠️ (self-review by the
+   same identity on the default lane) — a real, if secondary, scope reduction from what round 1
+   originally targeted, since across rounds 2→3 the file-count half of the trigger was also dropped:
+   a large, purely-mechanical diff that never self-reports uncertainty gets zero extra scrutiny under
+   either surviving version of this proposal. Worth deciding out loud rather than letting it ride.
+
+### Last draft (round 3, for reference — not adopted)
+
+The mechanism: one new decision point (`COPTRIGGER`) inside the existing `MODE=start` invocation,
+right before `gh pr create`. Trigger: PR body carries `Uncertain: <reason>`, capped once per PR, never
+alongside `risk:*` (which already gets Copilot). Action: self-apply the existing `review:copilot`
+label alongside `agent:working` — zero downstream edges change, since `COPILOT`/`COPTHREADS`/
+`MODEREV`/`MERGEGATE` already fire on that label. The `RISK` diamond stays untouched, so a
+self-applied `review:copilot` never triggers the Decision Comment / owner-sign-off path — it only
+swaps which reviewer runs, never whether a human has to bless the merge. Proposed playbook addition
+(the part that turned out to describe a nonexistent convention):
+
+> - **Policy-triggered exception** — the pipeline may self-apply `review:copilot` on a routine PR when
+>   the PR body carries the builder's own `Uncertain: <reason>` line, at most once per PR and never
+>   alongside `risk:*`. That's a fixed rule fired the same way every time, not the per-PR discretionary
+>   ask the line above bans.
+
+This text is accurate policy *if* option 1 above is taken — it is currently aspirational.

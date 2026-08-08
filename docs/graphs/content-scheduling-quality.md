@@ -203,3 +203,69 @@ and it leaves a typed, three-valued trail (`visible_most_relevant`) that a thin 
 into a false alarm. The newsletter draft→publish path is the weakest and the most useful *contrast*
 case for Phase 2: it has the right shape (producer beat, review queue, separate publish beat) but,
 unlike its own cover-image gate on the same row, the body ships on silence rather than on approval.
+
+## Gauntlet-loop redesign — WINS (3 rounds)
+
+Per `docs/gauntlet-loop.md`: builder proposes a redesign against this doc's Verifier, a fresh-context
+critic blind-judges it against the named reference exemplar, loop until it wins or hits the 3-round
+cap. This piece won on round 3.
+
+**Reference exemplar:** this graph's OWN comment-outcome → `hold_commenting` thread, and even more
+directly, the SAME newsletter edition's own cover-image gate (`pending_review` default, not
+publishable until approved) — the body should adopt the exact posture its own cover already has.
+
+**Round 1 → round 2:** critic found the hard `status == 'approved'` filter made autonomous newsletter
+publishing structurally unreachable for every user, forever — not a safer default, an eliminated
+option (in tension with the corrected product-goal framing that engagement/content flows should stay
+user-configurable, autonomous by default). Round 2 fix: added a per-user `auto_publish_newsletters`
+toggle (mirrors `cover_image_auto`'s shape), with a two-step migration backfilling existing users to
+`true` (no regression) and defaulting new rows to `false` (safe default going forward).
+
+**Round 2 → round 3:** critic verified the migration was correct MySQL/Flyway, but found the toggle
+was wired through DB/API/types and a read-only queue-page copy branch — with no actual rendered
+control anywhere in the SPA. A user at the new `false` default had no in-product way to opt back in.
+Round 3 fix: added a real `Toggle` to `NewsletterCard.tsx`, mirroring `cover_image_auto`'s existing
+control on the same form.
+
+**Final verdict (round 3): WINS.** The critic independently read the live component and confirmed
+the placement, the `setNl`/PUT-spread mechanic, and the "no new plumbing needed" claim all check out
+against the real code.
+
+### Proposed redesign
+
+Newsletter cadence (post-publish path unchanged — it's the reference this borrows from):
+
+```mermaid
+flowchart TD
+  J["auto_generate_newsletter_drafts (daily)"] --> K["_topup_newsletter_drafts_for_user"]
+  K -->|opt-in cover_image_auto| L["generate_newsletter_cover\n-> ALWAYS pending_review (unchanged, the exemplar)"]
+  K -->|resting status = 'draft'| M["review queue (NewsletterQueue.tsx)"]
+  M -->|Approve & Schedule| APPR["status -> 'approved'"]
+  M -->|Skip| SKIP["status -> 'skipped'"]
+  M -. no action: stays draft .-> M
+
+  TOGGLE["NEW: NewsletterCard.tsx Toggle\nbound to auto_publish_newsletters\n(mirrors cover_image_auto's control)"]
+
+  N["auto_publish_scheduled_editions (hourly)"] --> O["_publish_next_due_edition_for_user\ndue := scheduled_for<=now AND\n(status='approved' OR\n (status='draft' AND auto_publish_newsletters))"]
+  APPR -.-> O
+  TOGGLE -. opted-in user's overdue draft ALSO selectable .-> O
+  M -. overdue, still draft, opted-out:\nexcluded, log_debug (expected no-op) .-> O
+  O --> P["auto_publish_edition\n(guard mirrors the due-filter)"]
+```
+
+**What changed:** `get_editions_due_to_publish`'s filter widens from `status IN ('draft','approved')`
+to `status='approved' OR (status='draft' AND auto_publish_newsletters)`. Migration: `ADD COLUMN
+auto_publish_newsletters DEFAULT 1` (backfills every existing row to `true`), then `ALTER ... SET
+DEFAULT 0` (new rows only). A rendered `Toggle` in `NewsletterCard.tsx`, next to `cover_image_auto`,
+gives the setting an actual control — no new mutation/endpoint/loading state, it rides the
+component's existing spread-of-state PUT.
+
+**What did not change:** the cover-image gate itself (deliberately gets no equivalent opt-out — a
+generated cover is a public brand asset regardless of the body's setting); `_topup_newsletter_drafts_for_user`,
+cadence math, `_reschedule_pending_editions_forward`, the comment-outcome thread, and the post-publish
+path — all untouched.
+
+**Residual caveats (non-blocking, noted by the final critic):** `NewsletterCard.tsx` has no companion
+test file today, unlike sibling account cards — add one alongside this change given the 80%-patch-coverage
+gate. The DB/API/types work from round 2 wasn't re-audited in round 3's pass and should be
+sanity-checked end-to-end before merge.
