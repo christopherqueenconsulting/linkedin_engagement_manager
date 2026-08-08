@@ -27,6 +27,7 @@ Three things this script refuses to do, each because it silently corrupted an ea
 
 import argparse
 import ast
+import builtins
 import collections
 import json
 import pathlib
@@ -93,8 +94,11 @@ def free_names(text: str, already_bound: set[str]) -> set[str]:
     tree = ast.parse(text)
     bound = set(already_bound)
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            bound.add(node.name)
+        # Lambda belongs here too: it binds parameters exactly like a def, but has no .name, so
+        # a def-only check leaves `lambda t: t["x"]` looking like a read of a global called `t`.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if not isinstance(node, ast.Lambda):
+                bound.add(node.name)
             args = node.args
             bound |= {a.arg for a in args.args + args.kwonlyargs + args.posonlyargs}
             if args.vararg:
@@ -117,7 +121,10 @@ def free_names(text: str, already_bound: set[str]) -> set[str]:
             except SyntaxError:
                 continue
             used |= {n.id for n in ast.walk(parsed) if isinstance(n, ast.Name)}
-    return used - bound - set(dir(__builtins__)) - {"__name__"}
+    # `dir(__builtins__)` is not this: __builtins__ is the module when a script runs
+    # directly but a DICT when imported, so dir() would hand back dict methods and every
+    # real builtin would read as a free name needing an import.
+    return used - bound - set(dir(builtins)) - {"__name__"}
 
 
 def open_alerts_in(spans: list[tuple[int, int]]) -> list[str]:
@@ -195,13 +202,26 @@ def main() -> int:
     }
     known = real_tables()
 
-    votes = {}
+    # SORTED, and ties are refused rather than broken. tables_touched returns a set, and Python
+    # randomises string hashing per process -- so with an unsorted iteration a function touching
+    # two tables owned by different aggregates got a tied Counter that most_common() resolved by
+    # insertion order. Three identical runs assigned `posts` 79, 79 and 77 members. A function that
+    # lands in a different module depending on the run is not a refactor, it is a coin flip, and
+    # the `users` slice carries the SECRET_FIELD_* AAD constants.
+    votes, ambiguous = {}, {}
     for name, node in nodes.items():
         owners = collections.Counter(
-            TABLE_OWNER[t] for t in tables_touched(node, known) if t in TABLE_OWNER)
-        if owners:
-            votes[name] = owners.most_common(1)[0][0]
+            TABLE_OWNER[t] for t in sorted(tables_touched(node, known)) if t in TABLE_OWNER)
+        if not owners:
+            continue
+        top = max(owners.values())
+        winners = sorted(a for a, c in owners.items() if c == top)
+        if len(winners) > 1:
+            ambiguous[name] = winners        # genuinely spans aggregates -- a human decides
+            continue
+        votes[name] = winners[0]
     members = {n for n, agg in votes.items() if agg == args.aggregate}
+    touching = sorted(n for n, aggs in ambiguous.items() if args.aggregate in aggs)
 
     calls = collections.defaultdict(set)
     for name, node in nodes.items():
@@ -209,7 +229,16 @@ def main() -> int:
             is_call = isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
             if is_call and sub.func.id in nodes and sub.func.id != name:
                 calls[name].add(sub.func.id)
-    movable = {f for f in members if calls[f] <= members}
+    # Fixpoint, not a single pass. Movability is TRANSITIVE: if A calls B and B has to stay
+    # behind, A cannot leave either, or it would reference a name that is no longer in scope. A
+    # one-pass `calls[f] <= members` check misses that, marks A movable, and the breakage only
+    # surfaces later as an unresolved name.
+    movable = set(members)
+    while True:
+        stranded = {f for f in movable if not calls[f] <= movable}
+        if not stranded:
+            break
+        movable -= stranded
     deferred = sorted(members - movable)
 
     constants: dict[str, ast.AST] = {}
@@ -251,6 +280,10 @@ def main() -> int:
     unresolved = [n for n in needed if n not in imported]
 
     print(f"{args.aggregate}: {len(members)} member(s), {len(movable)} movable")
+    if touching:
+        print(f"  AMBIGUOUS, left in db.py for a human to place ({len(touching)}):")
+        for name in touching:
+            print(f"    {name} -> {'/'.join(ambiguous[name])}")
     if deferred:
         print(f"  deferred (call a function that stays behind): {deferred}")
     print(f"  constants travelling with them: {travelling}")
@@ -262,7 +295,18 @@ def main() -> int:
             print(f"    {alert}")
         return 1
     if unresolved:
-        print(f"  UNRESOLVED names, refusing to write: {unresolved}")
+        # Split the two very different reasons a name will not resolve. A name db.py DEFINES but
+        # cannot send along -- because something staying behind still reads it -- is shared
+        # vocabulary, and the fix is to lift it into a module both sides can import, never to
+        # duplicate it. Anything else is a genuine gap in this script.
+        shared = [n for n in unresolved if n in constants or n in {c.name for c in tree.body
+                  if isinstance(c, ast.ClassDef)}]
+        rest = [n for n in unresolved if n not in shared]
+        print("  REFUSING to write.")
+        if shared:
+            print(f"    shared with code that stays behind, lift these to platform/db/ first: {shared}")
+        if rest:
+            print(f"    unaccounted for -- this script has a gap: {rest}")
         return 1
     if args.dry_run:
         return 0
