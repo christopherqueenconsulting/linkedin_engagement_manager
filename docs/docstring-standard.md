@@ -8,8 +8,10 @@
 
 Two problems, one fix.
 
-**The lint gate could not fail.** `.github/workflows/test.yml` ran `ruff check` under
-`continue-on-error: true`, so "Run Linting" reported green no matter what. It had to: `pyproject.toml`
+**The lint gate could not fail.** The old `Test Suite` workflow (`.github/workflows/test.yml`,
+deleted once it turned out to duplicate the unit and integration lanes 3× per PR while gating
+nothing) ran `ruff check` under `continue-on-error: true`, so "Run Linting" reported green no matter
+what. It had to: `pyproject.toml`
 carried no `[tool.ruff] line-length`, so ruff measured against its **88-column default** while this
 code has always been written to **120** — **24,584** phantom `line-too-long` errors, with every real
 violation buried inside them. Setting `line-length = 120` drops the same measurement to 330.
