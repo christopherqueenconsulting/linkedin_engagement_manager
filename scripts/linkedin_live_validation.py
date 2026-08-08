@@ -524,6 +524,11 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
         reading["like_count"] = _comment_like_count(driver, ours)
         reading["reply_authors"] = [a for (_c, a) in replies][:20]
         reading["post_author_href"] = _post_author_href(driver)
+    # Capture candidate elements whenever the thread rendered but the sort control did not, so a
+    # manual run can paste the actual DOM evidence back into the issue.
+    if not reading["sort_control_found"] and items:
+        from cqc_lem.app.run_automation import _diagnose_sort_control_miss
+        reading["sort_control_candidates"] = _diagnose_sort_control_miss(driver)
     return graded(reading, comment_outcome_state(reading), comment_outcome_verdict(reading))
 
 
