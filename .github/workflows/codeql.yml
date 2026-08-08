@@ -9,6 +9,11 @@ on:
   schedule:
     - cron: "0 10 * * 1"  # Monday 10:00 UTC (offset from codeql-analysis.yml)
 
+env:
+  # Same reason as codeql-analysis.yml: a diff-scoped analysis makes the required
+  # PR gate vacuous, because it compares head alerts against base alerts.
+  CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
+
 jobs:
   codeql-advanced:
     name: Advanced Analysis (${{ matrix.language }})
