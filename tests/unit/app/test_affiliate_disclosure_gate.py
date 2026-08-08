@@ -25,6 +25,8 @@ def _post_patches(stack, content, prefs=None):
     from cqc_lem.utilities.db import PostType
     targets = {
         "get_post_status": {"return_value": "approved"},
+        # Issue #1074: the publish task refuses a native-publish draft before anything else.
+        "get_post_manual_publish": {"return_value": False},
         "get_user_password_pair_by_id": {"return_value": ("u@example.com", "pw")},
         "get_post_content": {"return_value": content},
         "get_engagement_preferences": {"return_value": prefs if prefs is not None else {}},

@@ -166,6 +166,7 @@ from cqc_lem.utilities.db import (
     get_post_age_minutes,
     get_post_content,
     get_post_first_comment_link,
+    get_post_manual_publish,
     get_post_message_from_log_for_user,
     get_post_status,
     get_post_type,
@@ -9462,6 +9463,15 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     if get_post_status(post_id) == PostStatus.POSTED.value:
         myprint(f"Post {post_id} already posted. Skipping duplicate execution.")
         return f"Post {post_id} already posted — skipped"
+
+    # An occasion/milestone draft publishes through LinkedIn's native composer, which has no API
+    # entity (issue #1074) — sharing it here would post it as an ordinary text update, losing the
+    # entity the post exists for. The scheduler never dispatches one; this is the cross-check at the
+    # single choke point every publish passes through, so any other caller is refused too.
+    if get_post_manual_publish(post_id):
+        log_warning("Refused to auto-publish a post marked for native (manual) publishing",
+                    user_id=user_id, post_id=post_id, task_name="post_to_linkedin")
+        return f"Post {post_id} publishes natively — skipped"
 
     # Login and publish post to LinkedIn
     user_email, user_password = get_user_password_pair_by_id(user_id)

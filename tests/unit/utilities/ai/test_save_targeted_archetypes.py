@@ -93,7 +93,9 @@ class TestSelectionAndRotation:
 
     def test_excluded_formats_are_off_the_menu_entirely(self):
         excluded = fw.fact_anchored_formats("post")
-        assert sorted(excluded) == sorted(SAVE_TARGETED)
+        # The save-targeted pair are fact-anchored, and so are the occasion archetypes (#1074) —
+        # a launch or a credential is nothing BUT its specifics. Nothing else is.
+        assert sorted(excluded) == sorted(set(SAVE_TARGETED) | set(fw.occasion_formats("post")))
         for _ in range(200):
             bp = fw.select_blueprint("post", prefer_save_targeted=True, exclude_formats=excluded)
             assert bp["format"] not in excluded

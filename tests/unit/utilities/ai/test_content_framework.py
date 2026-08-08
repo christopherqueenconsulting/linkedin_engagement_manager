@@ -255,8 +255,14 @@ class TestDirectivesAndCompact:
     def test_options_text_lists_all_keys(self, content_type):
         menu = fw.MENUS[content_type]
         text = fw.options_text(content_type)
+        # The occasion archetypes are deliberately absent from a PLANNER's menu (issue #1074): a
+        # planner filling a calendar slot has no real launch or credential to announce.
+        occasion = set(fw.occasion_formats(content_type))
         for key in list(menu["formats"]) + list(menu["hooks"]) + list(menu["ctas"]):
-            assert key in text
+            if key in occasion:
+                assert key not in text
+            else:
+                assert key in text
 
     def test_post_writing_directive_carries_craft_rules(self):
         text = fw.post_writing_directive()

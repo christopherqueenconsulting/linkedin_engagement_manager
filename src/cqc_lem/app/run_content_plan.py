@@ -82,6 +82,7 @@ from cqc_lem.utilities.ai.content_framework import (
     find_most_similar,
     has_first_person_proof,
     history_avoidance_directive,
+    occasion_stage,
     post_similarity_max,
     requires_fact_anchor,
     select_blueprint,
@@ -1246,6 +1247,77 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
 def regenerate_post_task(post_id: int, guidance: str = None):
     """Celery wrapper so post regeneration (slow lem-complex call) runs async off the API request."""
     return regenerate_post(post_id, guidance)
+
+
+# --- Occasion / milestone drafts (issue #1074) -------------------------------------------------
+# LinkedIn's native "Celebrate an occasion" composer has no API entity, so LEM writes the copy and
+# the author pastes it in. Everything below is the NORMAL generation pipeline with two things
+# pinned: the archetype (the human named the event, so the shape is not up for rotation) and the
+# factual anchor (what they typed is the ONLY specific the writer may state about it).
+
+# The story-bank `kind` each occasion archetype's anchor is presented as — the bank's directive is
+# already "this is the post's factual anchor, invent nothing else", which is exactly the contract an
+# occasion announcement needs, so the occasion rides that directive rather than a parallel one.
+_OCCASION_STORY_KINDS: dict = {
+    "project_launch": "artifact",
+    "educational_milestone": "anecdote",
+}
+
+
+def draft_occasion_post(post_id: int, archetype: str, occasion: str) -> Optional[str]:
+    """Write the copy for ONE occasion/milestone post and leave it PENDING for review.
+
+    `occasion` is the author's own description of the real event; it becomes the writer's ONLY
+    allowed specific about it (the story-bank no-fabrication contract), so an empty one is refused
+    rather than handed to the model to fill in. The row keeps `manual_publish`, so a draft that
+    lands here never reaches the publish path — the author copies it into LinkedIn's occasion
+    composer. Returns the persisted content, or None when nothing could be written.
+    """
+    from cqc_lem.utilities.db import get_post_buyer_stage, get_post_user_id
+
+    occasion = (occasion or "").strip()
+    archetype = (archetype or "").strip()
+    if not occasion or archetype not in _OCCASION_STORY_KINDS:
+        log_error("Occasion post has no usable event description or archetype",
+                  post_id=post_id, task_name="draft_occasion_post")
+        return None
+
+    user_id = get_post_user_id(post_id)
+    if not user_id:
+        myprint(f"draft_occasion_post: no user for post_id={post_id}")
+        return None
+
+    # The occasion IS the anchor: a synthetic bank entry so the writer gets the bank's absolute
+    # "these facts are the ONLY personal specifics you may state" rule for free.
+    entry = {"kind": _OCCASION_STORY_KINDS[archetype], "body": occasion}
+    blueprint = _select_post_blueprint(user_id, preferred_formats=[archetype])
+    blueprint = {**blueprint, "subject": occasion[:200],
+                 "fact_anchors": _story_bank.fact_sources(entry)}
+
+    stage = get_post_buyer_stage(post_id) or occasion_stage("post", archetype)
+    content = create_text_post(
+        user_id, stage, post_type="personal_story",
+        user_profile=load_profile_for_user(user_id),
+        blueprint=blueprint, post_id=post_id,
+        # No 70/20/10 class: an occasion is seeded by a real event, not by the plan's cadence, so
+        # counting it into the mix would move the governor's ratios for something it never planned.
+        story_directive=_story_bank.story_directive(entry))
+    if not content:
+        log_error("Occasion post generation produced nothing", user_id=user_id, post_id=post_id,
+                  task_name="draft_occasion_post")
+        update_db_post_status(post_id, PostStatus.ERROR)
+        return None
+
+    content = _finish_regenerated_post(user_id, post_id, content, PostType.TEXT.value)
+    log_info(f"Occasion post {post_id} drafted ({archetype}) — publish natively",
+             user_id=user_id, post_id=post_id, task_name="draft_occasion_post")
+    return content
+
+
+@shared_task.task
+def draft_occasion_post_task(post_id: int, archetype: str, occasion: str):
+    """Celery wrapper so occasion drafting (a slow lem-complex call) runs off the API request."""
+    return draft_occasion_post(post_id, archetype, occasion)
 
 
 def _post_content_mix(post_id: int) -> Optional[str]:

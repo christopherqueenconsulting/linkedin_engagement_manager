@@ -736,6 +736,56 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
     return success
 
 
+def insert_occasion_post(user_id: int, scheduled_time: datetime, buyer_stage: str) -> Optional[int]:
+    """Insert the SKELETON of an occasion/milestone post and return its id (issue #1074).
+
+    Lands at `PostStatus.PLANNING` with the 'TBD' placeholder, exactly like `insert_planned_post` —
+    the drafting task overwrites it — but with `manual_publish = 1`, which is what permanently keeps
+    the scheduler and `post_to_linkedin` off the row. The id comes back because the caller has to
+    hand it to the drafting task; None means nothing was written.
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor()
+
+    post_id = None
+    try:
+        cursor.execute("""
+            INSERT INTO posts (scheduled_time, post_type, user_id, buyer_stage, status, content,
+                               manual_publish)
+            VALUES (%s, %s, %s, %s, %s, %s, 1)
+        """, (to_naive_utc(scheduled_time), PostType.TEXT.value, user_id, buyer_stage,
+              PostStatus.PLANNING.value, 'TBD'))
+        connection.commit()
+        post_id = cursor.lastrowid if cursor.rowcount == 1 else None
+    except mysql.connector.Error as e:
+        log_error("Could not insert occasion post", exc=e, user_id=user_id)
+    finally:
+        cursor.close()
+        connection.close()
+    return post_id
+
+
+def get_post_manual_publish(post_id: int) -> bool:
+    """True when this post publishes by hand through LinkedIn's native occasion composer (#1074).
+
+    Fails CLOSED-ish in the direction that matters: an unreadable row answers False, which is the
+    pre-#1074 behaviour for every post that ever existed — the automatic path. The scheduler query
+    is the primary gate; this is the publish-time cross-check.
+    """
+    connection = _connection.get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT manual_publish FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not read manual_publish for post {post_id} | Error: {err}")
+        row = None
+    finally:
+        cursor.close()
+        connection.close()
+    return bool(row[0]) if row else False
+
+
 def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_type: PostType, post_id: int,
                    post_status: PostStatus, user_id: Optional[int] = None) -> bool:
     """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`."""
@@ -1036,7 +1086,8 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
 
         cursor.execute(
             f"SELECT id, content, video_url, image_url, scheduled_time, post_type, status, "
-            f"carousel_slides, authenticity_score, gate_reason, rejection_reason, archetype "
+            f"carousel_slides, authenticity_score, gate_reason, rejection_reason, archetype, "
+            f"manual_publish "
             f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
             params + [limit, offset]
         )
@@ -1791,11 +1842,15 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
     try:
         with db_cursor() as cursor:
         # Get posts that have scheduled time between 24 hours ago and the pre_post_time
+            # manual_publish rows are drafted for LinkedIn's native occasion composer, which has no
+            # API entity (issue #1074) — the author publishes them by hand, so the scheduler must
+            # never see one. Excluding them HERE makes that true for every consumer of this query.
             cursor.execute(
-                """SELECT p.id, p.scheduled_time, p.user_id 
+                """SELECT p.id, p.scheduled_time, p.user_id
                     FROM posts AS p
-                    WHERE status = 'approved' AND scheduled_time BETWEEN %s AND %s 
-                    ORDER BY scheduled_time ASC 
+                    WHERE status = 'approved' AND manual_publish = 0
+                      AND scheduled_time BETWEEN %s AND %s
+                    ORDER BY scheduled_time ASC
                     """,
                 (yesterday, pre_post_time,))
             posts = cursor.fetchall()
@@ -1820,6 +1875,11 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
     These arise when Celery tasks are purged on container restart while a post
     has already been transitioned from 'approved' → 'scheduled'. Without this
     recovery query, those posts stay stuck forever.
+
+    A `manual_publish` post is excluded for the same reason it is excluded upstream: only
+    `auto_check_scheduled_posts` writes 'scheduled', and it never sees one — so a manual-publish row
+    in that state is a bug, and re-queueing it would publish through the API the very post that
+    exists because the API cannot carry it (issue #1074).
     """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=lookback_hours)
@@ -1829,7 +1889,7 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
             cursor.execute(
                 """SELECT p.id, p.scheduled_time, p.user_id
                    FROM posts AS p
-                   WHERE status = 'scheduled'
+                   WHERE status = 'scheduled' AND manual_publish = 0
                      AND scheduled_time <= %s
                    ORDER BY scheduled_time ASC""",
                 (cutoff,),
