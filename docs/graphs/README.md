@@ -39,7 +39,7 @@ reads differently across the six graphs below:
 | Graph | What it is | Current-state weak row(s) | Gauntlet-loop outcome |
 |---|---|---|---|
 | [`deploy-release.md`](./deploy-release.md) | PR merge → CI → release-please → build-and-push → VPS cutover → health check → rollback | Human gate (❌ — required-reviewer gate was deliberately removed so green releases auto-deploy) | **WINS** (round 3) — category-scoped `release-risk-check` job, manual owner unblock, honestly scoped |
-| [`agent-issue-shipping.md`](./agent-issue-shipping.md) | How LEM's own code ships: triage → build → PR → review → merge → release | Worker/checker separation (⚠️ — self-review by the same identity on the default lane) | **PARKED, needs-human** (hit 3-round cap) — final fix cited a PR-convention that doesn't actually exist in the repo |
+| [`agent-issue-shipping.md`](./agent-issue-shipping.md) | How LEM's own code ships: triage → build → PR → review → merge → release | Worker/checker separation (⚠️ — self-review by the same identity on the default lane) | **WINS** (hit the 3-round cap, then resolved by owner decision — Option A implemented and re-verified) |
 | [`content-generation.md`](./content-generation.md) | Content-plan slot → written/checked/persisted post → approve/publish | Worker/checker separation (⚠️ — a failed check's retry was the same writer trying again) | **WINS** (round 3) — repair pass moved to a distinct editor prompt family, gated by a scoped, reversible toggle |
 | [`content-scheduling-quality.md`](./content-scheduling-quality.md) | Publish/track/feedback-loop already-generated content (posts + newsletters) | Human gate + worker/checker separation (⚠️ — newsletter `draft` was silently publishable, unlike its own cover image) | **WINS** (round 3) — real per-user toggle, with an actual rendered SPA control |
 | [`engagement-feed-reply.md`](./engagement-feed-reply.md) | Autonomous feed commenting, replies, seed/second-wave comments, suppression | Human gate + worker/checker separation (⚠️ — reactive checker ran on a week-scale lag) | **WINS** (round 3) — tuned an *existing* daily mechanism the first two rounds hadn't found, rather than adding a new one |
@@ -63,12 +63,15 @@ Worth naming plainly, since it's the point of running builder/critic pairs inste
   invented a parallel mechanism duplicating one that already existed in `suppression.py` — round 3
   found and reconciled with it instead of shipping a redundant, unreconciled second check.
 - **A citation that didn't hold up:** the final round of `agent-issue-shipping` cited an "existing"
-  PR-body convention that a `grep` across the repo shows was never written anywhere — caught, and
-  parked for a human rather than shipped on the strength of an unverified claim.
+  PR-body convention that a `grep` across the repo showed was never written anywhere — caught, and
+  parked for a human rather than shipped on the strength of an unverified claim. The owner reviewed
+  the parked write-up's two options and chose to ground the convention for real; a fresh critic then
+  independently re-verified the fix before the row was marked WINS.
 - **A cited written policy the first draft never reconciled with:** round 1 of `agent-issue-shipping`
   contradicted `AGENT_WORKFLOW_PLAYBOOK.md`'s own "never request Copilot review by hand" rule without
   amending it — caught in round 2.
 
 None of these were caught by the builder that produced them. That's the mechanism working as
 designed, not a sign the builders were careless — a same-pass self-review structurally can't catch a
-mistake the author is confident about, which is exactly why the pattern exists.
+mistake the author is confident about, which is exactly why the pattern exists. All six graphs now
+carry a winning, independently-verified redesign.
