@@ -109,10 +109,27 @@ def free_names(text: str, already_bound: set[str]) -> set[str]:
             bound.add(node.id)
         if isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
+    # ONLY module-level imports bind for the whole module. A function-local
+    # `from ... import log_error` binds inside THAT function and nowhere else -- treating it as a
+    # module binding made the import block skip `log_error` entirely, because four moved functions
+    # imported it locally while others relied on db.py's module-level one. The result raised
+    # NameError only on an error path, so nothing but a test could see it.
+    for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 bound.add((alias.asname or alias.name).split(".")[0])
-    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    used = set()
+    for node in tree.body:
+        scope_bound = set()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for sub in ast.walk(node):
+                if isinstance(sub, (ast.Import, ast.ImportFrom)) and sub is not node:
+                    for alias in sub.names:
+                        scope_bound.add((alias.asname or alias.name).split(".")[0])
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                if sub.id not in scope_bound:
+                    used.add(sub.id)
     for node in ast.walk(tree):
         annotation = getattr(node, "returns", None) or getattr(node, "annotation", None)
         if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):

@@ -50,6 +50,29 @@ class TestFreeNames:
         src = 'def f(x) -> "datetime | None":\n    return None\n'
         assert "datetime" in tool.free_names(src, {"f"})
 
+    def test_a_function_local_import_does_not_bind_the_whole_module(self, tool):
+        """The subtlest bug in this tool, and the only one a test caught rather than a linter.
+
+        `posts` was the first aggregate where SOME functions do a function-local
+        `from ... import log_error` while others rely on db.py's module-level one. Treating the
+        local import as a module binding made the generated import block omit `log_error` entirely,
+        so the functions without a local import raised `NameError` — on the ERROR path only, which
+        is why nothing but a test could reach it.
+        """
+        src = (
+            "def a():\n"
+            "    from cqc_lem.utilities.logger import log_error\n"
+            "    log_error('boom')\n"
+            "\n"
+            "def b():\n"
+            "    log_error('boom')\n"          # no local import — needs a module-level one
+        )
+        assert "log_error" in tool.free_names(src, {"a", "b"})
+
+    def test_a_module_level_import_does_bind(self, tool):
+        src = "from cqc_lem.utilities.logger import log_error\n\ndef a():\n    log_error('x')\n"
+        assert "log_error" not in tool.free_names(src, {"a"})
+
     def test_comprehension_and_except_bindings_are_not_free(self, tool):
         src = (
             "def f(rows):\n"
