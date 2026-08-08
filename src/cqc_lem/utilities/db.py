@@ -15,7 +15,6 @@ under it, and a value that will not decrypt reads as None rather than as ciphert
 
 import hashlib
 import json
-import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, NamedTuple, Optional, Union
@@ -27,6 +26,11 @@ from mysql.connector.abstracts import MySQLCursorAbstract
 
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import (
+    MYSQL_DATABASE,
+    MYSQL_HOST,
+    MYSQL_PASSWORD,
+    MYSQL_PORT,
+    MYSQL_USER,
     DbConnection,
     _get_connection_pool,
     _get_mysql_config,
@@ -122,6 +126,26 @@ from cqc_lem.utilities.utils import get_top_level_domain
 # a per-line ruff directive is invisible to CodeQL and an lgtm marker is invisible to ruff, so
 # either one alone leaves whichever tool is blind free to flag or delete these.
 __all__ = [
+    "ALREADY_CONNECTED_MESSAGE",
+    "APPRECIATION_EVENT_TYPES",
+    "CATCHUP_CONTACT_CAP_WINDOW_DAYS",
+    "CATCHUP_TOUCHES_MAX",
+    "CONNECT_NOTE_MAX_CHARS",
+    "ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK",
+    "ENGAGEMENT_TARGET_CONNECT_TERMINAL",
+    "ENGAGEMENT_TARGET_FOLLOW_TERMINAL",
+    "INVITE_NOT_SENT_MESSAGE",
+    "MAX_WAIT_RETRY",
+    "MYSQL_DATABASE",
+    "MYSQL_HOST",
+    "MYSQL_PASSWORD",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "NO_CONNECT_BUTTON_MESSAGE",
+    "SCHEDULED_DM_SOURCE_NURTURE",
+    "SESSION_SCOPE_EXTENSION",
+    "SESSION_SCOPE_RECOVERY",
+    "STORY_BANK_TARGET_ENTRIES",
     "_NEWSLETTER_BOOL_COLS",
     "_NEWSLETTER_COLS",
     "_NEWSLETTER_DEFAULTS",
@@ -197,14 +221,13 @@ __all__ = [
 load_dotenv()
 
 MAX_WAIT_RETRY = 3
-WAIT_TIMEOUT = 3
 
-# Retrieve MySQL connection details from environment variables
-MYSQL_HOST = os.getenv('MYSQL_HOST')
-MYSQL_USER = os.getenv('MYSQL_USER')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
-MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
-MYSQL_PORT = os.getenv('MYSQL_PORT')
+# The MYSQL_* settings are NOT redefined here. `platform/db/connection.py` owns them and is what
+# `get_db_connection` reads; a second `os.getenv` here produced a second binding that agreed by
+# coincidence and diverged the moment anything set one. That is not hypothetical -- the e2e
+# workflow test set MYSQL_HOST on this module to point at a host-machine MySQL and the override
+# silently did nothing, because the connect it then called reads connection.MYSQL_HOST.
+# Re-exported below so `from cqc_lem.utilities.db import MYSQL_HOST` still resolves.
 
 
 

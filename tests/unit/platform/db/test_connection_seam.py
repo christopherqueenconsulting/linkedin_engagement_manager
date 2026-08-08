@@ -54,6 +54,7 @@ class TestOneCanonicalTarget:
         "get_db_connection", "db_cursor", "to_naive_utc", "reset_connection_pool",
         "MYSQL_POOL_ENABLED", "MYSQL_POOL_SIZE", "_get_pooled_connection",
         "_get_connection_pool", "_get_mysql_config", "_POOL_STATE",
+        "MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE", "MYSQL_PORT",
     )
 
     @staticmethod
@@ -157,6 +158,12 @@ class TestOneCanonicalTarget:
                     offenders.append(f"{p} -> patch.object for {sym}")
                 if re.search(rf'monkeypatch\.setattr\(\s*db\s*,\s*["\']{re.escape(sym)}["\']', t):
                     offenders.append(f"{p} -> monkeypatch.setattr for {sym}")
+                # Plain assignment: the fourth style, and the one that actually shipped. The e2e
+                # workflow test did `_db_mod.MYSQL_HOST = ...` against the facade and then called a
+                # connect that reads connection.MYSQL_HOST, so its host override pointed nowhere.
+                # No mock, no patch call, nothing for the three checks above to match on.
+                if re.search(rf'^\s*\w*db\w*\.{re.escape(sym)}\s*=[^=]', t, re.MULTILINE):
+                    offenders.append(f"{p} -> direct assignment to {sym}")
         assert offenders == [], (
             "these rebind a moved symbol on the re-export, which the real module never reads — "
             f"target {_CANONICAL.rpartition('.')[0]} instead:\n  "
