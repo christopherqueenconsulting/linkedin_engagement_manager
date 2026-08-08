@@ -130,3 +130,42 @@ class TestUpdateQueueLengthMetric:
             result = update_queue_length_metric(sender=MagicMock())
 
         assert result == 3
+
+
+# ---------------------------------------------------------------------------
+# beat schedule integrity
+# ---------------------------------------------------------------------------
+
+class TestEveryBeatEntryResolves:
+    """The beat schedule pins every task by dotted string; nothing verified they resolve.
+
+    Task registration is NOT via `autodiscover_tasks(['cqc_lem'])` — that is a documented no-op
+    here, since `cqc_lem.tasks` does not exist — but via the explicit imports in
+    `cqc_lem/app/__init__.py`. So a module rename that misses that import list, or a typo in a
+    schedule key, leaves an entry pointing at a task the worker has never heard of. Beat then
+    dispatches a name nothing consumes and the behaviour simply stops happening, silently.
+    """
+
+    @staticmethod
+    def _schedule():
+        from cqc_lem.app.my_celery import app
+        return app.conf.beat_schedule
+
+    def test_the_schedule_is_not_empty(self):
+        assert len(self._schedule()) > 0
+
+    def test_every_scheduled_task_name_is_registered(self):
+        from cqc_lem.app.my_celery import app
+
+        schedule = self._schedule()
+        unresolved = sorted(
+            f"{key} -> {entry['task']}"
+            for key, entry in schedule.items()
+            if entry["task"] not in app.tasks
+        )
+        assert unresolved == [], (
+            "beat entries naming tasks that are not in the registry: " + "; ".join(unresolved))
+
+    def test_every_entry_declares_a_schedule(self):
+        missing = [key for key, entry in self._schedule().items() if not entry.get("schedule")]
+        assert missing == [], f"beat entries with no schedule: {missing}"

@@ -31,6 +31,15 @@ MAX_PHASEFIX_ATTEMPTS=2
 CLAUDE_TIMEOUT="45m"
 DRY_RUN="${DRY_RUN:-0}"
 
+# The checks branch protection ACTUALLY requires on main. Verify with:
+#   gh api repos/:owner/:repo/branches/main/protection --jq '.required_status_checks.contexts'
+#
+# Defined once because it was previously spelled out twice, and both copies had drifted from the
+# real list: they omitted "CodeQL PR Quality Gate", so the pipeline would call a PR green and
+# request a merge while a required check was still pending or failing — and then sit in the queue.
+# Note this is the PR *Quality Gate*, not "CodeQL Security Analysis", which runs but is NOT required.
+REQUIRED_CHECKS_JQ='select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Tests" or .n=="GitGuardian Scan" or .n=="UI Build" or .n=="Migration Versions" or .n=="CodeQL PR Quality Gate")'
+
 # Owner-tunable knobs (edit $BASE/config.env; missing file = these defaults).
 #   MAX_AGENTS         hard ceiling on concurrent Claude runs (slots), whatever the backlog
 #   SCALE_PER_ISSUES   +1 slot per this many agent:ready issues (1 + N/SCALE, capped)
@@ -1148,8 +1157,8 @@ for MPR in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
   [ -z "$MBR" ] && continue
   [ "$(gh pr view "$MPR" --repo "$SLUG" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null)" = "DIRTY" ] && continue
   MROLL="$(gh pr view "$MPR" --repo "$SLUG" --json statusCheckRollup 2>/dev/null \
-    | jq -r '[.statusCheckRollup[]? | {n:(.name//.context//""), s:(.conclusion//.state//"PENDING")}
-             | select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Tests" or .n=="GitGuardian Scan" or .n=="UI Build" or .n=="Migration Versions")]')"
+    | jq -r "[.statusCheckRollup[]? | {n:(.name//.context//\"\"), s:(.conclusion//.state//\"PENDING\")}
+             | $REQUIRED_CHECKS_JQ]")"
   [ "$(echo "$MROLL" | jq '[.[]|select(.s=="FAILURE" or .s=="ERROR" or .s=="TIMED_OUT" or .s=="CANCELLED")]|length')" -gt 0 ] && continue
   [ "$(echo "$MROLL" | jq '[.[]|select(.s=="PENDING" or .s=="QUEUED" or .s=="IN_PROGRESS" or .s=="EXPECTED")]|length')" -gt 0 ] && continue
   [ "$(copilot_unresolved_threads "$MPR")" -gt 0 ] && continue
@@ -1287,10 +1296,11 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
     exit 0
   fi
 
-  # Only the branch-protection REQUIRED checks gate merge — ignore non-required noise (CodeQL, E2E, lint).
+  # Only the branch-protection REQUIRED checks gate merge — ignore non-required noise
+  # (CodeQL Security Analysis, E2E, Docstring & Lint Gate). See REQUIRED_CHECKS_JQ at the top.
   ROLLUP="$(gh pr view "$PR" --repo "$SLUG" --json statusCheckRollup \
-    | jq -r '[.statusCheckRollup[]? | {n:(.name//.context//""), s:(.conclusion//.state//"PENDING")}
-             | select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Tests" or .n=="GitGuardian Scan" or .n=="UI Build" or .n=="Migration Versions")]')"
+    | jq -r "[.statusCheckRollup[]? | {n:(.name//.context//\"\"), s:(.conclusion//.state//\"PENDING\")}
+             | $REQUIRED_CHECKS_JQ]")"
   FAILED="$(echo "$ROLLUP" | jq '[.[]|select(.s=="FAILURE" or .s=="ERROR" or .s=="TIMED_OUT" or .s=="CANCELLED")]|length')"
   PENDING="$(echo "$ROLLUP" | jq '[.[]|select(.s=="PENDING" or .s=="QUEUED" or .s=="IN_PROGRESS" or .s=="EXPECTED")]|length')"
   ATTEMPTS="$(git -C "$REPO" rev-list --count "origin/main..origin/$BRANCH" 2>/dev/null || echo 1)"

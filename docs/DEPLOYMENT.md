@@ -181,8 +181,7 @@ A deploy recreates the app containers, which SIGTERMs the workers. Three layers 
    side, and `Task.__call__` only clears a lock rather than checking one, so it stops two
    dispatchers racing but does nothing about a broker redelivery. `CELERY_VISIBILITY_TIMEOUT`
    (default: longest task + 15m) must stay above the longest task so acks_late can't hand a
-   still-running task to a second worker; since tasks now carry `CELERY_TASK_TIME_LIMIT`, that
-   "longest task" is a bounded number rather than an assumption.
+   still-running task to a second worker.
 
 Inspect or drive it by hand from the box:
 
