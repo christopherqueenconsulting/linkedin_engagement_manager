@@ -1481,6 +1481,291 @@ class TestGroupMembershipLiveGrounding:
         assert reading["state"] == llv.STATE_DRIFT
 
 
+def _composer_card(hits_on=("normalize-space",)):
+    """A feed card whose locator-chain rungs hit only for the selectors named in `hits_on`.
+
+    Defaults to the shape the #816 home-feed run found: the aria-label/data-testid rungs match
+    nothing and the visible-TEXT XPath rungs carry the surface.
+    """
+    card = MagicMock()
+    card.find_elements.side_effect = lambda by, selector: (
+        [MagicMock()] if any(token in selector for token in hits_on) else [])
+    return card
+
+
+def _composer_feed_driver(text_nodes: int = 1, markers: int = 1, page_text: str = "A group feed"):
+    """A driver whose feed renders `text_nodes` post-text nodes and `markers` `Hide post by` controls."""
+    driver = MagicMock()
+    body = MagicMock()
+    body.text = page_text
+    boxes = [MagicMock() for _ in range(text_nodes)]
+    marker_els = [MagicMock() for _ in range(markers)]
+
+    def find_elements(by, selector):
+        if selector in ("main", "body"):
+            return [body]
+        if "expandable-text-box" in selector:
+            return boxes
+        if "Hide post by" in selector:
+            return marker_els
+        return []
+
+    driver.find_elements.side_effect = find_elements
+    driver.current_url = "https://www.linkedin.com/groups/42/"
+    return driver
+
+
+def _patch_composer_chain(monkeypatch, *, card=None, composer=None, in_card=(), scope=None,
+                          clicks=None):
+    """Point the shipped chain at fakes: `_card_for_textbox`, the action locators, the resolver.
+
+    `in_card` is what `_visible_composers(card)` returns, so a composer NOT in it is one the widened
+    `_single_post_scope` found — the #916 question the probe exists to answer.
+    """
+    card = card if card is not None else _composer_card()
+    monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: card)
+    monkeypatch.setattr("cqc_lem.app.run_automation._post_composer_for_card",
+                        lambda d, c, user_id=None: composer)
+    monkeypatch.setattr("cqc_lem.app.run_automation._single_post_scope",
+                        lambda d, c: scope if scope is not None else c)
+    monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+                        lambda root: [(box, {"y": 0}) for box in
+                                      (in_card if root is card else [])])
+    monkeypatch.setattr("cqc_lem.app.run_automation._is_post_comment_box",
+                        lambda box: True)
+    monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                        lambda *a, **k: MagicMock())
+
+    def click_first(driver, wait, locators, label, **kwargs):
+        if clicks is not None:
+            clicks.append(label)
+        return MagicMock()
+
+    monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", click_first)
+    monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: ["Comment", "Like"])
+    return card
+
+
+@pytest.mark.unit
+class TestGroupFeedComposerProbe:
+    """#928: #916 widened the composer lookup FOR the group feed and made every outcome silent.
+
+    The lane posting nothing and the lane working look identical from the desk either way.
+    """
+
+    def test_locator_hits_are_summed_across_cards_in_chain_order(self):
+        merged = llv.merge_locator_hits([{"a": 0, "b": 1}, {"a": 0, "b": 2}])
+        assert merged == {"a": 0, "b": 3}
+        assert list(merged) == ["a", "b"]
+
+    def test_a_rung_that_could_not_be_read_says_so_instead_of_reading_as_zero(self):
+        """A clean zero is evidence to re-ground from; an unreadable rung is not.
+
+        The two must never print the same.
+        """
+        merged = llv.merge_locator_hits([{"a": 1}, {"a": "<StaleElementReferenceException>"}])
+        assert merged == {"a (unreadable on 1 card(s))": 1}
+
+    def test_a_composer_on_any_card_is_ok(self):
+        feed = {"feed": "group", "page_text": "posts", "cards_found": 2, "composers_resolved": 1,
+                "composers_from_widening": 1}
+        assert llv.feed_composer_state(feed) == llv.STATE_OK
+        assert "#916 widening is what carries this surface" in llv.feed_composer_verdict(feed)
+
+    def test_a_composer_that_came_from_inside_the_card_says_so(self):
+        feed = {"feed": "home", "page_text": "posts", "cards_found": 2, "composers_resolved": 2,
+                "composers_from_widening": 0}
+        assert "from inside the card itself" in llv.feed_composer_verdict(feed)
+
+    def test_posts_on_the_page_the_card_walk_reached_none_of_is_drift(self):
+        feed = {"feed": "group", "page_text": "posts", "post_text_nodes": 6, "page_post_markers": 6,
+                "cards_found": 0}
+        assert llv.feed_composer_state(feed) == llv.STATE_DRIFT
+        assert "reached NONE of them" in llv.feed_composer_verdict(feed)
+
+    def test_a_feed_with_no_posts_on_it_grounds_nothing(self):
+        """A quiet group is not a defect.
+
+        Filing it weekly would bury the run where the composer really is gone.
+        """
+        feed = {"feed": "group", "page_text": "No new posts", "post_text_nodes": 0,
+                "page_post_markers": 0, "cards_found": 0}
+        assert llv.feed_composer_state(feed) == llv.STATE_UNKNOWN
+        assert "no posts at all" in llv.feed_composer_verdict(feed)
+
+    def test_a_feed_that_never_rendered_grounds_nothing(self):
+        assert llv.feed_composer_state({"feed": "group", "page_text": ""}) == llv.STATE_UNKNOWN
+        assert llv.feed_composer_state({"feed": "group", "error": "TimeoutException: x"}) \
+            == llv.STATE_UNKNOWN
+        assert "could not be read" in llv.feed_composer_verdict(
+            {"feed": "group", "error": "TimeoutException: x"})
+
+    def test_the_three_zero_shapes_are_graded_apart(self):
+        """They need opposite fixes and a bare `composers_resolved: 0` reads the same for all three."""
+        no_action = {"feed": "group", "page_text": "posts", "cards_found": 3,
+                     "composers_resolved": 0, "cards": [{"comment_action": None}]}
+        assert llv.feed_composer_state(no_action) == llv.STATE_DRIFT
+        assert "_COMMENT_ACTION_LOCATORS" in llv.feed_composer_verdict(no_action)
+
+        unclaimed = {"feed": "group", "page_text": "posts", "cards_found": 3,
+                     "composers_resolved": 0, "page_textboxes_after_click": 2,
+                     "cards": [{"comment_action": {"text": "Comment"}}]}
+        assert "claimed none of them for their card" in llv.feed_composer_verdict(unclaimed)
+
+        none_mounted = {"feed": "group", "page_text": "posts", "cards_found": 3,
+                        "composers_resolved": 0, "page_textboxes_after_click": 0,
+                        "cards": [{"comment_action": {"text": "Comment"}}]}
+        verdict = llv.feed_composer_verdict(none_mounted)
+        assert "NO composer mounted anywhere" in verdict and "#1084" in verdict
+
+    def test_the_home_control_is_what_makes_a_group_finding_about_groups(self):
+        ok = {"feed": "home", "page_text": "posts", "cards_found": 2, "composers_resolved": 2}
+        drift = {"feed": "group", "page_text": "posts", "cards_found": 2, "composers_resolved": 0,
+                 "page_textboxes_after_click": 1, "cards": [{"comment_action": {"text": "C"}}]}
+        reading = {"group_id": "42", "group": drift, "home": ok}
+        assert llv.group_feed_composer_state(reading) == llv.STATE_DRIFT
+        assert "group surface is what differs" in llv.group_feed_composer_verdict(reading)
+
+    def test_a_control_that_failed_the_same_way_is_not_a_group_finding(self):
+        drift = {"feed": "x", "page_text": "posts", "cards_found": 2, "composers_resolved": 0,
+                 "page_textboxes_after_click": 1, "cards": [{"comment_action": {"text": "C"}}]}
+        reading = {"group_id": "42", "group": dict(drift, feed="group"),
+                   "home": dict(drift, feed="home")}
+        assert "nothing to do with groups" in llv.group_feed_composer_verdict(reading)
+
+    def test_no_group_to_probe_grades_unknown_and_opens_no_feed(self):
+        driver = MagicMock()
+        reading = llv.probe_group_feed_composer(driver, user_id=1, enabled_ids=[],
+                                                sleep=lambda *_: None)
+        assert reading["target_source"] == "none"
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "no group to probe" in reading["verdict"]
+        driver.get.assert_not_called()
+
+    def test_an_unreadable_enabled_list_is_not_an_empty_one(self):
+        db = types.ModuleType("cqc_lem.utilities.db")
+
+        def get_enabled_group_ids(user_id):
+            raise RuntimeError("no db")
+
+        db.get_enabled_group_ids = get_enabled_group_ids
+        with patch.dict(sys.modules, {"cqc_lem.utilities.db": db}):
+            reading = llv.probe_group_feed_composer(MagicMock(), user_id=1, sleep=lambda *_: None)
+        assert reading["enabled_ids_readable"] is False
+        assert "RuntimeError" in reading["enabled_ids_error"]
+        assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_a_box_only_the_widened_scope_holds_is_reported_as_the_widenings_work(self, monkeypatch):
+        """The #916 answer: the card carries no textbox, `_single_post_scope` is what found one."""
+        driver = _composer_feed_driver()
+        composer = MagicMock()
+        clicks: list = []
+        _patch_composer_chain(monkeypatch, composer=composer, in_card=(), clicks=clicks)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        assert reading["cards_found"] == 1
+        assert reading["cards"][0]["composer_source"] == "widened_scope"
+        assert reading["composers_from_widening"] == 1
+        assert reading["state"] == llv.STATE_OK
+        # Read-only: the ONE click is the card's own Comment button, and nothing is ever typed.
+        assert clicks == ["Open comment composer"]
+        composer.send_keys.assert_not_called()
+
+    def test_a_composer_the_escape_closes_still_counts_as_having_mounted(self, monkeypatch):
+        """The page-wide count is taken while the box is OPEN, never after the walk Escaped it.
+
+        Read afterwards, a working Escape zeroes it and the two zero-shapes that need OPPOSITE
+        fixes collapse: "a composer mounted that the card-scoped resolver claimed for no card"
+        (re-ground the resolver) reads as "nothing mounts here at all" (#1084 — stop the lane).
+        """
+        driver = _composer_feed_driver()
+        card = _patch_composer_chain(monkeypatch, composer=None)
+        mounted = [MagicMock()]
+        monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+                            lambda root: [] if root is card else
+                            [(box, {"y": 0}) for box in mounted])
+
+        class _EscapeClosesTheComposer:
+            def __init__(self, _driver):
+                pass
+
+            def send_keys(self, *_):
+                return self
+
+            def perform(self):
+                mounted.clear()
+
+        monkeypatch.setattr("selenium.webdriver.ActionChains", _EscapeClosesTheComposer)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        assert reading["composers_resolved"] == 0
+        assert reading["page_textboxes_after_click"] == 1
+        assert reading["state"] == llv.STATE_DRIFT
+        assert "claimed none of them for their card" in reading["verdict"]
+        assert "#1084" not in reading["verdict"]
+
+    def test_a_box_inside_the_card_is_not_credited_to_the_widening(self, monkeypatch):
+        driver = _composer_feed_driver()
+        composer = MagicMock()
+        _patch_composer_chain(monkeypatch, composer=composer, in_card=(composer,))
+
+        reading = llv._walk_feed_composers(driver, "home", llv.FEED_URL, max_cards=1,
+                                           sleep=lambda *_: None)
+
+        assert reading["cards"][0]["composer_source"] == "in_card"
+        assert reading["composers_from_widening"] == 0
+
+    def test_per_locator_hit_counts_ride_along_so_a_zero_is_re_groundable(self, monkeypatch):
+        driver = _composer_feed_driver()
+        _patch_composer_chain(monkeypatch, composer=MagicMock())
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           max_cards=1, sleep=lambda *_: None)
+
+        hits = reading["locator_hits"]
+        assert hits, "the chain's own hit counts are the reading a re-grounding pass is written from"
+        assert any(count for count in hits.values()), "the TEXT rungs should have matched"
+        assert any(count == 0 for count in hits.values()), "the aria-label rungs should not have"
+
+    def test_a_card_the_page_renders_that_the_walk_misses_is_drift(self, monkeypatch):
+        driver = _composer_feed_driver(text_nodes=4, markers=4)
+        _patch_composer_chain(monkeypatch)
+        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: None)
+
+        reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
+                                           sleep=lambda *_: None)
+
+        assert reading["cards_found"] == 0 and reading["post_text_nodes"] == 4
+        assert reading["page_post_markers"] == 4
+        assert reading["state"] == llv.STATE_DRIFT
+
+    def test_the_probe_walks_the_group_then_the_home_feed_as_a_control(self, monkeypatch):
+        driver = _composer_feed_driver()
+        _patch_composer_chain(monkeypatch, composer=MagicMock())
+
+        reading = llv.probe_group_feed_composer(driver, user_id=1, enabled_ids=["42", "43"],
+                                                max_cards=1, sleep=lambda *_: None)
+
+        assert reading["group_id"] == "42" and reading["target_source"] == "db_enabled"
+        assert [c.args[0] for c in driver.get.call_args_list] == [
+            "https://www.linkedin.com/groups/42/", llv.FEED_URL]
+        assert reading["group"]["feed"] == "group" and reading["home"]["feed"] == "home"
+        assert reading["state"] == llv.STATE_OK
+
+    def test_group_feed_composer_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_group_feed_composer",
+                            lambda d, uid, group_id=None, max_cards=3: {"verdict": "ok"})
+        assert llv.main(["--group-feed-composer"]) == 0
+        assert llv.main(["--group-feed-composer", "42", "--group-feed-cards", "5"]) == 0
+
+
 @pytest.mark.unit
 class TestCompanyInviteProbe:
     def test_credit_copy_the_parser_cannot_read_is_drift(self):

@@ -26,9 +26,10 @@ Answers, against a REAL logged-in session, the two questions
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
 attaching or posting anything; ``--permalink-comment`` does the same for a POST's comment composer
-(#966) — it clicks Comment so the box mounts, describes it, and Escapes, typing and submitting
-nothing; ``--comment-outcome-url`` and ``--feed-sort`` flip a sort control, exactly as the
-production readers they are grounding do.
+(#966) and ``--group-feed-composer`` for every sampled card of a GROUP feed (#928) — each clicks
+Comment so the box mounts, describes it, and Escapes, typing and submitting nothing;
+``--comment-outcome-url`` and ``--feed-sort`` flip a sort control, exactly as the production readers
+they are grounding do.
 
 Run it from inside a Selenium worker so the login/cookie/proxy stack is the production one
 (``scripts/`` is not baked into the image, so pipe the file in on stdin, the same way
@@ -156,6 +157,9 @@ SURFACES = (
     {"key": "group_membership", "surface": "Groups directory + a group page's membership controls",
      "code": "run_automation._enumerate_joined_groups / auto_comment_in_groups",
      "flag": "--group-membership", "sweep": True},
+    {"key": "group_feed_composer", "surface": "Group feed post card → Comment → inline composer",
+     "code": "run_automation._post_composer_for_card / _single_post_scope / auto_comment_in_groups",
+     "flag": "--group-feed-composer", "sweep": True},
     {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
      "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
      "sweep": True},
@@ -2567,6 +2571,331 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
     return graded(reading, group_membership_state(reading), group_membership_verdict(reading))
 
 
+# ──────────────────── group-feed comment composer (issues #916 / #928) ────────────────────────
+# #916 widened the composer lookup from the post CARD to `_single_post_scope`, because the
+# card-scoped one missed on every post of every run — 408 misses in 18h, every one on a `/groups/`
+# URL — and it downgraded that miss to DEBUG, because a miss is a skip production already handles.
+# Both are right, and together they made the lane SILENT whether or not the widening works: the
+# three days before #916 examined 2,515 group posts and landed ONE comment.
+#
+# Nothing grounded this surface. `--group-composer` grounds the group SHARE BOX (posting INTO a
+# group, #932) and `--probe-composer` the home feed's; neither touches the per-post COMMENT composer
+# on a group feed, which is what `auto_comment_in_groups` reaches through `comment_on_feed_inline`.
+#
+# The home feed rides along as the CONTROL on every run. "No composer in the group" is only a
+# statement about groups next to a feed where the SAME chain, in the SAME session, resolves one.
+_GROUP_FEED_URL = "https://www.linkedin.com/groups/{group_id}/"
+
+
+def _locator_hits(scope, locators) -> dict:
+    """How many elements each rung of a shipped locator chain matches inside ONE scope.
+
+    Every rung is a different route to the same control and LinkedIn keeps several alive at once, so
+    WHICH rung is carrying the surface is the reading a re-grounding pass is written from — that is
+    what the `live count:` comments beside `_COMMENT_ACTION_LOCATORS` record, and they were taken on
+    the HOME feed (#816). A rung that raises is reported as its exception rather than as a zero: a
+    zero is evidence, an unreadable rung is not.
+    """
+    hits = {}
+    for by, selector in locators or []:
+        key = f"{by}={selector}"
+        try:
+            hits[key] = len(scope.find_elements(by, selector))
+        except Exception as e:
+            hits[key] = f"<{type(e).__name__}>"
+    return hits
+
+
+def merge_locator_hits(per_card) -> dict:
+    """Sum per-card locator hits into one chain-wide tally, keeping the chain's own order.
+
+    A rung that raised on some card contributes nothing to the sum but keeps its own count of
+    unreadable cards, so a chain that looks like a clean zero can still say it was never read.
+    """
+    totals: dict = {}
+    errors: dict = {}
+    for hits in per_card or []:
+        for key, value in (hits or {}).items():
+            if isinstance(value, int):
+                totals[key] = totals.get(key, 0) + value
+            else:
+                totals.setdefault(key, 0)
+                errors[key] = errors.get(key, 0) + 1
+    for key, count in errors.items():
+        totals[f"{key} (unreadable on {count} card(s))"] = totals.pop(key)
+    return totals
+
+
+def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
+                         sleep: Callable[[float], None] = time.sleep) -> dict:
+    """Walk ONE feed and report, per card, whether a comment composer resolves — and from WHERE.
+
+    Read-only in the sense `--permalink-comment` already is: it clicks each card's own Comment
+    button so the composer mounts, describes what mounted, and presses Escape. Nothing is typed and
+    nothing is submitted, so no comment can be left.
+
+    It calls the SHIPPED chain (`_card_for_textbox` → `_COMMENT_ACTION_LOCATORS` →
+    `_post_composer_for_card`), never a copy of it: an inlined duplicate grounds whatever the
+    probe's author last pasted, which is how the reaction probe once reported `cards_found: 0`
+    against a build whose walk was already fixed.
+    """
+    from selenium.webdriver import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.run_automation import (
+        _COMMENT_ACTION_LOCATORS,
+        _FEED_CARD_CROSSCHECK_SEL,
+        _FEED_POST_TEXT_SEL,
+        _card_for_textbox,
+        _is_post_comment_box,
+        _post_composer_for_card,
+        _single_post_scope,
+        _visible_composers,
+    )
+    from cqc_lem.utilities.selenium_util import click_first, find_first
+
+    wait = WebDriverWait(driver, 10)
+    reading: dict = {"feed": feed, "url": url, "cards": []}
+    try:
+        driver.get(url)
+        sleep(5)
+        # Both feeds lazy-load: on the first paint a group feed can carry no post cards at all, and
+        # "found nothing" would be indistinguishable from "the anchors are gone".
+        for _ in range(2):
+            driver.execute_script("window.scrollBy(0, 900);")
+            sleep(2)
+    except Exception as e:
+        reading["error"] = f"{type(e).__name__}: {e}"[:200]
+        return reading
+    reading["url"] = str(getattr(driver, "current_url", url) or url)[:200]
+    reading["page_text"] = page_text_sample(driver)
+
+    try:
+        boxes = list(driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL))
+    except Exception as e:
+        reading["error"] = f"card enumeration failed: {type(e).__name__}: {e}"[:200]
+        return reading
+    reading["post_text_nodes"] = len(boxes)
+    # The page's OWN count of posts, on an anchor the walk does not use — the zero-walk cross-check
+    # (#1013/#1021). Without it, a group feed the walk is blind to and a group feed with nothing in
+    # it are the same `cards_found: 0`.
+    try:
+        reading["page_post_markers"] = len(
+            driver.find_elements(By.CSS_SELECTOR, _FEED_CARD_CROSSCHECK_SEL))
+    except Exception:
+        reading["page_post_markers"] = 0
+
+    cards = []
+    for box in boxes:
+        if len(cards) >= max_cards:
+            break
+        try:
+            card = _card_for_textbox(driver, box)
+        except Exception:
+            card = None
+        if card is not None:
+            cards.append(card)
+    reading["cards_found"] = len(cards)
+
+    for index, card in enumerate(cards):
+        entry: dict = {"index": index, "locator_hits": _locator_hits(card, _COMMENT_ACTION_LOCATORS)}
+        action = find_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Comment action",
+                            parent_element=card, required=False, visible_only=True, max_try=1,
+                            warn_on_miss=False)
+        entry["comment_action"] = element_evidence(action) if action is not None else None
+        composer = None
+        if action is not None:
+            click_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Open comment composer",
+                        parent_element=card, required=False, max_try=1, warn_on_miss=False)
+            sleep(2)
+            composer = _post_composer_for_card(driver, card)
+        in_card = [box for box, _rect in _visible_composers(card)]
+        entry["textboxes_in_card"] = len(in_card)
+        # The #916 question itself: the card is only the NEAREST ancestor carrying the comment
+        # action, so whether the scope widened at all — and whether the box lives in the widened
+        # part — is what says if the fix reaches this surface or merely could.
+        scope = _single_post_scope(driver, card)
+        entry["scope_widened"] = bool(scope is not None and scope != card)
+        entry["textboxes_in_scope"] = len(_visible_composers(scope)) if scope is not None else 0
+        entry["composer"] = element_evidence(composer) if composer is not None else None
+        entry["composer_source"] = ("none" if composer is None else
+                                    "in_card" if any(composer == box for box in in_card) else
+                                    "widened_scope")
+        entry["composer_labelled"] = bool(composer is not None and _is_post_comment_box(composer))
+        if action is not None:
+            # Counted HERE, before the Escape below, because Escape closes the very box this number
+            # exists to see. Read once after the walk instead, a successful Escape zeroes it, and the
+            # two zero-shapes that need OPPOSITE fixes — "a composer mounted that the card-scoped
+            # resolver claimed for no card" (re-ground the resolver) and "nothing mounts anywhere"
+            # (the surface has no inline composer, #1084) — collapse into the second one.
+            try:
+                entry["page_textboxes_open"] = len(_visible_composers(driver))
+            except Exception:
+                entry["page_textboxes_open"] = 0
+        try:
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        except Exception:
+            # Closing is courtesy only — nothing was typed, and a failed Escape must not cost the
+            # evidence this probe exists to report.
+            pass
+        reading["cards"].append(entry)
+
+    reading["composers_resolved"] = sum(1 for c in reading["cards"] if c.get("composer"))
+    reading["composers_from_widening"] = sum(1 for c in reading["cards"]
+                                             if c.get("composer_source") == "widened_scope")
+    reading["locator_hits"] = merge_locator_hits(c.get("locator_hits") for c in reading["cards"])
+    # Page-native cross-check for the case that matters: a composer DID mount and the card-scoped
+    # resolver claimed none of them. That is drift; nothing mounting at all is a surface with no
+    # inline composer, which is a different finding and needs the opposite fix. The MOST any card's
+    # click had open at once, so one card's evidence survives the next card's Escape; the trailing
+    # page read only ever adds a box the Escapes left behind.
+    try:
+        page_after = len(_visible_composers(driver))
+    except Exception:
+        page_after = 0
+    reading["page_textboxes_after_click"] = max(
+        [page_after] + [c.get("page_textboxes_open") or 0 for c in reading["cards"]])
+    reading["visible_controls"] = visible_button_labels(driver, limit=30)
+    return graded(reading, feed_composer_state(reading), feed_composer_verdict(reading))
+
+
+def feed_composer_state(feed: Optional[dict]) -> str:
+    """Three-state grade for ONE feed's composer walk.
+
+    `drift` needs the page's own evidence, never an empty result: posts the page renders that the
+    card walk reached none of, or cards whose Comment action mounted a composer the card-scoped
+    resolver would not claim. A feed carrying no posts at all is `unknown` — a quiet group is not a
+    defect, and filing it weekly would bury the run where the composer really is gone.
+    """
+    feed = dict(feed or {})
+    if feed.get("error") or not str(feed.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if not feed.get("cards_found"):
+        return STATE_DRIFT if (feed.get("post_text_nodes") or feed.get("page_post_markers")) \
+            else STATE_UNKNOWN
+    return STATE_OK if feed.get("composers_resolved") else STATE_DRIFT
+
+
+def feed_composer_verdict(feed: Optional[dict]) -> str:
+    """What one feed's walk proves about `auto_comment_in_groups`' ability to post anything.
+
+    The three ways a walk can end at zero comments need three different fixes, and a bare
+    `composers_resolved: 0` reads the same for all of them: no Comment action at all (re-ground the
+    chain), a composer that mounted somewhere the card-scoped resolver would not claim (widen /
+    re-ground the resolver), and no composer mounting anywhere (the surface has none, so stop
+    generating a comment for it).
+    """
+    state = feed_composer_state(feed)
+    feed = dict(feed or {})
+    name = feed.get("feed") or "feed"
+    if feed.get("error"):
+        return f"the {name} feed could not be read ({feed['error']}) — re-run"
+    if not str(feed.get("page_text") or "").strip():
+        return f"the {name} feed did not render — this reading grounds nothing; re-run it"
+    if not feed.get("cards_found"):
+        if state == STATE_UNKNOWN:
+            return (f"the {name} feed rendered no posts at all — there was nothing to resolve a "
+                    f"composer on")
+        return (f"{feed.get('post_text_nodes') or 0} post text node(s) and "
+                f"{feed.get('page_post_markers') or 0} post marker(s) rendered on the {name} feed "
+                f"and the card walk reached NONE of them — production comments on nothing here")
+    if state == STATE_OK:
+        head = (f"{feed.get('composers_resolved')} of {feed.get('cards_found')} card(s) on the "
+                f"{name} feed resolved a comment composer")
+        widened = feed.get("composers_from_widening") or 0
+        if widened:
+            return (f"{head}, {widened} of them ONLY after `_single_post_scope` widened past the "
+                    f"card — the #916 widening is what carries this surface")
+        return f"{head}, every one from inside the card itself"
+    if not any(c.get("comment_action") for c in (feed.get("cards") or [])):
+        return (f"{feed.get('cards_found')} card(s) walked on the {name} feed and not one carried a "
+                f"Comment action — re-ground `_COMMENT_ACTION_LOCATORS` from `locator_hits`")
+    if feed.get("page_textboxes_after_click"):
+        return (f"Comment was clicked on {feed.get('cards_found')} card(s) of the {name} feed and "
+                f"{feed.get('page_textboxes_after_click')} composer(s) are mounted on the page, but "
+                f"`_post_composer_for_card` claimed none of them for their card — the #916 widening "
+                f"does not reach this surface")
+    return (f"Comment was clicked on {feed.get('cards_found')} card(s) of the {name} feed and NO "
+            f"composer mounted anywhere on the page — this surface has no inline composer, so "
+            f"production can never post here and must stop generating a comment per post (#1084)")
+
+
+def group_feed_composer_state(reading: Optional[dict]) -> str:
+    """Worst-wins across the group feed and its home-feed control.
+
+    With no group to probe the whole reading is `unknown` on purpose: the home half alone says
+    nothing about this surface, and grading it would let a home-feed finding file as a group one.
+    """
+    reading = dict(reading or {})
+    if not reading.get("group_id"):
+        return STATE_UNKNOWN
+    return worst_state([feed_composer_state(reading.get("group")),
+                        feed_composer_state(reading.get("home"))])
+
+
+def group_feed_composer_verdict(reading: Optional[dict]) -> str:
+    """Both halves, plus the comparison that makes the group half mean something."""
+    reading = dict(reading or {})
+    if not reading.get("group_id"):
+        return ("no group to probe — pass a group id, or enable one for this user; nothing here "
+                "grounds the group comment composer")
+    group_state = feed_composer_state(reading.get("group"))
+    home_state = feed_composer_state(reading.get("home"))
+    parts = [f"group {reading['group_id']}: {feed_composer_verdict(reading.get('group'))}",
+             f"home feed (control): {feed_composer_verdict(reading.get('home'))}"]
+    if group_state == STATE_DRIFT and home_state == STATE_OK:
+        parts.append("the SAME chain resolved a composer on the home feed in this session, so the "
+                     "group surface is what differs — not the chain")
+    elif group_state == STATE_DRIFT and home_state == STATE_DRIFT:
+        parts.append("the home-feed control failed the same way, so this is the comment chain "
+                     "itself and nothing to do with groups")
+    elif group_state == STATE_OK and home_state != STATE_OK:
+        parts.append("the group half resolved and the control did not, so the control grounds "
+                     "nothing this run — the group reading stands on its own")
+    return "; ".join(parts)
+
+
+def probe_group_feed_composer(driver, user_id: int = 1, group_id: Optional[str] = None,
+                              max_cards: int = 3, enabled_ids: Optional[list] = None,
+                              sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#928: does the composer `auto_comment_in_groups` needs resolve on a GROUP feed?
+
+    And is #916's widening what resolves it? Walks a group feed and then the home feed as a
+    control, running the SHIPPED card → Comment-action → composer chain on each card and reporting
+    per-locator hit counts, whether the box lived inside the card or only inside the widened
+    `_single_post_scope`, and the page's own post/composer counts to grade the zeros against.
+
+    Read-only: it clicks each card's own Comment button so the composer mounts, then Escapes.
+    Nothing is typed, no submit control is ever clicked, and no comment can be left.
+    """
+    enabled_ids_readable = True
+    enabled_ids_error = ""
+    if enabled_ids is None:
+        try:
+            from cqc_lem.utilities.db import get_enabled_group_ids
+            enabled_ids = [str(g) for g in (get_enabled_group_ids(user_id) or [])]
+        except Exception as e:
+            enabled_ids, enabled_ids_readable = [], False
+            enabled_ids_error = f"{type(e).__name__}: {e}"[:200]
+    enabled_ids = [str(g) for g in (enabled_ids or [])]
+
+    target = str(group_id) if group_id else (enabled_ids[0] if enabled_ids else "")
+    reading: dict = {"user_id": user_id, "group_id": target, "max_cards": max_cards,
+                     "enabled_group_ids": enabled_ids,
+                     "enabled_ids_readable": enabled_ids_readable,
+                     "target_source": ("argument" if group_id else
+                                       "db_enabled" if enabled_ids else "none")}
+    if enabled_ids_error:
+        reading["enabled_ids_error"] = enabled_ids_error
+    if target:
+        reading["group"] = _walk_feed_composers(driver, "group",
+                                                _GROUP_FEED_URL.format(group_id=target),
+                                                max_cards=max_cards, sleep=sleep)
+        reading["home"] = _walk_feed_composers(driver, "home", FEED_URL, max_cards=max_cards,
+                                               sleep=sleep)
+    return graded(reading, group_feed_composer_state(reading), group_feed_composer_verdict(reading))
+
+
 # ─────────────────────────── company-page invite modal (#732) ────────────────────────────────
 _CREDITS_TEXT_RE = re.compile(r"credits? available", re.IGNORECASE)
 
@@ -2937,6 +3266,7 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
             driver, profile_url or _sweep_own_profile(driver, user_id)),
         "catchup_cards": lambda: probe_catchup_cards(driver),
         "group_membership": lambda: probe_group_membership(driver, user_id),
+        "group_feed_composer": lambda: probe_group_feed_composer(driver, user_id),
         "company_invite": lambda: probe_company_invite(driver, user_id),
         "sent_invites": lambda: probe_sent_invites(driver),
         "appreciation_sources": lambda: probe_appreciation_sources(driver, user_id),
@@ -3070,6 +3400,15 @@ def build_parser() -> "argparse.ArgumentParser":
                              "it, plus one group page's own join/leave controls. Defaults to the "
                              "first group enabled in the DB. Read-only: nothing is clicked, no "
                              "group is joined or left.")
+    parser.add_argument("--group-feed-composer", metavar="GROUP_ID", nargs="?", const="",
+                        default=None,
+                        help="walk a GROUP feed and report, per card, whether the comment composer "
+                             "`auto_comment_in_groups` needs resolves — and whether #916's widening "
+                             "is what resolved it (#928). Runs the home feed as a control. Defaults "
+                             "to the first group enabled in the DB. Opens each card's composer and "
+                             "Escapes it; nothing is typed and no comment is left.")
+    parser.add_argument("--group-feed-cards", type=int, default=3,
+                        help="how many cards per feed to sample for --group-feed-composer")
     parser.add_argument("--company-invite", action="store_true",
                         help="open the company page's invite panel and report the credit counter, "
                              "invitee rows and checkboxes the invite lane reads (#732). Ticks no "
@@ -3104,13 +3443,15 @@ def main(argv: Optional[list] = None) -> int:
             or args.sent_invites or args.profile_views or args.connect_dialog
             or args.profile_scrape or args.profile_experiences or args.catchup_cards
             or args.group_composer or args.group_membership is not None
+            or args.group_feed_composer is not None
             or args.company_invite or args.permalink_comment
             or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --profile-experiences, "
                      "--connect-dialog, --catchup-cards, "
-                     "--group-composer, --group-membership, --company-invite, --reaction-probe, "
+                     "--group-composer, --group-membership, --group-feed-composer, "
+                     "--company-invite, --reaction-probe, "
                      "--roster-follow, "
                      "--roster-connect, --appreciation-sources, --sent-invites, "
                      "--permalink-comment and/or "
@@ -3171,6 +3512,10 @@ def main(argv: Optional[list] = None) -> int:
         if args.group_membership is not None:
             report["group_membership"] = probe_group_membership(
                 driver, args.user_id, group_id=args.group_membership or None)
+        if args.group_feed_composer is not None:
+            report["group_feed_composer"] = probe_group_feed_composer(
+                driver, args.user_id, group_id=args.group_feed_composer or None,
+                max_cards=args.group_feed_cards)
         if args.company_invite:
             report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
         if args.permalink_comment:
