@@ -32,12 +32,24 @@ export default function GroupPostQueue(
   const qc = useQueryClient()
   const [draftText, setDraftText] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [publishAt, setPublishAt] = useState<Date>(() => nextGroupPublishSlot())
   const mounted = useRef(false)
 
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
+    }
+  }, [])
+
+  // Update publish time every minute to prevent staleness if component is left open
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setPublishAt(nextGroupPublishSlot())
+    }, 60 * 1000) // Update every minute
+
+    return () => {
+      window.clearInterval(timer)
     }
   }, [])
 
@@ -76,7 +88,6 @@ export default function GroupPostQueue(
     },
   })
 
-  const publishAt = nextGroupPublishSlot()
   const dirty = !!draft && draftText !== null && draftText !== draft.content &&
     !!draftText.trim() && draftText.length <= GROUP_POST_MAX
 

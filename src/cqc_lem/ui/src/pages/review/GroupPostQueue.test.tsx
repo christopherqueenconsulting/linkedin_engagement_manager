@@ -87,6 +87,19 @@ describe('GroupPostQueue — scheduling info', () => {
     await waitFor(() => expect(screen.getByText('No group post draft queued yet.')).toBeTruthy())
     expect(screen.queryByLabelText('Group post text')).toBeNull()
   })
+
+  it('shows loading state while fetching draft', async () => {
+    // Mock a pending request that never resolves
+    const pendingPromise = new Promise(() => {})
+    get.mockReturnValue(pendingPromise)
+
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    expect(screen.getByText(/Loading group post draft…/i)).toBeTruthy()
+
+    // Clean up
+    get.mockReset()
+  })
 })
 
 describe('GroupPostQueue — editing', () => {
@@ -138,5 +151,83 @@ describe('GroupPostQueue — editing', () => {
     await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
     fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'x'.repeat(3001) } })
     expect((screen.getByRole('button', { name: /Save post/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows red character count when over limit', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'x'.repeat(3001) } })
+
+    const charCount = screen.getByText(/3001\/3000/i)
+    expect(charCount).toHaveClass('text-red-600')
+  })
+
+  it('shows green character count when under limit', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'Short text' } })
+
+    const charCount = screen.getByText(/10\/3000/i)
+    expect(charCount).toHaveClass('text-gray-500')
+  })
+
+  it('shows success message after saving', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'Updated content' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save post/i }))
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        content: 'Updated content',
+      })
+    )
+
+    expect(screen.getByText(/Saved\./i)).toBeTruthy()
+  })
+
+  it('shows error message when save fails', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    put.mockRejectedValue(new Error('Network error'))
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'Some content' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save post/i }))
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        content: 'Some content',
+      })
+    )
+
+    expect(screen.getByText(/Could not save — try again\./i)).toBeTruthy()
+  })
+
+  it('shows success message when skipping', async () => {
+    get.mockResolvedValue({ data: { detail: DRAFT } })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Skip this week/i }))
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
+        session_token: 'tok',
+        status: 'skipped',
+      })
+    )
+
+    expect(screen.getByText(/Skipped — no group post this week\./i)).toBeTruthy()
   })
 })
