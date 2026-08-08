@@ -316,7 +316,13 @@ def main() -> int:
         entry = imported[name]
         if isinstance(entry, tuple):
             stmt, alias = entry
-            grouped.setdefault(("from", stmt.module), []).append(alias.asname or alias.name)
+            # Carry the `as` through. db.py binds the connection module as `from cqc_lem.platform.db
+            # import connection as _connection`, and emitting just the bound name produced
+            # `from cqc_lem.platform.db import _connection` -- an ImportError, since the module is
+            # called `connection`. Only functions using `_connection.` directly hit this, so the
+            # first aggregate moved (all db_cursor) never exercised it.
+            spec = alias.name if not alias.asname else f"{alias.name} as {alias.asname}"
+            grouped.setdefault(("from", stmt.module), []).append(spec)
         else:
             grouped.setdefault(("import", entry.names[0].asname or entry.names[0].name), [])
     blocks = []
