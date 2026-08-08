@@ -333,6 +333,10 @@ class TestPostToGroup:
         return patch(f"{_RA}.get_current_profile",
                      return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
 
+    def _driver_patches_with(self, driver):
+        return patch(f"{_RA}.get_current_profile",
+                     return_value=(driver, MagicMock(), "e", MagicMock()))
+
     def test_publishes_the_reviewed_draft_and_stamps_rotation(self):
         """Issue #932: the published text is the draft the user could read and revise — nothing is
         generated here. Only a post that actually shipped moves the rotation on.
@@ -414,6 +418,57 @@ class TestPostToGroup:
         run.assert_called_once_with(1, "123")
         rec.assert_not_called()
         assert str(upd.call_args.kwargs["status"]) == "failed"
+
+    def test_share_box_drift_warns_when_page_text_still_carries_the_signal(self):
+        """Issue #1107: share-box signal visible but the locator chain cannot resolve it.
+
+        When the page plainly renders "Start a post" but the control lookup misses, we are looking
+        at selector drift rather than an admin-only group.
+        """
+        from cqc_lem.app.run_automation import auto_post_to_group
+        driver = MagicMock()
+        body = MagicMock()
+        body.text = "Some group header\nStart a post\nRecommended for you"
+        driver.find_element.return_value = body
+        with self._driver_patches_with(driver), \
+             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.update_group_post_draft") as upd, \
+             patch(f"{_RA}.record_group_post_run") as run, \
+             patch(f"{_RA}.log_warning") as warn, \
+             patch(f"{_RA}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
+                                            draft_id=11)
+        assert result == "Group share box control drifted"
+        run.assert_called_once_with(1, "123")
+        rec.assert_not_called()
+        assert str(upd.call_args.kwargs["status"]) == "failed"
+        warn.assert_called_once()
+        assert "drifted" in warn.call_args[0][0].lower()
+
+    def test_share_box_absent_without_signal_is_not_drift(self):
+        """If the page text has no share-box signal at all, the group is simply unpostable."""
+        from cqc_lem.app.run_automation import auto_post_to_group
+        driver = MagicMock()
+        body = MagicMock()
+        body.text = "Some group header\nRecommended for you"
+        driver.find_element.return_value = body
+        with self._driver_patches_with(driver), \
+             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.update_group_post_draft") as upd, \
+             patch(f"{_RA}.record_group_post_run") as run, \
+             patch(f"{_RA}.log_warning") as warn, \
+             patch(f"{_RA}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
+                                            draft_id=11)
+        assert result == "Group share box not found"
+        run.assert_called_once_with(1, "123")
+        rec.assert_not_called()
+        assert str(upd.call_args.kwargs["status"]) == "failed"
+        warn.assert_not_called()
 
     def test_failure_before_the_group_is_reached_does_not_advance_the_rotation(self):
         """A dead session is transient and not the group's fault — it keeps its turn, and the draft

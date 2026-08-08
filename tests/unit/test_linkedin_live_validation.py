@@ -207,6 +207,7 @@ class TestProbeComposer:
         assert report["opened"] is False
         assert report["controls"] == []
         assert report["document_affordance"] is None
+        assert report["chain_source"] == "image"
         # No share box AND no page text: the feed never rendered, so this run grounds nothing.
         assert report["state"] == llv.STATE_UNKNOWN
 
@@ -218,6 +219,42 @@ class TestProbeComposer:
         driver.find_elements.side_effect = lambda *a, **k: [main]
         report = llv.probe_composer(driver, sleep=lambda s: None)
         assert report["state"] == llv.STATE_DRIFT
+
+
+@pytest.mark.unit
+class TestGroupShareBoxChainCopy:
+    """The probe runs inside a Selenium worker whose `cqc_lem` is the DEPLOYED image.
+
+    A pre-merge grounding pass cannot import the chain it is grounding. The script therefore carries
+    a copy — and a copy that drifts grounds a chain nothing ships, which is worse than not probing
+    at all.
+    """
+
+    def test_carried_chain_is_identical_to_the_one_run_automation_uses(self):
+        from cqc_lem.app import run_automation as ra
+
+        assert llv._CARRIED_GROUP_SHARE_BOX_LOCATORS == ra._GROUP_SHARE_BOX_LOCATORS
+
+    def test_the_running_image_wins_when_it_has_a_chain(self):
+        locators, source = llv._share_box_chains()
+        assert source == "image"
+        from cqc_lem.app import run_automation as ra
+
+        assert locators == ra._GROUP_SHARE_BOX_LOCATORS
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_1107(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_chain(name, *a, **k):
+            if name == "cqc_lem.app.run_automation":
+                raise ImportError("cannot import name '_GROUP_SHARE_BOX_LOCATORS'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_chain)
+        locators, source = llv._share_box_chains()
+        assert source == "script"
+        assert locators == llv._CARRIED_GROUP_SHARE_BOX_LOCATORS
 
 
 @pytest.mark.unit
