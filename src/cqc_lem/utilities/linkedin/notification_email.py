@@ -6,6 +6,7 @@ parse-domain derivation and tokenized-address style — but the token is a PERSI
 """
 import os
 import re
+from email.utils import parseaddr
 from typing import Optional
 
 # Reuse the exact parse-domain derivation used by the PIN flow (SENDGRID_FROM_EMAIL /
@@ -20,6 +21,14 @@ _REPLY_TOKEN_RE = re.compile(r"reply\+([A-Za-z0-9]+)@")
 _COMMENT_PHRASES = ("commented on", "replied to", "left a comment", "comment on your")
 _REACTION_PHRASES = ("liked", "reacted to", "celebrates", "loves", "supports",
                      "found your post", "mentioned you", "started following")
+
+# The registrable domains LinkedIn's own notification mail is sent from. Every notification local
+# part we see (notifications-noreply@, messages-noreply@, invitations@, news@, hit-reply@) sits on
+# linkedin.com itself, and the delivery/bounce routes sit on subdomains of it (e.linkedin.com,
+# bounce.linkedin.com) — which the suffix rule in _is_linkedin_sender already covers. Kept to that
+# ONE domain on purpose: lnkd.in is a link shortener, never a sender, and every extra entry is
+# another domain someone can register a lookalike under.
+_LINKEDIN_SENDER_DOMAINS = ("linkedin.com",)
 
 
 def reply_inbound_address(token: str) -> str:
@@ -60,6 +69,35 @@ def is_comment_notification(subject: str, text: str = "") -> bool:
     return False
 
 
+def _sender_domain(sender: str) -> str:
+    """The lowercased domain of an RFC5322 `From` value, or `""` when it doesn't carry one.
+
+    Handles both shapes a From header arrives in — bare `news@linkedin.com` and the display-name
+    form `"LinkedIn" <notifications-noreply@linkedin.com>` — and takes the part after the LAST `@`,
+    which is the only part a mail server routes on. A value parseaddr can't read yields `""`.
+    """
+    _, address = parseaddr(sender or "")
+    _, at, domain = address.rpartition("@")
+    if not at:
+        return ""
+    # A trailing dot is a legal absolute FQDN ("linkedin.com.") naming the same host.
+    return domain.strip().rstrip(".").lower()
+
+
+def _is_linkedin_sender(sender: str) -> bool:
+    """True only when the From address's DOMAIN is LinkedIn's, or a true subdomain of it.
+
+    A substring test is not a domain test: `bounce@linkedin.com.attacker.net` (LinkedIn's domain as
+    a mere LABEL of someone else's) and `notlinkedin.com@evil.test` (it in the local part) both
+    contain "linkedin.com" while being sent by neither. Only an exact match or a `.linkedin.com`
+    suffix counts, so the dot boundary is what a lookalike has to get past.
+    """
+    domain = _sender_domain(sender)
+    if not domain:
+        return False
+    return any(domain == d or domain.endswith(f".{d}") for d in _LINKEDIN_SENDER_DOMAINS)
+
+
 def is_linkedin_notification(sender: str, subject: str, text: str = "") -> bool:
     """True when mail arriving on a reply+<token> address is a forwarded LinkedIn notification of ANY
     kind. This is the evidence that a user's forwarding rule is actually live (issue #813), so it is
@@ -67,7 +105,7 @@ def is_linkedin_notification(sender: str, subject: str, text: str = "") -> bool:
     works just as well — but not blanket: unrelated mail must not stand in as proof. A Gmail
     auto-forward preserves the original From header, so LinkedIn's sending domain survives the hop.
     """
-    if "linkedin.com" in (sender or "").lower():
+    if _is_linkedin_sender(sender):
         return True
     hay = f"{subject or ''}\n{(text or '')[:2000]}".lower()
     return "linkedin" in hay
