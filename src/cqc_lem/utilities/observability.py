@@ -1270,6 +1270,9 @@ def track_feed_scan(user_id: Optional[int], funnel: Optional[dict] = None, **ext
             "roster_followed": int(funnel.get("roster_followed") or 0),
             "off_topic_skipped": int(funnel.get("off_topic_skipped") or 0),
             "fallback_used": bool(funnel.get("fallback_used")),
+            # Group-feed lane only (issue #1084): posts whose composer was not reachable before the
+            # LLM generation was spent. Counted on `feed_scan` so the cost saving is measurable.
+            "skipped_no_composer": int(funnel.get("skipped_no_composer") or 0),
             **extra,
         },
     )
