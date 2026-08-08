@@ -2316,24 +2316,45 @@ FEED_SORT_MISSING = "missing"          # no sort control on the home feed at all
 FEED_SORT_UNKNOWN = "unknown"          # control there, but which sort applies could not be read
 FEED_SORT_NOT_APPLICABLE = "n/a"       # a surface that never had one (group feed, roster activity)
 
+# What can BE a sort trigger. Keyed on the interactive affordance — the tag, an ARIA role, or the
+# popup/href that makes it clickable — never on a class name, which SDUI churns.
+#
+# Re-grounded for #1108. The drift sweep enumerated every DISPLAYED <button> on the live home feed
+# in document order and the capture ran from the global nav straight into the first post's controls:
+# there was no <button> between them AT ALL, share box included. So the miss was structural, not a
+# label change — four of the five routes below used to require `self::button`, and whatever renders
+# the sort today is not one. Widening the affordance is the fix that survives whichever element
+# LinkedIn actually shipped; narrowing the label would only have re-guessed the same dead tag.
+_X_SORT_AFFORDANCE = ("self::button or self::a or @role='button' or @role='combobox' "
+                      "or @role='listbox' or @aria-haspopup")
+
 # Ordered fallback chain for the home-feed sort trigger, most-stable anchor first: aria-label →
 # data-testid → visible 'Sort by' text → a popup trigger whose whole label IS the current sort (the
-# 'Sort by' prefix is dropped on narrow layouts) → any non-<button> role=button carrying 'sort'.
-# Class names are never keyed on — SDUI churns them.
+# 'Sort by' prefix is dropped on narrow layouts) → a link carrying the sort in its own href.
 _FEED_SORT_LOCATORS = [
-    (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort')]"),
-    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_TESTID},'sort')]"),
-    (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'sort by')]"),
-    (By.XPATH, f"//button[@aria-haspopup][{_X_LOWER_TEXT}='{FEED_SORT_TOP}' or "
+    (By.XPATH, f"//*[{_X_SORT_AFFORDANCE}][contains({_X_LOWER_ARIA},'sort')]"),
+    (By.XPATH, f"//*[{_X_SORT_AFFORDANCE}][contains({_X_LOWER_TESTID},'sort')]"),
+    (By.XPATH, f"//*[{_X_SORT_AFFORDANCE}][contains({_X_LOWER_TEXT},'sort by')]"),
+    # Exact text, never `contains`: a popup trigger reading exactly 'Top' or 'Recent' is the sort
+    # control, while a card that merely CONTAINS the word 'recent' is someone's post (#1013 — never
+    # click a control whose label names a different entity than the target).
+    (By.XPATH, f"//*[@aria-haspopup or @role='combobox'][{_X_LOWER_TEXT}='{FEED_SORT_TOP}' or "
                f"{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
-    (By.XPATH, f"//*[@role='button'][contains({_X_LOWER_ARIA},'sort')]"),
+    # A link that carries the sort in its OWN href: navigating beats clicking when the page offers
+    # it (#1030). Gated on the href also naming /feed — an unguarded 'sortby=' match would happily
+    # resolve a link somebody SHARED in a post, and clicking it navigates the session off the feed
+    # the scan is about to read (the #1012 wrong-entity hazard, by URL instead of by label).
+    (By.XPATH, f"//main//a[contains({_x_lower('@href')},'/feed') and "
+               f"(contains({_x_lower('@href')},'sortby=') or "
+               f"contains({_x_lower('@href')},'sorttype='))]"),
 ]
 
 _FEED_RECENT_OPTION_LOCATORS = [
-    (By.XPATH, "//*[self::button or self::li or @role='menuitem' or @role='menuitemradio' "
-               f"or @role='option'][{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
-    (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio' or @role='option']"
-               f"[contains({_X_LOWER_TEXT},'{FEED_SORT_RECENT}')]"),
+    (By.XPATH, "//*[self::button or self::a or self::li or @role='menuitem' "
+               "or @role='menuitemradio' or @role='radio' or @role='option']"
+               f"[{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
+    (By.XPATH, "//*[self::button or self::a or @role='menuitem' or @role='menuitemradio' "
+               f"or @role='radio' or @role='option'][contains({_X_LOWER_TEXT},'{FEED_SORT_RECENT}')]"),
     (By.XPATH, f"//*[{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
 ]
 
@@ -2389,14 +2410,26 @@ def _switch_feed_to_recent(driver, wait, user_id: int = None) -> str:
     FEED_SORT_RECENT is returned ONLY when the control confirms it afterwards — an unverified flip
     recorded as sorted tells the same lie the silent no-op told. Fail-fast (`max_try=1`): this runs
     twice a run and each retry round burned MAX_WAIT_RETRY x ~5s before reporting the same miss.
+
+    A miss is graded against the page itself before it is logged as drift (#1108): the return value
+    is FEED_SORT_MISSING either way, so callers are unaffected, but only a feed that provably
+    rendered posts turns a missing control into a WARNING.
     """
     try:
         if not _is_home_feed(driver):
             log_debug("Skipping feed sort — not the home feed", action_type="scrape", user_id=user_id)
             return FEED_SORT_NOT_APPLICABLE
         btn = find_first(driver, wait, _FEED_SORT_LOCATORS, "Feed sort control", required=False,
-                         visible_only=True, max_try=1, user_id=user_id)
+                         visible_only=True, max_try=1, warn_on_miss=False, user_id=user_id)
         if btn is None:
+            # #1108: zero is not "nothing to do" until the page agrees. A dead session, a login
+            # wall and a rotated anchor all hand back the same None, and only the last is a defect
+            # — so the miss is graded against a per-post control this chain does not use (#1013).
+            # That grading owns the log level (`warn_on_miss=False` above), because `find_first`
+            # would otherwise warn on all three and file a defect for a feed that never rendered.
+            _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed sort control",
+                              user_id=user_id, action_type="scrape",
+                              task_name="_switch_feed_to_recent")
             return FEED_SORT_MISSING
         # The control reads 'Recent' once flipped — skip re-opening the menu so the second caller in
         # a run (navigate_to_feed then comment_on_feed_inline) is a cheap no-op.

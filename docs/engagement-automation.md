@@ -44,6 +44,13 @@ be read as recency-sorted:
   naming BOTH sorts** — some dropdown triggers spell their options into the accessible name ("Sort
   by, currently Top, options Top and Recent"), and reading 'recent' out of one would skip the flip
   AND record the run as sorted.
+- `missing` is graded against the PAGE before it is logged as drift (#1108). A dead session, a
+  login wall and a rotated anchor all return the same `None` from `find_first`, so the lookup runs
+  with `warn_on_miss=False` and hands the miss to `report_zero_walk` against
+  `button[aria-label^='Hide post by']` — an anchor the sort chain does not use. Only a feed that
+  provably rendered posts warns. **The returned state is `missing` in all three cases**: the
+  cross-check moves the log level, never what the run reports it ranked. See
+  `docs/sdui-selenium-notes.md` for what the live DOM measured.
 - `_is_home_feed` gates the whole thing: group feeds and a roster author's recent-activity page
   reuse the same engine but never had the control, so a miss there is `n/a` at DEBUG. An
   **unreadable URL counts as NOT the home feed** (#872) — a dead session cannot say which surface it
