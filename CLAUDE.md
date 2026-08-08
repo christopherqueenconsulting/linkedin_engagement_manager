@@ -246,8 +246,9 @@ The SIX contexts branch protection requires on `main` (verified against the API)
 (Python 3.12)`, `Integration Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`,
 `CodeQL PR Quality Gate`.
 
-**One workflow per test lane**, each owning the one Codecov flag `codecov.yml` declares — never add
-a whole-suite workflow (`tests/README.md`; the old `Test Suite` ran two lanes 3×/PR and gated none).
+**One workflow per test lane** (`tests/README.md`), each owning the one Codecov flag `codecov.yml`
+declares and all selecting `-m "not slow"`; never add a whole-suite workflow. `slow` tests are live
+third-party probes — `slow-tests.yml` runs them nightly and can never gate a PR.
 
 `CodeQL Security Analysis` and `Docstring & Lint Gate` run but are NOT required (the latter is the
 ratchet described under Code Conventions). **`required_approving_review_count` is 0**, so

@@ -1,0 +1,49 @@
+name: Nightly / Slow Tests
+
+# The 13 `slow`-marked tests, which NOTHING else in CI runs.
+#
+# Both required lanes select with `-m "not slow"` — deliberately, because these are live probes
+# against third-party services (Pexels, Perplexity, and the Ollama/LiteLLM video path) and a PR has
+# no business depending on someone else's uptime. The effect was that they ran nowhere at all.
+#
+# This replaces the old `Test Suite` workflow, which ran the unit lane and the integration lane a
+# THIRD time on every PR (13.7–19.9 min, ~39% of a PR's CI minutes) while gating nothing: it was
+# not a required context and had no `merge_group` trigger. Same file, honest job.
+#
+# NOT a gate, and it cannot become one — no `pull_request` or `push` trigger exists here.
+
+on:
+  schedule:
+    # 03:00 UTC. Clear of the release windows (05/11/17/23), the Dependabot reconciler (every 6h
+    # from 00:00), and the Monday CodeQL sweeps (09:00/10:00).
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slow:
+    name: Slow Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Poetry and dependencies
+        uses: ./.github/actions/poetry_setup
+        with:
+          python-version: "3.12"
+          install-args: --with test
+
+      # A missing key SKIPS rather than fails — `test_perplexity.py` and `test_pexels_video.py`
+      # both check for their key and call pytest.skip, and the Pexels one also skips on an
+      # unauthorized key rather than reporting a red CI for someone else's expired credential.
+      # PERPLEXITY_API_KEY is not currently a repo secret, so those tests skip; that is the honest
+      # state, not a silent hole. Adding the secret is what turns them on.
+      - name: Run the slow tests
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+        run: |
+          poetry run pytest tests/ -m slow -v --tb=short -rs

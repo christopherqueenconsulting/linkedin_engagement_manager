@@ -17,9 +17,22 @@ class TestPerplexitySearch:
         if not os.environ.get("PERPLEXITY_API_KEY"):
             pytest.skip("PERPLEXITY_API_KEY not set")
 
+        import requests
+
         from cqc_lem.utilities.ai.tools import search_with_perplexity
 
-        result = search_with_perplexity("Recent trends in artificial intelligence 2025")
+        try:
+            result = search_with_perplexity("Recent trends in artificial intelligence 2025")
+        except requests.exceptions.HTTPError as e:
+            # Same rule the Pexels probe already follows: a present-but-expired key is
+            # functionally "no key" for a live-call test, and turning the nightly red for
+            # someone else's dead credential is how a job stops being read. Presence was the only
+            # check here, so a 401 failed the run — caught the moment these tests were given a
+            # schedule to run on.
+            status = getattr(e.response, "status_code", None)
+            if status in (401, 403):
+                pytest.skip(f"PERPLEXITY_API_KEY unauthorized ({status})")
+            raise
 
         assert "answer" in result
         assert result["answer"], "Expected a non-empty answer from Perplexity"
