@@ -34,6 +34,15 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
+          # Deliberately NOT scoped to src/cqc_lem the way codeql.yml and the PR-gate config are:
+          # this is the broad sweep, and it is the only analysis that covers scripts/ and the rest
+          # of the tree. The single exclusion is vendored code — `.agents/skills` is pulled from
+          # upstream repos and pinned by content hash in skills-lock.json, so we cannot fix its
+          # findings, and leaving them in blocked an unrelated PR (#1145) on three py/empty-except
+          # alerts in code nobody here wrote. A lockfile bump is the moment to review that code.
+          config: |
+            paths-ignore:
+              - .agents/skills
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3

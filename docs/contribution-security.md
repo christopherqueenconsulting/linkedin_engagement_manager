@@ -177,6 +177,36 @@ specification and not an instruction to the agent, then apply `agent:ready` your
 **After changing `RUNBOOK.md`**, re-run `scripts/agent-pipeline/install.sh` — the installer copies
 it to `/home/lem/agent-pipeline/`, so an un-installed change has no effect on the running pipeline.
 
+## Vendored code is outside the CodeQL scope
+
+`.agents/skills/**` is pulled from upstream repositories and pinned by content hash in
+`skills-lock.json`. It is excluded from CodeQL in all three analyses.
+
+The reason is that its alerts are unactionable in the normal flow: nobody here wrote that code, a
+fix cannot be upstreamed through this repo's PR process, and the `CodeQL PR Quality Gate` counts
+any open alert in the tree as blocking. Three `py/empty-except` findings in vendored scripts held
+up an unrelated PR (#1145) indefinitely — the gate was doing its job, but on code the gate has no
+way to let anyone fix.
+
+**What this costs.** Vendored code still executes as agent tooling, and it is now unscanned. The
+control that replaces the scan is the lockfile: `computedHash` pins exact content, so vendored code
+cannot change without a visible lockfile diff. **A lockfile bump is a code review, not a version
+bump** — it is the one moment that content gets a human look.
+
+The exclusion is written in three places because the three analyses are scoped differently, and
+that difference is deliberate:
+
+| Analysis | Scope | Why |
+|---|---|---|
+| `codeql-analysis.yml` (`CodeQL Security Analysis`) | whole tree minus vendored | The broad sweep — the ONLY one covering `scripts/`, `.litellm/`, and the rest |
+| `codeql.yml` (`Advanced Analysis`) | `src/cqc_lem` | Application code, security-extended queries |
+| `.github/codeql/codeql-config.yml` (PR gate) | `src/cqc_lem` | What the merge gate compares against |
+
+Only the first was ever unscoped, which is why `paths: src/cqc_lem` in the other two never
+suppressed the vendored alerts — they were filed by a different analysis. In the two already scoped
+to `src/cqc_lem` the vendored entry is redundant today; it is there so widening `paths` later
+cannot silently pull vendored code back into the gate.
+
 ## Known gaps
 
 - **Shared identity.** The pipeline is `@gitchrisqueen`. A bot account or GitHub App would let
