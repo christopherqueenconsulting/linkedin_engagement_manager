@@ -67,7 +67,14 @@ describe('GroupPostQueue — publish slot helper', () => {
 })
 
 describe('GroupPostQueue — scheduling info', () => {
+  // The rendered publish slot is derived from the CURRENT instant, so this assertion is only
+  // meaningful against a pinned clock — left on the real one it passes this week and fails next.
+  // Only Date is faked: react-query and testing-library's waitFor still need real timers.
+  afterEach(() => vi.useRealTimers())
+
   it('renders the queued draft, group name, and publish timing', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-09T10:00:00Z')) // Sunday
     get.mockResolvedValue({ data: { detail: DRAFT } })
     harness(<GroupPostQueue userTimezone="America/New_York" />)
 
@@ -76,7 +83,7 @@ describe('GroupPostQueue — scheduling info', () => {
     expect((screen.getByLabelText('Group post text') as HTMLTextAreaElement).value).toBe('A useful insight.')
     // Drafted Aug 2 15:00 UTC -> 11:00 AM EDT
     expect(screen.getByText(/Drafted Aug 2, 11:00 AM/i)).toBeTruthy()
-    // Next Tuesday 15:00 UTC from Aug 9 (pinned by test helper) -> 11:00 AM EDT
+    // Next Tuesday 15:00 UTC from the pinned Sunday -> 11:00 AM EDT
     expect(screen.getByText(/Publishes Aug 11, 11:00 AM/i)).toBeTruthy()
   })
 
@@ -211,6 +218,21 @@ describe('GroupPostQueue — editing', () => {
     )
 
     expect(screen.getByText(/Could not save — try again\./i)).toBeTruthy()
+  })
+
+  it('keeps the skip confirmation once the retired draft leaves the queue', async () => {
+    // What the server really does: a skipped draft is no longer the OPEN one, so the refetch that
+    // follows the skip returns null and the panel holding the button unmounts. The confirmation
+    // has to outlive it, or the click reads as having done nothing.
+    get.mockResolvedValueOnce({ data: { detail: DRAFT } }).mockResolvedValue({ data: { detail: null } })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Skip this week/i }))
+
+    await waitFor(() => expect(screen.getByText('No group post draft queued yet.')).toBeTruthy())
+    expect(screen.getByText(/Skipped — no group post this week\./i)).toBeTruthy()
   })
 
   it('shows success message when skipping', async () => {

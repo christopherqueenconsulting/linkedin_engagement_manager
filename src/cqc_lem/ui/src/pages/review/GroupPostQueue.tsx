@@ -91,17 +91,26 @@ export default function GroupPostQueue(
   const dirty = !!draft && draftText !== null && draftText !== draft.content &&
     !!draftText.trim() && draftText.length <= GROUP_POST_MAX
 
+  // Rendered by every branch below: a skip retires the draft, so the panel that held the button is
+  // gone by the time the confirmation lands and the message has to outlive it.
+  const banner = msg && (
+    <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>
+  )
+
   if (isLoading) return <p className="text-gray-400 text-sm">Loading group post draft…</p>
 
   if (!draft) {
     return (
-      <div className="flex flex-col items-center text-center py-12 px-4 bg-white rounded-lg border border-gray-200">
-        <div className="text-4xl mb-4">👥</div>
-        <p className="text-gray-600 text-sm mb-2 max-w-sm">No group post draft queued yet.</p>
-        <p className="text-gray-400 text-xs max-w-sm">
-          Group posts are drafted Sunday and published Tuesday. Enable Post on a group in Account
-          settings to start the rotation.
-        </p>
+      <div className="space-y-3">
+        {banner}
+        <div className="flex flex-col items-center text-center py-12 px-4 bg-white rounded-lg border border-gray-200">
+          <div className="text-4xl mb-4">👥</div>
+          <p className="text-gray-600 text-sm mb-2 max-w-sm">No group post draft queued yet.</p>
+          <p className="text-gray-400 text-xs max-w-sm">
+            Group posts are drafted Sunday and published Tuesday. Enable Post on a group in Account
+            settings to start the rotation.
+          </p>
+        </div>
       </div>
     )
   }
@@ -166,7 +175,7 @@ export default function GroupPostQueue(
               </button>
             </span>
           </div>
-          {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
+          {banner}
         </div>
       </div>
     </div>
