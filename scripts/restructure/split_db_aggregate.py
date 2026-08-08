@@ -162,6 +162,30 @@ def function_bodies(src: str) -> dict[str, str]:
     }
 
 
+def module_bindings(src: str) -> dict[str, str]:
+    """Module-level constants and classes, by source text.
+
+    Verifying only function bodies left the most dangerous thing in the split unchecked. The `users`
+    aggregate carries `SECRET_FIELD_COOKIE_VALUE = "cookies.value"` and its three siblings, and those
+    STRING VALUES are the AAD every encrypted column was sealed under. A byte that changes while
+    moving does not fail a test -- it silently orphans every row already written, and
+    `ENCRYPTION_REQUIRED=true` in production means those reads then return None rather than erroring.
+    """
+    lines = src.splitlines()
+    out: dict[str, str] = {}
+    for n in ast.parse(src).body:
+        name = None
+        if isinstance(n, ast.Assign):
+            name = next((t.id for t in n.targets if isinstance(t, ast.Name)), None)
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            name = n.target.id
+        elif isinstance(n, ast.ClassDef):
+            name = n.name
+        if name:
+            out[name] = "\n".join(lines[n.lineno - 1:n.end_lineno])
+    return out
+
+
 def verify(aggregate: str, base: str) -> int:
     """Assert every moved body is byte-identical to the one on `base`, and that none went missing."""
     # An aggregate whose module already exists on `base` was moved by an EARLIER commit, so its
@@ -192,12 +216,21 @@ def verify(aggregate: str, base: str) -> int:
     altered = sorted(k for k in moved if k in before and before[k] != moved[k])
     invented = sorted(k for k in moved if k not in before)
     lost = sorted(k for k in before if k not in remaining and k not in moved)
-    for label, names in (("ALTERED", altered), ("INVENTED", invented), ("LOST", lost)):
+
+    # Constants and classes travel too, and one of them is the encryption AAD.
+    binds_before = module_bindings(old)
+    binds_moved = module_bindings((REPOSITORIES / f"{aggregate}.py").read_text())
+    const_altered = sorted(
+        k for k in binds_moved if k in binds_before and binds_before[k] != binds_moved[k])
+
+    for label, names in (("ALTERED", altered), ("INVENTED", invented), ("LOST", lost),
+                         ("ALTERED CONSTANT/CLASS", const_altered)):
         if names:
             print(f"  {label}: {names}")
-    if altered or invented or lost:
+    if altered or invented or lost or const_altered:
         return 1
-    print(f"  {len(moved)} function(s) moved, all byte-identical to {base}; none lost")
+    print(f"  {len(moved)} function(s) and {len(binds_moved)} constant(s)/class(es) moved, "
+          f"all byte-identical to {base}; none lost")
     return 0
 
 
