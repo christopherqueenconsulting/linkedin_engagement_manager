@@ -139,6 +139,14 @@ class TestBuildComment:
         row = _row(mod, name="RecurringWarning", description="Selector miss: Comment sort control")
         assert "no duplicate" in mod.build_comment(row, {"number": 818})
 
+    def test_it_never_offers_deletion_as_the_way_to_split_a_wrong_match(self, mod):
+        # Deleting the comment does NOT get the warning its own issue: the matched issue still
+        # carries the string, so the next run matches it again and re-posts here forever
+        # (pinned by TestOpenMatches.test_deleting_the_comment_re_matches_the_same_tracker).
+        body = self._comment(mod)
+        assert "delete this comment" not in body.casefold()
+        assert "open a separate issue" in body.casefold()
+
 
 class TestReplayLink:
     _SESSION = "0198f0aa-1b2c-7000-8000-abcdef012345"
@@ -240,6 +248,15 @@ class TestIssueMatching:
         assert mod.pick_match(long_signature,
                               [{"number": 5, "title": "Selector miss: xxx", "body": ""}]) is None
 
+    def test_truncation_lands_on_a_word_boundary(self, mod):
+        # GitHub tokenizes, so a phrase cut mid-word matches NOTHING — truncating must widen the
+        # candidate set, never empty it.
+        signature = ("Feed post-text walk matched nothing while the page still renders cards "
+                     "selector drift observed repeatedly across the whole sweep window")
+        phrase = mod.search_phrase(signature)
+        assert len(phrase) <= mod.MAX_SEARCH_CHARS
+        assert signature.startswith(phrase + " ")
+
 
 class TestOpenMatches:
     def _gh(self, hits):
@@ -284,6 +301,17 @@ class TestOpenMatches:
         gh = self._gh([])
         assert mod.open_matches(gh, [_row(mod, issue_id="a")], already=set()) == {}
         gh.search_open.assert_not_called()
+
+    def test_deleting_the_comment_re_matches_the_same_tracker(self, mod):
+        # The comment is the ONLY durable record this run happened, and the text match outlives it:
+        # with the marker gone, `is_filed` is False again and the tracker still carries the string.
+        # So a deleted comment comes BACK — it never gets the warning an issue of its own, which is
+        # why the comment tells the reader to open a separate issue instead.
+        row = _row(mod, issue_id="a", name="RecurringWarning",
+                   description="Selector miss: Comment sort control")
+        gh = self._gh([{"number": 818, "title": "'Selector miss: Comment sort control' — x",
+                        "body": ""}])
+        assert mod.open_matches(gh, [row], already=set())[mod.marker("a")]["number"] == 818
 
     def test_no_match_leaves_the_row_to_be_filed(self, mod):
         row = _row(mod, issue_id="a", name="RecurringWarning",

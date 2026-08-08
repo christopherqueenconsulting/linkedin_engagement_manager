@@ -204,6 +204,11 @@ Scope / Files / Acceptance), with a link to the PostHog issue for the stack trac
   When that string appears in an OPEN issue's **title or body**, the occurrence data is COMMENTED
   there and nothing is opened; the comment carries the marker, so from the next run the id layer
   skips the row and the comment never repeats.
+  - **The comment IS the record — do not delete it.** It is the only durable trace that this
+    PostHog id was handled (the script keeps no state of its own), and the text match does not go
+    away when the comment does: the matched issue still carries the warning string, so the next run
+    matches it again and re-posts. A wrong match is corrected by opening a separate issue for the
+    distinct defect, never by deleting the comment.
   - **Conservative by construction**: escalated warnings only, ≥16 chars and ≥3 words, exact
     (casefolded) substring, open issues only, lowest-numbered match wins. *A false merge hides a
     distinct defect; a false miss only files the duplicate we file today.* Comments are deliberately

@@ -233,8 +233,16 @@ def pick_match(signature: str, issues: Optional[list]) -> Optional[dict]:
 def search_phrase(signature: str) -> str:
     """What to hand GitHub's search — the signature, truncated and stripped of the double quotes
     that would close the phrase early. `pick_match` re-checks the FULL string against the candidates,
-    so weakening the query here can only widen the candidate set, never loosen the match."""
-    return " ".join(_text(signature).replace('"', " ").split())[:MAX_SEARCH_CHARS].strip()
+    so weakening the query here can only widen the candidate set, never loosen the match.
+
+    Truncation lands on a WORD boundary: GitHub's search tokenizes, so a phrase cut mid-word
+    (`… selector dri`) matches nothing at all — narrowing the candidate set to zero rather than
+    widening it, which is the one thing this function must not do.
+    """
+    phrase = " ".join(_text(signature).replace('"', " ").split())
+    if len(phrase) > MAX_SEARCH_CHARS:
+        phrase = phrase[:MAX_SEARCH_CHARS].rsplit(" ", 1)[0]
+    return phrase.strip()
 
 
 def _context_lines(row: dict, hours: int) -> list:
@@ -324,8 +332,9 @@ def build_comment(row: dict, existing: dict, hours: int = DEFAULT_HOURS,
     matched_on = f" `{matched_on}`" if matched_on else ""
     lines += ["",
               f"Matched this issue on the normalized warning string{matched_on}, so no duplicate "
-              f"was opened. If this is NOT the same defect, delete this comment and the next run "
-              f"files it separately.",
+              f"was opened. If this is NOT the same defect, open a separate issue for it and LEAVE "
+              f"this comment here — the match is on the warning TEXT, which this issue still "
+              f"carries, so deleting the comment only makes the next run post it again.",
               "",
               f"Dedup marker (do not remove): `{marker(issue_id)}`"]
     return "\n".join(lines)
