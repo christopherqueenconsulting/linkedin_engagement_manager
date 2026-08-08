@@ -38,7 +38,9 @@ backup() {
   [[ -n "${MYSQL_DATABASE:-}" ]] || { echo "[backup] ERROR: MYSQL_DATABASE not set" >&2; exit 1; }
   [[ -n "${MYSQL_ROOT_PASSWORD:-}" ]] || { echo "[backup] ERROR: MYSQL_ROOT_PASSWORD not set" >&2; exit 1; }
 
-  local STAMP DB_FILE CHROME_VOL CHROME_FILE chrome_size uncompressed_size
+  # DB_FILE is deliberately NOT local: the EXIT trap below runs after the function frame is gone
+  # when `set -e` aborts the dump pipeline, and a local would already be out of scope by then.
+  local STAMP CHROME_VOL CHROME_FILE chrome_size uncompressed_size
   STAMP="$(date -u +%Y%m%d-%H%M%S)"
   mkdir -p "$BACKUP_DIR"
 
@@ -47,6 +49,11 @@ backup() {
 
   log "dumping MySQL ${MYSQL_DATABASE}"
   DB_FILE="${BACKUP_DIR}/db-${STAMP}.sql.gz"
+  # A dump that never ran, or died mid-stream, still leaves a syntactically valid .gz behind —
+  # gzip of an empty stream is 20 bytes. That file is fresh, so the watchdog's age check reads it
+  # as a healthy backup and a human restoring from it gets an empty database. Nothing incomplete
+  # is allowed to survive: the trap clears on the line after the last validation.
+  trap 'if [[ -n "${DB_FILE:-}" ]]; then rm -f "$DB_FILE"; fi' EXIT
   docker exec "${MYSQL_HOST}" \
     mysqldump --single-transaction --quick --routines --triggers \
     -u root -p"${MYSQL_ROOT_PASSWORD}" "${MYSQL_DATABASE}" \
@@ -66,6 +73,7 @@ backup() {
     error "MySQL dump produced empty uncompressed output: ${DB_FILE}"
     exit 1
   fi
+  trap - EXIT
   log "MySQL dump OK: $(stat -c %s "$DB_FILE" 2>/dev/null || echo "?") bytes"
 
   log "archiving chrome-profile volume"

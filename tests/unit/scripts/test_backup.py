@@ -19,6 +19,12 @@ _FAKE_DOCKER = textwrap.dedent(
         # Look for the mysqldump keyword; everything else is ignored.
         if echo "$*" | grep -q mysqldump; then
           case "${BACKUP_DUMP_MODE:-ok}" in
+            fail)
+              # The #1090 outage shape: mysqldump errors out. `set -o pipefail` aborts the
+              # script, and gzip has already created the (partial, useless) output file.
+              echo "mysqldump: Got error: 1045: Access denied" >&2
+              exit 1
+              ;;
             empty)
               # No SQL output; the real `gzip` on the pipe will produce a valid
               # gzip with 0 uncompressed bytes, which the freshness guard rejects.
@@ -111,6 +117,18 @@ def _run(
     fake.chmod(0o755)
 
     env = os.environ.copy()
+    # tests/conftest.py calls load_dotenv(), so a dev box with a real .env would export the very
+    # keys backup.sh prefers over the file — sending the dump somewhere real, or (via
+    # BACKUP_REMOTE) rclone-ing it to production storage from a unit test.
+    for leaked in (
+        "MYSQL_HOST",
+        "MYSQL_DATABASE",
+        "MYSQL_ROOT_PASSWORD",
+        "BACKUP_DIR",
+        "RETAIN_DAYS",
+        "BACKUP_REMOTE",
+    ):
+        env.pop(leaked, None)
     env.update(env_overrides)
     env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
     env["BACKUP_SH"] = str(BACKUP_SH)
@@ -198,6 +216,38 @@ class TestBackupRun:
         )
         assert result.returncode != 0, result.stdout
         assert "ERROR: MySQL dump produced empty uncompressed output" in (result.stdout + result.stderr)
+
+    def test_empty_dump_leaves_no_artifact_behind(self, tmp_path: Path) -> None:
+        """A husk .gz is FRESH, so the watchdog's age check would read it as a healthy backup."""
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, password="secret", backup_dir=str(backup_dir))
+        result = _run(
+            tmp_path,
+            {
+                "LEM_ENV_FILE": str(env_file),
+                "BACKUP_DUMP_MODE": "empty",
+                "BACKUP_CHROME_VOL": "0",
+            },
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode != 0, result.stdout
+        assert list(backup_dir.glob("db-*.sql.gz")) == []
+
+    def test_failed_mysqldump_exits_nonzero_and_leaves_no_artifact(self, tmp_path: Path) -> None:
+        """`set -o pipefail` aborts before the guards run, so cleanup must be a trap, not a branch."""
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, password="secret", backup_dir=str(backup_dir))
+        result = _run(
+            tmp_path,
+            {
+                "LEM_ENV_FILE": str(env_file),
+                "BACKUP_DUMP_MODE": "fail",
+                "BACKUP_CHROME_VOL": "0",
+            },
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode != 0, result.stdout
+        assert list(backup_dir.glob("db-*.sql.gz")) == []
 
     def test_tiny_chrome_profile_logs_warning_but_does_not_fail(self, tmp_path: Path) -> None:
         backup_dir = tmp_path / "backups"

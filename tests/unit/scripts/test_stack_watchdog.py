@@ -8,7 +8,7 @@ from pathlib import Path
 WATCHDOG_SH = Path(__file__).resolve().parents[3] / "scripts" / "stack_watchdog.sh"
 
 
-def _touch(tmp_path: Path, pattern: str, age_hours: float, size_bytes: int = 1000) -> Path:
+def _touch(tmp_path: Path, pattern: str, age_hours: float, size_bytes: int = 2048) -> Path:
     """Create a file with the given name pattern, mtime and size."""
     f = tmp_path / pattern
     f.write_bytes(b"x" * size_bytes)
@@ -78,7 +78,37 @@ class TestBackupFreshness:
         assert "down=1" in result.stdout
         assert "backup:db:missing" in result.stdout
 
-    def test_stale_chrome_profile_backup_is_reported_down(self, tmp_path: Path) -> None:
+    def test_fresh_but_empty_db_backup_is_reported_down(self, tmp_path: Path) -> None:
+        """A dump that failed still leaves a valid, FRESH 20-byte .gz — age alone would pass it."""
+        backups = tmp_path / "backups"
+        backups.mkdir()
+        (tmp_path / ".env").write_text(f"BACKUP_DIR={backups}\n", encoding="utf-8")
+        _touch(backups, "db-20260808-030001.sql.gz", age_hours=1, size_bytes=20)
+
+        result = _run(
+            tmp_path,
+            'source "$WATCHDOG_SH"; check_backup_freshness; echo "down=${#down[@]}"; printf "%s\\n" "${down[@]}"',
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=1" in result.stdout
+        assert "backup:db:empty:20b" in result.stdout
+
+    def test_missing_backup_directory_is_reported_down(self, tmp_path: Path) -> None:
+        """No backups directory at all is the same fault as no dump inside one."""
+        (tmp_path / ".env").write_text(
+            f"BACKUP_DIR={tmp_path / 'nope'}\n", encoding="utf-8"
+        )
+
+        result = _run(
+            tmp_path,
+            'source "$WATCHDOG_SH"; check_backup_freshness; echo "down=${#down[@]}"; printf "%s\\n" "${down[@]}"',
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=1" in result.stdout
+        assert "backup:db:missing" in result.stdout
+
+    def test_stale_chrome_profile_backup_warns_but_is_not_down(self, tmp_path: Path) -> None:
+        """A decommissioned chrome-profile volume must not alert forever — cookies live in the DB."""
         backups = tmp_path / "backups"
         backups.mkdir()
         (tmp_path / ".env").write_text(f"BACKUP_DIR={backups}\n", encoding="utf-8")
@@ -90,8 +120,8 @@ class TestBackupFreshness:
             'source "$WATCHDOG_SH"; check_backup_freshness; echo "down=${#down[@]}"; printf "%s\\n" "${down[@]}"',
         )
         assert result.returncode == 0, result.stderr + result.stdout
-        assert "down=1" in result.stdout
-        assert "backup:chrome-profile:stale:" in result.stdout
+        assert "down=0" in result.stdout
+        assert "50h old" in result.stdout
 
     def test_missing_chrome_profile_backup_is_not_down(self, tmp_path: Path) -> None:
         backups = tmp_path / "backups"

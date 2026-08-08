@@ -33,6 +33,9 @@ HEAL="${WATCHDOG_HEAL:-1}"
 # How old the newest backup may be before it is treated as a fault. The nightly cron runs at 03:00,
 # so 48h gives two missed runs plus a little slack before we alert.
 BACKUP_AGE_HOURS="${WATCHDOG_BACKUP_AGE_HOURS:-48}"
+# Age alone cannot tell a backup from a husk: gzip of an empty stream is 20 bytes and it is FRESH.
+# A real dump of this database is ~380KB, so anything under a kilobyte is not a backup.
+BACKUP_MIN_BYTES="${WATCHDOG_BACKUP_MIN_BYTES:-1024}"
 
 log() { echo "[watchdog $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 now() { date -u +%s; }
@@ -133,13 +136,23 @@ check_services() {
   done
 }
 
-# Alert when the newest backup is older than BACKUP_AGE_HOURS. A missing DB backup is a fault;
-# a missing chrome-profile backup is not (the volume may not exist, and cookies now live encrypted
-# in the database). Tiny chrome-profile archives are logged as a warning, not a down event.
+# The DB backup is the only one that alerts, and it has to pass BOTH tests: recent enough
+# (BACKUP_AGE_HOURS) and big enough (BACKUP_MIN_BYTES). Age alone is not evidence — the #1090
+# failure wrote a valid, fresh, empty .gz every night. No backups directory at all is the same
+# fault as no dump in it: absence of evidence is the thing being watched for.
+#
+# The chrome-profile half never alerts. It is reported at WARN only, because cookies now live
+# encrypted in the database, backup.sh already exits non-zero when it cannot write the archive,
+# and a decommissioned chrome-profile volume would otherwise leave the last archive permanently
+# stale — an email every 5 minutes that no operator action can ever clear.
 check_backup_freshness() {
   local backup_dir db_file chrome_file db_age chrome_age db_size chrome_size now_epoch
   backup_dir="$(env_value BACKUP_DIR "${LEM_DIR}/backups")"
-  [[ -d "$backup_dir" ]] || return 0
+  if [[ ! -d "$backup_dir" ]]; then
+    log "WARN: backup directory ${backup_dir} does not exist"
+    down+=("backup:db:missing")
+    return 0
+  fi
 
   now_epoch=$(now)
 
@@ -150,6 +163,10 @@ check_backup_freshness() {
     if (( db_age >= BACKUP_AGE_HOURS )); then
       down+=("backup:db:stale:${db_age}h")
     fi
+    if (( db_size < BACKUP_MIN_BYTES )); then
+      log "ERROR: newest DB backup (${db_file}) is only ${db_size} bytes — that is not a restorable dump"
+      down+=("backup:db:empty:${db_size}b")
+    fi
   else
     down+=("backup:db:missing")
   fi
@@ -159,7 +176,7 @@ check_backup_freshness() {
     chrome_age=$(( (now_epoch - $(stat -c %Y "$chrome_file" 2>/dev/null || echo 0)) / 3600 ))
     chrome_size=$(stat -c %s "$chrome_file" 2>/dev/null || echo 0)
     if (( chrome_age >= BACKUP_AGE_HOURS )); then
-      down+=("backup:chrome-profile:stale:${chrome_age}h")
+      log "WARN: newest chrome-profile backup (${chrome_file}) is ${chrome_age}h old — not alerting; the volume may have been decommissioned"
     fi
     if (( chrome_size < 200 )); then
       log "WARN: newest chrome-profile backup (${chrome_file}) is only ${chrome_size} bytes — cookies now live encrypted in the database, a tiny archive may be expected"
