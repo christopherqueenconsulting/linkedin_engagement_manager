@@ -109,7 +109,7 @@ class TestUserGroupsDB:
         conn, cur = self._conn()
         cur.execute.side_effect = mysql.connector.Error("connection gone")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.log_error") as logged:
+             patch("cqc_lem.platform.db.repositories.groups.log_error") as logged:
             from cqc_lem.utilities.db import record_group_post_run
             assert record_group_post_run(1, "123") is False
         logged.assert_called_once()

@@ -58,7 +58,7 @@ class TestOneCanonicalTarget:
     )
 
     @staticmethod
-    def _repository_hazards(repo_dir: pathlib.Path | None = None) -> dict[str, str]:
+    def _repository_hazards(repo_dir: pathlib.Path | None = None) -> dict[str, set[str]]:
         """Moved symbols a facade patch would silently fail to intercept, derived not listed.
 
         Patching `cqc_lem.utilities.db.X` is normally FINE even after X moves: nearly every caller
@@ -70,7 +70,10 @@ class TestOneCanonicalTarget:
         Deriving this per module means each new aggregate slice inherits the guard instead of
         depending on someone remembering to extend a tuple.
         """
-        hazards: dict[str, str] = {}
+        # sym -> EVERY module that reads it, not just one. Keyed one-to-one, `log_error` (read by
+        # four repositories) collapsed to whichever sorted last, so a groups test went unflagged
+        # because the check then looked for newsletter functions in it.
+        hazards: dict[str, set[str]] = {}
         repo_dir = repo_dir or _DB.parent.parent / "platform" / "db" / "repositories"
         for mod in sorted(repo_dir.glob("*.py")):
             if mod.name == "__init__.py":
@@ -83,19 +86,75 @@ class TestOneCanonicalTarget:
             # Module-level constants are the same hazard wearing different clothes: a moved
             # function reads `CLAIM_STALE_MINUTES` out of its OWN globals, so rebinding the
             # facade's copy changes nothing the function will ever look at.
+            #
+            # IMPORTED names count for exactly the same reason, and this half was missed at first.
+            # `groups.py` does `from cqc_lem.utilities.logger import log_error`; a test patching
+            # `cqc_lem.utilities.db.log_error` then asserted against a mock the moved function
+            # never consults. Anything in the module's global namespace is a hazard, however it
+            # got there — defined here or imported here.
             for node in tree.body:
                 if isinstance(node, ast.Assign):
                     defined |= {t.id for t in node.targets if isinstance(t, ast.Name)}
                 elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                     defined.add(node.target.id)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    defined |= {(a.asname or a.name).split(".")[0] for a in node.names}
             for node in tree.body:
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
                 for sub in ast.walk(node):
                     read = isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
                     if read and sub.id in defined and sub.id != node.name:
-                        hazards[sub.id] = mod.stem
+                        hazards.setdefault(sub.id, set()).add(mod.stem)
         return hazards
+
+    @staticmethod
+    def _patches_facade(text: str, sym: str) -> bool:
+        """Does this file patch `<facade>.sym`, spelled literally OR through a module alias?
+
+        34 test files bind `_DB = "cqc_lem.utilities.db"` and then write `f"{_DB}.log_error"`. A
+        regex for the literal path sees none of them — which is why the widened hazard set still
+        missed the real `test_groups.py` failure, and why an earlier literal grep in this same
+        split undercounted 844 patch targets across 83 files.
+        """
+        if re.search(rf'["\']cqc_lem\.utilities\.db\.{re.escape(sym)}["\']', text):
+            return True
+        aliases = re.findall(r'^(\w+)\s*=\s*["\']cqc_lem\.utilities\.db["\']', text, re.MULTILINE)
+        return any(
+            re.search(rf'\{{{re.escape(a)}\}}\.{re.escape(sym)}\b', text) for a in aliases
+        )
+
+    @staticmethod
+    def _facade_patch_blocks(text: str, sym: str) -> list[str]:
+        """The `with` block around each facade patch of `sym` — approximated by the next 12 lines.
+
+        Every one of these follows the same shape in this suite: patch, import the function inside
+        the block, call it, assert. Twelve lines covers that comfortably without spilling into the
+        next test.
+        """
+        lines = text.splitlines()
+        aliases = re.findall(r'^(\w+)\s*=\s*["\']cqc_lem\.utilities\.db["\']', text, re.M)
+        patterns = [rf'["\']cqc_lem\.utilities\.db\.{re.escape(sym)}["\']']
+        patterns += [rf'\{{{re.escape(a)}\}}\.{re.escape(sym)}\b' for a in aliases]
+        return [
+            "\n".join(lines[i:i + 12])
+            for i, line in enumerate(lines)
+            if any(re.search(pat, line) for pat in patterns)
+        ]
+
+    @staticmethod
+    def _repository_functions(repo_dir: pathlib.Path | None = None) -> dict[str, set[str]]:
+        """Which functions each repository module now owns."""
+        owned: dict[str, set[str]] = {}
+        repo_dir = repo_dir or _DB.parent.parent / "platform" / "db" / "repositories"
+        for mod in sorted(repo_dir.glob("*.py")):
+            if mod.name == "__init__.py":
+                continue
+            owned[mod.stem] = {
+                n.name for n in ast.parse(mod.read_text()).body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+        return owned
 
     def test_the_hazard_derivation_actually_fires(self, tmp_path):
         """The guard above is currently green because no repository has an intra-module call yet.
@@ -116,22 +175,46 @@ class TestOneCanonicalTarget:
             "def untouched():\n"
             "    return None\n")
         hazards = self._repository_hazards(tmp_path)
-        assert hazards == {"read_widget": "widgets", "WIDGET_LIMIT": "widgets"}, (
+        assert hazards == {"read_widget": {"widgets"}, "WIDGET_LIMIT": {"widgets"}}, (
             "an intra-module callee AND an intra-module constant read must both be flagged; a "
             "function nobody calls and a constant nobody reads must not be")
 
     def test_no_test_patches_an_intra_repository_call_on_the_facade(self):
+        """Needs BOTH halves to fire, or it is noise.
+
+        Patching `cqc_lem.utilities.db.datetime` is perfectly correct for a function still IN
+        db.py, and half the repository modules import `datetime` too — so flagging every facade
+        patch of a name some repository happens to import produces false positives that would get
+        the whole assertion ignored. The hazard is a facade patch AND a target that moved, so the
+        file must also exercise a function that module now owns.
+        """
         offenders = []
         hazards = self._repository_hazards()
+        owned = self._repository_functions()
         for p in pathlib.Path("tests").rglob("*.py"):
             if p.name == "test_connection_seam.py":
                 continue
             t = p.read_text(errors="ignore")
-            for sym, mod in hazards.items():
-                if re.search(rf'["\']cqc_lem\.utilities\.db\.{re.escape(sym)}["\']', t):
+            for sym, mods in hazards.items():
+                blocks = self._facade_patch_blocks(t, sym)
+                if not blocks:
+                    continue
+                for mod in sorted(mods):
+                    # Scoped to the `with patch(...)` block, not the file. A test module routinely
+                    # patches log_error for a function still IN db.py while mentioning a moved one
+                    # somewhere else entirely — file-level matching called that an offence and
+                    # would have had me "fix" a correct patch into a broken one.
+                    exercised = sorted({
+                        f for block in blocks for f in owned[mod]
+                        if re.search(rf'\b{re.escape(f)}\b', block)
+                    })
+                    if not exercised:
+                        continue
                     offenders.append(
-                        f"{p} -> patches {sym}, which a sibling in repositories/{mod}.py "
-                        f"calls directly; target cqc_lem.platform.db.repositories.{mod}.{sym}")
+                        f"{p} -> patches {sym} on the facade while exercising "
+                        f"{', '.join(exercised[:3])} from repositories/{mod}.py, which reads "
+                        f"{sym} from its OWN globals; target "
+                        f"cqc_lem.platform.db.repositories.{mod}.{sym}")
         assert offenders == [], "\n  ".join([""] + sorted(set(offenders)))
 
     def test_no_test_rebinds_a_moved_symbol_on_the_facade(self):

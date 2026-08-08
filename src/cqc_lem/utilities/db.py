@@ -70,6 +70,21 @@ from cqc_lem.platform.db.enums import (
     ReferralStatus,
     ScheduledDmStatus,
 )
+from cqc_lem.platform.db.repositories.billing import (
+    COST_ROLLUP_COLUMNS,
+    accrue_monthly_fixed_costs,
+    convert_affiliate_referral,
+    get_affiliate_referral_counts,
+    get_affiliate_referral_for_referred,
+    get_affiliate_reward_totals,
+    get_cost_rollup,
+    get_daily_cost_totals,
+    get_early_adopter_grant,
+    get_early_adopter_slot_usage,
+    insert_cost_ledger_entry,
+    mark_affiliate_notice_seen,
+    record_affiliate_referral,
+)
 from cqc_lem.platform.db.repositories.engagement import (
     CLAIM_STALE_MINUTES,
     COMPANY_PAGE_INVITE_SENT_MESSAGE,
@@ -106,6 +121,18 @@ from cqc_lem.platform.db.repositories.engagement import (
     record_comment_outcome,
     release_post_claim,
     update_commented_post_key,
+)
+from cqc_lem.platform.db.repositories.groups import (
+    create_group_post_draft,
+    get_enabled_group_ids,
+    get_next_group_for_post,
+    get_post_enabled_group_ids,
+    get_user_groups,
+    record_group_post,
+    record_group_post_run,
+    set_groups_enabled,
+    update_group_post_draft,
+    upsert_user_group,
 )
 from cqc_lem.platform.db.repositories.newsletter import (
     _NEWSLETTER_BOOL_COLS,
@@ -163,6 +190,29 @@ from cqc_lem.utilities.utils import get_top_level_domain
 # a per-line ruff directive is invisible to CodeQL and an lgtm marker is invisible to ruff, so
 # either one alone leaves whichever tool is blind free to flag or delete these.
 __all__ = [
+    "COST_ROLLUP_COLUMNS",
+    "accrue_monthly_fixed_costs",
+    "convert_affiliate_referral",
+    "get_affiliate_referral_counts",
+    "get_affiliate_referral_for_referred",
+    "get_affiliate_reward_totals",
+    "get_cost_rollup",
+    "get_daily_cost_totals",
+    "get_early_adopter_grant",
+    "get_early_adopter_slot_usage",
+    "insert_cost_ledger_entry",
+    "mark_affiliate_notice_seen",
+    "record_affiliate_referral",
+    "create_group_post_draft",
+    "get_enabled_group_ids",
+    "get_next_group_for_post",
+    "get_post_enabled_group_ids",
+    "get_user_groups",
+    "record_group_post",
+    "record_group_post_run",
+    "set_groups_enabled",
+    "update_group_post_draft",
+    "upsert_user_group",
     "CLAIM_STALE_MINUTES",
     "COMPANY_PAGE_INVITE_SENT_MESSAGE",
     "CONNECTION_REQUEST_SENT_MESSAGE",
@@ -6487,163 +6537,20 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
         return []  # table not created yet (or unreadable) — the rollup reports an empty window
 
 
-def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
-    """Record a joined group (new groups default to enabled=1). Refreshes name + last_synced_at
-    without clobbering the user's enabled choice on an existing row.
-    """
-    if not group_id:
-        return False
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO user_groups (user_id, group_id, group_name, enabled, last_synced_at) "
-                "VALUES (%s,%s,%s,1,NOW()) ON DUPLICATE KEY UPDATE "
-                "group_name=COALESCE(VALUES(group_name), group_name), last_synced_at=NOW()",
-                (user_id, str(group_id), group_name))
-            return True
-    except mysql.connector.Error as err:
-        myprint(f"Could not upsert group for user {user_id} | Error: {err}")
-        return False
 
 
-def get_user_groups(user_id: int) -> list:
-    """The user's LinkedIn groups for the Account UI, JSON-safe (flags as bools, timestamps as ISO strings).
-
-    `enabled` and `post_enabled` are independent switches on purpose — being in a group is not permission
-    to publish into it. [] on a read error.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT group_id, group_name, enabled, post_enabled, last_posted_at "
-                "FROM user_groups WHERE user_id=%s ORDER BY group_name",
-                (user_id,))
-            rows = cursor.fetchall() or []
-            for r in rows:
-                r["enabled"] = bool(r.get("enabled"))
-                r["post_enabled"] = bool(r.get("post_enabled"))
-                posted = r.get("last_posted_at")
-                r["last_posted_at"] = posted.isoformat() if hasattr(posted, "isoformat") else posted
-            return rows
-    except mysql.connector.Error as err:
-        myprint(f"Could not list groups for user {user_id} | Error: {err}")
-        return []
 
 
-def get_enabled_group_ids(user_id: int) -> list:
-    """Group ids the user has enabled for engagement.
-
-    Swallows the error without logging and returns [], so a database blip reads as "no groups" and skips
-    the group pass instead of failing the run.
-    """
-    try:
-        with db_cursor() as cursor:
-            cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1", (user_id,))
-            return [r[0] for r in cursor.fetchall()]
-    except mysql.connector.Error:
-        return []
 
 
-def get_next_group_for_post(user_id: int) -> Optional[dict]:
-    """The ONE place "which group does the next group post go to" is decided (issue #769): the
-    least-recently-TRIED group the user has opted into for POSTING. `post_enabled` is independent
-    of `enabled` (which only governs commenting), so a group can take posts without being commented
-    in and vice versa. Never tried = sorts first. None when no group is opted in.
-
-    Ordering reads `last_post_run_at` (every run that reached the group), NOT `last_posted_at`
-    (successful posts only) — a group where members cannot post never stamps the latter, so ordering
-    on it left that group "next" every week forever and starved the rest (issue #858). The COALESCE
-    covers any row stamped before `last_post_run_at` existed.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT group_id, group_name FROM user_groups "
-                "WHERE user_id=%s AND post_enabled=1 "
-                "ORDER BY COALESCE(last_post_run_at, last_posted_at) IS NULL DESC, "
-                "         COALESCE(last_post_run_at, last_posted_at) ASC, group_name ASC LIMIT 1",
-                (user_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    except mysql.connector.Error as err:
-        myprint(f"Could not resolve next post group for user {user_id} | Error: {err}")
-        return None
 
 
-def record_group_post(user_id: int, group_id: str) -> bool:
-    """Stamp a group as just-posted-in so the rotation moves on to the next one. A successful post
-    is also a run, so both columns advance together.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE user_groups SET last_posted_at=NOW(), last_post_run_at=NOW() "
-                           "WHERE user_id=%s AND group_id=%s",
-                           (user_id, str(group_id)))
-            return True
-    except mysql.connector.Error as err:
-        myprint(f"Could not record group post for user {user_id} | Error: {err}")
-        return False
 
 
-def record_group_post_run(user_id: int, group_id: str) -> bool:
-    """Stamp a group as just-TRIED (issue #858) — the rotation moves on, but `last_posted_at` is
-    left alone because nothing was published. Called only when the run reached the group and the
-    group itself turned out to be unpostable (no share box / editor / Post button — admin-only or
-    announcement groups). A run that never reached the group stamps neither column, so a transient
-    session failure still leaves that group next in line.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE user_groups SET last_post_run_at=NOW() WHERE user_id=%s AND group_id=%s",
-                           (user_id, str(group_id)))
-            return True
-    except mysql.connector.Error as err:
-        # A lost stamp is exactly the starvation this function exists to prevent — the group stays
-        # least-recently-tried and is "next" again next week — and the caller has nothing to do
-        # about it, so it has to be visible on its own (ERROR, not the myprint shim: prod forwards
-        # WARNING and above to PostHog).
-        log_error("Could not record group post run", exc=err, user_id=user_id,
-                  task_name="record_group_post_run")
-        return False
 
 
-def set_groups_enabled(user_id: int, group_states: dict) -> bool:
-    """Bulk-update per-group flags. Each value is either a bare bool (engagement only — the shape
-    the pre-#769 SPA bundle still sends) or {"enabled": bool, "post_enabled": bool}; only the keys
-    present are written, so a partial payload never silently resets the other flag.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            for gid, state in group_states.items():
-                flags = state if isinstance(state, dict) else {"enabled": state}
-                updates = [(col, 1 if flags[col] else 0) for col in ("enabled", "post_enabled") if col in flags]
-                if not updates:
-                    continue
-                cursor.execute(
-                    f"UPDATE user_groups SET {', '.join(f'{c}=%s' for c, _ in updates)} "
-                    "WHERE user_id=%s AND group_id=%s",
-                    (*(v for _, v in updates), user_id, str(gid)))
-            return True
-    except mysql.connector.Error as err:
-        myprint(f"Could not update group states for user {user_id} | Error: {err}")
-        return False
 
 
-def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
-    """The groups the user has opted into for POSTING. Separate from get_enabled_group_ids, which
-    reads the independent commenting flag.
-
-    None (never []) when the read FAILED, so a caller can tell "opted out of every group" from "we
-    could not tell": the weekly publish run cancels a reviewed draft on the former, and a read error
-    that answered [] would silently cancel every user's approved group post (issue #932).
-    """
-    try:
-        with db_cursor() as cursor:
-            cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND post_enabled=1", (user_id,))
-            return [r[0] for r in cursor.fetchall()]
-    except mysql.connector.Error as err:
-        log_error("Could not list post-enabled groups", exc=err, user_id=user_id)
-        return None
 
 
 def _group_post_draft_row(row: dict) -> dict:
@@ -6654,21 +6561,6 @@ def _group_post_draft_row(row: dict) -> dict:
     return row
 
 
-def create_group_post_draft(user_id: int, group_id: str, content: str,
-                            group_name: str = None) -> Optional[int]:
-    """Store the coming week's group post for review (issue #932). Returns the new draft id."""
-    if not group_id or not (content or "").strip():
-        return None
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO group_post_drafts (user_id, group_id, group_name, content, status) "
-                "VALUES (%s,%s,%s,%s,%s)",
-                (user_id, str(group_id), group_name, content.strip(), str(GroupPostDraftStatus.READY)))
-            return cursor.lastrowid
-    except mysql.connector.Error as err:
-        log_error("Could not create group post draft", exc=err, user_id=user_id)
-        return None
 
 
 def get_open_group_post_draft(user_id: int) -> Optional[dict]:
@@ -6704,30 +6596,6 @@ def get_group_post_draft(draft_id: int) -> Optional[dict]:
         return None
 
 
-def update_group_post_draft(draft_id: int, content: str = None,
-                            status: "GroupPostDraftStatus" = None) -> bool:
-    """Save the user's revision and/or move the draft's status. `published_at` is stamped by the
-    status change itself, so the publish run can never claim a ship time without the status.
-    """
-    fields, params = [], []
-    if content is not None:
-        fields.append("content = %s")
-        params.append(content.strip())
-    if status is not None:
-        fields.append("status = %s")
-        params.append(str(status))
-        if status == GroupPostDraftStatus.PUBLISHED:
-            fields.append("published_at = NOW()")
-    if not fields:
-        return False
-    params.append(draft_id)
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(f"UPDATE group_post_drafts SET {', '.join(fields)} WHERE id = %s", tuple(params))
-            return True
-    except mysql.connector.Error as err:
-        log_error("Could not update group post draft", exc=err, task_name="update_group_post_draft")
-        return False
 
 
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
@@ -8792,74 +8660,8 @@ def post_used_avatar_media(post_id: Optional[int]) -> bool:
 # rolled up (one row per user x feature x tier x day) — see observability.flush_llm_cost_rollup.
 
 
-def insert_cost_ledger_entry(feature: str, category: str, usd: float,
-                             user_id: Optional[int] = None,
-                             provider: Optional[str] = None,
-                             model_tier: Optional[str] = None,
-                             qty: Optional[float] = None,
-                             post_id: Optional[int] = None,
-                             task_name: Optional[str] = None,
-                             incurred_on: Optional[date] = None) -> bool:
-    """Append one spend row. `user_id` None means system/shared cost; `incurred_on` defaults to today (UTC)."""
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                """INSERT INTO cost_ledger
-                       (user_id, feature, category, provider, model_tier, usd, qty, post_id, task_name, incurred_on)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, str(feature), str(category), provider, model_tier, round(float(usd), 6),
-                 round(float(qty), 4) if qty is not None else None,
-                 post_id, task_name, incurred_on or datetime.now(timezone.utc).date()),
-            )
-            return True
-    except mysql.connector.Error as err:
-        myprint(f"Could not insert cost_ledger entry ({category}/{feature}) | Error: {err}")
-        return False
 
 
-def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
-    """Write this month's fixed-cost accruals (proxy per user, infra amortization) idempotently.
-
-    `period` is the first day of the accrued month and is stored as `incurred_on`; an accrual is a
-    dict of {user_id, category, usd, provider?, feature?, qty?}. A (user_id, category, period)
-    already present is skipped, so re-running the monthly task never double-charges. Returns the
-    number of rows written.
-    """
-    if not accruals:
-        return 0
-
-    connection = _connection.get_db_connection()
-    cursor = connection.cursor()
-    written = 0
-    try:
-        for accrual in accruals:
-            user_id = accrual.get("user_id")
-            category = str(accrual.get("category"))
-            # NULL-safe compare: system rows (user_id NULL) must still dedupe against each other.
-            cursor.execute(
-                "SELECT id FROM cost_ledger WHERE user_id <=> %s AND category = %s AND incurred_on = %s LIMIT 1",
-                (user_id, category, period),
-            )
-            if cursor.fetchone():
-                continue
-            cursor.execute(
-                """INSERT INTO cost_ledger
-                       (user_id, feature, category, provider, usd, qty, incurred_on)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, str(accrual.get("feature", "system")), category, accrual.get("provider"),
-                 round(float(accrual.get("usd", 0)), 6),
-                 round(float(accrual["qty"]), 4) if accrual.get("qty") is not None else None,
-                 period),
-            )
-            written += 1
-        connection.commit()
-        return written
-    except mysql.connector.Error as err:
-        myprint(f"Could not accrue monthly fixed costs for {period} | Error: {err}")
-        return written
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def get_users_proxy_config(user_ids: list) -> list:
@@ -8889,16 +8691,6 @@ def get_users_proxy_config(user_ids: list) -> list:
 # the `cost_ledger` table the writers above fill. Every one degrades to an empty result when the
 # table isn't present yet, so the margin report ships ahead of it.
 
-# Whitelisted rollup dimensions → the cost_ledger column each groups by. Interpolating anything
-# outside this map into the SQL would be an injection vector.
-COST_ROLLUP_COLUMNS = {
-    "feature": "feature",
-    "category": "category",
-    "provider": "provider",
-    "model_tier": "model_tier",
-    "user": "user_id",
-    "task": "task_name",
-}
 
 
 def cost_ledger_available() -> bool:
@@ -8913,31 +8705,6 @@ def cost_ledger_available() -> bool:
         return False
 
 
-def get_cost_rollup(start_date, end_date, group_by: str = "feature",
-                    user_id: Optional[int] = None) -> dict:
-    """Summed `cost_ledger.usd` over [start_date, end_date] grouped by one dimension from
-    COST_ROLLUP_COLUMNS → `{key: usd}`. Omitting `user_id` includes EVERY row, shared/system spend
-    (NULL user_id) included, which is what the system-wide margin totals need. Rows with a NULL
-    group value collapse into the "unknown" key so their spend is never dropped — the column is CAST
-    to CHAR first so a numeric dimension (user_id) can't coerce 'unknown' into 0 and merge NULL
-    rows with a real user 0.
-    """
-    column = COST_ROLLUP_COLUMNS.get(group_by)
-    if not column:
-        myprint(f"Unsupported cost rollup dimension '{group_by}'")
-        return {}
-    try:
-        with db_cursor() as cursor:
-            sql = (f"SELECT COALESCE(CAST({column} AS CHAR), 'unknown') AS rollup_key, "
-                   "COALESCE(SUM(usd), 0) FROM cost_ledger WHERE incurred_on BETWEEN %s AND %s")
-            params = [start_date, end_date]
-            if user_id is not None:
-                sql += " AND user_id = %s"
-                params.append(user_id)
-            cursor.execute(sql + " GROUP BY rollup_key", tuple(params))
-            return {str(key): float(usd or 0) for key, usd in cursor.fetchall()}
-    except mysql.connector.Error:
-        return {}  # table not created yet (or unreadable) — caller reports it as unavailable
 
 
 def get_user_cost(user_id: int, start_date, end_date) -> dict:
@@ -8945,23 +8712,6 @@ def get_user_cost(user_id: int, start_date, end_date) -> dict:
     return get_cost_rollup(start_date, end_date, group_by="category", user_id=user_id)
 
 
-def get_daily_cost_totals(start_date, end_date) -> dict:
-    """Total spend per DAY over [start_date, end_date] → `{'YYYY-MM-DD': usd}` — the trailing series
-    the §E.2 spend-anomaly check scores today against. A day with no ledger rows is ABSENT rather
-    than 0.0 so a ledger that only started capturing mid-window can't manufacture a zero baseline
-    (and then flag the first real day of spend as an anomaly).
-    """
-    try:
-        with db_cursor() as cursor:
-            cursor.execute(
-                "SELECT incurred_on, COALESCE(SUM(usd), 0) FROM cost_ledger "
-                "WHERE incurred_on BETWEEN %s AND %s GROUP BY incurred_on ORDER BY incurred_on",
-                (start_date, end_date),
-            )
-            return {day.isoformat() if hasattr(day, "isoformat") else str(day): float(usd or 0)
-                    for day, usd in cursor.fetchall()}
-    except mysql.connector.Error:
-        return {}  # table not created yet (or unreadable) — caller reports the check as skipped
 
 
 def get_post_quality_rows(start_date, end_date) -> list:
@@ -9837,32 +9587,8 @@ def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
         return None
 
 
-def get_early_adopter_grant(user_id: int) -> Optional[dict]:
-    """The user's early-adopter grant, or None. Read by the checkout flow so the extension mirrors
-    into Stripe on conversion.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT id, user_id, cohort, trial_days, feedback_id, trial_ends_at, granted_at "
-                "FROM early_adopter_grants WHERE user_id=%s",
-                (user_id,),
-            )
-            return cursor.fetchone()
-    except mysql.connector.Error as err:
-        log_error("Could not fetch early-adopter grant", exc=err, user_id=user_id)
-        return None
 
 
-def get_early_adopter_slot_usage() -> dict:
-    """`{cohort: used}` for every cohort row — what the caps are measured against."""
-    try:
-        with db_cursor() as cursor:
-            cursor.execute("SELECT cohort, used FROM early_adopter_slots")
-            return {str(cohort): int(used or 0) for cohort, used in cursor.fetchall()}
-    except mysql.connector.Error as err:
-        log_error("Could not read early-adopter slot usage", exc=err)
-        return {}
 
 
 def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> dict:
@@ -10095,124 +9821,16 @@ def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str
     return get_affiliate_enrollment(user_id)
 
 
-def mark_affiliate_notice_seen(user_id: int) -> bool:
-    """Record that the user has actually SEEN the enrollment notice. Default-enrollment is only
-    honest if the notice was delivered, so this timestamp is the evidence — not a UI nicety.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE affiliate_enrollments SET notice_seen_at=COALESCE(notice_seen_at,%s) WHERE user_id=%s",
-                (datetime.now(timezone.utc), user_id),
-            )
-            return True
-    except mysql.connector.Error as err:
-        log_error("Could not mark affiliate notice seen", exc=err, user_id=user_id)
-        return False
 
 
-def get_affiliate_reward_totals(user_id: int) -> dict:
-    """`{total, enrollment, referral}` granted days. `total` is the SUM over the whole ledger,
-    revocations included as negatives — it is what the per-user cap is measured against, so a user
-    who opts out and back in cannot use the round trip to mint days.
-    """
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT kind, COALESCE(SUM(trial_days),0) AS days FROM affiliate_rewards "
-                "WHERE user_id=%s GROUP BY kind",
-                (user_id,),
-            )
-            by_kind = {str(r["kind"]): int(r["days"] or 0) for r in cursor.fetchall()}
-            return {
-                "total": sum(by_kind.values()),
-                "enrollment": by_kind.get(str(AffiliateRewardKind.ENROLLMENT), 0),
-                "referral": by_kind.get(str(AffiliateRewardKind.REFERRAL), 0),
-                "revoked": by_kind.get(str(AffiliateRewardKind.REVOKED), 0),
-            }
-    except mysql.connector.Error as err:
-        log_error("Could not read affiliate reward totals", exc=err, user_id=user_id)
-        return {"total": 0, "enrollment": 0, "referral": 0, "revoked": 0}
 
 
-def get_affiliate_referral_counts(user_id: int) -> dict:
-    """`{pending, converted, rejected}` referrals this member has driven."""
-    counts = {str(s): 0 for s in ReferralStatus}
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT status, COUNT(*) AS n FROM affiliate_referrals WHERE referrer_user_id=%s GROUP BY status",
-                (user_id,),
-            )
-            for row in cursor.fetchall():
-                counts[str(row["status"])] = int(row["n"] or 0)
-            return counts
-    except mysql.connector.Error as err:
-        log_error("Could not read affiliate referral counts", exc=err, user_id=user_id)
-        return counts
 
 
-def get_affiliate_referral_for_referred(referred_user_id: int) -> Optional[dict]:
-    """The one referral row a referred user can have, or None."""
-    try:
-        with db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT id, referrer_user_id, referred_user_id, referral_code, status, reject_reason, "
-                "created_at, converted_at FROM affiliate_referrals WHERE referred_user_id=%s",
-                (referred_user_id,),
-            )
-            return cursor.fetchone()
-    except mysql.connector.Error as err:
-        log_error("Could not read affiliate referral", exc=err, user_id=referred_user_id)
-        return None
 
 
-def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, referral_code: str,
-                              status: str = 'pending',
-                              reject_reason: Optional[str] = None) -> Optional[int]:
-    """Attribute a new signup to a referrer. Returns the referral id, or None when one already
-    exists for this referred user.
-
-    A rejected referral is WRITTEN (status='rejected' + a reason) rather than discarded: the caller
-    has already decided it doesn't pay, and a self-referral we can count is a fraud signal, while a
-    self-referral we dropped is nothing. The UNIQUE key on referred_user_id is what makes a replayed
-    signup a no-op rather than a second attribution.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO affiliate_referrals (referrer_user_id, referred_user_id, referral_code, "
-                "status, reject_reason) VALUES (%s,%s,%s,%s,%s)",
-                (referrer_user_id, referred_user_id, str(referral_code), str(status), reject_reason),
-            )
-            return cursor.lastrowid
-    except mysql.connector.Error as err:
-        if err.errno == errorcode.ER_DUP_ENTRY:
-            log_info("Referral already attributed — ignoring duplicate", user_id=referred_user_id)
-            return None
-        log_error("Could not record affiliate referral", exc=err, user_id=referred_user_id)
-        return None
 
 
-def convert_affiliate_referral(referred_user_id: int) -> Optional[dict]:
-    """Mark a PENDING referral converted, and return it. Returns None when there is nothing to
-    convert — no referral, already converted, or rejected — so the caller's reward grant is driven
-    by the rowcount rather than by a re-read that a concurrent activation could race.
-    """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE affiliate_referrals SET status=%s, converted_at=%s "
-                "WHERE referred_user_id=%s AND status=%s",
-                (str(ReferralStatus.CONVERTED), datetime.now(timezone.utc), referred_user_id,
-                 str(ReferralStatus.PENDING)),
-            )
-            if cursor.rowcount != 1:
-                return None
-    except mysql.connector.Error as err:
-        log_error("Could not convert affiliate referral", exc=err, user_id=referred_user_id)
-        return None
-    return get_affiliate_referral_for_referred(referred_user_id)
 
 
 def _affiliate_baseline_trial_end(cursor, user_id: int, started: datetime) -> datetime:
