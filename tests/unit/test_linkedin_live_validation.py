@@ -1898,6 +1898,75 @@ class TestReportFences:
 
 
 @pytest.mark.unit
+@pytest.mark.unit
+class TestCommentOutcomeProbe:
+    """#818: the comment-outcome reader needs to expose the actual DOM evidence when a rendered
+    thread yields no readable sort control, so the next locator iteration is written against live
+    selectors rather than guesses.
+    """
+
+    def _item(self, text, author):
+        tb = MagicMock(); tb.text = text
+        return (tb, MagicMock(), author)
+
+    def test_probe_returns_candidates_when_thread_rendered_but_sort_control_missing(self, monkeypatch):
+        items = [self._item("Latency is the tell here", "https://www.linkedin.com/in/me/")]
+
+        def _load_comment_thread(_d):
+            pass
+
+        monkeypatch.setattr("cqc_lem.app.run_automation._load_comment_thread", _load_comment_thread)
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_items", lambda d: items)
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_sort_label", lambda d, w: "")
+        monkeypatch.setattr("cqc_lem.app.run_automation._find_our_comment", lambda it, s, t: it[0][1])
+        monkeypatch.setattr("cqc_lem.app.run_automation._thread_replies", lambda d, o, it: [])
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_like_count", lambda d, c: 0)
+        monkeypatch.setattr("cqc_lem.app.run_automation._post_author_href", lambda d: "")
+        monkeypatch.setattr("cqc_lem.app.run_automation._diagnose_sort_control_miss",
+                            lambda d: [{"tag": "button", "text": "Most relevant"}])
+
+        report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
+                                           sleep=lambda s: None)
+        assert report["sort_control_found"] is False
+        assert report["rendered_comments"] == 1
+        assert report["sort_control_candidates"] == [{"tag": "button", "text": "Most relevant"}]
+        assert report["state"] == llv.STATE_DRIFT
+
+    def test_probe_omits_candidates_when_sort_control_resolves(self, monkeypatch):
+        items = [self._item("Latency is the tell here", "https://www.linkedin.com/in/me/")]
+
+        monkeypatch.setattr("cqc_lem.app.run_automation._load_comment_thread", lambda d: None)
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_items", lambda d: items)
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_sort_label",
+                            lambda d, w: "most relevant")
+        monkeypatch.setattr("cqc_lem.app.run_automation._find_our_comment", lambda it, s, t: it[0][1])
+        monkeypatch.setattr("cqc_lem.app.run_automation._thread_replies", lambda d, o, it: [])
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_like_count", lambda d, c: 0)
+        monkeypatch.setattr("cqc_lem.app.run_automation._post_author_href", lambda d: "")
+        monkeypatch.setattr("cqc_lem.app.run_automation._diagnose_sort_control_miss",
+                            lambda d: [{"tag": "button"}])  # would not be called
+
+        report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
+                                           sleep=lambda s: None)
+        assert report["sort_control_found"] is True
+        assert "sort_control_candidates" not in report
+        assert report["state"] == llv.STATE_OK
+
+    def test_probe_omits_candidates_when_thread_never_rendered(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation._load_comment_thread", lambda d: None)
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_items", lambda d: [])
+        monkeypatch.setattr("cqc_lem.app.run_automation._comment_sort_label", lambda d, w: "")
+        monkeypatch.setattr("cqc_lem.app.run_automation._diagnose_sort_control_miss",
+                            lambda d: [{"tag": "button"}])  # would not be called
+
+        report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
+                                           sleep=lambda s: None)
+        assert report["sort_control_found"] is False
+        assert report["rendered_comments"] == 0
+        assert "sort_control_candidates" not in report
+        assert report["state"] == llv.STATE_UNKNOWN
+
+
 class TestPermalinkCommentProbe:
     """#966: the permalink comment path failed SILENTLY, so the probe's job is to say plainly
     whether production would have a composer to type into.

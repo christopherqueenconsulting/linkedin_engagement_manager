@@ -5297,6 +5297,32 @@ _COMMENT_LIKE_COUNT_JS = (
 # match many nodes on a busy thread. Only the first few per locator are worth checking.
 _SORT_CANDIDATE_SCAN_CAP = 8
 
+# When the sort control cannot be read on a page that DID render comments, capture the
+# sort-control-like candidates so the next locator iteration has fresh evidence. The scan is
+# bounded: it looks only at interactive-ish elements near the comment list and keeps the first
+# `_SORT_CANDIDATE_SCAN_CAP` hits. Purely read-only / DEBUG — it never changes the outcome.
+_SORT_CONTROL_DIAGNOSTIC_JS = (
+    "const root=document.querySelector(\"[data-testid*='commentList']\")||document.body;"
+    "const out=[];"
+    "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
+    "  const aria=(el.getAttribute('aria-label')||'');"
+    "  const text=(el.innerText||'');"
+    "  const blob=(aria+' '+text+' '+(el.getAttribute('data-testid')||'')+' '+(el.getAttribute('class')||'')).toLowerCase();"
+    "  if(/sort|most relevant|most recent|top|newest/.test(blob)){"
+    "    out.push({"
+    "      tag:el.tagName.toLowerCase(),"
+    "      data_testid:el.getAttribute('data-testid')||'',"
+    "      aria_label:aria.slice(0,120),"
+    "      role:el.getAttribute('role')||'',"
+    "      text:text.replace(/\\s+/g,' ').trim().slice(0,80),"
+    "      has_popup:el.getAttribute('aria-haspopup')||'',"
+    "      classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' ')"
+    "    });"
+    "  }"
+    "  if(out.length>=8) break;"
+    "}"
+    "return out;")
+
 
 def _sort_from_element(el) -> str:
     """The sort an element names ('most relevant' / 'most recent'), or '' when it names neither —
@@ -5313,7 +5339,21 @@ def _sort_from_element(el) -> str:
     return ""
 
 
-def _find_comment_sort_control(driver, wait):
+def _diagnose_sort_control_miss(driver) -> list[dict]:
+    """Candidate elements near the comment list that look sort-control-ish, for DEBUG evidence.
+
+    Called only when a rendered thread yields no readable sort control. The scan is bounded and
+    read-only; it returns structured descriptors (tag, data-testid, aria-label, role, text) so the
+    next locator iteration can be written against production evidence rather than guesses.
+    """
+    try:
+        result = driver.execute_script(_SORT_CONTROL_DIAGNOSTIC_JS)
+        return [dict(r) for r in (result or []) if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
+def _find_comment_sort_control(driver, wait, *, warn_on_miss: bool = True):
     """The comment sort control, preferring a candidate whose own label actually reads as a sort.
 
     find_first hands back the first match of the first locator that yields ANY element — it never
@@ -5323,6 +5363,9 @@ def _find_comment_sort_control(driver, wait):
     a node fall through to a locator that names the real sort. Some renders label the control only
     inside its popup, so an unvalidated candidate is still returned when nothing in the chain parses
     — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it.
+
+    `warn_on_miss` is the caller's page-native cross-check (#1063): a total miss is only selector
+    rot on a page that rendered a comment thread at all.
     """
     fallback = None
     for locator in _COMMENT_SORT_LOCATORS:
@@ -5338,16 +5381,17 @@ def _find_comment_sort_control(driver, wait):
     if fallback is not None:
         return fallback
     # Nothing at all yet: fall back to find_first for its wait/retry and its Selector-miss warning.
-    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
+    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False,
+                      warn_on_miss=warn_on_miss)
 
 
-def _comment_sort_label(driver, wait) -> str:
+def _comment_sort_label(driver, wait, *, warn_on_miss: bool = True) -> str:
     """The comment sort currently applied, lowercased ('most relevant' / 'most recent'), or '' when
     the control isn't present. '' is load-bearing: without knowing the sort we cannot say whether an
     absent comment was demoted, so the visibility reading stays NULL rather than guessing.
     """
     try:
-        btn = _find_comment_sort_control(driver, wait)
+        btn = _find_comment_sort_control(driver, wait, warn_on_miss=warn_on_miss)
     except Exception:
         return ""
     return _sort_from_element(btn) if btn is not None else ""
@@ -5477,7 +5521,12 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     _load_comment_thread(driver)
 
     items = _comment_items(driver)
-    sort_label = _comment_sort_label(driver, wait)
+    # The rendered comment thread is the page-native cross-check on the sort control (#1063): a post
+    # that is deleted, private or has had its comments removed renders no thread AND no sort control,
+    # which is the `post-unavailable` skip recorded below — working behaviour. Warning there filed a
+    # grouped defect for a page that was simply gone; a thread that DID render and still yields no
+    # control is selector rot and still warns. Same grading `--comment-outcome-url` applies.
+    sort_label = _comment_sort_label(driver, wait, warn_on_miss=bool(items))
     ours = _find_our_comment(items, our_slug, comment_text)
     visible = None
     if ours is not None:
@@ -5497,6 +5546,15 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         log_info(f"Comment outcome skipped ({outcome['skip_reason']}) on {post_url}",
                  user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes")
         return outcome
+
+    # A rendered thread with an unreadable sort control is the #818 starvation signal: capture
+    # candidate elements at DEBUG so the next locator iteration has fresh evidence.
+    if not sort_label:
+        candidates = _diagnose_sort_control_miss(driver)
+        if candidates:
+            log_debug("Comment sort control unreadable on rendered thread",
+                      user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes",
+                      post_url=post_url, candidates=candidates)
 
     replies = _thread_replies(driver, ours, items)
     author_href = _post_author_href(driver)

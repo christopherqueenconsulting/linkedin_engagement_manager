@@ -119,6 +119,21 @@ class TestFindCommentSortControl:
         with patch(f"{RA}.find_first", return_value=None) as ff:
             assert _fn("_find_comment_sort_control")(driver, MagicMock()) is None
         assert ff.call_count == 1
+        assert ff.call_args.kwargs["warn_on_miss"] is True
+
+    def test_the_caller_can_stand_the_miss_warning_down(self):
+        # A page that rendered no comment thread renders no sort control either — the miss is that
+        # page, not selector rot (#1063).
+        driver = self._driver([])
+        with patch(f"{RA}.find_first", return_value=None) as ff:
+            assert _fn("_find_comment_sort_control")(driver, MagicMock(),
+                                                     warn_on_miss=False) is None
+        assert ff.call_args.kwargs["warn_on_miss"] is False
+
+    def test_the_label_reader_passes_the_cross_check_through(self):
+        with patch(f"{RA}._find_comment_sort_control", return_value=None) as fc:
+            assert _fn("_comment_sort_label")(MagicMock(), MagicMock(), warn_on_miss=False) == ""
+        assert fc.call_args.kwargs["warn_on_miss"] is False
 
     def test_a_locator_that_raises_does_not_abort_the_chain(self):
         right = self._el(text="Most recent")
@@ -142,6 +157,35 @@ class TestFindCommentSortControl:
         _fn("_find_comment_sort_control")(driver, MagicMock())
         read = [e for e in noise if e.get_attribute.called]
         assert len(read) == _fn("_SORT_CANDIDATE_SCAN_CAP")
+
+
+class TestDiagnoseSortControlMiss:
+    def _driver(self, candidates):
+        driver = MagicMock()
+        driver.execute_script.return_value = candidates
+        return driver
+
+    def test_returns_descriptors_from_js(self):
+        candidates = [{"tag": "button", "data_testid": "comment-sort-dropdown",
+                       "aria_label": "Sort comments", "role": "button", "text": "Most relevant",
+                       "has_popup": "true", "classes": "artdeco-dropdown"}]
+        out = _fn("_diagnose_sort_control_miss")(self._driver(candidates))
+        assert out == candidates
+
+    def test_returns_empty_when_js_raises(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = RuntimeError("stale")
+        assert _fn("_diagnose_sort_control_miss")(driver) == []
+
+    def test_returns_empty_when_js_returns_none(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = None
+        assert _fn("_diagnose_sort_control_miss")(driver) == []
+
+    def test_filters_non_dict_entries(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = [{"tag": "button"}, None, "not-a-dict"]
+        assert _fn("_diagnose_sort_control_miss")(driver) == [{"tag": "button"}]
 
 
 class TestSwitchCommentSort:
@@ -386,8 +430,39 @@ class TestReadCommentOutcome:
             driver = _outcome_env(es, [], sort_label="", switched=False)
             _p(es, "log_info")
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
+            label = _fn("_comment_sort_label")
         assert out["status"] == "skipped" and out["skip_reason"] == "post-unavailable"
         assert out["visible_most_relevant"] is None
+        # A gone post is not selector rot: the miss must not file a RecurringWarning defect (#1063).
+        assert label.call_args.kwargs["warn_on_miss"] is False
+
+    def test_a_rendered_thread_with_no_sort_control_still_warns(self):
+        # The thread rendered, so the control SHOULD be there — that miss is drift and keeps its
+        # warning (#1063).
+        theirs = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/glenda/")]
+        theirs[0][0].text = "someone else"
+        with ExitStack() as es:
+            driver = _outcome_env(es, theirs, sort_label="", switched=False)
+            _p(es, "log_info")
+            _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
+            label = _fn("_comment_sort_label")
+        assert label.call_args.kwargs["warn_on_miss"] is True
+
+    def test_rendered_thread_with_unreadable_sort_logs_candidates(self):
+        # A rendered thread where the sort control exists but is not readable is #818's starvation
+        # signal: we should capture candidate descriptors at DEBUG for the next iteration.
+        our_tb = MagicMock(); our_tb.text = "Latency is the tell here"
+        items = [(our_tb, MagicMock(), "https://www.linkedin.com/in/me/")]
+        with ExitStack() as es:
+            driver = _outcome_env(es, items, sort_label="", switched=False)
+            _p(es, "_thread_replies", return_value=[])
+            _p(es, "_diagnose_sort_control_miss",
+               return_value=[{"tag": "button", "text": "Sort by"}])
+            log_debug = _p(es, "log_debug")
+            _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
+                                          "Latency is the tell here")
+        assert log_debug.called
+        assert log_debug.call_args.kwargs["candidates"] == [{"tag": "button", "text": "Sort by"}]
 
     def test_unknown_sort_leaves_visibility_null_even_when_found(self):
         our_tb = MagicMock(); our_tb.text = "Latency is the tell here"
