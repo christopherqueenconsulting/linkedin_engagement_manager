@@ -27,6 +27,8 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Callable, List, NamedTuple, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
@@ -9184,6 +9186,52 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
         raise RuntimeError("Profile unavailable: live scrape failed and no cached profile to fall back on")
 
     return driver, wait, user_email, my_profile
+
+
+class LinkedInSession(NamedTuple):
+    """The four values every browser-driven task carries around together.
+
+    A NamedTuple on purpose: `driver, wait, user_email, my_profile = session` still unpacks exactly
+    as the bare tuple did, so this is additive for anything that already destructures the result of
+    `get_current_profile`.
+    """
+
+    driver: WebDriver
+    wait: WebDriverWait
+    user_email: str
+    my_profile: LinkedInProfile
+
+
+@contextmanager
+def browser_session(user_id: int, session_name: str, **kwargs) -> "Iterator[LinkedInSession]":
+    """Hold a logged-in LinkedIn session for the duration of a block, and always give it back.
+
+    Chrome capacity is a FIXED pool of session slots shared by the Selenium lanes
+    (`SE_NODE_MAX_SESSIONS`), so a driver that is acquired and not quit does not degrade
+    performance — it permanently removes one of about eight slots until the worker process is
+    recycled. That teardown is currently a `try/finally` written out by hand in 24 task bodies, and
+    nothing stops the 25th from forgetting it.
+
+    Deliberately does NOT catch the acquisition failure. `get_current_profile` raises on a 429, an
+    auth wall, or a profile that will not resolve, and each caller answers that differently — some
+    return a message string the beat records, some re-raise for a retry, one is a measurement-only
+    run that must stay quiet. Guessing one of those would be worse than the four lines it saves.
+
+    Args:
+        user_id: Whose stored credentials and proxy the session runs as.
+        session_name: The label the Grid session is tagged with, for VNC and logs.
+        **kwargs: Forwarded to `get_current_profile` — `measurement_only`, `debug`, `force_refresh`.
+
+    Yields:
+        A `LinkedInSession`, which also unpacks as the historical
+        `(driver, wait, user_email, my_profile)` 4-tuple.
+    """
+    driver, wait, user_email, my_profile = get_current_profile(
+        user_id=user_id, session_name=session_name, **kwargs)
+    try:
+        yield LinkedInSession(driver=driver, wait=wait, user_email=user_email, my_profile=my_profile)
+    finally:
+        quit_gracefully(driver)
 
 
 def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
