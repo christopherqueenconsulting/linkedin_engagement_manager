@@ -9,7 +9,11 @@
     "",
     "permissions.allow here is deliberately read-only and narrow. Anything that mutates state, and",
     "anything that can execute arbitrary code (interpreters, `docker exec`, `gh api` wildcards), is",
-    "left out on purpose: this file pre-approves those actions for ANY checkout of the repo."
+    "left out on purpose: this file pre-approves those actions for ANY checkout of the repo.",
+    "",
+    "enabledPlugins names the plugin, extraKnownMarketplaces names where it comes from. Both are",
+    "needed here for the same worktree reason: a fresh checkout that knows the plugin but not its",
+    "marketplace cannot resolve it, so the plugin silently does not load."
   ],
   "permissions": {
     "allow": [
@@ -28,5 +32,16 @@
       "src/cqc_lem/ui/node_modules",
       "src/cqc_lem/ui/dist"
     ]
+  },
+  "enabledPlugins": {
+    "codex@openai-codex": true
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    }
   }
 }
