@@ -859,3 +859,112 @@ class TestCountAuthFactors:
 
             mock_database_connection["cursor"].close.assert_called_once()
             mock_database_connection["connection"].close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# db_cursor
+# ---------------------------------------------------------------------------
+
+class TestDbCursor:
+    """The resource half of every DB call in this module."""
+
+    def test_yields_a_cursor_and_returns_both_on_success(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with db_cursor() as cursor:
+                assert cursor is mock_database_connection["cursor"]
+
+        mock_database_connection["cursor"].close.assert_called_once()
+        mock_database_connection["connection"].close.assert_called_once()
+
+    def test_does_not_commit_by_default(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with db_cursor() as cursor:
+                cursor.execute("SELECT 1")
+
+        mock_database_connection["connection"].commit.assert_not_called()
+
+    def test_commits_after_a_successful_body(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with db_cursor(commit=True) as cursor:
+                cursor.execute("UPDATE t SET a = 1")
+
+        mock_database_connection["connection"].commit.assert_called_once()
+
+    def test_a_raising_body_does_not_commit(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with pytest.raises(mysql.connector.Error):
+                with db_cursor(commit=True):
+                    raise mysql.connector.Error("write failed")
+
+        mock_database_connection["connection"].commit.assert_not_called()
+
+    def test_the_error_reaches_the_caller(self, mock_database_connection):
+        """It owns resources, not fallbacks — each caller answers a failure its own way."""
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with pytest.raises(mysql.connector.Error):
+                with db_cursor() as cursor:
+                    cursor.execute("SELECT bad")
+                    raise mysql.connector.Error("boom")
+
+    def test_both_are_returned_even_when_the_body_raises(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            with pytest.raises(RuntimeError):
+                with db_cursor():
+                    raise RuntimeError("body blew up")
+
+        mock_database_connection["cursor"].close.assert_called_once()
+        mock_database_connection["connection"].close.assert_called_once()
+
+    def test_a_failing_cursor_creation_still_returns_the_connection(self, mock_database_connection):
+        """The pool-slot leak the old hand-written shape had.
+
+        Those 417 blocks built the cursor between get_db_connection() and their `try:`, so a
+        failure in .cursor() skipped the `finally` — and PooledMySQLConnection has no __del__, so
+        the connection never went back to the pool. One statement wide, permanent every time.
+        """
+        from cqc_lem.utilities.db import db_cursor
+
+        connection = mock_database_connection["connection"]
+        connection.cursor.side_effect = mysql.connector.Error("cannot allocate cursor")
+        with patch("cqc_lem.utilities.db.get_db_connection", return_value=connection):
+            with pytest.raises(mysql.connector.Error):
+                with db_cursor():
+                    pass
+
+        connection.close.assert_called_once()
+
+    def test_dictionary_flag_is_forwarded(self, mock_database_connection):
+        from cqc_lem.utilities.db import db_cursor
+
+        connection = mock_database_connection["connection"]
+        with patch("cqc_lem.utilities.db.get_db_connection", return_value=connection):
+            with db_cursor(dictionary=True):
+                pass
+        connection.cursor.assert_called_once_with(dictionary=True)
+
+    def test_is_keyword_only_so_a_positional_cannot_mean_commit(self):
+        """`db_cursor(True)` must not silently become a commit — or a read starts writing."""
+        import inspect
+
+        from cqc_lem.utilities.db import db_cursor
+
+        params = inspect.signature(db_cursor.__wrapped__).parameters
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())

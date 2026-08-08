@@ -18,6 +18,8 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
@@ -185,6 +187,51 @@ def get_db_connection() -> DbConnection:
             log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
 
     return mysql.connector.connect(**config)
+
+
+@contextmanager
+def db_cursor(*, dictionary: bool = False, commit: bool = False) -> Iterator[MySQLCursorAbstract]:
+    """Check out a connection, hand back a cursor, and always give both back.
+
+    This owns the RESOURCE half of a database call and nothing else. It deliberately does NOT catch
+    `mysql.connector.Error`: every caller in this module answers a read failure with its own
+    fallback — False, None, `[]`, 0 — and a context manager that swallowed the error would have to
+    invent one. Callers keep their own `except`, and what they lose is the four lines of ceremony
+    this replaces, repeated 417 times.
+
+    It also closes a hole that shape had. Those 417 blocks build the cursor BETWEEN
+    `get_db_connection()` and their `try:`, so a failure in `.cursor()` itself skipped the `finally`
+    — and `PooledMySQLConnection` has no `__del__`, so that connection never returned to the pool.
+    One statement wide, but it drained a pool slot permanently every time it happened. Building the
+    cursor inside this function fixes it for every migrated caller at once, which is the point of
+    having one place.
+
+    `commit=True` commits only when the body completed. An uncommitted transaction left by a raising
+    body is not leaked to the next user of the connection: the pool is built with the connector's
+    default `pool_reset_session=True`, so `close()` resets the session (mysql/connector/pooling.py
+    :409), and the unpooled fallback connection drops the transaction when its socket closes.
+
+    Args:
+        dictionary: Rows come back as dicts keyed by column instead of positional tuples.
+        commit: Commit after the body succeeds. Required for writes; a no-op cost for reads.
+
+    Yields:
+        The cursor — including its `rowcount` and `lastrowid`, which callers read after `execute`.
+    """
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(dictionary=dictionary)
+    except BaseException:
+        # The one path the old shape leaked: no cursor was created, so no `finally` below can run.
+        connection.close()
+        raise
+    try:
+        yield cursor
+        if commit:
+            connection.commit()
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
