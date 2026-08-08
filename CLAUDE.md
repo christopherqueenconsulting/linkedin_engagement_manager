@@ -36,7 +36,7 @@ src/cqc_lem/
 │   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)
 │   ├── marketing/ video_tutorials.py — automated SPA tutorial videos
 │   ├── human_pacing.py  ONE cadence engine
-│   ├── db.py      All database access (no raw SQL outside this file)
+│   ├── db.py      DB facade — re-exports platform/db/ (no raw SQL outside those two)
 │   ├── proxy.py   Per-user static residential proxy resolution
 │   ├── geocoding.py  Login Location city/state geocoding
 │   ├── logger.py  Structured logger — log_info/log_error/etc. preferred over myprint()
@@ -63,7 +63,12 @@ compose/local/database/migrations/  Flyway migrations
 - **Type hints:** Required on all function signatures.
 - **Enums:** Use `PostStatus`, `PostType`, `LogActionType` from `db.py` for status fields — never raw strings.
 - **Imports:** Absolute imports from `cqc_lem.*` throughout.
-- **Database:** All DB access goes through functions in `utilities/db.py`. No raw SQL elsewhere.
+- **Database:** All DB access goes through `utilities/db.py` or a `platform/db/repositories/*.py`
+  module it re-exports (#1154, split in progress). No raw SQL anywhere else, and **importers keep
+  using `cqc_lem.utilities.db`** — the facade is the stable name. Patch targets are the exception:
+  once a symbol moves, patch it where it now LIVES, because a sibling in the same repository module
+  calls it directly and never reads the re-export. `tests/unit/platform/db/test_connection_seam.py`
+  derives that hazard set per module and fails the build on it.
 - **Secrets:** Never hardcode. Use `.env` with `load_dotenv()`. See `.env.example` for required variables.
 - **Comments & docstrings:** Only add a comment when the WHY is non-obvious — and that is exactly
   what a docstring is for. Ruff enforces **Google-convention docstrings** (`D`) alongside `E`/`F`/`I`/

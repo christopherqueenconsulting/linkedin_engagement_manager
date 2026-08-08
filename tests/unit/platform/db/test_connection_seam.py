@@ -56,6 +56,83 @@ class TestOneCanonicalTarget:
         "_get_connection_pool", "_get_mysql_config", "_POOL_STATE",
     )
 
+    @staticmethod
+    def _repository_hazards(repo_dir: pathlib.Path | None = None) -> dict[str, str]:
+        """Moved symbols a facade patch would silently fail to intercept, derived not listed.
+
+        Patching `cqc_lem.utilities.db.X` is normally FINE even after X moves: nearly every caller
+        reaches X through the facade, so the re-export is the binding it reads. The exception is a
+        caller that moved INTO the same repository module — it resolves X from its own module
+        globals and never consults the facade, so the patch binds an object nobody calls and the
+        test passes while asserting against real SQL.
+
+        Deriving this per module means each new aggregate slice inherits the guard instead of
+        depending on someone remembering to extend a tuple.
+        """
+        hazards: dict[str, str] = {}
+        repo_dir = repo_dir or _DB.parent.parent / "platform" / "db" / "repositories"
+        for mod in sorted(repo_dir.glob("*.py")):
+            if mod.name == "__init__.py":
+                continue
+            tree = ast.parse(mod.read_text())
+            defined = {
+                n.name for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            # Module-level constants are the same hazard wearing different clothes: a moved
+            # function reads `CLAIM_STALE_MINUTES` out of its OWN globals, so rebinding the
+            # facade's copy changes nothing the function will ever look at.
+            for node in tree.body:
+                if isinstance(node, ast.Assign):
+                    defined |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    defined.add(node.target.id)
+            for node in tree.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for sub in ast.walk(node):
+                    read = isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+                    if read and sub.id in defined and sub.id != node.name:
+                        hazards[sub.id] = mod.stem
+        return hazards
+
+    def test_the_hazard_derivation_actually_fires(self, tmp_path):
+        """The guard above is currently green because no repository has an intra-module call yet.
+
+        A guard nobody has watched fail is a guess. This pins the derivation itself against a
+        synthetic module, so the assertion stays meaningful for the aggregates still to be split.
+        """
+        (tmp_path / "widgets.py").write_text(
+            "WIDGET_LIMIT = 5\n"
+            "UNREAD_LIMIT = 9\n"
+            "\n"
+            "def read_widget(x):\n"
+            "    return x\n"
+            "\n"
+            "def list_widgets():\n"
+            "    return [read_widget(1)][:WIDGET_LIMIT]\n"
+            "\n"
+            "def untouched():\n"
+            "    return None\n")
+        hazards = self._repository_hazards(tmp_path)
+        assert hazards == {"read_widget": "widgets", "WIDGET_LIMIT": "widgets"}, (
+            "an intra-module callee AND an intra-module constant read must both be flagged; a "
+            "function nobody calls and a constant nobody reads must not be")
+
+    def test_no_test_patches_an_intra_repository_call_on_the_facade(self):
+        offenders = []
+        hazards = self._repository_hazards()
+        for p in pathlib.Path("tests").rglob("*.py"):
+            if p.name == "test_connection_seam.py":
+                continue
+            t = p.read_text(errors="ignore")
+            for sym, mod in hazards.items():
+                if re.search(rf'["\']cqc_lem\.utilities\.db\.{re.escape(sym)}["\']', t):
+                    offenders.append(
+                        f"{p} -> patches {sym}, which a sibling in repositories/{mod}.py "
+                        f"calls directly; target cqc_lem.platform.db.repositories.{mod}.{sym}")
+        assert offenders == [], "\n  ".join([""] + sorted(set(offenders)))
+
     def test_no_test_rebinds_a_moved_symbol_on_the_facade(self):
         """Covers BOTH lanes and all three rebinding styles.
 
@@ -94,7 +171,13 @@ class TestOneCanonicalTarget:
     def test_the_facade_re_exports_every_enum(self):
         from cqc_lem.platform.db import enums
         from cqc_lem.utilities import db
-        names = [n for n in dir(enums) if n[0].isupper() and not n.startswith("_")]
+        # Only the enums this module DEFINES. `dir()` also sees what it imports — `StrEnum` itself
+        # is in there, and asserting the facade re-exports a stdlib base class held db.py to
+        # keeping an import it no longer uses.
+        names = [
+            n for n in dir(enums)
+            if isinstance(getattr(enums, n), type) and getattr(enums, n).__module__ == enums.__name__
+        ]
         missing = [n for n in names if getattr(db, n, None) is not getattr(enums, n)]
         assert missing == [], f"facade does not re-export: {missing}"
 

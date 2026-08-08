@@ -31,6 +31,18 @@ os.environ.setdefault("CELERY_BROKER_URL", "redis://localhost:6379/0")
 os.environ.setdefault("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 os.environ.setdefault("PEXELS_API_KEY", "test-pexels-api-key-12345")
 
+# Also MODULE level, and for a sharper reason: `cqc_lem.utilities.db` is a FACADE that does
+# `from cqc_lem.platform.db.connection import get_db_connection` at import time. Whatever that name
+# is bound to at THAT moment is what the facade re-exports forever. Hundreds of tests patch
+# `platform.db.connection.get_db_connection` — so if the very first import of the facade happens
+# inside one of those `with patch(...)` blocks, the facade permanently re-exports a MagicMock and
+# every later test reading `db.get_db_connection` silently gets a dead mock.
+#
+# Which test imports it first depends on collection order, so this was a latent landmine that
+# passed on a full run and failed on a subset. Importing it here binds the real functions before
+# any test can patch anything.
+import cqc_lem.utilities.db  # noqa: E402,F401  (import for its binding side effect, not its names)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
