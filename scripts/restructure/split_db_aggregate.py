@@ -28,6 +28,7 @@ Three things this script refuses to do, each because it silently corrupted an ea
 import argparse
 import ast
 import collections
+import json
 import pathlib
 import re
 import subprocess
@@ -117,6 +118,32 @@ def free_names(text: str, already_bound: set[str]) -> set[str]:
                 continue
             used |= {n.id for n in ast.walk(parsed) if isinstance(n, ast.Name)}
     return used - bound - set(dir(__builtins__)) - {"__name__"}
+
+
+def open_alerts_in(spans: list[tuple[int, int]]) -> list[str]:
+    """Open CodeQL alerts sitting inside the line ranges about to move.
+
+    CodeQL tracks an alert by (path, content). A whole-file `git mv` carries the identity across,
+    but this is a partial extraction into a NEW file -- so an alert that rides along is reported at
+    a path that never had it, which the PR gate counts as newly introduced and refuses. Cheaper to
+    learn that here than 3 minutes into CI.
+    """
+    query = (
+        '[.[] | select(.most_recent_instance.location.path == "src/cqc_lem/utilities/db.py")'
+        ' | "\\(.rule.id)@\\(.most_recent_instance.location.start_line)"]'
+    )
+    probe = subprocess.run(
+        ["gh", "api", "repos/:owner/:repo/code-scanning/alerts?state=open&per_page=100",
+         "--jq", query],
+        capture_output=True, text=True, cwd=REPO)
+    if probe.returncode != 0:
+        return []  # no gh, no token, no network -- advisory check, never a hard stop
+    riding = []
+    for entry in json.loads(probe.stdout or "[]"):
+        rule, _, line = entry.rpartition("@")
+        if any(lo <= int(line) <= hi for lo, hi in spans):
+            riding.append(f"{rule} at db.py:{line}")
+    return riding
 
 
 def function_bodies(src: str) -> dict[str, str]:
@@ -227,6 +254,13 @@ def main() -> int:
     if deferred:
         print(f"  deferred (call a function that stays behind): {deferred}")
     print(f"  constants travelling with them: {travelling}")
+    riding = open_alerts_in([(nodes[f].lineno, nodes[f].end_lineno) for f in movable])
+    if riding:
+        print("  OPEN CodeQL ALERTS inside the moved code -- the PR gate will read these as newly")
+        print("  introduced once they land at a new path. Clear them on main first:")
+        for alert in riding:
+            print(f"    {alert}")
+        return 1
     if unresolved:
         print(f"  UNRESOLVED names, refusing to write: {unresolved}")
         return 1

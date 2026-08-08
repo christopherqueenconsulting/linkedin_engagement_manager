@@ -6,6 +6,7 @@ This module provides:
 - Test configuration and markers
 """
 
+import importlib
 import os
 from unittest.mock import MagicMock, patch
 
@@ -41,7 +42,10 @@ os.environ.setdefault("PEXELS_API_KEY", "test-pexels-api-key-12345")
 # Which test imports it first depends on collection order, so this was a latent landmine that
 # passed on a full run and failed on a subset. Importing it here binds the real functions before
 # any test can patch anything.
-import cqc_lem.utilities.db  # noqa: E402,F401  (import for its binding side effect, not its names)
+# Done as an import_module CALL rather than a plain import with a per-line suppression comment,
+# because the two linters disagree about that line: the suppression silences ruff, and CodeQL --
+# which cannot see ruff directives -- files a py/unused-import anyway. A call is a use to both.
+importlib.import_module("cqc_lem.utilities.db")
 
 
 @pytest.fixture(scope="session", autouse=True)
