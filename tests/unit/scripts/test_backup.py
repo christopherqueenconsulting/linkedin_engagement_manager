@@ -5,7 +5,6 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-import pytest
 
 BACKUP_SH = Path(__file__).resolve().parents[3] / "scripts" / "backup.sh"
 

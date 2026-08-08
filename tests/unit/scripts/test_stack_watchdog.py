@@ -5,7 +5,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import pytest
 
 WATCHDOG_SH = Path(__file__).resolve().parents[3] / "scripts" / "stack_watchdog.sh"
 
