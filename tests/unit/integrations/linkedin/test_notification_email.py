@@ -108,7 +108,7 @@ class TestLinkedInSenderDomain:
         "invitations@linkedin.com.",                            # absolute FQDN, same host
     ])
     def test_accepts_linkedin_domains(self, sender):
-        from cqc_lem.utilities.linkedin.notification_email import _is_linkedin_sender
+        from cqc_lem.integrations.linkedin.notification_email import _is_linkedin_sender
         assert _is_linkedin_sender(sender) is True
 
     @pytest.mark.parametrize("sender", [
@@ -121,7 +121,7 @@ class TestLinkedInSenderDomain:
         "",
     ])
     def test_rejects_non_linkedin_domains(self, sender):
-        from cqc_lem.utilities.linkedin.notification_email import _is_linkedin_sender
+        from cqc_lem.integrations.linkedin.notification_email import _is_linkedin_sender
         assert _is_linkedin_sender(sender) is False
 
     @pytest.mark.parametrize("sender", [
@@ -130,13 +130,13 @@ class TestLinkedInSenderDomain:
     ])
     def test_spoofed_sender_is_not_forwarding_evidence(self, sender):
         """A spoof with nothing LinkedIn-ish to say for itself is no longer proof of forwarding."""
-        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        from cqc_lem.integrations.linkedin.notification_email import is_linkedin_notification
         assert is_linkedin_notification(sender, "Your invoice is ready",
                                         "Payment due in 14 days") is False
 
     def test_domain_extraction_takes_the_last_at(self):
         """A quoted local part may itself contain an `@` — only the last one starts the domain."""
-        from cqc_lem.utilities.linkedin.notification_email import _sender_domain
+        from cqc_lem.integrations.linkedin.notification_email import _sender_domain
         assert _sender_domain('"news@linkedin.com"@evil.test') == "evil.test"
         assert _sender_domain("notlinkedin.com@evil.test") == "evil.test"
         assert _sender_domain('"LinkedIn" <notifications-noreply@linkedin.com>') == "linkedin.com"
@@ -144,7 +144,7 @@ class TestLinkedInSenderDomain:
 
     def test_unparseable_sender_fails_closed(self):
         """A malformed address is rejected outright — an unreadable From is never evidence."""
-        from cqc_lem.utilities.linkedin.notification_email import (
+        from cqc_lem.integrations.linkedin.notification_email import (
             _is_linkedin_sender,
             _sender_domain,
         )
