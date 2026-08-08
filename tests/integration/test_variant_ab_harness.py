@@ -14,8 +14,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
-
 
 class _FakeCursor:
     """Minimal MySQL-ish cursor over in-memory `posts`, `post_stats`, `post_variants` stores."""

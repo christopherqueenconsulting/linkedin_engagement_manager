@@ -12,7 +12,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _AFF = "cqc_lem.utilities.marketing.affiliate"
 
 # A trial that started yesterday and is still LIVE — the ordinary case. A lapsed trial is its own

@@ -13,7 +13,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _OBS = "cqc_lem.utilities.observability"
 _REDIS = "cqc_lem.utilities.linkedin.rate_limit._redis_client"
 

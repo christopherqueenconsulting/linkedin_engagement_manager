@@ -15,8 +15,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
     conn = MagicMock()

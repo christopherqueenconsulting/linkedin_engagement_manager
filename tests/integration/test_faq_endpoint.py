@@ -15,7 +15,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _MIGRATION = (Path(__file__).resolve().parents[2]
               / "compose/local/database/migrations/V20260725155210__add_faq_entries.sql")
 

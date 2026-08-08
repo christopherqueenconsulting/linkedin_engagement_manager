@@ -16,7 +16,6 @@ pytestmark = pytest.mark.unit
 _CPI = "cqc_lem.utilities.linkedin.company_page_inviter"
 _RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
-_DB = "cqc_lem.utilities.db"
 
 
 class TestCreditSpread:

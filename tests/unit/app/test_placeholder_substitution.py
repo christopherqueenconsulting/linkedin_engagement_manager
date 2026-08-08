@@ -8,7 +8,6 @@ pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"  # lgtm[py/unused-global-variable]
 _RCP = "cqc_lem.app.run_content_plan"  # lgtm[py/unused-global-variable]
-_AI = "cqc_lem.utilities.ai.ai_helper"  # lgtm[py/unused-global-variable]
 
 
 class TestRenderDmPlaceholders:

@@ -12,8 +12,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
-
 _STEP_COLUMNS = ("linkedin_connected_at", "voice_set_at", "first_post_approved_at",
                  "caps_enabled_at", "activated_at")
 

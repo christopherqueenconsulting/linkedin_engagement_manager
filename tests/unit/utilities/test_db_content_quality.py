@@ -10,8 +10,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _mock_conn(fetch_batches=None, fetch_all=None):
     """`fetch_batches` feeds a different result set to each successive fetchall() — the shipped-content

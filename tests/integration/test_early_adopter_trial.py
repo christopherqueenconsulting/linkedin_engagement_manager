@@ -16,7 +16,6 @@ from mysql.connector import errorcode
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _MAIN = "cqc_lem.api.main"
 _ENV = "cqc_lem.utilities.env_constants"
 

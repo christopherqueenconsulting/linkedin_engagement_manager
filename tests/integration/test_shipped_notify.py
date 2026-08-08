@@ -19,7 +19,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _SHIPPED = "cqc_lem.utilities.feedback.shipped"
 
 _PR = {"number": 539, "title": "fix(feed): comments now post reliably (closes #498)",

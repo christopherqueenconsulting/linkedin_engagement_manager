@@ -9,7 +9,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:1/"
 
 

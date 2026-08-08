@@ -12,7 +12,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _RA = "cqc_lem.app.run_automation"
 
 _BODY = ("Three lessons from the rebuild.\n\n"

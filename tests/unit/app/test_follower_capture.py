@@ -11,7 +11,6 @@ pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
-_DB = "cqc_lem.utilities.db"
 
 _PROFILE_TEXT = "Christopher Queen\nFounder\n4,312 followers\n500+ connections"
 _ANALYTICS_TEXT = "48\nProfile views\nPast 90 days\n12\nSearch appearances\nPrevious week"

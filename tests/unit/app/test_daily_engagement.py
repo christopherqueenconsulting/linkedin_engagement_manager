@@ -9,7 +9,6 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RS = "cqc_lem.app.run_scheduler"
-_DB = "cqc_lem.utilities.db"
 
 
 class TestHasScheduledPostToday:
