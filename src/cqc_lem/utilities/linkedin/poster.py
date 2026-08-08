@@ -29,7 +29,7 @@ from pydantic.types import StringConstraints
 
 from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.env_constants import LI_API_VERSION
-from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 
@@ -91,7 +91,7 @@ def download_media(media_path: str) -> str:
     tmp_path = f"/tmp/{uuid.uuid4()}{extension}"
     with open(tmp_path, "wb") as f:
         f.write(content)
-    myprint(f"Downloaded media to: {tmp_path}")
+    log_info(f"Downloaded media to: {tmp_path}")
     return tmp_path
 
 
@@ -151,7 +151,7 @@ def upload_media(access_token, owner_sub_id: str, media_path, media_type: str = 
         'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest']['headers']
     asset = upload_response.json()['value']['asset']
     mediaArtifact = upload_response.json()['value']['mediaArtifact']
-    myprint(f"Asset: {asset} | Upload URL: {upload_url} | Headers: {returned_headers} | Media Artifact: {mediaArtifact}")
+    log_info(f"Asset: {asset} | Upload URL: {upload_url} | Headers: {returned_headers} | Media Artifact: {mediaArtifact}")
 
     # Upload the media file. A longer read budget than the register call: this is the one that
     # carries the bytes, and a video can be tens of MB over a slow uplink.
@@ -212,7 +212,7 @@ def share_on_linkedin(user_id: int, content: str,
     access_token = get_user_access_token(user_id)
 
     if not linked_sub_id or not access_token:
-        myprint(f"No LinkedIn credentials found for user {user_id} — cannot post")
+        log_info(f"No LinkedIn credentials found for user {user_id} — cannot post")
         return None
 
     media_objects = []
@@ -220,12 +220,12 @@ def share_on_linkedin(user_id: int, content: str,
 
     if media_path:
         media_type = determine_media_type(media_path)
-        myprint(f"Detected Media Type: {media_type}")
+        log_info(f"Detected Media Type: {media_type}")
         media_urn = upload_media(access_token,
                                  linked_sub_id,
                                  media_path,
                                  media_type)  # Assuming upload_media returns the URN of the uploaded media
-        myprint(f"Media Uploaded to LinkedIn: {media_urn}")
+        log_info(f"Media Uploaded to LinkedIn: {media_urn}")
         if media_type.lower() in ['image' ]:
             share_media_category = 'IMAGE'
         elif media_type.lower() in ['video' ]:
@@ -234,7 +234,7 @@ def share_on_linkedin(user_id: int, content: str,
             share_media_category = 'ARTICLE'
         else:
             share_media_category = 'NONE'
-        myprint(f"Set share_media_category: {share_media_category}")
+        log_info(f"Set share_media_category: {share_media_category}")
 
         media_objects = [
             ShareMedia(
@@ -289,7 +289,7 @@ def share_on_linkedin(user_id: int, content: str,
     #    myprint(f"{key}: {value}")
 
     urn = posts_create_response.entity_id
-    myprint(f"Shared on LinkedIn via API call: https://www.linkedin.com/feed/update/{urn}")
+    log_info(f"Shared on LinkedIn via API call: https://www.linkedin.com/feed/update/{urn}")
 
     return urn
 
@@ -324,7 +324,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     access_token = get_user_access_token(user_id)
 
     if not linked_sub_id or not access_token:
-        myprint(f"No LinkedIn credentials found for user {user_id} — cannot post carousel")
+        log_info(f"No LinkedIn credentials found for user {user_id} — cannot post carousel")
         return None
 
     # NO placeholder/default image. Every slide must resolve to a REAL image — a provided
@@ -343,7 +343,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
             image_path = get_pexels_image_path(slide)  # text query; None if Pexels unavailable
 
         if not image_path or (not _is_image_url(image_path) and not os.path.isfile(image_path)):
-            myprint(f"Carousel slide has no real image (slide={slide!r}) — refusing to use a placeholder")
+            log_info(f"Carousel slide has no real image (slide={slide!r}) — refusing to use a placeholder")
             missing += 1
             continue
         urn = upload_media(access_token, linked_sub_id, image_path, "IMAGE")
@@ -354,7 +354,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
 
     # Don't post a partial/placeholder carousel — require a real image for every slide.
     if missing > 0 or not media_urns:
-        myprint(f"Carousel for user {user_id}: {missing} slide(s) without a real image — not posting (flag error).")
+        log_info(f"Carousel for user {user_id}: {missing} slide(s) without a real image — not posting (flag error).")
         return None
 
     media_objects = [ShareMedia(status="READY", media=urn).model_dump() for urn in media_urns]
@@ -383,7 +383,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     )
 
     urn = posts_create_response.entity_id
-    myprint(f"Carousel shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}")
+    log_info(f"Carousel shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}")
     return urn
 
 
@@ -644,7 +644,7 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
     sub_id = get_user_linked_sub_id(user_id)
     access_token = get_user_access_token(user_id)
     if not sub_id or not access_token:
-        myprint(f"No LinkedIn credentials for user {user_id} — cannot comment via API")
+        log_info(f"No LinkedIn credentials for user {user_id} — cannot comment via API")
         return None
     if not object_urn or not (text or "").strip():
         return None
@@ -658,7 +658,7 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
         access_token=access_token,
     )
     comment_urn = resp.entity_id or (resp.entity or {}).get("$URN")
-    myprint(f"Commented on {object_urn} via API: {comment_urn}")
+    log_info(f"Commented on {object_urn} via API: {comment_urn}")
     return comment_urn
 
 
@@ -682,5 +682,5 @@ def delete_linkedin_comment(user_id: int, object_urn: str, comment_urn: str) -> 
         query_params={"actor": f"urn:li:person:{sub_id}"},
         access_token=access_token,
     )
-    myprint(f"Deleted comment {comment_urn} on {object_urn} via API")
+    log_info(f"Deleted comment {comment_urn} on {object_urn} via API")
     return True

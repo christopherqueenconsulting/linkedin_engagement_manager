@@ -27,7 +27,7 @@ import json
 import os
 from typing import Optional
 
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import log_info
 
 
 def _region_proxies() -> dict:
@@ -38,7 +38,7 @@ def _region_proxies() -> dict:
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except (ValueError, TypeError) as e:
-        myprint(f"Invalid REGION_PROXIES JSON — ignoring: {e}")
+        log_info(f"Invalid REGION_PROXIES JSON — ignoring: {e}")
         return {}
 
 

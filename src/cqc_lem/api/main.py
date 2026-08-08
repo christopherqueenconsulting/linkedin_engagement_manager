@@ -342,7 +342,7 @@ from cqc_lem.utilities.linkedin.verification_pin import (
     extract_token_from_address,
     submit_pin_by_token,
 )
-from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.observability import (
     FUNNEL_CHURNED,
@@ -3684,8 +3684,8 @@ def get_assets(file_name: str, content_type: Optional[str] = None,
     if file_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    myprint(f"File Path: {file_path}")
-    myprint(f"Content Type: {content_type}")
+    log_info(f"File Path: {file_path}")
+    log_info(f"Content Type: {content_type}")
 
     file_extension = get_file_extension_from_filepath(file_path)
     mim_type = get_file_mime_type(file_extension)
@@ -4962,15 +4962,15 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     try:
         access_token_response = client.exchange_auth_code_for_access_token(code)
     except (ResponseFormattingError, Exception) as exc:
-        myprint(f"LinkedIn token exchange failed: {exc}")
+        log_info(f"LinkedIn token exchange failed: {exc}")
         return _account_redirect({'li_error': 'token_exchange_failed'})
 
-    myprint("Access token Response from api call")
+    log_info("Access token Response from api call")
     for key, value in access_token_response.__dict__.items():
-        myprint(f"{key}: {value}")
+        log_info(f"{key}: {value}")
 
     if not access_token_response.access_token:
-        myprint("LinkedIn token exchange returned no access_token")
+        log_info("LinkedIn token exchange returned no access_token")
         return _account_redirect({'li_error': 'no_access_token'})
 
     try:
@@ -4979,11 +4979,11 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
             resource_path='/userinfo',
             access_token=access_token_response.access_token,
         )
-        myprint("Response from /userinfo api call:")
+        log_info("Response from /userinfo api call:")
         for key, value in response.__dict__.items():
-            myprint(f"{key}: {value}")
+            log_info(f"{key}: {value}")
     except Exception as exc:
-        myprint(f"LinkedIn /userinfo call failed: {exc}")
+        log_info(f"LinkedIn /userinfo call failed: {exc}")
         return _account_redirect({'li_error': 'userinfo_failed'})
 
     user_email = response.entity.get('email', '')
@@ -4993,7 +4993,7 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     # the LinkedIn account email differs from the app login email).
     user_id = get_session_user_id(session_token_from_state) if session_token_from_state else None
     if user_id:
-        myprint(f"Updating LinkedIn token for session user_id={user_id}")
+        log_info(f"Updating LinkedIn token for session user_id={user_id}")
         update_user_linkedin_token(
             user_id,
             linked_sub_id,
@@ -5005,9 +5005,9 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
         )
     else:
         if not user_email:
-            myprint("LinkedIn /userinfo returned no email and no valid session")
+            log_info("LinkedIn /userinfo returned no email and no valid session")
             return _account_redirect({'li_error': 'no_email'})
-        myprint(f"No session in state — upserting by LinkedIn email {user_email}")
+        log_info(f"No session in state — upserting by LinkedIn email {user_email}")
         add_user_with_access_token(
             user_email,
             linked_sub_id,
@@ -5396,7 +5396,7 @@ async def upload_newsletter_cover_endpoint(
     except CoverRejected as e:
         raise HTTPException(status_code=400, detail=str(e))
     except OSError as e:
-        myprint(f"newsletter cover upload failed for edition {edition_id} — {e}")
+        log_info(f"newsletter cover upload failed for edition {edition_id} — {e}")
         raise HTTPException(status_code=500, detail="Could not store the cover image")
     previous = edition.get("cover_image_path")
     if not set_edition_cover_image(edition_id, user_id, relative, COVER_SOURCE_UPLOAD,
@@ -5420,7 +5420,7 @@ def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> Respo
     from cqc_lem.app.run_scheduler import generate_newsletter_cover
     generate_newsletter_cover.apply_async(kwargs={"edition_id": request.edition_id,
                                                   "use_avatar": request.use_avatar})
-    myprint(f"newsletter cover generation queued for edition {request.edition_id} (user {user_id})")
+    log_info(f"newsletter cover generation queued for edition {request.edition_id} (user {user_id})")
     return ResponseModel(status_code=200, detail="Cover generation started")
 
 
@@ -7297,7 +7297,7 @@ def billing_create_checkout_session(request: CheckoutSessionRequest) -> Response
         if upgraded:
             # No redirect needed — Stripe webhook will fire subscription.updated and sync DB
             return ResponseModel(status_code=200, detail={"checkout_url": None, "upgraded": True})
-        myprint(
+        log_info(
             f"In-place upgrade failed for sub={existing_sub_id}; falling back to checkout session"
         )
 
@@ -7379,7 +7379,7 @@ async def billing_webhook(request: Request) -> dict:
 
     event_type = event.get("type", "")
     data = event.get("data", {}).get("object", {})
-    myprint(f"Stripe webhook received: {event_type}")
+    log_info(f"Stripe webhook received: {event_type}")
 
     # --- Subscription lifecycle events ---
     if event_type in (
@@ -7389,7 +7389,7 @@ async def billing_webhook(request: Request) -> dict:
         stripe_customer_id = data.get("customer")
         stripe_subscription_id = data.get("id")
         if not stripe_customer_id:
-            myprint(f"Webhook {event_type} missing customer field — skipping")
+            log_info(f"Webhook {event_type} missing customer field — skipping")
             return {"received": True}
         sub_status = data.get("status", "")
         db_status = stripe_status_to_db(sub_status)
@@ -7407,7 +7407,7 @@ async def billing_webhook(request: Request) -> dict:
             datetime.fromtimestamp(period_end_ts, tz=timezone.utc) if period_end_ts else None
         )
 
-        myprint(
+        log_info(
             f"Subscription {stripe_subscription_id}: stripe_status={sub_status} "
             f"→ db_status={db_status}, tier={tier}, period_end={period_end}"
         )
@@ -7425,9 +7425,9 @@ async def billing_webhook(request: Request) -> dict:
         stripe_customer_id = data.get("customer")
         stripe_subscription_id = data.get("id")
         if not stripe_customer_id:
-            myprint(f"Webhook {event_type} missing customer field — skipping")
+            log_info(f"Webhook {event_type} missing customer field — skipping")
             return {"received": True}
-        myprint(f"Subscription {stripe_subscription_id} deleted for customer {stripe_customer_id}")
+        log_info(f"Subscription {stripe_subscription_id} deleted for customer {stripe_customer_id}")
         # tier=None preserves the historical tier in the DB
         update_subscription_from_stripe(
             stripe_customer_id, "cancelled", None, stripe_subscription_id
@@ -7440,10 +7440,10 @@ async def billing_webhook(request: Request) -> dict:
         stripe_customer_id = data.get("customer")
         stripe_subscription_id = data.get("subscription")
         if not stripe_customer_id:
-            myprint(f"Webhook {event_type} missing customer field — skipping")
+            log_info(f"Webhook {event_type} missing customer field — skipping")
             return {"received": True}
         if stripe_subscription_id:
-            myprint(
+            log_info(
                 f"Invoice payment succeeded for customer={stripe_customer_id}, "
                 f"subscription={stripe_subscription_id} — marking active"
             )
@@ -7466,10 +7466,10 @@ async def billing_webhook(request: Request) -> dict:
         stripe_customer_id = data.get("customer")
         stripe_subscription_id = data.get("subscription")
         if not stripe_customer_id:
-            myprint(f"Webhook {event_type} missing customer field — skipping")
+            log_info(f"Webhook {event_type} missing customer field — skipping")
             return {"received": True}
         if stripe_subscription_id:
-            myprint(
+            log_info(
                 f"Invoice payment FAILED for customer={stripe_customer_id}, "
                 f"subscription={stripe_subscription_id} — marking past_due"
             )
@@ -7484,7 +7484,7 @@ async def billing_webhook(request: Request) -> dict:
             # Only credit on confirmed card payment — async methods (e.g. bank transfer)
             # may fire this event before funds clear.
             if data.get("payment_status") != "paid":
-                myprint(
+                log_info(
                     f"checkout.session.completed: payment_status={data.get('payment_status')} "
                     f"— not yet paid, skipping credit grant"
                 )
@@ -7496,12 +7496,12 @@ async def billing_webhook(request: Request) -> dict:
             package = meta.get("package", "unknown")
 
             if not stripe_customer_id or credits <= 0:
-                myprint("Avatar credits webhook: missing customer or zero credits — skipping")
+                log_info("Avatar credits webhook: missing customer or zero credits — skipping")
                 return {"received": True}
 
             # Idempotency: Stripe may retry — skip if credits already granted for this session.
             if get_avatar_credit_ledger_entry_by_session(stripe_session_id):
-                myprint(f"Avatar credits already granted for session={stripe_session_id} — skipping duplicate")
+                log_info(f"Avatar credits already granted for session={stripe_session_id} — skipping duplicate")
                 return {"received": True}
 
             user_row = get_user_by_stripe_customer_id(stripe_customer_id)
@@ -7512,33 +7512,34 @@ async def billing_webhook(request: Request) -> dict:
                     f"purchase_{package}",
                     stripe_session_id,
                 )
-                myprint(
+                log_info(
                     f"Added {credits} avatar credit(s) for user_id={user_row['id']} "
                     f"via session={stripe_session_id}"
                 )
             else:
-                myprint(f"Avatar credits webhook: no user found for customer={stripe_customer_id}")
+                log_info(f"Avatar credits webhook: no user found for customer={stripe_customer_id}")
 
         elif meta.get("type") == "video_credits":
             if data.get("payment_status") != "paid":
-                myprint(f"video_credits checkout: payment_status={data.get('payment_status')} — skipping")
+                log_info(f"video_credits checkout: payment_status={data.get('payment_status')} — skipping")
                 return {"received": True}
             stripe_customer_id = data.get("customer")
             stripe_session_id = data.get("id")
             credits = int(meta.get("credits", 0))
             package = meta.get("package", "unknown")
             if not stripe_customer_id or credits <= 0:
-                myprint("Video credits webhook: missing customer or zero credits — skipping")
+                log_info("Video credits webhook: missing customer or zero credits — skipping")
                 return {"received": True}
             if get_video_credit_ledger_entry_by_session(stripe_session_id):
-                myprint(f"Video credits already granted for session={stripe_session_id} — skipping duplicate")
+                log_info(f"Video credits already granted for session={stripe_session_id} — skipping duplicate")
                 return {"received": True}
             user_row = get_user_by_stripe_customer_id(stripe_customer_id)
             if user_row:
                 add_video_credits(user_row["id"], credits, f"purchase_{package}", stripe_session_id)
-                myprint(f"Added {credits} video credit(s) for user_id={user_row['id']} via session={stripe_session_id}")
+                log_info(f"Added {credits} video credit(s) for user_id={user_row['id']} "
+                         f"via session={stripe_session_id}")
             else:
-                myprint(f"Video credits webhook: no user found for customer={stripe_customer_id}")
+                log_info(f"Video credits webhook: no user found for customer={stripe_customer_id}")
 
     elif event_type == "charge.refunded":
         payment_intent_id = data.get("payment_intent")
@@ -7547,12 +7548,12 @@ async def billing_webhook(request: Request) -> dict:
         amount_refunded = data.get("amount_refunded", 0)
 
         if not payment_intent_id or not stripe_customer_id:
-            myprint("charge.refunded: missing payment_intent or customer — skipping")
+            log_info("charge.refunded: missing payment_intent or customer — skipping")
             return {"received": True}
 
         # Only deduct credits for a full refund — partial refunds don't map cleanly to credits.
         if amount_refunded < amount:
-            myprint(
+            log_info(
                 f"charge.refunded: partial refund ({amount_refunded}/{amount} cents) "
                 f"for customer={stripe_customer_id} — no credit adjustment"
             )
@@ -7562,13 +7563,13 @@ async def billing_webhook(request: Request) -> dict:
         from cqc_lem.utilities.stripe_util import get_checkout_session_by_payment_intent
         session = get_checkout_session_by_payment_intent(payment_intent_id)
         if not session:
-            myprint(f"charge.refunded: no checkout session found for payment_intent={payment_intent_id}")
+            log_info(f"charge.refunded: no checkout session found for payment_intent={payment_intent_id}")
             return {"received": True}
 
         session_meta = session.get("metadata", {})
         credit_type = session_meta.get("type")
         if credit_type not in ("avatar_credits", "video_credits"):
-            myprint("charge.refunded: not a credits charge — ignoring")
+            log_info("charge.refunded: not a credits charge — ignoring")
             return {"received": True}
 
         # Route to the right ledger based on what was purchased.
@@ -7580,23 +7581,23 @@ async def billing_webhook(request: Request) -> dict:
         stripe_session_id = session.get("id")
         original_entry = entry_fn(stripe_session_id)
         if not original_entry:
-            myprint(f"charge.refunded: no {label} credit ledger entry for session={stripe_session_id} — nothing to deduct")
+            log_info(f"charge.refunded: no {label} credit ledger entry for session={stripe_session_id} — nothing to deduct")
             return {"received": True}
 
         user_row = get_user_by_stripe_customer_id(stripe_customer_id)
         if not user_row:
-            myprint(f"charge.refunded: no user found for customer={stripe_customer_id}")
+            log_info(f"charge.refunded: no user found for customer={stripe_customer_id}")
             return {"received": True}
 
         credits_to_deduct = original_entry["delta"]
         add_fn(user_row["id"], -credits_to_deduct, f"refund_{stripe_session_id}", stripe_session_id=None)
-        myprint(
+        log_info(
             f"Deducted {credits_to_deduct} {label} credit(s) for user_id={user_row['id']} "
             f"due to full refund of session={stripe_session_id}"
         )
 
     else:
-        myprint(f"Stripe webhook event ignored: {event_type}")
+        log_info(f"Stripe webhook event ignored: {event_type}")
 
     return {"received": True}
 
@@ -7720,7 +7721,7 @@ def upgrade_video(request: UpgradeVideoRequest) -> ResponseModel:
     update_post_video_quality(request.post_id, request.tier)
     from cqc_lem.app.run_content_plan import regenerate_post_video_task
     regenerate_post_video_task.apply_async(kwargs={"post_id": request.post_id})
-    myprint(f"video/upgrade: queued post_id={request.post_id} tier={request.tier} for user_id={user_id}")
+    log_info(f"video/upgrade: queued post_id={request.post_id} tier={request.tier} for user_id={user_id}")
     return ResponseModel(status_code=200, detail={
         "post_id": request.post_id, "tier": request.tier,
         "credits_required": needed, "status": "queued",
@@ -8155,7 +8156,7 @@ def admin_fix_video_urls(
     """
     _require_admin(x_admin_secret)
     updated = replace_video_url_base(request.old_base, request.new_base, request.user_id)
-    myprint(f"admin/fix-video-urls: replaced {updated} row(s) — {request.old_base!r} → {request.new_base!r}")
+    log_info(f"admin/fix-video-urls: replaced {updated} row(s) — {request.old_base!r} → {request.new_base!r}")
     return ResponseModel(status_code=200, detail={"updated_rows": updated})
 
 
@@ -8185,7 +8186,7 @@ def admin_set_user_location(
         timezone=geo["timezone"], source="manual")
     if not saved:
         raise HTTPException(status_code=500, detail="Could not save location")
-    myprint(f"admin/user/location: set user {request.user_id} -> {geo['city']}, {geo.get('country')} "
+    log_info(f"admin/user/location: set user {request.user_id} -> {geo['city']}, {geo.get('country')} "
             f"({geo['latitude']},{geo['longitude']} {geo.get('timezone')})")
     return ResponseModel(status_code=200, detail=geo)
 
@@ -8221,10 +8222,10 @@ def admin_regenerate_carousel(
         from cqc_lem.utilities.db import update_db_post_content
         update_db_post_content(request.post_id, new_content)
     except Exception as exc:
-        myprint(f"admin/regenerate-carousel: failed for post_id={request.post_id} — {exc}")
+        log_info(f"admin/regenerate-carousel: failed for post_id={request.post_id} — {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    myprint(f"admin/regenerate-carousel: regenerated post_id={request.post_id}")
+    log_info(f"admin/regenerate-carousel: regenerated post_id={request.post_id}")
     return ResponseModel(status_code=200, detail={"post_id": request.post_id, "content_preview": new_content[:120]})
 
 
@@ -8249,12 +8250,12 @@ def admin_regenerate_video(
     try:
         new_url = regenerate_video_for_post(request.post_id)
     except Exception as exc:
-        myprint(f"admin/regenerate-video: failed for post_id={request.post_id} — {exc}")
+        log_info(f"admin/regenerate-video: failed for post_id={request.post_id} — {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
     if not new_url:
         raise HTTPException(status_code=500, detail="Video regeneration failed (no asset produced)")
 
-    myprint(f"admin/regenerate-video: regenerated post_id={request.post_id} -> {new_url}")
+    log_info(f"admin/regenerate-video: regenerated post_id={request.post_id} -> {new_url}")
     return ResponseModel(status_code=200, detail={"post_id": request.post_id, "video_url": new_url})
 
 
@@ -8285,10 +8286,10 @@ def admin_generate_media_variants(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
-        myprint(f"admin/generate-media-variants: failed — {exc}")
+        log_info(f"admin/generate-media-variants: failed — {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    myprint(f"admin/generate-media-variants: batch={payload['batch_id']} "
+    log_info(f"admin/generate-media-variants: batch={payload['batch_id']} "
             f"variants={len(payload['variants'])} est=${payload['total_estimated_cost_usd']}")
     return ResponseModel(status_code=200, detail=payload)
 
@@ -8332,7 +8333,7 @@ def admin_test_comment(
     result = automate_commenting.apply_async(kwargs={
         "user_id": user_id, "loop_for_duration": loop_for_duration,
     }, queue="se_engage")
-    myprint(f"admin/test/comment: queued task={result.id} user_id={user_id}")
+    log_info(f"admin/test/comment: queued task={result.id} user_id={user_id}")
     return _queued(result, "automate_commenting", user_id=user_id)
 
 
@@ -8358,7 +8359,7 @@ def admin_test_reply(
         "user_id": user_id, "post_id": post_id,
         "loop_for_duration": loop_for_duration, "future_forward": future_forward,
     }, queue="se_engage")
-    myprint(f"admin/test/reply: queued task={result.id} post_id={post_id}")
+    log_info(f"admin/test/reply: queued task={result.id} post_id={post_id}")
     return _queued(result, "automate_reply_commenting", post_id=post_id, user_id=user_id)
 
 
@@ -8381,7 +8382,7 @@ def admin_consolidate_duplicate_comments(
     result = consolidate_duplicate_comments_for_user.apply_async(kwargs={
         "user_id": user_id, "dry_run": dry_run, "hours": hours,
     }, queue="se_engage")
-    myprint(f"admin/consolidate-duplicate-comments: queued task={result.id} user_id={user_id} dry_run={dry_run}")
+    log_info(f"admin/consolidate-duplicate-comments: queued task={result.id} user_id={user_id} dry_run={dry_run}")
     return _queued(result, "consolidate_duplicate_comments_for_user",
                    user_id=user_id, dry_run=dry_run, hours=hours)
 
@@ -8402,7 +8403,7 @@ def admin_test_dm(
     result = automate_appreciation_dms_for_user.apply_async(kwargs={
         "user_id": user_id, "loop_for_duration": loop_for_duration,
     }, queue="se_outreach")
-    myprint(f"admin/test/dm: queued task={result.id} user_id={user_id}")
+    log_info(f"admin/test/dm: queued task={result.id} user_id={user_id}")
     return _queued(result, "automate_appreciation_dms_for_user", user_id=user_id)
 
 
@@ -8425,7 +8426,7 @@ def admin_test_dm_direct(
     result = send_private_dm.apply_async(kwargs={
         "user_id": user_id, "profile_url": profile_url, "message": message,
     }, queue="se_outreach")
-    myprint(f"admin/test/dm-direct: queued task={result.id} user_id={user_id} -> {profile_url}")
+    log_info(f"admin/test/dm-direct: queued task={result.id} user_id={user_id} -> {profile_url}")
     return _queued(result, "send_private_dm", user_id=user_id, profile_url=profile_url)
 
 
@@ -8703,7 +8704,7 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
             for p in image_paths
         ]
     except Exception as exc:
-        myprint(f"generate-carousel: failed for user_id={user_id} — {exc}")
+        log_info(f"generate-carousel: failed for user_id={user_id} — {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
     return ResponseModel(status_code=200, detail={

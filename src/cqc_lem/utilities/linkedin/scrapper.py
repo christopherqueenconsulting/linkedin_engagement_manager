@@ -23,7 +23,7 @@ from selenium.webdriver.common.by import By
 
 from cqc_lem.utilities.date import convert_datetime_to_start_of_day, convert_viewed_on_to_date
 from cqc_lem.utilities.linkedin.zero_walk import grade_zero_walk
-from cqc_lem.utilities.logger import log_debug, log_warning, myprint
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
     get_driver_wait,
@@ -1040,7 +1040,7 @@ def get_profile_awards(driver, employee_link):
                 profile_awards.append({"name": name})
 
     if not profile_awards:
-        myprint("Awards section not yet fully implemented — no honors found or section unavailable")
+        log_info("Awards section not yet fully implemented — no honors found or section unavailable")
 
     return profile_awards
 
@@ -1076,7 +1076,7 @@ def get_profile_interests(driver, employee_link):
                 profile_interests.append({"type": section_type, "name": text})
 
     if not profile_interests:
-        myprint("Interests section not yet fully implemented — no interests found or section unavailable")
+        log_info("Interests section not yet fully implemented — no interests found or section unavailable")
 
     return profile_interests
 

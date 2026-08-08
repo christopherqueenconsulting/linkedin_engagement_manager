@@ -13,7 +13,7 @@ import mysql.connector
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.shared import AVATAR_APPROVAL_PENDING
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import log_info
 
 
 def get_avatar_credit_ledger_entry_by_session(stripe_session_id: str) -> Optional[dict]:
@@ -27,7 +27,7 @@ def get_avatar_credit_ledger_entry_by_session(stripe_session_id: str) -> Optiona
             )
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not look up ledger entry for session={stripe_session_id} | Error: {err}")
+        log_info(f"Could not look up ledger entry for session={stripe_session_id} | Error: {err}")
         return None
 def get_avatar_credit_balance(user_id: int) -> int:
     """Avatar credits on hand, as `SUM(delta)` over the append-only ledger.
@@ -45,7 +45,7 @@ def get_avatar_credit_balance(user_id: int) -> int:
             row = cursor.fetchone()
             return int(row["balance"]) if row else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not fetch avatar credit balance for user_id {user_id} | Error: {err}")
+        log_info(f"Could not fetch avatar credit balance for user_id {user_id} | Error: {err}")
         return 0
 def add_avatar_credits(
     user_id: int,
@@ -67,7 +67,7 @@ def add_avatar_credits(
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not add avatar credits for user_id {user_id} | Error: {err}")
+        log_info(f"Could not add avatar credits for user_id {user_id} | Error: {err}")
         return False
 def deduct_avatar_credit(user_id: int, training_id: str) -> bool:
     """Spend one credit on a training run, as a -1 ledger row tagged with the training id.
@@ -83,7 +83,7 @@ def deduct_avatar_credit(user_id: int, training_id: str) -> bool:
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not deduct avatar credit for user_id {user_id} | Error: {err}")
+        log_info(f"Could not deduct avatar credit for user_id {user_id} | Error: {err}")
         return False
 def refund_avatar_credit(user_id: int, training_id: str) -> bool:
     """Give the credit a training spent back, as a +1 row tagged with the same training id.
@@ -101,7 +101,7 @@ def refund_avatar_credit(user_id: int, training_id: str) -> bool:
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not refund avatar credit for user_id {user_id} | Error: {err}")
+        log_info(f"Could not refund avatar credit for user_id {user_id} | Error: {err}")
         return False
 def get_video_credit_balance(user_id: int) -> int:
     """Premium-video credits on hand, as `SUM(delta)` over the append-only ledger.
@@ -118,7 +118,7 @@ def get_video_credit_balance(user_id: int) -> int:
             row = cursor.fetchone()
             return int(row["balance"]) if row else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not get video credit balance for user_id {user_id} | Error: {err}")
+        log_info(f"Could not get video credit balance for user_id {user_id} | Error: {err}")
         return 0
 def get_video_credit_ledger_entry_by_session(stripe_session_id: str) -> Optional[dict]:
     """Return an existing purchase ledger entry for a Stripe session (idempotency check)."""
@@ -130,7 +130,7 @@ def get_video_credit_ledger_entry_by_session(stripe_session_id: str) -> Optional
             )
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not look up video credit ledger by session | Error: {err}")
+        log_info(f"Could not look up video credit ledger by session | Error: {err}")
         return None
 def add_video_credits(user_id: int, amount: int, reason: str,
                       stripe_session_id: Optional[str] = None) -> bool:
@@ -148,7 +148,7 @@ def add_video_credits(user_id: int, amount: int, reason: str,
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not add video credits for user_id {user_id} | Error: {err}")
+        log_info(f"Could not add video credits for user_id {user_id} | Error: {err}")
         return False
 def deduct_video_credits(user_id: int, amount: int, post_id: Optional[int] = None,
                          reason: str = "premium_video") -> bool:
@@ -166,7 +166,7 @@ def deduct_video_credits(user_id: int, amount: int, post_id: Optional[int] = Non
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not deduct video credits for user_id {user_id} | Error: {err}")
+        log_info(f"Could not deduct video credits for user_id {user_id} | Error: {err}")
         return False
 def refund_video_credits(user_id: int, amount: int, post_id: Optional[int] = None,
                          reason: str = "premium_video_refund") -> bool:
@@ -183,7 +183,7 @@ def refund_video_credits(user_id: int, amount: int, post_id: Optional[int] = Non
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not refund video credits for user_id {user_id} | Error: {err}")
+        log_info(f"Could not refund video credits for user_id {user_id} | Error: {err}")
         return False
 AVATAR_APPROVAL_APPROVED = "approved"
 AVATAR_APPROVAL_REJECTED = "rejected"
@@ -198,7 +198,7 @@ def insert_avatar_training(user_id: int, training_id: str, trigger_word: str) ->
             )
             return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not insert avatar training for user_id {user_id} | Error: {err}")
+        log_info(f"Could not insert avatar training for user_id {user_id} | Error: {err}")
         return None
 def update_avatar_training_status(
     training_id: str,
@@ -238,7 +238,7 @@ def update_avatar_training_status(
 
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update avatar training status for {training_id} | Error: {err}")
+        log_info(f"Could not update avatar training status for {training_id} | Error: {err}")
         return False
 def set_active_avatar(user_id: int, avatar_id: int) -> bool:
     """Make one avatar the account's active likeness.
@@ -258,12 +258,12 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
         )
         row = cursor.fetchone()
         if row is None:
-            myprint(f"set_active_avatar: avatar {avatar_id} not found for user_id {user_id}")
+            log_info(f"set_active_avatar: avatar {avatar_id} not found for user_id {user_id}")
             return False
         # The approval gate (issue #744): activation used to be reachable straight from
         # 'succeeded', so the first time a user saw their avatar was on a published post.
         if row.get("approval_status") != AVATAR_APPROVAL_APPROVED:
-            myprint(f"set_active_avatar: avatar {avatar_id} is not approved "
+            log_info(f"set_active_avatar: avatar {avatar_id} is not approved "
                     f"(status={row.get('approval_status')}) for user_id {user_id}")
             return False
         cursor.execute(
@@ -277,7 +277,7 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
         connection.commit()
         return True
     except mysql.connector.Error as err:
-        myprint(f"Could not set active avatar for user_id {user_id} | Error: {err}")
+        log_info(f"Could not set active avatar for user_id {user_id} | Error: {err}")
         return False
     finally:
         cursor.close()
@@ -304,7 +304,7 @@ def update_avatar_attributes(user_id: int, avatar_id: int,
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update avatar attributes for avatar {avatar_id} | Error: {err}")
+        log_info(f"Could not update avatar attributes for avatar {avatar_id} | Error: {err}")
         return False
 def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
     """Record the user's verdict on their rendered samples.
@@ -313,7 +313,7 @@ def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
     active would keep publishing exactly the media the user just rejected.
     """
     if status not in (AVATAR_APPROVAL_PENDING, AVATAR_APPROVAL_APPROVED, AVATAR_APPROVAL_REJECTED):
-        myprint(f"set_avatar_approval: refusing unknown approval status {status!r}")
+        log_info(f"set_avatar_approval: refusing unknown approval status {status!r}")
         return False
 
     try:
@@ -334,7 +334,7 @@ def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
                 )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not set approval {status} on avatar {avatar_id} | Error: {err}")
+        log_info(f"Could not set approval {status} on avatar {avatar_id} | Error: {err}")
         return False
 def update_avatar_samples(avatar_id: int, sample_paths: list[dict]) -> bool:
     """Persist rendered sample assets for an avatar (one JSON list per row).
@@ -353,7 +353,7 @@ def update_avatar_samples(avatar_id: int, sample_paths: list[dict]) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not store avatar samples for avatar {avatar_id} | Error: {err}")
+        log_info(f"Could not store avatar samples for avatar {avatar_id} | Error: {err}")
         return False
 def claim_avatar_sample_render(user_id: int, avatar_id: int, *, regeneration: bool = False,
                                max_regenerations: int = 0) -> bool:
@@ -386,7 +386,7 @@ def claim_avatar_sample_render(user_id: int, avatar_id: int, *, regeneration: bo
                 )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not claim a sample render for avatar {avatar_id} | Error: {err}")
+        log_info(f"Could not claim a sample render for avatar {avatar_id} | Error: {err}")
         return False
 def release_avatar_sample_render(user_id: int, avatar_id: int, *,
                                  regeneration: bool = False) -> bool:
@@ -413,5 +413,5 @@ def release_avatar_sample_render(user_id: int, avatar_id: int, *,
                 )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not release the sample-render claim for avatar {avatar_id} | Error: {err}")
+        log_info(f"Could not release the sample-render claim for avatar {avatar_id} | Error: {err}")
         return False

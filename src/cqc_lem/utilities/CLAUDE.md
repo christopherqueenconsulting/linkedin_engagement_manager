@@ -6,8 +6,9 @@ it loads when you are actually editing these modules. Full runtime posture:
 
 ## Logging
 
-Never use `print()`. Use the structured logger from `cqc_lem.utilities.logger`. Prefer the typed
-helpers over the legacy `myprint()` shim:
+Never use `print()`. Use the structured logger from `cqc_lem.utilities.logger`. The legacy
+`myprint()` shim is **gone** — ruff bans the import (TID251) and `test_logger.py` fails the build on
+a call site. Pick the level deliberately:
 
 | Function | Level | When to use |
 |---|---|---|
@@ -16,7 +17,6 @@ helpers over the legacy `myprint()` shim:
 | `log_warning(msg, exc=None, **ctx)` | WARNING | Recoverable failures, fallbacks, degraded paths. **Escalates on repeat** |
 | `log_error(msg, exc=None, **ctx)` | ERROR | Task-level failures — sent to PostHog |
 | `log_critical(msg, exc=None, **ctx)` | CRITICAL | Fatal conditions — sent to PostHog |
-| `myprint(msg, debug=False)` | INFO/DEBUG | Legacy shim — still works, avoid in new code |
 
 Pass structured context as keyword args. Supported fields: `user_id`, `task_id`, `task_name`,
 `post_id`, `action_type`, `duration_ms`, `ai_model`, `api_provider`, `http_status`. `log_error` /

@@ -39,7 +39,7 @@ src/cqc_lem/
 │   ├── db.py      DB facade — re-exports platform/db/ (no raw SQL outside those two)
 │   ├── proxy.py   Per-user static residential proxy resolution
 │   ├── geocoding.py  Login Location city/state geocoding
-│   ├── logger.py  Structured logger — log_info/log_error/etc. preferred over myprint()
+│   ├── logger.py  Structured logger — log_debug through log_critical
 │   └── selenium_util.py  get_docker_driver() + MV3 proxy-auth extension builder
 ├── ui/            React SPA (Account.tsx holds engagement prefs)
 └── aws/           AWS CDK stacks — UNSUPPORTED deploy path (#973), kept for reference only
@@ -54,8 +54,8 @@ compose/local/database/migrations/  Flyway migrations
 ## Code Conventions
 
 - **Logging:** Never use `print()`. Use the structured logger from `cqc_lem.utilities.logger`
-  (`log_debug` / `log_info` / `log_warning` / `log_error` / `log_critical`; `myprint()` is a legacy
-  shim). Pass context as keyword args (`user_id`, `post_id`, `task_name`, `action_type`, …);
+  (`log_debug` / `log_info` / `log_warning` / `log_error` / `log_critical`; the `myprint()` shim is
+  retired — ruff bans it). Pass context as keyword args (`user_id`, `post_id`, `task_name`, `action_type`, …);
   `log_error`/`log_critical` take `exc=`. **Once is a warning, repeatedly is a defect:** a repeated
   `log_warning` re-emits at ERROR and files ONE grouped `$exception`, so never warn on an expected
   no-op — log those DEBUG. Level table + escalation contract:

@@ -21,11 +21,7 @@ from cqc_lem.platform.db.enums import (
     AffiliateRewardKind,
     ReferralStatus,
 )
-from cqc_lem.utilities.logger import (
-    log_error,
-    log_info,
-    myprint,
-)
+from cqc_lem.utilities.logger import log_error, log_info
 
 
 def insert_cost_ledger_entry(feature: str, category: str, usd: float,
@@ -49,7 +45,7 @@ def insert_cost_ledger_entry(feature: str, category: str, usd: float,
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not insert cost_ledger entry ({category}/{feature}) | Error: {err}")
+        log_info(f"Could not insert cost_ledger entry ({category}/{feature}) | Error: {err}")
         return False
 def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
     """Write this month's fixed-cost accruals (proxy per user, infra amortization) idempotently.
@@ -89,7 +85,7 @@ def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
         connection.commit()
         return written
     except mysql.connector.Error as err:
-        myprint(f"Could not accrue monthly fixed costs for {period} | Error: {err}")
+        log_info(f"Could not accrue monthly fixed costs for {period} | Error: {err}")
         return written
     finally:
         cursor.close()
@@ -115,7 +111,7 @@ def get_cost_rollup(start_date, end_date, group_by: str = "feature",
     """
     column = COST_ROLLUP_COLUMNS.get(group_by)
     if not column:
-        myprint(f"Unsupported cost rollup dimension '{group_by}'")
+        log_info(f"Unsupported cost rollup dimension '{group_by}'")
         return {}
     try:
         with db_cursor() as cursor:

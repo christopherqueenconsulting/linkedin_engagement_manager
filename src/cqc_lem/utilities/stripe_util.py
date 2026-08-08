@@ -21,7 +21,7 @@ from cqc_lem.utilities.env_constants import (
     STRIPE_PRICE_ID_STARTER,
     STRIPE_WEBHOOK_SECRET,
 )
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import log_info
 
 # Map tier names → Stripe price IDs (populated from env at import time)
 TIER_PRICE_MAP: dict[str, Optional[str]] = {
@@ -43,7 +43,7 @@ def _get_stripe():
 def create_stripe_customer(email: str, user_id: int) -> Optional[str]:
     """Create a Stripe customer for a new user. Returns the customer ID or None on failure."""
     if not STRIPE_API_KEY:
-        myprint("STRIPE_API_KEY not set — skipping Stripe customer creation")
+        log_info("STRIPE_API_KEY not set — skipping Stripe customer creation")
         return None
     stripe = _get_stripe()
     try:
@@ -51,10 +51,10 @@ def create_stripe_customer(email: str, user_id: int) -> Optional[str]:
             email=email,
             metadata={"user_id": str(user_id)},
         )
-        myprint(f"Stripe customer created: {customer.id} for user_id={user_id}")
+        log_info(f"Stripe customer created: {customer.id} for user_id={user_id}")
         return customer.id
     except Exception as e:
-        myprint(f"Stripe customer creation failed for user_id={user_id}: {e}")
+        log_info(f"Stripe customer creation failed for user_id={user_id}: {e}")
         return None
 
 
@@ -79,10 +79,10 @@ def create_checkout_session(
     """
     price_id = TIER_PRICE_MAP.get(tier)
     if not price_id:
-        myprint(f"No Stripe price ID configured for tier '{tier}'")
+        log_info(f"No Stripe price ID configured for tier '{tier}'")
         return None
     if not STRIPE_API_KEY:
-        myprint("STRIPE_API_KEY not set — cannot create checkout session")
+        log_info("STRIPE_API_KEY not set — cannot create checkout session")
         return None
 
     extra: dict = {}
@@ -106,7 +106,7 @@ def create_checkout_session(
         )
         return session.url
     except Exception as e:
-        myprint(f"Stripe checkout session creation failed for customer={stripe_customer_id}: {e}")
+        log_info(f"Stripe checkout session creation failed for customer={stripe_customer_id}: {e}")
         return None
 
 
@@ -115,7 +115,7 @@ def create_portal_session(stripe_customer_id: str, return_url: str) -> Optional[
     Returns the portal URL, or None on failure.
     """
     if not STRIPE_API_KEY:
-        myprint("STRIPE_API_KEY not set — cannot create portal session")
+        log_info("STRIPE_API_KEY not set — cannot create portal session")
         return None
     stripe = _get_stripe()
     try:
@@ -125,7 +125,7 @@ def create_portal_session(stripe_customer_id: str, return_url: str) -> Optional[
         )
         return session.url
     except Exception as e:
-        myprint(f"Stripe portal session creation failed for customer={stripe_customer_id}: {e}")
+        log_info(f"Stripe portal session creation failed for customer={stripe_customer_id}: {e}")
         return None
 
 
@@ -138,7 +138,7 @@ def validate_webhook(payload: bytes, sig_header: str) -> Optional[dict]:
     raw payload as a dict so callers can use normal dict access.
     """
     if not STRIPE_WEBHOOK_SECRET:
-        myprint("STRIPE_WEBHOOK_SECRET not set — cannot validate webhook")
+        log_info("STRIPE_WEBHOOK_SECRET not set — cannot validate webhook")
         return None
     # Import stripe before the try block so it's in scope for the except clause.
     # If the package is not installed, the ImportError propagates immediately rather
@@ -151,10 +151,10 @@ def validate_webhook(payload: bytes, sig_header: str) -> Optional[dict]:
         # Return the raw payload as a plain dict for consistent .get() access
         return json.loads(payload.decode("utf-8"))
     except SignatureVerificationError as e:
-        myprint(f"Stripe webhook signature invalid: {e}")
+        log_info(f"Stripe webhook signature invalid: {e}")
         return None
     except Exception as e:
-        myprint(f"Stripe webhook validation failed: {e}")
+        log_info(f"Stripe webhook validation failed: {e}")
         return None
 
 
@@ -170,17 +170,17 @@ def upgrade_subscription(stripe_subscription_id: str, tier: str) -> bool:
     """
     price_id = TIER_PRICE_MAP.get(tier)
     if not price_id:
-        myprint(f"No Stripe price ID configured for tier '{tier}' — cannot upgrade")
+        log_info(f"No Stripe price ID configured for tier '{tier}' — cannot upgrade")
         return False
     if not STRIPE_API_KEY:
-        myprint("STRIPE_API_KEY not set — cannot upgrade subscription")
+        log_info("STRIPE_API_KEY not set — cannot upgrade subscription")
         return False
     stripe = _get_stripe()
     try:
         sub = stripe.Subscription.retrieve(stripe_subscription_id)
         items = sub.get("items", {}).get("data", [])
         if not items:
-            myprint(f"Subscription {stripe_subscription_id} has no line items — cannot upgrade")
+            log_info(f"Subscription {stripe_subscription_id} has no line items — cannot upgrade")
             return False
         item_id = items[0].get("id")
         stripe.Subscription.modify(
@@ -188,10 +188,10 @@ def upgrade_subscription(stripe_subscription_id: str, tier: str) -> bool:
             items=[{"id": item_id, "price": price_id}],
             proration_behavior="create_prorations",
         )
-        myprint(f"Subscription {stripe_subscription_id} upgraded to tier '{tier}'")
+        log_info(f"Subscription {stripe_subscription_id} upgraded to tier '{tier}'")
         return True
     except Exception as e:
-        myprint(f"Could not upgrade subscription {stripe_subscription_id} to '{tier}': {e}")
+        log_info(f"Could not upgrade subscription {stripe_subscription_id} to '{tier}': {e}")
         return False
 
 
@@ -234,7 +234,7 @@ def fetch_subscription(stripe_subscription_id: str) -> Optional[dict]:
         # to JSON, allowing callers to use plain .get() field access.
         return json.loads(str(sub))
     except Exception as e:
-        myprint(f"Could not fetch Stripe subscription {stripe_subscription_id}: {e}")
+        log_info(f"Could not fetch Stripe subscription {stripe_subscription_id}: {e}")
         return None
 
 
@@ -262,10 +262,10 @@ def create_avatar_credits_checkout(
     """
     pkg = AVATAR_CREDIT_PACKAGES.get(package)
     if not pkg:
-        myprint(f"Unknown avatar credit package '{package}'")
+        log_info(f"Unknown avatar credit package '{package}'")
         return None
     if not STRIPE_API_KEY:
-        myprint("STRIPE_API_KEY not set — cannot create avatar credits checkout")
+        log_info("STRIPE_API_KEY not set — cannot create avatar credits checkout")
         return None
 
     stripe = _get_stripe()
@@ -300,7 +300,7 @@ def create_avatar_credits_checkout(
         )
         return session.url
     except Exception as e:
-        myprint(f"Avatar credits checkout failed for customer={stripe_customer_id}: {e}")
+        log_info(f"Avatar credits checkout failed for customer={stripe_customer_id}: {e}")
         return None
 
 
@@ -325,10 +325,10 @@ def create_video_credits_checkout(
     """
     pkg = VIDEO_CREDIT_PACKAGES.get(package)
     if not pkg:
-        myprint(f"Unknown video credit package '{package}'")
+        log_info(f"Unknown video credit package '{package}'")
         return None
     if not STRIPE_API_KEY:
-        myprint("STRIPE_API_KEY not set — cannot create video credits checkout")
+        log_info("STRIPE_API_KEY not set — cannot create video credits checkout")
         return None
 
     stripe = _get_stripe()
@@ -363,7 +363,7 @@ def create_video_credits_checkout(
         )
         return session.url
     except Exception as e:
-        myprint(f"Video credits checkout failed for customer={stripe_customer_id}: {e}")
+        log_info(f"Video credits checkout failed for customer={stripe_customer_id}: {e}")
         return None
 
 
@@ -377,5 +377,5 @@ def get_checkout_session_by_payment_intent(payment_intent_id: str) -> Optional[d
         data = sessions.get("data", [])
         return data[0] if data else None
     except Exception as e:
-        myprint(f"Could not look up checkout session for payment_intent={payment_intent_id}: {e}")
+        log_info(f"Could not look up checkout session for payment_intent={payment_intent_id}: {e}")
         return None

@@ -214,34 +214,42 @@ class TestLogError:
 
 
 # ---------------------------------------------------------------------------
-# myprint (backward-compat shim)
+# myprint — retired, and it has to stay retired
 # ---------------------------------------------------------------------------
 
-class TestMyprint:
-    def test_myprint_routes_to_info_by_default(self):
+class TestTheMyprintShimIsGone:
+    """The shim hid the LEVEL at the call site, and level is a routing decision here.
+
+    `myprint` picked INFO or DEBUG from a `debug=` flag. `log_warning` escalates on repeat and files
+    a grouped `$exception`, so which level a message carries decides whether it pages someone — that
+    has to be legible in the function name, not in an argument.
+
+    Ruff bans the import (TID251), but ruff's gate is a ratchet and not yet required, so the ban
+    alone would not fail a build. These two do.
+    """
+
+    def test_the_shim_is_not_importable(self):
         from cqc_lem.utilities import logger as mod
 
-        with patch.object(mod.logger, "info") as mock_info:
-            mod.myprint("hello")
+        assert not hasattr(mod, "myprint")
 
-        mock_info.assert_called_once_with("hello")
+    def test_no_source_file_still_calls_it(self):
+        """A reintroduced shim would otherwise only surface as a NameError on the branch that logs."""
+        import pathlib
+        import re
 
-    def test_myprint_debug_true_routes_to_debug(self):
-        from cqc_lem.utilities import logger as mod
-
-        with patch.object(mod.logger, "debug") as mock_debug:
-            mod.myprint("verbose detail", debug=True)
-
-        mock_debug.assert_called_once_with("verbose detail")
-
-    def test_myprint_debug_false_does_not_call_debug(self):
-        from cqc_lem.utilities import logger as mod
-
-        with patch.object(mod.logger, "debug") as mock_debug, \
-             patch.object(mod.logger, "info"):
-            mod.myprint("normal message")
-
-        mock_debug.assert_not_called()
+        root = pathlib.Path(__file__).resolve().parents[3] / "src" / "cqc_lem"
+        call = re.compile(r"^[^#]*\bmyprint\s*\(")
+        offenders = [
+            f"{path.relative_to(root)}:{n}"
+            for path in root.rglob("*.py")
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if call.match(line)
+        ]
+        # my_celery.py keeps one inside a triple-quoted block of disabled code; it is text, not a
+        # call, and the AST-based sweep correctly left it alone.
+        offenders = [o for o in offenders if not o.startswith("app/my_celery.py")]
+        assert offenders == [], f"myprint() called from: {offenders}"
 
 
 # ---------------------------------------------------------------------------

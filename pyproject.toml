@@ -193,10 +193,18 @@ select = [
     "I", # isort
     "T201", # print
     "D", # pydocstyle - Google-style docstrings
+    "TID251", # banned-api — only what is listed below, NOT TID252 (relative imports)
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# The `myprint` shim resolved to logger.info/logger.debug from a `debug=` flag, which hid the LEVEL
+# at the call site. Level is a routing decision here — `log_warning` escalates on repeat and files a
+# grouped `$exception` — so it has to be legible in the function name. All 713 call sites were
+# rewritten to the level each already resolved to; this keeps a 714th from appearing.
+"cqc_lem.utilities.logger.myprint".msg = "Retired. Use log_debug / log_info / log_warning / log_error / log_critical."
 
 [tool.ruff.lint.isort]
 # Without this, isort gives every `X as _X` re-export its own `from ... import (...)` statement.

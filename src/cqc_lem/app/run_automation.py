@@ -309,7 +309,7 @@ from cqc_lem.utilities.linkedin.stale_invites import (
     withdraw_stale_invites,
 )
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
-from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
     FEATURE_CONTENT,
@@ -398,7 +398,7 @@ def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow
     `text` — never assume the composer holds exactly what was passed in.
     """
     # Simulate typing the comment
-    myprint("Typing Text...")
+    log_info("Typing Text...")
     type_speed_reducer = .5
 
     # Focus on Element
@@ -457,7 +457,7 @@ def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow
         # Send an additional space character (so changed register)
         actions.send_keys(Keys.SPACE).perform()
 
-    myprint("Finished Typing!")
+    log_info("Finished Typing!")
 
 
 # Why a permalink comment stopped, as the task's own return value. Named rather than inlined so the
@@ -489,13 +489,13 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     """
     # Check the database logs / claim ledger to make sure user hasn't already commented here.
     if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
-        myprint("User has already commented on this post. Skipping...")
+        log_info("User has already commented on this post. Skipping...")
         return "User has already commented on this post. Skipping..."
 
     # Atomically claim before doing any work — a concurrent worker with the same post_link loses
     # here and backs off (belt-and-suspenders alongside QueueOnce's user_id+post_link key).
     if not claim_post_for_comment(user_id, post_link):
-        myprint("Another task already claimed this post. Skipping...")
+        log_info("Another task already claimed this post. Skipping...")
         return "Another task already claimed this post. Skipping..."
 
     driver, wait = get_driver_wait_pair(session_name='Post Comment', user_id=user_id)
@@ -562,7 +562,7 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
         # lands comments for real, a comment invisible to the governor lets the feed walk and the
         # roster lane spend a full day's envelope on top of it.
         record_action(user_id, ACTION_COMMENT)
-        myprint("Added Comment via Post Button")
+        log_info("Added Comment via Post Button")
         method_result = " | ".join(filter(None, ["Added Comment via Post Button", method_result]))
     except Exception as e:
         # Nothing posted (login/compose failure) — release the claim so a later run can retry.
@@ -626,7 +626,7 @@ def check_commented(driver, wait, user_id: int = None, post_url: str = None,
     already_commented = False
 
     if post_url and post_url != driver.current_url:
-        myprint(f"Navigating To: {post_url}")
+        log_info(f"Navigating To: {post_url}")
         # Switch to post url
         driver.get(post_url)
 
@@ -1581,7 +1581,7 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
             log_warning("Reaction did not register after clicking", user_id=user_id,
                         action_type="comment")
             return False
-        myprint(f"Reacted '{reaction}' on post")
+        log_info(f"Reacted '{reaction}' on post")
         return True
     except Exception as e:
         log_warning("Inline post reaction failed", exc=e, action_type="comment", user_id=user_id)
@@ -2815,7 +2815,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                                         count_comments_today(user_id),
                                         caps=engagement_caps_from_prefs(prefs))
     if remaining_today <= 0:
-        myprint(f"Daily comment budget spent (cap {daily_cap}) — skipping")
+        log_info(f"Daily comment budget spent (cap {daily_cap}) — skipping")
         return 0
     max_posts = min(max_posts, remaining_today)
     max_age_min = (prefs.get("max_post_age_hours") or 24) * 60
@@ -2947,7 +2947,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # the feed to relevant content). Hard excludes / recency / min-reactions still applied.
             if not fallback_active and fallback_enabled and strict_misses >= _FEED_FALLBACK_AFTER_MISSES:
                 fallback_active = True
-                myprint("Feed targeting matched nothing — falling back to top feed posts for this run")
+                log_info("Feed targeting matched nothing — falling back to top feed posts for this run")
             # On-topic gate FIRST and unconditionally (issue #616): the fallback may widen WHICH
             # posts qualify, but it may never put a comment on a post that is off-topic for the
             # user's focus topics — that is what damaged distribution in the 2026-07-25 funnel.
@@ -2977,7 +2977,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
                          action_type="comment", task_name="comment_on_feed_inline")
                 posted += 1
-                myprint(f"Commented on {author or 'a'}'s post "
+                log_info(f"Commented on {author or 'a'}'s post "
                         f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
             elif is_group_feed:
                 # The only other group-feed failure mode handled inside _engage_card before
@@ -2995,7 +2995,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 and soft_seen and scrolls + 1 >= _FEED_FALLBACK_AFTER_MISSES):
             hard_relaxed = True
             fallback_active = True
-            myprint("No posts cleared the recency/min-reaction gates — relaxing them "
+            log_info("No posts cleared the recency/min-reaction gates — relaxing them "
                     "(empty-feed fallback) and re-scanning the top of the feed")
             driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(random.uniform(2.0, 3.5))
@@ -3354,7 +3354,7 @@ def auto_publish_newsletter_edition(self, user_id: int):
                                                       user_id=user_id)
         if url:
             mark_newsletter_published(user_id, url)
-            myprint(f"Published newsletter edition for user {user_id}: {edition['title']}")
+            log_info(f"Published newsletter edition for user {user_id}: {edition['title']}")
             return f"Published newsletter: {edition['title']}"
         log_error("Newsletter publish flow did not complete",
                   user_id=user_id, task_name="auto_publish_newsletter_edition", failed_step=failed_step)
@@ -3392,7 +3392,7 @@ def auto_publish_edition(self, edition_id: int):
                                                       cover_image_path=_approved_cover_path(edition))
         if url:
             mark_edition_published(edition_id, url)
-            myprint(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
+            log_info(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
             return f"Published newsletter edition: {edition['title']}"
         log_error("Newsletter edition publish flow did not complete",
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id, failed_step=failed_step)
@@ -3704,7 +3704,7 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         if comment_urn:
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.COMMENT,
                            result=LogResultType.SUCCESS, post_url=post_url, message=seed)
-            myprint(f"Seed comment posted on post {post_id} via API ({comment_urn})")
+            log_info(f"Seed comment posted on post {post_id} via API ({comment_urn})")
             return f"Seed comment posted via API ({comment_urn})"
         return "Seed comment failed to post"
     except Exception as e:
@@ -4263,7 +4263,7 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     a report can confirm the warm-up before that post actually happened (issue #547). It rides the
     self-requeue kwargs, so every pass in the window accumulates onto the same marker.
     """
-    myprint("Starting Automate Commenting Thread...")
+    log_info("Starting Automate Commenting Thread...")
 
     # Comment-quality hold (issue #628): when the weekly outcome report finds our comments are being
     # demoted out of 'Most relevant', commenting stops for this user until a human clears it.
@@ -4281,7 +4281,7 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     lock_name = f"automate_commenting:{user_id}"
     lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
     if lock_token is None:
-        myprint(f"Another commenting run is in progress for user {user_id} — skipping this cycle.")
+        log_info(f"Another commenting run is in progress for user {user_id} — skipping this cycle.")
         return "Skipped: another commenting run already in progress for this user."
 
     if post_id:
@@ -4324,12 +4324,12 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                myprint(f"Loop duration reached. Stopping {current_function_name} task...")
+                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration parameter
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 # Add our function call back to the task queue
-                myprint(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
+                log_info(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
@@ -4559,7 +4559,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     """
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
-        myprint(f"No successful post URL for post {post_id}; skipping replies.")
+        log_info(f"No successful post URL for post {post_id}; skipping replies.")
         return _reply_outcome("no_post_url", "No post URL")
     # Ground replies in the canonical post body (posts table); fall back to the log message.
     post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
@@ -4585,7 +4585,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         time.sleep(2)
 
     comments = _comment_items_from_thread(driver)
-    myprint(f"Comments Found: {len(comments)}")
+    log_info(f"Comments Found: {len(comments)}")
 
     # our profile slug — used to detect comments we AUTHORED or already replied to (the loop-breaker).
     our_slug = _profile_slug(str(my_profile.profile_url))
@@ -4608,7 +4608,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     for comment in comments:
         # Per-post volume backstop: never fire an unbounded burst of replies from one sweep.
         if comments_replied_count >= _MAX_REPLIES_PER_SWEEP:
-            myprint(f"Reply cap reached ({_MAX_REPLIES_PER_SWEEP}) for post {post_id}")
+            log_info(f"Reply cap reached ({_MAX_REPLIES_PER_SWEEP}) for post {post_id}")
             break
         try:
             tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
@@ -4794,7 +4794,7 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
     lock_name = f"sweep_reply_comments:{user_id}"
     lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
     if lock_token is None:
-        myprint(f"Another reply sweep is already running for user {user_id} — skipping.")
+        log_info(f"Another reply sweep is already running for user {user_id} — skipping.")
         return "Skipped — another reply sweep in progress"
     try:
         driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
@@ -5779,13 +5779,13 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                myprint(f"Loop duration reached. Stopping {current_function_name} task...")
+                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration and future_forward parameters
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 kwargs['future_forward'] = future_forward
                 # Add our function call back to the task queue
-                myprint(
+                log_info(
                     f"Adding {current_function_name} back to queue for {future_forward_time} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
@@ -6717,7 +6717,7 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
         start_time = datetime.now()
 
-        myprint("Sending Appreciations here...")
+        log_info("Sending Appreciations here...")
 
         result = "Appreciation DMs Sent"
 
@@ -6761,12 +6761,12 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                myprint(f"Loop duration reached. Stopping {current_function_name} task...")
+                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration parameter
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 # Add our function call back to the task queue
-                myprint(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
+                log_info(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
@@ -6805,10 +6805,10 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
 
     # Check to make sure user hasn't already commented on this post
     if check_commented(driver, wait, user_id, post_link, my_profile=my_profile):
-        myprint("Already commented on this post. Skipping...")
+        log_info("Already commented on this post. Skipping...")
         return False  # Skip posts we've already commented on
     else:
-        myprint("Haven't commented on this post yet. Proceeding...")
+        log_info("Haven't commented on this post yet. Proceeding...")
 
     try:
         # Get the post content (text) if available
@@ -6837,7 +6837,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
     # Read-time-realistic delay before engaging (issue #626) — same floor/ceiling as the feed walk,
     # so the permalink path can't be the fast one that gives the account away.
     read_time = pace_read(content, user_id=user_id)
-    myprint(f"Simulated Reading... for {read_time:.0f} seconds")
+    log_info(f"Simulated Reading... for {read_time:.0f} seconds")
 
     # Generate AI response — pass the user's engagement preferences so this path honors
     # tone/comment_length/style/emoji/hashtag settings exactly like the feed-commenting path
@@ -6864,7 +6864,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
                  user_id=user_id, action_type="comment")
         return False
 
-    myprint(f"AI Generated Comment: {comment_text}")
+    log_info(f"AI Generated Comment: {comment_text}")
 
     # This DOES post: the comment is handed to comment_on_post, which opens its own session and
     # submits it. (The line here used to read "Comment out the actual posting of the comment for
@@ -6874,7 +6874,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
               'comment_text': comment_text}
     comment_on_post.apply_async(kwargs=kwargs)
 
-    myprint(f"Comment queued for posting on: {post_link}")
+    log_info(f"Comment queued for posting on: {post_link}")
 
     return True
 
@@ -6936,7 +6936,7 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
     `lookback_days`. The default matches the daily cadence; a catch-up run passes a larger
     window once, then the cadence sticks to the delta.
     """
-    myprint("Starting Profile Viewer DMs")
+    log_info("Starting Profile Viewer DMs")
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Profile Viewer DMs")
@@ -6986,7 +6986,7 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
             # walk, and every row we have is still in range — without this the loop would spin
             # forever on an account whose viewers all fit on one screen.
             if len(rows) <= previous_count:
-                myprint("Profile viewers list stopped growing. Ending the walk...")
+                log_info("Profile viewers list stopped growing. Ending the walk...")
                 break
             previous_count = len(rows)
 
@@ -7008,7 +7008,7 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
                 log_debug("No profile viewers found on the analytics page — nothing to do",
                           user_id=user_id, task_name="automate_profile_viewer_engagement")
 
-        myprint(f"Final Viewers count: {len(rows)}")
+        log_info(f"Final Viewers count: {len(rows)}")
 
         # Filter per row against the lookback. The walk stops ON an out-of-range viewer, so that
         # row is always in this list — an all-or-nothing filter that threw on one unreadable
@@ -7028,14 +7028,14 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
             if verdict:
                 viewer_data[viewer_url] = row.get('name') or 'LinkedIn Member'
 
-        myprint(f"Filtered Viewers count: {len(viewer_data)}")
+        log_info(f"Filtered Viewers count: {len(viewer_data)}")
 
         # engage_with_profile_viewer opens its own session and navigates to the profile itself —
         # visiting each viewer here too doubled the profile visits and held this session open
         # for nothing, so the walk just dispatches.
         for viewer_url, viewer_name in viewer_data.items():
-            myprint(f"Viewer Name: {viewer_name}")
-            myprint(f"Viewer URL: {viewer_url}")
+            log_info(f"Viewer Name: {viewer_name}")
+            log_info(f"Viewer URL: {viewer_url}")
 
             kwargs = {'user_id': get_user_id(my_profile.email),
                       'viewer_url': viewer_url,
@@ -7055,12 +7055,12 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                myprint(f"Loop duration reached. Stopping {current_function_name} task...")
+                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration parameter
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 # Add our function call back to the task queue
-                myprint(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
+                log_info(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
@@ -7090,14 +7090,14 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
     written in `finally` whichever way it goes — a failed engagement is a recorded attempt, with
     SUCCESS/FAILURE saying which, never a gap in the record.
     """
-    myprint("Starting Profile Viewer Engagement")
+    log_info("Starting Profile Viewer Engagement")
 
     result = "Profile Viewer Engagement Started"
     engagement_successful = False
 
     # Check if we already engaged with this viewer today
     if has_engaged_url_with_x_days(user_id, viewer_url, 1):
-        myprint(f"Already engaged with {viewer_name} today. Skipping...")
+        log_info(f"Already engaged with {viewer_name} today. Skipping...")
         result = f"Already engaged with {viewer_name} today. Skipping..."
     else:
 
@@ -7110,7 +7110,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 
         try:
 
-            myprint(f"Engaging from: {my_profile.full_name} to: {viewer_name}")
+            log_info(f"Engaging from: {my_profile.full_name} to: {viewer_name}")
 
             if viewer_url != driver.current_url:
                 # Switch to viewer_url
@@ -7123,17 +7123,17 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                 # myprint(message)
 
                 if profile.is_1st_connection:
-                    myprint("We Are 1st Connections")
+                    log_info("We Are 1st Connections")
                     # engage with their content (
                     recent_activities = profile.recent_activities
 
-                    myprint(f"Recent Activities Count: {len(recent_activities)}")
+                    log_info(f"Recent Activities Count: {len(recent_activities)}")
 
                     # Filter activities by posted date less than a week ago
                     recent_activities = [activity for activity in recent_activities if
                                          (datetime.now() - activity.posted).days <= 7]
 
-                    myprint(f"Recent Activities Filtered (1 week) Count: {len(recent_activities)}")
+                    log_info(f"Recent Activities Filtered (1 week) Count: {len(recent_activities)}")
 
                     # DONT: Shuffle the activities (they are already in order of latest to oldest)
                     # random.shuffle(recent_activities)
@@ -7152,7 +7152,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                             break  # Only comment/interact with one
 
                     if not able_to_comment:
-                        myprint("No activities, unable to or already left comment")
+                        log_info("No activities, unable to or already left comment")
 
                         first_name = clean_person_name(viewer_name).split(" ")[0] or "there"
                         profile_url_str = str(profile.profile_url)
@@ -7196,9 +7196,9 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     recent_activity_summary = summarize_recent_activity(profile, my_profile)
                     response = profile.generate_personalized_message(recent_activity_message=recent_activity_summary,
                                                                      from_name=my_profile.full_name)
-                    myprint(f"Original Response: {response}")
+                    log_info(f"Original Response: {response}")
                     refined_response = get_ai_message_refinement(response)
-                    myprint(f"Refined Response: {refined_response}")
+                    log_info(f"Refined Response: {refined_response}")
 
                     # Send connection request with this message
                     kwargs = {'user_id': get_user_id(my_profile.email),
@@ -7208,7 +7208,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     result = f"Profile Viewer Engagement Completed. Sent Connection Request to {viewer_name}"
                     engagement_successful = True
             else:
-                myprint(f"Failed to get profile data for {viewer_name}")
+                log_info(f"Failed to get profile data for {viewer_name}")
                 result = f"Failed to get profile data for {viewer_name}"
 
         except Exception as e:
@@ -7273,7 +7273,7 @@ def clean_stale_invites(self, user_id: int):
         report = withdraw_stale_invites(driver, wait, user_id, plan=plan)
     except LinkedInRateLimited as e:
         # The breaker opened between the plan and the page. Not a failure of this lane — defer.
-        myprint(f"clean_stale_invites deferred (throttled): {e}")
+        log_info(f"clean_stale_invites deferred (throttled): {e}")
         report = {"status": WITHDRAW_STATUS_PAUSED, "cap": plan["cap"],
                   "withdrawn_today": plan["withdrawn_today"],
                   "threshold_days": plan["threshold_days"]}
@@ -7387,7 +7387,7 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
 
     dm_sent = False
 
-    myprint("Sending DM: " + message)
+    log_info("Sending DM: " + message)
 
     try:
         composer = open_addressed_composer(driver, wait, profile_url, person_name=person_name,
@@ -7435,7 +7435,7 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
     """Send dm message to a profile. Must be a 1st connection"""
     dm_sent = send_dm_now(user_id, profile_url, message)
     result = "DM Sent Successfully" if dm_sent else "DM Failed"
-    myprint(result)
+    log_info(result)
     return result
 
 
@@ -7460,7 +7460,7 @@ def send_scheduled_dm(self, dm_id: int):
     if remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
                          count_dms_sent_today(user_id),
                          caps=engagement_caps_from_prefs(prefs)) <= 0:
-        myprint(f"send_scheduled_dm: daily DM budget spent for user {user_id}; deferring DM {dm_id}")
+        log_info(f"send_scheduled_dm: daily DM budget spent for user {user_id}; deferring DM {dm_id}")
         update_scheduled_dm_status(dm_id, ScheduledDmStatus.APPROVED)  # retry on the next scan
         return f"Scheduled DM {dm_id} deferred (daily DM cap reached)"
 
@@ -7682,7 +7682,7 @@ def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) ->
     if slug:
         driver.get(_CONNECT_INVITE_URL.format(slug=slug))
         if _connect_dialog_present(driver, wait, user_id):
-            myprint("Connect dialog opened via the custom-invite URL")
+            log_info("Connect dialog opened via the custom-invite URL")
             return True
         # An already-pending invite renders no dialog here — an expected outcome for this
         # route, so the miss stays quiet and the profile-page route gets its turn.
@@ -7698,7 +7698,7 @@ def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) ->
                            required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
                            user_id=user_id)
         if item is not None and _connect_dialog_present(driver, wait, user_id):
-            myprint("Connect dialog opened via the profile More menu")
+            log_info("Connect dialog opened via the profile More menu")
             return True
 
     log_warning("No route opened the Connect invite dialog for this profile",
@@ -7770,7 +7770,7 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
 
         # The Send button only enables once the textarea has registered input.
         time.sleep(2)
-        myprint("Added note to the connection request")
+        log_info("Added note to the connection request")
         return True
     except Exception as e:
         log_warning("Could not attach a note to the connection request; sending it without one",
@@ -7794,7 +7794,7 @@ def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
         try:
             click_element_wait_retry(driver, wait, xpath, "Finding Send Connection Button",
                                      max_retry=1, use_action_chain=True)
-            myprint("Found Send Connection Button and clicked it")
+            log_info("Found Send Connection Button and clicked it")
             return True
         except Exception as e:
             last_error = e  # wrong label for this dialog state — try the other one
@@ -7829,7 +7829,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
             # Open the profile URL
             driver.get(profile_url)
 
-        myprint(f"Inviting to connect: {profile_url}")
+        log_info(f"Inviting to connect: {profile_url}")
 
         # Already connected? There is no Connect button to find — bail with a reason instead of
         # burning a session hunting for one and recording an opaque failure.
@@ -7886,7 +7886,7 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
-        myprint(f"invite_to_connect deferred (throttled): {e}")
+        log_info(f"invite_to_connect deferred (throttled): {e}")
         return "Invitation deferred (LinkedIn throttled)"
     if sent:
         return CONNECTION_REQUEST_SENT_MESSAGE
@@ -7959,14 +7959,14 @@ def send_connection_request(self, request_id: int):
     user_id = req["user_id"]
     prefs = get_engagement_preferences(user_id)
     if count_invites_sent_today(user_id) >= int(prefs.get("max_invites_per_day") or 0):
-        myprint(f"send_connection_request: daily invite cap reached for user {user_id}; deferring {request_id}")
+        log_info(f"send_connection_request: daily invite cap reached for user {user_id}; deferring {request_id}")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
         return f"Connection request {request_id} deferred (daily invite cap reached)"
 
     try:
         sent, reason = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"])
     except LinkedInRateLimited as e:
-        myprint(f"send_connection_request: throttled, deferring {request_id}: {e}")
+        log_info(f"send_connection_request: throttled, deferring {request_id}: {e}")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
         return f"Connection request {request_id} deferred (LinkedIn throttled)"
     if not sent:
@@ -9039,7 +9039,7 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                    session_name="Catch-up Moments")
     except LinkedInRateLimited as e:
-        myprint(f"automate_catchup_touches deferred (throttled): {e}")
+        log_info(f"automate_catchup_touches deferred (throttled): {e}")
         report["status"] = CATCHUP_STATUS_THROTTLED
         report_catchup_run(user_id, report, task_name)
         return "Catch-up scan deferred (LinkedIn throttled)"
@@ -9055,7 +9055,7 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         moments = _scrape_catchup_moments(driver, max_moments=max_moments, user_id=user_id,
                                           enabled_event_types=enabled)
     except LinkedInRateLimited as e:
-        myprint(f"automate_catchup_touches deferred mid-scrape (throttled): {e}")
+        log_info(f"automate_catchup_touches deferred mid-scrape (throttled): {e}")
         report["status"] = CATCHUP_STATUS_THROTTLED
         report_catchup_run(user_id, report, task_name)
         return "Catch-up scan deferred (LinkedIn throttled)"
@@ -9208,7 +9208,7 @@ def send_catchup_touch(self, touch_id: int):
         sent = send_dm_now(user_id, touch["profile_url"], touch["message"],
                            person_name=touch.get("person_name"))
     except LinkedInRateLimited as e:
-        myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
+        log_info(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
         # The breaker refused before a composer was ever opened, so nothing was sent — give the claim
         # back, or the deferral we are about to write could never be retried: the next attempt would
         # lose the claim and mark this touch `sent` having sent nothing.
@@ -9288,7 +9288,7 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
 
     The synthesis refresh is best-effort and never fails a scrape that already succeeded.
     """
-    myprint(f"Updating Stale Profile. User ID: {user_id}")
+    log_info(f"Updating Stale Profile. User ID: {user_id}")
     try:
         driver, wait, user_email, my_profile = get_current_profile(
             user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
@@ -9326,7 +9326,7 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
     the caller learns from the synthesis it gets back, not from a missing profile.
     """
-    myprint("Getting Updated Profile")
+    log_info("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
@@ -9457,11 +9457,11 @@ def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
 def post_to_linkedin(self, user_id: int, post_id: int):
     """Posts to LinkedIn using the LinkedIn API - https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/share-on-linkedin#creating-a-share-on-linkedin"""
     task_id = f"{self.request.id}-{user_id}-{post_id}"
-    myprint(f"Post To LinkedIn | Task ID: {task_id}")
+    log_info(f"Post To LinkedIn | Task ID: {task_id}")
 
     # Skip if already posted — prevents duplicate posts when the task is re-queued
     if get_post_status(post_id) == PostStatus.POSTED.value:
-        myprint(f"Post {post_id} already posted. Skipping duplicate execution.")
+        log_info(f"Post {post_id} already posted. Skipping duplicate execution.")
         return f"Post {post_id} already posted — skipped"
 
     # An occasion/milestone draft publishes through LinkedIn's native composer, which has no API
@@ -9475,7 +9475,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 
     # Login and publish post to LinkedIn
     user_email, user_password = get_user_password_pair_by_id(user_id)
-    myprint(f"Posting to LinkedIn as user: {user_email}")
+    log_info(f"Posting to LinkedIn as user: {user_email}")
 
     # Get the post content
     content = get_post_content(post_id)
@@ -9500,15 +9500,15 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     if gate:
         return gate
 
-    myprint(f"Posting to LinkedIn: {content}")
+    log_info(f"Posting to LinkedIn: {content}")
 
     post_type = get_post_type(post_id)
-    myprint(f"Post type: {post_type}")
+    log_info(f"Post type: {post_type}")
 
     if post_type in (PostType.CAROUSEL, PostType.DOCUMENT):
         slides = get_carousel_slides(post_id)
         label = "Document" if post_type == PostType.DOCUMENT else "Carousel"
-        myprint(f"{label} slides ({len(slides)}): {slides}")
+        log_info(f"{label} slides ({len(slides)}): {slides}")
         # No slides, or no real per-slide images → don't post a placeholder deck.
         # Flag the post 'error' so it surfaces for manual/dev fix instead of failing silently.
         if not slides:
@@ -9534,7 +9534,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     elif post_type == PostType.VIDEO:
         video_url = get_post_video_url(post_id)
         if video_url:
-            myprint(f"Adding to Post | Video URL: {video_url}")
+            log_info(f"Adding to Post | Video URL: {video_url}")
         urn = share_on_linkedin(user_id, content, video_url)
     else:
         # Single-image text post: attach the generated image when one exists. A missing image —
@@ -9548,14 +9548,14 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                         user_id=user_id, post_id=post_id, action_type="post")
             image_url = None
         if image_url:
-            myprint(f"Adding to Post | Image URL: {image_url}")
+            log_info(f"Adding to Post | Image URL: {image_url}")
             urn = share_on_linkedin(user_id, content, image_url)
         else:
             urn = share_on_linkedin(user_id, content)
 
     if urn:
         post_url = f"https://www.linkedin.com/feed/update/{urn}/"
-        myprint(f"Successfully created post using /posts API endpoint: {post_url}")
+        log_info(f"Successfully created post using /posts API endpoint: {post_url}")
 
         # Update DB with status=posted
         update_db_post_status(post_id, PostStatus.POSTED)
@@ -9587,7 +9587,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
             from cqc_lem.utilities.utils import purge_post_assets
             purge_post_assets(post_id, video_url=get_post_video_url(post_id) if post_type == PostType.VIDEO else None)
         except Exception as e:
-            myprint(f"purge_post_assets failed for post_id={post_id}: {e}")
+            log_info(f"purge_post_assets failed for post_id={post_id}: {e}")
 
         # Store the ACTUAL post body as the log message — not a status string. Seed comments and
         # thread replies read this back via get_post_message_from_log_for_user() to ground the AI in

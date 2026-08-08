@@ -19,7 +19,7 @@ from cqc_lem.utilities.email import (
     send_newsletter_draft_ready_email,
     send_session_revalidation_email,
 )
-from cqc_lem.utilities.logger import log_info, log_warning, myprint
+from cqc_lem.utilities.logger import log_info, log_warning
 
 
 def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
@@ -44,7 +44,7 @@ def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
             else send_connect_linkedin_email(email))
     if sent:
         set_linkedin_session_email_sent_at(user_id)
-        myprint(f"Sent LinkedIn session {'re-validation' if revalidation else 'connect'} "
+        log_info(f"Sent LinkedIn session {'re-validation' if revalidation else 'connect'} "
                 f"email to user_id {user_id}")
     return sent
 
@@ -259,8 +259,8 @@ def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_fo
             scheduled_for, "strftime") else str(scheduled_for)
         sent = send_newsletter_draft_ready_email(email, edition_title, when)
         if sent:
-            myprint(f"Sent newsletter draft-ready email to user_id {user_id}")
+            log_info(f"Sent newsletter draft-ready email to user_id {user_id}")
         return sent
     except Exception as e:
-        myprint(f"Could not send newsletter draft-ready email to user_id {user_id} | Error: {e}")
+        log_info(f"Could not send newsletter draft-ready email to user_id {user_id} | Error: {e}")
         return False

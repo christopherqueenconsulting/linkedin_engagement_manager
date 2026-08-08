@@ -32,11 +32,7 @@ from cqc_lem.utilities.env_constants import (
     SESSION_ABSOLUTE_MAX_DAYS,
     SESSION_IDLE_HOURS,
 )
-from cqc_lem.utilities.logger import (
-    log_error,
-    log_warning,
-    myprint,
-)
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 
 def create_pin_for_email(email: str, pin_hash: str) -> bool:
@@ -56,7 +52,7 @@ def create_pin_for_email(email: str, pin_hash: str) -> bool:
             )
             return cursor.rowcount == 1
     except mysql.connector.Error as err:
-        myprint(f"Could not create PIN for {email} | Error: {err}")
+        log_info(f"Could not create PIN for {email} | Error: {err}")
         return False
 def delete_pin_for_email(email: str) -> None:
     """Remove all unused PINs for an email — called when email send fails after DB write."""
@@ -64,7 +60,7 @@ def delete_pin_for_email(email: str) -> None:
         with db_cursor(commit=True) as cursor:
             cursor.execute("DELETE FROM email_pin_auth WHERE email = %s AND used = 0", (email,))
     except mysql.connector.Error as err:
-        myprint(f"Could not delete PIN for {email} | Error: {err}")
+        log_info(f"Could not delete PIN for {email} | Error: {err}")
 def get_pin_lockout(email: str) -> Optional[datetime]:
     """When this email's PIN entry is locked until, or None. Read by the API so a locked account
     gets a 429 with a wait time instead of an indistinguishable 401.
@@ -79,7 +75,7 @@ def get_pin_lockout(email: str) -> Optional[datetime]:
             row = cursor.fetchone()
             return row.get('locked_until') if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not read PIN lockout for {email} | Error: {err}")
+        log_info(f"Could not read PIN lockout for {email} | Error: {err}")
         return None
 def verify_pin_for_email(email: str, pin_hash: str) -> bool:
     """Consume a PIN. Wrong guesses increment `attempts` and lock the outstanding PIN once
@@ -123,7 +119,7 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
         connection.commit()
         return False
     except mysql.connector.Error as err:
-        myprint(f"Could not verify PIN for {email} | Error: {err}")
+        log_info(f"Could not verify PIN for {email} | Error: {err}")
         return False
     finally:
         cursor.close()
@@ -203,7 +199,7 @@ def resolve_session(token: str) -> Optional[dict]:
         connection.commit()
         return {"user_id": row['user_id'], "scope": scope}
     except mysql.connector.Error as err:
-        myprint(f"Could not validate session token | Error: {err}")
+        log_info(f"Could not validate session token | Error: {err}")
         return None
     finally:
         cursor.close()
@@ -222,7 +218,7 @@ def get_session_id(token: str) -> Optional[int]:
             row = cursor.fetchone()
             return row['id'] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not resolve session id | Error: {err}")
+        log_info(f"Could not resolve session id | Error: {err}")
         return None
 def delete_session(token: str) -> bool:
     """Revoke one session by its token.
@@ -236,7 +232,7 @@ def delete_session(token: str) -> bool:
             cursor.execute("DELETE FROM sessions WHERE session_token = %s", (hash_session_token(token),))
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not delete session | Error: {err}")
+        log_info(f"Could not delete session | Error: {err}")
         return False
 def revoke_session(user_id: int, session_id: int) -> bool:
     """Revoke ONE session. Scoped by user_id on purpose — a session id from another account must
@@ -251,7 +247,7 @@ def revoke_session(user_id: int, session_id: int) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not revoke session {session_id} for user_id {user_id} | Error: {err}")
+        log_info(f"Could not revoke session {session_id} for user_id {user_id} | Error: {err}")
         return False
 def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int:
     """Revoke every session except the one presenting `keep_token` (None revokes all). Returns how
@@ -274,7 +270,7 @@ def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int
                 )
             return cursor.rowcount or 0
     except mysql.connector.Error as err:
-        myprint(f"Could not revoke sessions for user_id {user_id} | Error: {err}")
+        log_info(f"Could not revoke sessions for user_id {user_id} | Error: {err}")
         return 0
 def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
                       email: Optional[str] = None, ip: Optional[str] = None,
@@ -295,7 +291,7 @@ def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
             return True
     except mysql.connector.Error as err:
         log_warning(f"Could not write auth audit row for {event}", user_id=user_id)
-        myprint(f"Could not write auth audit row | Error: {err}")
+        log_info(f"Could not write auth audit row | Error: {err}")
         return False
 def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
     """Recent auth history for the account page — what a user needs to spot a login they didn't
@@ -310,7 +306,7 @@ def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
             )
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not read auth audit for user_id {user_id} | Error: {err}")
+        log_info(f"Could not read auth audit for user_id {user_id} | Error: {err}")
         return []
 AUTH_FACTOR_TOTP = "totp"
 # `secret` is the TOTP seed at rest. The field name is the encryption AAD (see crypto.py) —
@@ -329,7 +325,7 @@ def get_user_passkey_credential_ids(user_id: int) -> list[str]:
             )
             return [row["credential_id"] for row in cursor.fetchall() if row.get("credential_id")]
     except mysql.connector.Error as err:
-        myprint(f"Could not list passkeys for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list passkeys for user_id {user_id} | Error: {err}")
         return []
 def update_factor_counter(factor_id: int, counter: int) -> bool:
     """Persist a factor's monotonic counter after a successful verification.
@@ -347,7 +343,7 @@ def update_factor_counter(factor_id: int, counter: int) -> bool:
             )
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not update counter for factor {factor_id} | Error: {err}")
+        log_info(f"Could not update counter for factor {factor_id} | Error: {err}")
         return False
 def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -> Optional[int]:
     """Start (or restart) TOTP enrolment. The row lands UNCONFIRMED — `confirmed_at IS NULL` — so a
@@ -373,7 +369,7 @@ def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -
             )
             return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not start TOTP enrolment for user_id {user_id} | Error: {err}")
+        log_info(f"Could not start TOTP enrolment for user_id {user_id} | Error: {err}")
         return None
 def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]:
     """The account's TOTP factor with its secret decrypted. Returns None when the envelope cannot
@@ -394,7 +390,7 @@ def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]
             row["secret"] = decrypt_secret(row.get("secret"), user_id, TOTP_SECRET_FIELD)
             return row if row["secret"] else None
     except mysql.connector.Error as err:
-        myprint(f"Could not read TOTP factor for user_id {user_id} | Error: {err}")
+        log_info(f"Could not read TOTP factor for user_id {user_id} | Error: {err}")
         return None
 def confirm_totp_factor(factor_id: int, user_id: int) -> bool:
     """Mark a TOTP seed proven. Scoped by user_id so a guessed factor id cannot confirm someone
@@ -410,7 +406,7 @@ def confirm_totp_factor(factor_id: int, user_id: int) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not confirm TOTP factor {factor_id} | Error: {err}")
+        log_info(f"Could not confirm TOTP factor {factor_id} | Error: {err}")
         return False
 def touch_auth_factor(factor_id: int) -> bool:
     """Stamp `last_used_at` on a factor so the Security card can show when it was last actually used.
@@ -424,7 +420,7 @@ def touch_auth_factor(factor_id: int) -> bool:
                            (datetime.now(timezone.utc), factor_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        myprint(f"Could not touch auth factor {factor_id} | Error: {err}")
+        log_info(f"Could not touch auth factor {factor_id} | Error: {err}")
         return False
 def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
     """The account's strong factors for the Security card. Never returns a secret or a public key —
@@ -440,7 +436,7 @@ def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
             cursor.execute(sql, (user_id,))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not list auth factors for user_id {user_id} | Error: {err}")
+        log_info(f"Could not list auth factors for user_id {user_id} | Error: {err}")
         return []
 def count_auth_factors(user_id: int) -> int:
     """How many CONFIRMED strong factors the account holds. The one question the login path and the
@@ -482,7 +478,7 @@ def delete_auth_factor(user_id: int, factor_id: int) -> bool:
                            (factor_id, user_id))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not delete auth factor {factor_id} for user_id {user_id} | Error: {err}")
+        log_info(f"Could not delete auth factor {factor_id} for user_id {user_id} | Error: {err}")
         return False
 def replace_recovery_codes(user_id: int, code_hashes: list[str]) -> bool:
     """Install a fresh set of recovery codes, invalidating every previous one — including the ones
@@ -498,7 +494,7 @@ def replace_recovery_codes(user_id: int, code_hashes: list[str]) -> bool:
                 )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not store recovery codes for user_id {user_id} | Error: {err}")
+        log_info(f"Could not store recovery codes for user_id {user_id} | Error: {err}")
         return False
 def get_unused_recovery_codes(user_id: int) -> list[dict]:
     """The account's unspent recovery codes as `(id, code_hash)` rows — never a usable code.
@@ -515,7 +511,7 @@ def get_unused_recovery_codes(user_id: int) -> list[dict]:
             )
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        myprint(f"Could not read recovery codes for user_id {user_id} | Error: {err}")
+        log_info(f"Could not read recovery codes for user_id {user_id} | Error: {err}")
         return []
 def consume_recovery_code(user_id: int, code_id: int) -> bool:
     """Spend one code. The `used_at IS NULL` predicate is the single-use guarantee: two requests
@@ -530,7 +526,7 @@ def consume_recovery_code(user_id: int, code_id: int) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not consume recovery code {code_id} | Error: {err}")
+        log_info(f"Could not consume recovery code {code_id} | Error: {err}")
         return False
 def count_recovery_codes(user_id: int) -> tuple[int, int]:
     """(unused, total) — what the account page shows so a user knows when to regenerate."""
@@ -544,7 +540,7 @@ def count_recovery_codes(user_id: int) -> tuple[int, int]:
             row = cursor.fetchone() or {}
             return int(row.get("unused") or 0), int(row.get("total") or 0)
     except mysql.connector.Error as err:
-        myprint(f"Could not count recovery codes for user_id {user_id} | Error: {err}")
+        log_info(f"Could not count recovery codes for user_id {user_id} | Error: {err}")
         return 0, 0
 def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[int] = None,
                           challenge: Optional[str] = None,
@@ -573,7 +569,7 @@ def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[
             )
             return handle
     except mysql.connector.Error as err:
-        myprint(f"Could not create auth challenge ({purpose}) | Error: {err}")
+        log_info(f"Could not create auth challenge ({purpose}) | Error: {err}")
         return None
 def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
     """Claim a ceremony exactly once and return it, or None when it is unknown, expired, already
@@ -605,7 +601,7 @@ def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
         connection.commit()
         return row
     except mysql.connector.Error as err:
-        myprint(f"Could not consume auth challenge ({purpose}) | Error: {err}")
+        log_info(f"Could not consume auth challenge ({purpose}) | Error: {err}")
         return None
     finally:
         cursor.close()
@@ -656,7 +652,7 @@ def claim_auth_challenge_attempt(handle: str, purpose: str,
         connection.commit()
         return row
     except mysql.connector.Error as err:
-        myprint(f"Could not claim auth challenge attempt ({purpose}) | Error: {err}")
+        log_info(f"Could not claim auth challenge attempt ({purpose}) | Error: {err}")
         return None
     finally:
         cursor.close()
@@ -680,7 +676,7 @@ def count_challenge_attempts(user_id: int, purpose: str, since: datetime) -> int
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count auth challenge attempts ({purpose}) | Error: {err}")
+        log_info(f"Could not count auth challenge attempts ({purpose}) | Error: {err}")
         # Fail CLOSED: an unreadable counter must not read as an empty one, or the bound it exists
         # to enforce disappears exactly when the database is unhappy.
         return -1
@@ -697,7 +693,7 @@ def clear_challenge_attempts(user_id: int, purpose: str) -> bool:
             )
             return True
     except mysql.connector.Error as err:
-        myprint(f"Could not clear auth challenge attempts ({purpose}) | Error: {err}")
+        log_info(f"Could not clear auth challenge attempts ({purpose}) | Error: {err}")
         return False
 def finish_auth_challenge(handle: str) -> bool:
     """Burn a challenge that has served its purpose — the success half of
@@ -715,7 +711,7 @@ def finish_auth_challenge(handle: str) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not finish auth challenge | Error: {err}")
+        log_info(f"Could not finish auth challenge | Error: {err}")
         return False
 def mark_session_verified(token: str) -> bool:
     """Stamp `sessions.last_verified_at` — this session just proved a strong factor, which is what
@@ -733,7 +729,7 @@ def mark_session_verified(token: str) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not mark session verified | Error: {err}")
+        log_info(f"Could not mark session verified | Error: {err}")
         return False
 def get_session_auth_state(token: str) -> Optional[dict]:
     """(`last_verified_at`, `scope`) for a live session — everything the step-up gate needs in one
@@ -751,7 +747,7 @@ def get_session_auth_state(token: str) -> Optional[dict]:
             )
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        myprint(f"Could not read session auth state | Error: {err}")
+        log_info(f"Could not read session auth state | Error: {err}")
         return None
 def release_enrollment_scope(token: str) -> bool:
     """Promote an `enroll`-held session to a full one — the account just enrolled a strong factor,
@@ -772,7 +768,7 @@ def release_enrollment_scope(token: str) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not release enrollment scope | Error: {err}")
+        log_info(f"Could not release enrollment scope | Error: {err}")
         return False
 def set_session_scope(token: str, scope: str) -> bool:
     """Set a session's scope outright (issue #905 / #1026).
@@ -788,7 +784,7 @@ def set_session_scope(token: str, scope: str) -> bool:
             cursor.execute("UPDATE sessions SET scope = %s WHERE session_token = %s", (scope, token_hash))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not set session scope | Error: {err}")
+        log_info(f"Could not set session scope | Error: {err}")
         return False
 def get_app_credential(name: str) -> Optional[str]:
     """The stored value for `name`, or None when unset/unreadable. A DB problem returns None so the

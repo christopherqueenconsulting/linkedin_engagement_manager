@@ -44,7 +44,7 @@ def _api_post():
     )
     from cqc_lem.utilities.ai.ai_helper import generate_seed_comment, get_or_create_profile_synthesis
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
-    from cqc_lem.utilities.logger import myprint
+    from cqc_lem.utilities.logger import log_info
 
     profile = load_profile_for_user(USER_ID)
     synth = get_or_create_profile_synthesis(USER_ID, profile)
@@ -54,26 +54,26 @@ def _api_post():
         body = get_post_content(pid)
         obj = object_urn_from_post_url(url)
         if not (url and body and obj):
-            myprint(f"[post {pid}] SKIP — url={bool(url)} body={bool(body)} urn={obj}")
+            log_info(f"[post {pid}] SKIP — url={bool(url)} body={bool(body)} urn={obj}")
             continue
         seed = generate_seed_comment(body, profile, prefs, profile_synthesis=synth)
-        myprint(f"[post {pid}] {obj}\n  NEW SEED: {seed!r}")
+        log_info(f"[post {pid}] {obj}\n  NEW SEED: {seed!r}")
         if MODE != "api_post" or not seed:
             continue
         urn = comment_on_linkedin_post(USER_ID, obj, seed)
         if urn:
             insert_new_log(user_id=USER_ID, post_id=pid, action_type=LogActionType.COMMENT,
                            result=LogResultType.SUCCESS, post_url=url, message=seed)
-            myprint(f"[post {pid}] POSTED via API -> {urn}")
+            log_info(f"[post {pid}] POSTED via API -> {urn}")
         else:
-            myprint(f"[post {pid}] FAILED to post")
+            log_info(f"[post {pid}] FAILED to post")
 
 
 def _delete_old():
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.db import get_post_url_from_log_for_user
     from cqc_lem.utilities.selenium_util import wait_for_ajax, quit_gracefully
-    from cqc_lem.utilities.logger import myprint
+    from cqc_lem.utilities.logger import log_info
 
     driver, wait, _email, prof = get_current_profile(user_id=USER_ID, session_name="Delete Old Seed")
     name = (prof.full_name or "").lower()
@@ -117,19 +117,19 @@ def _delete_old():
                 wait_for_ajax(driver)
                 time.sleep(random.uniform(2, 3))
                 deleted += 1
-            myprint(f"[post {pid}] deleted {deleted} old comment(s)")
+            log_info(f"[post {pid}] deleted {deleted} old comment(s)")
     finally:
         quit_gracefully(driver)
 
 
 def main():
-    from cqc_lem.utilities.logger import myprint
-    myprint(f"Reseed backfill | user={USER_ID} posts={POST_IDS} MODE={MODE}")
+    from cqc_lem.utilities.logger import log_info
+    log_info(f"Reseed backfill | user={USER_ID} posts={POST_IDS} MODE={MODE}")
     if MODE == "delete_old":
         _delete_old()
     else:
         _api_post()  # report / api_post
-    myprint("DONE")
+    log_info("DONE")
 
 
 if __name__ == "__main__":
