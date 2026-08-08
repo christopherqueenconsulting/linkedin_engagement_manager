@@ -62,11 +62,16 @@ _TEST_EMAIL = os.environ.get("TEST_LI_EMAIL", "workflow-e2e@test.internal")
 
 
 def _get_db():
-    """Return a fresh MySQL connection, overriding the host for host-machine runs."""
-    import cqc_lem.utilities.db as _db_mod
-    _db_mod.MYSQL_HOST = _E2E_MYSQL_HOST
-    _db_mod.MYSQL_PORT = _E2E_MYSQL_PORT
-    return _db_mod.get_db_connection()
+    """Return a fresh MySQL connection, overriding the host for host-machine runs.
+
+    Set on `platform.db.connection`, NOT on `utilities.db`. The facade re-exports these names, so
+    assigning there rebinds a copy that `get_db_connection` never reads — the override compiled,
+    ran, and pointed nowhere. This lane is `continue-on-error`, so it stayed quiet.
+    """
+    from cqc_lem.platform.db import connection as _conn
+    _conn.MYSQL_HOST = _E2E_MYSQL_HOST
+    _conn.MYSQL_PORT = _E2E_MYSQL_PORT
+    return _conn.get_db_connection()
 
 
 def _create_test_user(cursor, email: str) -> int:
