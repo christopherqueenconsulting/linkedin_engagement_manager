@@ -13,7 +13,10 @@
     "",
     "enabledPlugins names the plugin, extraKnownMarketplaces names where it comes from. Both are",
     "needed here for the same worktree reason: a fresh checkout that knows the plugin but not its",
-    "marketplace cannot resolve it, so the plugin silently does not load."
+    "marketplace cannot resolve it, so the plugin silently does not load.",
+    "",
+    "Note that `caveman` installs a SessionStart hook, so enabling it HERE turns the compressed",
+    "response style on for every agent working in this checkout, not just for one person."
   ],
   "permissions": {
     "allow": [
@@ -34,13 +37,20 @@
     ]
   },
   "enabledPlugins": {
-    "codex@openai-codex": true
+    "codex@openai-codex": true,
+    "caveman@caveman": true
   },
   "extraKnownMarketplaces": {
     "openai-codex": {
       "source": {
         "source": "github",
         "repo": "openai/codex-plugin-cc"
+      }
+    },
+    "caveman": {
+      "source": {
+        "source": "github",
+        "repo": "JuliusBrussee/caveman"
       }
     }
   }
