@@ -859,6 +859,9 @@ def _emit_report_to_the_run(report: str, new_alerts: list[Alert]) -> None:
             with open(summary, "a", encoding="utf-8") as handle:
                 handle.write(f"\n{report}\n")
         except OSError:
+            # Best-effort. The summary file is a convenience for whoever reads the run; losing it
+            # must never turn a passing gate into a failing one, or an unwritable runner disk
+            # starts blocking merges for a reason that has nothing to do with code quality.
             pass
     for alert in new_alerts:
         # ::error is what surfaces on the run's Summary tab, which is all a merge_group run has.
