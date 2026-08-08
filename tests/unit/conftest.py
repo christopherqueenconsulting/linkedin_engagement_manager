@@ -50,9 +50,16 @@ def _no_real_redis():
     behaviour. Tests that want a working handle keep patching `_redis_client` directly;
     those patches bypass this entirely.
     """
+    from cqc_lem.utilities.linkedin.rate_limit import reset_redis_client
+
+    # The handle is cached per (pid, url) so hot paths stop paying a TCP handshake per command.
+    # Clear it around every test, or a test that patches `from_url` to SUCCEED leaves its mock
+    # cached for the next one — the same reason `flags.reset_flag_state()` is called below.
+    reset_redis_client()
     blocked = ConnectionError("redis blocked in unit tests")
     with patch("redis.Redis.from_url", side_effect=blocked):
         yield
+    reset_redis_client()
 
 
 @pytest.fixture(autouse=True)

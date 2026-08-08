@@ -97,22 +97,14 @@ def _result_ttl_seconds() -> int:
 def _redis_client() -> Optional[RedisLike]:
     """Redis handle for the progress key, or None if unavailable (progress then no-ops).
 
-    Mirrors the 429 breaker's resolution order: the Celery broker URL when it points at Redis,
-    else the result backend (on AWS the broker is SQS), else the local default.
+    Delegates to the breaker's `shared_redis_client()` rather than re-deriving the URL. This body
+    used to be a byte-for-byte copy of that resolution order, so the two could drift apart silently
+    — and the shared handle is also the one that is cached per process, so this path stops paying a
+    TCP handshake per progress write.
     """
-    try:
-        import redis
-    except Exception:
-        return None
-    url = os.getenv("CELERY_BROKER_URL", "")
-    if not url.startswith("redis"):
-        url = os.getenv("CELERY_RESULT_BACKEND", "")
-    if not url.startswith("redis"):
-        url = f"redis://redis:{os.getenv('REDIS_PORT', '6379')}/0"
-    try:
-        return redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
-    except Exception:
-        return None
+    from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+
+    return shared_redis_client()
 
 
 def _key(user_id: int) -> str:

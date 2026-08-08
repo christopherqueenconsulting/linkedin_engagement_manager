@@ -58,25 +58,56 @@ def _trip_count_grace_seconds() -> int:
         return _DEFAULT_TRIP_COUNT_GRACE_SECONDS
 
 
-def _redis_client():
-    """Redis handle for the breaker, or None if unavailable (breaker then no-ops).
+def _resolve_redis_url() -> str:
+    """The Redis URL this process should use.
 
-    Uses the Celery broker URL when it points at Redis; on AWS the broker is SQS and
-    the result backend is Redis, so fall back to that, then to the local default.
+    The Celery broker URL when it points at Redis; on AWS the broker is SQS and the result backend
+    is Redis, so fall back to that, then to the local default.
     """
-    try:
-        import redis
-    except Exception:
-        return None
     url = os.getenv("CELERY_BROKER_URL", "")
     if not url.startswith("redis"):
         url = os.getenv("CELERY_RESULT_BACKEND", "")
     if not url.startswith("redis"):
         url = f"redis://redis:{os.getenv('REDIS_PORT', '6379')}/0"
+    return url
+
+
+# One client per (pid, url). `Redis.from_url` builds its OWN ConnectionPool every call, and the
+# pool disconnects when the object is collected — so re-deriving the handle per operation cost a
+# TCP handshake per Redis command, on paths that run per Selenium action. Keyed on pid because
+# Celery forks its workers: a pool built before the fork would hand the same socket to parent and
+# child, the same hazard `db.py`'s pool is pid-keyed for.
+_CLIENT_STATE: dict = {"client": None, "pid": None, "url": None}
+
+
+def reset_redis_client() -> None:
+    """Drop the cached handle so the next call rebuilds it (tests, and a changed URL)."""
+    _CLIENT_STATE.update(client=None, pid=None, url=None)
+
+
+def _redis_client():
+    """Redis handle for the breaker, or None if unavailable (breaker then no-ops).
+
+    Cached per process — see `_CLIENT_STATE`. Never caches a failure: an unavailable Redis returns
+    None and is retried on the next call, because "Redis was down once" must not become "the
+    breaker is off for the life of this worker".
+    """
     try:
-        return redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+        import redis
     except Exception:
         return None
+    url = _resolve_redis_url()
+    pid = os.getpid()
+    if (_CLIENT_STATE["client"] is not None
+            and _CLIENT_STATE["pid"] == pid
+            and _CLIENT_STATE["url"] == url):
+        return _CLIENT_STATE["client"]
+    try:
+        client = redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+    except Exception:
+        return None
+    _CLIENT_STATE.update(client=client, pid=pid, url=url)
+    return client
 
 
 def shared_redis_client():
