@@ -271,7 +271,7 @@ class TestGrantAndSlotReads:
         cur.execute.side_effect = mysql.connector.Error("boom")
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch("cqc_lem.platform.db.repositories.billing.log_error"):
             from cqc_lem.utilities.db import get_early_adopter_grant
             assert get_early_adopter_grant(5) is None
 
@@ -290,6 +290,6 @@ class TestGrantAndSlotReads:
         cur.execute.side_effect = mysql.connector.Error("boom")
         conn = MagicMock()
         conn.cursor.return_value = cur
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch("cqc_lem.platform.db.repositories.billing.log_error"):
             from cqc_lem.utilities.db import get_early_adopter_slot_usage
             assert get_early_adopter_slot_usage() == {}

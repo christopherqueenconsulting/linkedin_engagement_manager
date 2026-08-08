@@ -164,12 +164,30 @@ def function_bodies(src: str) -> dict[str, str]:
 
 def verify(aggregate: str, base: str) -> int:
     """Assert every moved body is byte-identical to the one on `base`, and that none went missing."""
+    # An aggregate whose module already exists on `base` was moved by an EARLIER commit, so its
+    # functions are legitimately absent from base's db.py and every one would report as INVENTED.
+    # That is a meaningless run, not a finding -- say so rather than printing 30 scary names.
+    rel = f"src/cqc_lem/platform/db/repositories/{aggregate}.py"
+    already = subprocess.run(["git", "cat-file", "-e", f"{base}:{rel}"],
+                             capture_output=True, cwd=REPO).returncode == 0
+    if already:
+        print(f"  {aggregate} already exists on {base} -- verify it against the commit before its"
+              f" move, e.g. --base {base}~1. Nothing to check here.")
+        return 0
+
     old = subprocess.run(
         ["git", "show", f"{base}:src/cqc_lem/utilities/db.py"],
         capture_output=True, text=True, cwd=REPO, check=True).stdout
     before = function_bodies(old)
     moved = function_bodies((REPOSITORIES / f"{aggregate}.py").read_text())
+    # "Lost" means gone from the CODEBASE, so every repository counts as a destination, not just
+    # this one. Scoping it to db.py + the aggregate under test reported each function moved by a
+    # SIBLING aggregate in the same branch as lost -- a false alarm that would train a reader to
+    # ignore the one check that would catch a real deletion.
     remaining = function_bodies(DB.read_text())
+    for sibling in sorted(REPOSITORIES.glob("*.py")):
+        if sibling.name != "__init__.py":
+            remaining.update(function_bodies(sibling.read_text()))
 
     altered = sorted(k for k in moved if k in before and before[k] != moved[k])
     invented = sorted(k for k in moved if k not in before)
