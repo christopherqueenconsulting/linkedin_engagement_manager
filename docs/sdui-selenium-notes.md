@@ -192,6 +192,21 @@ returns on the first hit. Reading "any badge on the page" is the #1012 rail haza
 instead of a click: it cancels the invite to a 2nd-degree target because one of their mutuals is a
 1st.
 
+## The feed share-box composer is a non-button clickable (#1107)
+
+Live-grounded 2026-08-08 (`/feed/`, user 1): the share-box trigger renders the text
+"Start a post" on the page but is no longer a native `<button>` that the old `//button[...]`
+XPath can resolve. `visible_button_labels()` therefore omits it even though `page_text_sample()`
+plainly contains the label. The working chain now matches `button` OR `*[role='button']` and
+checks both the element's normalized text and its `aria-label` (case-folded), because LinkedIn
+commonly moves the visible label into a descendant span while the actionable wrapper carries the
+role.
+
+The production path (`auto_post_to_group`) cross-checks the page text before treating a missing
+share box as "group is unpostable": if `<main>`/`<body>` still contains "Start a post",
+"Start a public post", or "Create a post", the control has drifted and the run warns rather
+than silently rotating past a postable group.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

@@ -390,6 +390,22 @@ def probe_document_render(driver, post_url: str, sleep=time.sleep) -> dict:
             "anchors": [dict(a, kind=classify_media_anchor(a)) for a in anchors]}
 
 
+def _share_box_chains() -> tuple:
+    """The share-box trigger chain from the running image when it exists, otherwise a carried copy.
+
+    The probe is piped into the DEPLOYED image, so a pre-merge pass cannot import a chain that has
+    not shipped yet. Carrying a copy here is the same posture as `feed_sort_chains` (#817) and
+    `_recommendation_reading` (#1007): the running image wins when it has one, and the reading names
+    the source so a pre-merge pass is never mistaken for a deployed one. A copy that drifts from
+    `run_automation._GROUP_SHARE_BOX_LOCATORS` grounds a chain nothing ships.
+    """
+    try:
+        from cqc_lem.app.run_automation import _GROUP_SHARE_BOX_LOCATORS
+        return list(_GROUP_SHARE_BOX_LOCATORS), "image"
+    except Exception:
+        return _CARRIED_GROUP_SHARE_BOX_LOCATORS, "script"
+
+
 def probe_composer(driver, sleep=time.sleep) -> dict:
     """Open the feed composer, capture its attach-control labels (the document-upload anchors
     LEM has never needed, because documents publish through the API), then close it."""
@@ -401,15 +417,15 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
     driver.get(FEED_URL)
     sleep(5)
     # Same locator chain auto_post_to_group uses for the share box — one composer, one map.
-    opened = click_first(driver, wait, [(By.XPATH,
-        "//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') "
-        "or contains(@aria-label,'Create a post')]")], "Composer share box", required=False)
+    share_box_locators, chain_source = _share_box_chains()
+    opened = click_first(driver, wait, share_box_locators, "Composer share box", required=False)
     if opened is None:
         # A share box that did not resolve is only DRIFT if the feed itself rendered — otherwise
         # this run was signed out or redirected and grounds nothing.
         reading = {"opened": False, "controls": [], "document_affordance": None,
                    "page_text": page_text_sample(driver),
-                   "visible_controls": visible_button_labels(driver)}
+                   "visible_controls": visible_button_labels(driver),
+                   "chain_source": chain_source}
         if reading["page_text"]:
             return graded(reading, STATE_DRIFT,
                           "the feed rendered but no share-box control resolved — re-ground the "
@@ -440,7 +456,8 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
         # a failed Escape must not mask the anchors this probe exists to report.
         pass
     reading = {"opened": True, "controls": controls,
-               "document_affordance": find_document_affordance(controls)}
+               "document_affordance": find_document_affordance(controls),
+               "chain_source": chain_source}
     if not controls:
         return graded(reading, STATE_DRIFT,
                       "the composer opened but carries no readable control labels — its dialog "
@@ -550,6 +567,26 @@ SORT_RECENT = "recent"
 SORT_TOP = "top"
 SORT_MISSING = "missing"
 SORT_UNKNOWN = "unknown"
+
+# Carried copy of `run_automation._GROUP_SHARE_BOX_LOCATORS` for images that predate #1107.
+# `TestGroupShareBoxChainCopy` fails the build if this drifts from the shipped chain.
+_CARRIED_GROUP_SHARE_BOX_LOCATORS = [
+    (By.XPATH,
+     "//*[self::button or @role='button']["
+     "contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+     "'abcdefghijklmnopqrstuvwxyz'),'start a post') "
+     "or contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+     "'abcdefghijklmnopqrstuvwxyz'),'start a public post') "
+     "or contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+     "'abcdefghijklmnopqrstuvwxyz'),'start a post') "
+     "or contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+     "'abcdefghijklmnopqrstuvwxyz'),'create a post') "
+     "or (contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+     "'abcdefghijklmnopqrstuvwxyz'),'start a') and "
+     "contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+     "'abcdefghijklmnopqrstuvwxyz'),'post'))"
+     "]"),
+]
 
 FALLBACK_SORT_LOCATORS = [
     (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort')]"),

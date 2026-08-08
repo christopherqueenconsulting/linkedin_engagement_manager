@@ -4058,11 +4058,19 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
 # grounds whatever the probe's author last pasted — that is how the reaction probe reported
 # cards_found: 0 against a build whose walk was already fixed.
 _GROUP_SHARE_BOX_LOCATORS = [
+    # LinkedIn SDUI now renders the share-box trigger as a non-button clickable (e.g.
+    # `div[role='button']`) whose text is "Start a post". The old `//button` chain missed it even
+    # though the page plainly contained the label (#1107).
     (By.XPATH,
-     "//button[contains(normalize-space(),'Start a post') or contains(normalize-space(),'Start a public post') "
-     "or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post') "
-     "or (contains(normalize-space(),'Start a') and contains(normalize-space(),'post'))]"),
+     "//*[self::button or @role='button']["
+     f"contains({_X_LOWER_TEXT},'start a post') "
+     f"or contains({_X_LOWER_TEXT},'start a public post') "
+     f"or contains({_X_LOWER_ARIA},'start a post') "
+     f"or contains({_X_LOWER_ARIA},'create a post') "
+     f"or (contains({_X_LOWER_TEXT},'start a') and contains({_X_LOWER_TEXT},'post'))"
+     "]"),
 ]
+_GROUP_SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create a post")
 _GROUP_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='textbox']")]
 _GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
 
@@ -4112,7 +4120,25 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
         # Open the group share box, type, and post (best-effort SDUI selectors).
         if click_first(driver, wait, _GROUP_SHARE_BOX_LOCATORS,
                        "Group share box", required=False) is None:
-            return _unpostable("Group share box not found")
+            # A share box that does not resolve is only "this group is unpostable" if the page
+            # itself says there is no share box. If the page text still contains "Start a post" then
+            # the control rendered but our chain cannot see it — selector drift, and we must warn
+            # rather than quietly rotate past a postable group (#1107).
+            page_text = ""
+            for tag in ("main", "body"):
+                try:
+                    page_text = (driver.find_element(By.TAG_NAME, tag).text or "").lower()
+                    if page_text.strip():
+                        break
+                except Exception:
+                    continue
+            has_share_signal = any(signal in page_text for signal in _GROUP_SHARE_BOX_TEXT_SIGNALS)
+            if has_share_signal:
+                log_warning("Group share box control drifted: page renders the signal but the locator "
+                          "chain did not resolve it", user_id=user_id, task_name="auto_post_to_group",
+                          group_id=group_id)
+            return _unpostable("Group share box control drifted" if has_share_signal
+                               else "Group share box not found")
         time.sleep(random.uniform(2, 3))
         box = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
                          visible_only=True, required=False)
