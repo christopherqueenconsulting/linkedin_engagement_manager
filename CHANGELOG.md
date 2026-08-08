@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.136.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.136.0...v0.136.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **security:** match the LinkedIn sender DOMAIN, not a substring of it ([#1151](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1151)) ([5350c5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5350c5e32e950b412e8029b811edbe0026d1845a))
+
 ## [0.136.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.135.0...v0.136.0) (2026-08-08)
 
 
