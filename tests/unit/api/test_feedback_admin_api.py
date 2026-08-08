@@ -1,19 +1,28 @@
-"""Unit tests for the feedback admin triage panel endpoints (issue #793)."""
+"""Unit tests for the feedback admin triage panel endpoints (issues #793, #1070)."""
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
+
+from cqc_lem.utilities.feedback.classifier import (
+    FeedbackCategory,
+    FeedbackClassification,
+    FeedbackRisk,
+    FeedbackSeverity,
+)
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
 def _auth_hardening_side_effects():
-    """Issue #745 (2b): every login now stamps `email_verified_at`, writes an `auth_audit_log` row
-    and reads the PIN lockout, and /auth/session resolves the account's public_uid. Those are DB
-    calls these tests never mocked — pin them so each test still exercises the flow it was written
-    for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
+    """Issue #745 (2b): every login now stamps `email_verified_at`, writes an `auth_audit_log` row.
+
+    It also reads the PIN lockout, and /auth/session resolves the account's public_uid. Those are
+    DB calls these tests never mocked — pin them so each test still exercises the flow it was
+    written for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
     """
     with patch("cqc_lem.api.main.record_auth_event", return_value=True), \
          patch("cqc_lem.api.main.mark_email_verified", return_value=True), \
@@ -54,6 +63,19 @@ def _auth(user):
         "is_admin": patch("cqc_lem.api.main.is_user_admin", return_value=user["is_admin"]),
         "get_email": patch("cqc_lem.api.main.get_user_email", return_value=user["email"]),
     }
+
+
+def _classification():
+    """A confident bug classification that routes to AUTO_WORK."""
+    return FeedbackClassification(
+        category=FeedbackCategory.BUG,
+        severity=FeedbackSeverity.HIGH,
+        component="ui",
+        title="Fix the thing",
+        summary="Thing is broken",
+        risk=FeedbackRisk.NONE,
+        confidence=0.9,
+    )
 
 
 class TestListFeedback:
@@ -134,8 +156,10 @@ class TestReviewFeedback:
         assert r.json()["detail"]["filed"] is True
 
     def test_approve_that_reached_no_issue_says_so(self, client):
-        """The 200 only means the review was recorded. A GitHub failure changes NOTHING else, so
-        without `filed` the panel cannot tell it apart from a successful approve (issue #1036).
+        """The 200 only means the review was recorded.
+
+        A GitHub failure changes NOTHING else, so without `filed` the panel cannot tell it apart
+        from a successful approve (issue #1036).
         """
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 12}), \
@@ -150,8 +174,10 @@ class TestReviewFeedback:
         assert r.json()["detail"]["filing_result"]["action"] == "error"
 
     def test_already_filed_row_cannot_be_re_approved(self, client):
-        """A filed row IS its own open cluster, so re-running the filer would match it to itself
-        and post a false "+1 another report" on the issue it created.
+        """A filed row IS its own open cluster.
+
+        Re-running the filer would match it to itself and post a false "+1 another report" on the
+        issue it created.
         """
         row = {"id": 9, "status": "issue_created", "github_issue_number": 404}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
@@ -212,6 +238,104 @@ class TestReviewFeedback:
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"]:
             r = client.post("/api/admin/feedback/1/review", json={"action": "dismiss"})
         assert r.status_code == 422
+
+    def test_approve_persists_issue_created_and_list_reflects_it(self, client):
+        """Issue #1070: the issue-filed transition must persist the triage status.
+
+        The feedback list endpoint must return it, and the SPA derives its buttons from that
+        status. This test exercises the real end-to-end path through `file_feedback_issue` rather
+        than mocking it, using a shared in-memory DB so the review write and the list read see the
+        same row.
+        """
+        store = {
+            5: {
+                "id": 5, "user_id": 1, "source": "widget", "type_hint": "bug",
+                "body": "the approve button does nothing", "context_json": None,
+                "embedding": None, "cluster_id": None, "github_issue_number": None,
+                "status": "new", "sentiment": None, "reviewed_by": None,
+                "reviewed_at": None, "created_at": None,
+                "email": "user@x.com", "is_admin": 0,
+            },
+        }
+
+        class FakeCur:
+            def __init__(self, dictionary):
+                self.dictionary = dictionary
+                self._rows = []
+
+            def execute(self, sql, params):
+                if "FROM feedback WHERE id=%s" in sql:
+                    self._rows = [store.get(params[0])]
+                elif "FROM feedback f LEFT JOIN users u" in sql:
+                    self._rows = []
+                    for row in store.values():
+                        item = dict(row)
+                        item["email"] = item.get("email")
+                        item["is_admin"] = item.get("is_admin")
+                        self._rows.append(item)
+                elif sql.startswith("UPDATE feedback SET"):
+                    set_part = sql[len("UPDATE feedback SET "):].split(" WHERE ")[0]
+                    cols = [c.split("=")[0].strip() for c in set_part.split(",")]
+                    feedback_id = params[-1]
+                    row = store[feedback_id]
+                    for col, val in zip(cols, params[:-1]):
+                        row[col] = val
+                    self._rows = []
+                else:
+                    self._rows = []
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def fetchall(self):
+                return self._rows
+
+            @property
+            def rowcount(self):
+                return 1
+
+            def close(self):
+                pass
+
+        class FakeConn:
+            def cursor(self, dictionary=True):
+                return FakeCur(dictionary)
+
+            def close(self):
+                pass
+
+            def commit(self):
+                pass
+
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.utilities.feedback.issue_service.classify_feedback",
+                   return_value=_classification()), \
+             patch("cqc_lem.utilities.feedback.issue_service.create_github_issue",
+                   return_value=1068), \
+             patch("cqc_lem.utilities.feedback.issue_service.comment_on_issue",
+                   return_value=True), \
+             patch("cqc_lem.utilities.feedback.issue_service.embed_text",
+                   return_value=None), \
+             patch("cqc_lem.utilities.feedback.issue_service.count_feedback_filed_by_user",
+                   return_value=0), \
+             patch("cqc_lem.utilities.feedback.issue_service.get_open_feedback_clusters",
+                   return_value=[]), \
+             patch("cqc_lem.utilities.db.get_db_connection", return_value=FakeConn()), \
+             patch("cqc_lem.utilities.db.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime(2026, 8, 7, 23, 0, 0, tzinfo=timezone.utc)
+
+            r1 = client.post("/api/admin/feedback/5/review", json={
+                "session_token": "tok", "action": "approve",
+            })
+            assert r1.status_code == 200
+            assert r1.json()["detail"]["filed"] is True
+
+            r2 = client.get("/api/admin/feedback", params={"session_token": "tok"})
+            assert r2.status_code == 200
+            item = r2.json()["detail"]["items"][0]
+            assert item["status"] == "issue_created"
+            assert item["github_issue_number"] == 1068
+            assert item["reviewed_by"] == 7
 
 
 class TestSessionExposesAdminFlag:

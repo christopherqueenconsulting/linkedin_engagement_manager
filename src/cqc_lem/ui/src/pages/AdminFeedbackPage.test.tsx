@@ -243,6 +243,69 @@ describe('AdminFeedbackPage (issue #793)', () => {
     )
   })
 
+  // Issue #1070: "the row never updates, even after a page refresh". The server persists
+  // `issue_created` and the list endpoint returns it (locked server-side in
+  // tests/unit/api/test_feedback_admin_api.py); this is the other half of that contract — the row
+  // must take its buttons from the status it was HANDED, so a reload of a settled row shows none.
+  it('offers no actions on a row the server reports as settled', async () => {
+    get.mockResolvedValue(listPayload([
+      {
+        id: 45,
+        email: 'user@x.com',
+        is_admin_reporter: false,
+        source: 'widget',
+        type_hint: 'bug',
+        body: 'Something is broken',
+        status: 'issue_created',
+        github_issue_number: 1068,
+        created_at: '2026-07-29T12:00:00Z',
+      },
+    ]))
+    harness(<AdminFeedbackPage />)
+    await waitFor(() => expect(screen.getByText('user@x.com')).toBeTruthy())
+    // Scoped to the row: the status filter renders every label as an <option> too.
+    const row = screen.getByText('Something is broken').closest('tr') as HTMLElement
+    expect(row.textContent).toContain('Issue created')
+    expect(row.querySelector('a')?.textContent).toBe('#1068')
+    expect(row.querySelectorAll('button').length).toBe(0)
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
+  })
+
+  // …and the same row settles WITHOUT a reload: the approve invalidates the list, and it is the
+  // refetched status — not any local "I clicked it" state — that retires the buttons.
+  it('retires the buttons when the refetched list reports the row as filed', async () => {
+    const pending = {
+      id: 45,
+      email: 'user@x.com',
+      is_admin_reporter: false,
+      source: 'widget',
+      type_hint: 'bug',
+      body: 'Something is broken',
+      status: 'new',
+      github_issue_number: null,
+      created_at: '2026-07-29T12:00:00Z',
+    }
+    get.mockResolvedValueOnce(listPayload([pending]))
+    get.mockResolvedValue(listPayload([
+      { ...pending, status: 'issue_created', github_issue_number: 1068 },
+    ]))
+    post.mockResolvedValue({ data: { detail: {
+      reviewed: true, action: 'approved', filed: true,
+      filing_result: { action: 'filed', issue_number: 1068 },
+    } } })
+
+    harness(<AdminFeedbackPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /approve/i })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /approve/i })).toBeNull())
+    const row = screen.getByText('Something is broken').closest('tr') as HTMLElement
+    expect(row.textContent).toContain('Issue created')
+    expect(row.querySelector('a')?.textContent).toBe('#1068')
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
+  })
+
   it('surfaces a failed review instead of swallowing it', async () => {
     get.mockResolvedValue(listPayload([
       {
