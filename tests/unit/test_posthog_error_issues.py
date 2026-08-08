@@ -105,6 +105,41 @@ class TestTitleAndBody:
         assert "API route:" not in body
 
 
+class TestBuildComment:
+    def _comment(self, mod, **overrides):
+        row = _row(mod, name="RecurringWarning",
+                   description="Selector miss: Comment sort control", **overrides)
+        return mod.build_comment(row, {"number": 818,
+                                       "signature": "Selector miss: Comment sort control"},
+                                 hours=24, project_id="475262")
+
+    def test_carries_the_marker_so_the_next_run_skips_the_row(self, mod):
+        body = self._comment(mod)
+        assert mod.marker("11111111-2222-3333-4444-555555555555") in body
+
+    def test_carries_the_fresh_occurrence_data_and_the_posthog_link(self, mod):
+        body = self._comment(mod)
+        assert "Occurrences (last 24h): **12**" in body
+        assert "automate_commenting" in body
+        assert "error_tracking/11111111-2222-3333-4444-555555555555" in body
+
+    def test_says_what_it_matched_on_so_a_bad_merge_is_visible(self, mod):
+        assert "`Selector miss: Comment sort control`" in self._comment(mod)
+
+    def test_it_is_not_a_mode_start_issue_body(self, mod):
+        body = self._comment(mod)
+        assert "## Acceptance" not in body
+        assert "## Scope" not in body
+
+    def test_a_browser_exception_still_links_its_replay(self, mod):
+        body = self._comment(mod, lib="web", session_id="0198f0aa-1b2c-7000-8000-abcdef012345")
+        assert "/replay/0198f0aa-1b2c-7000-8000-abcdef012345" in body
+
+    def test_survives_a_match_with_no_recorded_signature(self, mod):
+        row = _row(mod, name="RecurringWarning", description="Selector miss: Comment sort control")
+        assert "no duplicate" in mod.build_comment(row, {"number": 818})
+
+
 class TestReplayLink:
     _SESSION = "0198f0aa-1b2c-7000-8000-abcdef012345"
 
@@ -131,6 +166,130 @@ class TestReplayLink:
     def test_an_unshaped_session_id_is_never_linked(self, mod, session_id):
         assert mod.replay_url(session_id) is None
         assert "replay/" not in mod.build_body(_row(mod, session_id=session_id))
+
+
+class TestWarningSignature:
+    """#1083 — the normalized string an escalated warning is recognised by in an existing tracker."""
+
+    def test_a_recurring_warning_carries_its_normalized_message(self, mod):
+        row = _row(mod, name="RecurringWarning", description="Selector miss: Comment sort control")
+        assert mod.warning_signature(row) == "Selector miss: Comment sort control"
+
+    def test_a_raw_exception_has_no_signature(self, mod):
+        # Its description is the interpolated message, not a masked template — matching it against
+        # a human's prose would merge on coincidence.
+        assert mod.warning_signature(_row(mod, name="RuntimeError")) is None
+
+    @pytest.mark.parametrize("description", [None, "", "boom", "too short", "a b c"])
+    def test_a_vague_message_is_refused_rather_than_matched_loosely(self, mod, description):
+        assert mod.warning_signature(
+            _row(mod, name="RecurringWarning", description=description)) is None
+
+    def test_whitespace_is_collapsed(self, mod):
+        row = _row(mod, name="RecurringWarning", description="  Selector miss:   Feed  sort  ")
+        assert mod.warning_signature(row) == "Selector miss: Feed sort"
+
+
+class TestIssueMatching:
+    _SIG = "Selector miss: Comment sort control"
+
+    def test_matches_a_hand_filed_title(self, mod):
+        # The real #818: it quotes the warning in its title, and #1063 was auto-filed anyway.
+        issue = {"number": 818,
+                 "title": "fix(observability): 'Selector miss: Comment sort control' — comment-"
+                          "demotion denominator is silently shrinking",
+                 "body": "## Why\n..."}
+        assert mod.issue_matches(self._SIG, issue) is True
+
+    def test_matches_a_body_mention(self, mod):
+        issue = {"number": 816, "title": "reaction flow broken by SDUI drift",
+                 "body": "| `Selector miss: Comment sort control` | 30 | 3 |"}
+        assert mod.issue_matches(self._SIG, issue) is True
+
+    def test_casing_differences_still_match(self, mod):
+        assert mod.issue_matches(self._SIG, {"number": 1, "title": "selector MISS: comment sort "
+                                                                   "control", "body": ""}) is True
+
+    def test_a_different_warning_does_not_match(self, mod):
+        assert mod.issue_matches(self._SIG, {"number": 1, "title": "Selector miss: Reaction state",
+                                             "body": "nothing else"}) is False
+
+    def test_a_tokenized_search_hit_is_only_a_candidate(self, mod):
+        # gh's search matches on words; pick_match is where the literal phrase is enforced.
+        hits = [{"number": 900, "title": "sort control comment selector", "body": "unrelated"}]
+        assert mod.pick_match(self._SIG, hits) is None
+
+    def test_picks_the_lowest_numbered_tracker(self, mod):
+        hits = [{"number": 1063, "title": f"fix(errors): RecurringWarning: {self._SIG} (1x)",
+                 "body": ""},
+                {"number": 818, "title": f"'{self._SIG}' — denominator shrinking", "body": ""}]
+        assert mod.pick_match(self._SIG, hits)["number"] == 818
+
+    def test_a_hit_without_a_number_is_ignored(self, mod):
+        assert mod.pick_match(self._SIG, [{"title": self._SIG, "body": ""}]) is None
+
+    def test_no_hits_is_no_match(self, mod):
+        assert mod.pick_match(self._SIG, None) is None
+
+    def test_search_phrase_drops_quotes_that_would_close_it_early(self, mod):
+        assert '"' not in mod.search_phrase('Selector miss: "Sort by" control')
+
+    def test_search_phrase_is_truncated_but_the_full_string_still_decides(self, mod):
+        long_signature = "Selector miss: " + ("x" * 400)
+        assert len(mod.search_phrase(long_signature)) <= mod.MAX_SEARCH_CHARS
+        assert mod.pick_match(long_signature,
+                              [{"number": 5, "title": "Selector miss: xxx", "body": ""}]) is None
+
+
+class TestOpenMatches:
+    def _gh(self, hits):
+        gh = MagicMock()
+        gh.search_open.return_value = hits
+        return gh
+
+    def test_a_hand_filed_tracker_is_matched(self, mod):
+        row = _row(mod, issue_id="a", name="RecurringWarning",
+                   description="Selector miss: Comment sort control")
+        gh = self._gh([{"number": 818, "title": "'Selector miss: Comment sort control' — x",
+                        "body": ""}])
+        matches = mod.open_matches(gh, [row], already=set())
+        assert matches[mod.marker("a")]["number"] == 818
+        assert matches[mod.marker("a")]["signature"] == "Selector miss: Comment sort control"
+
+    def test_a_prior_auto_filed_issue_is_matched(self, mod):
+        # Same warning, NEW PostHog issue id (the fingerprint moved) — the open ticket it already
+        # has is the right thread, so it must not get a second one.
+        row = _row(mod, issue_id="new-id", name="RecurringWarning",
+                   description="Selector miss: Reaction state")
+        gh = self._gh([{"number": 874,
+                        "title": "fix(errors): RecurringWarning: Selector miss: Reaction state (1x)",
+                        "body": "Auto-filed. Dedup marker: `posthog-issue-old-id`"}])
+        assert mod.open_matches(gh, [row], already=set())[mod.marker("new-id")]["number"] == 874
+
+    def test_an_already_filed_row_is_not_searched(self, mod):
+        row = _row(mod, issue_id="a", name="RecurringWarning",
+                   description="Selector miss: Comment sort control")
+        gh = self._gh([])
+        assert mod.open_matches(gh, [row], already={mod.marker("a")}) == {}
+        gh.search_open.assert_not_called()
+
+    def test_a_resolved_row_is_not_searched(self, mod):
+        row = _row(mod, issue_id="a", name="RecurringWarning", status="resolved",
+                   description="Selector miss: Comment sort control")
+        gh = self._gh([])
+        assert mod.open_matches(gh, [row], already=set()) == {}
+        gh.search_open.assert_not_called()
+
+    def test_a_raw_exception_is_not_searched(self, mod):
+        gh = self._gh([])
+        assert mod.open_matches(gh, [_row(mod, issue_id="a")], already=set()) == {}
+        gh.search_open.assert_not_called()
+
+    def test_no_match_leaves_the_row_to_be_filed(self, mod):
+        row = _row(mod, issue_id="a", name="RecurringWarning",
+                   description="Selector miss: Comment sort control")
+        gh = self._gh([{"number": 7, "title": "something else", "body": "unrelated"}])
+        assert mod.open_matches(gh, [row], already=set()) == {}
 
 
 class TestPlanActions:
@@ -160,6 +319,30 @@ class TestPlanActions:
     def test_duplicate_ids_in_one_batch_file_once(self, mod):
         rows = [_row(mod, issue_id="a"), _row(mod, issue_id="a")]
         assert len(mod.pending(mod.plan_actions(rows, set()))) == 1
+
+    def test_a_matched_warning_comments_instead_of_filing(self, mod):
+        rows = [_row(mod, issue_id="a", name="RecurringWarning",
+                     description="Selector miss: Comment sort control")]
+        matches = {mod.marker("a"): {"number": 818, "title": "t", "signature": "Selector miss"}}
+        actions = mod.plan_actions(rows, set(), existing_matches=matches)
+        assert actions[0]["action"] == "comment"
+        assert actions[0]["existing"]["number"] == 818
+        assert mod.pending(actions) == actions
+
+    def test_the_marker_still_wins_over_a_text_match(self, mod):
+        rows = [_row(mod, issue_id="a", name="RecurringWarning",
+                     description="Selector miss: Comment sort control")]
+        matches = {mod.marker("a"): {"number": 818, "title": "t"}}
+        actions = mod.plan_actions(rows, {mod.marker("a")}, existing_matches=matches)
+        assert actions[0]["action"] == "skip"
+        assert actions[0]["reason"] == "already filed"
+
+    def test_comments_do_not_spend_the_max_new_budget(self, mod):
+        rows = [_row(mod, issue_id="a", name="RecurringWarning", description="Selector miss: one"),
+                _row(mod, issue_id="b"), _row(mod, issue_id="c")]
+        matches = {mod.marker("a"): {"number": 818, "title": "t"}}
+        actions = mod.plan_actions(rows, set(), max_new=1, existing_matches=matches)
+        assert [a["action"] for a in actions] == ["comment", "create", "deferred"]
 
     def test_summarize_counts_the_outcomes(self, mod):
         actions = mod.plan_actions([_row(mod, issue_id="a"),
@@ -198,6 +381,56 @@ class TestGitHubIssues:
             with pytest.raises(RuntimeError):
                 gh.is_filed("posthog-issue-a")
 
+    def test_is_filed_sees_a_marker_left_as_a_comment(self, mod):
+        # #1083: when the marker landed on a hand-filed tracker as a comment, that thread IS this
+        # exception's issue — a body-only check would file a duplicate on the next run.
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run", return_value=self._completed(
+                '[{"number": 818, "body": "hand written", '
+                '"comments": [{"body": "marker: posthog-issue-a"}]}]')):
+            assert gh.is_filed("posthog-issue-a") is True
+
+    def test_is_filed_tolerates_an_issue_with_no_comments(self, mod):
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run", return_value=self._completed(
+                '[{"number": 818, "body": "hand written", "comments": null}]')):
+            assert gh.is_filed("posthog-issue-a") is False
+
+    def test_search_open_quotes_the_phrase_and_stays_on_open_issues(self, mod):
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run", return_value=self._completed(
+                '[{"number": 818, "title": "t", "body": "b"}]')) as run:
+            assert gh.search_open("Selector miss: Comment sort control")[0]["number"] == 818
+        args = run.call_args[0][0]
+        assert "--state" in args and args[args.index("--state") + 1] == "open"
+        assert '"Selector miss: Comment sort control"' in args
+
+    def test_search_open_skips_the_call_for_an_empty_signature(self, mod):
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run") as run:
+            assert gh.search_open("   ") == []
+        run.assert_not_called()
+
+    def test_search_open_raises_when_the_search_fails(self, mod):
+        # Fail CLOSED — an unreadable search must not be read as "nothing tracks this yet".
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run", return_value=self._completed(returncode=1, stderr="502")):
+            with pytest.raises(RuntimeError):
+                gh.search_open("Selector miss: Comment sort control")
+
+    def test_comment_returns_the_comment_url(self, mod):
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run", return_value=self._completed(
+                "https://github.com/owner/repo/issues/818#issuecomment-1\n")) as run:
+            assert gh.comment(818, "body").endswith("#issuecomment-1")
+        args = run.call_args[0][0]
+        assert args[:3] == ["gh", "issue", "comment"] and "818" in args
+
+    def test_comment_returns_none_when_gh_fails(self, mod):
+        gh = mod.GitHubIssues("owner/repo")
+        with patch.object(gh, "_run", return_value=self._completed(returncode=1, stderr="boom")):
+            assert gh.comment(818, "body") is None
+
     def test_create_returns_the_issue_url(self, mod):
         gh = mod.GitHubIssues("owner/repo")
         with patch.object(gh, "_run", return_value=self._completed(
@@ -228,6 +461,33 @@ class TestApplyActions:
         applied = mod.apply_actions(gh, actions, dry_run=False)
         assert len(applied) == 1
         gh.create.assert_called_once()
+
+    def _comment_actions(self, mod):
+        rows = [_row(mod, issue_id="a", name="RecurringWarning",
+                     description="Selector miss: Comment sort control")]
+        actions = mod.plan_actions(rows, set(), existing_matches={
+            mod.marker("a"): {"number": 818, "title": "t"}})
+        actions[0]["body"] = "occurrence report"
+        return actions
+
+    def test_a_matched_warning_is_commented_never_created(self, mod):
+        gh = MagicMock()
+        gh.comment.return_value = "https://github.com/o/r/issues/818#issuecomment-1"
+        applied = mod.apply_actions(gh, self._comment_actions(mod), dry_run=False)
+        gh.create.assert_not_called()
+        gh.comment.assert_called_once_with(818, "occurrence report")
+        assert len(applied) == 1
+
+    def test_dry_run_comments_nothing(self, mod):
+        gh = MagicMock()
+        mod.apply_actions(gh, self._comment_actions(mod), dry_run=True)
+        gh.comment.assert_not_called()
+        gh.create.assert_not_called()
+
+    def test_a_failed_comment_is_not_counted_as_applied(self, mod):
+        gh = MagicMock()
+        gh.comment.return_value = None
+        assert mod.apply_actions(gh, self._comment_actions(mod), dry_run=False) == []
 
     def test_a_failed_create_is_not_counted_as_applied(self, mod):
         gh = MagicMock()
@@ -280,6 +540,51 @@ class TestMain:
              patch.object(mod.GitHubIssues, "create") as create:
             assert mod.main(["--apply"]) == 1
         create.assert_not_called()
+
+    _WARNING_ROW = [["a", "RecurringWarning", "Selector miss: Comment sort control", "active",
+                     "t0", "t1", 3, 1, "posthog-python", "sweep_comment_outcomes", None]]
+
+    def test_a_hand_filed_tracker_gets_a_comment_not_a_duplicate(self, mod, monkeypatch):
+        # The #1063/#818 case end to end: an open hand-filed issue quotes the warning, so nothing
+        # new is opened.
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        with patch.object(mod.PostHogQueryClient, "query", return_value=self._WARNING_ROW), \
+             patch.object(mod.GitHubIssues, "is_filed", return_value=False), \
+             patch.object(mod.GitHubIssues, "search_open", return_value=[
+                 {"number": 818,
+                  "title": "fix(observability): 'Selector miss: Comment sort control' — denominator",
+                  "body": "hand written"}]), \
+             patch.object(mod.GitHubIssues, "comment",
+                          return_value="https://github.com/o/r/issues/818#issuecomment-1") as comment, \
+             patch.object(mod.GitHubIssues, "create") as create:
+            assert mod.main(["--apply"]) == 0
+        create.assert_not_called()
+        number, body = comment.call_args[0]
+        assert number == 818
+        assert mod.marker("a") in body
+
+    def test_an_unmatched_warning_still_files(self, mod, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        with patch.object(mod.PostHogQueryClient, "query", return_value=self._WARNING_ROW), \
+             patch.object(mod.GitHubIssues, "is_filed", return_value=False), \
+             patch.object(mod.GitHubIssues, "search_open", return_value=[]), \
+             patch.object(mod.GitHubIssues, "comment") as comment, \
+             patch.object(mod.GitHubIssues, "create",
+                          return_value="https://github.com/o/r/issues/1") as create:
+            assert mod.main(["--apply"]) == 0
+        comment.assert_not_called()
+        create.assert_called_once()
+
+    def test_a_failed_signature_search_exits_one_without_writing(self, mod, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        with patch.object(mod.PostHogQueryClient, "query", return_value=self._WARNING_ROW), \
+             patch.object(mod.GitHubIssues, "is_filed", return_value=False), \
+             patch.object(mod.GitHubIssues, "search_open", side_effect=RuntimeError("gh down")), \
+             patch.object(mod.GitHubIssues, "comment") as comment, \
+             patch.object(mod.GitHubIssues, "create") as create:
+            assert mod.main(["--apply"]) == 1
+        create.assert_not_called()
+        comment.assert_not_called()
 
     def test_a_github_lookup_failure_exits_one_without_filing(self, mod, monkeypatch):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
