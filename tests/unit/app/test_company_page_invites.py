@@ -293,6 +293,130 @@ class TestAutomateInvitations:
         picked.assert_not_called()
 
 
+class _FakeElement:
+    def __init__(self, displayed=True, text=""):
+        self._displayed = displayed
+        self.text = text
+
+    def is_displayed(self):
+        return self._displayed
+
+
+class _FakeDriver:
+    """A DOM as a {xpath: [elements]} dict — enough for the expected_conditions the walk uses."""
+
+    def __init__(self, dom):
+        self.dom = dom
+
+    def find_elements(self, by, value):
+        return list(self.dom.get(value, []))
+
+    def find_element(self, by, value):
+        from selenium.common import NoSuchElementException
+        found = self.find_elements(by, value)
+        if not found:
+            raise NoSuchElementException(value)
+        return found[0]
+
+
+class _FakeWait:
+    """`WebDriverWait.until` without the polling: a falsy condition is an immediate timeout."""
+
+    def __init__(self, driver):
+        self.driver = driver
+
+    def until(self, method, message=""):
+        from selenium.common import (
+            NoSuchElementException,
+            StaleElementReferenceException,
+            TimeoutException,
+        )
+        try:
+            value = method(self.driver)
+        except (NoSuchElementException, StaleElementReferenceException):
+            raise TimeoutException(message)  # what WebDriverWait does with an ignored exception
+        if not value:
+            raise TimeoutException(message)
+        return value
+
+
+class TestInviteClickConfirmation:
+    """A click is not an outcome (#1102 / the #1013 SDUI invariant)."""
+
+    def _click(self, before, after, clicked=True):
+        """Run invite_selected_connections against a DOM that changes when the button is clicked."""
+        from cqc_lem.utilities.linkedin import company_page_inviter as cpi
+        driver = _FakeDriver(dict(before))
+        wait = _FakeWait(driver)
+
+        def _click_button(*_a, **_kw):
+            driver.dom = dict(after)
+            return _FakeElement() if clicked else None
+
+        with patch(f"{_CPI}.click_element_wait_retry", side_effect=_click_button):
+            return cpi.invite_selected_connections(driver, wait)
+
+    def _dom(self, modal=True, picker=True, toast=False):
+        from cqc_lem.utilities.linkedin import company_page_inviter as cpi
+        dom = {}
+        if modal:
+            dom[cpi._INVITE_BUTTON_XPATH] = [_FakeElement()]
+        if picker:
+            dom[cpi._INVITEE_LIST_XPATH] = [_FakeElement()]
+        if toast:
+            dom[cpi._INVITE_CONFIRMATION_XPATH] = [_FakeElement(text="1 invitation sent")]
+        return dom
+
+    def test_a_missing_button_is_not_clicked(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_CLICK_NOT_CLICKED
+        assert self._click(self._dom(), self._dom(), clicked=False) == INVITE_CLICK_NOT_CLICKED
+
+    def test_a_dialog_that_closes_is_confirmed(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_CLICK_CONFIRMED
+        assert self._click(self._dom(), self._dom(modal=False, picker=False)) == INVITE_CLICK_CONFIRMED
+
+    def test_a_picker_that_goes_away_is_confirmed(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_CLICK_CONFIRMED
+        assert self._click(self._dom(), self._dom(picker=False)) == INVITE_CLICK_CONFIRMED
+
+    def test_a_rendered_confirmation_counts_while_the_dialog_stays_open(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_CLICK_CONFIRMED
+        assert self._click(self._dom(), self._dom(toast=True)) == INVITE_CLICK_CONFIRMED
+
+    def test_a_click_that_changes_nothing_is_unconfirmed(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_CLICK_UNCONFIRMED
+        assert self._click(self._dom(), self._dom()) == INVITE_CLICK_UNCONFIRMED
+
+    def test_selectors_that_match_nothing_are_unconfirmed_not_confirmed(self):
+        """The fail-CLOSED half of the confirmation.
+
+        Selenium calls a locator that matches nothing "invisible", so a rotated selector would
+        otherwise prove the batch landed on every single run.
+        """
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_CLICK_UNCONFIRMED
+        # Nothing this walk watches is on the page before OR after the click.
+        assert self._click({}, {}) == INVITE_CLICK_UNCONFIRMED
+
+
+class TestSelectCheckboxesWithNoInvitees:
+    def _select(self, dom):
+        from cqc_lem.utilities.linkedin import company_page_inviter as cpi
+        driver = _FakeDriver(dom)
+        wait = _FakeWait(driver)
+        with patch(f"{_CPI}.get_initial_selected_count") as counter, \
+             patch("cqc_lem.utilities.selenium_util.time.sleep"):
+            selected = cpi.select_connection_checkboxes(driver, wait, 5)
+        return selected, counter
+
+    def test_an_empty_invitee_list_returns_zero_instead_of_raising(self):
+        # The whole point of #1102 part 2: a page with nobody left to invite is an ordinary outcome,
+        # and automate_invitations turns 0 into the no_candidates/drift verdict.
+        selected, counter = self._select({})
+        assert selected == 0
+        # The picker's counter is unreadable on such a page — reading it is what used to raise.
+        counter.assert_not_called()
+
+
 class TestSelectionPacing:
     def test_selections_are_spaced_by_a_bounded_human_pause(self):
         from cqc_lem.utilities.linkedin import company_page_inviter as cpi
