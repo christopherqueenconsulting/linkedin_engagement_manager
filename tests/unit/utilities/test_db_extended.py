@@ -595,7 +595,12 @@ class TestGetReadyToPostPosts:
             call_params = mock_database_connection["cursor"].execute.call_args[0][1]
             assert pre_post_time in call_params
 
-    def test_returns_none_on_db_error(self, mock_database_connection):
+    def test_returns_empty_list_on_db_error(self, mock_database_connection):
+        """A `-> list` reader must answer a list.
+
+        This used to answer None, and the publishing beat iterates the result directly — so a
+        read failure raised TypeError from run_scheduler and masked the mysql error underneath.
+        """
         from cqc_lem.utilities.db import get_ready_to_post_posts
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
@@ -604,7 +609,9 @@ class TestGetReadyToPostPosts:
 
             result = get_ready_to_post_posts()
 
-            assert result is None
+            assert result == []
+            # The caller's actual usage must not raise on the failure path.
+            assert [p for p in result] == []
 
 
 # ---------------------------------------------------------------------------
@@ -795,3 +802,60 @@ class TestInsertPostDbError:
             )
 
             assert result is True
+
+
+# ---------------------------------------------------------------------------
+# count_auth_factors
+# ---------------------------------------------------------------------------
+
+class TestCountAuthFactors:
+    """An unreadable factor count must never read as an un-enrolled account."""
+
+    def test_counts_confirmed_factors(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"n": 2}
+
+            assert count_auth_factors(7) == 2
+
+    def test_no_rows_is_zero(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = None
+
+            assert count_auth_factors(7) == 0
+
+    def test_a_read_failure_refuses_to_answer_rather_than_reporting_zero(
+            self, mock_database_connection):
+        """The 2FA gate is `count_auth_factors(user_id) > 0`.
+
+        Answering 0 on a mysql error is the same answer as "this account enrolled nothing", which
+        demoted an enrolled account's second factor to an email PIN alone exactly while the
+        database was unhappy. Raising fails CLOSED: the request surfaces as a server error and no
+        session is minted.
+        """
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            with pytest.raises(mysql.connector.Error):
+                count_auth_factors(7)
+
+    def test_the_connection_is_returned_even_when_it_raises(self, mock_database_connection):
+        from cqc_lem.utilities.db import count_auth_factors
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            with pytest.raises(mysql.connector.Error):
+                count_auth_factors(7)
+
+            mock_database_connection["cursor"].close.assert_called_once()
+            mock_database_connection["connection"].close.assert_called_once()

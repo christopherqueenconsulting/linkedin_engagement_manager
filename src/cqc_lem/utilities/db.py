@@ -2197,7 +2197,13 @@ def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] 
 
 
 def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minutes=20) -> list:
-    """Query the database for any pending posts that are scheduled to post now or earlier"""
+    """Query the database for any pending posts that are scheduled to post now or earlier.
+
+    Answers `[]` — never None — on a read failure, because the single caller (`run_scheduler`'s
+    every-10-minutes publishing beat) iterates the result directly and a None crashed it with a
+    TypeError that masked the real mysql error. No post is lost by answering empty: the query's own
+    24h lookback plus `get_orphaned_scheduled_posts` recover anything missed on the next tick.
+    """
     now = datetime.now(timezone.utc)
     if pre_post_time is None:
         # Get time for post_time_delta after now
@@ -2228,8 +2234,9 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
         else:
             log_debug("Posts ready to post: []")
     except mysql.connector.Error as err:
-        myprint(f"Could not get ready to post posts| Error: {err}")
-        posts = None
+        log_error("Could not read the ready-to-post queue", exc=err,
+                  task_name="auto_check_scheduled_posts")
+        posts = []
     finally:
         cursor.close()
         connection.close()
@@ -4216,6 +4223,19 @@ def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
 def count_auth_factors(user_id: int) -> int:
     """How many CONFIRMED strong factors the account holds. The one question the login path and the
     step-up gate both ask, so it is one indexed COUNT rather than a list the caller measures.
+
+    Raises:
+        mysql.connector.Error: the count could not be read. It deliberately does NOT answer 0, which
+            is the same answer as "this account enrolled nothing" — and `has_strong_factor` is the
+            sole gate deciding whether an email PIN alone may mint a full session (issue #745
+            phase 2c), so a swallowed error demoted an enrolled account's second factor exactly
+            while the database was unhappy. The sibling `count_challenge_attempts` fails closed on
+            a sentinel because its ONE caller tests `spent < 0`; this has 11, so the honest move is
+            to refuse to answer and let the request surface as a server error — no session is
+            minted either way, and that is what failing closed means here. Returning a truthy
+            sentinel instead would be worse than the bug: `list_auth_factors` answers `[]` on this
+            same fault, so the account would be handed a second-factor challenge offering no
+            methods at all.
     """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
@@ -4228,8 +4248,9 @@ def count_auth_factors(user_id: int) -> int:
         row = cursor.fetchone()
         return int(row["n"]) if row else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count auth factors for user_id {user_id} | Error: {err}")
-        return 0
+        log_error("Could not count auth factors — refusing to answer rather than report zero",
+                  exc=err, user_id=user_id)
+        raise
     finally:
         cursor.close()
         connection.close()

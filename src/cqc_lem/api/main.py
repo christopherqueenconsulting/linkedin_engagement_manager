@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 import requests
 from celery import chain as celery_chain
+from celery import states as celery_states
 from fastapi import (
     APIRouter,
     Depends,
@@ -8125,10 +8126,27 @@ def admin_generate_media_variants(
 # bearer API token AND X-Admin-Secret are required (see _require_api_and_admin).
 # ---------------------------------------------------------------------------
 
+def _queued(result, task: str, **detail) -> ResponseModel:
+    """Report a QueueOnce dispatch honestly — 409 when nothing was actually queued.
+
+    Every task behind these endpoints is a QueueOnce task with `once={'graceful': True}`, and a
+    graceful rejection does not raise: celery-once answers `EagerResult(None, None, REJECTED)`
+    (celery_once/tasks.py:104) because a run for the same key is already in flight. Reporting that
+    as a 200 with `"task_id": null` told the operator a run had started and handed them an id that
+    `/admin/task-status/{task_id}` can never resolve — the one thing these endpoints exist to let
+    you watch.
+    """
+    if result.state == celery_states.REJECTED or result.id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {task} run is already queued or in progress for this target")
+    return ResponseModel(status_code=200, detail={"task_id": result.id, "task": task, **detail})
+
 @router.post("/admin/test/comment", responses={
     200: {"description": "Commenting test run queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_comment(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8141,9 +8159,7 @@ def admin_test_comment(
         "user_id": user_id, "loop_for_duration": loop_for_duration,
     }, queue="se_engage")
     myprint(f"admin/test/comment: queued task={result.id} user_id={user_id}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "automate_commenting", "user_id": user_id,
-    })
+    return _queued(result, "automate_commenting", user_id=user_id)
 
 
 @router.post("/admin/test/reply", responses={
@@ -8151,6 +8167,7 @@ def admin_test_comment(
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
     404: {"description": "User for post not found"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_reply(
     post_id: int = Query(..., description="Id of an already-posted post to reply on", examples=[42]),
@@ -8168,16 +8185,14 @@ def admin_test_reply(
         "loop_for_duration": loop_for_duration, "future_forward": future_forward,
     }, queue="se_engage")
     myprint(f"admin/test/reply: queued task={result.id} post_id={post_id}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "automate_reply_commenting",
-        "post_id": post_id, "user_id": user_id,
-    })
+    return _queued(result, "automate_reply_commenting", post_id=post_id, user_id=user_id)
 
 
 @router.post("/admin/consolidate-duplicate-comments", responses={
     200: {"description": "Consolidation run queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_consolidate_duplicate_comments(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8193,16 +8208,15 @@ def admin_consolidate_duplicate_comments(
         "user_id": user_id, "dry_run": dry_run, "hours": hours,
     }, queue="se_engage")
     myprint(f"admin/consolidate-duplicate-comments: queued task={result.id} user_id={user_id} dry_run={dry_run}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "consolidate_duplicate_comments_for_user",
-        "user_id": user_id, "dry_run": dry_run, "hours": hours,
-    })
+    return _queued(result, "consolidate_duplicate_comments_for_user",
+                   user_id=user_id, dry_run=dry_run, hours=hours)
 
 
 @router.post("/admin/test/dm", responses={
     200: {"description": "DM test run queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_dm(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8215,16 +8229,14 @@ def admin_test_dm(
         "user_id": user_id, "loop_for_duration": loop_for_duration,
     }, queue="se_outreach")
     myprint(f"admin/test/dm: queued task={result.id} user_id={user_id}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "automate_appreciation_dms_for_user",
-        "user_id": user_id,
-    })
+    return _queued(result, "automate_appreciation_dms_for_user", user_id=user_id)
 
 
 @router.post("/admin/test/dm-direct", responses={
     200: {"description": "Direct DM queued"},
     401: {"description": "Missing/invalid bearer token"},
     403: {"description": "Missing/invalid admin secret"},
+    409: {"description": "A run is already queued or in progress for this target"},
 })
 def admin_test_dm_direct(
     user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
@@ -8240,10 +8252,7 @@ def admin_test_dm_direct(
         "user_id": user_id, "profile_url": profile_url, "message": message,
     }, queue="se_outreach")
     myprint(f"admin/test/dm-direct: queued task={result.id} user_id={user_id} -> {profile_url}")
-    return ResponseModel(status_code=200, detail={
-        "task_id": result.id, "task": "send_private_dm",
-        "user_id": user_id, "profile_url": profile_url,
-    })
+    return _queued(result, "send_private_dm", user_id=user_id, profile_url=profile_url)
 
 
 @router.get("/admin/task-status/{task_id}", responses={
