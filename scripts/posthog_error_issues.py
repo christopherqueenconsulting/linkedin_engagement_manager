@@ -315,8 +315,8 @@ def build_comment(row: dict, existing: dict, hours: int = DEFAULT_HOURS,
     issue_id = _text(row.get("issue_id"))
     lines = [f"### Still occurring — PostHog error tracking, last {hours}h",
              "",
-             "This warning is already tracked here, so the occurrence data lands as a comment "
-             "rather than a new issue.",
+             ("This warning is already tracked here, so the occurrence data lands as a comment " +
+              "rather than a new issue."),
              "",
              f"> {_text(row.get('description')) or '(no message captured)'}",
              ""]
