@@ -1,6 +1,5 @@
-from unittest.mock import ANY, MagicMock, patch
-
 import importlib
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from freezegun import freeze_time

@@ -11,7 +11,7 @@ import time
 import mysql.connector
 import pytest
 
-from cqc_lem.utilities import db
+from cqc_lem.platform.db import connection as db
 
 pytestmark = pytest.mark.integration
 

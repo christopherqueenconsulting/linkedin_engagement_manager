@@ -59,7 +59,6 @@ _requires_mysql = pytest.mark.skipif(
 
 _FAKE_URN = "urn:li:share:9999999999999"
 _TEST_EMAIL = os.environ.get("TEST_LI_EMAIL", "workflow-e2e@test.internal")
-_DB_MOD = "cqc_lem.utilities.db"
 
 
 def _get_db():

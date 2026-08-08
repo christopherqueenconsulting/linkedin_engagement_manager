@@ -15,7 +15,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _MIGRATION = (Path(__file__).resolve().parents[2]
               / "compose/local/database/migrations/V20260725155210__add_faq_entries.sql")
 
@@ -82,7 +81,7 @@ def store():
 
 
 def _get_faq(client, store):
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch("cqc_lem.utilities.observability.posthog"):
         return client.get("/api/faq")
 

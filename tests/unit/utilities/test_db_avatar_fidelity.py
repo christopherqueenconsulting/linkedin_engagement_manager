@@ -35,7 +35,7 @@ class TestAvatarRowSerialization:
             "created_at": None, "updated_at": None,
         }
         conn, _ = _conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_training
             result = get_avatar_training(3, 4)
         assert result["gender_presentation"] == "man"
@@ -48,13 +48,13 @@ class TestAvatarRowSerialization:
         row = {"id": 4, "training_id": "t4", "model_ref": "m", "trigger_word": "TOK",
                "status": "succeeded", "sample_paths": "{not json", "created_at": None}
         conn, _ = _conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_training
             assert get_avatar_training(3, 4)["sample_paths"] == []
 
     def test_scoped_to_owner(self):
         conn, cur = _conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_training
             assert get_avatar_training(3, 99) is None
         _, params = cur.execute.call_args[0]
@@ -63,7 +63,7 @@ class TestAvatarRowSerialization:
     def test_error_returns_none(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_training
             assert get_avatar_training(3, 4) is None
 
@@ -71,7 +71,7 @@ class TestAvatarRowSerialization:
 class TestUpdateAvatarAttributes:
     def test_normalizes_before_storing(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_attributes
             assert update_avatar_attributes(3, 4, " MAN ", "40s") is True
         sql, params = cur.execute.call_args[0]
@@ -80,7 +80,7 @@ class TestUpdateAvatarAttributes:
 
     def test_unrecognized_values_are_stored_as_null_not_guessed(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_attributes
             update_avatar_attributes(3, 4, "cisgender-ish", "middle aged")
         _, params = cur.execute.call_args[0]
@@ -89,7 +89,7 @@ class TestUpdateAvatarAttributes:
     def test_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_attributes
             assert update_avatar_attributes(3, 4, "man", "40s") is False
 
@@ -97,7 +97,7 @@ class TestUpdateAvatarAttributes:
 class TestSetAvatarApproval:
     def test_approve_stamps_approved_at(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_avatar_approval
             assert set_avatar_approval(3, 4, "approved") is True
         sql, params = cur.execute.call_args[0]
@@ -106,7 +106,7 @@ class TestSetAvatarApproval:
     def test_reject_also_deactivates(self):
         """Leaving a rejected likeness active would keep publishing what the user rejected."""
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_avatar_approval
             assert set_avatar_approval(3, 4, "rejected") is True
         sql, _ = cur.execute.call_args[0]
@@ -114,7 +114,7 @@ class TestSetAvatarApproval:
 
     def test_unknown_status_refused_without_touching_the_db(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_avatar_approval
             assert set_avatar_approval(3, 4, "sort-of") is False
         cur.execute.assert_not_called()
@@ -122,7 +122,7 @@ class TestSetAvatarApproval:
     def test_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_avatar_approval
             assert set_avatar_approval(3, 4, "approved") is False
 
@@ -131,7 +131,7 @@ class TestUpdateAvatarSamples:
     def test_stores_the_paths_without_touching_the_counter(self):
         """The re-roll is reserved before the render, never counted after it."""
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_samples
             assert update_avatar_samples(4, [{"label": "a", "path": "p"}]) is True
         sql, params = cur.execute.call_args[0]
@@ -141,7 +141,7 @@ class TestUpdateAvatarSamples:
     def test_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_samples
             assert update_avatar_samples(4, []) is False
 
@@ -153,7 +153,7 @@ class TestSampleRenderClaim:
 
     def test_regeneration_claim_increments_under_the_cap(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_avatar_sample_render
             assert claim_avatar_sample_render(3, 4, regeneration=True, max_regenerations=3) is True
         sql, params = cur.execute.call_args[0]
@@ -163,13 +163,13 @@ class TestSampleRenderClaim:
 
     def test_regeneration_claim_lost_at_the_cap(self):
         conn, _ = _conn(rowcount=0)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_avatar_sample_render
             assert claim_avatar_sample_render(3, 4, regeneration=True, max_regenerations=3) is False
 
     def test_first_render_claim_is_conditional_on_no_prior_render(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_avatar_sample_render
             assert claim_avatar_sample_render(3, 4) is True
         sql, params = cur.execute.call_args[0]
@@ -178,20 +178,20 @@ class TestSampleRenderClaim:
 
     def test_second_poll_mid_render_loses_the_claim(self):
         conn, _ = _conn(rowcount=0)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_avatar_sample_render
             assert claim_avatar_sample_render(3, 4) is False
 
     def test_claim_error_fails_closed(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_avatar_sample_render
             assert claim_avatar_sample_render(3, 4) is False
 
     def test_release_gives_a_regeneration_back(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import release_avatar_sample_render
             assert release_avatar_sample_render(3, 4, regeneration=True) is True
         sql, params = cur.execute.call_args[0]
@@ -200,7 +200,7 @@ class TestSampleRenderClaim:
 
     def test_release_reopens_the_first_render_only_while_no_samples_exist(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import release_avatar_sample_render
             assert release_avatar_sample_render(3, 4) is True
         sql, _ = cur.execute.call_args[0]
@@ -209,7 +209,7 @@ class TestSampleRenderClaim:
     def test_release_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import release_avatar_sample_render
             assert release_avatar_sample_render(3, 4, regeneration=True) is False
 
@@ -219,7 +219,7 @@ class TestAvatarPreferences:
         row = {"avatar_disabled": 0, "avatar_use_post_image": 1,
                "avatar_use_carousel": 0, "avatar_use_video": 1, "avatar_use_newsletter": 1}
         conn, _ = _conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_preferences
             prefs = get_avatar_preferences(3)
         assert prefs == {"avatar_disabled": False, "avatar_use_post_image": True,
@@ -228,7 +228,7 @@ class TestAvatarPreferences:
 
     def test_missing_user_returns_all_off(self):
         conn, _ = _conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_preferences
             assert not any(get_avatar_preferences(3).values())
 
@@ -236,13 +236,13 @@ class TestAvatarPreferences:
         """Degrading to 'don't use the avatar' is the safe direction."""
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_preferences
             assert not any(get_avatar_preferences(3).values())
 
     def test_update_only_writes_supplied_flags(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_preferences
             assert update_avatar_preferences(3, {"avatar_use_video": True}) is True
         sql, params = cur.execute.call_args[0]
@@ -251,7 +251,7 @@ class TestAvatarPreferences:
 
     def test_update_ignores_unknown_keys(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_preferences
             assert update_avatar_preferences(3, {"is_admin": True}) is False
         cur.execute.assert_not_called()
@@ -259,7 +259,7 @@ class TestAvatarPreferences:
     def test_update_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_preferences
             assert update_avatar_preferences(3, {"avatar_disabled": True}) is False
 
@@ -268,7 +268,7 @@ class TestPostAvatarFlags:
     @pytest.mark.parametrize("stored,expected", [((1,), True), ((0,), False), ((None,), None)])
     def test_use_avatar_is_three_valued(self, stored, expected):
         conn, _ = _conn(fetch_one=stored)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_use_avatar
             assert get_post_use_avatar(5) is expected
 
@@ -279,14 +279,14 @@ class TestPostAvatarFlags:
     def test_use_avatar_error_is_none(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_use_avatar
             assert get_post_use_avatar(5) is None
 
     @pytest.mark.parametrize("value,stored", [(True, 1), (False, 0), (None, None)])
     def test_update_post_use_avatar(self, value, stored):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_post_use_avatar
             assert update_post_use_avatar(5, value) is True
         _, params = cur.execute.call_args[0]
@@ -295,13 +295,13 @@ class TestPostAvatarFlags:
     def test_update_post_use_avatar_error(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_post_use_avatar
             assert update_post_use_avatar(5, True) is False
 
     def test_mark_and_read_avatar_media(self):
         conn, cur = _conn(rowcount=1, fetch_one=(1,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_post_avatar_media, post_used_avatar_media
             assert mark_post_avatar_media(5) is True
             assert post_used_avatar_media(5) is True
@@ -315,7 +315,7 @@ class TestPostAvatarFlags:
     def test_avatar_media_errors_are_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_post_avatar_media, post_used_avatar_media
             assert mark_post_avatar_media(5) is False
             assert post_used_avatar_media(5) is False
@@ -326,7 +326,7 @@ class TestInsertPostUseAvatar:
     def test_compose_choice_is_persisted(self, value, stored):
         from cqc_lem.utilities.db import PostStatus, PostType
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_id", return_value=3):
             from cqc_lem.utilities.db import insert_post
             assert insert_post("a@b.c", "body", datetime(2026, 7, 30, 9, 0), PostType.TEXT,

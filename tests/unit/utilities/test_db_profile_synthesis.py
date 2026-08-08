@@ -6,8 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _mock_conn(fetch_row=None, fetch_all=None, rowcount=1):
     conn = MagicMock()
@@ -22,13 +20,13 @@ def _mock_conn(fetch_row=None, fetch_all=None, rowcount=1):
 class TestGetProfileSynthesis:
     def test_returns_none_when_no_row(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_profile_synthesis
             assert get_profile_synthesis(1) is None
 
     def test_returns_none_when_synthesis_null(self):
         conn, _ = _mock_conn(fetch_row=(None, None))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_profile_synthesis
             assert get_profile_synthesis(1) is None
 
@@ -36,7 +34,7 @@ class TestGetProfileSynthesis:
         from datetime import datetime
         ts = datetime(2026, 7, 1)
         conn, cursor = _mock_conn(fetch_row=("Durable voice brief", ts))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_profile_synthesis
             text, generated_at = get_profile_synthesis(42)
         assert text == "Durable voice brief" and generated_at == ts
@@ -48,7 +46,7 @@ class TestGetProfileSynthesis:
 class TestSetProfileSynthesis:
     def test_updates_and_stamps_now(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_profile_synthesis
             assert set_profile_synthesis(7, "brief text") is True
         sql = cursor.execute.call_args[0][0]
@@ -59,7 +57,7 @@ class TestSetProfileSynthesis:
 
     def test_returns_false_when_no_profile_row(self):
         conn, _ = _mock_conn(rowcount=0)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_profile_synthesis
             assert set_profile_synthesis(7, "brief") is False
 
@@ -67,7 +65,7 @@ class TestSetProfileSynthesis:
 class TestStaleSelector:
     def test_selects_missing_and_stale_user_ids(self):
         conn, cursor = _mock_conn(fetch_all=[(1,), (5,), (9,)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_ids_needing_profile_synthesis
             ids = get_user_ids_needing_profile_synthesis(stale_days=7)
         assert ids == [1, 5, 9]
@@ -80,6 +78,6 @@ class TestStaleSelector:
 
     def test_empty_when_none_stale(self):
         conn, _ = _mock_conn(fetch_all=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_ids_needing_profile_synthesis
             assert get_user_ids_needing_profile_synthesis() == []

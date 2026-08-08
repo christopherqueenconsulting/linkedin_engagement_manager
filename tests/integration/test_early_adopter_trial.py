@@ -16,7 +16,6 @@ from mysql.connector import errorcode
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _MAIN = "cqc_lem.api.main"
 _ENV = "cqc_lem.utilities.env_constants"
 
@@ -142,7 +141,7 @@ def client():
 
 
 def _extend(client, store, user_id, p0=25, p1=100):
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda: _Conn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda: _Conn(store)), \
             patch(f"{_MAIN}.get_session_user_id", return_value=user_id), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_ENABLED", True), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_DAYS", 60), \
@@ -192,7 +191,7 @@ def test_cohort_counter_is_atomic_under_concurrency(client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=user_id):
             results.append(trial_extend_endpoint(TrialExtendRequest(session_token=f"tok{user_id}")))
 
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda: _Conn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda: _Conn(store)), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_ENABLED", True), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_DAYS", 60), \
             patch(f"{_ENV}.EARLY_ADOPTER_P0_SLOTS", 2), \
@@ -217,7 +216,7 @@ def test_conversion_mirrors_the_remaining_trial_into_stripe(client):
     store.users[1]["trial_ends_at"] = None
     assert _extend(client, store, 1).json()["detail"]["granted"] is True
 
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda: _Conn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda: _Conn(store)), \
             patch(f"{_MAIN}.get_session_user_id", return_value=1), \
             patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"), \
             patch(f"{_MAIN}.get_user_subscription_info",

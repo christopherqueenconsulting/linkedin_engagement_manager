@@ -8,8 +8,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _mock_conn(fetch_one=None, fetch_all=None):
     conn = MagicMock()
@@ -23,7 +21,7 @@ def _mock_conn(fetch_one=None, fetch_all=None):
 class TestEngagerConnectionDegree:
     def test_degree_is_written_and_coalesced(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engager
             assert upsert_engager(1, "Jane Doe", "https://x/in/jane", connection_degree="2nd") is True
         sql, params = cur.execute.call_args[0]
@@ -34,7 +32,7 @@ class TestEngagerConnectionDegree:
 
     def test_missing_degree_is_stored_as_null(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engager
             upsert_engager(1, "Jane Doe", "https://x/in/jane")
         assert cur.execute.call_args[0][1][3] is None
@@ -43,7 +41,7 @@ class TestEngagerConnectionDegree:
         rows = [{"person_name": "Jane", "person_profile_url": "https://x/in/jane",
                  "connection_degree": "1st", "occurred_at": None}]
         conn, cur = _mock_conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engager_candidates
             out = get_engager_candidates(1)
         assert "connection_degree" in cur.execute.call_args[0][0]
@@ -54,7 +52,7 @@ class TestConnectionRequestFailureReason:
     def test_failure_reason_is_stored_and_truncated(self):
         conn, cur = _mock_conn()
         cur.rowcount = 1
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
             assert update_connection_request_status(3, ConnectionRequestStatus.FAILED,
                                                     failure_reason="x" * 900) is True
@@ -65,14 +63,14 @@ class TestConnectionRequestFailureReason:
     def test_a_status_change_without_a_reason_clears_the_old_one(self):
         conn, cur = _mock_conn()
         cur.rowcount = 1
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
             update_connection_request_status(3, ConnectionRequestStatus.SENT)
         assert cur.execute.call_args[0][1][1] is None
 
     def test_failure_reason_is_selected_for_the_review_ui(self):
         conn, cur = _mock_conn(fetch_one={"id": 3})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_connection_request
             get_connection_request(3)
         assert "failure_reason" in cur.execute.call_args[0][0]
@@ -81,7 +79,7 @@ class TestConnectionRequestFailureReason:
 class TestOpenOutreachTargetCount:
     def test_counts_pending_and_approved_only(self):
         conn, cur = _mock_conn(fetch_one=(4,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_open_outreach_targets
             assert count_open_outreach_targets(1) == 4
         sql = cur.execute.call_args[0][0]
@@ -93,6 +91,6 @@ class TestOpenOutreachTargetCount:
         cur = MagicMock()
         cur.execute.side_effect = mysql.connector.Error("no such table")
         conn.cursor.return_value = cur
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_open_outreach_targets
             assert count_open_outreach_targets(1) == 0

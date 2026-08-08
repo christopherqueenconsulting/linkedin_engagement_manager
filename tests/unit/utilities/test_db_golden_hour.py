@@ -9,7 +9,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:1/"
 
 
@@ -27,7 +26,7 @@ class TestCountUserCommentsOnPostUrl:
     def test_counts_successful_comments_only(self):
         from cqc_lem.utilities.db import LogActionType, LogResultType
         conn, cur = _mock_conn(fetchone=(2,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_user_comments_on_post_url
             assert count_user_comments_on_post_url(1, _URL) == 2
         params = cur.execute.call_args[0][1]
@@ -35,17 +34,17 @@ class TestCountUserCommentsOnPostUrl:
 
     def test_db_error_counts_zero(self):
         conn, _ = _mock_conn(execute_error=mysql.connector.Error("boom"))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_user_comments_on_post_url
             assert count_user_comments_on_post_url(1, _URL) == 0
 
     def test_has_commented_is_the_same_read(self):
         conn, _ = _mock_conn(fetchone=(0,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_user_commented_on_post_url
             assert has_user_commented_on_post_url(1, _URL) is False
         conn, _ = _mock_conn(fetchone=(1,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_user_commented_on_post_url
             assert has_user_commented_on_post_url(1, _URL) is True
 
@@ -57,7 +56,7 @@ class TestGetPostAgeMinutes:
         """
         from cqc_lem.utilities.db import LogActionType, LogResultType
         conn, cur = _mock_conn(fetchone=(1320,))     # 22 minutes, in seconds
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_age_minutes
             assert get_post_age_minutes(1, 9) == 22.0
         sql, params = cur.execute.call_args[0]
@@ -66,13 +65,13 @@ class TestGetPostAgeMinutes:
 
     def test_clock_skew_never_reports_a_negative_age(self):
         conn, _ = _mock_conn(fetchone=(-30,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_age_minutes
             assert get_post_age_minutes(1, 9) == 0.0
 
     def test_unpublished_post_is_none(self):
         conn, _ = _mock_conn(fetchone=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_age_minutes
             assert get_post_age_minutes(1, 9) is None
 
@@ -80,6 +79,6 @@ class TestGetPostAgeMinutes:
         # None means "unknown", which the report renders as out-of-window — a 0 would silently
         # claim every sweep landed instantly.
         conn, _ = _mock_conn(execute_error=mysql.connector.Error("boom"))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_age_minutes
             assert get_post_age_minutes(1, 9) is None

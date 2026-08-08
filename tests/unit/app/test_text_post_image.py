@@ -8,8 +8,6 @@ from cqc_lem.utilities.ai.image_brief import ImageBrief
 
 pytestmark = pytest.mark.unit
 
-_RCP = "cqc_lem.app.run_content_plan"
-
 
 def _brief(prompt="a rendered prompt", focal="the focal idea"):
     return ImageBrief(prompt=prompt, ratio="1:1", surface="post_image",

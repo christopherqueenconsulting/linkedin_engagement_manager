@@ -216,7 +216,7 @@ def client():
 @pytest.fixture
 def env(store):
     with patch(f"{_M}.get_session_user_id", return_value=USER), \
-         patch("cqc_lem.utilities.db.get_db_connection", return_value=_Connection(store)), \
+         patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_Connection(store)), \
          patch("cqc_lem.utilities.observability.posthog"), \
          patch(f"{_ATTR}.PUBLIC_BASE_URL", "https://app.lem.test"), \
          patch(f"{_ATTR}.BRAND_SIGNUP_URL", "https://app.lem.test/signup"), \

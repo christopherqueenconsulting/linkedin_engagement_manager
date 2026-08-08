@@ -389,7 +389,7 @@ class TestRecentCommentHistoryQuery:
         conn = MagicMock()
         cursor = conn.cursor.return_value
         cursor.fetchall.return_value = [("newest comment",), ("older comment",)]
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             out = get_recent_comment_texts(7, limit=25)
         assert out == ["newest comment", "older comment"]
         sql, params = cursor.execute.call_args.args

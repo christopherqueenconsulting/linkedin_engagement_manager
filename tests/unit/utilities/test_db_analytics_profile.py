@@ -8,8 +8,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _conn(fetch_one=None):
     conn = MagicMock()
@@ -30,7 +28,7 @@ class TestGetUserAnalyticsProfile:
             "posts_approved": 12,
         }
         conn, cur = _conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             assert get_user_analytics_profile(7) == row
         assert cur.execute.call_args[0][1][-1] == 7
@@ -39,7 +37,7 @@ class TestGetUserAnalyticsProfile:
         # An approved post becomes scheduled and then posted; counting status='approved' alone would
         # reset the CSAT survey's gate the moment automation ran.
         conn, cur = _conn(fetch_one={})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             get_user_analytics_profile(1)
         statuses = set(cur.execute.call_args[0][1][:-1])
@@ -47,7 +45,7 @@ class TestGetUserAnalyticsProfile:
 
     def test_onboarding_completion_comes_from_activation_not_signup(self):
         conn, cur = _conn(fetch_one={})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             get_user_analytics_profile(1)
         sql = " ".join(cur.execute.call_args[0][0].split()).lower()
@@ -56,7 +54,7 @@ class TestGetUserAnalyticsProfile:
 
     def test_selects_no_credentials(self):
         conn, cur = _conn(fetch_one={})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             get_user_analytics_profile(1)
         sql = cur.execute.call_args[0][0].lower()
@@ -65,13 +63,13 @@ class TestGetUserAnalyticsProfile:
 
     def test_unknown_user_returns_empty_dict(self):
         conn, _ = _conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             assert get_user_analytics_profile(999) == {}
 
     def test_db_error_returns_empty_dict(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             assert get_user_analytics_profile(1) == {}

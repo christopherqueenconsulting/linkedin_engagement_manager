@@ -15,8 +15,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
     conn = MagicMock()
@@ -155,59 +153,59 @@ class TestMysqlErrorFallbacks:
             elif fname == "_count_actions_today":
                 args = (1, db.LogActionType.DM)
             elif fname == "update_scheduled_dm":
-                with patch.object(db, "get_db_connection", return_value=_err_conn()):
+                with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
                     assert db.update_scheduled_dm(1, message="x") == expected
                 return
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             result = getattr(db, fname)(*args)
         assert result == expected
 
     def test_get_engagement_preferences_error_returns_defaults(self):
         import cqc_lem.utilities.db as db
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             assert db.get_engagement_preferences(1) == dict(db._ENGAGEMENT_DEFAULTS)
 
     def test_get_lead_magnet_settings_error_returns_defaults(self):
         import cqc_lem.utilities.db as db
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             assert db.get_lead_magnet_settings(1) == {"enabled": False, "keyword": None,
                                                       "message": None}
 
     def test_get_newsletter_settings_error_returns_defaults(self):
         import cqc_lem.utilities.db as db
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             assert db.get_newsletter_settings(1) == dict(db._NEWSLETTER_DEFAULTS)
 
     def test_get_scheduled_dms_error_returns_empty_page(self):
         import cqc_lem.utilities.db as db
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             assert db.get_scheduled_dms(1, page=3, page_size=5) == {
                 "dms": [], "total": 0, "page": 3, "page_size": 5}
 
     def test_get_dm_template_error_falls_back_to_default_for_step0(self):
         import cqc_lem.utilities.db as db
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             tpl = db.get_dm_template(1, "manual", step=0)
         assert tpl == {"template_text": db._DM_DEFAULT_TEMPLATES["manual"],
                        "delay_hours": 0, "step": 0}
 
     def test_get_dm_template_error_returns_none_for_higher_steps(self):
         import cqc_lem.utilities.db as db
-        with patch.object(db, "get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
             assert db.get_dm_template(1, "manual", step=2) is None
 
     def test_claim_post_duplicate_key_loses_claim(self):
         import cqc_lem.utilities.db as db
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.IntegrityError(msg="dup", errno=1062)
-        with patch.object(db, "get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.claim_post_for_comment(1, "key") is False
 
     def test_create_newsletter_edition_duplicate_slot_is_silent_zero(self):
         import cqc_lem.utilities.db as db
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.IntegrityError(msg="dup", errno=1062)
-        with patch.object(db, "get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.create_newsletter_edition(1, "t", "s", "b",
                                                 datetime(2026, 7, 10)) == 0
 
@@ -217,62 +215,62 @@ class TestPostFieldGetters:
 
     def test_get_post_content(self):
         conn, cur = _conn(fetch_one={"content": "hello world"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_content
             assert get_post_content(9) == "hello world"
         assert cur.execute.call_args[0][1] == (9,)
 
     def test_get_post_content_missing_row(self):
         conn, _ = _conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_content
             assert get_post_content(9) is None
 
     def test_get_post_user_id(self):
         conn, _ = _conn(fetch_one={"user_id": 5})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_user_id
             assert get_post_user_id(9) == 5
 
     def test_get_post_video_url(self):
         conn, _ = _conn(fetch_one={"video_url": "https://x/v.mp4"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_video_url
             assert get_post_video_url(9) == "https://x/v.mp4"
 
     def test_get_post_buyer_stage(self):
         conn, _ = _conn(fetch_one={"buyer_stage": "awareness"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_buyer_stage
             assert get_post_buyer_stage(9) == "awareness"
 
     def test_get_post_type_returns_enum(self):
         conn, _ = _conn(fetch_one={"post_type": "carousel"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import PostType, get_post_type
             assert get_post_type(9) is PostType.CAROUSEL
 
     def test_get_post_type_invalid_value_returns_none(self):
         conn, _ = _conn(fetch_one={"post_type": "hologram"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_type
             assert get_post_type(9) is None
 
     def test_get_carousel_slides_parses_json_string(self):
         slides = ["https://x/1.png", "https://x/2.png"]
         conn, _ = _conn(fetch_one={"carousel_slides": json.dumps(slides)})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_carousel_slides
             assert get_carousel_slides(9) == slides
 
     def test_get_carousel_slides_bad_json_returns_empty(self):
         conn, _ = _conn(fetch_one={"carousel_slides": "{not json"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_carousel_slides
             assert get_carousel_slides(9) == []
 
     def test_get_carousel_slides_non_list_returns_empty(self):
         conn, _ = _conn(fetch_one={"carousel_slides": json.dumps({"a": 1})})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_carousel_slides
             assert get_carousel_slides(9) == []

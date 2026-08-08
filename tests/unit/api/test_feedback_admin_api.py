@@ -320,7 +320,7 @@ class TestReviewFeedback:
                    return_value=0), \
              patch("cqc_lem.utilities.feedback.issue_service.get_open_feedback_clusters",
                    return_value=[]), \
-             patch("cqc_lem.utilities.db.get_db_connection", return_value=FakeConn()), \
+             patch("cqc_lem.platform.db.connection.get_db_connection", return_value=FakeConn()), \
              patch("cqc_lem.utilities.db.datetime") as dt_mock:
             dt_mock.now.return_value = datetime(2026, 8, 7, 23, 0, 0, tzinfo=timezone.utc)
 

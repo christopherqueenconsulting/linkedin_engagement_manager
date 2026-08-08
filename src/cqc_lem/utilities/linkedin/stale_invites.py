@@ -36,13 +36,25 @@ from typing import Callable, Optional
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
 
-from cqc_lem.utilities.db import (get_engagement_preferences, insert_new_log, LogActionType,
-                                  LogResultType, count_invite_withdrawals_today,
-                                  STALE_INVITE_WITHDRAWN_MESSAGE)
-from cqc_lem.utilities.human_pacing import (ACTION_WITHDRAW_INVITE, engagement_caps_from_prefs,
-                                            record_action, remaining_actions)
-from cqc_lem.utilities.linkedin.rate_limit import (automation_pause_reason, is_automation_paused,
-                                                   rate_limit_cooldown_remaining)
+from cqc_lem.utilities.db import (
+    STALE_INVITE_WITHDRAWN_MESSAGE,
+    LogActionType,
+    LogResultType,
+    count_invite_withdrawals_today,
+    get_engagement_preferences,
+    insert_new_log,
+)
+from cqc_lem.utilities.human_pacing import (
+    ACTION_WITHDRAW_INVITE,
+    engagement_caps_from_prefs,
+    record_action,
+    remaining_actions,
+)
+from cqc_lem.utilities.linkedin.rate_limit import (
+    automation_pause_reason,
+    is_automation_paused,
+    rate_limit_cooldown_remaining,
+)
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # LinkedIn's own "Manage invitations -> Sent" surface. The only page that lists what is actually

@@ -307,7 +307,7 @@ class TestGenerationCarriesTheDayType:
         conn, cursor = MagicMock(), MagicMock()
         cursor.fetchall.return_value = []
         conn.cursor.return_value = cursor
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_posts_within_buffer
             get_planned_posts_within_buffer(1, days=5, max_posts=5)
         assert "scheduled_time FROM posts" in cursor.execute.call_args[0][0]

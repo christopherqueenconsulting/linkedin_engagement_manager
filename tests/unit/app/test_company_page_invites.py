@@ -16,7 +16,6 @@ pytestmark = pytest.mark.unit
 _CPI = "cqc_lem.utilities.linkedin.company_page_inviter"
 _RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
-_DB = "cqc_lem.utilities.db"
 
 
 class TestCreditSpread:
@@ -562,7 +561,7 @@ class TestCountCompanyPageInvitesToday:
     def test_it_sums_the_batch_counts_rather_than_counting_rows(self):
         from cqc_lem.utilities.db import count_company_page_invites_sent_today
         conn, cur = self._conn((7,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_company_page_invites_sent_today(1) == 7
         sql, params = cur.execute.call_args[0]
         assert "SUM(" in sql and "created_at >= CURDATE()" in sql
@@ -571,7 +570,7 @@ class TestCountCompanyPageInvitesToday:
     def test_no_rows_today_is_zero(self):
         from cqc_lem.utilities.db import count_company_page_invites_sent_today
         conn, _ = self._conn((None,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_company_page_invites_sent_today(1) == 0
 
 

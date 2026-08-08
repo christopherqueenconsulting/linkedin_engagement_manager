@@ -9,7 +9,6 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RS = "cqc_lem.app.run_scheduler"
-_DB = "cqc_lem.utilities.db"
 
 
 class TestHasScheduledPostToday:
@@ -19,12 +18,12 @@ class TestHasScheduledPostToday:
         return conn
 
     def test_true_when_post_today(self):
-        with patch(f"{_DB}.get_db_connection", return_value=self._conn(1)):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=self._conn(1)):
             from cqc_lem.utilities.db import has_scheduled_post_today
             assert has_scheduled_post_today(1) is True
 
     def test_false_when_none(self):
-        with patch(f"{_DB}.get_db_connection", return_value=self._conn(0)):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=self._conn(0)):
             from cqc_lem.utilities.db import has_scheduled_post_today
             assert has_scheduled_post_today(1) is False
 

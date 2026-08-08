@@ -6,8 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _mock_conn(fetch_all=None, fetch_one=None):
     conn = MagicMock()
@@ -28,7 +26,7 @@ class TestGetStoryBankEntries:
 
     def test_normalizes_active_and_counter(self):
         conn, _ = _mock_conn(fetch_all=[self._row(active=1, used_count=None)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_story_bank_entries
             rows = get_story_bank_entries(1)
         assert rows[0]["active"] is True
@@ -36,7 +34,7 @@ class TestGetStoryBankEntries:
 
     def test_orders_least_used_first(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_story_bank_entries
             get_story_bank_entries(1)
         sql = cursor.execute.call_args[0][0]
@@ -44,7 +42,7 @@ class TestGetStoryBankEntries:
 
     def test_active_only_filters_in_sql(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_story_bank_entries
             get_story_bank_entries(1, active_only=True)
         assert "active=1" in cursor.execute.call_args[0][0]
@@ -53,7 +51,7 @@ class TestGetStoryBankEntries:
         import mysql.connector
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_story_bank_entries
             assert get_story_bank_entries(1) == []
 
@@ -61,14 +59,14 @@ class TestGetStoryBankEntries:
 class TestCountStoryBankEntries:
     def test_counts_active_entries(self):
         conn, cursor = _mock_conn(fetch_one=(4,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_story_bank_entries
             assert count_story_bank_entries(1) == 4
         assert "active=1" in cursor.execute.call_args[0][0]
 
     def test_all_entries_when_active_only_is_off(self):
         conn, cursor = _mock_conn(fetch_one=(7,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_story_bank_entries
             assert count_story_bank_entries(1, active_only=False) == 7
         assert "active=1" not in cursor.execute.call_args[0][0]
@@ -77,7 +75,7 @@ class TestCountStoryBankEntries:
         import mysql.connector
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_story_bank_entries
             assert count_story_bank_entries(1) == 0
 
@@ -85,7 +83,7 @@ class TestCountStoryBankEntries:
 class TestUpsertStoryBankEntries:
     def test_new_entry_is_inserted_with_a_defaulted_title(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_story_bank_entries
             assert upsert_story_bank_entries(1, [{"body": "We cut onboarding to 3 days."}]) is True
         sql, rows = cursor.executemany.call_args[0]
@@ -95,14 +93,14 @@ class TestUpsertStoryBankEntries:
 
     def test_unknown_kind_falls_back_to_anecdote(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_story_bank_entries
             upsert_story_bank_entries(1, [{"body": "x", "kind": "gossip"}])
         assert cursor.executemany.call_args[0][1][0][1] == "anecdote"
 
     def test_existing_entry_is_updated_not_reinserted(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_story_bank_entries
             upsert_story_bank_entries(1, [{"id": 9, "body": "edited"}])
         sql = cursor.executemany.call_args[0][0]
@@ -111,14 +109,14 @@ class TestUpsertStoryBankEntries:
 
     def test_bodyless_rows_are_dropped(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_story_bank_entries
             assert upsert_story_bank_entries(1, [{"title": "just a title", "body": "  "}]) is True
         cursor.executemany.assert_not_called()
 
     def test_long_title_is_truncated_to_the_column_width(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_story_bank_entries
             upsert_story_bank_entries(1, [{"title": "t" * 400, "body": "x"}])
         assert len(cursor.executemany.call_args[0][1][0][2]) == 255
@@ -127,7 +125,7 @@ class TestUpsertStoryBankEntries:
         import mysql.connector
         conn, cursor = _mock_conn()
         cursor.executemany.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_story_bank_entries
             assert upsert_story_bank_entries(1, [{"body": "x"}]) is False
 
@@ -135,14 +133,14 @@ class TestUpsertStoryBankEntries:
 class TestDeleteAndRecordUse:
     def test_delete_is_scoped_to_the_user(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import delete_story_bank_entry
             assert delete_story_bank_entry(1, 9) is True
         assert cursor.execute.call_args[0][1] == (1, 9)
 
     def test_record_use_increments_and_stamps(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_story_bank_use
             assert record_story_bank_use(1, 9) is True
         sql = cursor.execute.call_args[0][0]
@@ -151,7 +149,7 @@ class TestDeleteAndRecordUse:
     def test_record_use_on_a_missing_row_is_false(self):
         conn, cursor = _mock_conn()
         cursor.rowcount = 0
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_story_bank_use
             assert record_story_bank_use(1, 404) is False
 
@@ -159,6 +157,6 @@ class TestDeleteAndRecordUse:
         import mysql.connector
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import delete_story_bank_entry
             assert delete_story_bank_entry(1, 9) is False

@@ -6,8 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _conn(rowcount=1):
     conn = MagicMock()
@@ -20,7 +18,7 @@ def _conn(rowcount=1):
 class TestUpdateCompanyPage:
     def test_sets_url(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_company_linked_in_url_for_user
             assert update_company_linked_in_url_for_user(7, "https://www.linkedin.com/company/x/") is True
         conn.commit.assert_called_once()
@@ -28,7 +26,7 @@ class TestUpdateCompanyPage:
 
     def test_empty_clears_to_none(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_company_linked_in_url_for_user
             update_company_linked_in_url_for_user(7, "")
         assert cur.execute.call_args[0][1] == (None, 7)

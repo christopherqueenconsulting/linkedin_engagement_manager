@@ -7,8 +7,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _conn(fetch_row=None, fetchall=None, lastrowid=7, error=None):
     conn = MagicMock(); cur = MagicMock()
@@ -25,7 +23,7 @@ def _conn(fetch_row=None, fetchall=None, lastrowid=7, error=None):
 class TestInsertWithProvenance:
     def test_stores_source_icp_and_reasons(self):
         conn, cur = _conn(lastrowid=11)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_connection_request
             got = insert_connection_request(1, "https://x/in/jane", message="hi",
                                             recipient_name="Jane", source="own_post",
@@ -37,7 +35,7 @@ class TestInsertWithProvenance:
 
     def test_blank_reasons_stored_as_null(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_connection_request
             insert_connection_request(1, "https://x/in/jane", reasons="")
         assert cur.execute.call_args[0][1][-1] is None
@@ -50,7 +48,7 @@ class TestInsertWithProvenance:
 class TestCountOpenConnectionRequests:
     def test_counts_unsent_statuses_only(self):
         conn, cur = _conn(fetch_row=(3,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_open_connection_requests
             assert count_open_connection_requests(1) == 3
         sql, params = cur.execute.call_args[0]
@@ -59,13 +57,13 @@ class TestCountOpenConnectionRequests:
 
     def test_no_rows_is_zero(self):
         conn, _cur = _conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_open_connection_requests
             assert count_open_connection_requests(1) == 0
 
     def test_db_error_is_zero(self):
         conn, _cur = _conn(error="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_open_connection_requests
             assert count_open_connection_requests(1) == 0
 
@@ -74,7 +72,7 @@ class TestRequestedPersonKeys:
     def test_keys_every_status_and_prefers_the_slug(self):
         conn, cur = _conn(fetchall=[("Jane Doe", "https://www.linkedin.com/in/jane-doe?x=1"),
                                     ("Nameless", None), (None, None)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_requested_person_keys
             keys = get_requested_person_keys(1)
         # No status filter: a canceled/failed target must not be re-sourced tomorrow.
@@ -83,7 +81,7 @@ class TestRequestedPersonKeys:
 
     def test_db_error_is_empty(self):
         conn, _cur = _conn(error="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_requested_person_keys
             assert get_requested_person_keys(1) == set()
 
@@ -93,7 +91,7 @@ class TestEngagerCandidates:
         rows = [{"person_name": "Jane", "person_profile_url": "https://x/in/jane",
                  "occurred_at": None}]
         conn, cur = _conn(fetchall=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engager_candidates
             assert get_engager_candidates(1, days=30) == rows
         sql, params = cur.execute.call_args[0]
@@ -103,7 +101,7 @@ class TestEngagerCandidates:
 
     def test_db_error_is_empty(self):
         conn, _cur = _conn(error="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engager_candidates
             assert get_engager_candidates(1) == []
 
@@ -119,7 +117,7 @@ class TestTargetingPreferences:
         conn, cur = _conn()
         cur.fetchone.return_value = {"connection_target_authors": '["https://x/in/guru"]',
                                      "connection_targeting_mode": "auto_queue"}
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
         assert prefs["connection_target_authors"] == ["https://x/in/guru"]
@@ -127,7 +125,7 @@ class TestTargetingPreferences:
     @pytest.mark.parametrize("bad", ["", "on", None, "AUTO_QUEUE"])
     def test_invalid_mode_falls_back_to_suggest(self, bad):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(1, {"connection_targeting_mode": bad})
         params = cur.execute.call_args[0][1]
@@ -137,7 +135,7 @@ class TestTargetingPreferences:
     def test_min_icp_is_clamped(self, raw, expected):
         # An out-of-range value must clamp, not roll back the whole single-row prefs upsert.
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"min_connection_icp_score": raw})
         params = cur.execute.call_args[0][1]
@@ -145,7 +143,7 @@ class TestTargetingPreferences:
 
     def test_authors_persist_as_json(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             update_engagement_preferences(1, {"connection_target_authors": ["https://x/in/guru"]})
         params = cur.execute.call_args[0][1]

@@ -37,7 +37,7 @@ class TestGetEngagementTargets:
 
     def test_normalizes_active_flag(self):
         conn, _ = _mock_conn(fetch_all=[self._row(active=1)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             rows = get_engagement_targets(1)
         assert rows[0]["active"] is True
@@ -47,14 +47,14 @@ class TestGetEngagementTargets:
         from cqc_lem.utilities.db import engagement_week_start
         stale = engagement_week_start() - timedelta(days=7)
         conn, _ = _mock_conn(fetch_all=[self._row(week_start=stale, comments_this_week=2)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             rows = get_engagement_targets(1)
         assert rows[0]["comments_this_week"] == 0
 
     def test_current_week_counter_is_kept(self):
         conn, _ = _mock_conn(fetch_all=[self._row(comments_this_week=2)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             rows = get_engagement_targets(1)
         assert rows[0]["comments_this_week"] == 2
@@ -63,21 +63,21 @@ class TestGetEngagementTargets:
         # 0 is the SPA's "pause this account without removing it" — reading it as unset would hand
         # the author the default cap back and show the operator a number they never typed.
         conn, _ = _mock_conn(fetch_all=[self._row(max_comments_per_week=0)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             rows = get_engagement_targets(1)
         assert rows[0]["max_comments_per_week"] == 0
 
     def test_a_missing_cap_falls_back_to_the_default(self):
         conn, _ = _mock_conn(fetch_all=[self._row(max_comments_per_week=None)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import ENGAGEMENT_TARGET_WEEKLY_DEFAULT, get_engagement_targets
             rows = get_engagement_targets(1)
         assert rows[0]["max_comments_per_week"] == ENGAGEMENT_TARGET_WEEKLY_DEFAULT
 
     def test_active_only_filters_in_sql(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             get_engagement_targets(1, active_only=True)
         assert "active=1" in cursor.execute.call_args[0][0]
@@ -86,7 +86,7 @@ class TestGetEngagementTargets:
         import mysql.connector
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             assert get_engagement_targets(1) == []
 
@@ -94,7 +94,7 @@ class TestGetEngagementTargets:
 class TestUpsertEngagementTargets:
     def test_upserts_and_clamps(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engagement_targets
             ok = upsert_engagement_targets(1, [
                 {"profile_url": "https://x/in/jane", "category": "bogus",
@@ -107,14 +107,14 @@ class TestUpsertEngagementTargets:
 
     def test_blank_url_rows_are_dropped(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engagement_targets
             assert upsert_engagement_targets(1, [{"profile_url": "   "}]) is True
         cursor.executemany.assert_not_called()
 
     def test_non_numeric_cap_falls_back_to_the_default(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import ENGAGEMENT_TARGET_WEEKLY_DEFAULT, upsert_engagement_targets
             upsert_engagement_targets(1, [{"profile_url": "https://x/in/j", "max_comments_per_week": "lots"}])
         assert cursor.executemany.call_args[0][1][0][4] == ENGAGEMENT_TARGET_WEEKLY_DEFAULT
@@ -122,7 +122,7 @@ class TestUpsertEngagementTargets:
     def test_does_not_write_the_weekly_counter(self):
         # An operator editing the roster must never reset an author's spent cap.
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engagement_targets
             upsert_engagement_targets(1, [{"profile_url": "https://x/in/j"}])
         sql = cursor.executemany.call_args[0][0]
@@ -132,7 +132,7 @@ class TestUpsertEngagementTargets:
 class TestRecordTargetEngagement:
     def test_increments_and_stamps(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_engagement
             assert record_target_engagement(1, "https://x/in/jane") is True
         sql = cursor.execute.call_args[0][0]
@@ -141,7 +141,7 @@ class TestRecordTargetEngagement:
     def test_missing_row_is_false(self):
         conn, cursor = _mock_conn()
         cursor.rowcount = 0
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_engagement
             assert record_target_engagement(1, "https://x/in/nobody") is False
 
@@ -196,7 +196,7 @@ class TestBlockedAndFollowDefaults:
     def test_null_columns_read_as_the_safe_defaults(self):
         # Rows written before the migration come back with NULLs; the SPA must not see them.
         conn, _ = _mock_conn(fetch_all=[self._row()])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             row = get_engagement_targets(1)[0]
         assert row["comment_blocked_streak"] == 0
@@ -206,13 +206,13 @@ class TestBlockedAndFollowDefaults:
 
     def test_an_unrecognised_follow_status_falls_back_to_unknown(self):
         conn, _ = _mock_conn(fetch_all=[self._row(follow_status="requested")])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             assert get_engagement_targets(1)[0]["follow_status"] == "unknown"
 
     def test_an_unrecognised_connect_status_falls_back_to_unknown(self):
         conn, _ = _mock_conn(fetch_all=[self._row(connect_status="following")])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             assert get_engagement_targets(1)[0]["connect_status"] == "unknown"
 
@@ -220,7 +220,7 @@ class TestBlockedAndFollowDefaults:
         conn, _ = _mock_conn(fetch_all=[self._row(comment_blocked_streak=3,
                                                   follow_status="follow_failed",
                                                   follow_attempts=2)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_targets
             row = get_engagement_targets(1)[0]
         assert (row["comment_blocked_streak"], row["follow_status"], row["follow_attempts"]) == \
@@ -229,7 +229,7 @@ class TestBlockedAndFollowDefaults:
     def test_the_editable_upsert_never_writes_the_automation_columns(self):
         # An operator saving the roster in the SPA must not reset a streak or a follow state.
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engagement_targets
             upsert_engagement_targets(1, [{"profile_url": "https://x/in/jane"}])
         sql = cursor.executemany.call_args[0][0]
@@ -242,7 +242,7 @@ class TestRecordTargetCommentBlocked:
     def test_increments_and_returns_the_new_streak(self):
         conn, cursor = _mock_conn()
         cursor.fetchone.return_value = (2, "unknown")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_comment_blocked
             assert record_target_comment_blocked(1, "https://x/in/jane").streak == 2
         sql = cursor.execute.call_args_list[0][0][0]
@@ -252,7 +252,7 @@ class TestRecordTargetCommentBlocked:
     def test_an_unmatched_target_reports_no_streak(self):
         conn, cursor = _mock_conn()
         cursor.rowcount = 0
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_comment_blocked
             assert record_target_comment_blocked(1, "https://x/in/nobody").streak == 0
 
@@ -262,7 +262,7 @@ class TestRecordTargetCommentBlocked:
         from cqc_lem.utilities.db import ConnectStatus
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_comment_blocked
             visit = record_target_comment_blocked(1, "https://x/in/jane")
         assert visit == (0, ConnectStatus.UNKNOWN.value)
@@ -274,7 +274,7 @@ class TestConnectEscalation:
     def _sql(self):
         conn, cursor = _mock_conn()
         cursor.fetchone.return_value = (2, "needs_connection")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_comment_blocked
             visit = record_target_comment_blocked(1, "https://x/in/jane")
         return cursor.execute.call_args_list[0][0], visit
@@ -306,7 +306,7 @@ class TestConnectEscalation:
         # one state is cleared — an invite already sent is a fact a comment does not undo.
         from cqc_lem.utilities import db
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.record_target_engagement(1, "https://x/in/jane") is True
         sql = cursor.execute.call_args[0][0]
         assert "connect_status = IF(connect_status = 'needs_connection', 'unknown', connect_status)" \
@@ -339,7 +339,7 @@ class TestSetTargetConnectStatus:
     def test_requested_stamps_the_timestamp_once(self):
         # A later read-only visit that re-observes Pending must not keep moving the date forward.
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_connect_status
             assert set_target_connect_status(1, "https://x/in/jane", "requested") is True
         assert "connect_requested_at=COALESCE(connect_requested_at, NOW())" in \
@@ -347,21 +347,21 @@ class TestSetTargetConnectStatus:
 
     def test_standing_back_down_clears_the_stamp(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_connect_status
             set_target_connect_status(1, "https://x/in/jane", "needs_connection")
         assert "connect_requested_at=NULL" in cursor.execute.call_args[0][0]
 
     def test_other_statuses_leave_the_stamp_alone(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_connect_status
             set_target_connect_status(1, "https://x/in/jane", "connected")
         assert "connect_requested_at" not in cursor.execute.call_args[0][0]
 
     def test_an_unknown_status_is_refused_without_a_query(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_connect_status
             assert set_target_connect_status(1, "https://x/in/jane", "following") is False
         cursor.execute.assert_not_called()
@@ -392,7 +392,7 @@ class TestFollowStatusEnum:
 class TestSetTargetFollowStatus:
     def test_following_stamps_the_timestamp_and_clears_attempts(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_follow_status
             assert set_target_follow_status(1, "https://x/in/jane", "following") is True
         sql = cursor.execute.call_args[0][0]
@@ -400,14 +400,14 @@ class TestSetTargetFollowStatus:
 
     def test_other_statuses_do_not_stamp_followed_at(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_follow_status
             set_target_follow_status(1, "https://x/in/jane", "not_following")
         assert "followed_at" not in cursor.execute.call_args[0][0]
 
     def test_an_unknown_status_is_refused_without_a_query(self):
         conn, cursor = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_target_follow_status
             assert set_target_follow_status(1, "https://x/in/jane", "requested") is False
         cursor.execute.assert_not_called()
@@ -418,7 +418,7 @@ class TestRecordTargetFollowFailure:
         from cqc_lem.utilities.db import ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS
         conn, cursor = _mock_conn()
         cursor.fetchone.return_value = (2,)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_follow_failure
             assert record_target_follow_failure(1, "https://x/in/jane") == 2
         sql, params = cursor.execute.call_args_list[0][0]
@@ -429,6 +429,6 @@ class TestRecordTargetFollowFailure:
     def test_an_unmatched_target_reports_no_attempts(self):
         conn, cursor = _mock_conn()
         cursor.rowcount = 0
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_target_follow_failure
             assert record_target_follow_failure(1, "https://x/in/nobody") == 0

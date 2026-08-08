@@ -6,8 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_S = "cqc_lem.utilities.stripe_util"  # lgtm[py/unused-global-variable]
-
 
 class TestValidateWebhookGenericError:
     def test_non_signature_exception_returns_none(self):

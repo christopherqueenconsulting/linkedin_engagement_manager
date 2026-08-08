@@ -26,7 +26,7 @@ class TestAvatarLedger:
     def test_ledger_entry_by_session(self):
         row = {"id": 1, "user_id": 3, "delta": 5}
         conn, cur = _conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_ledger_entry_by_session
             assert get_avatar_credit_ledger_entry_by_session("cs_1") == row
         sql, params = cur.execute.call_args[0]
@@ -35,13 +35,13 @@ class TestAvatarLedger:
     def test_ledger_entry_error_returns_none(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_ledger_entry_by_session
             assert get_avatar_credit_ledger_entry_by_session("cs_1") is None
 
     def test_refund_avatar_credit(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import refund_avatar_credit
             assert refund_avatar_credit(3, "train_1") is True
         sql, params = cur.execute.call_args[0]
@@ -51,7 +51,7 @@ class TestAvatarLedger:
     def test_refund_avatar_credit_error(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import refund_avatar_credit
             assert refund_avatar_credit(3, "train_1") is False
 
@@ -59,7 +59,7 @@ class TestAvatarLedger:
 class TestAvatarTrainings:
     def test_set_active_avatar_validates_then_deactivates_then_activates(self):
         conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "approved"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11) is True
         select_sql, select_params = cur.execute.call_args_list[0][0]
@@ -72,7 +72,7 @@ class TestAvatarTrainings:
     def test_set_active_avatar_invalid_id_preserves_current_active(self):
         # Unknown avatar id → False, and NO deactivating UPDATE ever runs.
         conn, cur = _conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 999) is False
         executed = [c[0][0] for c in cur.execute.call_args_list]
@@ -84,7 +84,7 @@ class TestAvatarTrainings:
         alone, and refusing must leave the current active avatar untouched.
         """
         conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "pending"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11) is False
         executed = [c[0][0] for c in cur.execute.call_args_list]
@@ -94,7 +94,7 @@ class TestAvatarTrainings:
     def test_set_active_avatar_error(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11) is False
 
@@ -104,7 +104,7 @@ class TestAvatarTrainings:
                  "status": "succeeded", "is_active": 1, "created_at": created,
                  "updated_at": None}]
         conn, _ = _conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_trainings
             result = get_avatar_trainings(3)
         assert result == [{"id": 1, "training_id": "t1", "model_ref": "m",
@@ -121,14 +121,14 @@ class TestAvatarTrainings:
     def test_get_avatar_trainings_error_returns_empty(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_trainings
             assert get_avatar_trainings(3) == []
 
     def test_update_training_status_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_training_status
             assert update_avatar_training_status("t1", "failed") is False
 
@@ -140,7 +140,7 @@ class TestUserGroups:
                 {"group_id": "g2", "group_name": "Sales", "enabled": 0, "post_enabled": 1,
                  "last_posted_at": None}]
         conn, _ = _conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_groups
             result = get_user_groups(1)
         # Commenting and posting are independent flags (issue #769) — neither implies the other.
@@ -153,7 +153,7 @@ class TestUserGroups:
     def test_get_user_groups_error_returns_empty(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_groups
             assert get_user_groups(1) == []
 
@@ -162,7 +162,7 @@ class TestPostStats:
     def test_record_post_stats_coerces_none_counts(self):
         # No matching post row → attribution snapshot is all-NULL but the stat is still recorded.
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, None, None, reposts=None, impressions=120, saves=None) is True
         params = cur.execute.call_args[0][1]  # last execute = the INSERT
@@ -171,7 +171,7 @@ class TestPostStats:
     def test_record_post_stats_snapshots_post_attribution(self):
         # The post's shape/topic is snapshotted onto the stat row at capture time (#386).
         conn, cur = _conn(fetch_one=("tactical_list", "bold_claim", "text", "AI hiring", "awareness"))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, 10, 3, reposts=1, impressions=200, saves=6) is True
         select_sql, select_params = cur.execute.call_args_list[0][0]
@@ -183,7 +183,7 @@ class TestPostStats:
 
     def test_get_recent_posted_post_ids(self):
         conn, cur = _conn(fetch_all=[(4,), (7,)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_posted_post_ids
             assert get_recent_posted_post_ids(1, days=10) == [4, 7]
         assert cur.execute.call_args[0][1] == (1, 10)
@@ -191,7 +191,7 @@ class TestPostStats:
     def test_get_post_engagement_rows(self):
         rows = [(datetime(2026, 7, 1, 15, 0), 10, 2, 1)]
         conn, cur = _conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_engagement_rows
             assert get_post_engagement_rows(1) == rows
         assert cur.execute.call_args[0][1] == (1, 1)
@@ -199,7 +199,7 @@ class TestPostStats:
     def test_get_post_engagement_rows_none_coerced(self):
         conn, cur = _conn()
         cur.fetchall.return_value = None
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_engagement_rows
             assert get_post_engagement_rows(1) == []
 
@@ -207,7 +207,7 @@ class TestPostStats:
 class TestMarkNewsletterPublished:
     def test_with_url_updates_url_too(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_newsletter_published
             assert mark_newsletter_published(1, "https://li.com/nl/1") is True
         sql, params = cur.execute.call_args[0]
@@ -215,7 +215,7 @@ class TestMarkNewsletterPublished:
 
     def test_without_url_only_stamps_time(self):
         conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_newsletter_published
             assert mark_newsletter_published(1) is True
         sql, params = cur.execute.call_args[0]
@@ -226,7 +226,7 @@ class TestScheduledDms:
     def test_get_scheduled_dm(self):
         row = {"id": 4, "user_id": 1, "message": "hi"}
         conn, cur = _conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_scheduled_dm
             assert get_scheduled_dm(4) == row
         assert cur.execute.call_args[0][1] == (4,)
@@ -247,7 +247,7 @@ class TestScheduledDms:
         cur.fetchone.return_value = {"c": 1}
         cur.fetchall.return_value = [{"id": 1, "scheduled_time": when,
                                       "created_at": when, "updated_at": None}]
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_scheduled_dms
             result = get_scheduled_dms(1, status_filter="pending", page=2, page_size=10,
                                        sort_order="desc")

@@ -29,7 +29,7 @@ def _mock_conn(fetch_one=None, fetch_all=None, rowcount=1):
 class TestUpdateDbPostGateReason:
     def test_stores_the_findings_as_json(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_gate_reason
             assert update_db_post_gate_reason(7, [_FINDING]) is True
         sql, params = cur.execute.call_args[0]
@@ -40,7 +40,7 @@ class TestUpdateDbPostGateReason:
     def test_no_findings_clears_the_column(self, findings):
         # A post that passes on re-score must stop showing a stale reason.
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_gate_reason
             assert update_db_post_gate_reason(7, findings) is True
         assert cur.execute.call_args[0][1] == (None, 7)
@@ -49,7 +49,7 @@ class TestUpdateDbPostGateReason:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_gate_reason
             assert update_db_post_gate_reason(7, [_FINDING]) is False
 
@@ -57,14 +57,14 @@ class TestUpdateDbPostGateReason:
 class TestGetPostGateReason:
     def test_parses_the_stored_json(self):
         conn, _ = _mock_conn(fetch_one=(json.dumps([_FINDING]),))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_gate_reason
             assert get_post_gate_reason(7) == [_FINDING]
 
     @pytest.mark.parametrize("row", [(None,), None])
     def test_empty_when_never_evaluated(self, row):
         conn, _ = _mock_conn(fetch_one=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_gate_reason
             assert get_post_gate_reason(7) == []
 
@@ -72,7 +72,7 @@ class TestGetPostGateReason:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_gate_reason
             assert get_post_gate_reason(7) == []
 
@@ -80,7 +80,7 @@ class TestGetPostGateReason:
 class TestPostsQueryExposesTheVerdict:
     def test_get_posts_selects_the_quality_columns(self):
         conn, cur = _mock_conn(fetch_one={"total": 0}, fetch_all=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_posts
             get_posts(1)
         sql = cur.execute.call_args_list[-1][0][0]
@@ -90,7 +90,7 @@ class TestPostsQueryExposesTheVerdict:
 class TestRecentPostTextsExclusion:
     def test_excludes_the_post_being_rescored(self):
         conn, cur = _mock_conn(fetch_all=[("older post",)])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             assert get_recent_post_texts(1, limit=5, exclude_post_id=42) == ["older post"]
         sql, params = cur.execute.call_args[0]
@@ -99,7 +99,7 @@ class TestRecentPostTextsExclusion:
 
     def test_no_exclusion_keeps_the_original_query(self):
         conn, cur = _mock_conn(fetch_all=[])
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_texts
             get_recent_post_texts(1, limit=5)
         sql, params = cur.execute.call_args[0]
@@ -110,7 +110,7 @@ class TestRecentPostTextsExclusion:
 class TestEngagementThresholdPersistence:
     def _saved(self, prefs):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.max_catchup_touches_allowed", return_value=5):
             from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
             assert update_engagement_preferences(1, prefs) is True

@@ -9,7 +9,6 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"  # lgtm[py/unused-global-variable]
-_RS = "cqc_lem.app.run_scheduler"  # lgtm[py/unused-global-variable]
 
 
 class TestEnqueueNextFollowup:

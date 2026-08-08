@@ -21,7 +21,7 @@ def _make_db_mocks(fetchone_return=None, fetchall_return=None, rowcount=1):
 class TestGetAvatarCreditBalance:
     def test_returns_sum_from_ledger(self):
         conn, cur = _make_db_mocks(fetchone_return={"balance": 5})
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_balance
 
             balance = get_avatar_credit_balance(1)
@@ -30,7 +30,7 @@ class TestGetAvatarCreditBalance:
 
     def test_returns_zero_when_no_rows(self):
         conn, cur = _make_db_mocks(fetchone_return={"balance": 0})
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_balance
 
             balance = get_avatar_credit_balance(1)
@@ -40,7 +40,7 @@ class TestGetAvatarCreditBalance:
     def test_returns_zero_on_db_error(self):
         conn, cur = _make_db_mocks()
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("DB down")
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_balance
 
             balance = get_avatar_credit_balance(99)
@@ -52,7 +52,7 @@ class TestGetAvatarCreditBalance:
 class TestAddAvatarCredits:
     def test_inserts_positive_delta(self):
         conn, cur = _make_db_mocks()
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import add_avatar_credits
 
             result = add_avatar_credits(1, 3, "purchase_value", "sess_abc")
@@ -65,7 +65,7 @@ class TestAddAvatarCredits:
     def test_returns_false_on_db_error(self):
         conn, cur = _make_db_mocks()
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("fail")
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import add_avatar_credits
 
             result = add_avatar_credits(1, 1, "purchase_starter")
@@ -77,7 +77,7 @@ class TestAddAvatarCredits:
 class TestDeductAvatarCredit:
     def test_inserts_negative_delta(self):
         conn, cur = _make_db_mocks()
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import deduct_avatar_credit
 
             result = deduct_avatar_credit(1, "train-xyz")
@@ -89,7 +89,7 @@ class TestDeductAvatarCredit:
     def test_returns_false_on_error(self):
         conn, cur = _make_db_mocks()
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("fail")
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import deduct_avatar_credit
 
             assert deduct_avatar_credit(1, "train-xyz") is False
@@ -100,7 +100,7 @@ class TestInsertAvatarTraining:
     def test_returns_lastrowid(self):
         conn, cur = _make_db_mocks()
         cur.lastrowid = 7
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_avatar_training
 
             result = insert_avatar_training(1, "train-abc", "LEMAVTR1")
@@ -110,7 +110,7 @@ class TestInsertAvatarTraining:
     def test_returns_none_on_error(self):
         conn, cur = _make_db_mocks()
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("fail")
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_avatar_training
 
             assert insert_avatar_training(1, "train-abc", "TOK") is None
@@ -120,7 +120,7 @@ class TestInsertAvatarTraining:
 class TestUpdateAvatarTrainingStatus:
     def test_updates_status_and_model_ref(self):
         conn, cur = _make_db_mocks(rowcount=1)
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_training_status
 
             result = update_avatar_training_status("train-1", "succeeded", "user/model:v1")
@@ -129,7 +129,7 @@ class TestUpdateAvatarTrainingStatus:
 
     def test_issues_refund_on_failure(self):
         conn, cur = _make_db_mocks(rowcount=1, fetchone_return={"user_id": 5})
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch("cqc_lem.utilities.db.refund_avatar_credit") as mock_refund:
             from cqc_lem.utilities.db import update_avatar_training_status
 
@@ -142,7 +142,7 @@ class TestUpdateAvatarTrainingStatus:
 class TestGetActiveAvatar:
     def test_returns_none_when_no_active(self):
         conn, cur = _make_db_mocks(fetchone_return=None)
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_active_avatar
 
             result = get_active_avatar(1)
@@ -157,7 +157,7 @@ class TestGetActiveAvatar:
             "trigger_word": "LEMAVTR1",
             "status": "succeeded",
         })
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_active_avatar
 
             result = get_active_avatar(1)

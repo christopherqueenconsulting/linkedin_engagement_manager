@@ -6,8 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _mock_conn(fetch_all=None, rowcount=1):
     conn = MagicMock(); cur = MagicMock()
@@ -20,7 +18,7 @@ def _mock_conn(fetch_all=None, rowcount=1):
 class TestUpdateDbPostShape:
     def test_updates_shape_columns(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_shape
             assert update_db_post_shape(7, "tactical_list", "bold_claim") is True
         sql, params = cur.execute.call_args[0]
@@ -29,7 +27,7 @@ class TestUpdateDbPostShape:
 
     def test_persists_topic(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_shape
             assert update_db_post_shape(7, "tactical_list", "bold_claim", topic="AI hiring") is True
         _, params = cur.execute.call_args[0]
@@ -39,7 +37,7 @@ class TestUpdateDbPostShape:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_shape
             assert update_db_post_shape(7, "tactical_list", "bold_claim") is False
 
@@ -49,7 +47,7 @@ class TestGetRecentPostShapeHistory:
         rows = [{"archetype": "tactical_list", "hook_style": "bold_claim"},
                 {"archetype": "personal_lesson", "hook_style": "question"}]
         conn, cur = _mock_conn(fetch_all=rows)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_shape_history
             out = get_recent_post_shape_history(1, limit=5)
         assert [h["archetype"] for h in out] == ["tactical_list", "personal_lesson"]
@@ -61,6 +59,6 @@ class TestGetRecentPostShapeHistory:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_post_shape_history
             assert get_recent_post_shape_history(1) == []

@@ -23,7 +23,7 @@ def _conn_cursor() -> tuple:
 
 
 def _patch_conn(conn):
-    return patch("cqc_lem.utilities.db.get_db_connection", return_value=conn)
+    return patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn)
 
 
 def _sha256(value: str) -> str:

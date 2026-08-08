@@ -100,7 +100,7 @@ def client():
 
 def _run(client, rows, redis, method="get"):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
-         patch("cqc_lem.utilities.db.get_db_connection", return_value=_FakeConnection(rows)), \
+         patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_FakeConnection(rows)), \
          patch(f"{_RL}._redis_client", return_value=redis):
         if method == "get":
             response = client.get("/api/user/automation-status?session_token=t")

@@ -22,7 +22,7 @@ def _mock_conn(fetch_row=None, rowcount=1):
 class TestGetEngagementPreferences:
     def test_defaults_when_no_row(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
         assert prefs["comment_length"] == "medium"
@@ -37,7 +37,7 @@ class TestGetEngagementPreferences:
             "focus_topics": json.dumps(["B2B sales", "leadership"]),
             "business_goals": "Book discovery calls", "personal_goals": "Grow authority",
         })
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
         assert prefs["focus_topics"] == ["B2B sales", "leadership"]
@@ -55,7 +55,7 @@ class TestGetEngagementPreferences:
             "max_comments_per_day": 15, "max_dms_per_day": 10, "default_buyer_stage": "awareness",
         }
         conn, _ = _mock_conn(fetch_row=row)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
         assert prefs["include_topics"] == ["AI", "SaaS"]
@@ -66,7 +66,7 @@ class TestGetEngagementPreferences:
 class TestUpdateEngagementPreferences:
     def test_upserts_with_json_encoded_arrays(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             ok = update_engagement_preferences(7, {
                 "tone": "bold", "include_topics": ["AI"], "use_hashtags": True, "max_comments_per_day": 5})
@@ -79,7 +79,7 @@ class TestUpdateEngagementPreferences:
 
     def test_persists_focus_and_goals(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             ok = update_engagement_preferences(9, {
                 "focus_topics": ["AI adoption"], "business_goals": "5 calls/mo",
@@ -132,7 +132,7 @@ class TestPartialUpdateKeepsTheRest:
 
     def _upsert(self, call):
         conn, cursor = _mock_conn(fetch_row=dict(self._STORED), rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.max_catchup_touches_allowed", return_value=10):
             call()
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -166,7 +166,7 @@ class TestPartialUpdateKeepsTheRest:
 
     def test_new_row_still_gets_the_code_defaults(self):
         conn, cursor = _mock_conn(fetch_row=None, rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.max_catchup_touches_allowed", return_value=5):
             from cqc_lem.utilities.db import set_default_video_quality
             set_default_video_quality(2, "premium")
@@ -180,7 +180,7 @@ class TestPartialUpdateKeepsTheRest:
         import mysql.connector
         conn, cursor = _mock_conn(rowcount=1)
         cursor.execute.side_effect = mysql.connector.Error(msg="db down")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             assert update_engagement_preferences(1, {"tone": "warm"}) is False
         assert not any("INSERT INTO engagement_preferences" in (c.args[0] if c.args else "")
@@ -194,13 +194,13 @@ class TestEngagementPreferencesAreConfigured:
 
     def test_true_when_a_row_exists(self):
         conn, _ = _mock_conn(fetch_row={"tone": "warm"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import engagement_preferences_are_configured
             assert engagement_preferences_are_configured(1) is True
 
     def test_false_when_the_user_never_saved_one(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import engagement_preferences_are_configured
             assert engagement_preferences_are_configured(1) is False
 
@@ -208,7 +208,7 @@ class TestEngagementPreferencesAreConfigured:
         import mysql.connector
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error(msg="db down")
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.log_error") as err:
             from cqc_lem.utilities.db import engagement_preferences_are_configured
             assert engagement_preferences_are_configured(1) is None
@@ -219,7 +219,7 @@ class TestEngagementPreferencesAreConfigured:
         `has_engagement_preferences` is this same question.
         """
         conn, cursor = _mock_conn(fetch_row=(1,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import engagement_preferences_are_configured
             engagement_preferences_are_configured(1)
         sql = cursor.execute.call_args.args[0]
@@ -231,12 +231,12 @@ class TestEngagementPreferencesAreConfigured:
         """
         import mysql.connector
         conn, cursor = _mock_conn(fetch_row=(1,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_engagement_preferences
             assert has_engagement_preferences(1) is True
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error(msg="db down")
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import has_engagement_preferences
             assert has_engagement_preferences(1) is False
 
@@ -244,7 +244,7 @@ class TestEngagementPreferencesAreConfigured:
 class TestReplyCheckConfig:
     def test_defaults_include_reply_config(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
         assert prefs["reply_check_mode"] == "event"
@@ -253,7 +253,7 @@ class TestReplyCheckConfig:
 
     def test_clamps_bad_mode_and_out_of_range_numbers(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {
                 "reply_check_mode": "bogus", "reply_sweeps_per_day": 99, "reply_max_post_age_days": 0})
@@ -267,7 +267,7 @@ class TestReplyCheckConfig:
 
     def test_valid_mode_and_floor_preserved(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"reply_check_mode": "scheduled", "reply_sweeps_per_day": 1})
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -277,11 +277,11 @@ class TestReplyCheckConfig:
 
     def test_connection_request_mode_default_and_coercion(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["connection_request_mode"] == "auto_approve"
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"connection_request_mode": "bogus"})
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -290,7 +290,7 @@ class TestReplyCheckConfig:
 
     def test_connection_request_mode_valid_preserved(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"connection_request_mode": "pre_review"})
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -301,19 +301,19 @@ class TestReplyCheckConfig:
 class TestFeedFallbackPref:
     def test_default_true(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["feed_fallback_when_empty"] is True
 
     def test_decodes_as_bool(self):
         conn, _ = _mock_conn(fetch_row={"feed_fallback_when_empty": 0})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["feed_fallback_when_empty"] is False
 
     def test_persists_as_int(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"feed_fallback_when_empty": False})
         cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
@@ -330,19 +330,19 @@ class TestPostsPerWeekPref:
 
     def test_default_is_three_a_week(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import DEFAULT_POSTS_PER_WEEK, get_engagement_preferences
             assert get_engagement_preferences(1)["posts_per_week"] == DEFAULT_POSTS_PER_WEEK == 3
 
     def test_null_column_reads_as_the_default(self):
         conn, _ = _mock_conn(fetch_row={"posts_per_week": None})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["posts_per_week"] == 3
 
     def test_saved_value_is_preserved(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"posts_per_week": 4})
         assert self._saved(cursor)["posts_per_week"] == 4
@@ -352,7 +352,7 @@ class TestPostsPerWeekPref:
         for given, expected in ((0, POSTS_PER_WEEK_MIN), (99, POSTS_PER_WEEK_MAX),
                                 ("nonsense", 3), (None, 3)):
             conn, cursor = _mock_conn(rowcount=1)
-            with patch(f"{_DB}.get_db_connection", return_value=conn):
+            with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
                 from cqc_lem.utilities.db import update_engagement_preferences
                 update_engagement_preferences(3, {"posts_per_week": given})
             assert self._saved(cursor)["posts_per_week"] == expected
@@ -369,25 +369,25 @@ class TestPostingDays:
 
     def test_default_is_monday_to_friday(self):
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import DEFAULT_POSTING_DAYS, get_engagement_preferences
             assert get_engagement_preferences(1)["posting_days"] == DEFAULT_POSTING_DAYS == [0, 1, 2, 3, 4]
 
     def test_null_column_reads_as_monday_to_friday(self):
         conn, _ = _mock_conn(fetch_row={"posting_days": None})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["posting_days"] == [0, 1, 2, 3, 4]
 
     def test_saved_row_decodes_its_own_days(self):
         conn, _ = _mock_conn(fetch_row={"posting_days": "[5, 6]"})
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["posting_days"] == [5, 6]
 
     def test_all_seven_days_stay_selectable(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"posting_days": [6, 5, 4, 3, 2, 1, 0]})
         assert self._saved(cursor)["posting_days"] == "[0, 1, 2, 3, 4, 5, 6]"
@@ -396,21 +396,21 @@ class TestPostingDays:
         # The whole prefs row upserts at once (the V52 lesson), so nothing unusable may reach MySQL.
         for given in ([], None, "nonsense", [9, -1], ["mon", "tue"], {}):
             conn, cursor = _mock_conn(rowcount=1)
-            with patch(f"{_DB}.get_db_connection", return_value=conn):
+            with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
                 from cqc_lem.utilities.db import update_engagement_preferences
                 update_engagement_preferences(3, {"posting_days": given})
             assert self._saved(cursor)["posting_days"] == "[0, 1, 2, 3, 4]", given
 
     def test_duplicates_and_order_are_normalised(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"posting_days": [4, 0, 4, "2"]})
         assert self._saved(cursor)["posting_days"] == "[0, 2, 4]"
 
     def test_partial_valid_input_keeps_only_the_valid_days(self):
         conn, cursor = _mock_conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
             update_engagement_preferences(3, {"posting_days": [1, 42, "x"]})
         assert self._saved(cursor)["posting_days"] == "[1]"
@@ -419,7 +419,7 @@ class TestPostingDays:
 class TestReplyInboundToken:
     def test_returns_existing_token(self):
         conn, cursor = _mock_conn(fetch_row=("existingtoken",))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_or_create_reply_inbound_token
             assert get_or_create_reply_inbound_token(1) == "existingtoken"
         # no UPDATE issued when a token already exists
@@ -427,7 +427,7 @@ class TestReplyInboundToken:
 
     def test_mints_when_missing(self):
         conn, cursor = _mock_conn(fetch_row=(None,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_or_create_reply_inbound_token
             token = get_or_create_reply_inbound_token(1)
         assert token and len(token) == 20
@@ -436,7 +436,7 @@ class TestReplyInboundToken:
 
     def test_reverse_lookup(self):
         conn, _ = _mock_conn(fetch_row=(42,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_id_by_reply_token
             assert get_user_id_by_reply_token("abc") == 42
 
@@ -447,7 +447,7 @@ class TestReplyInboundToken:
     def test_users_with_reply_mode(self):
         conn, cursor = _mock_conn()
         cursor.fetchall.return_value = [(1,), (5,), (9,)]
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_with_reply_mode
             assert get_users_with_reply_mode("scheduled") == [1, 5, 9]
         assert "reply_check_mode = %s" in cursor.execute.call_args[0][0]
@@ -456,7 +456,7 @@ class TestReplyInboundToken:
 class TestCountActions:
     def test_count_comments_today(self):
         conn, cursor = _mock_conn(fetch_row=(3,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_comments_today
             assert count_comments_today(1) == 3
         sql = cursor.execute.call_args[0][0]
@@ -469,7 +469,7 @@ class TestRosterAutoFollowPrefs:
     def test_defaults_are_off_and_conservative(self):
         from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
         conn, _ = _mock_conn(fetch_row=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
         assert prefs["roster_auto_follow"] is False
@@ -487,21 +487,21 @@ class TestRosterAutoFollowPrefs:
         # A NULL cap on every pre-migration row must not read as "the user switched it off".
         from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
         conn, _ = _mock_conn(fetch_row=self._row(max_follows_per_day=None))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["max_follows_per_day"] == \
                 ROSTER_FOLLOWS_PER_DAY_DEFAULT
 
     def test_an_explicit_zero_cap_is_preserved(self):
         conn, _ = _mock_conn(fetch_row=self._row(max_follows_per_day=0))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             assert get_engagement_preferences(1)["max_follows_per_day"] == 0
 
     def _saved(self, prefs):
         from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
         conn, cursor = _mock_conn(fetch_row=self._row(), rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.max_catchup_touches_allowed", return_value=10):
             update_engagement_preferences(1, prefs)
         return dict(zip(list(_ENGAGEMENT_COLS), cursor.execute.call_args[0][1][1:]))

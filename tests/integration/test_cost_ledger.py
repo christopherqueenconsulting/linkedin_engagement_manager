@@ -13,7 +13,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _OBS = "cqc_lem.utilities.observability"
 _REDIS = "cqc_lem.utilities.linkedin.rate_limit._redis_client"
 
@@ -88,7 +87,7 @@ def ledger():
     rows = []
     connection = MagicMock()
     connection.cursor.return_value = _FakeCursor(rows)
-    with patch(f"{_DB}.get_db_connection", return_value=connection):
+    with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=connection):
         yield rows
 
 

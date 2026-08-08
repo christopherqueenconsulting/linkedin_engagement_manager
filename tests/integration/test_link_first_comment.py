@@ -12,7 +12,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _RA = "cqc_lem.app.run_automation"
 
 _BODY = ("Three lessons from the rebuild.\n\n"
@@ -128,7 +127,7 @@ def _run_publish_and_seed(store):
         return "urn:li:comment:(x,1)"
 
     with ExitStack() as stack:
-        stack.enter_context(patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)))
+        stack.enter_context(patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)))
         stack.enter_context(patch(f"{_RA}.share_on_linkedin", side_effect=_share))
         stack.enter_context(patch(f"{_RA}.comment_on_linkedin_post", side_effect=_comment))
         stack.enter_context(patch(f"{_RA}.auto_seed_comment_on_post", seed_task))

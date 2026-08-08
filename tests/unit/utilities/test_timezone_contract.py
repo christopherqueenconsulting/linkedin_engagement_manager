@@ -174,7 +174,7 @@ class TestSchedulingWritesNormalizeToUtc:
 
     def test_insert_scheduled_dm(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_scheduled_dm
             insert_scheduled_dm(1, "https://x/in/jane", "hi", self.AWARE)
         stored = cur.execute.call_args[0][1][5]
@@ -182,7 +182,7 @@ class TestSchedulingWritesNormalizeToUtc:
 
     def test_update_scheduled_dm(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_scheduled_dm
             update_scheduled_dm(7, scheduled_time=self.AWARE)
         stored = cur.execute.call_args[0][1][0]
@@ -190,7 +190,7 @@ class TestSchedulingWritesNormalizeToUtc:
 
     def test_insert_post(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_id", return_value=1):
             from cqc_lem.utilities.db import PostType, insert_post
             insert_post("a@b.co", "body", self.AWARE, PostType.TEXT)
@@ -199,7 +199,7 @@ class TestSchedulingWritesNormalizeToUtc:
 
     def test_bulk_update_posts(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import bulk_update_posts
             bulk_update_posts([1, 2], scheduled_time=self.AWARE)
         stored = cur.execute.call_args[0][1][0]
@@ -207,7 +207,7 @@ class TestSchedulingWritesNormalizeToUtc:
 
     def test_create_newsletter_edition(self):
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_newsletter_edition
             create_newsletter_edition(1, "T", "S", "B", self.AWARE)
         stored = cur.execute.call_args[0][1][-1]
@@ -216,7 +216,7 @@ class TestSchedulingWritesNormalizeToUtc:
     def test_update_newsletter_edition_keeps_none_as_leave_alone(self):
         """scheduled_for=None means COALESCE-to-existing, not 'clear the column'."""
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_newsletter_edition
             update_newsletter_edition(3, 1, title="T")
         assert cur.execute.call_args[0][1][-3] is None

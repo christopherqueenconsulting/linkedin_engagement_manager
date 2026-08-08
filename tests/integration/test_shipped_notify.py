@@ -19,7 +19,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
 _SHIPPED = "cqc_lem.utilities.feedback.shipped"
 
 _PR = {"number": 539, "title": "fix(feed): comments now post reliably (closes #498)",
@@ -194,7 +193,7 @@ def _emails(store):
 
 def _run_pass(store):
     """One real `process_shipped_fixes` pass over one merged PR, with GitHub + SMTP faked."""
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch(f"{_SHIPPED}.github_token", return_value="tok"), \
          patch(f"{_SHIPPED}.github_request", return_value=[_PR]), \
          patch(f"{_SHIPPED}._parse_github_time", return_value=datetime.now().astimezone()), \
@@ -208,7 +207,7 @@ def _run_pass(store):
 
 
 def _call(client, store, method, path, **kwargs):
-    with patch(f"{_DB}.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
+    with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch("cqc_lem.api.main.get_session_user_id", return_value=4), \
          patch("cqc_lem.utilities.observability.posthog"):
         return getattr(client, method)(path, **kwargs)

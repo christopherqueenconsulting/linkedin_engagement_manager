@@ -6,8 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_DB = "cqc_lem.utilities.db"
-
 
 def _mock_conn(fetch_one=None, rowcount=1):
     conn = MagicMock(); cur = MagicMock()
@@ -20,7 +18,7 @@ def _mock_conn(fetch_one=None, rowcount=1):
 class TestUpdateDbPostAuthenticityScore:
     def test_updates_score_column(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_authenticity_score
             assert update_db_post_authenticity_score(7, 82) is True
         sql, params = cur.execute.call_args[0]
@@ -29,7 +27,7 @@ class TestUpdateDbPostAuthenticityScore:
 
     def test_accepts_null_score(self):
         conn, cur = _mock_conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_authenticity_score
             assert update_db_post_authenticity_score(7, None) is True
         _, params = cur.execute.call_args[0]
@@ -39,7 +37,7 @@ class TestUpdateDbPostAuthenticityScore:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_db_post_authenticity_score
             assert update_db_post_authenticity_score(7, 50) is False
 
@@ -47,7 +45,7 @@ class TestUpdateDbPostAuthenticityScore:
 class TestGetPostAuthenticityScore:
     def test_returns_int_score(self):
         conn, cur = _mock_conn(fetch_one=(73,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_authenticity_score
             assert get_post_authenticity_score(7) == 73
         sql, params = cur.execute.call_args[0]
@@ -56,13 +54,13 @@ class TestGetPostAuthenticityScore:
 
     def test_none_when_unscored(self):
         conn, cur = _mock_conn(fetch_one=(None,))
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_authenticity_score
             assert get_post_authenticity_score(7) is None
 
     def test_none_when_no_row(self):
         conn, cur = _mock_conn(fetch_one=None)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_authenticity_score
             assert get_post_authenticity_score(999) is None
 
@@ -70,6 +68,6 @@ class TestGetPostAuthenticityScore:
         import mysql.connector
         conn, cur = _mock_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_authenticity_score
             assert get_post_authenticity_score(7) is None

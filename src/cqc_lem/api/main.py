@@ -24,8 +24,7 @@ from typing import Annotated, Any, Awaitable, Callable, Dict, Iterator, List, No
 from urllib.parse import urlparse
 
 import requests
-from celery import chain as celery_chain
-from celery import states as celery_states
+from celery import chain as celery_chain, states as celery_states
 from fastapi import (
     APIRouter,
     Depends,

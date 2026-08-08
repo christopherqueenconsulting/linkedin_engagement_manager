@@ -13,8 +13,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
-
 
 class _FakeCursor:
     """Minimal MySQL-ish cursor over in-memory `posts` and `post_stats` stores."""
@@ -99,7 +97,7 @@ class TestPostAttributionFeedbackLoop:
         def _conn(*a, **k):
             return _FakeConn(posts, stats)
 
-        with patch(f"{_DB}.get_db_connection", side_effect=_conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=_conn):
             # 1) Generation assigns the post's shape + topic.
             assert update_db_post_shape(9, "case_study", "bold_claim", topic="AI onboarding") is True
             # 2) The stat scraper captures engagement and snapshots attribution off the post.
@@ -131,7 +129,7 @@ class TestPostAttributionFeedbackLoop:
         def _conn(*a, **k):
             return _FakeConn(posts, stats)
 
-        with patch(f"{_DB}.get_db_connection", side_effect=_conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=_conn):
             record_post_stats(1, 5, reactions=10, comments=1)
             update_db_post_shape(5, "tactical_list", "story", topic="retention")
             rows = get_post_engagement_rows(1)

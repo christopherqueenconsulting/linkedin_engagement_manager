@@ -273,7 +273,7 @@ class TestAgentTokenTTL:
             "user_id": 7, "scope": scope,
             "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
         }
-        with patch("cqc_lem.utilities.db.get_db_connection", return_value=conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             resolved = db.resolve_session("a" * 64)
         updates = [c for c in cursor.execute.call_args_list if "UPDATE" in c[0][0].upper()]
         assert len(updates) == 1

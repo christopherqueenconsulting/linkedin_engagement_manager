@@ -14,8 +14,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_DB = "cqc_lem.utilities.db"
-
 
 class _FakeCursor:
     """Minimal MySQL-ish cursor over in-memory `posts`, `post_stats`, `post_variants` stores."""
@@ -117,7 +115,7 @@ class TestVariantABHarness:
 
         combo_a = {"image_model": "flux-dev", "video_model": "gen4_turbo", "ratio": "1:1"}
         combo_b = {"image_model": "flux-1.1-pro", "video_model": "gen4_turbo", "ratio": "1:1"}
-        with patch(f"{_DB}.get_db_connection", side_effect=_conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=_conn):
             # 1) Persist which variant actually shipped for each post.
             assert record_shipped_variant(1, 1, "A", combo=combo_a, batch_id="b", variant_index=0)
             assert record_shipped_variant(1, 2, "A", combo=combo_a, batch_id="b", variant_index=0)
@@ -153,7 +151,7 @@ class TestVariantABHarness:
         def _conn(*a, **k):
             return _FakeConn(posts, [], variants)
 
-        with patch(f"{_DB}.get_db_connection", side_effect=_conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=_conn):
             record_shipped_variant(1, 1, "flux-dev|gen4_turbo|1:1")
             record_shipped_variant(1, 2, "flux-1.1-pro|gen4_turbo|1:1")
             record_shipped_variant(2, 3, "other-user")  # never leaks across users
@@ -173,7 +171,7 @@ class TestVariantABHarness:
         def _conn(*a, **k):
             return _FakeConn(posts, stats, variants)
 
-        with patch(f"{_DB}.get_db_connection", side_effect=_conn):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=_conn):
             record_shipped_variant(1, 1, "A")
             record_shipped_variant(1, 1, "B")  # same post → overwrite
             rows = get_variant_outcome_rows(1)
