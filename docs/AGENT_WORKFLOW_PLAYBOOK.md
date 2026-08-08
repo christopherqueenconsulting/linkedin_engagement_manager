@@ -50,6 +50,10 @@ changes, auth/security surface, anything needing a live LinkedIn session, or spe
 - **`review:copilot`** — add to any PR (or rely on `risk:*`, which implies it) to also get a GitHub
   Copilot review. Copilot credits are metered ($) — the runner requests it once, after CI is green.
   Never request Copilot review by hand on routine PRs.
+- **Policy-triggered exception** — the pipeline may self-apply `review:copilot` on a routine PR when
+  the PR body carries the builder's own `Uncertain: <reason>` line (**spec-first** step 1's assumption
+  format), at most once per PR and never alongside `risk:*`. That's a fixed rule fired the same way
+  every time, not the per-PR discretionary ask the line above bans.
 - `agent:model:sonnet` / `agent:model:haiku` / `agent:model:opus` — owner's cost dial, read off the
   **issue** (not the PR): forces the model for that issue's build, CI-fix and review runs. No label
   = default (best) model. Agents never touch these.

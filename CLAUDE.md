@@ -180,6 +180,20 @@ Browser capacity is a **fixed pool of Chrome session slots shared by the Celery 
 - **Strong auth + step-up** (#745 phase 2c, `docs/strong-authentication.md`): `utilities/auth_factors.py` is the ONE place factor state is decided (`webauthn_util.py` holds the ceremonies). Once an account enrols a passkey or TOTP the email PIN is a **bootstrap** only; a **passkey** login is the only path arriving already stepped up, a **recovery code** never does. `sessions.last_verified_at` gates every credential-touching write — refusal is **403 `step_up_required`**, never 401. **The FIRST factor is free, every one after it is gated, removing one always is.** Second-factor attempts are durable (`auth_challenges.attempts`), counted **per account** over `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` and carried into the next handle: **401 = wrong code, retry; 400 = handle gone; 429 = budget spent**. `STRONG_AUTH_ENABLED=false` reverts to 2b.
 - **Session scopes are SURFACES** (#905 / #1026, `docs/identity-and-sessions.md`): the same resolver enforces scope everywhere; refusal is 403 + audited `session_scope_denied`. `extension` reaches only the ONE path the extension calls; `enroll` — a PIN login past `REQUIRE_STRONG_FACTOR_AFTER` on a factor-less account — reaches only enrolment, which promotes it to `full` (**a hold is never a lockout:** the PIN still signs you in, every read goes through `enrollment_hold_active()`; empty date = 2c behaviour exactly). **`agent`** is the headless credential — minted once by a human, `_AGENT_SESSION_SURFACE` (queueing) only, TTL fixed at mint (the ONE scope `resolve_session` never slides). It may queue but NEVER approve — THREE guards, because a row reaches APPROVED three ways: `action="approve"`, `status="approved"` at create, the `auto_approve` account default. Surfaces match on PATH not method, so granting a read grants its writes — hence `PUT /user/engagement-preferences` is separately refused (`agent_may_not_configure`).
 
+## Agent Working Method
+
+Two cross-cutting practices bookend `ship-issue`'s branch → build → PR flow — one before code, one before the PR:
+
+- **Before writing code on a non-trivial issue** (`docs/spec-verifier-environment.md`, Karpathy's
+  Spec/Verifier/Environment framework mapped onto this repo): nail testable acceptance criteria, name
+  the specific check that proves success, and locate the owning docs/skill/module — BEFORE `ship-issue`
+  step 1. Skill: `spec-first`.
+- **Agent quality gate — Gauntlet Loop** (`docs/gauntlet-loop.md`): optional pre-PR pass for any
+  deliverable that needs a REAL bar, not just review — builder/critic pairs blind-compare against a
+  named reference exemplar, loop until the build wins (capped at 3 rounds, then `needs-human`).
+  First-class for `ui/`-touching or UX-sensitive issues (screenshot critique against this project's
+  stated UX goals). Slots into `ship-issue` step 4, before drafting the PR. Skill: `gauntlet-loop`.
+
 ## Testing Standards
 
 - All new/modified code: ≥80% patch coverage enforced by Codecov.
