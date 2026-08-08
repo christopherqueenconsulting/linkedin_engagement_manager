@@ -26,7 +26,7 @@ WORKDIR /app
 # Stage: build the React SPA so the dist/ folder exists inside the image.
 # The dist/ directory is .gitignored, so it must be built here.
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS ui-builder
+FROM node:24-slim AS ui-builder
 
 WORKDIR /ui
 # No VITE_API_TOKEN (issue #950). A LEM-issued shared secret baked in here ends up inlined in a
@@ -60,7 +60,7 @@ RUN npm run build
 # build that skips the upload still never serves them.
 #
 # ca-certificates is installed inside the conditional, not in the stage setup, so a build with no
-# token doesn't pay for it. It is REQUIRED: posthog-cli is a Rust binary and node:22-slim carries no
+# token doesn't pay for it. It is REQUIRED: posthog-cli is a Rust binary and node:24-slim carries no
 # system CA store, so its HTTP client panics before it ever authenticates —
 #   panicked ... reqwest::Error { kind: Builder, source: General("No CA certificates were loaded
 #   from the system") }
