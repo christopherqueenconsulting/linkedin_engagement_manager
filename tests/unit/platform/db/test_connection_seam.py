@@ -71,7 +71,7 @@ class TestOneCanonicalTarget:
                     offenders.append(f"{p} -> monkeypatch.setattr for {sym}")
         assert offenders == [], (
             "these rebind a moved symbol on the re-export, which the real module never reads — "
-            f"target cqc_lem.platform.db.connection instead:\n  " + "\n  ".join(sorted(set(offenders))))
+            "target cqc_lem.platform.db.connection instead:\n  " + "\n  ".join(sorted(set(offenders))))
 
     def test_the_facade_still_re_exports_it(self):
         """Compatibility half: ~2,400 imports still say `from cqc_lem.utilities.db import ...`."""
