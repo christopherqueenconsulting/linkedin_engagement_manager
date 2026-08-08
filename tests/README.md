@@ -103,6 +103,22 @@ declare, so a fourth report merged into the project number from a run that exclu
 If you want the whole suite in one command, run it locally. In CI, add tests to the lane that owns
 them.
 
+### The `slow` marker, and the one job that runs it
+
+Every lane above selects with `-m "not slow"`, so until `slow-tests.yml` existed the 13
+`slow`-marked tests ran **nowhere**. They are live probes against third-party services — Pexels,
+Perplexity, and the Ollama/LiteLLM video path — which is exactly why a PR should not depend on
+them, and exactly why something still has to.
+
+`Nightly / Slow Tests` (`slow-tests.yml`, 03:00 UTC + `workflow_dispatch`) is that something. It has
+no `pull_request` or `push` trigger, so it cannot become a gate.
+
+**A live probe skips on a bad credential; it does not fail.** A missing key skips, and so does a
+present-but-unauthorized one — a nightly that goes red for someone else's expired token is a nightly
+people stop reading. `test_pexels_video.py` already worked that way; `test_perplexity.py` checked
+only for *presence*, so a 401 failed the run, which surfaced the moment these tests were finally
+given a schedule.
+
 ## Test Markers
 
 Tests use markers to categorize and filter execution:
