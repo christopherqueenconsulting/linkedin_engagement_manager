@@ -23,7 +23,19 @@ _PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search"
 
 
 def search_videos(query: str, per_page: int = 10) -> list[dict]:
-    """Search Pexels for stock videos matching query. Returns a list of video dicts."""
+    """Search Pexels for stock videos matching query. Returns a list of video dicts.
+
+    Raises:
+        requests.HTTPError: on any non-2xx. **A 401 here does not mean the key is bad.** Pexels
+            reports an exhausted rate limit as `401 {"code":"Unauthorized","message":"Invalid API
+            key"}` rather than 429, so a throttle and a dead credential are indistinguishable from
+            the status, the body, and the logs. Measured 2026-08-08: a working key returned 200
+            repeatedly, then 401 for every subsequent call — including calls that had just
+            succeeded — while the same code with a second, unthrottled key downloaded fine.
+
+            Check quota before replacing a key on the strength of a 401. The live-probe tests
+            (`tests/integration/test_pexels_video.py`) skip on 401/403 for exactly this reason.
+    """
     pexels_key = os.environ.get("PEXELS_API_KEY")
     if not pexels_key:
         return []
