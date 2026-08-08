@@ -489,9 +489,10 @@ POST_FORMATS: dict = {
     },
 }
 
-# The occasion archetypes are OFF the automatic menu: they announce a real, dated event (~1/month
-# by design), so a rotation that could pick one would invent a launch nobody shipped. They are
-# reachable only when a caller NAMES one — `preferred_formats=[...]` or an explicit guidance hint.
+# The `occasion_milestone` family (issue #1074). These archetypes are OFF the automatic menu: they
+# announce a real, dated event (~1/month by design), so a rotation that could pick one would invent
+# a launch nobody shipped. They are reachable only when a caller NAMES one —
+# `preferred_formats=[...]` or an explicit guidance hint.
 OCCASION_FORMAT_KEYS: tuple = ("project_launch", "educational_milestone")
 
 # Post CTAs: the conversation-driving newsletter CTA styles apply verbatim to posts (shared object
