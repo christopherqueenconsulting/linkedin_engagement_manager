@@ -9,6 +9,20 @@ on:
   schedule:
     - cron: "0 9 * * 1"  # Monday 09:00 UTC
 
+env:
+  # Diff-informed analysis is ON by default for Python and reports only alerts INSIDE the diff.
+  # Measured in this repo: every `refs/pull/<n>/merge` python analysis returns results_count=0
+  # while `refs/heads/main` returns 73 and the merge-queue ref returns 74. The PR gate compares
+  # head-vs-base, so an empty head set makes `head - base` empty and the REQUIRED gate passes
+  # VACUOUSLY on every pull request. It only has teeth on merge_group, which is not a pull request
+  # and therefore gets the full analysis -- which is why PRs read CLEAN and are then evicted from
+  # the queue with no explanation (#1168 churned 24 times, #1171 eleven).
+  #
+  # An alert whose DEFINITION sits outside the changed lines is invisible: PR #1171 removed the
+  # last use of `_DB` at line 228 while the binding at line 11 stayed put, so nothing was reported.
+  # Costs ~20% slower CodeQL on PRs. Cheap against 74 wasted merge-group matrices in one day.
+  CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
+
 jobs:
   codeql:
     name: Analyze (${{ matrix.language }})

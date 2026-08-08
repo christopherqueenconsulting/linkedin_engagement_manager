@@ -847,6 +847,28 @@ def build_report(
     return "\n".join(lines)
 
 
+def _emit_report_to_the_run(report: str, new_alerts: list[Alert]) -> None:
+    """Put the alert list where a merge_group run can show it: the step summary and annotations.
+
+    Unconditional on purpose. A PR comment covers the `pull_request` ref only, and the merge_group
+    ref is the one that blocks the queue.
+    """
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as handle:
+                handle.write(f"\n{report}\n")
+        except OSError:
+            pass
+    for alert in new_alerts:
+        # ::error is what surfaces on the run's Summary tab, which is all a merge_group run has.
+        print(
+            f"::error file={alert.path},line={alert.start_line}::"
+            f"[{alert.rule_id}] {alert.message}",
+            flush=True,
+        )
+
+
 def post_comment(
     client: GitHubClient, pr_number: int, body: str
 ) -> bool:
@@ -952,6 +974,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     report = build_report(new_alerts, security, mechanical, judgment, fixed_alerts)
     if new_alerts:
         post_comment(client, args.pr_number, report)
+        # A merge_group run has no PR to comment on (`pr_number=0`), and `log_info(...,
+        # report=report)` does not render kwargs to stdout — so on the one ref where this gate
+        # actually has teeth, it failed with `Gate failed: new alerts require human review` and
+        # nothing else. The queue evicted PRs with no way to see why: #1168 churned 24 times,
+        # #1171 eleven. Both were one unused module-level variable in a test file.
+        _emit_report_to_the_run(report, new_alerts)
     log_info("CodeQL PR gate report", report=report)
 
     fixed_count = len(fixed_alerts)
