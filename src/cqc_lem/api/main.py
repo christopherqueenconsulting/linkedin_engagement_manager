@@ -58,6 +58,7 @@ from cqc_lem.app.run_automation import (
     send_lead_response,
     send_private_dm,
     sweep_reply_comments,
+    update_stale_profile,
 )
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.auth_factors import (
@@ -359,6 +360,7 @@ from cqc_lem.utilities.post_image import (
     remove_post_image_file,
     save_post_image_bytes,
 )
+from cqc_lem.utilities.profile_refresh import claim_profile_refresh, refresh_claimed_seconds
 from cqc_lem.utilities.quality_gates import (
     AUTHENTICITY_SCORE_MIN_BOUNDS,
     SIMILARITY_MAX_PCT_BOUNDS,
@@ -6728,12 +6730,54 @@ def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
 
 @router.get("/user/linkedin-profile")
 def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
-    """The caller's connected LinkedIn profile URL. None when no LinkedIn account is attached yet."""
+    """The caller's connected LinkedIn profile URL. None when no LinkedIn account is attached yet.
+
+    `refresh_available_in_seconds` reports the on-demand re-scrape window (issue #1076) so the SPA
+    renders the same disabled state after a reload that it showed right after the press — a peek,
+    never a claim.
+    """
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return ResponseModel(status_code=200, detail={
         "linkedin_profile_url": get_linkedin_profile_url_by_user_id(user_id),
+        "refresh_available_in_seconds": refresh_claimed_seconds(user_id),
+    })
+
+
+@router.post("/user/linkedin-profile/refresh", status_code=202, responses={
+    202: {"description": "Refresh queued, or already claimed for today"},
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
+})
+def refresh_user_linkedin_profile_endpoint(request: SessionOnlyRequest) -> ResponseModel:
+    """Re-scrape the caller's OWN LinkedIn profile now and regenerate the voice synthesis from it.
+
+    Without this, a profile edit reaches LEM's writing only when the weekly staleness beat
+    (`run_scheduler.auto_refresh_profile_syntheses`) catches up — up to 7 days of content generated
+    from the old headline, old skills, old experience.
+
+    Always 202, never 429: pressing the button a second time in the same day is a person pressing a
+    button twice, not an error, so the answer says `queued: false` and names the window instead of
+    reading as a failure. The claim is taken BEFORE dispatch — a double-click must cost one Chrome
+    session, not two — and the task's own `QueueOnce` lock is the second line against a duplicate
+    that slips past a failed-open limiter.
+
+    An `agent`-scoped session never reaches here: this path is absent from
+    `_AGENT_SESSION_SURFACE`, so `_scope_allows` refuses it before the handler runs. Spending a
+    Selenium slot is exactly the kind of capacity a headless token must not be able to draw on
+    (same posture as `agent_may_not_configure`).
+    """
+    user_id = require_session_user_id(request.session_token)
+    claim = claim_profile_refresh(user_id)
+    if claim.queued:
+        update_stale_profile.apply_async(kwargs={"user_id": user_id, "force_refresh": True},
+                                         retry=True, retry_policy={"max_retries": 1})
+        log_info("Queued an on-demand LinkedIn profile refresh", user_id=user_id,
+                 task_name="update_stale_profile")
+    return ResponseModel(status_code=202, detail={
+        "queued": claim.queued,
+        "reason": claim.reason,
+        "retry_after_seconds": claim.retry_after_seconds,
     })
 
 

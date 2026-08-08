@@ -255,6 +255,10 @@ AUTH_IP_MAX_PER_HOUR      = int(get_constant_from_env('AUTH_IP_MAX_PER_HOUR', de
 PIN_MAX_ATTEMPTS          = int(get_constant_from_env('PIN_MAX_ATTEMPTS', default_value='5'))
 PIN_LOCKOUT_MINUTES       = int(get_constant_from_env('PIN_LOCKOUT_MINUTES', default_value='15'))
 
+# On-demand profile re-scrape (issue #1076). One scrape costs a Chrome session slot out of the
+# fixed pool, so the manual button is bounded per user per day the same way the auth windows are.
+PROFILE_REFRESH_MAX_PER_DAY = int(get_constant_from_env('PROFILE_REFRESH_MAX_PER_DAY', default_value='1'))
+
 # Strong authentication (issue #745, phase 2c). WebAuthn is origin-bound: the RP id must be the
 # registrable domain the SPA is served from and the origin must match exactly, or the browser
 # refuses the ceremony. Both are DERIVED from PUBLIC_BASE_URL so a deploy cannot end up with a

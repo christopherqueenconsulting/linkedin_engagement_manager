@@ -748,7 +748,8 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         myprint("Login failed. Check your credentials.")
 
 
-def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None) -> LinkedInProfile:
+def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None,
+                   force_refresh: bool = False) -> LinkedInProfile:
     """The signed-in user's OWN profile, from the DB cache when it is there and by scraping when it is
     not.
 
@@ -757,13 +758,21 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
     window reads as absent, so this re-scrapes roughly daily. `user_id` is the preferred cache key;
     email is the backward-compatible fallback.
 
+    `force_refresh` skips the cache read entirely — the on-demand refresh (issue #1076) exists
+    precisely for the case the freshness window gets wrong: the user edited their profile MINUTES
+    ago, so a row written this morning is fresh by age and stale by content. It bypasses BOTH cache
+    layers, since the by-URL cache inside `get_linkedin_profile_from_url` would otherwise hand back
+    the same stale row the by-user read was told to ignore.
+
     Returns None, despite the annotation, when the scrape yields nothing; every caller must handle
     that, because a DOM change makes it the normal failure.
     """
     profile = None
 
     # Prefer user_id-based cache key; fall back to email for backward compat.
-    if user_id is not None:
+    if force_refresh:
+        profile_json = None
+    elif user_id is not None:
         profile_json = get_linked_in_profile_by_user_id(user_id)
     else:
         profile_json = get_linked_in_profile_by_email(user_email)
@@ -777,7 +786,8 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
         time.sleep(2)
         profile_url = driver.current_url  # Get the updated url
 
-        profile_data = get_linkedin_profile_from_url(driver, wait, profile_url, True)
+        profile_data = get_linkedin_profile_from_url(driver, wait, profile_url, True,
+                                                    force_refresh=force_refresh)
 
         if profile_data:
 
@@ -824,13 +834,15 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
         return None
 
 
-def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False, force_save=False):
+def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False, force_save=False,
+                                  force_refresh=False):
     """Anyone's profile as a plain dict — DB cache first, scrape (plus an AI industry guess) on a miss.
 
     A dict rather than a `LinkedInProfile` because that is what `get_my_profile` and the viewer
     outreach walk feed onward. LinkedIn rewrites vanity URLs, so a navigation that lands somewhere
     else re-enters this function on the URL it actually got — the cache is keyed on the resolved URL,
-    not the one asked for.
+    not the one asked for, and `force_refresh` rides that recursion so the second hop does not read
+    the cache the first hop was told to skip.
 
     The two branches do not return quite the same thing: a fresh scrape returns the SCRAPED fields
     only, so the AI-derived `industry` reaches the DB but is missing from the dict until a later
@@ -841,7 +853,7 @@ def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False,
             rate-limited page must never be cached or read as a sparse profile.
     """
     # Get the profile from the DB if it exists
-    profile_json = get_linked_in_profile_by_url(profile_url)
+    profile_json = None if force_refresh else get_linked_in_profile_by_url(profile_url)
 
     if profile_json is None:
 
@@ -859,7 +871,8 @@ def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False,
                 profile_url = driver.current_url
 
                 # Get the profile using the new url
-                return get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user)
+                return get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user,
+                                                     force_refresh=force_refresh)
 
         # Get the company name
         company_element = get_element_wait_retry(driver, wait, '//button[contains(@aria-label,"Current company")]',

@@ -9217,7 +9217,7 @@ def final_method(drivers: List[WebDriver]):
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='1/m', queue='se_outreach')
-def update_stale_profile(self, user_id: int):
+def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     """Re-scrape the user's OWN LinkedIn profile and refresh the voice synthesis distilled from it.
 
     The scrape is a side effect of `get_current_profile`; the session is closed immediately because
@@ -9225,11 +9225,18 @@ def update_stale_profile(self, user_id: int):
     lane wanted. A login failure returns a message string rather than raising, so one user's broken
     session shows up in that task's result instead of as a worker exception.
 
+    `force_refresh` is what makes this task an ON-DEMAND refresh (issue #1076) rather than a daily
+    sweep: without it a profile cached within the last day is simply read back, which is right for
+    the beat and wrong for a user who edited their profile a minute ago and pressed the button. It
+    also splits the `QueueOnce` key, so a manual refresh is deduped against other manual refreshes
+    and never swallowed by an in-flight sweep.
+
     The synthesis refresh is best-effort and never fails a scrape that already succeeded.
     """
     myprint(f"Updating Stale Profile. User ID: {user_id}")
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Update Stale Profile")
+        driver, wait, user_email, my_profile = get_current_profile(
+            user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
     except Exception as e:
         log_error("Error while updating stale profile", exc=e, user_id=user_id, task_name="update_stale_profile")
         return f"Failed to update profile: {e}"
@@ -9248,7 +9255,8 @@ def update_stale_profile(self, user_id: int):
 
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
-                        measurement_only: bool = False, debug: bool = False) -> Tuple[
+                        measurement_only: bool = False, debug: bool = False,
+                        force_refresh: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
@@ -9258,6 +9266,10 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
 
     `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
     back to the normal pool when the node is busy or absent.
+
+    `force_refresh` makes the scrape bypass the profile cache (issue #1076). The cached FALLBACK
+    below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
+    the caller learns from the synthesis it gets back, not from a missing profile.
     """
     myprint("Getting Updated Profile")
 
@@ -9279,7 +9291,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     # transient DOM change) even when the feed is reachable. Don't let that abort the
     # whole task — fall back to the user's cached profile so commenting can proceed.
     try:
-        my_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
+        my_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id,
+                                    force_refresh=force_refresh)
     except Exception as e:
         log_warning("Live profile refresh failed; falling back to cached profile", exc=e, user_id=user_id)
         my_profile = None
