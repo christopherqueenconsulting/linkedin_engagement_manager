@@ -161,7 +161,7 @@ describe('GroupPostQueue — editing', () => {
     fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'x'.repeat(3001) } })
 
     const charCount = screen.getByText(/3001\/3000/i)
-    expect(charCount).toHaveClass('text-red-600')
+    expect(charCount.className).toContain('text-red-600')
   })
 
   it('shows green character count when under limit', async () => {
@@ -172,7 +172,7 @@ describe('GroupPostQueue — editing', () => {
     fireEvent.change(screen.getByLabelText('Group post text'), { target: { value: 'Short text' } })
 
     const charCount = screen.getByText(/10\/3000/i)
-    expect(charCount).toHaveClass('text-gray-500')
+    expect(charCount.className).toContain('text-gray-500')
   })
 
   it('shows success message after saving', async () => {
