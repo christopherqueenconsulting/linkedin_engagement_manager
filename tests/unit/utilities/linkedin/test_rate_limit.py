@@ -1,5 +1,6 @@
 """Unit tests for the LinkedIn 429 circuit breaker (rate_limit.py)."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -414,3 +415,68 @@ class TestCommentingHold:
         fake_redis.get.side_effect = RuntimeError("boom")
         from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason
         assert commenting_hold_reason(7) is None
+
+
+class TestTheRedisHandleIsCachedPerProcess:
+    """`Redis.from_url` builds its own ConnectionPool every call, and the pool disconnects when the
+    object is collected — so re-deriving the handle per operation cost a TCP handshake per command,
+    on paths that run per Selenium action.
+    """
+
+    @staticmethod
+    def _fresh():
+        from cqc_lem.utilities.linkedin import rate_limit
+        rate_limit.reset_redis_client()
+        return rate_limit
+
+    def test_a_second_call_reuses_the_first_handle(self, monkeypatch):
+        rate_limit = self._fresh()
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://broker:6379/0")
+        client = MagicMock()
+        with patch("redis.Redis.from_url", return_value=client) as from_url:
+            first = rate_limit._redis_client()
+            second = rate_limit._redis_client()
+        assert first is second is client
+        assert from_url.call_count == 1
+
+    def test_a_changed_url_rebuilds(self, monkeypatch):
+        rate_limit = self._fresh()
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://one:6379/0")
+        with patch("redis.Redis.from_url", return_value=MagicMock()) as from_url:
+            rate_limit._redis_client()
+            monkeypatch.setenv("CELERY_BROKER_URL", "redis://two:6379/0")
+            rate_limit._redis_client()
+        assert from_url.call_count == 2
+        assert from_url.call_args[0][0] == "redis://two:6379/0"
+
+    def test_a_failure_is_never_cached(self, monkeypatch):
+        """'Redis was down once' must not become 'the breaker is off for this worker's life'."""
+        rate_limit = self._fresh()
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://broker:6379/0")
+        with patch("redis.Redis.from_url", side_effect=ConnectionError("down")):
+            assert rate_limit._redis_client() is None
+        good = MagicMock()
+        with patch("redis.Redis.from_url", return_value=good):
+            assert rate_limit._redis_client() is good
+
+    def test_a_forked_child_does_not_inherit_the_parents_handle(self, monkeypatch):
+        """Celery prefork: a pool built before the fork would share a socket parent/child."""
+        rate_limit = self._fresh()
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://broker:6379/0")
+        real_pid = os.getpid()  # captured BEFORE patching, or the lambda calls itself
+        with patch("redis.Redis.from_url", return_value=MagicMock()) as from_url:
+            rate_limit._redis_client()
+            monkeypatch.setattr(rate_limit.os, "getpid", lambda: real_pid + 1)
+            rate_limit._redis_client()
+        assert from_url.call_count == 2
+
+    def test_content_generation_status_uses_the_same_handle(self, monkeypatch):
+        """It used to carry a byte-for-byte copy of the URL resolution, free to drift."""
+        rate_limit = self._fresh()
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://broker:6379/0")
+        from cqc_lem.utilities import content_generation_status as cgs
+        client = MagicMock()
+        with patch("redis.Redis.from_url", return_value=client) as from_url:
+            assert rate_limit._redis_client() is client
+            assert cgs._redis_client() is client
+        assert from_url.call_count == 1
