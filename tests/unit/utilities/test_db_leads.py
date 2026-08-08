@@ -12,6 +12,8 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _DB = "cqc_lem.utilities.db"
+_OUTREACH = "cqc_lem.platform.db.repositories.outreach"
+_GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
 
 def _mock_conn(fetch_row=None, fetch_all=None, side_effect=None, rowcount=1):
@@ -31,7 +33,7 @@ class TestGetLeadActivity:
         conn, cursor = _mock_conn()
         cursor.fetchall.side_effect = lambda: [{"person_name": "Jane", "person_profile_url": None,
                                                 "occurred_at": None, "detail": ""}]
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import _LEAD_ACTIVITY_SOURCES, get_lead_activity
             rows = get_lead_activity(4, days=30)
         assert len(rows) == len(_LEAD_ACTIVITY_SOURCES)
@@ -48,7 +50,7 @@ class TestGetLeadActivity:
     def test_one_broken_source_does_not_lose_the_others(self):
         conn, cursor = _mock_conn(fetch_all=[{"person_name": "Jane"}])
         cursor.execute.side_effect = [mysql.connector.Error("no such table")] + [None] * 10
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.myprint"):
             from cqc_lem.utilities.db import _LEAD_ACTIVITY_SOURCES, get_lead_activity
             rows = get_lead_activity(1)
         assert len(rows) == len(_LEAD_ACTIVITY_SOURCES) - 1
@@ -64,7 +66,7 @@ class TestGetProfileFacts:
     def test_keys_the_facts_by_profile_url(self):
         conn, cursor = _mock_conn(fetch_all=[{"profile_url": "u1", "job_title": "CTO",
                                               "company_name": "Acme", "industry": "AI"}])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_profile_facts
             facts = get_profile_facts(["u1", "u2"])
         assert facts["u1"]["job_title"] == "CTO"
@@ -72,7 +74,7 @@ class TestGetProfileFacts:
 
     def test_looks_up_querystring_and_trailing_slash_variants(self):
         conn, cursor = _mock_conn(fetch_all=[])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_profile_facts
             get_profile_facts(["https://www.linkedin.com/in/jane-doe?trk=feed"])
         params = set(cursor.execute.call_args[0][1])
@@ -81,7 +83,7 @@ class TestGetProfileFacts:
 
     def test_variants_of_the_same_person_are_not_queried_twice(self):
         conn, cursor = _mock_conn(fetch_all=[])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_profile_facts
             get_profile_facts(["https://linkedin.com/in/jane/",
                                "https://linkedin.com/in/jane?trk=x"])
@@ -89,14 +91,14 @@ class TestGetProfileFacts:
         assert len(params) == len(set(params))
 
     def test_no_urls_skips_the_query(self):
-        with patch("cqc_lem.platform.db.connection.get_db_connection") as get:
+        with patch(f"{_GET_CONN}") as get:
             from cqc_lem.utilities.db import get_profile_facts
             assert get_profile_facts([]) == {} and get_profile_facts(None) == {}
         get.assert_not_called()
 
     def test_db_error_returns_no_facts(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import get_profile_facts
             assert get_profile_facts(["u1"]) == {}
 
@@ -104,7 +106,7 @@ class TestGetProfileFacts:
 class TestResetLeadScores:
     def test_zeroes_computed_columns_only(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import reset_lead_scores
             assert reset_lead_scores(3) is True
         sql = cursor.execute.call_args[0][0]
@@ -114,14 +116,14 @@ class TestResetLeadScores:
 
     def test_clears_the_stale_recommended_action(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import reset_lead_scores
             reset_lead_scores(3)
         assert "next_action=NULL" in cursor.execute.call_args[0][0]
 
     def test_db_error_is_reported_not_raised(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import reset_lead_scores
             assert reset_lead_scores(3) is False
 
@@ -129,7 +131,7 @@ class TestResetLeadScores:
 class TestUpsertLead:
     def test_upserts_on_the_person_key(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import LeadStage, upsert_lead
             assert upsert_lead(2, "in:jane", person_name="Jane", score=81,
                                stage=LeadStage.HOT, signals="engaged,intent") is True
@@ -139,7 +141,7 @@ class TestUpsertLead:
 
     def test_never_overwrites_operator_columns(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import upsert_lead
             upsert_lead(2, "in:jane")
         update_clause = cursor.execute.call_args[0][0].split("ON DUPLICATE KEY UPDATE")[1]
@@ -148,21 +150,21 @@ class TestUpsertLead:
 
     def test_scores_are_clamped_into_their_columns(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import upsert_lead
             upsert_lead(2, "in:jane", score=9999, icp_score=-5, engagement_score=300)
         params = cursor.execute.call_args[0][1]
         assert (params[4], params[5], params[6]) == (255, 0, 255)
 
     def test_blank_person_key_is_refused(self):
-        with patch("cqc_lem.platform.db.connection.get_db_connection") as get:
+        with patch(f"{_GET_CONN}") as get:
             from cqc_lem.utilities.db import upsert_lead
             assert upsert_lead(2, "") is False
         get.assert_not_called()
 
     def test_db_error_returns_false(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import upsert_lead
             assert upsert_lead(2, "in:jane") is False
 
@@ -176,7 +178,7 @@ class TestGetLeads:
 
     def test_hides_dismissed_leads_by_default(self):
         conn, cursor = _mock_conn(fetch_row={"c": 1}, fetch_all=self._rows())
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_leads
             result = get_leads(2)
         assert result["total"] == 1
@@ -184,7 +186,7 @@ class TestGetLeads:
 
     def test_stage_filter_honors_a_manual_override(self):
         conn, cursor = _mock_conn(fetch_row={"c": 0}, fetch_all=[])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_leads
             get_leads(2, stage_filter="hot", include_dismissed=True)
         sql, params = cursor.execute.call_args_list[0][0]
@@ -193,7 +195,7 @@ class TestGetLeads:
 
     def test_serializes_timestamps_and_the_dismissed_flag(self):
         conn, _ = _mock_conn(fetch_row={"c": 1}, fetch_all=self._rows())
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_leads
             lead = get_leads(2)["leads"][0]
         assert lead["last_signal_at"] == "2026-07-24T09:00:00"
@@ -201,14 +203,14 @@ class TestGetLeads:
 
     def test_paginates(self):
         conn, cursor = _mock_conn(fetch_row={"c": 40}, fetch_all=[])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_leads
             get_leads(2, page=3, page_size=10)
         assert cursor.execute.call_args_list[1][0][1][-2:] == (10, 20)
 
     def test_db_error_returns_an_empty_board(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import get_leads
             assert get_leads(2) == {"leads": [], "total": 0, "page": 1, "page_size": 100}
 
@@ -216,7 +218,7 @@ class TestGetLeads:
 class TestHotLeads:
     def test_hot_list_covers_hot_and_warmer_stages(self):
         conn, cursor = _mock_conn(fetch_all=[{"id": 1}])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_hot_leads
             assert get_hot_leads(2, limit=5) == [{"id": 1}]
         sql, params = cursor.execute.call_args[0]
@@ -224,19 +226,19 @@ class TestHotLeads:
 
     def test_hot_list_db_error_is_empty(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import get_hot_leads
             assert get_hot_leads(2) == []
 
     def test_count_hot_leads(self):
         conn, _ = _mock_conn(fetch_row=(3,))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import count_hot_leads
             assert count_hot_leads(2) == 3
 
     def test_count_hot_leads_db_error_is_zero(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import count_hot_leads
             assert count_hot_leads(2) == 0
 
@@ -244,19 +246,19 @@ class TestHotLeads:
 class TestGetAndUpdateLead:
     def test_get_lead_returns_the_row(self):
         conn, _ = _mock_conn(fetch_row={"id": 9, "user_id": 2})
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_lead
             assert get_lead(9)["user_id"] == 2
 
     def test_get_lead_db_error_returns_none(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import get_lead
             assert get_lead(9) is None
 
     def test_updates_only_the_supplied_fields(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_lead
             assert update_lead(9, notes="met at a conference") is True
         sql, params = cursor.execute.call_args[0]
@@ -265,7 +267,7 @@ class TestGetAndUpdateLead:
 
     def test_stage_override_and_dismissal(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import LeadStage, update_lead
             update_lead(9, manual_stage=LeadStage.OPPORTUNITY, dismissed=True)
         params = cursor.execute.call_args[0][1]
@@ -273,19 +275,19 @@ class TestGetAndUpdateLead:
 
     def test_empty_stage_clears_the_override(self):
         conn, cursor = _mock_conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+        with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_lead
             update_lead(9, manual_stage="")
         assert cursor.execute.call_args[0][1] == (None, 9)
 
     def test_nothing_to_update_is_refused(self):
-        with patch("cqc_lem.platform.db.connection.get_db_connection") as get:
+        with patch(f"{_GET_CONN}") as get:
             from cqc_lem.utilities.db import update_lead
             assert update_lead(9) is False
         get.assert_not_called()
 
     def test_db_error_returns_false(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), patch(f"{_DB}.myprint"):
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.myprint"):
             from cqc_lem.utilities.db import update_lead
             assert update_lead(9, notes="x") is False
