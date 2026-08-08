@@ -115,6 +115,20 @@ class TestClaim:
         redis.ttl = MagicMock(side_effect=RuntimeError("no ttl"))
         assert claim_profile_refresh(7).retry_after_seconds == WINDOW_SECONDS
 
+    def test_a_counter_that_lost_its_expiry_is_re_armed_not_left_forever(self, redis):
+        """A `-1` TTL is the one state that must be repaired, or the button dies permanently.
+
+        `EXPIRE` is a second command, so a connection dropping between it and the `INCR` leaves a
+        counter with no expiry. Nothing else in this module re-stamps one, so that user's window
+        would never reset: every later press reads "already refreshed today" for the rest of time.
+        """
+        from cqc_lem.utilities.profile_refresh import WINDOW_SECONDS, claim_profile_refresh
+        claim_profile_refresh(7)
+        redis.ttls["lem:profile_refresh:7"] = -1        # Redis: key exists, no expiry set
+
+        assert claim_profile_refresh(7).queued is False  # still bounded right now...
+        assert redis.ttls["lem:profile_refresh:7"] == WINDOW_SECONDS  # ...but it will expire
+
 
 class TestPeek:
     def test_an_unspent_window_reads_as_zero(self, redis):
@@ -148,3 +162,19 @@ class TestPeek:
         broken.get.side_effect = RuntimeError("broker restarting")
         with patch(f"{_M}.shared_redis_client", return_value=broken):
             assert refresh_claimed_seconds(7) == 0
+
+    def test_an_unreadable_window_is_debug_never_a_warning(self):
+        """`GET /user/linkedin-profile` runs this on every Dashboard load.
+
+        One Redis outage would otherwise warn once per page view in every open tab, escalate to
+        ERROR on the third and file a grouped `$exception` — for a broker `claim_profile_refresh`
+        already warns about. Same call `auth_rate_limit` made for its own read-only twin.
+        """
+        from cqc_lem.utilities.profile_refresh import refresh_claimed_seconds
+        broken = MagicMock()
+        broken.get.side_effect = RuntimeError("broker restarting")
+        with patch(f"{_M}.shared_redis_client", return_value=broken), \
+             patch(f"{_M}.log_warning") as warn, patch(f"{_M}.log_debug") as debug:
+            assert refresh_claimed_seconds(7) == 0
+        warn.assert_not_called()
+        debug.assert_called()

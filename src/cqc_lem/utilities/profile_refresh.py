@@ -50,16 +50,25 @@ def _key(user_id: int) -> str:
     return f"{_KEY_PREFIX}:{user_id}"
 
 
+def _raw_ttl(client, user_id: int) -> int:
+    """Redis' own answer: seconds left, `-1` for a key with no expiry, `-2` for no key.
+
+    Unreadable reads as `-2` — nothing to repair and nothing to report from here, since the caller
+    is already inside its own fail-open handler.
+    """
+    try:
+        return int(client.ttl(_key(user_id)))
+    except Exception:
+        return -2
+
+
 def _remaining_seconds(client, user_id: int) -> int:
     """What is left of this user's window, or the full window when Redis cannot say.
 
     A key with no TTL (`-1`) or none at all (`-2`) reads as the full window rather than 0: telling
     the SPA to re-enable the button immediately is the one answer that is certainly wrong.
     """
-    try:
-        ttl = int(client.ttl(_key(user_id)))
-    except Exception:
-        return WINDOW_SECONDS
+    ttl = _raw_ttl(client, user_id)
     return ttl if ttl > 0 else WINDOW_SECONDS
 
 
@@ -77,7 +86,13 @@ def claim_profile_refresh(user_id: int) -> RefreshClaim:
         return RefreshClaim(queued=True, reason=REASON_QUEUED)
     try:
         count = int(client.incr(_key(user_id)))
-        if count == 1:
+        # The TTL is stamped on the FIRST increment, which is what keeps the window fixed rather
+        # than sliding. `-1` (a key with no expiry) is the one state that must be repaired anyway:
+        # an `expire` that never landed — the connection dropping between the two commands is
+        # enough — leaves a counter that outlives every window, and with nothing to re-arm it the
+        # button would be dead for that user FOREVER. Re-stamping only when there is no expiry
+        # cannot extend a live window.
+        if count == 1 or _raw_ttl(client, user_id) < 0:
             client.expire(_key(user_id), WINDOW_SECONDS)
     except Exception as e:
         log_warning("Profile-refresh limiter failed — allowing the refresh", exc=e, user_id=user_id)
@@ -96,6 +111,14 @@ def refresh_claimed_seconds(user_id: int) -> int:
     load without spending the window it is reporting on. Fails open to 0 for the same reason the
     claim fails open: an unreadable limiter must leave the button usable, and the claim is the thing
     that actually enforces the bound.
+
+    An unreadable window logs DEBUG, not WARNING, and that is the same call as `auth_rate_limit`
+    made for its own read-only twin. This runs on every `GET /user/linkedin-profile` — the Dashboard
+    loads it — so ONE Redis outage would warn once per page view in every open tab, escalate to
+    ERROR on the third and file a grouped `$exception` for a broker the claim path is already
+    reporting (`utilities/CLAUDE.md`: warn where you detect, and one condition gets one warning).
+    Nobody is worse off for the silence: the peek only decides whether a button renders enabled, and
+    pressing it re-asks the limiter for real.
     """
     client = shared_redis_client()
     if client is None:
@@ -104,7 +127,7 @@ def refresh_claimed_seconds(user_id: int) -> int:
         raw = client.get(_key(user_id))
         count = int(raw) if raw is not None else 0
     except Exception as e:
-        log_warning("Could not read the profile-refresh window", exc=e, user_id=user_id)
+        log_debug(f"Could not read the profile-refresh window: {e}", user_id=user_id)
         return 0
     if count < PROFILE_REFRESH_MAX_PER_DAY:
         return 0
