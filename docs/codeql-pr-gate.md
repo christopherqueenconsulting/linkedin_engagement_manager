@@ -13,7 +13,8 @@ Config:   `.github/codeql/codeql-config.yml`
 1. After the existing CodeQL workflows upload SARIF **for the commit being gated** (see
    *Analysis freshness* below), the gate queries
    `/repos/{owner}/{repo}/code-scanning/alerts` for both the PR head and the base ref.
-2. It computes the **new** alerts introduced by the PR (by rule, file, line, and message).
+2. It computes the **new** alerts introduced by the PR (by rule, file, line, and message — plus
+   the alert number, see *Alert identity* below).
 3. It buckets them:
 
 ### Auto-fixable / mechanical quality alerts
@@ -114,6 +115,37 @@ The fix: the gate is told the SHA its ref resolves to and waits for *that commit
 
 This is the same shape as the v0.115.0 release incident in `docs/release-fast-lane.md` ("Step 2
 waits on the *run*, not on 'a release PR exists' — those look equivalent and are not").
+
+## Alert identity — a line that moved is not a new alert (issue #1087)
+
+`Alert.key` is `(rule, path, start_line, end_line, message[:200])`, so **line position is part of
+identity**. A pre-existing alert whose line shifts because the PR added code *above* it in the same
+file therefore reads as new on the head ref — a gate failure on debt the PR did not create, and one
+that arrives on any diff big enough to move a line.
+
+Measured on 2026-08-07: PR #1067 added 13 lines above `run_automation.py`'s pre-existing
+`py/empty-except` alert (line 4240 on `main` → 4253 on the merge-queue ref). The gate called it new,
+the required check failed on every `merge_group` run, GitHub evicted the PR from the merge queue and
+the pipeline re-enqueued it next tick. That loop ran ~47h (with the `tick.sh` half tracked in #1082).
+The `pull_request` run of the same gate can pass while the `merge_group` run fails — `main` moves
+under the PR between the two — so this surfaces in the queue, where there is no PR comment surface
+and no human watching.
+
+`compare_alerts` matches head against base **two ways**:
+
+- **Exact** — the `Alert.key` above.
+- **Number** — the alert `number`, which is repo-global and stable across refs. GitHub already
+  tracks an alert across line movement (SARIF partial fingerprints); the number is that tracking,
+  which is exactly what a line key is trying to approximate. A head alert whose number the base
+  ref's open set also carries is the same alert, wherever it now sits.
+
+The line key is kept, not replaced: it still catches a genuinely new alert that arrives without a
+number. A new alert gets a number the base ref has never seen, so it fails the gate at any line.
+
+**The tolerance is never silent.** Number matching is the only way this comparison can *over*-match,
+so `Compared alerts` reports the split — `exact_matched` and `shift_matched` alongside `new_count` —
+and `shift_matched_count` is a workflow output. A run where `shift_matched` is large is a run to
+look at.
 
 ## Fail-open behavior
 
