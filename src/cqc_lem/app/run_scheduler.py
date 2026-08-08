@@ -1593,19 +1593,23 @@ def auto_check_catchup_touches():
         if budgets[user_id] <= 0:
             capped += 1
             continue  # cap met for today — the rest stay 'approved' for tomorrow
+        # Durable send claim: once we dispatch a touch, mark it `sending` so a lost worker can't
+        # send it again without passing the `catchup_send_attempts` guard inside send_catchup_touch.
+        if not update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING):
+            continue
         budgets[user_id] -= 1
-        update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
         send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
         dispatched += 1
 
     # Re-queue touches stuck in 'sending' whose send task was lost (container restart) — mirrors the
-    # orphaned connection-request recovery. The 2-hour gap avoids racing an in-flight task.
+    # orphaned connection-request recovery. The 2-hour gap avoids racing an in-flight task. A claim row
+    # in catchup_send_attempts will stop the second send if the first one actually landed.
     orphaned = get_orphaned_catchup_touches(lookback_hours=2)
     for touch_id, user_id in orphaned:
         log_warning(f"Re-queueing orphaned catch-up touch {touch_id}",
                     user_id=user_id, task_name=task_name)
-        update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
-        send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
+        if update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING):
+            send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
 
     # The drafted-but-unapproved backlog, counted on EVERY beat (issue #792). The scan reports its
     # `drafted` count once a day; for the other 23 hours a full approval queue and an empty lane both

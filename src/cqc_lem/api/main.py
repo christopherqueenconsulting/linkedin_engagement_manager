@@ -87,6 +87,12 @@ from cqc_lem.utilities.content_generation_status import clear_generation_status,
 from cqc_lem.utilities.db import (
     AVATAR_APPROVAL_APPROVED,
     AVATAR_APPROVAL_REJECTED,
+    CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
+    CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+    CATCHUP_MAX_PER_CONTACT_DAYS_MIN,
+    CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
+    CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+    CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
     CATCHUP_TOUCHES_MAX,
     CATCHUP_TOUCHES_MAX_STANDARD,
     CATCHUP_TOUCHES_MIN,
@@ -1969,6 +1975,9 @@ class EngagementPreferencesRequest(BaseModel):
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
     catchup_event_types: List[str] = list(DEFAULT_CATCHUP_EVENT_TYPES)
     catchup_message_source: str = "linkedin"  # 'linkedin' (LinkedIn's own draft) | 'ai'
+    # Per-contact catch-up frequency guard (issue #1078). 0 disables the guard.
+    min_catchup_contact_interval_days: int = CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+    max_catchup_touches_per_contact_days: int = CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
 
     @field_validator("comment_length")
     @classmethod
@@ -2090,6 +2099,24 @@ class EngagementPreferencesRequest(BaseModel):
     def _clean_catchup_event_types(cls, v: List[str]) -> List[str]:
         # Drop unknown milestone types at the boundary — the ledger column is a MySQL ENUM.
         return [t for t in (v or []) if t in tuple(CatchupEventType)]
+
+    @field_validator("min_catchup_contact_interval_days")
+    @classmethod
+    def _clamp_catchup_contact_interval(cls, v: int) -> int:
+        try:
+            return min(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+                       max(CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN, int(v)))
+        except (TypeError, ValueError):
+            return CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT
+
+    @field_validator("max_catchup_touches_per_contact_days")
+    @classmethod
+    def _clamp_catchup_per_contact_cap(cls, v: int) -> int:
+        try:
+            return min(CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+                       max(CATCHUP_MAX_PER_CONTACT_DAYS_MIN, int(v)))
+        except (TypeError, ValueError):
+            return CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT
 
 
 class DmTemplateItem(BaseModel):
@@ -5059,6 +5086,15 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
+    # Read-only: bounds for the per-contact catch-up frequency guard (issue #1078).
+    prefs["catchup_contact_interval_bounds"] = {
+        "min_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
+        "max_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
+    }
+    prefs["catchup_per_contact_cap_bounds"] = {
+        "min": CATCHUP_MAX_PER_CONTACT_DAYS_MIN,
+        "max": CATCHUP_MAX_PER_CONTACT_DAYS_MAX,
+    }
     # Read-only: the deploy-wide gate thresholds, so the UI can show what "default" actually means
     # for a user who hasn't overridden them (issue #421).
     from cqc_lem.utilities.ai.content_alignment import authenticity_score_min

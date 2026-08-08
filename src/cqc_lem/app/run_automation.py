@@ -101,6 +101,7 @@ from cqc_lem.utilities.connection_targeting import (
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import (
     ALREADY_CONNECTED_MESSAGE,
+    CATCHUP_CONTACT_CAP_WINDOW_DAYS,
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
     ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK,
@@ -127,7 +128,9 @@ from cqc_lem.utilities.db import (
     PostType,
     ScheduledDmStatus,
     claim_appreciation_touch,
+    claim_catchup_send_attempt,
     claim_post_for_comment,
+    count_catchup_touches_for_contact_in_window,
     count_catchup_touches_sent_today,
     count_comments_today,
     count_dms_sent_today,
@@ -195,6 +198,7 @@ from cqc_lem.utilities.db import (
     insert_new_log,
     insert_outreach_target,
     insert_scheduled_dm,
+    last_catchup_sent_at,
     mark_edition_failed,
     mark_edition_published,
     mark_followup,
@@ -214,6 +218,7 @@ from cqc_lem.utilities.db import (
     record_target_comment_blocked,
     record_target_engagement,
     record_target_follow_failure,
+    release_catchup_send_attempt,
     release_post_claim,
     resolve_weekly_cap,
     set_profile_synthesis,
@@ -8473,6 +8478,9 @@ CATCHUP_STATUS_FAILED = "failed"                    # send_dm_now could not deli
 CATCHUP_STATUS_DM_CAPPED = "dm_capped"              # the ACCOUNT-wide DM cap, not the catch-up one
 CATCHUP_STATUS_NO_MESSAGE = "no_message"            # approved with an empty body
 CATCHUP_STATUS_NOT_SENDABLE = "not_sendable"        # row missing or no longer approved/sending
+CATCHUP_STATUS_CONTACT_COOLDOWN = "contact_cooldown"  # per-contact interval hasn't elapsed (issue #1078)
+CATCHUP_STATUS_CONTACT_CAP = "contact_cap"            # per-contact window cap reached (issue #1078)
+CATCHUP_STATUS_ALREADY_SENT = "already_sent"          # durable claim row already exists (issue #1078)
 
 # Ordered fallback chain for the catch-up cards. Live-grounded 2026-08-03 on a real session: the
 # surface is full SDUI — every card is a div[role='listitem'] (with a componentkey UUID) inside the
@@ -8634,6 +8642,35 @@ def _catchup_excluded(moment: dict, prefs: dict) -> bool:
         if str(term).strip() and str(term).strip().lower() in haystack:
             return True
     return False
+
+
+def _catchup_contact_cooldown_active(user_id: int, profile_url: str, cooldown_days: int) -> bool:
+    """True when this contact already received a catch-up within `cooldown_days` (issue #1078).
+
+    A non-positive cooldown disables the guard. Read failures return False so a broken query never
+    blocks the lane.
+    """
+    if cooldown_days <= 0:
+        return False
+    last_sent = last_catchup_sent_at(user_id, profile_url)
+    if last_sent is None:
+        return False
+    return datetime.now(timezone.utc) - last_sent.replace(tzinfo=timezone.utc) < timedelta(
+        days=cooldown_days)
+
+
+def _catchup_contact_cap_reached(user_id: int, profile_url: str, max_touches: int,
+                                 window_days: int = CATCHUP_CONTACT_CAP_WINDOW_DAYS) -> bool:
+    """True when this contact has already received `max_touches` catch-ups in `window_days` (issue #1078).
+
+    The window is the fixed rolling month, NOT the cooldown: a cap measured over the cooldown window
+    can never be reached, because the cooldown blocks the second message long before the cap counts
+    it — and a user who sets the cooldown to 0 would lose the cap with it. A non-positive
+    `max_touches` disables the guard. Read failures return False.
+    """
+    if window_days <= 0 or max_touches <= 0:
+        return False
+    return count_catchup_touches_for_contact_in_window(user_id, profile_url, window_days) >= max_touches
 
 
 def _score_catchup_moment(moment: dict, prefs: dict) -> int:
@@ -8875,7 +8912,8 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
 _CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
                                      CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED,
                                      CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE,
-                                     CATCHUP_STATUS_AWAITING_APPROVAL})
+                                     CATCHUP_STATUS_AWAITING_APPROVAL, CATCHUP_STATUS_CONTACT_COOLDOWN,
+                                     CATCHUP_STATUS_CONTACT_CAP, CATCHUP_STATUS_ALREADY_SENT})
 
 
 def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> None:
@@ -8907,9 +8945,11 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     NOTHING is sent here. Qualifying moments become 'pending' rows in catchup_touches for human
     approval (or 'approved' when the user opted into catchup_touch_mode='auto_approve'), and the
     capped scanner sends them later. Only milestone types the user enabled are drafted, each
-    milestone is deduped on (person, event_type, period), and moments scoring below CATCHUP_MIN_SCORE
-    are tombstoned as 'skipped' so we neither draft nor re-score them. The message itself is
-    LinkedIn's own pre-drafted response unless the user opted into catchup_message_source='ai'.
+    milestone is deduped on (person, event_type, period), moments scoring below CATCHUP_MIN_SCORE
+    are tombstoned as 'skipped' so we neither draft nor re-score them, and the per-contact frequency
+    guard (issue #1078) holds back any new event for a contact that already received a catch-up in
+    the configured window. The message itself is LinkedIn's own pre-drafted response unless the user
+    opted into catchup_message_source='ai'.
 
     EVERY run reports (issue #792) — including the ones that draft nothing — with the per-stage
     funnel counts, because a quiet lane and a broken one are otherwise the same silence.
@@ -8958,7 +8998,10 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     finally:
         quit_gracefully(driver)
 
-    funnel = {"classified": 0, "enabled_type": 0, "excluded": 0, "duplicate": 0, "below_bar": 0}
+    cooldown_days = int(prefs.get("min_catchup_contact_interval_days") or 0)
+    max_per_contact = int(prefs.get("max_catchup_touches_per_contact_days") or 0)
+    funnel = {"classified": 0, "enabled_type": 0, "excluded": 0, "duplicate": 0, "below_bar": 0,
+              "contact_cooldown": 0, "contact_cap": 0}
     for moment in moments:
         if drafted >= max_drafts:
             break
@@ -8976,6 +9019,14 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         period = _catchup_event_period(event_type)
         if has_catchup_touch(user_id, moment["profile_url"], event_type, period):
             funnel["duplicate"] += 1
+            continue
+        # Per-contact frequency guard (issue #1078): don't stack congratulations to the same person
+        # across different events within the configured window.
+        if _catchup_contact_cooldown_active(user_id, moment["profile_url"], cooldown_days):
+            funnel["contact_cooldown"] += 1
+            continue
+        if _catchup_contact_cap_reached(user_id, moment["profile_url"], max_per_contact):
+            funnel["contact_cap"] += 1
             continue
         score = _score_catchup_moment(moment, prefs)
         if score < CATCHUP_MIN_SCORE:
@@ -9017,6 +9068,10 @@ def send_catchup_touch(self, touch_id: int):
     the shared DM logging. A high-value milestone also enqueues the user's follow-up sequence, which is
     what routes a replying prospect into the BD nurture.
 
+    Issue #1078 adds two extra guards: a durable `catchup_send_attempts` claim written BEFORE the DM
+    goes out (so retries / worker restarts can never double-send the same milestone), and a per-contact
+    cooldown/cap that defers a touch when the same person already received a catch-up within the window.
+
     EVERY outcome reports (issue #792). A deferral puts the touch back to 'approved' and the drip
     re-dispatches it 20 minutes later, so without this the send phase's `dispatched` count climbs all
     day on a lane that has never delivered a single message — which IS the reported symptom.
@@ -9053,11 +9108,42 @@ def send_catchup_touch(self, touch_id: int):
         _report(CATCHUP_STATUS_DM_CAPPED, user_id)
         return f"Catch-up touch {touch_id} deferred (daily DM cap reached)"
 
+    cooldown_days = int(prefs.get("min_catchup_contact_interval_days") or 0)
+    max_per_contact = int(prefs.get("max_catchup_touches_per_contact_days") or 0)
+    if _catchup_contact_cooldown_active(user_id, touch["profile_url"], cooldown_days):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        _report(CATCHUP_STATUS_CONTACT_COOLDOWN, user_id)
+        return f"Catch-up touch {touch_id} deferred (per-contact cooldown)"
+    if _catchup_contact_cap_reached(user_id, touch["profile_url"], max_per_contact):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        _report(CATCHUP_STATUS_CONTACT_CAP, user_id)
+        return f"Catch-up touch {touch_id} deferred (per-contact cap)"
+
+    # Durable send claim: only one worker can insert this milestone identity. If another already
+    # did, the row is already sent (or sending) and we must not call LinkedIn again.
+    event_period = touch.get("event_period") or _catchup_event_period(touch["event_type"])
+    if not claim_catchup_send_attempt(touch_id, user_id, touch["profile_url"], touch["event_type"],
+                                      event_period):
+        # A claim we did not write, on a row that never reached `sent`, means a send was lost between
+        # the claim and its status update — rare enough to be worth a defect, and never routine.
+        log_warning(f"Catch-up touch {touch_id} already has a send claim; skipping",
+                    user_id=user_id, action_type="catchup")
+        # Leave the row as SENT if the claim exists; a missing status update is the only reason we'd
+        # arrive here with the claim already present.
+        if touch["status"] != CatchupTouchStatus.SENT:
+            update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT)
+        _report(CATCHUP_STATUS_ALREADY_SENT, user_id)
+        return f"Catch-up touch {touch_id} already sent"
+
     try:
         sent = send_dm_now(user_id, touch["profile_url"], touch["message"],
                            person_name=touch.get("person_name"))
     except LinkedInRateLimited as e:
         myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
+        # The breaker refused before a composer was ever opened, so nothing was sent — give the claim
+        # back, or the deferral we are about to write could never be retried: the next attempt would
+        # lose the claim and mark this touch `sent` having sent nothing.
+        release_catchup_send_attempt(user_id, touch["profile_url"], touch["event_type"], event_period)
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
         _report(CATCHUP_STATUS_THROTTLED, user_id)
         return f"Catch-up touch {touch_id} deferred (LinkedIn throttled)"
