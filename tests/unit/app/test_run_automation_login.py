@@ -172,6 +172,38 @@ class TestUpdateStaleProfileLoginError:
         mock_quit.assert_called_once_with(mock_driver)
         assert result == "Profile Updated Successfully"
 
+    def test_the_daily_sweep_still_honours_the_profile_cache(self):
+        """No `force_refresh` means the beat behaves exactly as it did before issue #1076."""
+        with patch(_PATCH_GET_PROFILE,
+                   return_value=(MagicMock(), MagicMock(), "u@e.com", MagicMock())) as get_profile, \
+             patch(f"{_MOD}.synthesize_profile", return_value=""), \
+             patch(f"{_MOD}.quit_gracefully"):
+            from cqc_lem.app.run_automation import update_stale_profile
+
+            update_stale_profile.run(user_id=1)
+
+        assert get_profile.call_args.kwargs["force_refresh"] is False
+
+    def test_an_on_demand_refresh_bypasses_the_profile_cache(self):
+        """The whole point of the button (issue #1076).
+
+        A profile cached this morning must NOT be read back when the user edited it a minute ago.
+        """
+        with patch(_PATCH_GET_PROFILE,
+                   return_value=(MagicMock(), MagicMock(), "u@e.com", MagicMock())) as get_profile, \
+             patch(f"{_MOD}.synthesize_profile", return_value="voice brief"), \
+             patch(f"{_MOD}.set_profile_synthesis", return_value=True) as set_synth, \
+             patch(f"{_MOD}.quit_gracefully"):
+            from cqc_lem.app.run_automation import update_stale_profile
+
+            result = update_stale_profile.run(user_id=1, force_refresh=True)
+
+        assert get_profile.call_args.kwargs["force_refresh"] is True
+        # A fresh scrape is only half the job — the voice brief every generation prompt reads has
+        # to be re-distilled from it, or the new headline never reaches the writing.
+        set_synth.assert_called_once_with(1, "voice brief")
+        assert result == "Profile Updated Successfully"
+
 
 class TestEngageWithProfileViewerLoginError:
     def test_returns_error_string_on_runtime_error(self):

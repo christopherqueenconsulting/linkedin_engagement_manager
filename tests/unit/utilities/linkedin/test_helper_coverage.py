@@ -196,6 +196,33 @@ class TestGetMyProfile:
              patch(f"{_H}.time.sleep"):
             assert get_my_profile(driver, MagicMock(), "a@x.com", "pw", user_id=3) is None
 
+    def test_force_refresh_scrapes_past_a_warm_cache(self):
+        """The freshness window is exactly wrong for a profile edited minutes ago (issue #1076).
+
+        The row is fresh by AGE and stale by CONTENT, so the on-demand refresh skips the read.
+        """
+        from cqc_lem.utilities.linkedin.helper import get_my_profile
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/in/jane/"
+        scraped = {"full_name": "Jane Doe", "job_title": "CTO"}
+        with patch(f"{_H}.get_linked_in_profile_by_user_id",
+                   return_value=_profile_json()) as by_uid, \
+             patch(f"{_H}.get_linked_in_profile_by_email",
+                   return_value=_profile_json()) as by_email, \
+             patch(f"{_H}.login_to_linkedin") as login, \
+             patch(f"{_H}.get_linkedin_profile_from_url", return_value=scraped) as from_url, \
+             patch(f"{_H}.add_linkedin_profile", return_value=True), \
+             patch(f"{_H}.time.sleep"):
+            profile = get_my_profile(driver, MagicMock(), "a@x.com", "pw", user_id=3,
+                                     force_refresh=True)
+        by_uid.assert_not_called()
+        by_email.assert_not_called()
+        login.assert_called_once()
+        assert profile.full_name == "Jane Doe"
+        # The by-URL cache is the second layer, and skipping only the first would hand back the
+        # very row the caller asked to ignore.
+        assert from_url.call_args.kwargs["force_refresh"] is True
+
 
 class TestGetLinkedInProfileFromUrl:
     def test_cached_profile_returned_as_dict(self):
@@ -235,6 +262,44 @@ class TestGetLinkedInProfileFromUrl:
                                                  "https://www.linkedin.com/in/old/")
         driver.get.assert_called_once_with("https://www.linkedin.com/in/old/")
         assert data["full_name"] == "Jane Doe"
+
+    def test_force_refresh_never_reads_the_by_url_cache(self):
+        from cqc_lem.utilities.linkedin.helper import get_linkedin_profile_from_url
+        url = "https://www.linkedin.com/in/jane/"
+        driver = MagicMock()
+        driver.current_url = url
+        scraped = {"full_name": "Jane Doe", "company_name": "Acme"}
+        with patch(f"{_H}.get_linked_in_profile_by_url",
+                   return_value=_profile_json()) as by_url, \
+             patch(f"{_H}.get_element_wait_retry", return_value=None), \
+             patch(f"{_H}.returnProfileInfo", return_value=scraped), \
+             patch(f"{_H}.get_industries_of_profile_from_ai", return_value="Tech"), \
+             patch(f"{_H}.add_linkedin_profile", return_value=True):
+            data = get_linkedin_profile_from_url(driver, MagicMock(), url, force_refresh=True)
+        by_url.assert_not_called()
+        assert data == scraped
+
+    def test_force_refresh_survives_the_redirect_recursion(self):
+        """LinkedIn rewrites vanity URLs, so the walk re-enters itself on the resolved URL.
+
+        If the flag did not ride along, the second hop would serve the cached row after all.
+        """
+        from cqc_lem.utilities.linkedin.helper import get_linkedin_profile_from_url
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/in/jane-redirected/"
+        scraped = {"full_name": "Jane Doe"}
+        with patch(f"{_H}.get_linked_in_profile_by_url",
+                   return_value=_profile_json()) as by_url, \
+             patch(f"{_H}.get_element_wait_retry", return_value=None), \
+             patch(f"{_H}.returnProfileInfo", return_value=scraped), \
+             patch(f"{_H}.get_industries_of_profile_from_ai", return_value="Tech"), \
+             patch(f"{_H}.add_linkedin_profile", return_value=True), \
+             patch(f"{_H}.time.sleep"):
+            data = get_linkedin_profile_from_url(driver, MagicMock(),
+                                                 "https://www.linkedin.com/in/old/",
+                                                 force_refresh=True)
+        by_url.assert_not_called()
+        assert data == scraped
 
 
 class TestDriveEmailPinChallenge:

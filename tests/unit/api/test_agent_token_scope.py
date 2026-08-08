@@ -61,6 +61,10 @@ class TestAgentSurface:
         "/user/security",
         "/user/extension-token",
         "/user/agent-token",            # must not be able to mint its own successor
+        # Not a credential — capacity. One press opens a Chrome session out of the fixed pool the
+        # engagement lanes are sized against, so a headless token must not be able to draw on it
+        # (issue #1076).
+        "/user/linkedin-profile/refresh",
     ])
     def test_everything_that_would_widen_the_blast_radius_is_refused(self, main_mod, path):
         key = main_mod._scope_path("/api" + path)
