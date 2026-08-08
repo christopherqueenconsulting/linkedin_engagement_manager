@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.136.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.135.0...v0.136.0) (2026-08-08)
+
+
+### Features
+
+* **agent-workflow:** spec-first + gauntlet-loop skills, applied to LEM's own pipelines ([#1127](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1127)) ([ebc7d5d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ebc7d5ddf791c111631b1bd3e5b624d9e511b706))
+
+
+### Bug Fixes
+
+* **automation:** re-ground feed/group share-box composer for SDUI drift ([#1107](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1107)) ([7e1ebb2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7e1ebb2975b32ab84cd315a5f15ba76c92c2b492))
+* **automation:** re-ground feed/group share-box composer for SDUI drift (closes [#1107](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1107)) ([#1116](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1116)) ([7e1ebb2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7e1ebb2975b32ab84cd315a5f15ba76c92c2b492))
+* **feed-commenting:** probe group-feed composer before lem-medium generation ([#1084](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1084)) ([9b756ea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9b756ea72676c08b289a592a782c1d6e0dc6a9e3))
+* **feed-commenting:** stop spending an LLM generation per group post the composer can't reach ([#1084](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1084)) ([#1129](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1129)) ([9b756ea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9b756ea72676c08b289a592a782c1d6e0dc6a9e3))
+* **observability:** capture sort-control candidates on unreadable comment threads ([#818](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/818)) ([#1118](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1118)) ([fd4211b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fd4211b77c71cab21c028f68f6c4ddd596802ff3))
+* **observability:** capture sort-control candidates when comment thread renders but control is unreadable ([#818](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/818)) ([fd4211b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fd4211b77c71cab21c028f68f6c4ddd596802ff3))
+* **observability:** dedup auto-filed error issues against open hand-filed trackers (closes [#1083](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1083)) ([#1126](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1126)) ([3c3fc06](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3c3fc06928b763e8f31751ba00ab8e3293511cdf))
+* **sdui:** re-ground the home-feed sort chain on the affordance, not the tag ([#1108](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1108)) ([#1119](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1119)) ([e961bdf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e961bdf96057eb7c2b566765cb9b378cb90b1fa0))
+
+
+### Performance Improvements
+
+* **redis:** cache the shared handle per process, and collapse one duplicated resolver ([#1131](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1131)) ([157e3c1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/157e3c1efd962b7790139427b5a0397f28cb36c2))
+
+
+### Documentation
+
+* **claude:** hand token-heavy execution to Codex, keep the judgement here ([#1149](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1149)) ([7db48f6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7db48f6c787c14ba62f00aed67cef1d8f00d5ae7))
+
 ## [0.135.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.134.0...v0.135.0) (2026-08-08)
 
 
