@@ -42,6 +42,10 @@ class _FakeCursor:
             self._rows([posts[params[0]]], ["post_type"])
         elif s.startswith("SELECT first_comment_link FROM posts"):
             self._rows([posts[params[0]]], ["first_comment_link"])
+        elif s.startswith("SELECT manual_publish FROM posts"):
+            # The occasion/milestone gate (issue #1074). This fixture publishes through the
+            # AUTOMATIC path, so the column reads 0 exactly as it does for every pre-#1074 row.
+            self._rows([posts[params[0]]], ["manual_publish"])
         elif s.startswith("UPDATE posts SET content"):
             posts[params[1]]["content"] = params[0]
             self.rowcount = 1
@@ -101,7 +105,7 @@ class _FakeConn:
 def _store(link_pref_row=None):
     return {
         "posts": {10: {"id": 10, "status": "approved", "content": _BODY, "post_type": "text",
-                       "first_comment_link": None}},
+                       "first_comment_link": None, "manual_publish": 0}},
         "users": {1: {"email": "u@example.com", "password": "pw"}},
         "prefs": ({1: link_pref_row} if link_pref_row else {}),
         "logs": [],

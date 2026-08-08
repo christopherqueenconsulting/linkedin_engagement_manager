@@ -460,8 +460,7 @@ POST_FORMATS: dict = {
             "Hook in the assigned hook style — name the thing that is now live, in plain words",
             "What it actually does and who it is for, in two concrete lines",
             "Why it was built: the specific problem or gap that made it worth the work",
-            "One honest detail from building it — a constraint, a dead end, a decision that cost "
-            "something",
+            "One honest detail from building it — a constraint, a dead end, a decision that cost something",
             "Who to hand it to first, and how they get it",
             "CTA in the assigned CTA style",
         ],

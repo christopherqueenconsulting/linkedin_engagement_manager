@@ -20,7 +20,7 @@ class TestSchedulerQueriesExcludeManualPublish:
     def test_ready_to_post_query_filters_manual_publish(self, mock_database_connection):
         from cqc_lem.utilities.db import get_ready_to_post_posts
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = []
 
@@ -32,7 +32,7 @@ class TestSchedulerQueriesExcludeManualPublish:
     def test_orphan_requeue_query_filters_manual_publish(self, mock_database_connection):
         from cqc_lem.utilities.db import get_orphaned_scheduled_posts
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchall.return_value = []
 
@@ -47,7 +47,7 @@ class TestGetPostManualPublish:
     def test_reads_the_flag(self, mock_database_connection, stored, expected):
         from cqc_lem.utilities.db import get_post_manual_publish
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = (stored,)
 
@@ -56,7 +56,7 @@ class TestGetPostManualPublish:
     def test_unknown_post_is_not_manual(self, mock_database_connection):
         from cqc_lem.utilities.db import get_post_manual_publish
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].fetchone.return_value = None
 
@@ -65,7 +65,7 @@ class TestGetPostManualPublish:
     def test_db_error_falls_back_to_the_automatic_path(self, mock_database_connection):
         from cqc_lem.utilities.db import get_post_manual_publish
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
 
@@ -79,7 +79,7 @@ class TestInsertOccasionPost:
         cursor = mock_database_connection["cursor"]
         cursor.rowcount = 1
         cursor.lastrowid = 99
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
 
             post_id = insert_occasion_post(3, datetime(2026, 8, 9, tzinfo=timezone.utc), "decision")
@@ -92,7 +92,7 @@ class TestInsertOccasionPost:
     def test_failed_write_returns_none(self, mock_database_connection):
         from cqc_lem.utilities.db import insert_occasion_post
 
-        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+        with patch("cqc_lem.platform.db.connection.get_db_connection") as mock_conn:
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
 
