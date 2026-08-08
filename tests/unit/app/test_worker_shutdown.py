@@ -82,6 +82,8 @@ class TestTaskDurability:
     def _config(self, monkeypatch):
         monkeypatch.delenv("CELERY_VISIBILITY_TIMEOUT", raising=False)
         monkeypatch.delenv("CELERY_LONGEST_TASK_SECONDS", raising=False)
+        monkeypatch.delenv("CELERY_TASK_SOFT_TIME_LIMIT", raising=False)
+        monkeypatch.delenv("CELERY_TASK_TIME_LIMIT", raising=False)
         from cqc_lem.app import celeryconfig
         yield importlib.reload(celeryconfig)
         importlib.reload(celeryconfig)
@@ -101,6 +103,52 @@ class TestTaskDurability:
         # Must exceed the longest task AND the 8m stop_grace_period, or acks_late re-delivers a
         # still-running task to a second worker (the acks_late + Redis double-run trap).
         assert visibility >= _config.max_timeout + (8 * 60)
+
+    def test_a_task_is_actually_bounded(self, _config):
+        # Nothing bounded a task before this: `max_timeout` is not a Celery setting name, it only fed
+        # the visibility arithmetic. A hung socket parked a lane's only slot indefinitely.
+        assert _config.task_soft_time_limit > 0
+        assert _config.task_time_limit > 0
+
+    def test_the_soft_limit_fires_before_the_hard_one(self, _config):
+        # The soft limit raises INSIDE the task so a Selenium lane can quit Chrome in its `finally`;
+        # the hard limit kills the child and skips that cleanup. Soft must therefore come first.
+        assert _config.task_soft_time_limit < _config.task_time_limit
+
+    def test_visibility_timeout_clears_the_HARD_limit_too(self, _config):
+        # The real longest a task can run is the hard limit, not max_timeout — so that is what the
+        # "comfortably above the longest task" claim has to clear for acks_late to be safe.
+        visibility = _config.broker_transport_options["visibility_timeout"]
+        assert visibility >= _config.task_time_limit + (8 * 60)
+
+    def test_hard_timeout_acks_instead_of_requeueing(self, _config):
+        """The footgun that makes a hard time limit safe here — pinned, not assumed.
+
+        A hard limit kills the pool child, and `task_reject_on_worker_lost = True` requeues a lost
+        worker's message. That combination is only safe because `task_acks_on_failure_or_timeout`
+        is True, which makes `Request.on_timeout` ACK (celery/worker/request.py:547-548) rather
+        than reject-with-requeue (request.py:615-616). Setting it False would turn every hard
+        timeout into an infinite redelivery of the task that timed out.
+        """
+        from celery.app.defaults import NAMESPACES
+        assert NAMESPACES["task"]["acks_on_failure_or_timeout"].default is True
+        # And we must not override that default back to False anywhere in our own config.
+        assert getattr(_config, "task_acks_on_failure_or_timeout", True) is True
+
+    def test_time_limits_are_env_tunable(self, monkeypatch):
+        monkeypatch.setenv("CELERY_TASK_SOFT_TIME_LIMIT", "120")
+        monkeypatch.setenv("CELERY_TASK_TIME_LIMIT", "300")
+        from cqc_lem.app import celeryconfig
+        reloaded = importlib.reload(celeryconfig)
+        assert reloaded.task_soft_time_limit == 120
+        assert reloaded.task_time_limit == 300
+
+    def test_hard_limit_defaults_to_soft_plus_grace(self, monkeypatch):
+        monkeypatch.setenv("CELERY_TASK_SOFT_TIME_LIMIT", "600")
+        monkeypatch.delenv("CELERY_TASK_TIME_LIMIT", raising=False)
+        from cqc_lem.app import celeryconfig
+        reloaded = importlib.reload(celeryconfig)
+        assert reloaded.task_time_limit == 600 + reloaded.TASK_KILL_GRACE_SECONDS
 
     def test_visibility_timeout_is_env_tunable(self, monkeypatch):
         monkeypatch.setenv("CELERY_VISIBILITY_TIMEOUT", "9999")

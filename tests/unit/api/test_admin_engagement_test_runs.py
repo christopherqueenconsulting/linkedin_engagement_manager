@@ -181,3 +181,66 @@ class TestAdminCredentialsAreNotAdvertised:
         with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
             assert client.post("/api/admin/automation-pause",
                                params={"user_id": 1}).status_code == 403
+
+
+def _rejected_result():
+    """What celery-once actually hands back on a graceful rejection.
+
+    `once={'graceful': True}` does not raise — `QueueOnce.apply_async` returns
+    `EagerResult(None, None, states.REJECTED)` (celery_once/tasks.py:104) because a run for the
+    same key is already in flight. Nothing was queued.
+    """
+    from celery import states
+    from celery.result import EagerResult
+    return EagerResult(None, None, states.REJECTED)
+
+
+# (route, task symbol patched on main, query params)
+_QUEUE_ONCE_ROUTES = [
+    ("/api/admin/test/comment", "automate_commenting", {"user_id": 7}),
+    ("/api/admin/test/reply", "automate_reply_commenting", {"post_id": 12}),
+    ("/api/admin/consolidate-duplicate-comments", "consolidate_duplicate_comments_for_user",
+     {"user_id": 7}),
+    ("/api/admin/test/dm", "automate_appreciation_dms_for_user", {"user_id": 7}),
+    ("/api/admin/test/dm-direct", "send_private_dm",
+     {"user_id": 7, "profile_url": "https://www.linkedin.com/in/x/", "message": "hi"}),
+]
+
+
+class TestAGracefulRejectionIsNotASuccess:
+    """Every one of these tasks is `base=QueueOnce, once={'graceful': True}`.
+
+    A rejection used to be reported as 200 with `"task_id": null` — telling the operator a run had
+    started and handing them an id `/admin/task-status/{task_id}` can never resolve, which is the
+    one thing these endpoints exist to let you watch.
+    """
+
+    @pytest.mark.parametrize("route,task,params", _QUEUE_ONCE_ROUTES)
+    def test_already_running_answers_409(self, client, route, task, params):
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
+             patch(f"cqc_lem.api.main.{task}.apply_async", return_value=_rejected_result()):
+            r = client.post(route, params=params, headers=_ADMIN_HEADER)
+        assert r.status_code == 409, route
+        assert "already queued or in progress" in r.json()["detail"]
+
+    @pytest.mark.parametrize("route,task,params", _QUEUE_ONCE_ROUTES)
+    def test_a_real_dispatch_still_answers_200_with_its_id(self, client, route, task, params):
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
+             patch(f"cqc_lem.api.main.{task}.apply_async", return_value=_async_result()):
+            r = client.post(route, params=params, headers=_ADMIN_HEADER)
+        assert r.status_code == 200, route
+        assert r.json()["detail"]["task_id"] == "task-123"
+        assert r.json()["detail"]["task"] == task
+
+    @pytest.mark.parametrize("route,task,params", _QUEUE_ONCE_ROUTES)
+    def test_no_route_can_ever_publish_a_null_task_id(self, client, route, task, params):
+        """The property that matters, independent of how the rejection is spelled."""
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
+             patch(f"cqc_lem.api.main.{task}.apply_async", return_value=_rejected_result()):
+            r = client.post(route, params=params, headers=_ADMIN_HEADER)
+        body = r.json()
+        assert not (isinstance(body.get("detail"), dict)
+                    and body["detail"].get("task_id") is None), route

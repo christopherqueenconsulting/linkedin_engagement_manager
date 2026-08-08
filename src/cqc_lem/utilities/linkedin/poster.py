@@ -33,6 +33,12 @@ from cqc_lem.utilities.logger import log_error, log_info, log_warning, myprint
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 
+# (connect, read) seconds for the two-step media upload. `requests` waits forever by default and no
+# task in this tree sets a Celery time limit, so an unanswered LinkedIn socket parks a Selenium-lane
+# worker slot until the process is recycled. The byte upload gets the longer read budget of the two.
+REGISTER_UPLOAD_TIMEOUT = (5, 30)
+MEDIA_UPLOAD_TIMEOUT = (5, 120)
+
 # Define annotations for constrained strings
 ReadyStatus = Annotated[str, StringConstraints(pattern=r'^(READY)$')]
 ShareMediaCategory = Annotated[str, StringConstraints(pattern=r'^(NONE|ARTICLE|IMAGE|VIDEO|DOCUMENT)$')]
@@ -122,6 +128,7 @@ def upload_media(access_token, owner_sub_id: str, media_path, media_type: str = 
     upload_response = requests.post(
         f'{API_URL}/assets?action=registerUpload',
         headers=headers,
+        timeout=REGISTER_UPLOAD_TIMEOUT,
         data=json.dumps({
             "registerUploadRequest": {
                 "recipes": [f"urn:li:digitalmediaRecipe:feedshare-{str(media_type).lower()}"],
@@ -146,8 +153,10 @@ def upload_media(access_token, owner_sub_id: str, media_path, media_type: str = 
     mediaArtifact = upload_response.json()['value']['mediaArtifact']
     myprint(f"Asset: {asset} | Upload URL: {upload_url} | Headers: {returned_headers} | Media Artifact: {mediaArtifact}")
 
-    # Upload the media file
-    upload_response = requests.put(upload_url, headers=headers, data=media_content)
+    # Upload the media file. A longer read budget than the register call: this is the one that
+    # carries the bytes, and a video can be tens of MB over a slow uplink.
+    upload_response = requests.put(upload_url, headers=headers, data=media_content,
+                                   timeout=MEDIA_UPLOAD_TIMEOUT)
 
     # Delete the temp file
     if is_tmp_path:

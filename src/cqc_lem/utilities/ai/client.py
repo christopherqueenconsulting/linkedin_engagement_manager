@@ -222,7 +222,15 @@ class AttributedOpenAI(OpenAI):
                 time.sleep(delay)
 
 
+# The SDK's default is a flat 600s per attempt, and it retries twice — so an unanswered proxy could
+# hold a worker for 30 minutes on top of the connect-retry budget above. Sit the client ceiling just
+# ABOVE the proxy's own longest `request_timeout` (300s in .litellm/config.yaml) so LiteLLM is always
+# the one that decides a slow generation has failed, and this is only the backstop for a proxy that
+# answered the connection and then went silent.
+_REQUEST_TIMEOUT = httpx.Timeout(connect=5.0, read=330.0, write=30.0, pool=5.0)
+
 client = AttributedOpenAI(
     api_key=os.getenv("LITELLM_MASTER_KEY", os.getenv("OPENAI_API_KEY")),
     base_url=os.getenv("LITELLM_BASE_URL", "http://litellm:4000"),
+    timeout=_REQUEST_TIMEOUT,
 )
