@@ -228,7 +228,7 @@ class TestAddUserByEmail:
         cur.execute.side_effect = mysql.connector.Error(
             msg="dup", errno=errorcode.ER_DUP_ENTRY)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.get_user_id", return_value=7):
+             patch("cqc_lem.platform.db.repositories.users.get_user_id", return_value=7):
             from cqc_lem.utilities.db import add_user_by_email
             assert add_user_by_email("existing@x.com") == 7
 

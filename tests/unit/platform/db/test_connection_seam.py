@@ -58,7 +58,8 @@ class TestOneCanonicalTarget:
     )
 
     @staticmethod
-    def _repository_hazards(repo_dir: pathlib.Path | None = None) -> dict[str, set[str]]:
+    def _repository_hazards(
+            repo_dir: pathlib.Path | None = None) -> dict[str, dict[str, set[str]]]:
         """Moved symbols a facade patch would silently fail to intercept, derived not listed.
 
         Patching `cqc_lem.utilities.db.X` is normally FINE even after X moves: nearly every caller
@@ -73,7 +74,7 @@ class TestOneCanonicalTarget:
         # sym -> EVERY module that reads it, not just one. Keyed one-to-one, `log_error` (read by
         # four repositories) collapsed to whichever sorted last, so a groups test went unflagged
         # because the check then looked for newsletter functions in it.
-        hazards: dict[str, set[str]] = {}
+        hazards: dict[str, dict[str, set[str]]] = {}
         repo_dir = repo_dir or _DB.parent.parent / "platform" / "db" / "repositories"
         for mod in sorted(repo_dir.glob("*.py")):
             if mod.name == "__init__.py":
@@ -105,7 +106,14 @@ class TestOneCanonicalTarget:
                 for sub in ast.walk(node):
                     read = isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
                     if read and sub.id in defined and sub.id != node.name:
-                        hazards.setdefault(sub.id, set()).add(mod.stem)
+                        # Record WHICH function reads it, not just that the module does. The hazard
+                        # is not "a test patches `get_user_id`" -- half this suite does that
+                        # correctly, because `helper.py` and the db.py functions that stayed both
+                        # read the facade. It is "a test exercises a function INSIDE this
+                        # repository that reads the patched name from this module's globals".
+                        # Flagging the looser condition retargeted 159 correct patches and broke
+                        # 52 tests.
+                        hazards.setdefault(sub.id, {}).setdefault(mod.stem, set()).add(node.name)
         return hazards
 
     @staticmethod
@@ -142,20 +150,6 @@ class TestOneCanonicalTarget:
             if any(re.search(pat, line) for pat in patterns)
         ]
 
-    @staticmethod
-    def _repository_functions(repo_dir: pathlib.Path | None = None) -> dict[str, set[str]]:
-        """Which functions each repository module now owns."""
-        owned: dict[str, set[str]] = {}
-        repo_dir = repo_dir or _DB.parent.parent / "platform" / "db" / "repositories"
-        for mod in sorted(repo_dir.glob("*.py")):
-            if mod.name == "__init__.py":
-                continue
-            owned[mod.stem] = {
-                n.name for n in ast.parse(mod.read_text()).body
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-            }
-        return owned
-
     def test_the_hazard_derivation_actually_fires(self, tmp_path):
         """The guard above is currently green because no repository has an intra-module call yet.
 
@@ -175,7 +169,8 @@ class TestOneCanonicalTarget:
             "def untouched():\n"
             "    return None\n")
         hazards = self._repository_hazards(tmp_path)
-        assert hazards == {"read_widget": {"widgets"}, "WIDGET_LIMIT": {"widgets"}}, (
+        assert hazards == {"read_widget": {"widgets": {"list_widgets"}},
+                           "WIDGET_LIMIT": {"widgets": {"list_widgets"}}}, (
             "an intra-module callee AND an intra-module constant read must both be flagged; a "
             "function nobody calls and a constant nobody reads must not be")
 
@@ -190,7 +185,6 @@ class TestOneCanonicalTarget:
         """
         offenders = []
         hazards = self._repository_hazards()
-        owned = self._repository_functions()
         for p in pathlib.Path("tests").rglob("*.py"):
             if p.name == "test_connection_seam.py":
                 continue
@@ -199,14 +193,19 @@ class TestOneCanonicalTarget:
                 blocks = self._facade_patch_blocks(t, sym)
                 if not blocks:
                     continue
-                for mod in sorted(mods):
-                    # Scoped to the `with patch(...)` block, not the file. A test module routinely
-                    # patches log_error for a function still IN db.py while mentioning a moved one
-                    # somewhere else entirely — file-level matching called that an offence and
-                    # would have had me "fix" a correct patch into a broken one.
+                for mod, readers in sorted(mods.items()):
+                    # The block must CALL a function that READS `sym` from this module's globals.
+                    # Both halves were learned the hard way. Matching the whole file flagged a
+                    # correct patch. Matching any moved function in the block still flagged 13
+                    # files when only 5 were wrong — because `helper.py` and the db.py functions
+                    # that stayed BOTH read `get_user_id` off the facade, so patching it there is
+                    # right. Acting on the loose version retargeted 159 patches and broke 52 tests.
+                    #
+                    # `get_user_id` has exactly one reader inside users.py — `add_user_by_email` —
+                    # and that is exactly the one test that genuinely failed.
                     exercised = sorted({
-                        f for block in blocks for f in owned[mod]
-                        if re.search(rf'\b{re.escape(f)}\b', block)
+                        f for block in blocks for f in readers
+                        if re.search(rf'\b{re.escape(f)}\s*\(', block)
                     })
                     if not exercised:
                         continue

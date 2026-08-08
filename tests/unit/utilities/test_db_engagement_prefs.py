@@ -209,7 +209,7 @@ class TestEngagementPreferencesAreConfigured:
         conn, cursor = _mock_conn()
         cursor.execute.side_effect = mysql.connector.Error(msg="db down")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
-             patch(f"{_DB}.log_error") as err:
+             patch("cqc_lem.platform.db.repositories.users.log_error") as err:
             from cqc_lem.utilities.db import engagement_preferences_are_configured
             assert engagement_preferences_are_configured(1) is None
         assert err.call_count == 1
