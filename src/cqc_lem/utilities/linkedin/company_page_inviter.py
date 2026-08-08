@@ -33,6 +33,8 @@ from typing import Optional
 
 from selenium.common import TimeoutException
 from selenium.webdriver import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
 
 from cqc_lem.utilities.db import (
     COMPANY_PAGE_INVITE_SENT_MESSAGE,
@@ -79,6 +81,10 @@ INVITE_STATUS_DRIFT = "drift"
 INVITE_STATUS_NO_PAGE = "no_page"
 INVITE_STATUS_FAILED = "failed"
 INVITE_STATUS_PAUSED = "paused"
+# A click reached LinkedIn but its outcome could not be confirmed. Kept apart from `sent` and `failed`
+# because the budget must not be spent on an unconfirmed click, yet the run is not a missing-button
+# failure either. Issue #1102.
+INVITE_STATUS_UNCONFIRMED = "unconfirmed"
 # No Chrome session could be started (grid full, container restart). Kept apart from `failed` for the
 # same reason the golden-hour sweep does it: "the browser never came up" and "LinkedIn's UI moved"
 # need different fixes, and a run that emitted nothing at all would read as paced-to-zero.
@@ -171,7 +177,7 @@ def get_available_credits(driver, wait):
                                                  "Finding Credits Text Element", max_try=0)
         credit_text = getText(credit_text_element)
         current_credits, total_credits = map(int, credit_text.split('/'))
-    except TimeoutException as te:
+    except TimeoutException:
         myprint("No remaining invite credits")
 
     myprint(f"Credits available: {current_credits}/{total_credits}")
@@ -270,15 +276,19 @@ def select_connection_checkboxes(driver, wait, limit):
     connections_list_count = 0
     checkboxes = []
     while checkbox_count < limit:
-        connections_list = get_elements_as_list_wait_stale(wait,
-                                                           "//div[contains(@class,'scaffold-finite-scroll__content')]//li",
-                                                           "Finding Connections List", max_retry=0)
+        try:
+            connections_list = get_elements_as_list_wait_stale(wait,
+                                                               "//div[contains(@class,'scaffold-finite-scroll__content')]//li",
+                                                               "Finding Connections List", max_retry=0)
+        except TimeoutException:
+            myprint("No invitee list rendered.")
+            connections_list = []
         new_connections_list_count = len(connections_list)
 
         try:
             checkboxes = get_elements_as_list_wait_stale(wait, "//input[@type='checkbox' and contains(@id, 'invitee')]",
                                                          "Finding Checkboxes", max_retry=0)
-        except TimeoutException as te:
+        except TimeoutException:
             myprint("No checkboxes found.")
             checkboxes = []
 
@@ -313,27 +323,66 @@ def select_connection_checkboxes(driver, wait, limit):
     return selected_count
 
 
+def _confirm_invite_sent(driver, wait) -> bool:
+    """Whether LinkedIn accepted the invite batch after the primary button was clicked.
+
+    The dialog closing, the invitee list shrinking, or a rendered confirmation all count as proof
+    that the click had an outcome. A read that cannot prove anything returns False — "unconfirmed"
+    is a separate status from "not clicked" and "confirmed sent".
+    """
+    # 1) Dialog gone: the modal wrapper is no longer present.
+    try:
+        modal_gone = wait.until(EC.invisibility_of_element_located(
+            (By.XPATH, "//div[contains(@class,'modal')]//button[contains(@class,'artdeco-button--primary')]")))
+    except TimeoutException:
+        modal_gone = False
+
+    # 2) Invitee list shrunk: the picker no longer renders the rows we were selecting from.
+    try:
+        list_shrank = wait.until(EC.invisibility_of_element_located(
+            (By.XPATH, "//div[@id='invitee-picker-results-container']")))
+    except TimeoutException:
+        list_shrank = False
+
+    # 3) Rendered confirmation: a success/toast label containing "invited" or "invitation".
+    try:
+        confirmation = get_element_wait_retry(driver, wait,
+                                              "//div[contains(@class,'artdeco-toast') "
+                                              "or contains(@class,'artdeco-modal__confirmation')] "
+                                              "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+                                              "'abcdefghijklmnopqrstuvwxyz'),'invited') or "
+                                              "contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+                                              "'abcdefghijklmnopqrstuvwxyz'),'invitation')]",
+                                              "Finding invite confirmation", max_try=0,
+                                              element_always_expected=False)
+    except TimeoutException:
+        confirmation = None
+
+    confirmed = bool(modal_gone or list_shrank or confirmation)
+    myprint(f"Invite outcome confirmation: modal_gone={modal_gone}, list_shrank={list_shrank}, "
+            f"confirmation={bool(confirmation)} -> {confirmed}")
+    return confirmed
+
+
 def invite_selected_connections(driver, wait):
-    """Click the invite dialog's primary button and report whether that click landed.
+    """Click the invite dialog's primary button and report the outcome.
 
-    False means the button never resolved — the run is a `failed` report and a FAILURE log row, and
-    crucially no `invites_sent` count is recorded, so tomorrow's drip is not shortened by a batch
-    that never went out.
-
-    True is the weaker claim: the control was found and clicked. Nothing here re-reads the page to
-    confirm LinkedIn accepted the batch, so a True is "we asked", not "they landed".
+    Returns one of three strings so the caller can distinguish a missing button (`not_clicked`), a
+    button that was clicked but whose effect could not be verified (`unconfirmed`), and a batch that
+    LinkedIn visibly accepted (`confirmed`). Only `confirmed` may be logged as a sent batch and spent
+    against tomorrow's budget.
     """
     # myprint("Entering invite_selected_connections function.")
     xpath = "//div[contains(@class,'modal')]//button[contains(@class,'artdeco-button--primary')]"
     invite_button = click_element_wait_retry(driver, wait, xpath, "Finding Invite Button",
                                              element_always_expected=False)
-    if invite_button:
-        # invite_button.click()
-        myprint("Invite button clicked.")
-        return True
+    if not invite_button:
+        myprint("Invite button not found.")
+        return "not_clicked"
 
-    myprint("Invite button not found.")
-    return False
+    # invite_button.click()
+    myprint("Invite button clicked.")
+    return "confirmed" if _confirm_invite_sent(driver, wait) else "unconfirmed"
 
 
 def dismiss_prompt(driver, wait):
@@ -418,12 +467,23 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
         return _report(INVITE_STATUS_DRIFT if verdict == "drift" else INVITE_STATUS_NO_CANDIDATES,
                        **base)
 
-    if not invite_selected_connections(driver, wait):
+    invite_outcome = invite_selected_connections(driver, wait)
+    if invite_outcome == "not_clicked":
         insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
                        post_url=li_company_page_url,
                        message="Failed to invite to company page: invite button not found")
         myprint("No invite button found, stopping automate_invitations.")
         return _report(INVITE_STATUS_FAILED, **base)
+
+    if invite_outcome == "unconfirmed":
+        # The click reached LinkedIn but we cannot prove the batch landed. Do NOT spend tomorrow's
+        # budget on it; keep the outcome visible as its own status (#1102).
+        insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
+                       post_url=li_company_page_url,
+                       message=(f"Company page invite click unconfirmed: "
+                                f"{selected_count} invitees selected"))
+        myprint("Invite click could not be confirmed, stopping automate_invitations.")
+        return _report(INVITE_STATUS_UNCONFIRMED, **base)
 
     # The "<message>: <n>" shape is load-bearing — count_company_page_invites_sent_today SUMS that
     # number, and it is what makes a second run today idempotent.

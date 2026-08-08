@@ -167,7 +167,7 @@ class TestAutomateInvitations:
     credit_reads = 0
 
     def _run(self, allowance=5, credits=(200, 250), selected=None, day=date(2026, 7, 10),
-             invite_ok=True, page_url="https://www.linkedin.com/company/acme",
+             invite_outcome="confirmed", page_url="https://www.linkedin.com/company/acme",
              count_credit_reads=False):
         from cqc_lem.utilities.linkedin import company_page_inviter as cpi
         real_spread = cpi.credit_spread_budget
@@ -186,7 +186,7 @@ class TestAutomateInvitations:
              patch(f"{_CPI}.login_to_linkedin"), \
              patch(f"{_CPI}.get_available_credits", side_effect=_credits), \
              patch(f"{_CPI}.select_connection_checkboxes", picked), \
-             patch(f"{_CPI}.invite_selected_connections", return_value=invite_ok), \
+             patch(f"{_CPI}.invite_selected_connections", return_value=invite_outcome), \
              patch(f"{_CPI}.dismiss_prompt", return_value=False), \
              patch(f"{_CPI}.insert_new_log") as log, \
              patch(f"{_CPI}.record_action") as rec, \
@@ -261,10 +261,30 @@ class TestAutomateInvitations:
 
     def test_a_missing_invite_button_is_a_failure_not_a_silent_send(self):
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
-        report, _, log, rec = self._run(allowance=4, invite_ok=False)
+        report, _, log, rec = self._run(allowance=4, invite_outcome="not_clicked")
         assert report["status"] == INVITE_STATUS_FAILED
-        assert log.call_args[1]["message"].startswith("Failed to invite")
+        assert log.call_args.kwargs["message"].startswith("Failed to invite")
         rec.assert_not_called()
+
+    def test_an_unconfirmed_invite_click_does_not_spend_the_budget(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_UNCONFIRMED
+        report, _, log, rec = self._run(allowance=4, invite_outcome="unconfirmed")
+        assert report["status"] == INVITE_STATUS_UNCONFIRMED
+        assert report["invites_sent"] == 0
+        # A log row makes the outcome visible, but it is a FAILURE so it is not counted as sent.
+        assert log.call_count == 1
+        assert log.call_args.args[2].value == "failure"
+        assert "unconfirmed" in log.call_args.kwargs["message"].lower()
+        rec.assert_not_called()
+
+    def test_a_confirmed_invite_click_records_success_and_spends_budget(self):
+        from cqc_lem.utilities.db import COMPANY_PAGE_INVITE_SENT_MESSAGE
+        from cqc_lem.utilities.human_pacing import ACTION_INVITE
+        report, _, log, rec = self._run(allowance=4, invite_outcome="confirmed")
+        assert report["status"] == "sent"
+        assert report["invites_sent"] == 4
+        assert log.call_args.kwargs["message"] == f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}: 4"
+        rec.assert_called_once_with(1, ACTION_INVITE, 4)
 
     def test_no_company_page_stops_before_login(self):
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_NO_PAGE
