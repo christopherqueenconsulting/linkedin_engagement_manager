@@ -186,20 +186,43 @@ Daily host cron, run by `scripts/error_to_issues.sh` (as `lem`), replacing
 
 One HogQL query reads the error-tracking columns the `events` table exposes (`issue_id`,
 `issue_name`, `issue_status`, `issue_first_seen`) and groups by `issue_id`. For each ACTIVE issue
-with no GitHub issue carrying its marker, it files one `agent:ready` + `bug` issue shaped for the
-pipeline's `MODE=start` (Why / Scope / Files / Acceptance), with a link to the PostHog issue for the
-stack trace.
+with no GitHub issue carrying its marker **and no open issue already tracking the same warning
+string**, it files one `agent:ready` + `bug` issue shaped for the pipeline's `MODE=start` (Why /
+Scope / Files / Acceptance), with a link to the PostHog issue for the stack trace.
 
 - **Browser exceptions link their replay** (issue #649): the query also reads `$session_id`, so a
   filed issue for an SPA error carries a "Watch the session replay" link. Backend exceptions have no
   session and simply omit the line. See `docs/session-replay.md`.
 - **Dedup is the id**, not the message: the body carries `posthog-issue-<issue_id>`, and the next
-  run searches for that literal string across open AND closed issues. Closed counts — a fixed
-  exception that trickles in for one more day must not reopen the backlog item.
+  run searches for that literal string across open AND closed issues — in bodies **and comments**.
+  Closed counts — a fixed exception that trickles in for one more day must not reopen the backlog
+  item.
+- **Second layer, for the trackers this script did not write** (issue #1083): the marker is invisible
+  to a human who filed an issue for the same defect first, so an ESCALATED warning also dedups on its
+  text. `RecurringWarning` is the only exception type with a usable one — `log_escalation` masks the
+  volatile tokens before capture, so its description is the stable template a person quotes verbatim.
+  When that string appears in an OPEN issue's **title or body**, the occurrence data is COMMENTED
+  there and nothing is opened; the comment carries the marker, so from the next run the id layer
+  skips the row and the comment never repeats.
+  - **The comment IS the record — do not delete it.** It is the only durable trace that this
+    PostHog id was handled (the script keeps no state of its own), and the text match does not go
+    away when the comment does: the matched issue still carries the warning string, so the next run
+    matches it again and re-posts. A wrong match is corrected by opening a separate issue for the
+    distinct defect, never by deleting the comment.
+  - **Conservative by construction**: escalated warnings only, ≥16 chars and ≥3 words, exact
+    (casefolded) substring, open issues only, lowest-numbered match wins. *A false merge hides a
+    distinct defect; a false miss only files the duplicate we file today.* Comments are deliberately
+    NOT searched — a warning quoted in a comment usually belongs to a different issue's problem — and
+    a CLOSED tracker never matches, because "declared fixed" makes a recurrence news.
+  - Measured cost of not having it: **#1063** duplicated hand-filed **#818** (same warning, same
+    task) and spawned PR #1066 against work already parked; the **#874/#875/#877/#878** cluster filed
+    four issues against the one outage **#816** tracked.
 - **Fail closed**: if the GitHub search itself fails, the run aborts rather than treating "cannot
   read" as "nothing filed" and duplicating the whole window.
 - **Resolved/suppressed PostHog issues are never filed** — triage done in PostHog stays done.
 - `--max-new` (default 10) caps a bad deploy at 10 tickets per run; the rest wait for the next one.
+  It caps NEW issues only — a comment on an existing tracker adds nothing to the backlog, and each
+  one happens once per PostHog issue id anyway.
 
 ```bash
 scripts/posthog_error_issues.py --print-sql          # the HogQL, no network

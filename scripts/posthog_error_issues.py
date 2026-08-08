@@ -13,6 +13,14 @@ and no GitHub issue carrying its marker. A brand-new issue therefore files on th
 long-running one is filed once and never again — spikes on an already-filed issue are PostHog's own
 alert's job (docs/error-tracking.md), not a second GitHub issue.
 
+Second dedup layer, for the trackers this script did NOT write (issue #1083): the marker is invisible
+to a human who opened an issue for the same defect first, so an escalated warning also matches on its
+normalized string. #1063 auto-filed `Selector miss: Comment sort control` while hand-filed #818
+already tracked exactly that warning; the #874/#875/#877/#878 cluster filed four issues against the
+one outage #816 tracked. When the normalized string appears in an OPEN issue's title or body, the
+occurrence data is COMMENTED there instead — and the comment carries the marker, so the id-based
+layer takes over from the next run.
+
 Split like scripts/model_health_check.py and scripts/posthog_dashboards.py: PURE logic (query,
 titles, bodies, planning — unit-tested) and a thin I/O layer (the PostHog query API and the `gh`
 CLI, mocked in tests). Deliberately imports nothing from `cqc_lem`: this runs from a host cron clone
@@ -69,6 +77,22 @@ COLUMNS = ("issue_id", "name", "description", "status", "first_seen", "last_seen
 
 # What posthog-js hands out as a session id. A value that isn't this shape is not linked (#649).
 SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
+
+# `log_escalation.RecurringWarning` — the ONLY exception type whose description is already the
+# normalized warning string (volatile tokens masked to `<n>`/`<list>`/…), which is what makes a
+# substring match against a human's issue text safe. Every other exception carries a raw interpolated
+# message, so it keeps id-only dedup. Named as a string, not imported: this script runs from a host
+# cron clone with no `cqc_lem` on the path.
+ESCALATED_WARNING_NAME = "RecurringWarning"
+# Floors on what may be matched by text. A short or single-word warning ("boom") is a phrase that
+# turns up in unrelated issues, and a false merge HIDES a distinct defect — where a false miss only
+# files the duplicate we file today.
+MIN_SIGNATURE_CHARS = 16
+MIN_SIGNATURE_WORDS = 3
+# GitHub's search takes the phrase; the full signature is re-checked client-side, so truncating here
+# can only widen the candidate set, never loosen the match.
+MAX_SEARCH_CHARS = 120
+MATCH_SEARCH_LIMIT = 30
 
 
 # ─────────────────────────── pure logic (unit-tested) ────────────────────────────
@@ -156,11 +180,73 @@ def build_title(row: dict) -> str:
     return head + suffix
 
 
-def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_PROJECT_ID,
-               app_host: str = DEFAULT_APP_HOST) -> str:
-    """The `MODE=start` body the pipeline reads: Why / Scope / Files / Acceptance, plus the marker
-    that makes this run idempotent."""
-    issue_id = _text(row.get("issue_id"))
+def warning_signature(row: dict) -> Optional[str]:
+    """The normalized warning string an existing tracker would be recognised by, or None.
+
+    Only an escalated warning has one: `log_escalation` masks the volatile tokens BEFORE the
+    exception is captured, so `RecurringWarning`'s description is a stable template
+    (`Selector miss: Comment sort control`) that a human writing about the same defect quotes
+    verbatim. Anything shorter or vaguer than the floors above is refused rather than matched
+    loosely.
+    """
+    if _text(row.get("name")) != ESCALATED_WARNING_NAME:
+        return None
+    text = " ".join(_text(row.get("description")).split())
+    if len(text) < MIN_SIGNATURE_CHARS or len(text.split()) < MIN_SIGNATURE_WORDS:
+        return None
+    return text
+
+
+def issue_matches(signature: str, issue: dict) -> bool:
+    """Whether this GitHub issue is already tracking that warning.
+
+    Title or body only — deliberately NOT comments. A warning quoted in a comment is usually someone
+    referring to a different issue's problem, and merging onto it would bury a real defect. Casefold
+    on both sides: a hand-written title reformats the casing far more often than it changes a word.
+    """
+    if not signature:
+        return False
+    haystack = f"{(issue or {}).get('title') or ''}\n{(issue or {}).get('body') or ''}"
+    return signature.casefold() in haystack.casefold()
+
+
+def _issue_number(issue: dict) -> int:
+    try:
+        return int((issue or {}).get("number") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def pick_match(signature: str, issues: Optional[list]) -> Optional[dict]:
+    """The lowest-numbered open issue that really contains `signature` — the ORIGINAL tracker, so a
+    third occurrence lands on the same thread as the second rather than on its duplicate. GitHub's
+    search tokenizes, so its hits are candidates only; this is where the phrase is actually checked.
+    """
+    matched = [issue for issue in issues or []
+               if isinstance(issue, dict) and _issue_number(issue) > 0
+               and issue_matches(signature, issue)]
+    if not matched:
+        return None
+    return min(matched, key=_issue_number)
+
+
+def search_phrase(signature: str) -> str:
+    """What to hand GitHub's search — the signature, truncated and stripped of the double quotes
+    that would close the phrase early. `pick_match` re-checks the FULL string against the candidates,
+    so weakening the query here can only widen the candidate set, never loosen the match.
+
+    Truncation lands on a WORD boundary: GitHub's search tokenizes, so a phrase cut mid-word
+    (`… selector dri`) matches nothing at all — narrowing the candidate set to zero rather than
+    widening it, which is the one thing this function must not do.
+    """
+    phrase = " ".join(_text(signature).replace('"', " ").split())
+    if len(phrase) > MAX_SEARCH_CHARS:
+        phrase = phrase[:MAX_SEARCH_CHARS].rsplit(" ", 1)[0]
+    return phrase.strip()
+
+
+def _context_lines(row: dict, hours: int) -> list:
+    """The occurrence facts shared by a filed body and a comment on an existing tracker."""
     context = [f"- Occurrences (last {hours}h): **{int(row.get('occurrences') or 0)}** across "
                f"{int(row.get('users') or 0)} distinct actor(s)",
                f"- First seen: `{_text(row.get('first_seen')) or 'unknown'}` · "
@@ -171,6 +257,15 @@ def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_
         context.append(f"- API route: `{_text(row.get('route'))}`")
     if _text(row.get("lib")):
         context.append(f"- SDK: `{_text(row.get('lib'))}`")
+    return context
+
+
+def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_PROJECT_ID,
+               app_host: str = DEFAULT_APP_HOST) -> str:
+    """The `MODE=start` body the pipeline reads: Why / Scope / Files / Acceptance, plus the marker
+    that makes this run idempotent."""
+    issue_id = _text(row.get("issue_id"))
+    context = _context_lines(row, hours)
 
     lines = ["## Why",
              f"PostHog error tracking grouped this exception into an issue that is still active: "
@@ -209,12 +304,52 @@ def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_
     return "\n".join(lines)
 
 
-def plan_actions(rows: list, filed_markers, max_new: int = DEFAULT_MAX_NEW) -> list:
+def build_comment(row: dict, existing: dict, hours: int = DEFAULT_HOURS,
+                  project_id: str = DEFAULT_PROJECT_ID,
+                  app_host: str = DEFAULT_APP_HOST) -> str:
+    """The occurrence report added to an issue that already tracks this warning (issue #1083).
+
+    It carries the marker, which is what stops this from becoming a daily comment: from the next run
+    the id-based layer sees the marker on this thread and skips the row entirely.
+    """
+    issue_id = _text(row.get("issue_id"))
+    lines = [f"### Still occurring — PostHog error tracking, last {hours}h",
+             "",
+             ("This warning is already tracked here, so the occurrence data lands as a comment " +
+              "rather than a new issue."),
+             "",
+             f"> {_text(row.get('description')) or '(no message captured)'}",
+             ""]
+    lines += _context_lines(row, hours)
+    lines += ["",
+              f"[Open the issue in PostHog]({issue_url(issue_id, project_id, app_host)}) — stack "
+              f"trace, grouped occurrences and affected people."]
+    replay = replay_url(row.get("session_id"), project_id, app_host)
+    if replay:
+        lines.append(f"[Watch the session replay]({replay}) — the browser session one of these "
+                     f"exceptions was thrown in.")
+    matched_on = _text((existing or {}).get("signature"))
+    matched_on = f" `{matched_on}`" if matched_on else ""
+    lines += ["",
+              f"Matched this issue on the normalized warning string{matched_on}, so no duplicate "
+              f"was opened. If this is NOT the same defect, open a separate issue for it and LEAVE "
+              f"this comment here — the match is on the warning TEXT, which this issue still "
+              f"carries, so deleting the comment only makes the next run post it again.",
+              "",
+              f"Dedup marker (do not remove): `{marker(issue_id)}`"]
+    return "\n".join(lines)
+
+
+def plan_actions(rows: list, filed_markers, max_new: int = DEFAULT_MAX_NEW,
+                 existing_matches: Optional[dict] = None) -> list:
     """What this run would do, in order: one `create` per actionable issue that has no GitHub issue
-    yet, `skip` for everything else with the reason. Capped at `max_new` so a bad deploy that
-    produces 50 new issues does not open 50 tickets in one go — the rest are `deferred` and picked up
-    by the next run."""
+    yet, `comment` where an open issue already tracks the same warning string, `skip` for everything
+    else with the reason. Creates are capped at `max_new` so a bad deploy that produces 50 new issues
+    does not open 50 tickets in one go — the rest are `deferred` and picked up by the next run.
+    Comments are not capped: they add nothing to the backlog, and each one happens once per PostHog
+    issue id because the comment carries the marker."""
     already = {str(m) for m in (filed_markers or set())}
+    matches = existing_matches or {}
     seen = set()
     actions = []
     created = 0
@@ -229,6 +364,9 @@ def plan_actions(rows: list, filed_markers, max_new: int = DEFAULT_MAX_NEW) -> l
         elif key in already:
             actions.append({"action": "skip", "reason": "already filed", "row": row,
                             "marker": key})
+        elif matches.get(key):
+            actions.append({"action": "comment", "row": row, "marker": key,
+                            "existing": matches[key]})
         elif created >= max(0, int(max_new)):
             actions.append({"action": "deferred", "reason": "max-new reached", "row": row,
                             "marker": key})
@@ -239,7 +377,8 @@ def plan_actions(rows: list, filed_markers, max_new: int = DEFAULT_MAX_NEW) -> l
 
 
 def pending(actions: list) -> list:
-    return [a for a in actions or [] if a.get("action") == "create"]
+    """Everything this run would write to GitHub — a new issue or a comment on an existing one."""
+    return [a for a in actions or [] if a.get("action") in ("create", "comment")]
 
 
 def summarize(actions: list) -> str:
@@ -285,35 +424,65 @@ class GitHubIssues:
     def _run(self, args: list) -> subprocess.CompletedProcess:
         return subprocess.run(args, capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS)
 
-    def is_filed(self, issue_marker: str) -> bool:
-        """True when ANY issue — open or closed — already carries this marker. Closed counts: a
-        fixed exception that trickles in for another day must not reopen the backlog item.
-
-        GitHub's search tokenizes on hyphens, so a UUID marker can match a NEIGHBOURING issue; the
-        returned bodies are re-checked for the literal marker so dedup stays exact."""
-        result = self._run(["gh", "issue", "list", "--repo", self.repo, "--state", "all",
-                            "--search", issue_marker, "--json", "number,body"])
+    def _search(self, state: str, phrase: str, fields: str, limit: int) -> list:
+        """One `gh issue list --search`, or a raised error. Fail CLOSED: an unreadable search must
+        never be read as "nothing filed yet", or a GitHub outage turns into a duplicate for every
+        issue in the window."""
+        result = self._run(["gh", "issue", "list", "--repo", self.repo, "--state", state,
+                            "--search", phrase, "--limit", str(limit), "--json", fields])
         if result.returncode != 0:
-            # Fail CLOSED: an unreadable search must never be read as "nothing filed yet", or a
-            # GitHub outage turns into a duplicate for every issue in the window.
             raise RuntimeError(f"gh issue list failed: {(result.stderr or '').strip()[:200]}")
         try:
             found = json.loads(result.stdout or "[]")
         except ValueError:
             raise RuntimeError("gh issue list returned unparseable JSON")
-        return any(issue_marker in (item.get("body") or "") for item in found
-                   if isinstance(item, dict))
+        return [item for item in found if isinstance(item, dict)]
+
+    def is_filed(self, issue_marker: str) -> bool:
+        """True when ANY issue — open or closed — already carries this marker. Closed counts: a
+        fixed exception that trickles in for another day must not reopen the backlog item.
+
+        Comments count as well as bodies: when the marker landed on a hand-filed tracker as a comment
+        (issue #1083), that thread IS this exception's GitHub issue and must not also get one of its
+        own. GitHub's search tokenizes on hyphens, so a UUID marker can match a NEIGHBOURING issue;
+        the returned text is re-checked for the literal marker so dedup stays exact."""
+        found = self._search("all", issue_marker, "number,body,comments", MATCH_SEARCH_LIMIT)
+        for item in found:
+            if issue_marker in (item.get("body") or ""):
+                return True
+            for comment in item.get("comments") or []:
+                if isinstance(comment, dict) and issue_marker in (comment.get("body") or ""):
+                    return True
+        return False
+
+    def search_open(self, signature: str) -> list:
+        """Open-issue candidates for a warning string. Open only: a CLOSED tracker says the defect
+        was declared fixed, so a recurrence is news and deserves its own issue."""
+        phrase = search_phrase(signature)
+        if not phrase:
+            return []
+        return self._search("open", f'"{phrase}"', "number,title,body,url", MATCH_SEARCH_LIMIT)
+
+    def _write(self, what: str, args: list) -> Optional[str]:
+        """A `gh` write, or None with the reason on stderr. Never raises: a row that fails to write
+        is left unhandled and retried by the next run — the run itself must still finish."""
+        result = self._run(args)
+        if result.returncode != 0:
+            print(f"  ! gh issue {what} failed: {(result.stderr or '').strip()[:300]}",
+                  file=sys.stderr)
+            return None
+        return (result.stdout or "").strip()
+
+    def comment(self, number: int, body: str) -> Optional[str]:
+        """Add the occurrence report to an existing tracker (issue #1083)."""
+        return self._write("comment", ["gh", "issue", "comment", str(number), "--repo", self.repo,
+                                       "--body", body])
 
     def create(self, title: str, body: str, labels=LABELS) -> Optional[str]:
         args = ["gh", "issue", "create", "--repo", self.repo, "--title", title, "--body", body]
         for label in labels:
             args += ["--label", label]
-        result = self._run(args)
-        if result.returncode != 0:
-            print(f"  ! gh issue create failed: {(result.stderr or '').strip()[:300]}",
-                  file=sys.stderr)
-            return None
-        return (result.stdout or "").strip()
+        return self._write("create", args)
 
 
 def filed_markers(github: GitHubIssues, rows: list) -> set:
@@ -327,19 +496,44 @@ def filed_markers(github: GitHubIssues, rows: list) -> set:
     return found
 
 
+def open_matches(github: GitHubIssues, rows: list, already=None) -> dict:
+    """Marker -> the OPEN issue already tracking that warning string, hand-filed or auto-filed.
+
+    One search per candidate row. Rows already carrying a marker are skipped — the id is the stronger
+    key and has the final say, so searching them would only cost a call.
+    """
+    filed = {str(m) for m in (already or set())}
+    matches: dict = {}
+    for row in rows or []:
+        key = marker(_text(row.get("issue_id")))
+        if key in matches or key in filed or not is_actionable(row):
+            continue
+        signature = warning_signature(row)
+        if not signature:
+            continue
+        match = pick_match(signature, github.search_open(signature))
+        if match:
+            matches[key] = {**match, "signature": signature}
+    return matches
+
+
 def apply_actions(github: GitHubIssues, actions: list, dry_run: bool = True) -> list:
-    """File the planned issues (or, in dry-run, just report them). Never raises on a GitHub failure:
-    a row that fails to file is left unfiled and retried by the next run."""
+    """File the planned issues and comment on the trackers that already exist (or, in dry-run, just
+    report them). Never raises on a GitHub failure: a row that fails to write is left unhandled and
+    retried by the next run."""
     applied = []
     for action in pending(actions):
-        row = action["row"]
-        title = build_title(row)
+        title = build_title(action["row"])
+        # A comment action without a usable issue number falls back to filing: an unaddressable
+        # match is the "false miss" case, and a duplicate is the acceptable half of that trade.
+        onto = _issue_number(action.get("existing") or {}) if action["action"] == "comment" else 0
         if dry_run:
-            print(f"  would file: {title}")
+            print(f"  would {f'comment on #{onto}' if onto else 'file'}: {title}")
             continue
-        url = github.create(title, action["body"])
+        url = (github.comment(onto, action["body"]) if onto
+               else github.create(title, action["body"]))
         if url:
-            print(f"  filed: {url} — {title}")
+            print(f"  {f'commented on #{onto}' if onto else 'filed'}: {url} — {title}")
             applied.append({**action, "url": url})
     return applied
 
@@ -379,14 +573,18 @@ def main(argv: Optional[list] = None) -> int:
     github = GitHubIssues(repo)
     try:
         already = filed_markers(github, rows)
+        matches = open_matches(github, rows, already)
     except Exception as e:
         print(f"GitHub dedup lookup failed: {e}", file=sys.stderr)
         return 1
 
-    actions = plan_actions(rows, already, args.max_new)
+    actions = plan_actions(rows, already, args.max_new, matches)
     for action in actions:
         if action["action"] == "create":
             action["body"] = build_body(action["row"], args.hours, project_id, app_host)
+        elif action["action"] == "comment":
+            action["body"] = build_comment(action["row"], action["existing"], args.hours,
+                                           project_id, app_host)
     print(f"PostHog: {len(rows)} error-tracking issue(s) in the last {args.hours}h "
           f"— {summarize(actions)}")
 

@@ -15,4 +15,6 @@ Decision tree — the contract is **"once is a warning, repeatedly is a defect"*
 
 Auto-filed issues carry `posthog-issue-<id>` (the dedup marker — leave it in the body) and a PostHog link for the stack trace; browser errors also link a session replay. Cron: `scripts/error_to_issues.sh` daily 08:30, wrapping `scripts/posthog_error_issues.py`.
 
+A recurring warning already tracked by an OPEN issue arrives as a **comment on that issue**, not a new one (#1083) — so triage it on the thread you're already on, and the marker in that comment is what stops the next run duplicating it. If the match was wrong (the string matched a different defect), open a separate issue for it and LEAVE the comment — the match is on the warning TEXT, which the matched issue still carries, so deleting the comment only makes the next run post it there again.
+
 Authoritative: `docs/error-tracking.md`, `src/cqc_lem/utilities/CLAUDE.md` (level table + escalation contract).
