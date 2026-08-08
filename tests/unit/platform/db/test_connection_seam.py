@@ -12,6 +12,7 @@ missed them. They call it through the MODULE now, which is what these tests pin.
 """
 
 import ast
+import importlib
 import pathlib
 import re
 
@@ -24,6 +25,16 @@ _CANONICAL = "cqc_lem.platform.db.connection.get_db_connection"
 
 
 class TestOneCanonicalTarget:
+    def test_the_canonical_target_actually_resolves(self):
+        """The path this suite tells everyone to patch must be a real, importable target.
+
+        Without this, a later rename leaves the advice below pointing at nothing: every offending
+        test gets told to patch a path that would raise `ModuleNotFoundError` if it obeyed.
+        """
+        module_path, _, attr = _CANONICAL.rpartition(".")
+        module = importlib.import_module(module_path)
+        assert callable(getattr(module, attr))
+
     def test_db_py_never_calls_the_re_export_directly(self):
         """A bare `get_db_connection()` in db.py reads the facade's copy, which patches miss."""
         src = _DB.read_text()
@@ -71,7 +82,8 @@ class TestOneCanonicalTarget:
                     offenders.append(f"{p} -> monkeypatch.setattr for {sym}")
         assert offenders == [], (
             "these rebind a moved symbol on the re-export, which the real module never reads — "
-            "target cqc_lem.platform.db.connection instead:\n  " + "\n  ".join(sorted(set(offenders))))
+            f"target {_CANONICAL.rpartition('.')[0]} instead:\n  "
+            + "\n  ".join(sorted(set(offenders))))
 
     def test_the_facade_still_re_exports_it(self):
         """Compatibility half: ~2,400 imports still say `from cqc_lem.utilities.db import ...`."""
