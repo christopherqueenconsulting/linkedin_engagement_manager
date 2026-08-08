@@ -163,6 +163,9 @@ interface Post {
   gate_reason?: GateFinding[] | null
   // Why the user rejected/deleted this draft (issue #713) — used when regenerating.
   rejection_reason?: string | null
+  // An occasion/milestone draft (issue #1074). LinkedIn's "Celebrate an occasion" composer has no
+  // API, so LEM never publishes this one — the author copies it across and says when it landed.
+  manual_publish?: boolean
 }
 
 // What POST /user/post/rescore returns after re-running the gates on the saved content.
@@ -399,6 +402,37 @@ export default function ContentStudio() {
     onError: (err) => imageErrorText(err, 'Image generation failed — try again.'),
     onSettled: () => setImageBusy(null),
   })
+
+  // "I posted this natively" (issue #1074). Only a manual-publish draft can be marked this way —
+  // for every other post 'posted' is written by the task that has the LinkedIn URN to prove it.
+  const [nativeCopied, setNativeCopied] = useState(false)
+  const [nativeError, setNativeError] = useState<string | null>(null)
+  useEffect(() => { setNativeCopied(false); setNativeError(null) }, [editingPostId])
+
+  const markPostedMutation = useMutation({
+    mutationFn: (post_id: number) =>
+      api.post('/user/post/mark-posted', { session_token: sessionToken, post_id }),
+    onMutate: () => setNativeError(null),
+    onSuccess: (_res, post_id) => {
+      setEditingPost((p) => (p && p.post_id === post_id ? { ...p, status: 'posted' } : p))
+      qc.invalidateQueries({ queryKey: ['posts', email] })
+    },
+    onError: (err) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setNativeError(typeof detail === 'string' ? detail : 'Could not mark this post as published.')
+    },
+  })
+
+  const copyNativeText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setNativeCopied(true)
+    } catch {
+      // A denied clipboard permission is not a failure the user can act on by retrying — say what
+      // to do instead, since the text is right there in the editor.
+      setNativeError('Copy blocked by your browser — select the text above and copy it manually.')
+    }
+  }
 
   const removeImageMutation = useMutation({
     mutationFn: (post_id: number) =>
@@ -999,6 +1033,11 @@ export default function ContentStudio() {
                     </span>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <span className="text-xs text-gray-400 uppercase">{post.post_type}</span>
+                      {post.manual_publish && post.status !== 'posted' && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                          POST NATIVELY
+                        </span>
+                      )}
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[post.status] ?? 'bg-gray-100 text-gray-600'}`}>
                         {post.status.toUpperCase()}
                       </span>
@@ -1110,6 +1149,46 @@ export default function ContentStudio() {
               /* Editable form for non-posted statuses */
               <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-4">
                 <h3 className="font-semibold text-gray-700">Edit Post #{editingPost.post_id}</h3>
+
+                {/* Occasion / milestone draft (issue #1074). LinkedIn's occasion composer has no
+                    API, so this post never publishes itself — copy it across, then say it landed. */}
+                {editingPost.manual_publish && (
+                  <div className="border border-amber-300 bg-amber-50 rounded-lg p-4 space-y-3">
+                    <p className="text-sm font-semibold text-amber-900">Post natively on LinkedIn</p>
+                    <p className="text-xs text-amber-800">
+                      LinkedIn's occasion posts can only be created in its own composer, so LEM won't
+                      publish this one. On LinkedIn: <span className="font-semibold">Start a post →
+                      More → Celebrate an occasion</span>, pick the occasion, then paste the text
+                      below.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => copyNativeText(editingPost.content)}
+                        className="bg-amber-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-amber-700 transition-colors"
+                      >
+                        {nativeCopied ? 'Copied ✓' : 'Copy post text'}
+                      </button>
+                      <a
+                        href="https://www.linkedin.com/feed/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-amber-400 text-amber-800 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-amber-100 transition-colors"
+                      >
+                        Open LinkedIn ↗
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => markPostedMutation.mutate(editingPost.post_id)}
+                        disabled={markPostedMutation.isPending}
+                        className="border border-amber-400 text-amber-800 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-amber-100 disabled:opacity-50 transition-colors"
+                      >
+                        {markPostedMutation.isPending ? 'Saving…' : 'I posted this'}
+                      </button>
+                    </div>
+                    {nativeError && <p className="text-xs text-red-600 font-medium">{nativeError}</p>}
+                  </div>
+                )}
 
                 {/* Why this draft is pending + how to clear it (issue #421). */}
                 <PostGateReason

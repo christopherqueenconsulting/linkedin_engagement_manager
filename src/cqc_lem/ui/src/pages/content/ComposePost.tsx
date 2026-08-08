@@ -12,6 +12,24 @@ import { maskProps } from '../../utils/analytics'
 const POST_TYPES = ['TEXT', 'VIDEO', 'CAROUSEL'] as const
 type PostType = typeof POST_TYPES[number]
 
+// The occasion archetypes LEM can draft (issue #1074) — mirrors content_framework's occasion
+// family. Both publish through LinkedIn's native composer, which is why they are not post types.
+const OCCASION_TYPES = [
+  {
+    value: 'project_launch',
+    label: 'Project / product launch',
+    hint: 'Something you actually shipped — what it is, who it is for, why you built it.',
+    placeholder: 'What shipped, who it is for, and the one thing that was hard about building it…',
+  },
+  {
+    value: 'educational_milestone',
+    label: 'Certification / course completed',
+    hint: 'A credential you actually earned — and the one thing it changed about your work.',
+    placeholder: 'What you completed, what it took, and the one thing it changed in your work…',
+  },
+] as const
+type OccasionType = typeof OCCASION_TYPES[number]['value']
+
 const CAROUSEL_STAGES = [
   { value: 'awareness', label: 'Awareness', hint: 'Educational tips, insights, how-tos' },
   { value: 'consideration', label: 'Consideration', hint: 'Step-by-step frameworks, processes' },
@@ -64,6 +82,12 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
   const [imageBusy, setImageBusy] = useState<'upload' | 'generate' | null>(null)
   const [imageError, setImageError] = useState<string | null>(null)
   const imageFileRef = useRef<HTMLInputElement>(null)
+
+  // Occasion / milestone drafting state (issue #1074) — rare by design, ~once a month.
+  const [occasionType, setOccasionType] = useState<OccasionType>('project_launch')
+  const [occasionText, setOccasionText] = useState('')
+  const [occasionBusy, setOccasionBusy] = useState(false)
+  const [occasionResult, setOccasionResult] = useState<{ ok: boolean; msg: string } | null>(null)
 
   // Carousel AI generation state
   const [carouselMode, setCarouselMode] = useState<'manual' | 'ai'>('ai')
@@ -227,6 +251,31 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
       setImageError(imageErrorText(err, 'Image generation failed — try again.'))
     } finally {
       setImageBusy(null)
+    }
+  }
+
+  // Occasion / milestone draft (issue #1074). LinkedIn's "Celebrate an occasion" composer has no
+  // API, so this asks LEM for the COPY only — the draft lands in Review marked "post natively".
+  async function handleDraftOccasion(e: React.FormEvent) {
+    e.preventDefault()
+    if (occasionText.trim().length < 10) {
+      setOccasionResult({ ok: false, msg: 'Describe the occasion — it is the only fact the draft may state.' })
+      return
+    }
+    setOccasionBusy(true)
+    setOccasionResult(null)
+    try {
+      await api.post('/user/post/occasion', {
+        session_token: sessionToken,
+        archetype: occasionType,
+        occasion: occasionText.trim(),
+      })
+      setOccasionText('')
+      setOccasionResult({ ok: true, msg: 'Drafting your occasion post — it appears in Review shortly.' })
+    } catch (err) {
+      setOccasionResult({ ok: false, msg: imageErrorText(err, 'Could not start the draft. Please try again.') })
+    } finally {
+      setOccasionBusy(false)
     }
   }
 
@@ -736,6 +785,78 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
               {submitting ? 'Scheduling…' : 'Approve & Schedule'}
             </button>
           </div>
+        </form>
+
+        {/* Occasion / milestone post (issue #1074). LinkedIn's native occasion composer reaches far
+            more people than a plain text post, and no API can create one — so LEM writes the copy
+            and you paste it in. Keep these rare: real launches and real credentials only. */}
+        <form
+          onSubmit={handleDraftOccasion}
+          className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 space-y-3"
+        >
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700">Celebrate an occasion</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              LEM drafts it; you publish it from LinkedIn's own occasion composer (Start a post →
+              More → Celebrate an occasion). Best kept to real events — about one a month.
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="occasion-type" className="block text-xs font-medium text-gray-600 mb-1">
+              Occasion
+            </label>
+            <select
+              id="occasion-type"
+              value={occasionType}
+              onChange={(e) => setOccasionType(e.target.value as OccasionType)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {OCCASION_TYPES.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-400">
+              {OCCASION_TYPES.find((o) => o.value === occasionType)?.hint}
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="occasion-text" className="block text-xs font-medium text-gray-600 mb-1">
+              What happened?
+            </label>
+            <textarea
+              id="occasion-text"
+              rows={3}
+              value={occasionText}
+              onChange={(e) => setOccasionText(e.target.value)}
+              placeholder={OCCASION_TYPES.find((o) => o.value === occasionType)?.placeholder}
+              {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none')}
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              These are the only facts the draft may state — anything you leave out, it leaves out.
+            </p>
+          </div>
+
+          {occasionResult && (
+            <p className={`text-sm font-medium ${occasionResult.ok ? 'text-green-600' : 'text-red-600'}`}>
+              {occasionResult.msg}
+              {occasionResult.ok && onNavigateTab && (
+                <button type="button" onClick={() => onNavigateTab('review')}
+                  className="ml-2 font-semibold text-blue-600 hover:underline">
+                  View in Review &rarr;
+                </button>
+              )}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={occasionBusy || !sessionToken}
+            className="w-full bg-amber-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-amber-700 disabled:opacity-50 transition-colors"
+          >
+            {occasionBusy ? 'Drafting…' : 'Draft occasion post'}
+          </button>
         </form>
       </div>
 

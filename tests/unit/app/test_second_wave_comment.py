@@ -232,6 +232,7 @@ class TestSecondWaveDispatch:
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.get_post_content", return_value="body"), \
              patch(f"{_RA}.get_post_status", return_value="approved"), \
+             patch(f"{_RA}.get_post_manual_publish", return_value=False), \
              patch(f"{_RA}.get_user_password_pair_by_id", return_value=("u@example.com", "pw")), \
              patch(f"{_RA}.get_post_type", return_value=ra.PostType.TEXT), \
              patch(f"{_RA}.get_engagement_preferences", return_value={"reply_check_mode": "off"}), \
@@ -253,6 +254,7 @@ class TestSecondWaveDispatch:
         monkeypatch.setenv("SECOND_WAVE_COMMENT_ENABLED", "false")
         with patch(f"{_RA}.get_post_content", return_value="body"), \
              patch(f"{_RA}.get_post_status", return_value="approved"), \
+             patch(f"{_RA}.get_post_manual_publish", return_value=False), \
              patch(f"{_RA}.get_user_password_pair_by_id", return_value=("u@example.com", "pw")), \
              patch(f"{_RA}.get_post_type", return_value=ra.PostType.TEXT), \
              patch(f"{_RA}.get_engagement_preferences", return_value={"reply_check_mode": "off"}), \

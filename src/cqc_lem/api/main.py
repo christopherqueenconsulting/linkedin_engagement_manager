@@ -216,6 +216,7 @@ from cqc_lem.utilities.db import (
     get_post_coverage_counts,
     get_post_engagement_rows,
     get_post_image_url,
+    get_post_manual_publish,
     get_post_performance_rows,
     get_post_status,
     get_post_type,
@@ -252,6 +253,7 @@ from cqc_lem.utilities.db import (
     insert_avatar_training,
     insert_connection_request,
     insert_feedback,
+    insert_occasion_post,
     insert_outreach_target,
     insert_post,
     insert_scheduled_dm,
@@ -1716,6 +1718,28 @@ class PostRegenerateRequest(BaseModel):
     session_token: str
     post_id: int
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => fresh take honoring settings
+
+
+class OccasionPostRequest(BaseModel):
+    """Body of `POST /user/post/occasion` — seed one occasion/milestone draft (issue #1074).
+
+    `occasion` is the author's own account of the real event, and it is the ONLY specific the writer
+    is allowed to state about it, so it is required rather than defaulted. `archetype` is validated
+    against the framework's occasion family in the handler (400), not here, so the menu stays in one
+    place.
+    """
+
+    session_token: SessionTokenField = None
+    archetype: str
+    occasion: str = Field(min_length=10, max_length=2000)
+    scheduled_datetime: Optional[datetime] = None
+
+
+class PostMarkPostedRequest(BaseModel):
+    """Body of `POST /user/post/mark-posted` — the author says they published this one by hand."""
+
+    session_token: SessionTokenField = None
+    post_id: int
 
 
 class PostRescoreRequest(BaseModel):
@@ -3491,6 +3515,9 @@ def get_posts_for_email(
             "gate_reason": parse_gate_findings(post.get("gate_reason")),
             # Why the user rejected/deleted this draft (issue #713) — surfaced when regenerating.
             "rejection_reason": post.get("rejection_reason"),
+            # An occasion draft the author publishes by hand (issue #1074) — the Studio renders a
+            # copy-and-mark-as-posted state for it instead of a schedule.
+            "manual_publish": bool(post.get("manual_publish")),
         }
         for post in posts
     ]
@@ -5450,6 +5477,91 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
         guidance = get_post_rejection_reason(request.post_id)
     regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})
     return ResponseModel(status_code=200, detail="Regeneration started")
+
+
+# --- Occasion / milestone posts (issue #1074) --------------------------------------------------
+# LinkedIn's "Celebrate an occasion" composer creates an entity no API call can, so these two
+# endpoints are the whole loop: seed a draft LEM writes, then record that the author published it
+# by hand. Nothing here ever publishes — that is the point of the feature.
+
+# How far out an occasion draft is scheduled when the author names no date: far enough to be
+# reviewed and edited, near enough that a launch announcement is still news.
+OCCASION_DEFAULT_LEAD_HOURS = 24
+
+
+@router.post("/user/post/occasion", responses={
+    200: {"description": "Occasion draft queued"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403]},
+    500: {"description": "Could not create the draft"},
+})
+def create_occasion_post_endpoint(request: OccasionPostRequest) -> ResponseModel:
+    """Seed ONE occasion/milestone draft for the caller, written to the named archetype.
+
+    The row is created up front (so the Content Studio shows it immediately) and marked
+    `manual_publish`, which is what permanently keeps the scheduler and `post_to_linkedin` off it —
+    the author publishes it through LinkedIn's native occasion composer, which is the only place the
+    occasion entity exists. Drafting itself is a slow LLM call, so it runs in Celery.
+    """
+    from cqc_lem.utilities.ai.content_framework import occasion_formats, occasion_stage
+
+    user_id = require_session_user_id(request.session_token)
+
+    archetype = (request.archetype or "").strip().lower()
+    if archetype not in occasion_formats("post"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown occasion type '{request.archetype}' "
+                   f"(known: {', '.join(occasion_formats('post'))})")
+    occasion = request.occasion.strip()
+    if len(occasion) < 10:
+        raise HTTPException(status_code=400,
+                            detail="Describe the occasion — it is the only fact the draft may state")
+
+    scheduled = request.scheduled_datetime
+    if scheduled is None:
+        scheduled = datetime.now(timezone.utc) + timedelta(hours=OCCASION_DEFAULT_LEAD_HOURS)
+    else:
+        _warn_if_naive_schedule(scheduled, "/user/post/occasion", user_id=user_id)
+
+    post_id = insert_occasion_post(user_id, scheduled, occasion_stage("post", archetype))
+    if not post_id:
+        log_error("Could not create the occasion post row", user_id=user_id)
+        raise HTTPException(status_code=500, detail="Could not create the draft")
+
+    from cqc_lem.app.run_content_plan import draft_occasion_post_task
+    draft_occasion_post_task.apply_async(
+        kwargs={"post_id": post_id, "archetype": archetype, "occasion": occasion})
+    return ResponseModel(status_code=200, detail={"post_id": post_id, "archetype": archetype,
+                                                 "manual_publish": True})
+
+
+@router.post("/user/post/mark-posted", responses={
+    200: {"description": "Post marked as published"},
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 404]},
+    409: {"description": "Post does not publish natively, or is already published"},
+    500: {"description": "Could not update the post"},
+})
+def mark_post_posted_endpoint(request: PostMarkPostedRequest) -> ResponseModel:
+    """Record that the caller published a `manual_publish` draft by hand.
+
+    Deliberately narrow: only a native-publish draft can be marked this way, because for every
+    other post 'posted' is written by the publish task that has the LinkedIn URN to prove it. A
+    post already marked is a 409, not a silent no-op — the author needs to know which of two clicks
+    landed.
+    """
+    user_id = require_session_user_id(request.session_token)
+    if get_post_user_id(request.post_id) != user_id:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if not get_post_manual_publish(request.post_id):
+        raise HTTPException(status_code=409,
+                            detail="This post publishes automatically — LEM marks it posted itself")
+    if get_post_status(request.post_id) == PostStatus.POSTED.value:
+        raise HTTPException(status_code=409, detail="This post is already marked as published")
+    if not bulk_update_posts([request.post_id], status=PostStatus.POSTED, user_id=user_id):
+        log_error("Could not mark the occasion post as published",
+                  user_id=user_id, post_id=request.post_id)
+        raise HTTPException(status_code=500, detail="Could not update the post")
+    return ResponseModel(status_code=200, detail="Post marked as published")
 
 
 @router.post("/user/post/rescore")

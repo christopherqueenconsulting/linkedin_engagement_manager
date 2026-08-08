@@ -444,7 +444,55 @@ POST_FORMATS: dict = {
             "CTA in the assigned CTA style",
         ],
     },
+    # --- Occasion / milestone archetypes (issue #1074) ----------------------------------------
+    # LinkedIn's native "Celebrate an occasion" composer carries an entity the REST API has no
+    # equivalent for, so these two ship as MANUAL-publish drafts the author pastes into that
+    # composer (posts.manual_publish). Both are announcements of a REAL event — a launch that
+    # happened, a credential that was earned — so both are fact-anchored: the writer may only
+    # state a specific it was given.
+    "project_launch": {
+        "label": "Project Launch",
+        "guidance": ("Announce something the author ACTUALLY shipped — a product, feature, tool or "
+                     "project that is live now. Lead with what it is and who it is for, not with "
+                     "how excited the author is. The launch is the news; the reason it exists is "
+                     "the story. Never announce something that has not shipped."),
+        "structure": [
+            "Hook in the assigned hook style — name the thing that is now live, in plain words",
+            "What it actually does and who it is for, in two concrete lines",
+            "Why it was built: the specific problem or gap that made it worth the work",
+            "One honest detail from building it — a constraint, a dead end, a decision that cost something",
+            "Who to hand it to first, and how they get it",
+            "CTA in the assigned CTA style",
+        ],
+        "occasion": True,
+        "stage": "decision",
+        "fact_anchored": True,
+    },
+    "educational_milestone": {
+        "label": "Educational Milestone",
+        "guidance": ("Mark a credential, certification, course or programme the author actually "
+                     "completed — and make the POST about what it changed in their work, not about "
+                     "the certificate. The milestone earns the reader's attention; the transferable "
+                     "lesson is what earns the read."),
+        "structure": [
+            "Hook in the assigned hook style — name the milestone plainly, no fanfare",
+            "What it took, in one or two honest lines (the real hours, the hard part)",
+            "The ONE thing it changed about how the author works — the specific, not 'grew so much'",
+            "What the reader should take from it whether or not they ever do the same programme",
+            "Who to thank, named, when there is genuinely someone",
+            "CTA in the assigned CTA style",
+        ],
+        "occasion": True,
+        "stage": "awareness",
+        "fact_anchored": True,
+    },
 }
+
+# The `occasion_milestone` family (issue #1074). These archetypes are OFF the automatic menu: they
+# announce a real, dated event (~1/month by design), so a rotation that could pick one would invent
+# a launch nobody shipped. They are reachable only when a caller NAMES one —
+# `preferred_formats=[...]` or an explicit guidance hint.
+OCCASION_FORMAT_KEYS: tuple = ("project_launch", "educational_milestone")
 
 # Post CTAs: the conversation-driving newsletter CTA styles apply verbatim to posts (shared object
 # references — ONE definition), minus the subscribe-focused ones, plus a save-focused close that
@@ -736,6 +784,34 @@ def fact_anchored_formats(content_type: str) -> list:
     return [k for k, m in _menu(content_type)["formats"].items() if m.get("fact_anchored")]
 
 
+def occasion_formats(content_type: str) -> list:
+    """Every occasion/milestone archetype key for a content type, in menu order (issue #1074)."""
+    return [k for k, m in _menu(content_type)["formats"].items() if m.get("occasion")]
+
+
+def is_occasion_format(content_type: str, format_key) -> bool:
+    """True for the archetypes announcing a REAL dated event — a launch, a credential.
+
+    They publish through LinkedIn's native occasion composer, which has no API entity, so a draft
+    written to one of these must never reach the automatic publish path (`posts.manual_publish`).
+    """
+    return bool(format_meta(content_type, format_key).get("occasion"))
+
+
+def occasion_stage(content_type: str, format_key, default: str = "awareness") -> str:
+    """The buyer-journey stage an occasion archetype implies — a launch sells, a credential doesn't."""
+    return format_meta(content_type, format_key).get("stage") or default
+
+
+def _rotatable(formats: dict) -> dict:
+    """The formats an automatic pick may draw from: everything except the occasion archetypes.
+
+    An occasion post is seeded by a human naming a real event, so leaving these on the rotation
+    menu would eventually schedule a launch announcement for a launch that never happened.
+    """
+    return {k: v for k, v in formats.items() if not v.get("occasion")} or formats
+
+
 def requires_fact_anchor(content_type: str, format_key) -> bool:
     """True for archetypes whose whole value IS the specifics (build receipt, compendium). Their
     drafts run through the no-fabrication guard: a number that no verified fact backs must be a
@@ -748,7 +824,9 @@ def options_text(content_type: str) -> str:
     """The menu of formats/hooks/CTAs given to a PLANNER so it assigns real, known values."""
     menu = _menu(content_type)
     lines = ["Available FORMATS (use the key on the left):"]
-    lines += [f"- {k}: {m['label']} — {m['guidance']}" for k, m in menu["formats"].items()]
+    # The occasion archetypes are deliberately absent: a planner filling a calendar slot has no
+    # real launch or credential to announce, so offering them invites an invented one (#1074).
+    lines += [f"- {k}: {m['label']} — {m['guidance']}" for k, m in _rotatable(menu["formats"]).items()]
     if menu["hooks"]:
         lines.append("\nAvailable HOOK STYLES (use the key on the left):")
         lines += [f"- {k}: {m['label']} — {m['guidance']}" for k, m in menu["hooks"].items()]
@@ -878,6 +956,10 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
     """
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
+    # A reassignment is an automatic pick, so it draws from the rotation menu only — a planned batch
+    # can never be repaired INTO an occasion announcement (#1074). A blueprint that already names
+    # one is left alone: it was seeded by a human naming a real event.
+    rotatable = _rotatable(formats)
     rf = [f for f in (_normalize(x, formats) for x in (recent_formats or [])) if f]
     rh = [h for h in (_normalize(x, hooks) for x in (recent_hook_styles or [])) if h]
     f_recency, h_recency = list(rf), list(rh)
@@ -892,8 +974,12 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
         if not isinstance(bp, dict):
             continue
         fmt = _normalize(bp.get("format"), formats)
-        if fmt is None or fmt == prev_f or fmt in batch_f or fmt in window_f:
-            fmt = _pick(formats, f_recency, {prev_f} | batch_f | window_f)
+        # A seeded occasion post keeps its shape and its slot; everything else is repaired from
+        # the rotation menu.
+        seeded_occasion = fmt is not None and formats[fmt].get("occasion")
+        if not seeded_occasion and (fmt is None or fmt == prev_f or fmt in batch_f
+                                    or fmt in window_f):
+            fmt = _pick(rotatable, f_recency, {prev_f} | batch_f | window_f)
         item = dict(bp)
         item.update({"format": fmt, "structure": list(formats[fmt]["structure"])})
         # A save-targeted archetype narrows the hook menu to the number-led styles, so the hook is
@@ -954,7 +1040,10 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
             if k.replace("_", " ") in low or meta["label"].lower() in low:
                 hinted = k
                 break
-    pickable = formats
+    # An automatic pick never lands on an occasion archetype (#1074) — but `guidance` and
+    # `preferred_formats` still resolve against the FULL menu, which is how a caller that HAS a real
+    # launch or credential to announce reaches one.
+    pickable = _rotatable(formats)
     if preferred_formats and not hinted:
         family = dict.fromkeys(f for f in (_normalize(x, formats) for x in preferred_formats) if f)
         pickable = {k: formats[k] for k in family} or formats

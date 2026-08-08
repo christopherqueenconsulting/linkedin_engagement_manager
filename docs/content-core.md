@@ -76,6 +76,33 @@ unfilled placeholders hold it too until the author fills them in (a re-score of 
 text treats the author's own numbers as verified, or the hold could never clear). An empty bank
 means every such draft is placeholder-only and approval-gated.
 
+### Occasion / milestone archetypes (issue #1074)
+
+Two more archetypes live in the same `POST_FORMATS` menu — `project_launch` and
+`educational_milestone` — and they are the only ones nothing may pick automatically. LinkedIn's
+native "Celebrate an occasion" composer (Start a post → More → Celebrate an occasion) creates an
+entity the REST API has no equivalent for, so these drafts are written by LEM and published BY HAND.
+
+- **Off the automatic menu.** `_rotatable()` drops anything marked `occasion` from the three places
+  a shape is chosen without a human: `select_blueprint`'s rotation, `enforce_variety`'s repair, and
+  the planner menu `options_text` hands an LLM. They stay reachable through `preferred_formats=[…]`
+  or an explicit `guidance` hint — which is how the ONE caller that has a real event reaches them.
+  The reason is not tidiness: a rotation that could land on `project_launch` would eventually
+  announce a launch that never happened.
+- **Not a cadence slot.** They are absent from `POST_DAY_TYPES` and carry no `content_mix` class, so
+  an occasion post neither fills a weekly slot nor moves the 70/20/10 ratios. Rare by design (~1 a
+  month), seeded by the author naming a real event.
+- **Fact-anchored.** What the author typed IS the anchor: `draft_occasion_post` wraps it as a
+  synthetic story-bank entry, so the writer gets the bank's absolute "these are the ONLY personal
+  specifics you may state" rule without a parallel directive.
+- **`posts.manual_publish` is the enforcement.** `get_ready_to_post_posts` never returns such a row
+  (nor does the orphan re-queue), and `post_to_linkedin` refuses one that reaches it anyway — the
+  single choke point every publish passes through. `POST /user/post/mark-posted` is the author
+  saying they published it; it is refused for any post that is NOT `manual_publish`, because for
+  those 'posted' is written by the task that holds the LinkedIn URN.
+
+Phase 2 — driving the occasion composer with Selenium — is tracked separately on #1088.
+
 ## Carousels
 
 Carousels draw from the same menu via `carousel_blueprint_directive` and persist their shape into

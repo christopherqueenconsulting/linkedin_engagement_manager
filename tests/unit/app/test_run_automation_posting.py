@@ -7,6 +7,8 @@ import pytest
 
 BASE_PATCHES = [
     ("cqc_lem.app.run_automation.get_post_status", {"return_value": "approved"}),
+    # Issue #1074: the publish task refuses a native-publish draft before anything else.
+    ("cqc_lem.app.run_automation.get_post_manual_publish", {"return_value": False}),
     ("cqc_lem.app.run_automation.get_user_password_pair_by_id", {"return_value": ("u@example.com", "pw")}),
     ("cqc_lem.app.run_automation.get_post_content", {"return_value": "Post text"}),
     ("cqc_lem.app.run_automation.insert_new_log", {}),
