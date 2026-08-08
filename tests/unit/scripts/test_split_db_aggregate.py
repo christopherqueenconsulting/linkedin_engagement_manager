@@ -74,6 +74,37 @@ class TestTableGrounding:
         assert tool.tables_touched(node, {"posts", "users"}) == {"posts"}
 
 
+class TestModuleBindings:
+    """`--verify` checked function bodies only; the constants travelling with them were unchecked.
+
+    The `users` aggregate carries `SECRET_FIELD_COOKIE_VALUE = "cookies.value"` and three siblings,
+    and those string VALUES are the AAD every encrypted column was sealed under. A byte changing in
+    transit fails no test — it orphans every row already written, and with `ENCRYPTION_REQUIRED=true`
+    in production those reads then return None instead of raising.
+    """
+
+    def test_constants_classes_and_annotated_assignments_are_all_captured(self, tool):
+        src = (
+            'SECRET_FIELD_COOKIE_VALUE = "cookies.value"\n'
+            "STEPS: tuple = (1, 2)\n"
+            "\n"
+            "class Marker(Exception):\n"
+            "    pass\n"
+            "\n"
+            "def fn():\n"
+            "    return SECRET_FIELD_COOKIE_VALUE\n"
+        )
+        binds = tool.module_bindings(src)
+        assert set(binds) == {"SECRET_FIELD_COOKIE_VALUE", "STEPS", "Marker"}
+        assert binds["SECRET_FIELD_COOKIE_VALUE"] == 'SECRET_FIELD_COOKIE_VALUE = "cookies.value"'
+
+    def test_a_changed_value_is_visible(self, tool):
+        """The whole point: same name, different bytes, must not compare equal."""
+        before = tool.module_bindings('SECRET_FIELD_PASSWORD = "users.password"\n')
+        after = tool.module_bindings('SECRET_FIELD_PASSWORD = "users.passwd"\n')
+        assert before["SECRET_FIELD_PASSWORD"] != after["SECRET_FIELD_PASSWORD"]
+
+
 class TestDeterminism:
     @pytest.mark.parametrize("aggregate", ["posts", "outreach", "users"])
     def test_the_same_input_assigns_the_same_functions(self, aggregate):
