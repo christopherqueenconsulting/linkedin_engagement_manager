@@ -182,12 +182,23 @@ Browser capacity is a **fixed pool of Chrome session slots shared by the Celery 
 
 ## Agent Working Method
 
-Two cross-cutting practices bookend `ship-issue`'s branch → build → PR flow — one before code, one before the PR:
+Three cross-cutting practices wrap `ship-issue`'s branch → build → PR flow — one before code, one
+during the build, one before the PR:
 
 - **Before writing code on a non-trivial issue** (`docs/spec-verifier-environment.md`, Karpathy's
   Spec/Verifier/Environment framework mapped onto this repo): nail testable acceptance criteria, name
   the specific check that proves success, and locate the owning docs/skill/module — BEFORE `ship-issue`
   step 1. Skill: `spec-first`.
+- **Hand token-heavy EXECUTION to Codex** (`codex@openai-codex`, enabled in `.claude/settings.json`):
+  this session keeps the judgement, Codex does the grinding. Delegate when the task is a **bulk file
+  edit** — the same mechanical change across many files, though a scripted `sed`/AST pass beats both
+  agents when the change is truly uniform; a **well-specced build** — acceptance criteria already
+  testable and the design settled, and if they are not, sharpen them here with `spec-first` first; or
+  a **bug still failing after 2 attempts** — two is a limit, not a suggestion, because a third pass
+  from the same context re-derives the same wrong model of the problem. What does NOT go to Codex:
+  deciding WHAT to build, reading a failure to work out what it means, anything touching a documented
+  invariant, and the last look before the PR. Verify its output exactly as you would your own — the
+  CI gates do not care which model wrote the diff.
 - **Agent quality gate — Gauntlet Loop** (`docs/gauntlet-loop.md`): optional pre-PR pass for any
   deliverable that needs a REAL bar, not just review — builder/critic pairs blind-compare against a
   named reference exemplar, loop until the build wins (capped at 3 rounds, then `needs-human`).
