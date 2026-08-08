@@ -1368,12 +1368,47 @@ class TestCatchupContactFrequency:
                 3, 1, "https://www.linkedin.com/in/jane", "job_change", "2026-08"
             ) is False
 
-    def test_count_existing_double_sent_catchups_counts_buckets(self, mock_database_connection):
+    def test_release_catchup_send_attempt_deletes_the_claim(self, mock_database_connection):
+        from cqc_lem.utilities.db import release_catchup_send_attempt
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert release_catchup_send_attempt(
+                1, "https://www.linkedin.com/in/jane", "job_change", "2026-08") is True
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        assert sql.startswith("DELETE FROM catchup_send_attempts")
+
+    def test_release_catchup_send_attempt_false_when_nothing_to_release(self, mock_database_connection):
+        from cqc_lem.utilities.db import release_catchup_send_attempt
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 0
+            assert release_catchup_send_attempt(
+                1, "https://www.linkedin.com/in/jane", "job_change", "2026-08") is False
+
+    def test_release_catchup_send_attempt_false_on_db_error(self, mock_database_connection):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import release_catchup_send_attempt
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+            assert release_catchup_send_attempt(
+                1, "https://www.linkedin.com/in/jane", "job_change", "2026-08") is False
+
+    def test_count_existing_double_sent_catchups_counts_repeated_sends(self, mock_database_connection):
+        """It has to read `logs`.
+
+        `catchup_touches` is UNIQUE on the milestone identity, so counting duplicates THERE could only
+        ever report zero — and the duplicate this issue is about is one touch row sent twice.
+        """
         from cqc_lem.utilities.db import count_existing_double_sent_catchups
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].fetchone.return_value = (42,)
             assert count_existing_double_sent_catchups() == 42
+        sql = mock_database_connection["cursor"].execute.call_args[0][0]
+        assert "FROM logs l" in sql and "action_type = 'dm'" in sql
 
     def test_count_existing_double_sent_catchups_zero_on_db_error(self, mock_database_connection):
         import mysql.connector

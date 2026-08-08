@@ -9,13 +9,15 @@
 --   - `last_sent_at` on catchup_touches: the real send timestamp (updated when status moves to `sent`).
 --   - `min_catchup_contact_interval_days` on engagement_preferences: the per-contact cooldown across
 --     all catch-up event types. NULL/0 means "no cooldown beyond the per-milestone dedup".
---   - `max_catchup_touches_per_contact_days` on engagement_preferences: a per-contact rolling cap in
---     the same window. NULL/0 means no per-contact cap.
+--   - `max_catchup_touches_per_contact_days` on engagement_preferences: a per-contact cap over the
+--     fixed rolling window in db.CATCHUP_CONTACT_CAP_WINDOW_DAYS (30 days), NOT over the cooldown —
+--     a cap measured over the cooldown window could never be reached, because the cooldown blocks
+--     the second message long before the cap could count it. NULL/0 means no per-contact cap.
 --
 -- Backfill `last_sent_at` from existing `sent` rows so the new cooldown logic can see history.
 --
 -- Default both prefs to conservative but non-blocking values: 7 days between any two catch-up
--- messages to the same person, and at most 2 messages to the same person in that window. These
+-- messages to the same person, and at most 2 messages to the same person per rolling month. These
 -- defaults are small enough that they rarely fire for typical usage, but they close the burst hole.
 
 ALTER TABLE catchup_touches

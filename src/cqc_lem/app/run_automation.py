@@ -101,6 +101,7 @@ from cqc_lem.utilities.connection_targeting import (
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import (
     ALREADY_CONNECTED_MESSAGE,
+    CATCHUP_CONTACT_CAP_WINDOW_DAYS,
     CONNECT_NOTE_MAX_CHARS,
     CONNECTION_REQUEST_SENT_MESSAGE,
     ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK,
@@ -217,6 +218,7 @@ from cqc_lem.utilities.db import (
     record_target_comment_blocked,
     record_target_engagement,
     record_target_follow_failure,
+    release_catchup_send_attempt,
     release_post_claim,
     resolve_weekly_cap,
     set_profile_synthesis,
@@ -8657,11 +8659,14 @@ def _catchup_contact_cooldown_active(user_id: int, profile_url: str, cooldown_da
         days=cooldown_days)
 
 
-def _catchup_contact_cap_reached(user_id: int, profile_url: str, window_days: int,
-                                 max_touches: int) -> bool:
+def _catchup_contact_cap_reached(user_id: int, profile_url: str, max_touches: int,
+                                 window_days: int = CATCHUP_CONTACT_CAP_WINDOW_DAYS) -> bool:
     """True when this contact has already received `max_touches` catch-ups in `window_days` (issue #1078).
 
-    A non-positive `max_touches` disables the guard. Read failures return False.
+    The window is the fixed rolling month, NOT the cooldown: a cap measured over the cooldown window
+    can never be reached, because the cooldown blocks the second message long before the cap counts
+    it — and a user who sets the cooldown to 0 would lose the cap with it. A non-positive
+    `max_touches` disables the guard. Read failures return False.
     """
     if window_days <= 0 or max_touches <= 0:
         return False
@@ -9020,8 +9025,7 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         if _catchup_contact_cooldown_active(user_id, moment["profile_url"], cooldown_days):
             funnel["contact_cooldown"] += 1
             continue
-        if _catchup_contact_cap_reached(user_id, moment["profile_url"], cooldown_days,
-                                         max_per_contact):
+        if _catchup_contact_cap_reached(user_id, moment["profile_url"], max_per_contact):
             funnel["contact_cap"] += 1
             continue
         score = _score_catchup_moment(moment, prefs)
@@ -9110,17 +9114,20 @@ def send_catchup_touch(self, touch_id: int):
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
         _report(CATCHUP_STATUS_CONTACT_COOLDOWN, user_id)
         return f"Catch-up touch {touch_id} deferred (per-contact cooldown)"
-    if _catchup_contact_cap_reached(user_id, touch["profile_url"], cooldown_days, max_per_contact):
+    if _catchup_contact_cap_reached(user_id, touch["profile_url"], max_per_contact):
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
         _report(CATCHUP_STATUS_CONTACT_CAP, user_id)
         return f"Catch-up touch {touch_id} deferred (per-contact cap)"
 
     # Durable send claim: only one worker can insert this milestone identity. If another already
     # did, the row is already sent (or sending) and we must not call LinkedIn again.
+    event_period = touch.get("event_period") or _catchup_event_period(touch["event_type"])
     if not claim_catchup_send_attempt(touch_id, user_id, touch["profile_url"], touch["event_type"],
-                                     touch.get("event_period") or _catchup_event_period(touch["event_type"])):
-        log_debug(f"Catch-up touch {touch_id} already has a send claim; skipping",
-                  user_id=user_id, action_type="catchup")
+                                      event_period):
+        # A claim we did not write, on a row that never reached `sent`, means a send was lost between
+        # the claim and its status update — rare enough to be worth a defect, and never routine.
+        log_warning(f"Catch-up touch {touch_id} already has a send claim; skipping",
+                    user_id=user_id, action_type="catchup")
         # Leave the row as SENT if the claim exists; a missing status update is the only reason we'd
         # arrive here with the claim already present.
         if touch["status"] != CatchupTouchStatus.SENT:
@@ -9133,6 +9140,10 @@ def send_catchup_touch(self, touch_id: int):
                            person_name=touch.get("person_name"))
     except LinkedInRateLimited as e:
         myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
+        # The breaker refused before a composer was ever opened, so nothing was sent — give the claim
+        # back, or the deferral we are about to write could never be retried: the next attempt would
+        # lose the claim and mark this touch `sent` having sent nothing.
+        release_catchup_send_attempt(user_id, touch["profile_url"], touch["event_type"], event_period)
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
         _report(CATCHUP_STATUS_THROTTLED, user_id)
         return f"Catch-up touch {touch_id} deferred (LinkedIn throttled)"

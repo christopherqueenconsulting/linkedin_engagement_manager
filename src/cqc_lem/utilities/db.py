@@ -5195,11 +5195,21 @@ CATCHUP_TOUCHES_MAX = CATCHUP_TOUCHES_MAX_PREMIUM
 CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT = 7
 CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN = 0
 CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX = 365
-# Per-contact rolling cap in the same window (issue #1078). At most this many catch-up messages may
-# be sent to the same person within `min_catchup_contact_interval_days`. 0 means no cap.
+# Per-contact rolling cap (issue #1078). At most this many catch-up messages may reach the same
+# person within CATCHUP_CONTACT_CAP_WINDOW_DAYS. 0 means no cap.
+#
+# The cap window is deliberately NOT the cooldown window: the cooldown already blocks every send
+# inside its own window, so a cap measured over the same span could never be reached (the first
+# message would trip the cooldown long before the second reached the cap), and disabling the
+# cooldown would silently disable the cap too. A month-long window makes the cap the second,
+# independent bound the reporter asked for — "no more than N catch-ups to this person, ever, in a
+# rolling month" — regardless of how the cooldown is set.
 CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT = 2
 CATCHUP_MAX_PER_CONTACT_DAYS_MIN = 0
 CATCHUP_MAX_PER_CONTACT_DAYS_MAX = 365
+# The rolling window the per-contact cap is measured over. Fixed, not a preference: the cap and the
+# cooldown are two different questions, and one knob answering both is how the cap became unreachable.
+CATCHUP_CONTACT_CAP_WINDOW_DAYS = 30
 # Paid plans that unlock the premium catch-up allowance (see stripe_util.TIER_PRICE_MAP).
 PREMIUM_SUBSCRIPTION_TIERS = ("professional", "enterprise")
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trial")
@@ -5311,8 +5321,9 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "catchup_message_source": "linkedin",
     # Per-contact catch-up frequency guard (issue #1078). A new congratulations to the same person is
     # held until `min_catchup_contact_interval_days` have passed since the last one, and at most
-    # `max_catchup_touches_per_contact_days` may land in that window. Both default to small, safe
-    # values that rarely block normal usage but stop a burst across multiple milestone types.
+    # `max_catchup_touches_per_contact_days` may land per rolling CATCHUP_CONTACT_CAP_WINDOW_DAYS.
+    # Both default to small, safe values that rarely block normal usage but stop a burst across
+    # multiple milestone types.
     "min_catchup_contact_interval_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_DEFAULT,
     "max_catchup_touches_per_contact_days": CATCHUP_MAX_PER_CONTACT_DAYS_DEFAULT,
     "posts_per_week": DEFAULT_POSTS_PER_WEEK,
@@ -10010,22 +10021,29 @@ def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
 
 
 def count_existing_double_sent_catchups() -> int:
-    """Count milestone buckets that were sent more than once.
+    """Count contacts who were sent the SAME catch-up congratulations more than once.
 
-    A bucket is (user, profile_url, event_type, event_period); more than one `sent` row in
-    `catchup_touches` means the same contact was messaged twice for the same milestone. Used once at
-    deploy time to report the historical duplicate-send surface to the issue (issue #1078).
+    Measured off `logs`, not `catchup_touches`: the ledger carries a UNIQUE key on
+    (user, profile_url, event_type, event_period), so grouping IT by that key can never return a
+    duplicate — the historical double-send this issue is about came from ONE touch row being sent
+    twice (a retry or an orphan re-queue after the status update was lost), which shows up only as
+    two `success` DM log rows carrying the same body to the same person.
 
-    Returns 0 when nothing is double-sent or the read fails.
+    Read-only, run once at deploy time to report the historical duplicate surface on the issue
+    (#1078). Returns 0 when nothing is double-sent or the read fails.
     """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "SELECT COUNT(*) FROM ("
-            "SELECT user_id, profile_url, event_type, event_period "
-            "FROM catchup_touches WHERE status = 'sent' "
-            "GROUP BY user_id, profile_url, event_type, event_period HAVING COUNT(*) > 1"
+            "SELECT l.user_id, l.post_url, l.message FROM logs l "
+            "WHERE l.action_type = 'dm' AND l.result = 'success' "
+            # EXISTS rather than a JOIN: two milestones can share one body (the deterministic
+            # fallback congratulations), and a join would multiply ONE log row into a fake duplicate.
+            "AND EXISTS (SELECT 1 FROM catchup_touches c WHERE c.user_id = l.user_id "
+            "AND c.profile_url = l.post_url AND c.message = l.message) "
+            "GROUP BY l.user_id, l.post_url, l.message HAVING COUNT(*) > 1"
             ") dupes")
         r = cursor.fetchone()
         return int(r[0]) if r else 0
@@ -10057,6 +10075,33 @@ def claim_catchup_send_attempt(touch_id: int, user_id: int, profile_url: str,
         return cursor.rowcount == 1
     except mysql.connector.Error as err:
         myprint(f"Could not claim catch-up send attempt for touch_id {touch_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def release_catchup_send_attempt(user_id: int, profile_url: str, event_type: "CatchupEventType",
+                                 event_period: str) -> bool:
+    """Give the claim back when NOTHING was sent (issue #1078).
+
+    Only call this where the send provably never reached LinkedIn — the 429 breaker refusing before a
+    composer was ever opened. A send whose outcome is unknown must KEEP its claim: the whole point of
+    the ledger is that an ambiguous attempt is treated as sent. Without this the throttle deferral,
+    which puts the touch back to `approved` for the next scan, would leave a claim no later attempt
+    could ever beat — so the retry would mark the touch `sent` having sent nothing.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM catchup_send_attempts WHERE user_id = %s AND profile_url = %s "
+            "AND event_type = %s AND event_period = %s",
+            (user_id, profile_url, str(event_type), event_period))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not release catch-up send claim for user_id {user_id} | Error: {err}")
         return False
     finally:
         cursor.close()
