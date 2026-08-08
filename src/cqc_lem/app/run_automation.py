@@ -24,8 +24,6 @@ import math
 import os
 import random
 import re
-import sys
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
@@ -341,51 +339,6 @@ from cqc_lem.utilities.selenium_util import (
 # Load .env file
 load_dotenv()
 
-# Global flag to indicate when to stop the thread
-stop_all_thread = threading.Event()
-time_remaining_seconds = 0
-
-
-def countdown_timer(seconds):
-    """Legacy in-process countdown from the pre-Celery script era; nothing in the task graph calls it.
-
-    Counts down on stdout with a carriage return, then SETS the module-global `stop_all_thread` —
-    the flag the old threaded runner used to stop its workers. Unconditionally, on every exit path:
-    a call that returns early because the flag was ALREADY set still sets it again. It is a global,
-    so a second call cannot run independently of the first, and once the flag is set it stays set
-    for the life of the process.
-    """
-    global stop_all_thread
-    global time_remaining_seconds
-    time_remaining_seconds = seconds
-    while seconds > 0 and not stop_all_thread.is_set():
-        mins, secs = divmod(seconds, 60)
-        timer = f'Time left: {mins:02d}:{secs:02d}'
-        sys.stdout.write('\r' + timer)
-        sys.stdout.flush()
-        time.sleep(1)
-        seconds -= 1
-        time_remaining_seconds = seconds
-    sys.stdout.write('\rTime left: 00:00\n')
-    sys.stdout.flush()
-    stop_all_thread.set()  # Set the flag to stop other threads
-
-
-def get_time_remaining_seconds():
-    """Whatever `countdown_timer` last wrote to the process-global counter — 0 if it never ran.
-
-    Not a clock: nothing decrements this except a running `countdown_timer`, so in a Celery worker
-    (where that timer is never started) it reads 0 forever.
-    """
-    global time_remaining_seconds
-    return time_remaining_seconds
-
-
-def get_time_remaining_minutes():
-    """`get_time_remaining_seconds()` floored to whole minutes — under 60 seconds left reads as 0."""
-    return get_time_remaining_seconds() // 60
-
-
 def navigate_to_feed(driver, wait):
     """Put the session on the home feed and ask `_switch_feed_to_recent` to sort it.
 
@@ -407,65 +360,8 @@ def navigate_to_feed(driver, wait):
     _switch_feed_to_recent(driver, wait)
 
 
-def get_feed_posts(driver, wait, num_posts=10):
-    """Legacy feed reader: scroll until `num_posts` cards are present, return `{'link': ...}` dicts.
-
-    Superseded by the SDUI card walk in `comment_on_feed_inline` and no longer on any live path — it
-    still keys off `data-id="urn:li:activity"`, and the scroll loop gives up as soon as a scroll adds
-    no cards, so it can return FEWER than `num_posts` (or none at all) without saying so.
-    """
-    posts = []
-
-    # Find the posts in the feed
-    post_element_xpath = '//div[contains(@data-id, "urn:li:activity")]'
-    post_elements = get_elements_as_list_wait_stale(wait, post_element_xpath, "Finding Posts in Feed")
-
-    if len(post_elements) == 0:
-        print(" No posts found in feed.")
-
-    while len(post_elements) < num_posts:
-        # Scroll to the bottom of the page to load more posts
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-
-        # Wait for the posts to load
-        time.sleep(5)
-
-        # Find the posts in the feed
-        new_post_elements = get_elements_as_list_wait_stale(wait, post_element_xpath, "Finding New Posts in Feed")
-
-        if len(new_post_elements) == len(post_elements):
-            # No new posts. Exit the loop
-            break
-
-        post_elements = new_post_elements
-
-    # Limit to the number of posts we want
-    for post in post_elements[:num_posts]:
-        # Get the link to the post
-        post_link = 'https://www.linkedin.com/feed/update/' + post.get_attribute('data-id')
-
-        posts.append({
-            'link': post_link,
-
-        })
-
-    return posts
-
-
-# Reading/thinking delays now come from utilities/human_pacing.py (issue #626) — one engine, with a
-# floor no human beats and a ceiling that keeps the sleep inline-safe.
-
-
-def simulate_writing_time(content):
-    """Seconds a human would take to type `content` at ~5 chars/sec — an estimate, it does not sleep.
-
-    Superseded on every live path by `utilities/human_pacing.py` (issue #626), which is the ONE
-    cadence engine and, unlike this, is seeded per (user, action, date) so a retry never re-rolls.
-    """
-    # Simulate a human writing time (around 5 characters per second)
-    char_count = len(content)
-    writing_time = char_count / 5
-    return round(writing_time)
+# Reading/thinking/typing delays all come from utilities/human_pacing.py (issue #626) — one engine,
+# with a floor no human beats and a ceiling that keeps the sleep inline-safe.
 
 
 def emoji_to_ue_string(emoji):
@@ -4248,8 +4144,6 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     a report can confirm the warm-up before that post actually happened (issue #547). It rides the
     self-requeue kwargs, so every pass in the window accumulates onto the same marker.
     """
-    global stop_all_thread
-
     myprint("Starting Automate Commenting Thread...")
 
     # Comment-quality hold (issue #628): when the weekly outcome report finds our comments are being
@@ -6865,8 +6759,6 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
     `lookback_days`. The default matches the daily cadence; a catch-up run passes a larger
     window once, then the cadence sticks to the delta.
     """
-    global stop_all_thread
-
     myprint("Starting Profile Viewer DMs")
 
     try:
@@ -9201,20 +9093,6 @@ def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
                     user_id=user_id, action_type="catchup")
 
 
-def final_method(drivers: List[WebDriver]):
-    """Legacy shutdown from the pre-Celery script era: stop the threads, quit every driver, EXIT.
-
-    It ends with `sys.exit(0)`, so it never returns to its caller — which is why nothing on the
-    Celery path calls it, and why nothing should: killing the interpreter inside a worker takes
-    every other task in that process with it. Tasks quit their own driver in a `finally` instead.
-    """
-    global stop_all_thread
-    stop_all_thread.set()  # Set the flag to stop other threads
-    for driver in drivers: quit_gracefully(driver)  # Quit all the drivers
-    myprint("All drivers stopped. Program has exited.")
-    sys.exit(0)
-
-
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='1/m', queue='se_outreach')
 def update_stale_profile(self, user_id: int):
@@ -9293,29 +9171,6 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
         raise RuntimeError("Profile unavailable: live scrape failed and no cached profile to fall back on")
 
     return driver, wait, user_email, my_profile
-
-
-if __name__ == "__main__":
-    # Create the driver
-    # driver = create_driver()
-    # wait = get_driver_wait(driver)
-    # test_already_commented(driver, wait)
-
-    # test_ai_responses()
-    # generate_ai_response_test
-    # test_dates()
-    # test_linked_in_profile()
-    # test_get_linkedin_profile_from_url()
-    # test_describe_profile()
-    # test_describe_summarize_interesting_activity()
-    # test_post_comment()
-    # test_send_dm()
-    # test_invite_to_connect()
-    # exit(0)
-
-    # start_process()
-    # myprint("Process finished")
-    pass
 
 
 def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
