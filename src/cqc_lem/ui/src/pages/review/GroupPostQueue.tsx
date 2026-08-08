@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
@@ -32,6 +32,14 @@ export default function GroupPostQueue(
   const qc = useQueryClient()
   const [draftText, setDraftText] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const mounted = useRef(false)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   const { data: draft, isLoading } = useQuery<GroupPostDraft | null>({
     queryKey: ['group-post-draft', sessionToken],
@@ -56,11 +64,15 @@ export default function GroupPostQueue(
       if (body.status) setDraftText(null)
       await qc.invalidateQueries({ queryKey: ['group-post-draft'] })
       setMsg({ ok: true, text: body.status ? 'Skipped — no group post this week.' : 'Saved.' })
-      setTimeout(() => setMsg(null), 3000)
+      setTimeout(() => {
+        if (mounted.current) setMsg(null)
+      }, 3000)
     },
     onError: () => {
       setMsg({ ok: false, text: 'Could not save — try again.' })
-      setTimeout(() => setMsg(null), 5000)
+      setTimeout(() => {
+        if (mounted.current) setMsg(null)
+      }, 5000)
     },
   })
 
