@@ -456,6 +456,93 @@ class TestFeedSortProbe:
 
 
 @pytest.mark.unit
+class TestFeedSortCandidates:
+    """#1108: `visible_controls` graded the drift but could not re-ground it.
+
+    It lists `<button>` labels, and the finding WAS that the live feed has no button between the
+    nav and the first post. `sort_candidates` is the capture a trigger chain can be written from.
+    """
+
+    @staticmethod
+    def _candidate(tag="div", displayed=True, **attrs):
+        el = MagicMock()
+        el.tag_name = tag
+        el.text = attrs.pop("text", "")
+        el.is_displayed.return_value = displayed
+        el.get_attribute.side_effect = lambda a: attrs.get(a)
+        return el
+
+    def test_captures_the_anchors_a_locator_can_be_written_from(self):
+        driver = MagicMock()
+        driver.find_elements.return_value = [self._candidate(
+            tag="div", text="Recent", **{"role": "button", "aria-label": "Sort feed",
+                                         "data-testid": "feed-sort-toggle", "aria-haspopup": "true",
+                                         "href": None})]
+        [row] = llv.feed_sort_candidates(driver)
+        assert row["tag"] == "div" and row["role"] == "button"
+        assert row["aria_label"] == "Sort feed" and row["data_testid"] == "feed-sort-toggle"
+        assert row["aria_haspopup"] == "true" and row["text"] == "Recent"
+
+    def test_skips_hidden_elements(self):
+        driver = MagicMock()
+        driver.find_elements.return_value = [self._candidate(text="Top", displayed=False),
+                                             self._candidate(text="Recent")]
+        assert [r["text"] for r in llv.feed_sort_candidates(driver)] == ["Recent"]
+
+    def test_a_hidden_element_that_cannot_answer_is_skipped_not_fatal(self):
+        stale = self._candidate(text="Top")
+        stale.is_displayed.side_effect = RuntimeError("stale element")
+        driver = MagicMock()
+        driver.find_elements.return_value = [stale, self._candidate(text="Recent")]
+        assert [r["text"] for r in llv.feed_sort_candidates(driver)] == ["Recent"]
+
+    def test_the_cap_is_spent_on_the_header_because_the_order_is_the_dom_order(self):
+        """The header comes first in `main`, so a cap hit deep in the feed still carries it.
+
+        The #1108 reading spent all 40 of its label slots on post furniture.
+        """
+        driver = MagicMock()
+        driver.find_elements.return_value = [self._candidate(text=f"c{i}") for i in range(50)]
+        rows = llv.feed_sort_candidates(driver)
+        assert len(rows) == 20
+        assert [r["text"] for r in rows[:2]] == ["c0", "c1"]
+
+    def test_the_selector_is_scoped_to_main_and_covers_non_button_affordances(self):
+        selector = llv.SORT_CANDIDATE_SELECTOR
+        assert "[role='button']" in selector and "[aria-haspopup]" in selector
+        assert "a[href]" in selector
+        assert all(part.strip().startswith("main ") for part in selector.split(","))
+
+    def test_an_unreadable_page_reports_the_cause_instead_of_an_empty_list(self):
+        """An empty list means 'the feed rendered nothing', which grades UNKNOWN.
+
+        A failed query must not be able to say that.
+        """
+        driver = MagicMock()
+        driver.find_elements.side_effect = RuntimeError("invalid session id")
+        [row] = llv.feed_sort_candidates(driver)
+        assert "RuntimeError" in row["error"]
+
+    def test_the_probe_emits_the_candidates_before_the_labels(self, monkeypatch):
+        """The issue body truncates the evidence blob.
+
+        The half a re-grounding pass reads has to be the half that survives the cut.
+        """
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([None]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: ["Comment"])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "feed_sort_candidates",
+                            lambda d, **k: [{"tag": "a", "text": "Recent"}])
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        keys = list(report)
+        assert keys.index("sort_candidates") < keys.index("visible_controls")
+        assert report["sort_candidates"] == [{"tag": "a", "text": "Recent"}]
+        assert "`sort_candidates`" in report["verdict"]
+
+
+@pytest.mark.unit
 class TestFeedSortChainCopy:
     """The probe runs inside a Selenium worker whose `cqc_lem` is the DEPLOYED image, so a pre-merge
     grounding pass cannot import the chain it is grounding. The script therefore carries a copy —
@@ -906,6 +993,17 @@ class TestThreeStateVerdicts:
         rendered = {"control_found": False, "visible_controls": ["Start a post"]}
         assert llv.feed_sort_state(rendered) == llv.STATE_DRIFT
         assert llv.feed_sort_state({"sort_after": llv.SORT_RECENT}) == llv.STATE_OK
+
+    def test_feed_sort_candidates_alone_are_enough_to_prove_the_feed_rendered(self):
+        """#1108's exact shape: a header with no `<button>` reads blank to `visible_button_labels`.
+
+        Grading that `unknown` would excuse the very drift the probe exists to catch.
+        """
+        rendered = {"control_found": False, "visible_controls": [],
+                    "sort_candidates": [{"tag": "div", "role": "button", "text": "Top"}]}
+        assert llv.feed_sort_state(rendered) == llv.STATE_DRIFT
+        assert llv.feed_sort_state({"control_found": False, "visible_controls": [],
+                                    "sort_candidates": []}) == llv.STATE_UNKNOWN
 
     def test_sent_invites_zero_rows_reads_three_different_ways(self):
         assert llv.sent_invites_state({"rows_seen": 0, "empty_state": "no pending invitations",

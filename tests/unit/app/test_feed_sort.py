@@ -53,20 +53,66 @@ class TestSwitchFeedToRecent:
         assert state == FEED_SORT_NOT_APPLICABLE
         find_first.assert_not_called()
 
-    def test_missing_sort_control_still_warns_on_the_home_feed(self):
-        """The home feed DOES render the control — silencing the miss there would hide the selector
-        rot that leaves the recency-dominant engine reading a 'Top' feed. `find_first` warns on a
-        miss by default, so the home feed is the one surface where the lookup actually runs.
+    def test_missing_sort_control_on_the_home_feed_is_graded_against_the_page(self):
+        """A miss on the home feed is real signal, but only the page can say it is selector rot.
+
+        Silencing it would hide the rot that leaves the recency-dominant engine reading a 'Top'
+        feed. `find_first`'s own warning cannot tell rot from a feed that never rendered, so #1108
+        hands the miss to the zero-walk grader: same lookup, one warning, only when posts are there.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
+        from cqc_lem.app.run_automation import (FEED_SORT_MISSING, _FEED_CARD_CROSSCHECK_SEL,
+                                                _switch_feed_to_recent)
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/"
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+        with patch(f"{_MOD}.find_first", return_value=None) as find_first, \
+             patch(f"{_MOD}._report_zero_walk") as report:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_MISSING
         find_first.assert_called_once()
-        # Not silenced: the default is warn_on_miss=True and #817 must not opt out of it.
-        assert find_first.call_args.kwargs.get("warn_on_miss", True) is True
+        # The grader owns the level, so find_first must NOT also warn — two log lines for one event
+        # escalate twice as fast and file the defect the grader deliberately withheld.
+        assert find_first.call_args.kwargs.get("warn_on_miss") is False
+        report.assert_called_once()
+        # Cross-checked through an anchor the sort chain does not use (#1013): a rotated sort
+        # anchor must not be able to answer both questions.
+        assert report.call_args.args[1] == _FEED_CARD_CROSSCHECK_SEL
+
+    def test_a_feed_that_never_rendered_is_not_reported_as_selector_drift(self):
+        """A dead session, a login wall and a rotated anchor all hand back the same None.
+
+        Warning on all three files a defect for a feed that simply was not there.
+        """
+        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
+        driver = _driver()
+        driver.find_elements.return_value = []
+        with patch(f"{_MOD}.find_first", return_value=None), \
+             patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
+            state = _switch_feed_to_recent(driver, MagicMock())
+        assert state == FEED_SORT_MISSING
+        log_warning.assert_not_called()
+
+    def test_a_rendered_feed_with_no_sort_control_is_reported_as_drift(self):
+        """The #1108 shape: posts on screen, no sort control resolvable. That IS the defect.
+
+        The state stays MISSING either way, so #817's "never read an unsorted scan as recency
+        sorted" is untouched — the cross-check moves the LOG LEVEL, never the reported sort.
+        """
+        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
+        driver = _driver()
+        driver.find_elements.return_value = [MagicMock(), MagicMock()]
+        with patch(f"{_MOD}.find_first", return_value=None), \
+             patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
+            state = _switch_feed_to_recent(driver, MagicMock())
+        assert state == FEED_SORT_MISSING
+        assert log_warning.called
+
+    def test_a_resolved_control_never_pays_for_the_cross_check(self):
+        """The grader is the MISS path only — a working feed must not spend a DOM query per run."""
+        from cqc_lem.app.run_automation import _switch_feed_to_recent
+        with patch(f"{_MOD}.find_first", return_value=_control("Sort by: Recent")), \
+             patch(f"{_MOD}._report_zero_walk") as report:
+            _switch_feed_to_recent(_driver(), MagicMock())
+        report.assert_not_called()
 
     def test_unreadable_url_does_not_warn(self):
         """A dead session can't say which surface it was on — never escalate on a guess (#872).
@@ -210,6 +256,64 @@ class TestFeedSortLocators:
         from cqc_lem.app.run_automation import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS
         for _by, value in _FEED_SORT_LOCATORS + _FEED_RECENT_OPTION_LOCATORS:
             assert "translate(" in value
+
+    # --- #1108: the tag was the dead assumption, not the label ---------------------------------
+    # The drift sweep enumerated every displayed `<button>` on the live feed in document order and
+    # went from the global nav straight into the first post's controls: there is no `<button>` in
+    # that region of the page at all. A chain re-grounded by picking a better LABEL would have
+    # shipped just as dead.
+
+    def test_no_trigger_route_requires_a_button_tag(self):
+        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        for _by, selector in _FEED_SORT_LOCATORS:
+            assert "//button[" not in selector, selector
+
+    def test_every_trigger_route_admits_a_non_button_affordance(self):
+        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        for _by, selector in _FEED_SORT_LOCATORS:
+            assert any(token in selector for token in
+                       ("@role=", "@aria-haspopup", "self::a", "//main//a")), selector
+
+    def test_the_bare_sort_name_route_matches_exactly_never_contains(self):
+        """'Top'/'Recent' as a WHOLE label is the sort control.
+
+        A card that merely CONTAINS the word 'recent' is somebody's post — the #1013 wrong-entity
+        hazard, one `contains` away.
+        """
+        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        bare = [s for _b, s in _FEED_SORT_LOCATORS
+                if "'recent'" in s and "'sort'" not in s and "sortby=" not in s]
+        assert bare, "the chain lost its 'the label IS the sort' route"
+        for selector in bare:
+            assert "contains(" not in selector, selector
+            assert "='recent'" in selector and "='top'" in selector, selector
+
+    def test_a_link_carrying_the_sort_in_its_own_href_is_a_route(self):
+        """Navigating beats clicking when the page offers it (#1030).
+
+        It must still be a link to the FEED: an unguarded 'sortby=' would resolve a URL somebody
+        shared in a post, and clicking that walks the session off the page the scan is about to
+        read — #1012's wrong-entity hazard, addressed by URL instead of by label.
+        """
+        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        href_routes = [s for _b, s in _FEED_SORT_LOCATORS if "sortby=" in s]
+        assert href_routes
+        for selector in href_routes:
+            assert "'/feed'" in selector, selector
+
+    def test_the_option_chain_admits_links_and_radio_rows(self):
+        from cqc_lem.app.run_automation import _FEED_RECENT_OPTION_LOCATORS
+        joined = " ".join(s for _b, s in _FEED_RECENT_OPTION_LOCATORS)
+        assert "self::a" in joined and "@role='radio'" in joined
+
+    def test_the_cross_check_anchor_is_independent_of_this_chain(self):
+        """Cross-checking a chain against its own selector proves nothing.
+
+        A rotated anchor answers zero to both questions (#1013).
+        """
+        from cqc_lem.app.run_automation import _FEED_CARD_CROSSCHECK_SEL, _FEED_SORT_LOCATORS
+        assert "hide post by" not in " ".join(s for _b, s in _FEED_SORT_LOCATORS).lower()
+        assert "sort" not in _FEED_CARD_CROSSCHECK_SEL.lower()
 
 
 class TestIsHomeFeed:

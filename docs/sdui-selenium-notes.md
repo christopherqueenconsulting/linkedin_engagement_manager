@@ -42,6 +42,47 @@ scope every locator to the owning card or dialog.
 The old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors no longer exist. Prefer
 `data-testid` / `aria-label` selectors via `find_first`/`click_first`.
 
+## The home feed's sort control is not a `<button>` (#1108)
+
+Measured 2026-08 by the weekly drift sweep (`--feed-sort`, `/feed/`, user 1). The probe enumerates
+every **displayed `<button>` in document order** and caps the list at 40. That capture ran from the
+global nav (`Home, 1 new notification` / `Me` / `For Business`) **straight into the first post's
+controls** (`Open control menu for post by …`), then spent the whole cap on the next seven posts.
+
+Read that literally: between the navigation bar and the first feed card there was **no displayed
+`<button>` at all** — not the sort control, and not the share box's `Start a post` either. So the
+verdict "NO sort control resolved" was not a label rotation. Every route in `_FEED_SORT_LOCATORS`
+except the last required `self::button`, and the last one required `role='button'` *plus* `sort` in
+the `aria-label`; nothing matching either shape exists in that region of the page any more.
+
+What changed in response:
+
+- `_FEED_SORT_LOCATORS` now keys on the **interactive affordance** — `self::button or self::a or
+  @role='button' or @role='combobox' or @role='listbox' or @aria-haspopup` — instead of the tag, so
+  the chain resolves whichever element LinkedIn shipped as long as it is still reachable. The
+  option chain gained `self::a` and `@role='radio'` for the same reason. A route matching a link
+  whose own `href` carries `sortBy=` / `sortType=` **and** names `/feed` was added last: navigating
+  beats clicking when the page offers it (#1030), but an unguarded `sortby=` match would resolve a
+  URL somebody *shared in a post* and walk the session off the page the scan is about to read.
+- The exact-text route stays **exact** (`normalize-space()='top'`), never `contains`. A `contains`
+  match on 'recent' would happily resolve someone's post — the #1013 wrong-entity hazard.
+- `probe_feed_sort` now also reports **`sort_candidates`**: the first 20 displayed interactive
+  elements inside `main`, in document order, each with tag / role / `aria-label` / `data-testid` /
+  text / `href` / `aria-haspopup`. `visible_controls` alone could not re-ground this drift — it
+  reports `<button>` labels, and the finding *was* that there are no buttons there. It is emitted
+  before `visible_controls` because the issue body truncates the evidence blob at 6000 chars.
+- **A missing control is only a WARNING once the page proves it rendered posts.** The production
+  lookup passes `warn_on_miss=False` and hands the miss to `report_zero_walk` against
+  `button[aria-label^='Hide post by']` — a per-post anchor the sort chain does not use. A dead
+  session, a login wall and a rotated anchor all return `None` from `find_first`; only the last is
+  a defect worth paging on. The returned state is `FEED_SORT_MISSING` in all three cases, so #817's
+  "an unsorted scan is never read as recency-sorted" is unchanged.
+
+**Still ungrounded:** the real live DOM of whatever now renders the sort. The widened chain is
+written from what the evidence *rules out*, not from a positive sighting, so the next `--feed-sort`
+probe run is what closes this section — either `feed_sort` grades `ok`, or `sort_candidates` finally
+shows the element and the chain gets a precise route.
+
 ## The Catch-up feed is full SDUI — no `data-view-name`, no `<li>` cards
 
 Live-grounded 2026-08-03 (`/mynetwork/catch-up/all/`, user 1): each card is a

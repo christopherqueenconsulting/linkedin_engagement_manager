@@ -573,6 +573,9 @@ SORT_TOP = "top"
 SORT_MISSING = "missing"
 SORT_UNKNOWN = "unknown"
 
+_X_SORT_AFFORDANCE = ("self::button or self::a or @role='button' or @role='combobox' "
+                      "or @role='listbox' or @aria-haspopup")
+
 # Carried copy of `run_automation._GROUP_SHARE_BOX_LOCATORS` for images that predate #1107.
 # `TestGroupShareBoxChainCopy` fails the build if this drifts from the shipped chain.
 _CARRIED_GROUP_SHARE_BOX_LOCATORS = [
@@ -594,21 +597,30 @@ _CARRIED_GROUP_SHARE_BOX_LOCATORS = [
 ]
 
 FALLBACK_SORT_LOCATORS = [
-    (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort')]"),
-    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_TESTID},'sort')]"),
-    (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'sort by')]"),
-    (By.XPATH, f"//button[@aria-haspopup][{_X_LOWER_TEXT}='{SORT_TOP}' or "
+    (By.XPATH, f"//*[{_X_SORT_AFFORDANCE}][contains({_X_LOWER_ARIA},'sort')]"),
+    (By.XPATH, f"//*[{_X_SORT_AFFORDANCE}][contains({_X_LOWER_TESTID},'sort')]"),
+    (By.XPATH, f"//*[{_X_SORT_AFFORDANCE}][contains({_X_LOWER_TEXT},'sort by')]"),
+    (By.XPATH, f"//*[@aria-haspopup or @role='combobox'][{_X_LOWER_TEXT}='{SORT_TOP}' or "
                f"{_X_LOWER_TEXT}='{SORT_RECENT}']"),
-    (By.XPATH, f"//*[@role='button'][contains({_X_LOWER_ARIA},'sort')]"),
+    (By.XPATH, f"//main//a[contains({_x_lower('@href')},'/feed') and "
+               f"(contains({_x_lower('@href')},'sortby=') or "
+               f"contains({_x_lower('@href')},'sorttype='))]"),
 ]
 
 FALLBACK_RECENT_OPTION_LOCATORS = [
-    (By.XPATH, "//*[self::button or self::li or @role='menuitem' or @role='menuitemradio' "
-               f"or @role='option'][{_X_LOWER_TEXT}='{SORT_RECENT}']"),
-    (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio' or @role='option']"
-               f"[contains({_X_LOWER_TEXT},'{SORT_RECENT}')]"),
+    (By.XPATH, "//*[self::button or self::a or self::li or @role='menuitem' "
+               "or @role='menuitemradio' or @role='radio' or @role='option']"
+               f"[{_X_LOWER_TEXT}='{SORT_RECENT}']"),
+    (By.XPATH, "//*[self::button or self::a or @role='menuitem' or @role='menuitemradio' "
+               f"or @role='radio' or @role='option'][contains({_X_LOWER_TEXT},'{SORT_RECENT}')]"),
     (By.XPATH, f"//*[{_X_LOWER_TEXT}='{SORT_RECENT}']"),
 ]
+
+# Everything that could BE a sort trigger, as a CSS selector list so `querySelectorAll` hands them
+# back in DOCUMENT order. Scoped to `main`: the global nav is not where the control lives, and on
+# the #1108 capture it spent three of the forty label slots.
+SORT_CANDIDATE_SELECTOR = ("main button, main a[href], main select, main [role='button'], "
+                           "main [role='combobox'], main [role='listbox'], main [aria-haspopup]")
 
 
 def feed_sort_chains() -> tuple:
@@ -658,7 +670,7 @@ def feed_sort_verdict(reading: Optional[dict]) -> str:
         return f"sort control OK — {route}{note}"
     if not reading.get("control_found"):
         return ("NO sort control resolved — every feed scan is ranking LinkedIn's algorithmic feed; "
-                f"re-ground _FEED_SORT_LOCATORS from `visible_controls` below{note}")
+                f"re-ground _FEED_SORT_LOCATORS from `sort_candidates` below{note}")
     if state == SORT_TOP or reading.get("option_found") is False:
         return ("control resolved but the 'Recent' option did not — re-ground "
                 f"_FEED_RECENT_OPTION_LOCATORS from `visible_controls` below{note}")
@@ -666,13 +678,20 @@ def feed_sort_verdict(reading: Optional[dict]) -> str:
 
 
 def feed_sort_state(reading: Optional[dict]) -> str:
-    """Three-state grade for one feed-sort read. `visible_controls` is the page-native cross-check:
-    a feed that rendered controls but yielded no sort control among them is drift, while a screen
-    with no controls at all is a feed that never rendered."""
+    """Three-state grade for one feed-sort read.
+
+    The captured controls are the page-native cross-check: a feed that rendered controls but
+    yielded no sort control among them is drift, while a screen with no controls at all is a feed
+    that never rendered.
+
+    EITHER capture counts as "the feed rendered" (#1108). `sort_candidates` sees affordances
+    `visible_controls` cannot — a feed whose header is entirely non-<button> reads as blank to the
+    older capture, and grading that `unknown` would excuse the exact drift this probe exists for.
+    """
     reading = dict(reading or {})
     if reading.get("sort_after") == SORT_RECENT:
         return STATE_OK
-    if not reading.get("visible_controls"):
+    if not reading.get("visible_controls") and not reading.get("sort_candidates"):
         return STATE_UNKNOWN
     if not reading.get("control_found") or reading.get("option_found") is False:
         return STATE_DRIFT
@@ -713,6 +732,43 @@ def menu_item_labels(driver, limit: int = 40) -> list:
     return labels
 
 
+def feed_sort_candidates(driver, limit: int = 20) -> list:
+    """Every interactive affordance in `main`, in DOCUMENT order, with its usable anchors.
+
+    `visible_controls` could not re-ground #1108 and that is the whole reason this exists: it
+    enumerates `<button>` labels only, so when the live feed rendered no button between the global
+    nav and the first post, the capture proved the shipped chain was dead without showing what had
+    replaced it — "re-ground from the evidence below" with nothing sort-shaped in the evidence.
+    Document order is the point: `main` opens at the share box, so wherever the control moved it is
+    in the first rows, and the cap is spent on the header instead of on post furniture.
+    """
+    out = []
+    try:
+        elements = driver.find_elements(By.CSS_SELECTOR, SORT_CANDIDATE_SELECTOR)
+    except Exception as e:
+        return [{"error": f"{type(e).__name__}: {e}"}]
+    for element in elements:
+        if len(out) >= limit:
+            break
+        try:
+            if not element.is_displayed():
+                continue
+        except Exception:
+            continue
+        evidence = element_evidence(element)
+        for key, attr in (("data_testid", "data-testid"), ("aria_haspopup", "aria-haspopup"),
+                          ("href", "href")):
+            try:
+                value = element.get_attribute(attr)
+            except Exception:
+                value = None
+            if value:
+                evidence[key] = str(value)[:120]
+        if evidence:
+            out.append(evidence)
+    return out
+
+
 def _flip_feed_sort(driver, wait, control, option_locators, sort_locators, sleep) -> dict:
     """The steps `_switch_feed_to_recent` takes, run from the probe so a pre-merge pass can take
     them against an image that does not have that function yet.
@@ -745,10 +801,15 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
     """#817: on the real home feed, report whether the sort control resolves, what it reads before
     and after the flip, and every visible control that could plausibly BE it.
 
-    `visible_controls` is the point: a bare "not found" is not re-groundable, but the live labels are
-    exactly what the next locator chain gets written from. They are captured AFTER the flip attempt
-    on purpose — when the trigger resolved and the 'Recent' option did not, the dropdown is still
-    open at that moment, so the capture holds the menu this probe exists to re-ground.
+    The capture is the point: a bare "not found" is not re-groundable, but the live controls are
+    exactly what the next locator chain gets written from. They are taken AFTER the flip attempt on
+    purpose — when the trigger resolved and the 'Recent' option did not, the dropdown is still open
+    at that moment, so the capture holds the menu this probe exists to re-ground.
+
+    Two captures, answering different halves (#1108). `sort_candidates` carries the header's
+    interactive elements with their anchors, which is what a TRIGGER chain is written from;
+    `visible_controls` carries button and menu-item LABELS, which is what an OPTION chain is
+    written from once the dropdown is open.
     """
     from cqc_lem.utilities.selenium_util import find_first
     from selenium.webdriver.support.ui import WebDriverWait
@@ -772,6 +833,9 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
         # would send the re-grounding pass looking at selectors when the session was the problem.
         reading.update({"option_found": None, "sort_after": SORT_UNKNOWN,
                         "flip_error": f"{type(e).__name__}: {e}"})
+    # Before `visible_controls`, not after: the issue body truncates the evidence blob, and the
+    # half a re-grounding pass reads must be the half that survives the cut (#1108).
+    reading["sort_candidates"] = feed_sort_candidates(driver)
     reading["visible_controls"] = visible_button_labels(driver) + menu_item_labels(driver)
     return graded(reading, feed_sort_state(reading), feed_sort_verdict(reading))
 
