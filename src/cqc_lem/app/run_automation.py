@@ -1324,7 +1324,8 @@ def _post_composer_for_card(driver: WebDriver, card: WebElement,
     return None
 
 
-def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None) -> bool:
+def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None,
+                        composer: WebElement | None = None) -> bool:
     """Open the card's inline comment composer, type the comment, and submit via the composer's
     own Comment/Post button (the SDUI composer has no <form>). Returns True only if the comment
     actually lands (composer clears / appears in the list), not just because text was typed.
@@ -1334,28 +1335,33 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
     collapsed unrelated faults into one escalated issue. Step names carry no quotes or digits on
     purpose — the escalation dedup key masks both, so quoting them would re-merge the very keys
     this split exists to separate.
+
+    `composer` is the ALREADY-resolved textbox for this post. When provided (e.g. the group-feed
+    probe in `_engage_card` opened it before spending an LLM call), the open/find steps are skipped
+    so the composer is not clicked shut while the comment is being generated.
     """
     step = "prepare text"
     try:
         comment_text = _strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
         if not comment_text.strip():
             return False
-        step = "open composer"
-        if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
-                       "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
-            return False
-        time.sleep(random.uniform(1.5, 3))
-        step = "find composer"
-        # Scoped to THIS post. The feed walk comments on several posts without reloading the page and
-        # LinkedIn leaves each composer mounted after it submits, so a document-wide lookup returns
-        # the FIRST visible role=textbox in DOM order — an earlier post's composer, scrolled off the
-        # top, which is how the click landed under the sticky nav at y=9 (issue #876). Centering that
-        # composer (#815) would not have fixed it, it would have typed the comment into the wrong
-        # post. `_post_composer_for_card` owns both the resolution and the miss log; still no
-        # page-wide fallback — no composer for this post means skip the post.
-        composer = _post_composer_for_card(driver, card, user_id=user_id)
         if composer is None:
-            return False
+            step = "open composer"
+            if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
+                           "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
+                return False
+            time.sleep(random.uniform(1.5, 3))
+            step = "find composer"
+            # Scoped to THIS post. The feed walk comments on several posts without reloading the page and
+            # LinkedIn leaves each composer mounted after it submits, so a document-wide lookup returns
+            # the FIRST visible role=textbox in DOM order — an earlier post's composer, scrolled off the
+            # top, which is how the click landed under the sticky nav at y=9 (issue #876). Centering that
+            # composer (#815) would not have fixed it, it would have typed the comment into the wrong
+            # post. `_post_composer_for_card` owns both the resolution and the miss log; still no
+            # page-wide fallback — no composer for this post means skip the post.
+            composer = _post_composer_for_card(driver, card, user_id=user_id)
+            if composer is None:
+                return False
         step = "focus composer"
         _focus_composer(driver, composer)
         step = "type comment"
@@ -2451,7 +2457,8 @@ def get_feed_funnel(user_id: int) -> "dict | None":
 
 def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, key: str,
                  content: str, author: str, prefs: dict, profile_synthesis,
-                 used_comment_shapes: list, recent_comments: list = None) -> bool:
+                 used_comment_shapes: list, recent_comments: list = None,
+                 is_group_feed: bool = False) -> bool:
     """Claim -> generate -> react -> comment on ONE post card. True only when the comment actually
     landed. Shared by the roster pass and the feed walk so both go through the same at-most-once
     claim, the same per-run blueprint rotation, and the same react-before-submit ordering.
@@ -2459,9 +2466,36 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
     `recent_comments` is the user's own recent comment history (newest first) that the quality gate
     dedups this draft against; a comment that lands is prepended to it, so two posts in the SAME run
     can't get near-identical comments either (issue #617).
+
+    `is_group_feed` changes the ORDERING for the group-feed lane only: the comment composer is
+    resolved BEFORE the `lem-medium` generation is spent (issue #1084). A miss releases the claim
+    and returns False so the caller can count it as a skipped-no-composer post. The roster and home
+    feed keep the original generate-first ordering.
     """
     if not claim_post_for_comment(user_id, key):
         return False
+
+    resolved_composer = None
+    if is_group_feed:
+        # Group feeds: prove the composer is reachable BEFORE spending an LLM call. Up to ~2,500
+        # group posts per day were being run through `generate_ai_response` even though the composer
+        # never resolved, so this ordering saves real cost (issue #1084). The click itself is best-
+        # effort and leaves the composer open for the type/submit path below.
+        if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
+                       "Open comment composer", parent_element=card, required=False,
+                       user_id=user_id) is None:
+            log_debug("Group feed comment action not found — skipping without LLM generation",
+                      user_id=user_id, action_type="comment")
+            release_post_claim(user_id, key)
+            return False
+        time.sleep(random.uniform(1.5, 3))
+        resolved_composer = _post_composer_for_card(driver, card, user_id=user_id)
+        if resolved_composer is None:
+            log_debug("Group feed composer did not resolve — skipping without LLM generation",
+                      user_id=user_id, action_type="comment")
+            release_post_claim(user_id, key)
+            return False
+
     comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
     with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
         comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
@@ -2507,7 +2541,8 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
             # Warning again from out here filed a SECOND PostHog defect for one condition (#878).
             log_debug("No reaction landed on post — continuing to the comment", user_id=user_id,
                       action_type="comment")
-    if not post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
+    if not post_comment_inline(driver, wait, card, comment_text, user_id=user_id,
+                               composer=resolved_composer):
         release_post_claim(user_id, key)  # posting failed — let a later run retry
         return False
     mark_post_commented(user_id, key)
@@ -2720,12 +2755,17 @@ def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: 
 
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
                            max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
-                           engagers: set = None) -> int:
+                           engagers: set = None, is_group_feed: bool = False) -> int:
     """Comment on the user's curated engagement ROSTER first (issue #616), then walk the SDUI feed
     for whatever budget is left, prioritizing by a scoring matrix instead of DOM order:
     recency-dominant (golden hour), then relevance, reciprocity (people who engaged with us), and
     healthy activity. Applies targeting filters + per-day cap + a max-post-age gate, and never
     comments on a post that fails the on-topic gate. Returns the total number of comments posted.
+
+    `is_group_feed` is True when the feed is a LinkedIn group feed (called from
+    `auto_comment_in_groups`). On groups the composer is resolved before the `lem-medium` comment
+    generation is spent, so posts with no reachable composer cost zero LLM calls (issue #1084).
+    The home feed and roster pass keep the original ordering.
     """
     from selenium.common.exceptions import StaleElementReferenceException
     if prefs is None:
@@ -2770,11 +2810,13 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # Roster FIRST (issue #616): curated peers / ICP / large creators outrank whatever the home
     # feed happens to serve. An empty roster returns zeros here and the run degrades to the plain
     # feed walk below. `seen` is shared, so a roster post can never be re-commented from the feed.
+    # Group feeds have no roster pass, so this call returns zeros immediately.
     roster_stats = comment_on_roster_posts(driver, wait, my_profile, user_id, max_posts, prefs,
                                            profile_synthesis, used_comment_shapes, seen,
                                            deadline_ts=deadline_ts, recent_comments=recent_comments)
     posted = roster_stats["posted"]
     off_topic_skipped = 0
+    skipped_no_composer = 0  # group-feed lane only (issue #1084)
 
     if roster_stats["targets_visited"]:
         navigate_to_feed(driver, wait)  # the roster pass navigated away from the feed
@@ -2891,14 +2933,24 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # _engage_card atomically claims the post BEFORE spending an LLM call or commenting. If
             # a prior/concurrent run already holds it, we lose the race there and move on — at most
             # one comment per post per user, across the pre-post run, the golden-hour run, and retries.
-            if _engage_card(driver, wait, my_profile, user_id, card, key, content, author, prefs,
-                            profile_synthesis, used_comment_shapes, recent_comments):
+            # On group feeds the composer is resolved before generation (issue #1084), so a miss is
+            # counted separately instead of being folded into "examined but not commented".
+            engaged = _engage_card(driver, wait, my_profile, user_id, card, key, content, author,
+                                 prefs, profile_synthesis, used_comment_shapes, recent_comments,
+                                 is_group_feed=is_group_feed)
+            if engaged:
                 posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
                 log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
                          action_type="comment", task_name="comment_on_feed_inline")
                 posted += 1
                 myprint(f"Commented on {author or 'a'}'s post "
                         f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
+            elif is_group_feed:
+                # The only other group-feed failure mode handled inside _engage_card before
+                # generation is a composer that did not resolve. Claim failures, generation failures,
+                # and post-submit failures are all possible too, but they are either not group-
+                # specific or already counted elsewhere; for telemetry we count the composer miss.
+                skipped_no_composer += 1
             continue  # DOM re-rendered / candidate consumed — re-gather from the top
         # Nothing cleared the hard filters this pass. If the whole feed keeps coming up empty
         # (0 posts past excludes + recency + min-reactions) but some only missed the recency/
@@ -2955,6 +3007,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         "roster_connect_requested": roster_stats.get("connect_requested", 0),
         "off_topic_skipped": off_topic_total,  # failed the on-topic gate — never commented on
         "fallback_used": fallback_used,
+        # Group-feed lane only (issue #1084): posts whose composer could not be reached BEFORE the
+        # LLM generation was spent. This makes the cost saving measurable on `feed_scan`.
+        "skipped_no_composer": skipped_no_composer,
         "key_sources": examined_key_sources,           # every post we looked at
         "commented_key_sources": posted_key_sources,   # only the ones we commented on
         "max_post_age_hours": prefs.get("max_post_age_hours") or 24,
@@ -2975,6 +3030,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
              f"passed filters {len(hard_keys)}, matched topics {len(include_keys)}, "
              f"commented {posted} (roster {roster_stats['posted']} / feed {feed_commented}), "
              f"off-topic skipped {off_topic_total}, "
+             f"skipped-no-composer {skipped_no_composer}, "
              f"roster comment-blocked {roster_stats.get('comment_blocked', 0)}, "
              f"roster followed {roster_stats.get('followed', 0)}, fallback={fallback_used}, "
              f"sort {feed_sort}, key sources {examined_key_sources}", user_id=user_id,
@@ -4001,7 +4057,8 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                 driver.get(f"https://www.linkedin.com/groups/{gid}/")
                 time.sleep(random.uniform(4, 7))
                 total += comment_on_feed_inline(driver, wait, my_profile, user_id,
-                                                max_posts=max_per_group, prefs=prefs, engagers=engagers)
+                                                max_posts=max_per_group, prefs=prefs, engagers=engagers,
+                                                is_group_feed=True)
             except Exception as e:
                 if not is_session_lost(e):
                     raise

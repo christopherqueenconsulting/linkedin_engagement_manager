@@ -44,10 +44,14 @@ def _card_for(box):
     return card
 
 
+_UNSET = object()
+
+
 def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
               author="Jane Author", is_me=False, react_returns=True, post_returns=True,
               prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None,
-              urn_by_text=None):
+              urn_by_text=None, is_group_feed=False, click_first_return=_UNSET,
+              post_composer_return=_UNSET):
     """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
     the key mocks so assertions can inspect calls.
 
@@ -55,6 +59,9 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     text selector and the zero-walk cross-check selector differently (issue #1013).
     `urn_by_text` maps a post's text to the URN its card carries, so one scan can mix cards that
     resolve a URN with cards that fall back to the content hash.
+    `is_group_feed` exercises the group-feed composer-probe path (issue #1084).
+    `click_first_return` / `post_composer_return` control the probe's two resolution steps; both
+    default to a truthy mock so the probe succeeds unless the caller overrides one to None.
     """
     from cqc_lem.app import run_automation as ra
 
@@ -79,6 +86,17 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     release = MagicMock(return_value=True)
     react = MagicMock(return_value=react_returns)
     gen = MagicMock(return_value="A thoughtful comment.")
+
+    # Group-feed probe collaborators. Defaults are truthy so the "hit" path works unless a test
+    # explicitly passes None to simulate a miss.
+    if is_group_feed:
+        if click_first_return is _UNSET:
+            click_first_return = MagicMock()
+        if post_composer_return is _UNSET:
+            post_composer_return = MagicMock()
+    else:
+        click_first_return = None if click_first_return is _UNSET else click_first_return
+        post_composer_return = None if post_composer_return is _UNSET else post_composer_return
 
     with ExitStack() as es:
         p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
@@ -123,11 +141,17 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         debug = p("log_debug")
         p("insert_new_log")
         p("pace_read", return_value=0.0)
-        posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts)
+        click_first_mock = MagicMock(return_value=click_first_return)
+        p("click_first", new=click_first_mock)
+        ppc = MagicMock(return_value=post_composer_return)
+        p("_post_composer_for_card", new=ppc)
+        posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts,
+                                           is_group_feed=is_group_feed)
 
     return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
             "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen,
-            "funnel": funnel_holder, "warn": warn, "debug": debug}
+            "funnel": funnel_holder, "warn": warn, "debug": debug,
+            "click_first": click_first_mock, "_post_composer_for_card": ppc}
 
 
 class TestFeedDedup:
@@ -382,6 +406,52 @@ class TestFeedFunnelAndFallback:
                              "feed_fallback_when_empty": False, "min_reactions": 5})
         assert r["posted"] == 0
         assert r["funnel"]["fallback_used"] is False
+
+
+class TestGroupFeedComposerProbe:
+    """Issue #1084: on group feeds, the composer is resolved BEFORE the lem-medium generation is
+    spent. A miss must cost zero LLM calls and be countable on the feed_scan funnel.
+    """
+
+    def test_group_feed_composer_miss_skips_without_generation(self):
+        r = _run_feed([_box("A group post whose composer never opens.")], is_group_feed=True,
+                      post_composer_return=None)
+        # The probe fails before generation, so generate_ai_response is never called.
+        r["gen"].assert_not_called()
+        r["post_inline"].assert_not_called()
+        # The claim must be released so a later run can retry.
+        r["release"].assert_called_once()
+        # The funnel carries the skip count.
+        assert r["funnel"]["skipped_no_composer"] == 1
+        assert r["funnel"]["commented"] == 0
+
+    def test_group_feed_comment_action_missing_skips_without_generation(self):
+        r = _run_feed([_box("A group post with no comment action at all.")], is_group_feed=True,
+                      click_first_return=None)
+        r["gen"].assert_not_called()
+        r["post_inline"].assert_not_called()
+        r["release"].assert_called_once()
+        assert r["funnel"]["skipped_no_composer"] == 1
+
+    def test_group_feed_composer_hits_calls_generator_and_posts(self):
+        r = _run_feed([_box("A group post with a reachable composer.")], is_group_feed=True)
+        r["gen"].assert_called_once()
+        r["post_inline"].assert_called_once()
+        # The pre-resolved composer is passed through so post_comment_inline does not re-open it.
+        passed_composer = r["post_inline"].call_args.kwargs.get("composer")
+        assert passed_composer is r["_post_composer_for_card"].return_value
+        assert r["funnel"]["skipped_no_composer"] == 0
+        assert r["funnel"]["commented"] == 1
+
+    def test_home_feed_unchanged_no_probe(self):
+        """The home-feed lane keeps generate-before-post ordering and never runs the group probe."""
+        r = _run_feed([_box("A normal home-feed post.")], is_group_feed=False)
+        r["gen"].assert_called_once()
+        r["post_inline"].assert_called_once()
+        # No composer probe was performed on the home feed.
+        r["click_first"].assert_not_called()
+        r["_post_composer_for_card"].assert_not_called()
+        assert r["funnel"]["skipped_no_composer"] == 0
 
 
 class TestFeedZeroWalkTripwire:
