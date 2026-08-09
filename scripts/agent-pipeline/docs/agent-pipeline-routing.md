@@ -90,6 +90,12 @@ TIER2_ALT_CONTEXT_TOKENS=524288
 TIER3_CONTEXT_TOKENS=262144
 ```
 
+An override must be a positive integer — anything else (a `256k`, a `0`) is ignored in favour of the
+mapped value rather than exported into the CLI's environment. The variable is set on the tick's own
+shell, so it is also **cleared** before a claude-lane run: a leaked Ollama window would silently cap
+a model whose real one is far larger, the same hazard `run_lane.sh` unsets `ANTHROPIC_*` for. Only a
+value the dispatcher exported is cleared, so a global operator setting survives.
+
 Ids are the **bare** `ollama.com/api/tags` names, like every other Ollama deployment in that file.
 These four carried a `:cloud` tag until #844. Probed 2026-08-01: `glm-5.2:cloud` answers **200** and
 serves the same model as bare `glm-5.2` (`glm-5.2:bogus` 404s, so tags *are* validated — `:cloud`

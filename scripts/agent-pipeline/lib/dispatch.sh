@@ -105,11 +105,36 @@ _ollama_tier_context_tokens() {
     lem-agent-tier3)     override="${TIER3_CONTEXT_TOKENS:-}";     own=262144  ;;
     *)                   override="${DEFAULT_CONTEXT_TOKENS:-}";   own=262144  ;;
   esac
+  # An override is operator input and is exported straight into the CLI's environment, so it gets
+  # the same validation as the floor below: non-numeric or zero falls through to the mapped value
+  # rather than handing `claude` a window it cannot parse (or a 0 that compacts every turn).
+  case "$override" in ''|*[!0-9]*) override="" ;; esac
+  if [ -n "$override" ] && [ "$override" -eq 0 ]; then override=""; fi
   if [ -n "$override" ]; then echo "$override"; return; fi
   floor="${OLLAMA_CONTEXT_FLOOR_TOKENS:-262144}"
   case "$floor" in ''|*[!0-9]*) floor="" ;; esac   # a junk floor must not silently win
   if [ -n "$floor" ] && [ "$own" -gt "$floor" ]; then own="$floor"; fi
   echo "$own"
+}
+
+# Set — or CLEAR — CLAUDE_CODE_MAX_CONTEXT_TOKENS for the lane about to run. $1=lane $2=tier.
+#
+# Clearing matters because the export outlives the dispatch that made it: the variable is set on
+# the tick's own shell, so any later claude-lane dispatch in the same process would inherit an
+# Ollama tier's window and silently cap a model whose real window is far larger (Opus at 262144).
+# run_lane.sh unsets ANTHROPIC_* on the claude lane for exactly this reason; this is the same
+# hazard for the variable this file introduces. Only a value WE exported is cleared, so an
+# operator's own global setting survives a claude-lane run untouched.
+_LANE_CONTEXT_EXPORTED=""
+_export_lane_context_window() {
+  if [ "${1:-}" = "ollama" ]; then
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS="$(_ollama_tier_context_tokens "${2:-}")"
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    _LANE_CONTEXT_EXPORTED=1
+  elif [ -n "$_LANE_CONTEXT_EXPORTED" ]; then
+    unset CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    _LANE_CONTEXT_EXPORTED=""
+  fi
 }
 
 # ── per-run dispatch (inside run_claude) ─────────────────────────────────────
@@ -152,10 +177,7 @@ dispatch_lane() {
 
   # Tell the Claude CLI the real context window for the LiteLLM alias it does not
   # recognize, so auto-compact works against the model's limit instead of 200k.
-  if [ "$LANE" = "ollama" ]; then
-    CLAUDE_CODE_MAX_CONTEXT_TOKENS="$(_ollama_tier_context_tokens "$AGENT_TIER")"
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS
-  fi
+  _export_lane_context_window "$LANE" "$AGENT_TIER"
 
   local provider="$LANE"
   [ "$LANE" = "ollama" ] && provider="ollama-cloud"

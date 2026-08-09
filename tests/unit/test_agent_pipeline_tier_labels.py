@@ -60,12 +60,38 @@ def _pick_ollama_tier(labels: str, mode: str = "start", default_tier: str = "lem
     return out.stdout.strip()
 
 
+def _extract_shell_func(name: str) -> str:
+    """Return the text of shell function `name` as defined in dispatch.sh."""
+    source = DISPATCH_SH.read_text(encoding="utf-8")
+    # `\n}` may be the last thing in the file (no trailing newline), so end-of-string closes too.
+    match = re.search(rf"\n{name}\(\) \{{.*?\n\}}(?:\n|\Z)", source, re.S)
+    assert match, f"{name} not found in dispatch.sh"
+    return match.group(0)
+
+
+def _lane_context_export(lanes: list[tuple[str, str]], preset: str | None = None) -> str:
+    """Run _export_lane_context_window over `lanes` (lane, tier) in ONE shell.
+
+    Returns the surviving CLAUDE_CODE_MAX_CONTEXT_TOKENS, or the literal `<unset>` when the
+    variable is gone — the distinction the leak guard turns on, which an empty string would hide.
+    """
+    funcs = _extract_shell_func("_ollama_tier_context_tokens") + _extract_shell_func(
+        "_export_lane_context_window"
+    )
+    pre = f'export CLAUDE_CODE_MAX_CONTEXT_TOKENS="{preset}"\n' if preset is not None else ""
+    calls = "".join(f'_export_lane_context_window "{lane}" "{tier}"\n' for lane, tier in lanes)
+    out = _bash(f'''
+        {pre}_LANE_CONTEXT_EXPORTED=""
+        {funcs}
+        {calls}
+        echo "${{CLAUDE_CODE_MAX_CONTEXT_TOKENS-<unset>}}"
+    ''')
+    return out.stdout.strip()
+
+
 def _ollama_tier_context_tokens(tier: str, overrides: dict[str, str] | None = None) -> str:
     """Extract _ollama_tier_context_tokens from dispatch.sh and run it for `tier`."""
-    source = DISPATCH_SH.read_text(encoding="utf-8")
-    match = re.search(r"\n_ollama_tier_context_tokens\(\) \{.*?\n\}\n", source, re.S)
-    assert match, "_ollama_tier_context_tokens not found in dispatch.sh"
-    func = match.group(0)
+    func = _extract_shell_func("_ollama_tier_context_tokens")
     env = "".join(f'{k}="{v}"\n' for k, v in (overrides or {}).items())
     out = _bash(f'''
         {env}{func}
@@ -250,3 +276,30 @@ class TestTierContextWindow:
 
     def test_unknown_tier_falls_back_to_safe_default(self):
         assert _ollama_tier_context_tokens("lem-agent-tier9") == "262144"
+
+    def test_junk_override_does_not_reach_the_cli(self):
+        """An override is exported verbatim into the CLI env, so garbage must fall through."""
+        assert _ollama_tier_context_tokens("lem-agent-tier2", {"TIER2_CONTEXT_TOKENS": "256k"}) == "262144"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", {"TIER2_CONTEXT_TOKENS": "0"}) == "262144"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", {"TIER2_CONTEXT_TOKENS": "-1"}) == "262144"
+
+
+class TestLaneContextExport:
+    """The variable is set on the tick's shell, so clearing it is as load-bearing as setting it."""
+
+    def test_ollama_lane_exports_the_clamped_window(self):
+        assert _lane_context_export([("ollama", "lem-agent-tier1")]) == "262144"
+
+    def test_claude_lane_after_an_ollama_dispatch_does_not_inherit_the_tier_window(self):
+        # Two dispatches in one process: a leaked 262144 would cap a 1M Claude model instead.
+        assert _lane_context_export([("ollama", "lem-agent-tier1"), ("claude", "")]) == "<unset>"
+
+    def test_an_operator_set_window_survives_a_claude_lane_dispatch(self):
+        """Only a value this file exported is cleared — a global operator setting is not ours."""
+        assert _lane_context_export([("claude", "")], preset="500000") == "500000"
+
+    def test_dispatch_lane_is_wired_to_the_export_helper(self):
+        """The helper only guards anything if dispatch_lane actually routes through it."""
+        body = _extract_shell_func("dispatch_lane")
+        assert '_export_lane_context_window "$LANE" "$AGENT_TIER"' in body
+        assert "_LANE_CONTEXT_EXPORTED=\"\"" in DISPATCH_SH.read_text(encoding="utf-8")
