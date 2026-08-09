@@ -298,3 +298,38 @@ def _post_social_counts(card) -> dict:
     return {"reactions": _num(_REACTIONS_RE, "reactions"), "comments": _num(_COMMENTS_RE, "comments"),
             "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
             "saves": _num(_SAVES_RE, "saves")}
+
+# Declared because this module exists to be imported FROM: `run_automation` reads these
+# selectors and helpers, and nothing in this file uses several of them, so CodeQL reports
+# them as unused globals without it (py/unused-global-variable).
+__all__ = [
+    "_BARE_COUNT_RE",
+    "_CARD_FOR_TEXTBOX_JS",
+    "_COMMENTS_RE",
+    "_COMMENT_ACTION_JS",
+    "_COUNT",
+    "_COUNT_MULT",
+    "_FEED_POST_TEXT_SEL",
+    "_IMPRESSIONS_RE",
+    "_REACTIONS_RE",
+    "_REPOSTS_RE",
+    "_SAVES_RE",
+    "_SEP",
+    "_STACKED_LABEL_FIRST",
+    "_STACKED_VALUE_FIRST",
+    "_URN_RE",
+    "_URN_SCAN_JS",
+    "_X_AZ_LOWER",
+    "_X_AZ_UPPER",
+    "_X_LOWER_ARIA",
+    "_X_LOWER_TEXT",
+    "_card_for_textbox",
+    "_feed_post_urn_from_card",
+    "_norm_prefix",
+    "_normalize_post_text",
+    "_parse_count",
+    "_post_permalink_from_card",
+    "_post_social_counts",
+    "_stacked_counts",
+    "_x_lower",
+]
