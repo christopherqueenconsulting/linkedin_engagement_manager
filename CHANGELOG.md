@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.137.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.137.1...v0.137.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **restructure:** match a router prefix on the path SEGMENT, not the string ([#1190](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1190)) ([571e9b4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/571e9b4d12509e460f8aeaceb360799da9405e2d))
+
 ## [0.137.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.137.0...v0.137.1) (2026-08-09)
 
 
