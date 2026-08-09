@@ -246,7 +246,10 @@ class TestGetLinkedInProfileFromUrl:
              patch(f"{_H}.get_industries_of_profile_from_ai", return_value="Tech"), \
              patch(f"{_H}.add_linkedin_profile", return_value=True) as add:
             data = get_linkedin_profile_from_url(driver, MagicMock(), url)
-        assert data == scraped
+        # Fresh scrape now returns the enriched LinkedInProfile dict, not the raw scraped dict,
+        # so `industry` is present on the first call (issue #1101).
+        assert data["full_name"] == "Jane Doe"
+        assert data["industry"] == "Tech"
         rpi.assert_called_once_with(driver, url, "Acme", False)
         assert add.call_args[0][0].industry == "Tech"
 
@@ -277,7 +280,9 @@ class TestGetLinkedInProfileFromUrl:
              patch(f"{_H}.add_linkedin_profile", return_value=True):
             data = get_linkedin_profile_from_url(driver, MagicMock(), url, force_refresh=True)
         by_url.assert_not_called()
-        assert data == scraped
+        assert data["full_name"] == "Jane Doe"
+        assert data["company_name"] == "Acme"
+        assert data["industry"] == "Tech"
 
     def test_force_refresh_survives_the_redirect_recursion(self):
         """LinkedIn rewrites vanity URLs, so the walk re-enters itself on the resolved URL.
@@ -299,7 +304,79 @@ class TestGetLinkedInProfileFromUrl:
                                                  "https://www.linkedin.com/in/old/",
                                                  force_refresh=True)
         by_url.assert_not_called()
-        assert data == scraped
+        assert data["full_name"] == "Jane Doe"
+        assert data["industry"] == "Tech"
+
+
+class TestLoginToLinkedIn:
+    def _driver_logged_in(self):
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/feed/"
+        driver.find_element.return_value = MagicMock(text="")
+        driver.title = "Feed | LinkedIn"
+        return driver
+
+    def test_cookie_login_success_returns_true(self):
+        from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+        driver = self._driver_logged_in()
+        with patch(f"{_H}.get_cookies", return_value=[{"name": "li_at", "value": "x"}]), \
+             patch(f"{_H}.load_cookies"), \
+             patch(f"{_H}._persist_session_cookies", return_value=True) as persist, \
+             patch(f"{_H}.clear_rate_limit"), \
+             patch(f"{_H}._human_pause"), \
+             patch(f"{_H}.time.sleep"):
+            result = login_to_linkedin(driver, MagicMock(), "a@x.com", "pw")
+        assert result is True
+        persist.assert_called_once_with(driver, "a@x.com")
+
+    def test_credential_login_success_returns_true(self):
+        from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/login"
+        driver.title = "Feed | LinkedIn"
+        driver.find_element.return_value = MagicMock(text="")
+        with patch(f"{_H}.get_cookies", return_value=None), \
+             patch(f"{_H}.load_cookies"), \
+             patch(f"{_H}._persist_session_cookies", return_value=True) as persist, \
+             patch(f"{_H}.clear_rate_limit"), \
+             patch(f"{_H}.get_visible_element_wait_retry", return_value=MagicMock()), \
+             patch(f"{_H}.EC.element_to_be_clickable"), \
+             patch(f"{_H}._human_pause"), \
+             patch(f"{_H}.time.sleep"):
+            # After the click / title wait we land on /feed
+            driver.current_url = "https://www.linkedin.com/feed/"
+            result = login_to_linkedin(driver, MagicMock(), "a@x.com", "pw")
+        assert result is True
+        persist.assert_called_once_with(driver, "a@x.com")
+
+    def test_failed_login_returns_false(self):
+        from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/login"
+        driver.title = "Feed | LinkedIn"
+        driver.find_element.return_value = MagicMock(text="")
+        with patch(f"{_H}.get_cookies", return_value=None), \
+             patch(f"{_H}.load_cookies"), \
+             patch(f"{_H}._persist_session_cookies") as persist, \
+             patch(f"{_H}.clear_rate_limit"), \
+             patch(f"{_H}.get_visible_element_wait_retry", return_value=MagicMock()), \
+             patch(f"{_H}.EC.element_to_be_clickable"), \
+             patch(f"{_H}._human_pause"), \
+             patch(f"{_H}.time.sleep"), \
+             patch(f"{_H}.log_error") as log_error:
+            # Title wait succeeds but final URL is still the login page
+            driver.current_url = "https://www.linkedin.com/login"
+            result = login_to_linkedin(driver, MagicMock(), "a@x.com", "pw")
+        assert result is False
+        persist.assert_not_called()
+        log_error.assert_called_once()
+
+    def test_automation_pause_raises(self):
+        from cqc_lem.utilities.linkedin.helper import LinkedInRateLimited, login_to_linkedin
+        with patch(f"{_H}.is_automation_paused", return_value=True), \
+             patch(f"{_H}.automation_pause_remaining", return_value=300):
+            with pytest.raises(LinkedInRateLimited):
+                login_to_linkedin(MagicMock(), MagicMock(), "a@x.com", "pw")
 
 
 class TestDriveEmailPinChallenge:

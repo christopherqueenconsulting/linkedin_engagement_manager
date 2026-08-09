@@ -416,7 +416,7 @@ def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
 
 
 def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, user_password: str,
-                      measurement_only: bool = False):
+                      measurement_only: bool = False) -> bool:
     """Sign `driver` in — stored cookies first, a credential login only if they no longer authenticate.
 
     The central gate for all Selenium work. Both back-off checks run BEFORE any navigation, because
@@ -430,6 +430,11 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     other two drop the cookies (or raise transiently) rather than tripping the breaker on a network
     blip. A 429 WITH stored cookies is treated as a stale-cookie mismatch and re-authenticated fresh;
     only a 429 with nothing left to drop trips the breaker.
+
+    Returns:
+        bool: True when the session is authenticated and cookies were persisted; False only when
+            the credential flow completed without reaching a signed-in state. Every other failure
+            path raises, so a False return is unambiguous.
 
     Raises:
         LinkedInRateLimited: automation paused, breaker open, a genuine 429, or a transient
@@ -660,7 +665,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         log_info(f"Already logged in! (current URL: {driver.current_url})")
         clear_rate_limit()
         _persist_session_cookies(driver, user_email)
-        return
+        return True
 
     # We had a stored session cookie but it didn't authenticate — it's stale/expired.
     # Auto-detect this and email the user to reconnect (preferred over password login).
@@ -744,16 +749,18 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         log_info("Login successful!")
         clear_rate_limit()
         _persist_session_cookies(driver, user_email)
-    else:
-        # ERROR, not INFO: this is the fall-through where the whole login flow ran and did not
-        # reach a signed-in state. Everything downstream then does nothing, quietly, for as long
-        # as it lasts — which is exactly how engagement sat dead for weeks. No exc= : there is no
-        # exception here, so this is a loud log line rather than a filed $exception.
-        log_error("LinkedIn login did not reach a signed-in state", action_type="login")
+        return True
+
+    # ERROR, not INFO: this is the fall-through where the whole login flow ran and did not
+    # reach a signed-in state. Everything downstream then does nothing, quietly, for as long
+    # as it lasts — which is exactly how engagement sat dead for weeks. No exc= : there is no
+    # exception here, so this is a loud log line rather than a filed $exception.
+    log_error("LinkedIn login did not reach a signed-in state", action_type="login")
+    return False
 
 
 def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None,
-                   force_refresh: bool = False) -> LinkedInProfile:
+                   force_refresh: bool = False) -> Optional[LinkedInProfile]:
     """The signed-in user's OWN profile, from the DB cache when it is there and by scraping when it is
     not.
 
@@ -768,8 +775,8 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
     layers, since the by-URL cache inside `get_linkedin_profile_from_url` would otherwise hand back
     the same stale row the by-user read was told to ignore.
 
-    Returns None, despite the annotation, when the scrape yields nothing; every caller must handle
-    that, because a DOM change makes it the normal failure.
+    Returns None when the scrape yields nothing; every caller must handle that, because a DOM
+    change makes it the normal failure.
     """
     profile = None
 
@@ -851,8 +858,7 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
         return None
 
 
-def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False, force_save=False,
-                                  force_refresh=False):
+def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False, force_refresh=False):
     """Anyone's profile as a plain dict — DB cache first, scrape (plus an AI industry guess) on a miss.
 
     A dict rather than a `LinkedInProfile` because that is what `get_my_profile` and the viewer
@@ -861,9 +867,8 @@ def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False,
     not the one asked for, and `force_refresh` rides that recursion so the second hop does not read
     the cache the first hop was told to skip.
 
-    The two branches do not return quite the same thing: a fresh scrape returns the SCRAPED fields
-    only, so the AI-derived `industry` reaches the DB but is missing from the dict until a later
-    cached read. `force_save` is currently accepted and not read.
+    Both cache-hit and fresh-scrape paths now return the same dict shape, including the AI-derived
+    `industry` — previously a fresh scrape returned only the raw scraped fields.
 
     Raises:
         ProfileUnavailableError: from the scraper, and deliberately not caught here — an auth-wall or
@@ -910,6 +915,9 @@ def get_linkedin_profile_from_url(driver, wait, profile_url, is_main_user=False,
             # Save the profile to the DB
             if add_linkedin_profile(profile):
                 log_info(f"Profile saved to DB: {profile.full_name}")
+
+            # Return the same shape the cache-hit path returns, including AI-derived fields.
+            profile_data = profile.model_dump()
 
         # Use json to output to string
         # myprint(json.dumps(profile_data, indent=4))
