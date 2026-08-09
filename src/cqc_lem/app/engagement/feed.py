@@ -880,6 +880,14 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
                 ActionChains(driver).move_to_element(trigger).perform()
                 time.sleep(random.uniform(0.6, 1.2))
             except Exception:
+                # Swallowed on purpose: the hover is one of THREE ways this fly-out opens, and the
+                # other two run below regardless — the trailing opener click, then the direct
+                # toggle click that leaves a default Like. A hover that cannot be performed (the
+                # trigger scrolled out of the viewport, or went stale between the lookup and the
+                # move) therefore costs nothing, and the verdict is decided further down by whether
+                # the toggle's label actually flipped away from 'no reaction'. Logging here would
+                # fire on cards this path still reacts to — the expected-no-op the recurrence rule
+                # escalates into a filed defect.
                 pass
         # The explicit opener is GONE as of 2026-08 (live count: 0) — hovering the trigger is what
         # opens the fly-out. Kept as a trailing fallback for surfaces that still ship it, but its
