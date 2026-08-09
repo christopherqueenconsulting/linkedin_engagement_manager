@@ -70,25 +70,32 @@ model_list:
   # scored `:0731` 100% on this tier. Declined; see docs/model-benchmarks/README.md. Newer tag ≠
   # better model is the whole point of the harness.
   #
-  # This id WAS unversioned, and the #925 exposure that choice documented has now fired — but not
-  # in the direction predicted. ollama did not re-point the bare tag onto a different build: on
-  # 2026-08-09 it DELETED `deepseek-v4-flash` and republished the SAME artifact as
-  # `deepseek-v4-flash:preview` — identical in the catalog (140GB, modified 2026-04-24) where
-  # `:0731` differs (167GB). The tier was therefore pointing at a model that no longer exists,
-  # which is worse than the drift that was being guarded against: latency-based routing keeps
-  # picking a fast-failing deployment, which is exactly how the retired ministral-3:8b kept
-  # winning lem-simple.
+  # This id WAS unversioned, and the #925 exposure that choice documented has now fired — in the
+  # predicted direction, though it did not look like it at first. On 2026-08-09 the bare
+  # `deepseek-v4-flash` left `ollama.com/api/tags` and `:preview` appeared carrying the catalog
+  # entry the bare tag used to have (140GB, modified 2026-04-24; `:0731` differs at 167GB). #1200
+  # read that as a delete-and-republish and repointed here. The repoint is right; the reason was
+  # not. ollama.com's tags page publishes a per-tag digest, and `deepseek-v4-flash:cloud` shares
+  # ITS digest with `deepseek-v4-flash:0731-cloud` (031ce2a95446), not with
+  # `deepseek-v4-flash:preview-cloud` (dd3d9b94bae4) — so the bare name was RE-POINTED onto the
+  # `:0731` build, the one #921 declined on both these tiers, and the build LEM had been serving
+  # was published under `:preview`. Recorded in docs/model-benchmarks/README.md (#1201).
   #
-  # Repointed to `:preview`, which PRESERVES the build benchmarked at 90% — a rename, not an
-  # unbenchmarked model change.
+  # So `:preview` is not a cosmetic rename. It PRESERVES the build benchmarked at 90%, and it is
+  # the only spelling that does: writing the bare id here — which is what note 0's "use the bare
+  # catalog id" rule reads like an instruction to do — points two tiers at a name this repo no
+  # longer controls. Unprobed which way that fails, and both ways are bad: either the endpoint
+  # resolves the untagged name as it resolves `:cloud` (#844) and both tiers quietly serve the
+  # rejected `:0731` build, or it 404s and wins the latency race under (1). Note 0's rule is
+  # match-the-catalog-VERBATIM, and `:preview` is verbatim.
   #
-  # The loop worked, and it is worth naming which part did what, because the two halves are
-  # separate: a silent RE-POINT is caught by plan_repoints (#925, closed — it diffs build size and
-  # modified_at under an unchanged tag), but plan_repoints skips a tag missing from either side, so
-  # a DELETION is not its job. The deletion was caught by the catalog diff that opened this PR, and
-  # then by the roster test asserting every configured id is in the committed catalog. The refresh
-  # deliberately does NOT repoint the config for you — it removes the tag and lets CI fail loudly,
-  # which is why this PR arrived red rather than silently changing which model serves two tiers.
+  # Worth naming which guard did what, because they cover different failures: a silent RE-POINT
+  # under an UNCHANGED tag is caught by plan_repoints (#925, closed — it diffs build size and
+  # modified_at), but it skips a tag missing from either side, so this one — a re-point that also
+  # dropped the name from the catalog — was invisible to it (#1237). What caught it was the catalog
+  # diff that opened #1200, then the roster test asserting every configured id is in the committed
+  # catalog. The refresh deliberately does NOT repoint the config for you — it removes the tag and
+  # lets CI fail loudly, rather than silently changing which model serves two tiers.
   - model_name: lem-medium
     litellm_params:
       model: openai/deepseek-v4-flash:preview
@@ -153,9 +160,9 @@ model_list:
   # of the HIGH usage-level minimax-m3 / glm-5.2 as the quality option, is a
   # scripts/benchmark_models.py decision on #842, not a config-time one.
   # Repointed to `:preview` on the same terms as the lem-medium deployment above, and for the same
-  # reason — ollama deleted the bare tag on 2026-08-09 and republished this build under it. The
-  # `:0731` build did not beat this one here either (80% contract vs 90%, #921), so `:preview`
-  # remains the measured choice.
+  # reason — the bare tag left the catalog on 2026-08-09 and now serves the `:0731` build. That
+  # build did not beat this one here either (80% contract vs 90%, #921), so `:preview` remains the
+  # measured choice, and the version is what holds it.
   - model_name: lem-complex
     litellm_params:
       model: openai/deepseek-v4-flash:preview

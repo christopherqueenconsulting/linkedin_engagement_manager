@@ -308,16 +308,17 @@ Four things this run is worth reading for beyond the two verdicts:
   whole scorecard: **a one-run margin under ~20 points is not a reason to swap anything.** It is
   also not a reason to swap the other way: every margin in the `:0731` decision above is exactly
   one case, which is why that decline rests on "no `recommend`" rather than on the gap's size.
-- **Declining `:0731` is not the same as being safe from it.** `.litellm/config.yaml` runs the
-  *unversioned* `deepseek-v4-flash` on two tiers, so those tiers follow whatever the catalog's
-  moving tag points at — and `scripts/model_health_check.py` diffed tag NAMES only, so a re-point of
+- **Declining `:0731` is not the same as being safe from it.** `.litellm/config.yaml` ran the
+  *unversioned* `deepseek-v4-flash` on two tiers, so those tiers followed whatever the catalog's
+  moving tag pointed at — and `scripts/model_health_check.py` diffed tag NAMES only, so a re-point of
   that name onto the 0731 build filed no evaluation issue and swapped a live tier's model
   unbenchmarked. The id was left unversioned anyway (it is the build measured at 90%, and a pin has
   upkeep of its own on every path that keys the exact id string); **#925** closed the detection gap
   instead — the weekly scan now also compares each CONFIGURED tag's `size`/`modified_at` against the
   committed snapshot and files a re-point evaluation issue naming the tiers that moved. The dedup
   marker carries the new build's fingerprint, so a *second* re-point is not deduped away as
-  already-filed. It stays a trigger, never an auto-pin.
+  already-filed. It stays a trigger, never an auto-pin. **That exposure fired a week later** — the
+  bare tag now carries the `:0731` build. See the next section.
 
 Both runs are `in-runner-judge` mode with **no judge evidence** — the runner had no LiteLLM proxy to
 reach, so the judge answered nothing and every judge expectation renders as unscored. Read the
@@ -326,6 +327,47 @@ the judge (a case that already failed deterministically is never judged), so it 
 first-draft pass count, not the case count. None of that changes a verdict here — all nine gate
 verdicts across the two runs already fail a *deterministic* graded expectation, and the judge can
 only ever add a reason to reject. A run that intends to *promote* something still needs one.
+
+### What the 2026-08-09 tag scan settled (#1201) — one tag, adopted, unbenchmarked on purpose
+
+| Tag | What it is | Decision |
+|---|---|---|
+| `deepseek-v4-flash:preview` | Medium usage level, 1M context, text-only (ollama.com/library/deepseek-v4-flash). 140GB, published 2026-04-24 — the same catalog entry (`size` and `modified_at`) the committed snapshot carried under the *bare* `deepseek-v4-flash` until this scan, i.e. the build measured at **90% contract on `lem-medium` and on `lem-complex`** in `bm-20260802-b84f19` | **Adopt** — and it already is, on both tiers, since #1200. No new benchmark: this is not a new model, it is a versioned name for the one LEM has served since #717. Same usage level, so the quota burn is flat. |
+
+The scan filed this as a NEW tag because a new tag is what `/api/tags` showed. What the tag actually
+records is a **re-point of the bare name**, and the two halves are worth separating because #1200
+landed the right config change with the wrong reason attached:
+
+- `/api/tags` on 2026-08-09 lists 18 tags. The bare `deepseek-v4-flash` is not among them;
+  `:0731` (167GB, 2026-07-31) and `:preview` (140GB, 2026-04-24) are.
+- ollama.com's tags page for the model still lists three rows — the `-cloud` spellings, with no
+  bare/`:latest` row — and publishes a per-tag digest. `deepseek-v4-flash:cloud` and
+  `deepseek-v4-flash:0731-cloud` share one digest (`031ce2a95446`, "1 week ago");
+  `deepseek-v4-flash:preview-cloud` carries a different one (`dd3d9b94bae4`, "3 months ago").
+  `:cloud` is the alias of the bare name (probed on #844), so that shared digest is what says where
+  the bare name now points.
+- So the bare name was not deleted and it was not republished as `:preview`. **It was re-pointed
+  onto the `:0731` build** — the one #921 declined — and the 140GB build it used to serve was
+  published under `:preview`. #1200's config comment reads the other way round; corrected there in
+  the same PR as this section.
+
+That makes the repoint in #1200 load-bearing rather than cosmetic. Had the bare id been left in
+place — or "corrected" back to it, which is exactly what a reader following the *use the bare
+catalog id* rule would try — `lem-medium` and `lem-complex` would both be pointing at a name this
+file no longer controls. Which of two failures that buys was NOT probed, and both are bad: if the
+endpoint still resolves the untagged name the way it resolves `:cloud` (#844), the two tiers serve
+the `:0731` build this file rejected, silently, with no run and no issue; if it does not, they 404 —
+and under latency routing a 404 is the fastest answer in the group, so the dead deployment takes
+the traffic (the ministral-3:8b failure). Don't write it back to find out. **A versioned id is the
+only thing that pins a build**; the bare-id rule in `.litellm/config.yaml` is about matching the
+catalog verbatim, and `:preview` matches it verbatim.
+
+One gap this leaves open, filed separately (#1237): the guard that exists for precisely this — the
+#925 re-point scan — skipped it. `plan_repoints` compares a CONFIGURED tag's `size`/`modified_at`
+against the snapshot and ignores any tag missing from either side, so a re-point that *also* drops
+the name from `/api/tags` is invisible to it. What caught this one was the catalog diff plus the
+roster test failing CI, which says "your configured id is gone" and not "your configured id now
+serves a build you rejected".
 
 ## Running it
 
@@ -355,7 +397,7 @@ A real run needs a key, so it used to need a person. Four env vars are the whole
 | Variable | Why it has to be in the environment |
 |---|---|
 | `BENCHMARK_ENABLED=true` | Without it `--run` prints "nothing to do" and exits 0 — a silent no-op, not an error. |
-| `OLLAMA_CLOUD_URL` | `https://ollama.com/v1`, the direct API that serves the bare model ids (`deepseek-v4-flash`, not `deepseek-v4-flash:cloud`). |
+| `OLLAMA_CLOUD_URL` | `https://ollama.com/v1`, the direct API that serves exactly the ids `/api/tags` lists (`glm-5.2`, not `glm-5.2:cloud`; `deepseek-v4-flash:preview`, whose bare form the catalog no longer carries at all). |
 | `OLLAMA_CLOUD_API_KEY` | The metered credential. Never in the repo, never in a report. |
 | `BENCHMARK_USAGE_LEVELS` | The incumbents' levels, which ollama.com does not publish. Unsupplied is `unknown`, and `unknown` holds a swap — so a run without it can recommend but can never conclude. |
 
