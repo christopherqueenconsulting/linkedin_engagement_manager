@@ -17,6 +17,12 @@ from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field
 
+# Nothing here is read by this module — every name is for somebody else, which is the whole point of
+# it. `__all__` is the one declaration ruff and CodeQL both understand; without it CodeQL files
+# py/unused-global-variable against `_LEN_DM_TEMPLATE` (a leading underscore reads as private, so an
+# unread one reads as dead), and a per-line ruff directive is invisible to CodeQL.
+__all__ = ["ResponseModel", "SessionTokenField", "_LEN_DM_TEMPLATE", "error_responses"]
+
 
 class ResponseModel(BaseModel):
     """The envelope almost every route returns.
