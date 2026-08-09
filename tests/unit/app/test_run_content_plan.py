@@ -181,6 +181,29 @@ class TestRollingBufferBounds:
     @patch(f"{_RCP}.create_content", return_value=("Text", None))
     @patch(f"{_RCP}.update_db_post_status")
     @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=2)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer",
+           return_value=[_planned(post_id=1), _planned(post_id=2), _planned(post_id=3)])
+    def test_horizon_of_five_fills_to_five_ready_posts(self, mock_planned, mock_ready,
+                                                       upd_content, upd_status, mock_create, prefs):
+        """buffer_days=5 / buffer_max=5 with 2 already ready hands (5, 5, 2) to the query.
+
+        Orchestration only — WHICH statuses count as ready is the query's own question, covered by
+        tests/unit/utilities/test_db_content_buffer.py (`READY_POST_STATUSES`), and the delta cap
+        is enforced there too. What this locks is that `_top_up_buffer_for_user` passes the
+        per-user window, the cap and the live ready count through instead of defaulting any of them.
+        """
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        prefs.return_value = {"auto_schedule_posts": 0, "content_buffer_days": 5,
+                              "content_buffer_max_posts": 5}
+        auto_create_weekly_content(user_id=1)
+        # already_ready=2, cap=5 → ask for the 3 planning posts we have
+        assert mock_planned.call_args[0] == (1, 5, 5, 2)
+        assert mock_create.call_count == 3
+
+    @patch(f"{_RCP}.create_content", return_value=("Text", None))
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
     @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
     @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
     @patch(f"{_RCP}.get_user_ids_with_planned_posts_within_buffer", return_value=[4, 9])
