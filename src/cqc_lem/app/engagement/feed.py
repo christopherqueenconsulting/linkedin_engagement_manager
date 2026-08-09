@@ -46,6 +46,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Callable, NamedTuple, Optional, Tuple
 
+from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded
 from selenium.common import (
     StaleElementReferenceException,
@@ -2795,15 +2796,18 @@ def auto_sync_user_groups(self, user_id: int):
 # and it is the walk most likely to reach it: one Chrome session, N group feeds, each an LLM-priced
 # scored comment pass. Reaching the limit is the worst way to stop, because it lands mid-comment and
 # nothing downstream of it runs. So the walk carries its OWN deadline, derived from that limit and
-# checked between groups, and passed INTO the feed engine so a single slow group cannot spend the
-# whole budget. The reserve is what the in-flight group and `quit_gracefully` get to finish in.
+# checked between groups AND passed INTO the feed engine — the between-groups check alone can only
+# fire once a group RETURNS, so a group whose feed stalls would still be cut down mid-comment by
+# the soft limit. What this bounds is the walk's TOTAL time, not any one group's share of it: a
+# slow first group can still leave the later groups nothing, exactly as it did before. The reserve
+# is what the in-flight group and `quit_gracefully` get to finish in.
 GROUP_WALK_RESERVE_SECONDS = 10 * 60
 # A limit configured tighter than the reserve must still leave a walk something to spend, or the
 # deadline check would refuse the first group and the task would never comment at all.
 GROUP_WALK_MIN_BUDGET_SECONDS = 5 * 60
 
 
-def _group_walk_deadline(task, started_ts: float) -> Optional[float]:
+def _group_walk_deadline(task: Task, started_ts: float) -> Optional[float]:
     """Wall-clock instant a group walk must stop by to beat its Celery soft time limit.
 
     Reads the limit off the task's own request first (a caller may override it per dispatch) and
