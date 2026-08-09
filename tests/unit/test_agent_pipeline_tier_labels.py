@@ -13,7 +13,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -73,6 +72,40 @@ def _ollama_tier_context_tokens(tier: str, overrides: dict[str, str] | None = No
         _ollama_tier_context_tokens "{tier}"
     ''')
     return out.stdout.strip()
+
+
+def _agent_fallback_chains() -> dict[str, list[str]]:
+    """Return the `lem-agent-*` entries of `router_settings.fallbacks` in .litellm/config.yaml.
+
+    Hand-parsed rather than loaded with PyYAML because the unit lane installs only the `test`
+    dependency group, which carries no YAML parser; the block is a fixed two-level list of
+    `- <alias>:` followed by its indented fallback targets.
+    """
+    chains: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    in_block = False
+    block_indent = 0
+    for raw in LITELLM_CONFIG.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if not in_block:
+            if stripped == "fallbacks:":
+                in_block = True
+                block_indent = indent
+            continue
+        if indent <= block_indent:
+            break
+        alias = re.fullmatch(r"-\s*([\w.:-]+):", stripped)
+        if alias:
+            current = []
+            chains[alias.group(1)] = current
+            continue
+        target = re.fullmatch(r"-\s*([\w.:-]+)", stripped)
+        if target and current is not None:
+            current.append(target.group(1))
+    return {alias: targets for alias, targets in chains.items() if alias.startswith("lem-agent-")}
 
 
 def _ensure_ai_labels_creates(existing: list[str], tmp_path: Path) -> list[str]:
@@ -191,15 +224,12 @@ class TestTierContextWindow:
         Guards the regression this clamp exists for: raising a tier's window without raising every
         target it degrades into turns the fallback ladder into a guaranteed context-length failure.
         """
-        config = yaml.safe_load(LITELLM_CONFIG.read_text(encoding="utf-8"))
-        chains = {
-            alias: targets
-            for entry in config["router_settings"]["fallbacks"]
-            for alias, targets in entry.items()
-            if alias.startswith("lem-agent-")
-        }
+        chains = _agent_fallback_chains()
         assert chains, "no lem-agent-* fallbacks found in .litellm/config.yaml"
         for alias, targets in chains.items():
+            # An empty chain would make this test vacuous, which is how a parser that silently
+            # stopped matching the config would slip through.
+            assert targets, f"{alias} parsed with no fallback targets"
             own = int(_ollama_tier_context_tokens(alias))
             for target in targets:
                 assert own <= int(_ollama_tier_context_tokens(target)), (
