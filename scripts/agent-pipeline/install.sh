@@ -17,9 +17,11 @@
 # How --sync knows what is safe: every install writes a manifest of the sha256 of each file it
 # placed (.installed.sha256). On sync, a box file whose hash still matches the manifest has not
 # been touched since we put it there — safe to replace. A mismatch means a box-local edit; those
-# are listed and skipped unless --force. (The pre-manifest install can't tell — the first --sync
-# treats every differing file as box-edited and asks for --force once; it writes the manifest, so
-# every later sync is precise.)
+# are listed and skipped unless --force. A refused file is never written to the manifest, so it
+# stays refused on every later sync until someone --force's it (or the box copy matches the repo
+# again) — recording its hash would make the next sync read that edit as ours and silently
+# overwrite it, which is the exact loss this guard exists to prevent. A pre-manifest install can't
+# tell either way, so the first --sync after upgrading treats every differing file as box-edited.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="${LEM_PIPELINE_DEST:-/home/lem/agent-pipeline}"   # overridable so the installer is testable
@@ -30,7 +32,9 @@ for a in "$@"; do
   case "$a" in
     --sync)  SYNC=1 ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the whole header block, whatever its length — a fixed line range silently truncates
+    # the usage text mid-sentence the moment someone adds a line to it.
+    -h|--help) sed -n '2,/^set -/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -67,9 +71,21 @@ place() {  # <relpath>
   case "$rel" in *.sh) chmod +x "$DEST/$rel" ;; esac
 }
 
+# Args: relpaths that were REFUSED this run. Those keep their previous manifest entry (or none) —
+# recording the hash of a box-edited file would tell the NEXT --sync that the edit is what we
+# placed, and it would overwrite it without asking, which is the whole failure --sync exists to
+# stop. Everything else is recorded at the hash now on the box.
 write_manifest() {
+  local rel arg refused prev
   : > "$MANIFEST.new"
   while IFS= read -r rel; do
+    refused=0
+    for arg in "$@"; do [ "$arg" = "$rel" ] && refused=1; done
+    if [ "$refused" = 1 ]; then
+      prev="$(manifest_sha "$rel")"
+      [ -n "$prev" ] && printf '%s %s\n' "$prev" "$rel" >> "$MANIFEST.new"
+      continue
+    fi
     printf '%s %s\n' "$(sha "$DEST/$rel")" "$rel" >> "$MANIFEST.new"
   done < <(files)
   mv "$MANIFEST.new" "$MANIFEST"
@@ -96,7 +112,7 @@ if [ "$SYNC" = 1 ]; then
     fi
     place "$rel"; updated=$((updated+1))
   done < <(files)
-  write_manifest
+  write_manifest ${skipped[@]+"${skipped[@]}"}
   echo "sync: $updated updated, $same already current, ${#skipped[@]} refused."
   if [ "${#skipped[@]}" -gt 0 ]; then
     echo "REFUSED (box-local edits — diff before deciding, then --sync --force):"

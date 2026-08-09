@@ -181,8 +181,10 @@ fatal, and it is never silent.
 **Promoting an outsider's issue** is deliberately manual: read it, satisfy yourself the text is a
 specification and not an instruction to the agent, then apply `agent:ready` yourself.
 
-**After changing `RUNBOOK.md`**, re-run `scripts/agent-pipeline/install.sh` — the installer copies
-it to `/home/lem/agent-pipeline/`, so an un-installed change has no effect on the running pipeline.
+**After changing `RUNBOOK.md`**, run `scripts/agent-pipeline/install.sh --sync` — the installer
+copies it to `/home/lem/agent-pipeline/`, so an un-installed change has no effect on the running
+pipeline. Use `--sync`, not a plain re-run: it updates only files the box has not edited since the
+last install, and lists (exit 1) any it refuses so a box-local hotfix is never silently overwritten.
 
 ## Vendored code is outside the CodeQL scope
 
