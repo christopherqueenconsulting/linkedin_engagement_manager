@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 
 pytestmark = pytest.mark.unit
 
@@ -15,6 +16,23 @@ _DB = "cqc_lem.utilities.db"
 def _no_sleep():
     with patch(f"{_FEED}.time.sleep"):
         yield
+
+
+def _clock(*values):
+    """A `time.time` stand-in that walks the given instants and then holds the last one.
+
+    Holding rather than raising StopIteration keeps a test pinned to the behaviour it is asserting,
+    instead of failing on however many clock reads the code happens to make after the interesting one.
+    """
+    remaining = list(values)
+    held = {"v": values[-1]}
+
+    def _now():
+        if remaining:
+            held["v"] = remaining.pop(0)
+        return held["v"]
+
+    return _now
 
 
 class TestUserGroupsDB:
@@ -310,6 +328,69 @@ class TestCommentInGroups:
         assert info.called and not err.called
         quit_driver.assert_called_once_with(driver)
 
+    def test_the_walk_hands_its_deadline_to_the_feed_engine(self):
+        """Issue #1198: one slow group must not be able to spend the whole task budget.
+
+        So the deadline goes INTO `comment_on_feed_inline`, not just around it.
+        """
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}._group_walk_deadline", return_value=4000.0), \
+             patch(f"{_FEED}.time.time", return_value=1000.0), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=1) as cfi, \
+             patch(f"{_FEED}.quit_gracefully"):
+            auto_comment_in_groups.run(user_id=1)
+        assert cfi.call_args.kwargs["deadline_ts"] == 4000.0
+
+    def test_out_of_time_stops_between_groups_and_keeps_what_shipped(self):
+        """Issue #1198: reaching the soft time limit kills the run mid-comment.
+
+        So the walk stops itself first — remaining groups are skipped, the posted comments stand,
+        and nothing raises.
+        """
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        driver = MagicMock()
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}._group_walk_deadline", return_value=4000.0), \
+             patch(f"{_FEED}.time.time", side_effect=_clock(1000.0, 1000.0, 9999.0)), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.quit_gracefully") as quit_driver:
+            result = auto_comment_in_groups.run(user_id=1)
+        assert result == "Commented 2 time(s) across 1 group(s) before running out of time"
+        assert cfi.call_count == 1  # groups 2 and 3 were never opened
+        assert warned.called
+        quit_driver.assert_called_once_with(driver)
+
+    def test_the_soft_time_limit_itself_is_absorbed_not_crashed(self):
+        """Issue #1198: the backstop for a run whose reserve was not enough.
+
+        SoftTimeLimitExceeded derives from Exception, so the loop's session-lost handler re-raises
+        it — it must land on the run's own handler, keep the comments already posted, and quit
+        Chrome.
+        """
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        driver = MagicMock()
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}._group_walk_deadline", return_value=None), \
+             patch(f"{_FEED}.comment_on_feed_inline", side_effect=SoftTimeLimitExceeded()), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.log_error") as err, \
+             patch(f"{_FEED}.quit_gracefully") as quit_driver:
+            result = auto_comment_in_groups.run(user_id=1)
+        assert result == "Commented 0 time(s) before the task time limit"
+        assert warned.called and not err.called
+        quit_driver.assert_called_once_with(driver)
+
     def test_a_real_failure_mid_run_still_raises(self):
         """Only a LOST SESSION is absorbed — anything else stays a crash, and a defect."""
         from cqc_lem.app.engagement.feed import auto_comment_in_groups
@@ -322,6 +403,45 @@ class TestCommentInGroups:
              patch(f"{_FEED}.quit_gracefully"):
             with pytest.raises(RuntimeError):
                 auto_comment_in_groups.run(user_id=1)
+
+
+class TestGroupWalkDeadline:
+    """`_group_walk_deadline` — the budget arithmetic behind the #1198 stop."""
+
+    def _task(self, timelimit):
+        task = MagicMock()
+        task.request.timelimit = timelimit
+        return task
+
+    def test_reads_the_soft_limit_off_the_request_first(self):
+        """Celery orders the header (hard, soft) — reading index 0 would budget off the wrong one."""
+        from cqc_lem.app.engagement.feed import GROUP_WALK_RESERVE_SECONDS, _group_walk_deadline
+        assert _group_walk_deadline(self._task((5400, 4800)), 1000.0) == 1000.0 + 4800 - GROUP_WALK_RESERVE_SECONDS
+
+    def test_falls_back_to_the_app_config(self):
+        from cqc_lem.app.engagement.feed import (
+            GROUP_WALK_RESERVE_SECONDS,
+            _group_walk_deadline,
+            shared_task,
+        )
+        soft = shared_task.conf.task_soft_time_limit
+        assert soft, "the app must configure a soft time limit for the walk to budget against"
+        assert _group_walk_deadline(self._task(None), 1000.0) == 1000.0 + soft - GROUP_WALK_RESERVE_SECONDS
+
+    def test_a_limit_tighter_than_the_reserve_still_leaves_a_budget(self):
+        """Otherwise the first deadline check would refuse group one and nothing would be commented.
+
+        A stricter limit must shorten the walk, not cancel it.
+        """
+        from cqc_lem.app.engagement.feed import GROUP_WALK_MIN_BUDGET_SECONDS, _group_walk_deadline
+        assert _group_walk_deadline(self._task((120, 60)), 1000.0) == 1000.0 + GROUP_WALK_MIN_BUDGET_SECONDS
+
+    def test_no_limit_anywhere_leaves_the_walk_unbounded(self):
+        from cqc_lem.app.engagement.feed import _group_walk_deadline
+        unbounded_app = MagicMock()
+        unbounded_app.conf.task_soft_time_limit = None
+        with patch(f"{_FEED}.shared_task", unbounded_app):
+            assert _group_walk_deadline(self._task(None), 1000.0) is None
 
 
 _READY_DRAFT = {"id": 11, "user_id": 1, "group_id": "123", "group_name": "AI Leaders",
