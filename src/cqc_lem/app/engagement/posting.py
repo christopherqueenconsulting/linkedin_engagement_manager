@@ -574,8 +574,10 @@ def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, co
         # must not also get an artifact draft stacked on the same thread.
         if (has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_ARTIFACT)
                 or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE)):
-            log_info(f"Artifact delivery: {first_name or profile_url} already has a queued draft; "
-                     f"skipping", user_id=user_id, action_type="dm")
+            # DEBUG: "one open draft per person" is the designed rule, and the sweep re-reads the
+            # same comment on every pass — an expected no-op, logged as one.
+            log_debug(f"Artifact delivery: {first_name or profile_url} already has a queued draft; "
+                      f"skipping", user_id=user_id, action_type="dm")
             return None
         cap = int((prefs or {}).get("max_dms_per_day") or 0)
         if count_scheduled_dms_created_today(user_id, source=SCHEDULED_DM_SOURCE_ARTIFACT) >= cap:
@@ -815,7 +817,9 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
     lock_name = f"sweep_reply_comments:{user_id}"
     lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
     if lock_token is None:
-        log_info(f"Another reply sweep is already running for user {user_id} — skipping.")
+        # DEBUG: the comment above says this lock exists precisely BECAUSE two sweeps can start —
+        # losing the race is the mechanism working, not a degraded run.
+        log_debug(f"Another reply sweep is already running for user {user_id} — skipping.")
         return "Skipped — another reply sweep in progress"
     try:
         driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
@@ -1558,8 +1562,10 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     if ours is None:
         outcome["status"] = "skipped"
         outcome["skip_reason"] = "post-unavailable" if not items else "comment-not-found"
-        log_info(f"Comment outcome skipped ({outcome['skip_reason']}) on {post_url}",
-                 user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes")
+        # DEBUG: the comment above already calls a `post-unavailable` skip working behaviour, and
+        # the caller writes the skip as a durable comment_outcomes row — that is the record.
+        log_debug(f"Comment outcome skipped ({outcome['skip_reason']}) on {post_url}",
+                  user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes")
         return outcome
 
     # A rendered thread with an unreadable sort control is the #818 starvation signal: capture
@@ -1705,13 +1711,15 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
+                # DEBUG on both branches: this is the re-queue loop's own bookkeeping, and the
+                # duration running out IS its exit condition.
+                log_debug(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration and future_forward parameters
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 kwargs['future_forward'] = future_forward
                 # Add our function call back to the task queue
-                log_info(
+                log_debug(
                     f"Adding {current_function_name} back to queue for {future_forward_time} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
@@ -1821,7 +1829,9 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 
     # Skip if already posted — prevents duplicate posts when the task is re-queued
     if get_post_status(post_id) == PostStatus.POSTED.value:
-        log_info(f"Post {post_id} already posted. Skipping duplicate execution.")
+        # DEBUG: this guard exists BECAUSE the task is re-queued, so tripping it is the guard
+        # working. The comment above says as much.
+        log_debug(f"Post {post_id} already posted. Skipping duplicate execution.")
         return f"Post {post_id} already posted — skipped"
 
     # An occasion/milestone draft publishes through LinkedIn's native composer, which has no API
@@ -1947,7 +1957,11 @@ def post_to_linkedin(self, user_id: int, post_id: int):
             from cqc_lem.utilities.utils import purge_post_assets
             purge_post_assets(post_id, video_url=get_post_video_url(post_id) if post_type == PostType.VIDEO else None)
         except Exception as e:
-            log_info(f"purge_post_assets failed for post_id={post_id}: {e}")
+            # WARNING: purge_post_assets warns on the per-file failures it OWNS (#1186), so an
+            # exception ESCAPING it is a different fault — and an asset we never delete keeps
+            # accumulating on the shared volume until someone looks.
+            log_warning("Could not purge this post's local media — the assets volume keeps it",
+                        exc=e, user_id=user_id, post_id=post_id, task_name="post_to_linkedin")
 
         # Store the ACTUAL post body as the log message — not a status string. Seed comments and
         # thread replies read this back via get_post_message_from_log_for_user() to ground the AI in

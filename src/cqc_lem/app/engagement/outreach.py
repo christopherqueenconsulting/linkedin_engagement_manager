@@ -1087,8 +1087,10 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         # person ends up with two pending messages, which is the spam shape both gates exist to stop.
         if (has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE)
                 or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_ARTIFACT)):
-            log_info(f"DM nurture: {first_name or profile_url} already has a queued draft; skipping",
-                     user_id=user_id, action_type="dm")
+            # DEBUG: "one open draft per conversation" is the designed rule the comment above
+            # states, and a thread is re-checked on a schedule — an expected no-op.
+            log_debug(f"DM nurture: {first_name or profile_url} already has a queued draft; skipping",
+                      user_id=user_id, action_type="dm")
             return None
 
         cap = _nurture_max_per_day()
@@ -1367,12 +1369,14 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
+                # DEBUG on both branches: the re-queue loop's own bookkeeping, and the duration
+                # running out IS its exit condition.
+                log_debug(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration parameter
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 # Add our function call back to the task queue
-                log_info(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
+                log_debug(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
@@ -1411,7 +1415,10 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
 
     # Check to make sure user hasn't already commented on this post
     if check_commented(driver, wait, user_id, post_link, my_profile=my_profile):
-        log_info("Already commented on this post. Skipping...")
+        # DEBUG: the viewer walk revisits the same activities on consecutive runs, so this is the
+        # dedup working rather than anything going wrong.
+        log_debug("Already commented on this post. Skipping...", user_id=user_id,
+                  action_type="comment")
         return False  # Skip posts we've already commented on
     else:
         log_info("Haven't commented on this post yet. Proceeding...")
@@ -1664,12 +1671,14 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
+                # DEBUG on both branches: the re-queue loop's own bookkeeping, and the duration
+                # running out IS its exit condition.
+                log_debug(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration parameter
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 # Add our function call back to the task queue
-                log_info(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
+                log_debug(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
@@ -1707,7 +1716,10 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 
     # Check if we already engaged with this viewer today
     if has_engaged_url_with_x_days(user_id, viewer_url, 1):
-        log_info(f"Already engaged with {viewer_name} today. Skipping...")
+        # DEBUG: the docstring says the analytics page lists the same viewer on consecutive runs,
+        # which makes this the documented expected repeat, not a skipped opportunity.
+        log_debug(f"Already engaged with {viewer_name} today. Skipping...", user_id=user_id,
+                  task_name="engage_with_profile_viewer")
         result = f"Already engaged with {viewer_name} today. Skipping..."
     else:
 
@@ -1818,7 +1830,12 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     result = f"Profile Viewer Engagement Completed. Sent Connection Request to {viewer_name}"
                     engagement_successful = True
             else:
-                log_info(f"Failed to get profile data for {viewer_name}")
+                # WARNING: the viewer's profile scrape came back with nothing, so this whole
+                # engagement silently does nothing. Symmetric with get_my_profile's
+                # "scrape returned nothing" — once is SDUI noise, repeatedly is drift.
+                log_warning("Profile scrape returned nothing for this viewer — skipping them",
+                            user_id=user_id, action_type="scrape",
+                            task_name="engage_with_profile_viewer")
                 result = f"Failed to get profile data for {viewer_name}"
 
         except Exception as e:
@@ -1980,7 +1997,11 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
     """Send dm message to a profile. Must be a 1st connection"""
     dm_sent = send_dm_now(user_id, profile_url, message)
     result = "DM Sent Successfully" if dm_sent else "DM Failed"
-    log_info(result)
+    # A task wrapper is a caller (#1038): every way send_dm_now can fail already logged itself —
+    # ERROR with exc= for a raise, DEBUG for a composer it could not address — and wrote the
+    # durable FAILURE row, so restating the failure here is DEBUG. The success stays INFO.
+    (log_info if dm_sent else log_debug)(result, user_id=user_id, action_type="dm",
+                                         task_name="send_private_dm")
     return result
 
 
@@ -3138,7 +3159,11 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                    session_name="Catch-up Moments")
     except LinkedInRateLimited as e:
-        log_info(f"automate_catchup_touches deferred (throttled): {e}")
+        # DEBUG on all three throttle deferrals in this lane: an open breaker is working behaviour,
+        # reported where it is DETECTED (rate_limit.mark_rate_limited), and the lane retries on the
+        # next rotation by design — the same call send_roster_connect_invite makes.
+        log_debug(f"automate_catchup_touches deferred (throttled): {e}", user_id=user_id,
+                  task_name=task_name)
         report["status"] = CATCHUP_STATUS_THROTTLED
         report_catchup_run(user_id, report, task_name)
         return "Catch-up scan deferred (LinkedIn throttled)"
@@ -3154,7 +3179,8 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         moments = _scrape_catchup_moments(driver, max_moments=max_moments, user_id=user_id,
                                           enabled_event_types=enabled)
     except LinkedInRateLimited as e:
-        log_info(f"automate_catchup_touches deferred mid-scrape (throttled): {e}")
+        log_debug(f"automate_catchup_touches deferred mid-scrape (throttled): {e}",
+                  user_id=user_id, task_name=task_name)
         report["status"] = CATCHUP_STATUS_THROTTLED
         report_catchup_run(user_id, report, task_name)
         return "Catch-up scan deferred (LinkedIn throttled)"
@@ -3308,7 +3334,8 @@ def send_catchup_touch(self, touch_id: int):
         sent = send_dm_now(user_id, touch["profile_url"], touch["message"],
                            person_name=touch.get("person_name"))
     except LinkedInRateLimited as e:
-        log_info(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
+        log_debug(f"send_catchup_touch: throttled, deferring {touch_id}: {e}", user_id=user_id,
+                  action_type="dm", task_name="send_catchup_touch")
         # The breaker refused before a composer was ever opened, so nothing was sent — give the claim
         # back, or the deferral we are about to write could never be retried: the next attempt would
         # lose the claim and mark this touch `sent` having sent nothing.

@@ -47,6 +47,7 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.human_pacing import ACTION_INVITE, record_action
 from cqc_lem.utilities.lead_scoring import profile_slug
 from cqc_lem.utilities.linkedin.company_page_inviter import (
+    INVITE_STATUS_DISABLED,
     INVITE_STATUS_FAILED,
     INVITE_STATUS_PAUSED,
     INVITE_STATUS_SESSION_FAILED,
@@ -124,7 +125,11 @@ def clean_stale_invites(self, user_id: int):
         report = withdraw_stale_invites(driver, wait, user_id, plan=plan)
     except LinkedInRateLimited as e:
         # The breaker opened between the plan and the page. Not a failure of this lane — defer.
-        log_info(f"clean_stale_invites deferred (throttled): {e}")
+        # DEBUG for the same reason send_roster_connect_invite's copy of this is: an open breaker
+        # is working behaviour, it is reported where it is DETECTED (rate_limit.mark_rate_limited),
+        # and this lane retries on the next rotation by design.
+        log_debug(f"clean_stale_invites deferred (throttled): {e}", user_id=user_id,
+                  task_name=task_name, action_type="invite")
         report = {"status": WITHDRAW_STATUS_PAUSED, "cap": plan["cap"],
                   "withdrawn_today": plan["withdrawn_today"],
                   "threshold_days": plan["threshold_days"]}
@@ -476,7 +481,10 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
-        log_info(f"invite_to_connect deferred (throttled): {e}")
+        # DEBUG, matching send_roster_connect_invite: an open breaker is working behaviour and is
+        # already reported where it is detected.
+        log_debug(f"invite_to_connect deferred (throttled): {e}", user_id=user_id,
+                  action_type="invite_connect", task_name="invite_to_connect")
         return "Invitation deferred (LinkedIn throttled)"
     if sent:
         return CONNECTION_REQUEST_SENT_MESSAGE
@@ -558,7 +566,11 @@ def send_connection_request(self, request_id: int):
     try:
         sent, reason = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"])
     except LinkedInRateLimited as e:
-        log_info(f"send_connection_request: throttled, deferring {request_id}: {e}")
+        # DEBUG, matching the other two wrappers: the request stays 'approved' and the next scan
+        # picks it up, so nothing was lost and nothing here is new information.
+        log_debug(f"send_connection_request: throttled, deferring {request_id}: {e}",
+                  user_id=user_id, action_type="invite_connect",
+                  task_name="send_connection_request")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
         return f"Connection request {request_id} deferred (LinkedIn throttled)"
     if not sent:
@@ -595,9 +607,12 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
     plan = plan_daily_invites(user_id)
     if plan["allowance"] <= 0:
         report = {"status": plan["status"], "cap": plan["cap"], "sent_today": plan["sent_today"]}
-        log_info(f"Company page invites skipped — {plan['status']} "
-                 f"(cap {plan['cap']}, sent today {plan['sent_today']})",
-                 user_id=user_id, task_name=task_name, action_type="company_invite")
+        # Same split clean_stale_invites makes: DEBUG for the switched-off case, which is the
+        # DEFAULT for any user with no company page and repeats for every active user every day.
+        emit = log_debug if plan["status"] == INVITE_STATUS_DISABLED else log_info
+        emit(f"Company page invites skipped — {plan['status']} "
+             f"(cap {plan['cap']}, sent today {plan['sent_today']})",
+             user_id=user_id, task_name=task_name, action_type="company_invite")
         track_company_page_invite_run(user_id, report)
         return f"No company page invites to send ({plan['status']})"
 
