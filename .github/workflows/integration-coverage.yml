@@ -52,13 +52,17 @@ jobs:
       OPENAI_API_KEY: test-key-not-real
       LITELLM_BASE_URL: http://localhost:4000
       LITELLM_MASTER_KEY: test-master-key
-      # There is no LiteLLM proxy on this runner, and there is not meant to be — the tests that
-      # reach one are asserting the failure branch. The production default rides out ~24s of refused
-      # connections per call so a deploy restart does not lose a generation (issue #986), which here
-      # is 24s of sleeping for an answer we already have. Four tests that fall through to an
-      # unmocked call were spending 311s of the lane's 354s doing it. `1` is the documented way to
-      # turn the wait off; the retry schedule itself is covered in the unit lane, which sets this
-      # env var per test.
+      # There is no LiteLLM proxy on this runner, and there is not meant to be. The production
+      # default rides out ~24s of refused connections per call so a deploy restart cannot lose a
+      # generation (issue #986), which here would be 24s of sleeping for an answer nothing wants.
+      #
+      # This is now a BACKSTOP, not the fix. It was worth 132s of this lane (185s -> 53s) while
+      # three tests still made live calls; with those mocked and `_no_live_llm_calls` refusing any
+      # new one (issue #1188), removing it measured 45.7s against 50.6s — i.e. nothing. It stays
+      # for the one path the guard cannot cover: the guard is function-scoped, so a module- or
+      # session-scoped fixture that reached the network during ITS setup would run outside it.
+      #
+      # The retry schedule itself is covered in the unit lane, which sets this var per test.
       LLM_CONNECT_RETRY_ATTEMPTS: 1
 
     steps:

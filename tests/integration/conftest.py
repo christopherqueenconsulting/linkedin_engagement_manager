@@ -161,7 +161,7 @@ def _redis_url_for_worker(url: str, worker: str) -> str:
 def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Refuses, loudly, any LLM request a test in this lane did not mock (issue #1188).
 
-    Four tests here were 311s of a 354s lane while doing no work at all: each fell through to a
+    Three tests here were 281s of a 354s lane while doing no work at all: each fell through to a
     real request, and with no LiteLLM proxy on the runner every one of them paid the PRODUCTION
     connect-retry ride-out (#986, ~24s) for a response the test never asserted on. That is a
     *slow* failure, which is the kind nobody reads — the lane got faster and the tests stayed
@@ -170,9 +170,9 @@ def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     `OpenAI.post` is the seam, not the three endpoint methods the unit lane's #480 guard patches:
     every endpoint the SDK exposes (chat, embeddings, images, speech) funnels through it, so a new
     call shape inherits the guard, and it catches the raw `openai.OpenAI()` fallback in
-    `ai_helper._pick_reaction` as well as the shared `AttributedOpenAI` singleton. Setting it on
-    the base class covers the subclass too, because `AttributedOpenAI.post` reaches it via `super()`
-    — and the retry loop there passes a refusal straight through, since only a real
+    `ai_helper.choose_post_reaction` as well as the shared `AttributedOpenAI` singleton. Setting it
+    on the base class covers the subclass too, because `AttributedOpenAI.post` reaches it via
+    `super()` — and the retry loop there passes a refusal straight through, since only a real
     `httpx.ConnectError` is retryable.
 
     Refusing with pytest's own `Failed` (a BaseException) rather than the `APIConnectionError` the
