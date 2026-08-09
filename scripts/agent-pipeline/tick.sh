@@ -190,6 +190,7 @@ TICK_OUTCOME="unknown"                   # dispatched | skipped | error | nothin
 TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_docfix", "mode_revise", "mode_phasefix", "escalate"
 TICK_MODE=""                             # mode name if a Claude run was dispatched
 TICK_ISSUE=""                            # issue number dispatched
+TICK_WORKTREE=""                         # worktree this tick created; released by the EXIT trap
 TICK_PR=""                               # PR number processed
 TICK_BRANCH=""                           # branch
 TICK_LANE="${LANE:-}"                    # claude | ollama
@@ -244,7 +245,12 @@ print(json.dumps(out))
 # Emit on every exit (success, explicit exit, error). The trap fires LAST; if a code path already
 # called emit_tick_outcome inline, the trap call is a no-op for repeat emission (PostHog accepts
 # duplicates — the duplicate is harmless and the inline call gives us a single clean event).
-trap '__TICK_DUR_MS=$(( (SECONDS - TICK_T0) * 1000 )); emit_tick_outcome' EXIT
+# Worktree release rides the SAME trap. Bash allows one handler per signal, so this must extend the
+# existing one rather than add a second — a second `trap ... EXIT` would silently replace the
+# telemetry. TICK_WORKTREE is set by add_worktree; release_worktree refuses if the branch lock is
+# still held or the tree holds uncommitted/unpushed work, so a killed run never loses an agent's
+# commits.
+trap '__TICK_DUR_MS=$(( (SECONDS - TICK_T0) * 1000 )); emit_tick_outcome; release_worktree "${TICK_WORKTREE:-}"' EXIT
 
 # --- helpers ---
 epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
@@ -869,6 +875,78 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
 }
 # ---- end merge execution ----------------------------------------------------------------------
 
+worktree_has_unsaved_work() {  # $1=path -> 0 if it holds work that is NOT on the remote
+  # Two ways an agent's work can exist only here: uncommitted changes, and commits it never pushed
+  # (a run killed between `git commit` and `git push`). Either one makes the directory the ONLY
+  # copy, so removing it destroys work. Anything unreadable counts as unsafe.
+  local wt="$1" br
+  [ -d "$wt" ] || return 1
+  git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || return 0     # unreadable -> treat as unsafe
+  [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
+  br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 0
+  [ -z "$br" ] || [ "$br" = "HEAD" ] && return 0                    # detached -> cannot compare
+  if git -C "$wt" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null 2>&1; then
+    [ -n "$(git -C "$wt" log --oneline "origin/$br..HEAD" 2>/dev/null)" ] && return 0
+    return 1
+  fi
+  # No remote branch at all: unpushed by definition unless it carries nothing beyond main.
+  [ -n "$(git -C "$wt" log --oneline "origin/main..HEAD" 2>/dev/null)" ] && return 0
+  return 1
+}
+
+branch_lock_free() {  # $1=branch -> 0 when NO live tick holds the claim
+  # claim_branch() flocks this same file for the life of a tick. Testing it non-blockingly on a
+  # SEPARATE fd is how cleanup avoids racing a run that is mid-flight.
+  local lf="$BASE/locks/br-$(echo "$1" | tr '/' '_').lock"
+  [ -f "$lf" ] || return 0
+  ( exec 9>"$lf"; flock -n 9 ) 2>/dev/null
+}
+
+release_worktree() {  # $1=path -> remove it unless it is in use or holds unsaved work
+  local wt="$1" br
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  case "$wt" in "$WORKROOT"/*) ;; *) return 0 ;; esac   # never touch anything outside work/
+  br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -n "$br" ] && ! branch_lock_free "$br"; then return 0; fi
+  if worktree_has_unsaved_work "$wt"; then
+    log "worktree $wt kept: it holds uncommitted or unpushed work."
+    return 0
+  fi
+  git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  git -C "$REPO" worktree prune >/dev/null 2>&1
+  return 0
+}
+
+sweep_stale_worktrees() {
+  # The box accumulated 255 worktrees / 40G before this existed: add_worktree only ever cleaned the
+  # ONE branch it was about to recreate, and nothing swept the rest. A worktree is disposable the
+  # moment its work is on the remote — add_worktree rebuilds it from origin in seconds.
+  #
+  # Rate-limited by a stamp file: this stats every worktree, and the tick runs every 5 minutes.
+  local stamp="$BASE/locks/.worktree-sweep" now age open removed=0 wt br
+  now="$(date +%s)"
+  if [ -f "$stamp" ]; then
+    age=$(( now - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
+    [ "$age" -lt "${WORKTREE_SWEEP_INTERVAL:-3600}" ] && return 0
+  fi
+  : > "$stamp"
+  # One API call, not one per worktree. An unreadable answer means we keep everything: deleting on
+  # the assumption that a PR is closed, when we simply could not ask, is the wrong way to be wrong.
+  open="$(gh pr list --repo "$SLUG" --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null)" || return 0
+  [ -z "$open" ] && ! gh pr list --repo "$SLUG" --state open --limit 1 >/dev/null 2>&1 && return 0
+  for wt in "$WORKROOT"/*/; do
+    [ -d "$wt" ] || continue
+    wt="${wt%/}"
+    # Grace period: a run that just finished may still be opening its PR.
+    [ $(( now - $(stat -c %Y "$wt" 2>/dev/null || echo "$now") )) -lt "${WORKTREE_GRACE_SECONDS:-7200}" ] && continue
+    br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [ -n "$br" ] && printf '%s\n' "$open" | grep -qxF "$br" && continue   # still has an open PR
+    release_worktree "$wt" && [ ! -d "$wt" ] && removed=$((removed+1))
+  done
+  [ "$removed" -gt 0 ] && log "worktree sweep: removed $removed stale worktree(s)."
+  return 0
+}
+
 add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   local branch="$1" base="$2" wt="$WORKROOT/$1"
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
@@ -902,6 +980,9 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
     log "add_worktree: FAILED to create $wt (branch=$branch base=$base). Check git worktree list." >&2
     return 1
   fi
+  # Recorded so the EXIT trap can release it on EVERY path, including a crash or a kill. Set here
+  # rather than at the nine call sites, for the same reason the worktree guard lives in run_lane().
+  TICK_WORKTREE="$wt"
   echo "$wt"
 }
 
@@ -937,7 +1018,18 @@ run_claude() {  # $1=worktree  $2=prompt  $3=model (optional; empty = CLI defaul
 }
 
 # --- state machine ---
-git -C "$REPO" fetch origin --prune >/dev/null 2>&1
+# EVERY worktree below is cut from `origin/main`, so this fetch is what makes "latest main" true.
+# Its result used to be discarded: a failed fetch (network blip, expired credential) left the tick
+# branching from whatever `origin/main` happened to say last time — silently, and looking identical
+# to a healthy run. Cron retries in 5 minutes, so refusing is cheaper than a day of PRs cut from a
+# stale base.
+if ! git -C "$REPO" fetch origin --prune >/dev/null 2>&1; then
+  log "git fetch origin FAILED — refusing to dispatch from a possibly stale origin/main. Retrying next tick."
+  TICK_OUTCOME="error"; TICK_REASON="fetch_failed"
+  exit 1
+fi
+
+sweep_stale_worktrees
 
 # ---- STALE-CLAIM REAPER: return abandoned agent:working issues to the queue ----------------
 # `agent:working` is stamped the moment a run STARTS, and select_next_issue excludes it. So any run
