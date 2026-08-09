@@ -5,9 +5,14 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="/home/lem/agent-pipeline"
 
-mkdir -p "$DEST/logs" "$DEST/work"
+mkdir -p "$DEST/logs" "$DEST/work" "$DEST/lib"
 cp "$SRC/tick.sh" "$DEST/tick.sh"
 cp "$SRC/RUNBOOK.md" "$DEST/RUNBOOK.md"
+# lib/ was NOT copied here until 2026-08-09, so tick.sh shipped while the helpers it sources did
+# not. The box's copies drifted out of the repo's sight: `run_lane.sh` there had gained an export
+# block (the #842 unattended-benchmark vars) that existed nowhere in git, and would have been
+# destroyed by the first person who thought to sync lib/ the obvious way.
+cp "$SRC"/lib/*.sh "$DEST/lib/"
 chmod +x "$DEST/tick.sh"
 touch "$DEST/PAUSED"   # start paused — nothing runs until you remove this file
 echo "Installed to $DEST (PAUSED)."

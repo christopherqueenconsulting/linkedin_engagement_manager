@@ -22,6 +22,13 @@ BASE="${BASE:-/home/lem/agent-pipeline}"
 # shellcheck disable=SC1091
 . "$BASE/lib/labels.sh" 2>/dev/null || true
 [ -f "$BASE/secrets.env" ] && . "$BASE/secrets.env" 2>/dev/null
+# Sourcing makes these shell variables, not environment variables — a `claude -p` child (and any
+# script a tick runs inside the worktree) would never see them. LEM issue #842 decision `1B`: the
+# model benchmark is meant to run UNATTENDED from this runner's env, so the four vars it reads are
+# exported here. Everything else in secrets.env stays shell-local on purpose.
+export OLLAMA_CLOUD_URL="${OLLAMA_CLOUD_URL:-}" OLLAMA_CLOUD_API_KEY="${OLLAMA_CLOUD_API_KEY:-}"
+export BENCHMARK_ENABLED="${BENCHMARK_ENABLED:-}" \
+       BENCHMARK_USAGE_LEVELS="${BENCHMARK_USAGE_LEVELS:-}"
 
 MCP_CONFIG="$BASE/mcp/mcp-config.json"
 OLLAMA_LITELLM_URL="${OLLAMA_LITELLM_URL:-http://127.0.0.1:4000}"
@@ -47,6 +54,31 @@ print(json.dumps({**base,**extra}))
 
 run_lane() {  # $1=worktree  $2=prompt  $3=claude_model_hint
   local wt="$1" prompt="$2" hint="${3:-}" out rc t0 ms
+
+  # EVERY lane runs its agent inside its OWN git worktree, and this is the one place that is
+  # enforced. Below, the agent is launched as `( cd "$wt" && claude ... )` — and `cd ""` in bash
+  # SUCCEEDS as a no-op, so an empty $wt does not fail: it silently runs the agent in whatever
+  # directory the tick happens to be in. That is the shared checkout, where concurrent slots would
+  # then edit the same files and clobber each other.
+  #
+  # `add_worktree` returns empty on failure, and its callers capture stdout without checking the
+  # exit code. Two of the nine lanes (start, phasefix) guard it at the call site; the other seven
+  # did not. Guarding HERE covers all of them, and every lane added later, instead of relying on
+  # nine copies of the same check staying in sync — which is exactly the failure mode this repo's
+  # restructure kept finding in its own test guards.
+  if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    log "run_lane: REFUSING to dispatch — worktree path is empty or missing ('${wt}'). An agent must
+never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${ISSUE:-?} PR=${PR:-?}"
+    return 1
+  fi
+  # A directory alone is not proof: a worktree carries a `.git` FILE pointing at the parent repo
+  # (a normal clone has a `.git` DIRECTORY). Refusing here catches a stale path that happens to
+  # exist as a plain directory.
+  if [ ! -e "$wt/.git" ]; then
+    log "run_lane: REFUSING to dispatch — '$wt' is not a git worktree (no .git). MODE=${MODE:-?}"
+    return 1
+  fi
+
   if [ "${DRY_RUN:-0}" = "1" ]; then
     dispatch_lane "$hint"
     log "DRY_RUN: would run lane=$LANE model=${AGENT_MODEL:-default} tier=${AGENT_TIER:-} in $wt"

@@ -341,6 +341,19 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
   shared archive volume, a loop-guarded one-shot reload on import failure, and `/api/app-info`
   polling that prompts rather than reloads.
 ## Git Safety & Multi-Agent Concurrency Rules
+- **Every agent gets its OWN worktree — always.** Spawn with `isolation: "worktree"`; the
+  `.claude/agents/*.md` definitions declare it too, but pass it explicitly rather than trusting the
+  frontmatter. Agents launched into the shared checkout WILL clobber each other: three once did, and
+  one switched the branch under the others inside a minute. `tick.sh` enforces the same rule for the
+  pipeline in `lib/run_lane.sh` — note `cd ""` SUCCEEDS in bash, so an empty worktree path silently
+  runs the agent in the shared tree rather than failing.
+- **One venv, many worktrees:** the editable-install `.pth` is mutable and the last `poetry install`
+  anywhere wins, so `poetry run python -c "import cqc_lem…"` may read a DIFFERENT worktree. Use
+  `PYTHONPATH=src` for standalone scripts and print `__file__` to prove which tree you loaded.
+  `pytest` is unaffected (`pythonpath` is rootdir-relative).
+- **Reproduce CI locally** with an empty `.env` and `src/cqc_lem/ui/dist` moved aside. A dev `.env`
+  masks real failures (unset `DB_PORT` → `int(None)` → `TypeError`, which `except
+  mysql.connector.Error` does NOT catch); a built SPA causes a false `test_docs_surface` failure.
 - **Fresh state:** before generating ANY code edit, run `git status` and read the target file. Never edit from conversation memory — another agent may have changed it under you.
 - **Micro-branching:** never edit a shared branch asynchronously; start each distinct task on its own branch (`git checkout -b feature/claude-<task-name>`).
 - **Atomic commits:** stage + commit each completed sub-task with a clean conventional-commit message.
