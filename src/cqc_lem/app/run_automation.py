@@ -26,8 +26,9 @@ What IS re-exported, and why it has to be:
   scan/send reports with them. They are now SOURCED from `app.engagement.outreach`, which is what
   the split's abort criterion for step 5 asked to be proved.
 
-`load_dotenv()` still runs here because `app/__init__.py` imports this module first and has always
-had that side effect at that point in the import order.
+`load_dotenv()` is kept because importing this module has always had that side effect at that point
+in `app/__init__.py`'s import block. `utilities/db.py` and `ai_helper.py` call it too, so it is very
+probably redundant — but "probably" is not the bar for a behaviour change in a pure move.
 """
 
 from dotenv import load_dotenv
