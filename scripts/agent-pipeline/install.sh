@@ -13,7 +13,9 @@ cp "$SRC/RUNBOOK.md" "$DEST/RUNBOOK.md"
 # block (the #842 unattended-benchmark vars) that existed nowhere in git, and would have been
 # destroyed by the first person who thought to sync lib/ the obvious way.
 cp "$SRC"/lib/*.sh "$DEST/lib/"
-chmod +x "$DEST/tick.sh"
+# The operator status report lives next to tick.sh so it is where someone looks when they SSH in.
+cp "$SRC/status.sh" "$DEST/status.sh"
+chmod +x "$DEST/tick.sh" "$DEST/status.sh"
 touch "$DEST/PAUSED"   # start paused — nothing runs until you remove this file
 echo "Installed to $DEST (PAUSED)."
 
@@ -32,6 +34,9 @@ fi
 cat <<'EOF'
 
 Next steps:
+  0. See what the pipeline is doing at any time (read-only, safe to leave running):
+       /home/lem/agent-pipeline/status.sh            # one-shot report
+       /home/lem/agent-pipeline/status.sh --watch    # refreshing dashboard
   1. Dry-run once to validate selection/state logic (no code changes, no Claude call):
        DRY_RUN=1 /home/lem/agent-pipeline/tick.sh ; tail -n 40 /home/lem/agent-pipeline/logs/tick-*.log
   2. Go LIVE:      rm /home/lem/agent-pipeline/PAUSED
