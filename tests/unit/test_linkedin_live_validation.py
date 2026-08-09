@@ -221,8 +221,10 @@ class TestProbeComposer:
         assert report["state"] == llv.STATE_DRIFT
 
     def test_a_missing_share_box_does_not_warn(self, monkeypatch):
-        """The probe already grades a missing share box as drift/unknown. Logging that miss as a
-        warning escalates to a RecurringWarning in error tracking for expected best-effort drift.
+        """A missing share box is graded, not warned.
+
+        The probe already grades it drift/unknown. Logging that miss as a warning escalates to a
+        RecurringWarning in error tracking for expected best-effort drift.
         """
         calls = []
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
