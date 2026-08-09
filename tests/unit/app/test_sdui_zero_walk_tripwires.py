@@ -22,9 +22,9 @@ import pytest
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 
-_RA = "cqc_lem.app.run_automation"
-# The post-stats sweep moved to `app.engagement.posting` (#1154); the profile-viewer
-# branch below still runs in `run_automation`, so both spellings are live in this file.
+# The profile-viewer branch below runs in `app.engagement.outreach` (#1154); the post-stats sweep
+# went to `app.engagement.posting`, so both spellings are live in this file.
+_OUT = "cqc_lem.app.engagement.outreach"
 _POST = "cqc_lem.app.engagement.posting"
 # The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
 # is the module whose globals the invite code reads.
@@ -311,24 +311,24 @@ class TestProfileViewerBranch:
     """Both sides of the 1st-vs-other branch the dead badge silently collapsed into one."""
 
     def _engage(self, connection, activities=()):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         profile_data = {"full_name": "Jane Doe", "connection": connection,
                         "profile_url": "https://www.linkedin.com/in/jane-doe",
                         "recent_activities": list(activities)}
         my_profile = MagicMock()
         my_profile.full_name = "Chris Queen"
         my_profile.email = "chris@example.com"
-        with patch(f"{_RA}.has_engaged_url_with_x_days", return_value=False), \
-             patch(f"{_RA}.get_current_profile",
+        with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=False), \
+             patch(f"{_OUT}.get_current_profile",
                    return_value=(MagicMock(), MagicMock(), "chris@example.com", my_profile)), \
-             patch(f"{_RA}.get_linkedin_profile_from_url", return_value=profile_data), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="voice"), \
-             patch(f"{_RA}.generate_and_post_comment", return_value=True) as commented, \
-             patch(f"{_RA}.summarize_recent_activity", return_value="they shipped a thing"), \
-             patch(f"{_RA}.get_ai_message_refinement", return_value="Hi Jane"), \
-             patch(f"{_RA}.get_user_id", return_value=1), \
-             patch(f"{_RA}.invite_to_connect") as invite, \
-             patch(f"{_RA}.insert_new_log"), patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_OUT}.get_linkedin_profile_from_url", return_value=profile_data), \
+             patch(f"{_OUT}.get_or_create_profile_synthesis", return_value="voice"), \
+             patch(f"{_OUT}.generate_and_post_comment", return_value=True) as commented, \
+             patch(f"{_OUT}.summarize_recent_activity", return_value="they shipped a thing"), \
+             patch(f"{_OUT}.get_ai_message_refinement", return_value="Hi Jane"), \
+             patch(f"{_OUT}.get_user_id", return_value=1), \
+             patch(f"{_OUT}.invite_to_connect") as invite, \
+             patch(f"{_OUT}.insert_new_log"), patch(f"{_OUT}.quit_gracefully"):
             ra.engage_with_profile_viewer.run(user_id=1,
                                               viewer_url="https://www.linkedin.com/in/jane-doe",
                                               viewer_name="Jane Doe")

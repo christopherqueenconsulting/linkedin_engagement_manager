@@ -15,10 +15,11 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
-# `comment_on_post` and the permalink card walk moved to `app.engagement.feed` (#1154);
-# `check_commented` / `_thread_carries_our_comment` did not. Both aliases are live in this
-# file, and each test patches the module whose globals the code under test reads.
+# `check_commented` / `_thread_carries_our_comment` went with the DM cluster to
+# `app.engagement.outreach` (#1154); `comment_on_post` and the permalink card walk went to
+# `app.engagement.feed`. Both aliases are live in this file, and each test patches the module
+# whose globals the code under test reads.
+_OUT = "cqc_lem.app.engagement.outreach"
 _FEED = "cqc_lem.app.engagement.feed"
 
 _PERMALINK = "https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/"
@@ -28,7 +29,7 @@ _OTHER_URN = "urn:li:activity:7000000000000000002"
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"), patch(f"{_FEED}.time.sleep"):
+    with patch(f"{_OUT}.time.sleep"), patch(f"{_FEED}.time.sleep"):
         yield
 
 
@@ -266,88 +267,88 @@ class TestThreadCarriesOurComment:
         return prof
 
     def test_true_when_our_slug_authored_a_rendered_comment(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         items = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/someone-else/"),
                  (MagicMock(), MagicMock(), "https://www.linkedin.com/in/chris-queen-9b1/")]
-        with patch(f"{_RA}._comment_items", return_value=items):
+        with patch(f"{_OUT}._comment_items", return_value=items):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is True
 
     def test_a_slug_we_are_a_prefix_of_is_not_us(self):
         # Substring matching would read a stranger's comment as ours and silence the post.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         items = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/chris-queen-9b1-extra/")]
-        with patch(f"{_RA}._comment_items", return_value=items):
+        with patch(f"{_OUT}._comment_items", return_value=items):
             assert ra._thread_carries_our_comment(
                 MagicMock(), self._profile("https://www.linkedin.com/in/chris/")) is False
 
     def test_no_slug_is_false_without_reading_the_thread(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         reader = MagicMock()
-        with patch(f"{_RA}._comment_items", reader):
+        with patch(f"{_OUT}._comment_items", reader):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile("")) is False
         reader.assert_not_called()
 
     def test_driver_fault_is_false_not_fatal(self):
         from selenium.common import WebDriverException
 
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}._comment_items", side_effect=WebDriverException("gone")):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}._comment_items", side_effect=WebDriverException("gone")):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
 
     def test_waits_for_the_thread_to_mount_before_deciding(self):
         # The comment list hydrates AFTER driver.get() returns. Reading it on the first paint sees
         # zero comments on a post that plainly has them, which would make this rebuilt guard a
         # second silently-never-firing check — the #966 defect itself.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         ours = (MagicMock(), MagicMock(), "https://www.linkedin.com/in/chris-queen-9b1/")
         renders = [[], [], [ours]]
-        with patch(f"{_RA}._comment_items", side_effect=lambda _d: renders.pop(0)):
+        with patch(f"{_OUT}._comment_items", side_effect=lambda _d: renders.pop(0)):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is True
 
     def test_a_rendered_thread_without_us_stops_polling(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         stranger = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/someone-else/")]
         reader = MagicMock(return_value=stranger)
-        with patch(f"{_RA}._comment_items", reader):
+        with patch(f"{_OUT}._comment_items", reader):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
         # One poll to render, one to see it stopped growing — never the whole budget.
         assert reader.call_count == 2
 
     def test_a_thread_that_never_renders_is_false_not_a_hang(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         reader = MagicMock(return_value=[])
-        with patch(f"{_RA}._comment_items", reader):
+        with patch(f"{_OUT}._comment_items", reader):
             assert ra._thread_carries_our_comment(MagicMock(), self._profile()) is False
         assert reader.call_count == ra._COMMENT_THREAD_MOUNT_POLLS
 
 
 class TestCheckCommented:
     def test_ledger_hit_short_circuits_the_thread_read(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         reader = MagicMock()
         driver = MagicMock()
         driver.current_url = _PERMALINK
-        with patch(f"{_RA}.has_user_commented_on_post_url", return_value=True), \
-             patch(f"{_RA}._thread_carries_our_comment", reader):
+        with patch(f"{_OUT}.has_user_commented_on_post_url", return_value=True), \
+             patch(f"{_OUT}._thread_carries_our_comment", reader):
             assert ra.check_commented(driver, MagicMock(), 1, _PERMALINK,
                                       my_profile=MagicMock()) is True
         reader.assert_not_called()
 
     def test_without_a_profile_only_the_ledger_decides(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         reader = MagicMock(return_value=True)
         driver = MagicMock()
         driver.current_url = _PERMALINK
-        with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
-             patch(f"{_RA}._thread_carries_our_comment", reader):
+        with patch(f"{_OUT}.has_user_commented_on_post_url", return_value=False), \
+             patch(f"{_OUT}._thread_carries_our_comment", reader):
             assert ra.check_commented(driver, MagicMock(), 1, _PERMALINK) is False
         reader.assert_not_called()
 
     def test_thread_read_catches_a_comment_the_ledger_missed(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         driver = MagicMock()
         driver.current_url = _PERMALINK
-        with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
-             patch(f"{_RA}._thread_carries_our_comment", return_value=True):
+        with patch(f"{_OUT}.has_user_commented_on_post_url", return_value=False), \
+             patch(f"{_OUT}._thread_carries_our_comment", return_value=True):
             assert ra.check_commented(driver, MagicMock(), 1, _PERMALINK,
                                       my_profile=MagicMock()) is True

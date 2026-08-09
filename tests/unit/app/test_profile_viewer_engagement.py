@@ -17,7 +17,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MOD = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 
 
 def _profile_pair(driver=None):
@@ -55,16 +55,16 @@ def _driver_scripting(rows_per_round: list[list[dict]], headline_stat=None) -> M
 
 
 def _run(driver, render_wait: int = 0, **kwargs):
-    with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair(driver)), \
-         patch(f"{_MOD}.quit_gracefully") as mock_quit, \
-         patch(f"{_MOD}.get_user_id", return_value=1), \
-         patch(f"{_MOD}.time.sleep"), \
-         patch(f"{_MOD}._PROFILE_VIEWER_RENDER_WAIT_SECONDS", render_wait), \
-         patch(f"{_MOD}.log_debug") as mock_debug, \
-         patch(f"{_MOD}.log_warning") as mock_warning, \
-         patch(f"{_MOD}.log_error") as mock_error, \
-         patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-        from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+    with patch(f"{_OUT}.get_current_profile", return_value=_profile_pair(driver)), \
+         patch(f"{_OUT}.quit_gracefully") as mock_quit, \
+         patch(f"{_OUT}.get_user_id", return_value=1), \
+         patch(f"{_OUT}.time.sleep"), \
+         patch(f"{_OUT}._PROFILE_VIEWER_RENDER_WAIT_SECONDS", render_wait), \
+         patch(f"{_OUT}.log_debug") as mock_debug, \
+         patch(f"{_OUT}.log_warning") as mock_warning, \
+         patch(f"{_OUT}.log_error") as mock_error, \
+         patch(f"{_OUT}.engage_with_profile_viewer") as mock_engage:
+        from cqc_lem.app.engagement.outreach import automate_profile_viewer_engagement
 
         result = automate_profile_viewer_engagement.run(user_id=1, **kwargs)
 
@@ -113,7 +113,7 @@ class TestNoPollingWaitOnTheViewerList:
     """
 
     def test_the_polling_locator_is_not_even_importable_into_the_walk(self):
-        import cqc_lem.app.run_automation as ra
+        import cqc_lem.app.engagement.outreach as ra
 
         assert not hasattr(ra, "get_elements_as_list_wait_stale"), (
             "run_automation re-bound the polling locator whose unresolvable wait raised the "
@@ -202,11 +202,11 @@ class TestUnexpectedFailureStillErrors:
         driver = MagicMock(name="driver")
         driver.execute_script.side_effect = RuntimeError("boom")
 
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair(driver)), \
-             patch(f"{_MOD}.quit_gracefully") as mock_quit, \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.log_error") as mock_error:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+        with patch(f"{_OUT}.get_current_profile", return_value=_profile_pair(driver)), \
+             patch(f"{_OUT}.quit_gracefully") as mock_quit, \
+             patch(f"{_OUT}.time.sleep"), \
+             patch(f"{_OUT}.log_error") as mock_error:
+            from cqc_lem.app.engagement.outreach import automate_profile_viewer_engagement
 
             result = automate_profile_viewer_engagement.run(user_id=1)
 

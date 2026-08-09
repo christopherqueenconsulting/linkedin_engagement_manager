@@ -1,10 +1,10 @@
 # SDUI surface inventory + probe coverage matrix
 
-Issue #1013. Every Selenium touchpoint in `app/run_automation.py`, `app/engagement/*` (the feed,
-group and roster walks, the newsletter rail, the connect rail and the publish/sweep lane all moved
-there in #1154) and `utilities/linkedin/*`, the read-only probe flag
-that grounds it, and the production-path tripwire that stops a zero result from reading as
-"nothing to do".
+Issue #1013. Every Selenium touchpoint in `app/engagement/*` (the feed, group and roster walks, the
+newsletter rail, the connect rail, the publish/sweep lane and the DM/outreach lane all moved there
+in #1154, leaving `app/run_automation.py` a re-export shim) and `utilities/linkedin/*`, the
+read-only probe flag that grounds it, and the production-path tripwire that stops a zero result
+from reading as "nothing to do".
 
 Read this with `docs/sdui-selenium-notes.md` (what the live DOM actually looks like) and the
 **linkedin-live-validation** skill (who may run a probe, and how).

@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -17,11 +17,11 @@ class TestSendScheduledDm:
                 "message": "hi jane", "status": status}
 
     def test_sends_and_marks_sent(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         with patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=self._dm()), \
              patch("cqc_lem.utilities.db.count_dms_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
-             patch(f"{_RA}.send_dm_now", return_value=True) as send, \
+             patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
+             patch(f"{_OUT}.send_dm_now", return_value=True) as send, \
              patch("cqc_lem.utilities.db.update_scheduled_dm_status") as upd:
             out = ra.send_scheduled_dm(3)
         send.assert_called_once_with(1, "https://x/in/jane", "hi jane")
@@ -30,22 +30,22 @@ class TestSendScheduledDm:
         assert "sent" in out
 
     def test_failed_send_marks_failed(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         with patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=self._dm()), \
              patch("cqc_lem.utilities.db.count_dms_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
-             patch(f"{_RA}.send_dm_now", return_value=False), \
+             patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
+             patch(f"{_OUT}.send_dm_now", return_value=False), \
              patch("cqc_lem.utilities.db.update_scheduled_dm_status") as upd:
             ra.send_scheduled_dm(3)
         from cqc_lem.utilities.db import ScheduledDmStatus
         upd.assert_called_once_with(3, ScheduledDmStatus.FAILED)
 
     def test_defers_when_cap_reached(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         with patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=self._dm()), \
              patch("cqc_lem.utilities.db.count_dms_sent_today", return_value=10), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
-             patch(f"{_RA}.send_dm_now") as send, \
+             patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
+             patch(f"{_OUT}.send_dm_now") as send, \
              patch("cqc_lem.utilities.db.update_scheduled_dm_status") as upd:
             out = ra.send_scheduled_dm(3)
         send.assert_not_called()  # over cap → never sends
@@ -54,9 +54,9 @@ class TestSendScheduledDm:
         assert "cap" in out.lower()
 
     def test_skips_non_sendable_status(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         with patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=self._dm(status="sent")), \
-             patch(f"{_RA}.send_dm_now") as send:
+             patch(f"{_OUT}.send_dm_now") as send:
             out = ra.send_scheduled_dm(3)
         send.assert_not_called()
         assert "not sendable" in out

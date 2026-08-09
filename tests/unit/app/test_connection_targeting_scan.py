@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 _RS = "cqc_lem.app.run_scheduler"
 # `_draft_connect_note` moved down to `utilities/dm_templates.py` (#1154) and took its LLM
 # import with it, so the refinement call resolves THERE now.
@@ -29,7 +29,7 @@ def _prefs(**over):
 def _scan(prefs=None, engagers=None, requested=None, open_reqs=0, sent_today=0, facts=None,
           insert_id=7, max_new=None, adjacent=None):
     """Run the scan with every I/O boundary mocked; returns (result, insert_mock)."""
-    from cqc_lem.app import run_automation as ra
+    from cqc_lem.app.engagement import outreach as ra
     patches = {
         "get_engagement_preferences": prefs if prefs is not None else _prefs(),
         "count_invites_sent_today": sent_today,
@@ -38,12 +38,12 @@ def _scan(prefs=None, engagers=None, requested=None, open_reqs=0, sent_today=0, 
         "get_requested_person_keys": requested or set(),
         "get_profile_facts": facts or {},
     }
-    with patch.multiple(_RA, **{k: MagicMock(return_value=v) for k, v in patches.items()}), \
+    with patch.multiple(_OUT, **{k: MagicMock(return_value=v) for k, v in patches.items()}), \
          patch(f"{_DM}.get_ai_message_refinement", return_value="Refined note"), \
-         patch(f"{_RA}.insert_connection_request", return_value=insert_id) as insert, \
-         patch(f"{_RA}._adjacent_author_signals", return_value=adjacent or []), \
-         patch(f"{_RA}.get_current_profile") as profile, \
-         patch(f"{_RA}.quit_gracefully"):
+         patch(f"{_OUT}.insert_connection_request", return_value=insert_id) as insert, \
+         patch(f"{_OUT}._adjacent_author_signals", return_value=adjacent or []), \
+         patch(f"{_OUT}.get_current_profile") as profile, \
+         patch(f"{_OUT}.quit_gracefully"):
         profile.return_value = (MagicMock(), MagicMock(), "me@x.com",
                                MagicMock(full_name="Me Myself"))
         return ra.scan_connection_candidates.run(user_id=1, max_new=max_new), insert
@@ -88,7 +88,7 @@ class TestEmptyScanIsNotAWarning:
         ({"requested": {"in:jane-doe"}}, "every candidate was already requested"),
     ])
     def test_empty_outcome_logs_debug_not_warning(self, kwargs, marker):
-        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+        with patch(f"{_OUT}.log_warning") as warn, patch(f"{_OUT}.log_debug") as debug:
             _out, insert = _scan(**kwargs)
         insert.assert_not_called()
         warn.assert_not_called()
@@ -135,7 +135,7 @@ class TestScanFiling:
         assert insert.call_count == 1
 
     def test_per_scan_ceiling_env_falls_back_when_unparseable(self, monkeypatch):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         monkeypatch.setenv("MAX_NEW_CONNECT_TARGETS_PER_SCAN", "five")
         assert ra._connect_env_int("MAX_NEW_CONNECT_TARGETS_PER_SCAN", 5) == 5
         monkeypatch.setenv("MAX_NEW_CONNECT_TARGETS_PER_SCAN", "3")
@@ -167,17 +167,17 @@ class TestScanFiling:
         assert "adjacent authors" in insert.call_args.kwargs["reasons"]
 
     def test_adjacent_sourcing_failure_still_files_own_post_engagers(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_engagement_preferences",
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.get_engagement_preferences",
                    return_value=_prefs(connection_target_authors=["https://x/in/guru"])), \
-             patch(f"{_RA}.count_invites_sent_today", return_value=0), \
-             patch(f"{_RA}.count_open_connection_requests", return_value=0), \
-             patch(f"{_RA}.get_engager_candidates", return_value=_ENGAGERS), \
-             patch(f"{_RA}.get_requested_person_keys", return_value=set()), \
-             patch(f"{_RA}.get_profile_facts", return_value={}), \
+             patch(f"{_OUT}.count_invites_sent_today", return_value=0), \
+             patch(f"{_OUT}.count_open_connection_requests", return_value=0), \
+             patch(f"{_OUT}.get_engager_candidates", return_value=_ENGAGERS), \
+             patch(f"{_OUT}.get_requested_person_keys", return_value=set()), \
+             patch(f"{_OUT}.get_profile_facts", return_value={}), \
              patch(f"{_DM}.get_ai_message_refinement", return_value="Refined note"), \
-             patch(f"{_RA}.get_current_profile", side_effect=RuntimeError("no session")), \
-             patch(f"{_RA}.insert_connection_request", return_value=7) as insert:
+             patch(f"{_OUT}.get_current_profile", side_effect=RuntimeError("no session")), \
+             patch(f"{_OUT}.insert_connection_request", return_value=7) as insert:
             out = ra.scan_connection_candidates.run(user_id=1)
         assert insert.call_count == 1 and "Filed 1" in out
 
@@ -222,10 +222,10 @@ class TestAdjacentAuthorHarvest:
         return comment
 
     def test_harvests_commenters_with_post_context(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         driver = MagicMock()
-        with patch(f"{_RA}._comment_items_from_thread", return_value=[self._commenter()]), \
-             patch(f"{_RA}.time.sleep"):
+        with patch(f"{_OUT}._comment_items_from_thread", return_value=[self._commenter()]), \
+             patch(f"{_OUT}.time.sleep"):
             signals = ra._harvest_post_commenters(driver, "https://x/feed/update/1", "Guru Gary",
                                                   datetime(2026, 7, 25))
         assert len(signals) == 1
@@ -234,18 +234,18 @@ class TestAdjacentAuthorHarvest:
         assert signals[0].source == "adjacent_post"
 
     def test_skips_comments_with_no_author_link(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         broken = MagicMock()
         broken.find_element.side_effect = Exception("no link")
         nameless = self._commenter(name="")
-        with patch(f"{_RA}._comment_items_from_thread", return_value=[broken, nameless]), \
-             patch(f"{_RA}.time.sleep"):
+        with patch(f"{_OUT}._comment_items_from_thread", return_value=[broken, nameless]), \
+             patch(f"{_OUT}.time.sleep"):
             signals = ra._harvest_post_commenters(MagicMock(), "https://x/p", "G",
                                                   datetime(2026, 7, 25))
         assert signals == []
 
     def test_walks_each_authors_recent_posts_and_drops_ourselves(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         from cqc_lem.utilities.connection_targeting import SOURCE_ADJACENT_POST, CandidateSignal
         harvested = [CandidateSignal(person_name="Me Myself", person_profile_url="https://x/in/me",
                                      source=SOURCE_ADJACENT_POST),
@@ -255,26 +255,26 @@ class TestAdjacentAuthorHarvest:
                    return_value=[{"link": "https://x/feed/update/1"},
                                  {"link": "https://x/feed/update/2"},
                                  {"link": "https://x/feed/update/3"}]), \
-             patch(f"{_RA}._harvest_post_commenters", return_value=harvested) as harvest:
+             patch(f"{_OUT}._harvest_post_commenters", return_value=harvested) as harvest:
             signals = ra._adjacent_author_signals(MagicMock(), 1, ["https://x/in/guru-gary"],
                                                   "Me Myself", datetime(2026, 7, 25))
         assert harvest.call_count == 2  # capped at _MAX_ADJACENT_POSTS_PER_AUTHOR
         assert [s.person_name for s in signals] == ["Guru Fan", "Guru Fan"]
 
     def test_unreadable_author_and_post_are_skipped(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         with patch("cqc_lem.utilities.linkedin.scrapper.get_profile_recent_activity",
                    side_effect=Exception("profile gone")):
             assert ra._adjacent_author_signals(MagicMock(), 1, ["https://x/in/a"], "Me",
                                                datetime(2026, 7, 25)) == []
         with patch("cqc_lem.utilities.linkedin.scrapper.get_profile_recent_activity",
                    return_value=[{"link": None}, {"link": "https://x/p"}]), \
-             patch(f"{_RA}._harvest_post_commenters", side_effect=Exception("post gone")):
+             patch(f"{_OUT}._harvest_post_commenters", side_effect=Exception("post gone")):
             assert ra._adjacent_author_signals(MagicMock(), 1, ["https://x/in/a"], "Me",
                                                datetime(2026, 7, 25)) == []
 
     def test_author_display_name_from_slug(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         assert ra._author_display_name("https://www.linkedin.com/in/jane-doe-1a2b3c") == "Jane Doe"
         assert ra._author_display_name("not-a-profile") == ""
 
@@ -284,7 +284,7 @@ class TestSchedulerDispatch:
         from cqc_lem.app import run_scheduler as rs
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
-             patch(f"{_RA}.scan_connection_candidates.apply_async") as dispatch:
+             patch(f"{_OUT}.scan_connection_candidates.apply_async") as dispatch:
             out = rs.auto_scan_connection_candidates()
         assert dispatch.call_count == 2
         assert "2 user(s)" in out
@@ -292,7 +292,7 @@ class TestSchedulerDispatch:
     def test_skips_when_throttled(self):
         from cqc_lem.app import run_scheduler as rs
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \
-             patch(f"{_RA}.scan_connection_candidates.apply_async") as dispatch:
+             patch(f"{_OUT}.scan_connection_candidates.apply_async") as dispatch:
             out = rs.auto_scan_connection_candidates()
         dispatch.assert_not_called()
         assert out == "Automation throttled"
@@ -303,5 +303,5 @@ class TestSchedulerDispatch:
         assert entry["task"] == "cqc_lem.app.run_scheduler.auto_scan_connection_candidates"
 
     def test_scan_runs_on_the_outreach_lane(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         assert ra.scan_connection_candidates.queue == "se_outreach"

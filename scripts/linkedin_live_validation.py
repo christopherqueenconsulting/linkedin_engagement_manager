@@ -116,7 +116,7 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
 
 
 # ─────────────────────── surface inventory / probe coverage matrix (#1013) ───────────────────
-# Every Selenium touchpoint in run_automation.py + app/engagement/* + utilities/linkedin/*, and
+# Every Selenium touchpoint in app/engagement/* + utilities/linkedin/*, and
 # the probe flag that
 # grounds it. This is the machine-readable half of docs/sdui-probe-coverage.md — `--surfaces`
 # prints it, a unit test asserts every `flag` is a real CLI argument and every `sweep` entry runs
@@ -140,7 +140,7 @@ SURFACES = (
      "code": "engagement.feed.auto_post_to_group (share box) / _post_composer_for_card",
      "flag": "--probe-composer", "sweep": True},
     {"key": "profile_views", "surface": "Profile-views analytics viewer list",
-     "code": "run_automation._PROFILE_VIEWER_ROWS_JS", "flag": "--profile-views", "sweep": True},
+     "code": "engagement.outreach._PROFILE_VIEWER_ROWS_JS", "flag": "--profile-views", "sweep": True},
     {"key": "profile_scrape", "surface": "Profile header scrape (name / headline / degree badge)",
      "code": "scrapper.parse_profile_header + engagement.invites._profile_is_first_degree",
      "flag": "--profile-scrape", "arg": "<profile-url>", "sweep": True},
@@ -151,7 +151,7 @@ SURFACES = (
      "code": "engagement.invites._open_connect_invite_dialog", "flag": "--connect-dialog",
      "arg": "<profile-url>", "sweep": False},
     {"key": "catchup_cards", "surface": "Catch-up moment cards",
-     "code": "run_automation._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
+     "code": "engagement.outreach._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
     {"key": "group_composer", "surface": "Group share box / post editor",
      "code": "engagement.feed.auto_post_to_group", "flag": "--group-composer",
      "arg": "<group-id>", "sweep": False},
@@ -173,7 +173,7 @@ SURFACES = (
      "code": "engagement.feed._resolve_connect_state", "flag": "--roster-connect",
      "arg": "<profile-url>", "sweep": False},
     {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
-     "code": "run_automation._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
+     "code": "engagement.outreach._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
      "flag": "--appreciation-sources", "sweep": True},
     {"key": "article_editor", "surface": "Newsletter/article editor publish steps",
      "code": "article_editor.find_article_editor_elements", "flag": "--article-editor-url",
@@ -399,7 +399,7 @@ def _share_box_chains() -> tuple:
     not shipped yet. Carrying a copy here is the same posture as `feed_sort_chains` (#817) and
     `_recommendation_reading` (#1007): the running image wins when it has one, and the reading names
     the source so a pre-merge pass is never mistaken for a deployed one. A copy that drifts from
-    `run_automation._GROUP_SHARE_BOX_LOCATORS` grounds a chain nothing ships.
+    `engagement.feed._GROUP_SHARE_BOX_LOCATORS` grounds a chain nothing ships.
     """
     try:
         from cqc_lem.app.engagement.feed import _GROUP_SHARE_BOX_LOCATORS
@@ -558,7 +558,7 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
 # grounding, because that image predates it. So the chain is taken from the running image when it
 # HAS one and carried here when it does not, and the report names which — a reading against the
 # deployed chain and one against this branch's answer different questions. `TestFeedSortChainCopy`
-# fails the build if the carried copy drifts from `run_automation`'s.
+# fails the build if the carried copy drifts from `engagement.feed`'s.
 _X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
 
@@ -579,7 +579,7 @@ SORT_UNKNOWN = "unknown"
 _X_SORT_AFFORDANCE = ("self::button or self::a or @role='button' or @role='combobox' "
                       "or @role='listbox' or @aria-haspopup")
 
-# Carried copy of `run_automation._GROUP_SHARE_BOX_LOCATORS` for images that predate #1107.
+# Carried copy of `engagement.feed._GROUP_SHARE_BOX_LOCATORS` for images that predate #1107.
 # `TestGroupShareBoxChainCopy` fails the build if this drifts from the shipped chain.
 _CARRIED_GROUP_SHARE_BOX_LOCATORS = [
     (By.XPATH,
@@ -851,7 +851,7 @@ def probe_profile_viewers(driver, sleep=time.sleep) -> dict:
     The production locator is a TEXT discriminator (an /in/ anchor carrying a "Viewed …" line);
     `sample_rows` holds each row's text lines, which is exactly what the next locator gets
     re-grounded from when this rotates again."""
-    from cqc_lem.app.run_automation import (_PROFILE_VIEWER_ROWS_JS, _PROFILE_VIEWER_SCROLL_JS,
+    from cqc_lem.app.engagement.outreach import (_PROFILE_VIEWER_ROWS_JS, _PROFILE_VIEWER_SCROLL_JS,
                                             _PROFILE_VIEWER_STAT_JS)
 
     driver.get("https://www.linkedin.com/analytics/profile-views/")
@@ -1557,7 +1557,7 @@ def _carried_recommendation_reading(driver) -> dict:
 def recommendation_read() -> tuple:
     """(the read to drive, how many times to re-read an empty page, where both came from)."""
     try:
-        from cqc_lem.app.run_automation import (_RECOMMENDATION_RENDER_ATTEMPTS,
+        from cqc_lem.app.engagement.outreach import (_RECOMMENDATION_RENDER_ATTEMPTS,
                                                 _recommendation_reading)
     except ImportError:
         return (_carried_recommendation_reading, FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS, "script")
@@ -1616,7 +1616,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     drives the same card reads (`_recommendation_reading` for recommendations since #1007, the
     mention locator chain for the other) and the same date parsers directly. Nothing is messaged:
     the ledger is only READ (`has_appreciation_touch`), never claimed."""
-    from cqc_lem.app.run_automation import (_MENTIONS_URL, _MENTION_ACTOR_LOCATORS,
+    from cqc_lem.app.engagement.outreach import (_MENTIONS_URL, _MENTION_ACTOR_LOCATORS,
                                             _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE, _card_person,
                                             _card_text, _mention_actor_name, _normalize_profile_url,
                                             _own_profile_url, _parse_recommendation_date,
@@ -2186,7 +2186,7 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
     composer opened, nothing is sent."""
     # The production URL, not a copy of it — a probe that reads a different screen than the lane
     # does grounds nothing about the lane (the same reason the card walk is imported, not inlined).
-    from cqc_lem.app.run_automation import (CATCHUP_URL, _CATCHUP_CARD_LOCATORS,
+    from cqc_lem.app.engagement.outreach import (CATCHUP_URL, _CATCHUP_CARD_LOCATORS,
                                             _classify_catchup_moment)
     from cqc_lem.utilities.selenium_util import find_all_first
 
@@ -3421,7 +3421,7 @@ def _sweep_own_profile(driver, user_id: int) -> str:
     """The user's own profile URL — the one profile a sweep may scrape without a human choosing a
     target. It carries a degree badge of its own ('You'/no badge), so the header/name half is what
     it grounds; a stranger's profile is what `--profile-scrape <url>` is for."""
-    from cqc_lem.app.run_automation import _own_profile_url
+    from cqc_lem.app.engagement.outreach import _own_profile_url
     return _own_profile_url(driver, user_id) or ""
 
 

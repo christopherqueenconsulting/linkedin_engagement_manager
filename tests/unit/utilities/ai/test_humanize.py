@@ -437,13 +437,13 @@ class TestGeneratorsRouteThroughHumanize:
 
     def test_dm_builder_routes_through(self, monkeypatch):
         monkeypatch.setenv("HUMANIZE_ENABLED", "on")
-        from cqc_lem.app import run_automation
-        with patch("cqc_lem.app.run_automation.get_dm_template",
+        from cqc_lem.app.engagement import outreach
+        with patch("cqc_lem.app.engagement.outreach.get_dm_template",
                    return_value={"template_text": "Hi {first_name}"}), \
-             patch("cqc_lem.app.run_automation.get_ai_message_refinement", return_value="Hi Sam, welcome."), \
-             patch("cqc_lem.app.run_automation.humanize_text",
+             patch("cqc_lem.app.engagement.outreach.get_ai_message_refinement", return_value="Hi Sam, welcome."), \
+             patch("cqc_lem.app.engagement.outreach.humanize_text",
                    side_effect=lambda t, content_type="post", **kw: f"DM[{content_type},{kw.get('max_chars')}]") as h:
-            out = run_automation.build_dm_from_template(1, "connection", "Sam", MagicMock())
+            out = outreach.build_dm_from_template(1, "connection", "Sam", MagicMock())
         assert out == "DM[dm,300]"
         h.assert_called_once()
 

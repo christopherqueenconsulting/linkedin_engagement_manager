@@ -364,19 +364,19 @@ class TestPermalinkCommentPathSkips:
     """The single-post path (generate_and_post_comment) must skip, not post an empty comment."""
 
     def test_gate_skip_never_queues_a_comment(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
-        with patch("cqc_lem.app.run_automation.get_user_id", return_value=1), \
-             patch("cqc_lem.app.run_automation.check_commented", return_value=False), \
-             patch("cqc_lem.app.run_automation.get_element_wait_retry", return_value=MagicMock()), \
-             patch("cqc_lem.app.run_automation.getText", return_value=_POST), \
-             patch("cqc_lem.app.run_automation.get_engagement_preferences", return_value={}), \
-             patch("cqc_lem.app.run_automation.get_recent_comment_texts",
+        with patch("cqc_lem.app.engagement.outreach.get_user_id", return_value=1), \
+             patch("cqc_lem.app.engagement.outreach.check_commented", return_value=False), \
+             patch("cqc_lem.app.engagement.outreach.get_element_wait_retry", return_value=MagicMock()), \
+             patch("cqc_lem.app.engagement.outreach.getText", return_value=_POST), \
+             patch("cqc_lem.app.engagement.outreach.get_engagement_preferences", return_value={}), \
+             patch("cqc_lem.app.engagement.outreach.get_recent_comment_texts",
                    return_value=["an older comment"]) as history, \
-             patch("cqc_lem.app.run_automation.pace_read", return_value=0.0), \
-             patch("cqc_lem.app.run_automation.time.sleep"), \
-             patch("cqc_lem.app.run_automation.generate_ai_response", return_value=None) as gen, \
+             patch("cqc_lem.app.engagement.outreach.pace_read", return_value=0.0), \
+             patch("cqc_lem.app.engagement.outreach.time.sleep"), \
+             patch("cqc_lem.app.engagement.outreach.generate_ai_response", return_value=None) as gen, \
              patch.object(ra.comment_on_post, "apply_async") as queued:
             ok = ra.generate_and_post_comment(driver, MagicMock(), driver.current_url, MagicMock())
         assert ok is False

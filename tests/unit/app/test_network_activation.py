@@ -15,7 +15,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 # The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
 # is the module whose globals the invite code reads.
 _INV = "cqc_lem.app.engagement.invites"
@@ -36,7 +36,7 @@ def _engager(name="Jane Doe", slug="jane-doe", degree=None):
 
 
 def _scan_connections(prefs=None, engagers=None, facts=None):
-    from cqc_lem.app import run_automation as ra
+    from cqc_lem.app.engagement import outreach as ra
     patches = {
         "get_engagement_preferences": prefs if prefs is not None else _prefs(),
         "count_invites_sent_today": 0,
@@ -45,9 +45,9 @@ def _scan_connections(prefs=None, engagers=None, facts=None):
         "get_requested_person_keys": set(),
         "get_profile_facts": facts or {},
     }
-    with patch.multiple(_RA, **{k: MagicMock(return_value=v) for k, v in patches.items()}), \
-         patch(f"{_RA}.get_ai_message_refinement", return_value="Refined note"), \
-         patch(f"{_RA}.insert_connection_request", return_value=7) as insert:
+    with patch.multiple(_OUT, **{k: MagicMock(return_value=v) for k, v in patches.items()}), \
+         patch(f"{_OUT}.get_ai_message_refinement", return_value="Refined note"), \
+         patch(f"{_OUT}.insert_connection_request", return_value=7) as insert:
         return ra.scan_connection_candidates.run(user_id=1), insert
 
 
@@ -137,14 +137,14 @@ class TestReplyCheckUnblocksNurture:
     """
 
     def test_an_appreciation_dm_now_leaves_a_reply_check_behind(self, monkeypatch):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         monkeypatch.delenv("DM_NURTURE_ENABLED", raising=False)
-        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
-             patch(f"{_RA}.claim_appreciation_touch", return_value=True), \
-             patch(f"{_RA}.build_dm_from_template", return_value="hi Jane"), \
-             patch(f"{_RA}.send_private_dm") as dm, \
-             patch(f"{_RA}.get_dm_template", return_value=None), \
-             patch(f"{_RA}.enqueue_followup") as enq:
+        with patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+             patch(f"{_OUT}.claim_appreciation_touch", return_value=True), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="hi Jane"), \
+             patch(f"{_OUT}.send_private_dm") as dm, \
+             patch(f"{_OUT}.get_dm_template", return_value=None), \
+             patch(f"{_OUT}.enqueue_followup") as enq:
             sent = ra._dispatch_appreciation_dms(1, MagicMock(), "connection_accepted",
                                                  {"https://x/in/jane": "Jane Doe • 1st"})
         assert sent == 1
@@ -152,22 +152,22 @@ class TestReplyCheckUnblocksNurture:
         enq.assert_called_once()  # the thread stays on the sequencer instead of going cold
 
     def test_the_recipient_name_is_cleaned_before_it_reaches_the_template(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
-             patch(f"{_RA}.claim_appreciation_touch", return_value=True), \
-             patch(f"{_RA}.build_dm_from_template", return_value="hi") as build, \
-             patch(f"{_RA}.send_private_dm"), \
-             patch(f"{_RA}.enqueue_next_followup"):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+             patch(f"{_OUT}.claim_appreciation_touch", return_value=True), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="hi") as build, \
+             patch(f"{_OUT}.send_private_dm"), \
+             patch(f"{_OUT}.enqueue_next_followup"):
             ra._dispatch_appreciation_dms(1, MagicMock(), "connection_accepted",
                                           {"https://x/in/h": "Harshal Karanpuriya Verified Profile 1st"})
         assert build.call_args[0][2] == "Harshal"
 
     def test_a_missing_template_is_logged_not_swallowed(self, caplog):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
-             patch(f"{_RA}.claim_appreciation_touch") as claim, \
-             patch(f"{_RA}.build_dm_from_template", return_value=None), \
-             patch(f"{_RA}.send_private_dm") as dm:
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+             patch(f"{_OUT}.claim_appreciation_touch") as claim, \
+             patch(f"{_OUT}.build_dm_from_template", return_value=None), \
+             patch(f"{_OUT}.send_private_dm") as dm:
             sent = ra._dispatch_appreciation_dms(1, MagicMock(), "collaboration",
                                                  {"https://x/in/jane": "Jane"})
         assert sent == 0
@@ -178,14 +178,14 @@ class TestReplyCheckUnblocksNurture:
         assert "No 'collaboration' DM template" in caplog.text
 
     def test_an_empty_followup_run_says_so(self, caplog):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_due_followups", return_value=[]):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.get_due_followups", return_value=[]):
             out = ra.process_user_followups.run(user_id=1)
         assert out == "No due follow-ups"
         assert "no nurture draft" in caplog.text
 
     def test_nurture_says_so_when_it_is_switched_off(self, monkeypatch, caplog):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         monkeypatch.setenv("DM_NURTURE_ENABLED", "false")
         assert ra._nurture_after_reply(1, {"profile_url": "https://x/in/j"}, "sure, tell me more",
                                        MagicMock()) is None
@@ -202,25 +202,25 @@ def _roster(**over):
 def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, requested=None,
                  existing=None, max_new=None, commenters=None, activity=None, profile_exc=None,
                  activity_exc=None):
-    from cqc_lem.app import run_automation as ra
-    with patch(f"{_RA}.get_engagement_preferences",
+    from cqc_lem.app.engagement import outreach as ra
+    with patch(f"{_OUT}.get_engagement_preferences",
                return_value=prefs if prefs is not None else _prefs()), \
-         patch(f"{_RA}.count_open_outreach_targets", return_value=open_targets), \
-         patch(f"{_RA}.get_engagement_targets", return_value=roster if roster is not None else []), \
-         patch(f"{_RA}.get_engager_candidates", return_value=engagers or []), \
-         patch(f"{_RA}.get_requested_person_keys", return_value=requested or set()), \
-         patch(f"{_RA}.get_outreach_target_by_url", return_value=existing), \
-         patch(f"{_RA}.get_or_create_profile_synthesis", return_value="voice"), \
-         patch(f"{_RA}.generate_ai_response", return_value="A grounded comment."), \
-         patch(f"{_RA}.get_ai_message_refinement", return_value="Refined note"), \
-         patch(f"{_RA}.insert_outreach_target", return_value=11) as insert, \
-         patch(f"{_RA}._harvest_post_commenters", return_value=commenters or []), \
+         patch(f"{_OUT}.count_open_outreach_targets", return_value=open_targets), \
+         patch(f"{_OUT}.get_engagement_targets", return_value=roster if roster is not None else []), \
+         patch(f"{_OUT}.get_engager_candidates", return_value=engagers or []), \
+         patch(f"{_OUT}.get_requested_person_keys", return_value=requested or set()), \
+         patch(f"{_OUT}.get_outreach_target_by_url", return_value=existing), \
+         patch(f"{_OUT}.get_or_create_profile_synthesis", return_value="voice"), \
+         patch(f"{_OUT}.generate_ai_response", return_value="A grounded comment."), \
+         patch(f"{_OUT}.get_ai_message_refinement", return_value="Refined note"), \
+         patch(f"{_OUT}.insert_outreach_target", return_value=11) as insert, \
+         patch(f"{_OUT}._harvest_post_commenters", return_value=commenters or []), \
          patch("cqc_lem.utilities.linkedin.scrapper.get_profile_recent_activity",
                side_effect=activity_exc,
                return_value=activity if activity is not None
                else [{"link": "https://x/feed/update/1", "text": "Post body"}]), \
-         patch(f"{_RA}.get_current_profile") as profile, \
-         patch(f"{_RA}.quit_gracefully"):
+         patch(f"{_OUT}.get_current_profile") as profile, \
+         patch(f"{_OUT}.quit_gracefully"):
         if profile_exc is not None:
             profile.side_effect = profile_exc
         else:
@@ -303,22 +303,22 @@ class TestOutreachFunnelSourcing:
         assert "only source from post engagers" in caplog.text
 
     def test_roster_scraping_failure_still_sources_engagers(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_engagement_preferences", return_value=_prefs()), \
-             patch(f"{_RA}.count_open_outreach_targets", return_value=0), \
-             patch(f"{_RA}.get_engagement_targets", return_value=[_roster()]), \
-             patch(f"{_RA}.get_engager_candidates", return_value=[_engager(degree="2nd")]), \
-             patch(f"{_RA}.get_requested_person_keys", return_value=set()), \
-             patch(f"{_RA}.get_outreach_target_by_url", return_value=None), \
-             patch(f"{_RA}.get_ai_message_refinement", return_value="Refined note"), \
-             patch(f"{_RA}.get_current_profile", side_effect=RuntimeError("no session")), \
-             patch(f"{_RA}.insert_outreach_target", return_value=11) as insert:
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.get_engagement_preferences", return_value=_prefs()), \
+             patch(f"{_OUT}.count_open_outreach_targets", return_value=0), \
+             patch(f"{_OUT}.get_engagement_targets", return_value=[_roster()]), \
+             patch(f"{_OUT}.get_engager_candidates", return_value=[_engager(degree="2nd")]), \
+             patch(f"{_OUT}.get_requested_person_keys", return_value=set()), \
+             patch(f"{_OUT}.get_outreach_target_by_url", return_value=None), \
+             patch(f"{_OUT}.get_ai_message_refinement", return_value="Refined note"), \
+             patch(f"{_OUT}.get_current_profile", side_effect=RuntimeError("no session")), \
+             patch(f"{_OUT}.insert_outreach_target", return_value=11) as insert:
             out = ra.scan_outreach_funnel_targets.run(user_id=1)
         assert insert.call_count == 1 and "Filed 1" in out
 
     def test_a_roster_sourcing_failure_still_warns(self):
         """The degraded path is a real failure — dropping the empty outcomes must not silence it."""
-        with patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.log_warning") as warn:
             _out, insert = _scan_funnel(roster=[_roster()], engagers=[_engager(degree="2nd")],
                                         profile_exc=RuntimeError("no session"))
         assert insert.call_count == 1
@@ -326,11 +326,11 @@ class TestOutreachFunnelSourcing:
                    for call in warn.call_args_list)
 
     def test_a_gated_comment_draft_leaves_the_text_to_the_operator(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         # generate_ai_response returns None when the #617 quality gate rejects every attempt.
-        with patch(f"{_RA}.generate_ai_response", return_value=None):
+        with patch(f"{_OUT}.generate_ai_response", return_value=None):
             assert ra._draft_funnel_comment(1, {"context_text": "Post body"}, MagicMock()) == ""
-        with patch(f"{_RA}.generate_ai_response", side_effect=RuntimeError("llm down")):
+        with patch(f"{_OUT}.generate_ai_response", side_effect=RuntimeError("llm down")):
             assert ra._draft_funnel_comment(1, {"context_text": "Post body"}, MagicMock()) == ""
         assert ra._draft_funnel_comment(1, {"context_text": ""}, MagicMock()) == ""
 
@@ -348,7 +348,7 @@ class TestEmptyFunnelScanIsNotAWarning:
         ({"roster": [_roster()], "activity": []}, "has no recent post to comment on"),
     ])
     def test_empty_outcome_logs_debug_not_warning(self, kwargs, marker):
-        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+        with patch(f"{_OUT}.log_warning") as warn, patch(f"{_OUT}.log_debug") as debug:
             _out, _insert = _scan_funnel(**kwargs)
         warn.assert_not_called()
         assert any(marker in str(call.args[0]) for call in debug.call_args_list)
@@ -361,7 +361,7 @@ class TestEmptyFunnelScanIsNotAWarning:
 
     def test_an_unreadable_roster_author_still_warns(self):
         """Silencing the quiet author must not silence the profile that could not be read at all."""
-        with patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.log_warning") as warn:
             _scan_funnel(roster=[_roster()], activity_exc=RuntimeError("profile gone"))
         assert any("Could not read a roster author's recent activity" in str(call.args[0])
                    for call in warn.call_args_list)
@@ -372,7 +372,7 @@ class TestSourcingDispatch:
         from cqc_lem.app import run_scheduler as rs
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
-             patch(f"{_RA}.scan_outreach_funnel_targets.apply_async") as dispatch:
+             patch(f"{_OUT}.scan_outreach_funnel_targets.apply_async") as dispatch:
             out = rs.auto_scan_outreach_funnel_targets()
         assert dispatch.call_count == 2
         assert "2 user(s)" in out
@@ -380,7 +380,7 @@ class TestSourcingDispatch:
     def test_skips_when_throttled(self):
         from cqc_lem.app import run_scheduler as rs
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \
-             patch(f"{_RA}.scan_outreach_funnel_targets.apply_async") as dispatch:
+             patch(f"{_OUT}.scan_outreach_funnel_targets.apply_async") as dispatch:
             out = rs.auto_scan_outreach_funnel_targets()
         dispatch.assert_not_called()
         assert out == "Automation throttled"
@@ -391,5 +391,5 @@ class TestSourcingDispatch:
         assert entry["task"] == "cqc_lem.app.run_scheduler.auto_scan_outreach_funnel_targets"
 
     def test_sourcing_runs_on_the_outreach_lane(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         assert ra.scan_outreach_funnel_targets.queue == "se_outreach"

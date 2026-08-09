@@ -119,8 +119,8 @@ The three Selenium lane workers each open sessions against that one node:
 
 Total requested concurrency **2 + 1 + 1 = 4 = `SE_NODE_MAX_SESSIONS`**. So at full
 parallelism **every Chrome slot is claimed** and there is zero spare browser
-capacity. The lane split (via `task_routes` + per-task `queue=` in
-`run_automation.py`) correctly stops a long commenting loop from starving DMs — but
+capacity. The lane split (via `task_routes` + per-task `queue=` on each task in
+`app/engagement/*`) correctly stops a long commenting loop from starving DMs — but
 it does **not** add capacity; it partitions the same 4 slots. `--prefetch-multiplier=1`
 means a lane worker holds exactly one in-flight task per concurrency slot, so a
 15-minute commenting loop blocks that slot for the full 15 minutes.
