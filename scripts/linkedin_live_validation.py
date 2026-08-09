@@ -3174,8 +3174,18 @@ def profile_experiences_verdict(reading: dict) -> str:
         return (f"{dated} dated entities and ZERO parsed — selector rot: production would return [] "
                 "and warn. The `entities` sample below is what the next parser pass rewrites from")
     positions = sum(len(e.get("positions") or []) for e in parsed)
+    # #1096 shipped with 7 of 8 entities parsed and companyless, and that read as a clean run
+    # because the count was nowhere in the JSON. Every role on a profile belongs to a company, so
+    # the blank count IS the attribution grade.
+    blank = reading.get("experiences_without_company")
+    if blank is None:
+        blank = sum(1 for e in parsed if not (e.get("company_name") or "").strip())
+    attribution = (f"; {blank} of {len(parsed)} carry an empty company_name — the grouping above the "
+                   "roles is not reaching them (#1096)" if blank else
+                   f"; all {len(parsed)} carry a company_name")
     return (f"{len(parsed)} experiences / {positions} positions parsed from {dated} dated entities "
-            "— compare company/title/dates against the profile as rendered before trusting it")
+            "— compare company/title/dates against the profile as rendered before trusting it"
+            + attribution)
 
 
 def profile_experiences_state(reading: dict) -> str:
@@ -3185,10 +3195,16 @@ def profile_experiences_state(reading: dict) -> str:
     renders `Mar 2019 - Present · 7 yrs` lines while the parser reads no experience is drift —
     that is exactly the 2026-08-03 footer-rung failure, and it graded itself as "no experience
     here" for as long as nobody looked. A page with no dated line anywhere never rendered the
-    section (auth wall) or the profile genuinely lists no experience: `unknown`, never filed."""
+    section (auth wall) or the profile genuinely lists no experience: `unknown`, never filed.
+
+    Parsing every role and attributing NONE of them is drift too (#1096): the roles are there, the
+    company grouping above them is not being read. SOME blank is not — one unresolvable entry is the
+    honest-blank contract working, and filing that weekly would be noise."""
     reading = dict(reading or {})
-    if reading.get("experiences"):
-        return STATE_OK
+    parsed = reading.get("experiences") or []
+    if parsed:
+        attributed = any((e.get("company_name") or "").strip() for e in parsed)
+        return STATE_OK if attributed else STATE_DRIFT
     return STATE_DRIFT if (reading.get("page_dated_lines") or 0) else STATE_UNKNOWN
 
 
@@ -3201,7 +3217,10 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
     positional parser branched on (`start_identifier_map`: 20/16/7/22 meant company/title/description
     /dates); anything else meant that entity was silently dropped or misread, which is what this
     issue is about. Reporting it is how a live run PROVES the old parser was dead rather than
-    assuming it."""
+    assuming it.
+
+    `experiences_without_company` is the #1096 half: a run can parse every role and still attach the
+    company to only one of them, and without the count that reads as a clean run."""
     from bs4 import BeautifulSoup
 
     from cqc_lem.utilities.linkedin.scrapper import (_DATE_RANGE_RE, _EXPERIENCE_ENTITY_SELECTORS,
@@ -3248,6 +3267,12 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
     page_dated = sum(1 for line in visible_lines(source.find("main") or source)
                      if _DATE_RANGE_RE.match(line))
 
+    experiences = parse_profile_experiences(source)
+    # Company attribution is graded on its own count: the #1096 run parsed 8 entities and named the
+    # company on ONE, and the JSON said nothing about it. `companyless_titles` is what a reader needs
+    # to see WHICH roles lost their grouping without re-running the probe.
+    companyless = [e for e in experiences if not (e.get("company_name") or "").strip()]
+
     reading = {"profile_url": profile_url,
                "experience_url": url,
                "url": getattr(driver, "current_url", url),
@@ -3257,7 +3282,10 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                "page_dated_lines": page_dated,
                "selector_counts": counts,
                "entities": entities,
-               "experiences": parse_profile_experiences(source)}
+               "experiences_without_company": len(companyless),
+               "companyless_titles": [(e.get("positions") or [{}])[0].get("title", "")
+                                      for e in companyless][:max_entities],
+               "experiences": experiences}
     return graded(reading, profile_experiences_state(reading),
                   profile_experiences_verdict(reading))
 
@@ -3475,7 +3503,8 @@ def build_parser() -> "argparse.ArgumentParser":
                              "Escapes it; nothing is typed and no comment is left.")
     parser.add_argument("--profile-experiences", metavar="PROFILE_URL",
                         help="any profile URL — reports what the rebuilt experience parser reads "
-                             "off /details/experience/, beside the raw lines it read (#970). "
+                             "off /details/experience/, beside the raw lines it read (#970), and "
+                             "how many entries lost their company_name (#1096). "
                              "Read-only: it navigates and parses, nothing else.")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "

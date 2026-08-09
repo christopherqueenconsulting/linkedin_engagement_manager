@@ -442,6 +442,135 @@ class TestCompanyContext:
             "Christopher Queen Consulting")
 
 
+# The 2026-08-07 live probe on PR #984: `main li` = 8 flat siblings, `main div[role='list'] li` = 0.
+# The company header is NOT one of the `li`s — it is a run of divs beside the <ul> holding the roles,
+# so only the FIRST role's leading run reached it and 7 of 8 entities came back with company "".
+FLAT_LIVE_PAGE = (
+    "<html><body><div data-sdui-screen='com.linkedin.sdui.profile.Experience'>"
+    "<main>"
+    "<h2>Experience</h2>"
+    "<div>"
+    "<div>Christopher Queen Consulting</div><div>9 yrs 6 mos</div>"
+    "<ul>"
+    + _live_role("AI Ethics Guardian", "Mar 2019 - Present", "7 yrs 6 mos",
+                 "🛡️ Safeguards against biases in deployed models.",
+                 "Compliance and Regulations, Artificial Intelligence for Business, +9 skills")
+    + _live_role("AI Solutions Sorcerer", "Mar 2019 - Present", "7 yrs 6 mos",
+                 "Builds the automation clients ask for.", "Python, LangChain, +4 skills")
+    + _live_role("Data Whisperer", "Mar 2017 - Mar 2023", "6 yrs 1 mo",
+                 "Turns warehouses into answers.", "SQL, dbt")
+    + "</ul></div></main></div></body></html>")
+
+# Two companies, same flat shape: header + <ul> of roles, twice. The naive carry-forward labels
+# every Umbrella role "Initech" — the confidently-wrong row #970 exists to kill.
+TWO_COMPANY_FLAT_PAGE = (
+    "<html><body><main>"
+    "<h2>Experience</h2>"
+    "<div>"
+    "<div>Initech</div><div>4 yrs 2 mos</div>"
+    "<ul>"
+    + _live_role("Staff Engineer", "Jan 2013 - Dec 2015", "3 yrs",
+                 "Kept the TPS reports running.", "COBOL, Patience")
+    + _live_role("Senior Engineer", "Jan 2012 - Dec 2012", "1 yr 2 mos",
+                 "Shipped the first release.", "Java")
+    + "</ul>"
+    "<div>Umbrella Inc</div><div>3 yrs 1 mo</div>"
+    "<ul>"
+    + _live_role("Head of Research", "Jan 2016 - Dec 2017", "2 yrs",
+                 "Ran the lab.", "Virology")
+    + _live_role("Principal Scientist", "Jan 2018 - Dec 2018", "1 yr 1 mo",
+                 "Published the findings.", "Statistics")
+    + "</ul></div></main></body></html>")
+
+
+class TestFlatLiveShape:
+    """#1096: the roles are flat `li` siblings and the company header is NOT one of them."""
+
+    def test_the_flat_role_list_is_the_rung_that_wins(self):
+        from cqc_lem.utilities.linkedin.scrapper import experience_entity_nodes
+
+        nodes, selector = experience_entity_nodes(_soup(FLAT_LIVE_PAGE))
+
+        assert selector == "main li"
+        assert len(nodes) == 3  # the header is a div run beside the <ul>, never an entity
+
+    def test_every_sibling_role_carries_the_company_above_the_list(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(FLAT_LIVE_PAGE))
+
+        assert [e["company_name"] for e in parsed] == ["Christopher Queen Consulting"] * 3
+        assert [e["positions"][0]["title"] for e in parsed] == [
+            "AI Ethics Guardian", "AI Solutions Sorcerer", "Data Whisperer"]
+
+    def test_a_predecessor_s_description_does_not_blank_the_company(self):
+        """The run between two roles holds the previous role's prose, not an empty gap.
+
+        Grading that as "not a sibling" is what left 7 of 8 entities blank.
+        """
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(FLAT_LIVE_PAGE))
+
+        assert parsed[1]["positions"][0]["details"] == ["Builds the automation clients ask for."]
+        assert parsed[1]["company_name"] == "Christopher Queen Consulting"
+
+    def test_a_second_company_header_starts_a_new_group(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(TWO_COMPANY_FLAT_PAGE))
+
+        assert [e["company_name"] for e in parsed] == ["Initech", "Initech",
+                                                       "Umbrella Inc", "Umbrella Inc"]
+
+    def test_the_section_heading_is_never_inherited_as_the_company(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(FLAT_LIVE_PAGE))
+
+        assert all(e["company_name"] != "Experience" for e in parsed)
+
+    def test_a_role_with_no_header_anywhere_stays_blank(self):
+        """A blank is honest; a guessed company is a confidently-wrong row."""
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        page = _soup("<html><body><main><ul>"
+                     + _live_role("Consultant", "Jan 2015 - Dec 2016", "2 yrs",
+                                  "Advised on the migration.", "Strategy")
+                     + _live_role("Advisor", "Jan 2017 - Dec 2018", "2 yrs",
+                                  "Advised on the next one.", "Strategy")
+                     + "</ul></main></body></html>")
+
+        assert [e["company_name"] for e in parse_profile_experiences(page)] == ["", ""]
+
+
+class TestCompanyForLeading:
+    """The positional rule itself — `_company_for_leading` decides group membership."""
+
+    def test_a_header_after_the_last_date_line_starts_a_new_group(self):
+        from cqc_lem.utilities.linkedin.scrapper import _company_for_leading
+
+        leading = ["Initech", "4 yrs 2 mos", "Staff Engineer", "Jan 2013 - Dec 2015 · 3 yrs",
+                   "Kept the TPS reports running.", "Umbrella Inc", "3 yrs 1 mo"]
+
+        assert _company_for_leading(leading) == "Umbrella Inc"
+
+    def test_no_header_since_the_last_role_inherits_that_role_s_company(self):
+        from cqc_lem.utilities.linkedin.scrapper import _company_for_leading
+
+        leading = ["Initech", "4 yrs 2 mos", "Staff Engineer", "Jan 2013 - Dec 2015 · 3 yrs",
+                   "Kept the TPS reports running."]
+
+        assert _company_for_leading(leading) == "Initech"
+
+    def test_nothing_header_shaped_resolves_to_blank(self):
+        from cqc_lem.utilities.linkedin.scrapper import _company_for_leading
+
+        assert _company_for_leading([]) == ""
+        assert _company_for_leading(["Experience"]) == ""
+        assert _company_for_leading(["Consultant", "Jan 2015 - Dec 2016", "Advised."]) == ""
+
+
 class TestSkillsLine:
     def test_comma_separated_skills_drop_the_overflow_chip(self):
         from cqc_lem.utilities.linkedin.scrapper import parse_experience_entity

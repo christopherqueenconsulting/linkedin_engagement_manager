@@ -232,7 +232,12 @@ It emits one JSON report:
    matching the page footer). It grades itself off the PAGE's own dated lines
    (`page_dated_lines`), not off the ladder that may have missed them: dated lines the parser reads
    nothing from are `drift`; no dated line anywhere is `unknown` (never rendered, or a profile with
-   no experience) and is never filed. It runs in the weekly sweep against the user's own profile.
+   no experience) and is never filed. **Company attribution is graded separately** (#1096):
+   `experiences_without_company` counts the parsed entries with an empty `company_name` and
+   `companyless_titles` names them, because a run can parse every role and still attach the company
+   to only one of them — which is what the 2026-08-07 run did, and nothing in the JSON said so.
+   Parsing roles and attributing NONE of them is `drift`; SOME blank is not (one unresolvable entry
+   is the honest-blank contract working). It runs in the weekly sweep against the user's own profile.
 
 ```bash
 sudo docker exec -i celery_worker_selenium python - --user-id 1 --article-editor-url \
