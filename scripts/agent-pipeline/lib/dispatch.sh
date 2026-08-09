@@ -86,14 +86,30 @@ _pick_ollama_tier() {
 #   kimi-k2.7-code  ->   262,144 (256K) — Moonshot AI Kimi docs
 #   minimax-m3      ->   524,288 (512K) — MiniMax guarantees at least 512K (up to 1M)
 #   nemotron-3-super ->  262,144 (256K) — model card says up to 1M; default deployments 256K
+#
+# What is exported is NOT the tier's own window but the SMALLEST window in the tier's LiteLLM
+# fallback chain. `.litellm/config.yaml` router_settings.fallbacks degrades every agent tier
+# through lem-agent-tier3 (256K), and a fallback replays the SAME prompt: a context grown to
+# tier1's 1M can never be rescued — tier2/tier3 reject it outright, so the ladder that exists to
+# save a hard run becomes guaranteed to fail exactly when it is needed. The 200k assumption this
+# fix replaces was accidentally safe that way; the replacement has to be deliberately safe.
+# Raise OLLAMA_CONTEXT_FLOOR_TOKENS in config.env only alongside the fallback chain in
+# config.yaml. An explicit per-tier TIER*_CONTEXT_TOKENS is the operator stating what their own
+# deployment serves, so it wins over the floor.
 _ollama_tier_context_tokens() {
+  local override own floor
   case "${1:-}" in
-    lem-agent-tier1)     echo "${TIER1_CONTEXT_TOKENS:-1048576}" ;;
-    lem-agent-tier2)     echo "${TIER2_CONTEXT_TOKENS:-262144}" ;;
-    lem-agent-tier2-alt) echo "${TIER2_ALT_CONTEXT_TOKENS:-524288}" ;;
-    lem-agent-tier3)     echo "${TIER3_CONTEXT_TOKENS:-262144}" ;;
-    *)                   echo "${DEFAULT_CONTEXT_TOKENS:-262144}" ;;
+    lem-agent-tier1)     override="${TIER1_CONTEXT_TOKENS:-}";     own=1048576 ;;
+    lem-agent-tier2)     override="${TIER2_CONTEXT_TOKENS:-}";     own=262144  ;;
+    lem-agent-tier2-alt) override="${TIER2_ALT_CONTEXT_TOKENS:-}"; own=524288  ;;
+    lem-agent-tier3)     override="${TIER3_CONTEXT_TOKENS:-}";     own=262144  ;;
+    *)                   override="${DEFAULT_CONTEXT_TOKENS:-}";   own=262144  ;;
   esac
+  if [ -n "$override" ]; then echo "$override"; return; fi
+  floor="${OLLAMA_CONTEXT_FLOOR_TOKENS:-262144}"
+  case "$floor" in ''|*[!0-9]*) floor="" ;; esac   # a junk floor must not silently win
+  if [ -n "$floor" ] && [ "$own" -gt "$floor" ]; then own="$floor"; fi
+  echo "$own"
 }
 
 # ── per-run dispatch (inside run_claude) ─────────────────────────────────────

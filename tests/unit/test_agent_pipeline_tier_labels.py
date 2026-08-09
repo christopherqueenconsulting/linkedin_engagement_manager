@@ -13,11 +13,14 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
-LABELS_SH = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "lib" / "labels.sh"
-DISPATCH_SH = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "lib" / "dispatch.sh"
+_ROOT = Path(__file__).resolve().parents[2]
+LABELS_SH = _ROOT / "scripts" / "agent-pipeline" / "lib" / "labels.sh"
+DISPATCH_SH = _ROOT / "scripts" / "agent-pipeline" / "lib" / "dispatch.sh"
+LITELLM_CONFIG = _ROOT / ".litellm" / "config.yaml"
 
 
 def _bash(script: str) -> subprocess.CompletedProcess:
@@ -160,14 +163,48 @@ class TestTierRouting:
 
 class TestTierContextWindow:
     def test_tier_context_windows_match_documented_defaults(self):
+        # Every default is clamped to the fallback floor: what ships is the smallest window in the
+        # tier's LiteLLM fallback chain, not the tier's own (see test_default_never_exceeds_*).
         expected = {
-            "lem-agent-tier1": "1048576",
+            "lem-agent-tier1": "262144",
             "lem-agent-tier2": "262144",
-            "lem-agent-tier2-alt": "524288",
+            "lem-agent-tier2-alt": "262144",
             "lem-agent-tier3": "262144",
         }
         for tier, window in expected.items():
             assert _ollama_tier_context_tokens(tier) == window, f"{tier} default context window mismatch"
+
+    def test_raising_the_floor_exposes_the_models_own_window(self):
+        """The floor is the only thing holding tier1/tier2-alt down — the real windows are mapped."""
+        high = {"OLLAMA_CONTEXT_FLOOR_TOKENS": "1048576"}
+        assert _ollama_tier_context_tokens("lem-agent-tier1", high) == "1048576"
+        assert _ollama_tier_context_tokens("lem-agent-tier2-alt", high) == "524288"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", high) == "262144"
+
+    def test_junk_floor_does_not_win(self):
+        """A malformed floor must fall back to the model window, never to an empty/garbage export."""
+        assert _ollama_tier_context_tokens("lem-agent-tier1", {"OLLAMA_CONTEXT_FLOOR_TOKENS": "lots"}) == "1048576"
+
+    def test_default_never_exceeds_any_litellm_fallback_target(self):
+        """A fallback replays the SAME prompt, so a tier may never be told more than its chain serves.
+
+        Guards the regression this clamp exists for: raising a tier's window without raising every
+        target it degrades into turns the fallback ladder into a guaranteed context-length failure.
+        """
+        config = yaml.safe_load(LITELLM_CONFIG.read_text(encoding="utf-8"))
+        chains = {
+            alias: targets
+            for entry in config["router_settings"]["fallbacks"]
+            for alias, targets in entry.items()
+            if alias.startswith("lem-agent-")
+        }
+        assert chains, "no lem-agent-* fallbacks found in .litellm/config.yaml"
+        for alias, targets in chains.items():
+            own = int(_ollama_tier_context_tokens(alias))
+            for target in targets:
+                assert own <= int(_ollama_tier_context_tokens(target)), (
+                    f"{alias} exports {own} but falls back to {target}, which cannot accept it"
+                )
 
     def test_tier_context_windows_are_overridable(self):
         overrides = {

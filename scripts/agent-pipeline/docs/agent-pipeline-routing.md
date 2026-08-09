@@ -62,17 +62,29 @@ Mapped in `.litellm/config.yaml` as `lem-agent-*` aliases (reusing `OLLAMA_CLOUD
 
 The `claude` CLI does not recognize the `lem-agent-tierN` aliases, so without a hint it auto-compacts against an assumed 200k window. `lib/dispatch.sh` exports `CLAUDE_CODE_MAX_CONTEXT_TOKENS` per tier so auto-compact manages the real model limit instead.
 
-| Alias | Cloud model | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Source / note |
-|---|---|---:|---|
-| `lem-agent-tier1` | `glm-5.2` | 1,048,576 | Zhipu/GLM docs, NVIDIA NIM, Unsloth (1M context) |
-| `lem-agent-tier2` | `kimi-k2.7-code` | 262,144 | Moonshot AI Kimi docs (256K context) |
-| `lem-agent-tier2-alt` | `minimax-m3` | 524,288 | MiniMax guarantees at least 512K; some endpoints up to 1M |
-| `lem-agent-tier3` | `nemotron-3-super` | 262,144 | Model card up to 1M; common deployment default 256K |
+| Alias | Cloud model | Model's own window | Exported | Source / note |
+|---|---|---:|---:|---|
+| `lem-agent-tier1` | `glm-5.2` | 1,048,576 | 262,144 | Zhipu/GLM docs, NVIDIA NIM, Unsloth (1M context) |
+| `lem-agent-tier2` | `kimi-k2.7-code` | 262,144 | 262,144 | Moonshot AI Kimi docs (256K context) |
+| `lem-agent-tier2-alt` | `minimax-m3` | 524,288 | 262,144 | MiniMax guarantees at least 512K; some endpoints up to 1M |
+| `lem-agent-tier3` | `nemotron-3-super` | 262,144 | 262,144 | Model card up to 1M; common deployment default 256K |
 
-These are the conservative, documented values as of 2026-08-09. Override per tier in `config.env` if your Ollama Cloud deployment caps a model differently:
+**Why the exported number is not the model's own window.** `.litellm/config.yaml`
+`router_settings.fallbacks` degrades every agent tier through `lem-agent-tier3`
+(tier1 → tier2 → tier3, tier2 → tier3, tier2-alt → tier3), and a fallback replays the *same*
+prompt. A context grown to tier1's 1M can therefore never be rescued — tier2 and tier3 reject it
+outright, so the ladder that exists to save a hard run is guaranteed to fail exactly when it is
+needed. tier1 is also the tier that times out most, i.e. the one that actually uses its fallbacks.
+The old 200k assumption was accidentally safe that way; the replacement is deliberately safe, so
+what ships is the **smallest window in the tier's fallback chain** — `OLLAMA_CONTEXT_FLOOR_TOKENS`,
+default 262,144. Raise it only alongside the fallback chain in `config.yaml`.
+
+Override in `config.env`. A per-tier override is the operator stating what their own Ollama Cloud
+deployment actually serves, so it wins over the floor:
 
 ```bash
-TIER1_CONTEXT_TOKENS=1048576
+OLLAMA_CONTEXT_FLOOR_TOKENS=262144   # smallest window any fallback target serves
+TIER1_CONTEXT_TOKENS=1048576         # per-tier override — bypasses the floor
 TIER2_CONTEXT_TOKENS=262144
 TIER2_ALT_CONTEXT_TOKENS=524288
 TIER3_CONTEXT_TOKENS=262144
