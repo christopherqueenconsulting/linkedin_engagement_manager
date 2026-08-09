@@ -7,6 +7,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+# The six outreach db functions moved WITH the handlers, so they are read from the router's own
+# globals now. `get_session_user_id` deliberately still patches on `_M`: the handler reaches it as
+# an attribute of the host module at request time, so that seam did not move (#1154).
+_R = "cqc_lem.api.routers.outreach"
 
 
 @pytest.fixture(scope="module")
@@ -38,8 +42,8 @@ _U = 5
 class TestCreateTarget:
     def test_creates_pending(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_by_url", return_value=None), \
-             patch(f"{_M}.insert_outreach_target", return_value=11) as ins:
+             patch(f"{_R}.get_outreach_target_by_url", return_value=None), \
+             patch(f"{_R}.insert_outreach_target", return_value=11) as ins:
             resp = client.post("/api/outreach/target", json={
                 "session_token": _S, "target_profile_url": "https://x/in/jane",
                 "target_name": "Jane", "context_url": "https://x/post/1", "draft_text": "nice"})
@@ -50,8 +54,8 @@ class TestCreateTarget:
 
     def test_approved_status_maps(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_by_url", return_value=None), \
-             patch(f"{_M}.insert_outreach_target", return_value=12) as ins:
+             patch(f"{_R}.get_outreach_target_by_url", return_value=None), \
+             patch(f"{_R}.insert_outreach_target", return_value=12) as ins:
             resp = client.post("/api/outreach/target", json={
                 "session_token": _S, "target_profile_url": "https://x/in/jane", "status": "approved"})
         assert resp.status_code == 200
@@ -60,8 +64,8 @@ class TestCreateTarget:
 
     def test_strips_whitespace_before_dedup_and_insert(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_by_url", return_value=None) as dup, \
-             patch(f"{_M}.insert_outreach_target", return_value=13) as ins:
+             patch(f"{_R}.get_outreach_target_by_url", return_value=None) as dup, \
+             patch(f"{_R}.insert_outreach_target", return_value=13) as ins:
             resp = client.post("/api/outreach/target", json={
                 "session_token": _S, "target_profile_url": "  https://x/in/jane  ",
                 "target_name": "  Jane  ", "context_url": "  https://x/post/1  "})
@@ -73,7 +77,7 @@ class TestCreateTarget:
 
     def test_blank_url_422(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.insert_outreach_target") as ins:
+             patch(f"{_R}.insert_outreach_target") as ins:
             resp = client.post("/api/outreach/target", json={
                 "session_token": _S, "target_profile_url": "   "})
         assert resp.status_code == 422
@@ -81,8 +85,8 @@ class TestCreateTarget:
 
     def test_duplicate_409(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_by_url", return_value={"id": 1}), \
-             patch(f"{_M}.insert_outreach_target") as ins:
+             patch(f"{_R}.get_outreach_target_by_url", return_value={"id": 1}), \
+             patch(f"{_R}.insert_outreach_target") as ins:
             resp = client.post("/api/outreach/target", json={
                 "session_token": _S, "target_profile_url": "https://x/in/jane"})
         assert resp.status_code == 409
@@ -96,8 +100,8 @@ class TestCreateTarget:
 
     def test_insert_failure_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_by_url", return_value=None), \
-             patch(f"{_M}.insert_outreach_target", return_value=None):
+             patch(f"{_R}.get_outreach_target_by_url", return_value=None), \
+             patch(f"{_R}.insert_outreach_target", return_value=None):
             resp = client.post("/api/outreach/target", json={
                 "session_token": _S, "target_profile_url": "https://x/in/jane"})
         assert resp.status_code == 500
@@ -106,7 +110,7 @@ class TestCreateTarget:
 class TestListTargets:
     def test_lists(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_targets",
+             patch(f"{_R}.get_outreach_targets",
                    return_value={"targets": [], "total": 0, "page": 1, "page_size": 25}) as lst:
             resp = client.get(f"/api/outreach/targets?session_token={_S}&status_filter=pending&stage_filter=comment")
         assert resp.status_code == 200
@@ -122,8 +126,8 @@ class TestListTargets:
 class TestUpdateAndCancel:
     def test_approve(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=_U), \
-             patch(f"{_M}.update_outreach_target", return_value=True) as upd:
+             patch(f"{_R}.get_outreach_target_user_id", return_value=_U), \
+             patch(f"{_R}.update_outreach_target", return_value=True) as upd:
             resp = client.put("/api/outreach/target", json={"session_token": _S, "target_id": 3, "action": "approve"})
         assert resp.status_code == 200
         from cqc_lem.utilities.db import OutreachStatus
@@ -131,8 +135,8 @@ class TestUpdateAndCancel:
 
     def test_save_draft_only(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=_U), \
-             patch(f"{_M}.update_outreach_target", return_value=True) as upd:
+             patch(f"{_R}.get_outreach_target_user_id", return_value=_U), \
+             patch(f"{_R}.update_outreach_target", return_value=True) as upd:
             resp = client.put("/api/outreach/target", json={"session_token": _S, "target_id": 3, "draft_text": "hi"})
         assert resp.status_code == 200
         assert upd.call_args.kwargs["draft_text"] == "hi"
@@ -140,14 +144,14 @@ class TestUpdateAndCancel:
 
     def test_update_404_when_not_owner(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=999):
+             patch(f"{_R}.get_outreach_target_user_id", return_value=999):
             resp = client.put("/api/outreach/target", json={"session_token": _S, "target_id": 3, "draft_text": "x"})
         assert resp.status_code == 404
 
     def test_unknown_action_422(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=_U), \
-             patch(f"{_M}.update_outreach_target") as upd:
+             patch(f"{_R}.get_outreach_target_user_id", return_value=_U), \
+             patch(f"{_R}.update_outreach_target") as upd:
             resp = client.put("/api/outreach/target", json={"session_token": _S, "target_id": 3, "action": "nope"})
         assert resp.status_code == 422
         assert "Unknown action" in resp.json()["detail"]
@@ -155,8 +159,8 @@ class TestUpdateAndCancel:
 
     def test_no_fields_and_no_action_422(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=_U), \
-             patch(f"{_M}.update_outreach_target") as upd:
+             patch(f"{_R}.get_outreach_target_user_id", return_value=_U), \
+             patch(f"{_R}.update_outreach_target") as upd:
             resp = client.put("/api/outreach/target", json={"session_token": _S, "target_id": 3})
         assert resp.status_code == 422
         assert "Nothing to update" in resp.json()["detail"]
@@ -164,8 +168,8 @@ class TestUpdateAndCancel:
 
     def test_cancel_sets_canceled(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=_U), \
-             patch(f"{_M}.update_outreach_target_status", return_value=True) as upd:
+             patch(f"{_R}.get_outreach_target_user_id", return_value=_U), \
+             patch(f"{_R}.update_outreach_target_status", return_value=True) as upd:
             resp = client.request("DELETE", "/api/outreach/target", json={"session_token": _S, "target_id": 3})
         assert resp.status_code == 200
         from cqc_lem.utilities.db import OutreachStatus
@@ -173,6 +177,6 @@ class TestUpdateAndCancel:
 
     def test_delete_404_when_not_owner(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_outreach_target_user_id", return_value=999):
+             patch(f"{_R}.get_outreach_target_user_id", return_value=999):
             resp = client.request("DELETE", "/api/outreach/target", json={"session_token": _S, "target_id": 3})
         assert resp.status_code == 404
