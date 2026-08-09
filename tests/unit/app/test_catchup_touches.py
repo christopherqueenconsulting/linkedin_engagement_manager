@@ -13,10 +13,9 @@ pytestmark = pytest.mark.unit
 
 _OUT = "cqc_lem.app.engagement.outreach"
 # The catch-up lane moved to `app.engagement.outreach` (#1154), so that is where the code under
-# test reads its collaborators from. `_RA` survives for ONE shape: `auto_scan_catchup_moments`
-# does a lazy `from cqc_lem.app.run_automation import automate_catchup_touches` INSIDE the beat, so
-# the re-export IS the binding it reads and patching `outreach` there would bind nothing.
-_RA = "cqc_lem.app.run_automation"
+# test reads its collaborators from — including `auto_scan_catchup_moments`'s lazy
+# `from cqc_lem.app.engagement.outreach import automate_catchup_touches` INSIDE the beat, which
+# went through the `run_automation` shim until #1206 deleted it.
 # The zero-walk grading moved to its own module (#1021) so scrapper/company_page_inviter can
 # share it; the logger it calls lives there now.
 _ZW = "cqc_lem.utilities.linkedin.zero_walk"
@@ -944,7 +943,7 @@ class TestCatchupDispatchers:
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_RS}.get_engagement_preferences", side_effect=lambda uid: prefs[uid]), \
-             patch(f"{_RA}.automate_catchup_touches") as task:
+             patch(f"{_OUT}.automate_catchup_touches") as task:
             out = auto_scan_catchup_moments()
         assert task.apply_async.call_count == 1
         assert "1 user" in out
@@ -952,7 +951,7 @@ class TestCatchupDispatchers:
     def test_scan_dispatcher_short_circuits_when_throttled(self):
         from cqc_lem.app.run_scheduler import auto_scan_catchup_moments
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \
-             patch(f"{_RA}.automate_catchup_touches") as task:
+             patch(f"{_OUT}.automate_catchup_touches") as task:
             assert auto_scan_catchup_moments() == "Automation throttled"
         task.apply_async.assert_not_called()
 
@@ -1148,7 +1147,7 @@ class TestCatchupRunReport:
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.get_engagement_preferences", return_value=_prefs(catchup_event_types=[])), \
-             patch(f"{_RA}.automate_catchup_touches"), \
+             patch(f"{_OUT}.automate_catchup_touches"), \
              patch(f"{_OUT}.track_catchup_run") as track:
             auto_scan_catchup_moments()
         assert track.call_args.args[1]["status"] == "disabled"

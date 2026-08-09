@@ -24,7 +24,7 @@ def _plan(allowance=0, status="disabled"):
 
 class TestCleanStaleInvites:
     def test_zero_allowance_opens_no_browser_and_still_reports(self):
-        from cqc_lem.app.run_automation import clean_stale_invites
+        from cqc_lem.app.engagement.invites import clean_stale_invites
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan()), \
                 patch(f"{_INV}.get_driver_wait_pair") as driver_pair, \
                 patch(f"{_INV}.track_stale_invite_run") as track:
@@ -38,7 +38,7 @@ class TestCleanStaleInvites:
         """It is the default, it repeats for every active user every night, and it is working
         behaviour — an INFO line here is one row per user per day saying nothing happened.
         """
-        from cqc_lem.app.run_automation import clean_stale_invites
+        from cqc_lem.app.engagement.invites import clean_stale_invites
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan()), \
                 patch(f"{_INV}.track_stale_invite_run"), \
                 patch(f"{_INV}.log_debug") as debug, patch(f"{_INV}.log_info") as info:
@@ -47,7 +47,7 @@ class TestCleanStaleInvites:
         info.assert_not_called()
 
     def test_a_real_run_walks_the_page_and_quits_the_driver(self):
-        from cqc_lem.app.run_automation import clean_stale_invites
+        from cqc_lem.app.engagement.invites import clean_stale_invites
         driver = MagicMock()
         report = {"status": "withdrew", "withdrawn": 2}
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan(allowance=3, status="withdrew")), \
@@ -66,7 +66,7 @@ class TestCleanStaleInvites:
         """'The browser never came up' and 'LinkedIn's markup moved' need different fixes, and an
         escaping exception would emit nothing — indistinguishable from a day paced to zero.
         """
-        from cqc_lem.app.run_automation import clean_stale_invites
+        from cqc_lem.app.engagement.invites import clean_stale_invites
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan(allowance=3, status="withdrew")), \
                 patch(f"{_INV}.get_driver_wait_pair", side_effect=RuntimeError("grid full")), \
                 patch(f"{_INV}.log_error"), \
@@ -76,7 +76,7 @@ class TestCleanStaleInvites:
         assert track.call_args[0][1]["status"] == "session_failed"
 
     def test_the_breaker_opening_mid_run_defers_rather_than_failing(self):
-        from cqc_lem.app.run_automation import clean_stale_invites
+        from cqc_lem.app.engagement.invites import clean_stale_invites
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan(allowance=3, status="withdrew")), \
                 patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
@@ -90,7 +90,7 @@ class TestCleanStaleInvites:
         error.assert_not_called()
 
     def test_a_failing_walk_still_reports_and_quits(self):
-        from cqc_lem.app.run_automation import clean_stale_invites
+        from cqc_lem.app.engagement.invites import clean_stale_invites
         driver = MagicMock()
         with patch(f"{_INV}.plan_withdrawals", return_value=_plan(allowance=3, status="withdrew")), \
                 patch(f"{_INV}.get_driver_wait_pair", return_value=(driver, MagicMock())), \

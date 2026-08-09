@@ -1136,7 +1136,7 @@ class TestNewsletterPublishGatedOnBreaker:
         from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
         with patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900), \
              patch(f"{_MOD}.is_automation_paused", return_value=False), \
-             patch("cqc_lem.app.run_automation.auto_publish_edition") as pub, \
+             patch("cqc_lem.app.engagement.newsletter.auto_publish_edition") as pub, \
              patch("cqc_lem.utilities.db.get_editions_due_to_publish") as due:
             result = auto_publish_scheduled_editions()
         pub.apply_async.assert_not_called()
@@ -1145,7 +1145,7 @@ class TestNewsletterPublishGatedOnBreaker:
 
     def test_dispatches_when_not_throttled(self):
         from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
-        with patch("cqc_lem.app.run_automation.auto_publish_edition") as pub, \
+        with patch("cqc_lem.app.engagement.newsletter.auto_publish_edition") as pub, \
              patch("cqc_lem.utilities.db.get_editions_due_to_publish",
                    return_value=[{"id": 7, "user_id": 1}]), \
              patch("cqc_lem.utilities.db.get_pending_newsletter_editions",

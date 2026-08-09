@@ -106,8 +106,8 @@ class TestNoPollingWaitOnTheViewerList:
     waited out and re-read, never polled into a raised exception.
 
     This used to be asserted by patching `run_automation.get_elements_as_list_wait_stale` and
-    checking the mock was never called. Since the newsletter rail left (#1154) that name is not
-    bound in `run_automation` at ALL, and a patch of it raises. Asserting the ABSENCE of the binding
+    checking the mock was never called. The walk lives in `app.engagement.outreach` since #1154 and
+    does not bind that name at ALL, so a patch of it raises. Asserting the ABSENCE of the binding
     is the stronger form anyway: a mock-not-called check would go silently green if the walk ever
     re-imported the helper and called it through another module's namespace.
     """
@@ -116,7 +116,7 @@ class TestNoPollingWaitOnTheViewerList:
         import cqc_lem.app.engagement.outreach as ra
 
         assert not hasattr(ra, "get_elements_as_list_wait_stale"), (
-            "run_automation re-bound the polling locator whose unresolvable wait raised the "
+            "outreach re-bound the polling locator whose unresolvable wait raised the "
             "escalated 'Finding Profile Viewers' TimeoutException (#1040)")
 
     def test_empty_page_never_touches_the_polling_locator(self):

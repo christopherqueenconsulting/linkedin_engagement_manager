@@ -57,8 +57,6 @@ ignore:
   - "src/cqc_lem/utilities/selenium_util.py"
   - "src/cqc_lem/utilities/linkedin/scrapper.py"
   - "src/cqc_lem/utilities/linkedin/company_page_inviter.py"
-  # Celery automation tasks — ~90% Selenium, covered by E2E suite
-  - "src/cqc_lem/app/run_automation.py"
   # PIL image rendering — visual output, no unit-test strategy
   - "src/cqc_lem/utilities/carousel_creator.py"
   # Docker / database setup scripts

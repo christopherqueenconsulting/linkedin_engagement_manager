@@ -586,7 +586,7 @@ class TestPublishScheduledEditions:
              patch("cqc_lem.utilities.db.get_pending_newsletter_editions",
                    side_effect=lambda uid: [{"id": 3 if uid == 1 else 8,
                                              "scheduled_for": datetime(2026, 1, 1)}]), \
-             patch("cqc_lem.app.run_automation.auto_publish_edition") as task:
+             patch("cqc_lem.app.engagement.newsletter.auto_publish_edition") as task:
             result = auto_publish_scheduled_editions()
         assert task.apply_async.call_count == 2
         assert "2 newsletter edition" in result

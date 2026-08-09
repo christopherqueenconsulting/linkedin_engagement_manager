@@ -1,7 +1,8 @@
 """Celery **beat** tasks — the fan-out layer between the schedule and the work itself.
 
 Almost nothing here touches LinkedIn: each `auto_*` task decides WHO is due right now and dispatches
-the real task (mostly `run_automation`) onto the right lane. Two rules run through all of them.
+the real task (mostly an `app.engagement.*` lane) onto the right lane. Two rules run through all of
+them.
 
 Every Selenium fan-out asks `_skip_if_throttled()` before dispatching, so a manual pause or an open
 429 breaker stops work at the source instead of spending Chrome slots on sessions that would fail —
@@ -17,9 +18,13 @@ from typing import Tuple
 
 from cqc_lem import assets_dir
 from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
-from cqc_lem.app.my_celery import app as shared_task
-from cqc_lem.app.queue_once import QueueOnce
-from cqc_lem.app.run_automation import (
+from cqc_lem.app.engagement.feed import automate_commenting
+from cqc_lem.app.engagement.invites import (
+    automate_invites_to_company_page_for_user,
+    clean_stale_invites,
+    send_connection_request,
+)
+from cqc_lem.app.engagement.outreach import (
     CATCHUP_PHASE_SCAN,
     CATCHUP_PHASE_SEND,
     CATCHUP_STATUS_AWAITING_APPROVAL,
@@ -30,20 +35,20 @@ from cqc_lem.app.run_automation import (
     CATCHUP_STATUS_NOTHING_TO_SEND,
     CATCHUP_STATUS_THROTTLED,
     automate_appreciation_dms_for_user,
-    automate_commenting,
-    automate_invites_to_company_page_for_user,
     automate_profile_viewer_engagement,
-    clean_stale_invites,
-    post_to_linkedin,
     report_catchup_run,
     send_catchup_touch,
-    send_connection_request,
     send_scheduled_dm,
+)
+from cqc_lem.app.engagement.posting import (
+    post_to_linkedin,
     sweep_comment_followups,
     sweep_comment_outcomes,
     sweep_reply_comments,
     update_stale_profile,
 )
+from cqc_lem.app.my_celery import app as shared_task
+from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.utilities.db import (
     CatchupTouchStatus,
     ConnectionRequestStatus,
@@ -995,7 +1000,7 @@ def auto_track_newsletter_subscribers():
     """
     if _skip_if_throttled("auto_track_newsletter_subscribers"):
         return "Skipped (throttled)"
-    from cqc_lem.app.run_automation import track_newsletter_subscribers
+    from cqc_lem.app.engagement.newsletter import track_newsletter_subscribers
     from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
 
     dispatched = 0
@@ -1231,7 +1236,7 @@ def auto_publish_scheduled_editions():
     # the cooldown lapsed and re-escalated it back to the 6h cap.
     if _skip_if_throttled("auto_publish_scheduled_editions"):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import auto_publish_edition
+    from cqc_lem.app.engagement.newsletter import auto_publish_edition
     from cqc_lem.utilities.db import get_editions_due_to_publish
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     due = get_editions_due_to_publish(now)
@@ -1276,7 +1281,7 @@ def auto_refresh_profile_syntheses():
 @shared_task.task
 def auto_sync_groups():
     """Refresh each active user's joined-groups list (new groups default to enabled)."""
-    from cqc_lem.app.run_automation import auto_sync_user_groups
+    from cqc_lem.app.engagement.feed import auto_sync_user_groups
     users = get_active_user_ids()
     n = 0
     for uid in users:
@@ -1293,7 +1298,7 @@ def auto_group_engagement():
     """
     if _skip_if_throttled("auto_group_engagement"):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import auto_comment_in_groups
+    from cqc_lem.app.engagement.feed import auto_comment_in_groups
     users = get_active_user_ids()
     n = 0
     for uid in users:
@@ -1312,7 +1317,7 @@ def auto_group_post_drafts():
     A user who still has an unpublished draft is skipped by the task itself — carrying their edits
     forward beats replacing them with a generation they never asked for.
     """
-    from cqc_lem.app.run_automation import auto_draft_group_post
+    from cqc_lem.app.engagement.feed import auto_draft_group_post
     from cqc_lem.utilities.db import get_next_group_for_post
     users = get_active_user_ids()
     n = 0
@@ -1338,7 +1343,7 @@ def auto_group_posts():
     since been switched off for posting is dropped rather than published into a group the user
     opted out of.
     """
-    from cqc_lem.app.run_automation import auto_post_to_group
+    from cqc_lem.app.engagement.feed import auto_post_to_group
     from cqc_lem.utilities.db import (
         GroupPostDraftStatus,
         get_open_group_post_draft,
@@ -1378,7 +1383,7 @@ def auto_scrape_stats():
     """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
     if _skip_if_throttled("auto_scrape_stats", measurement_only=True):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import auto_scrape_post_stats
+    from cqc_lem.app.engagement.posting import auto_scrape_post_stats
     users = get_active_user_ids()
     n = 0
     for uid in users:
@@ -1396,7 +1401,7 @@ def auto_capture_follower_stats():
     """
     if _skip_if_throttled("auto_capture_follower_stats", measurement_only=True):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import capture_follower_stats
+    from cqc_lem.app.engagement.posting import capture_follower_stats
     users = get_active_user_ids()
     n = 0
     for uid in users:
@@ -1411,7 +1416,7 @@ def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     if _skip_if_throttled("auto_send_due_followups"):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import process_user_followups
+    from cqc_lem.app.engagement.outreach import process_user_followups
     from cqc_lem.utilities.db import get_due_followups
     # due_at is stored naive-UTC; compare against naive-UTC now (not container-local time).
     due = get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
@@ -1429,7 +1434,7 @@ def auto_process_outreach_funnel():
     """
     if _skip_if_throttled("auto_process_outreach_funnel"):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import process_outreach_funnel
+    from cqc_lem.app.engagement.outreach import process_outreach_funnel
     from cqc_lem.utilities.db import get_users_with_approved_outreach
     user_ids = get_users_with_approved_outreach()
     for uid in user_ids:
@@ -1446,7 +1451,7 @@ def auto_scan_connection_candidates():
     """
     if _skip_if_throttled("auto_scan_connection_candidates"):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import scan_connection_candidates
+    from cqc_lem.app.engagement.outreach import scan_connection_candidates
     user_ids = get_active_user_ids()
     for uid in user_ids:
         scan_connection_candidates.apply_async(kwargs={"user_id": uid})
@@ -1462,7 +1467,7 @@ def auto_scan_outreach_funnel_targets():
     """
     if _skip_if_throttled("auto_scan_outreach_funnel_targets"):
         return "Automation throttled"
-    from cqc_lem.app.run_automation import scan_outreach_funnel_targets
+    from cqc_lem.app.engagement.outreach import scan_outreach_funnel_targets
     user_ids = get_active_user_ids()
     for uid in user_ids:
         scan_outreach_funnel_targets.apply_async(kwargs={"user_id": uid})
@@ -1543,7 +1548,7 @@ def auto_scan_catchup_moments():
         report_catchup_run(None, {"phase": CATCHUP_PHASE_SCAN,
                                   "status": CATCHUP_STATUS_THROTTLED}, task_name)
         return "Automation throttled"
-    from cqc_lem.app.run_automation import automate_catchup_touches
+    from cqc_lem.app.engagement.outreach import automate_catchup_touches
     dispatched = 0
     for user_id in get_active_user_ids():
         if not (get_engagement_preferences(user_id).get("catchup_event_types") or []):

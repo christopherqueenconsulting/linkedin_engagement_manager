@@ -223,13 +223,13 @@ class TestCheckDmReplied:
 
 class TestAutoSendDueFollowups:
     def test_dispatches_per_unique_user(self):
-        # `run_automation`, not `outreach`: `auto_send_due_followups` does a lazy
-        # `from cqc_lem.app.run_automation import process_user_followups` INSIDE the beat, so the
-        # re-export IS the binding it reads and patching `outreach` here would bind nothing (#1154).
+        # `auto_send_due_followups` does a lazy `from cqc_lem.app.engagement.outreach import
+        # process_user_followups` INSIDE the beat, so `outreach` IS the binding it reads. It went
+        # through the `run_automation` re-export until #1206 deleted that shim (#1154).
         from cqc_lem.app.run_scheduler import auto_send_due_followups
         with patch("cqc_lem.utilities.db.get_due_followups",
                    return_value=[{"user_id": 1}, {"user_id": 1}, {"user_id": 2}]), \
-             patch("cqc_lem.app.run_automation.process_user_followups") as proc:
+             patch("cqc_lem.app.engagement.outreach.process_user_followups") as proc:
             result = auto_send_due_followups()
         assert proc.apply_async.call_count == 2  # users 1 and 2 (deduped)
         assert "2 user" in result

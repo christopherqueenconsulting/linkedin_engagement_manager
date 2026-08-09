@@ -34,7 +34,7 @@ class LinkedInActivity(BaseModel):
 
     `posted` comes from a relative caption ("2d") resolved by `convert_viewed_on_to_date` and floored
     to the start of that day, so it is accurate to the DAY and no finer. Recency filtering on it
-    (run_automation only engages activity from the last week) is a day-granular question by design.
+    (the feed lane only engages activity from the last week) is a day-granular question by design.
     """
 
     text: str = None
@@ -161,7 +161,7 @@ class LinkedInProfile(BaseModel):
         """First whitespace-separated token of `full_name` — a split, not a name parser.
 
         Anything the scrape left in the field comes through with it. The greeting path in
-        run_automation deliberately does NOT use this: it runs the raw display name through
+        The engagement lanes deliberately do NOT use this: they run the raw display name through
         `helper.clean_person_name` first, which is what removes LinkedIn's badge and degree text.
         """
         return self.full_name.split()[0]
@@ -178,7 +178,7 @@ class LinkedInProfile(BaseModel):
     def is_1st_connection(self):
         """Whether the scraped degree text says 1st — the fork between engaging and connecting.
 
-        run_automation branches on this: a 1st-degree person gets a comment on their recent activity
+        The outreach lane branches on this: a 1st-degree person gets a comment on their recent activity
         or a DM, anyone else gets a connection request. A profile whose degree never scraped
         (`connection is None`) reads False, so the fallback is the invite, never an unearned DM.
         """
@@ -205,7 +205,7 @@ class LinkedInProfile(BaseModel):
     def generate_personalized_message(self, recent_activity_message: str = None, from_name: str = None):
         """A connection-request note assembled from this profile — deterministic, no LLM involved.
 
-        This is the DRAFT, not the thing that gets sent: run_automation passes the result through
+        This is the DRAFT, not the thing that gets sent: the invite rail passes the result through
         `get_ai_message_refinement` before it goes out with the invite.
 
         Everything is conditional on what scraped, so it never emits an empty slot. Without a

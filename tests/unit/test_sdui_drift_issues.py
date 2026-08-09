@@ -19,7 +19,7 @@ def _sweep(**probes) -> dict:
         "probes": probes,
         "surfaces": {
             "catchup_cards": {"surface": "Catch-up moment cards",
-                              "code": "run_automation._CATCHUP_CARD_LOCATORS",
+                              "code": "outreach._CATCHUP_CARD_LOCATORS",
                               "flag": "--catchup-cards"},
             "feed_sort": {"surface": "Home feed sort", "code": "x", "flag": "--feed-sort"},
         },
@@ -68,7 +68,7 @@ class TestBodies:
         body = filer.build_body(row, user_id=1)
         assert filer.marker("catchup_cards") in body
         assert "--catchup-cards" in body
-        assert "run_automation._CATCHUP_CARD_LOCATORS" in body
+        assert "outreach._CATCHUP_CARD_LOCATORS" in body
 
     def test_the_body_carries_both_fix_invariants(self):
         row = filer.drift_rows(_sweep(catchup_cards={"state": "drift"}))[0]

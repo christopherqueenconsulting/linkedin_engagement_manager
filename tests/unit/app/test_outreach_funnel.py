@@ -7,11 +7,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _OUT = "cqc_lem.app.engagement.outreach"
-# The funnel moved to `app.engagement.outreach` (#1154). `_RA` survives for ONE shape:
-# `auto_process_outreach_funnel` does a lazy `from cqc_lem.app.run_automation import
-# process_outreach_funnel` INSIDE the beat, so the re-export IS the binding it reads and patching
-# `outreach` there would bind nothing.
-_RA = "cqc_lem.app.run_automation"
+# The funnel moved to `app.engagement.outreach` (#1154), and #1206 deleted the `run_automation`
+# shim the beat used to import through — `auto_process_outreach_funnel`'s lazy
+# `from cqc_lem.app.engagement.outreach import process_outreach_funnel` now resolves here, so this
+# is the binding the dispatch patches have to target.
 _RS = "cqc_lem.app.run_scheduler"
 _DB = "cqc_lem.utilities.db"
 
@@ -186,7 +185,7 @@ class TestDispatcher:
         from cqc_lem.app.run_scheduler import auto_process_outreach_funnel
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_DB}.get_users_with_approved_outreach", return_value=[1, 2]), \
-             patch(f"{_RA}.process_outreach_funnel") as proc:
+             patch(f"{_OUT}.process_outreach_funnel") as proc:
             out = auto_process_outreach_funnel()
         assert proc.apply_async.call_count == 2
         assert "2 user" in out

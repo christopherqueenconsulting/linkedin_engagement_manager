@@ -1,8 +1,8 @@
 """Unit tests for graceful profile fallback in `linkedin.session.get_current_profile`.
 
 The function moved down out of `run_automation` in #1154 and took its imports with it, so this
-is the module whose bindings it reads — patching them on `run_automation` would rebind names
-nothing looks at.
+is the module whose bindings it reads. #1206 then deleted `run_automation` outright, so the stale
+patch target that used to rebind names nothing looks at now raises instead.
 """
 
 from unittest.mock import MagicMock, patch

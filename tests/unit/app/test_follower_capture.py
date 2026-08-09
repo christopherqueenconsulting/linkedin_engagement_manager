@@ -10,11 +10,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 # The snapshot and its task moved to `app.engagement.posting` (#1154) — that is the module whose
-# globals they read. `_RA` survives for ONE thing: the daily dispatcher does a lazy
-# `from cqc_lem.app.engagement.posting import capture_follower_stats` INSIDE the beat, so the binding it
-# reads is `run_automation`'s re-export and patching it anywhere else would rebind nothing.
+# globals they read, and since #1206 deleted the `run_automation` shim it is also where the daily
+# dispatcher's lazy `from cqc_lem.app.engagement.posting import capture_follower_stats` INSIDE the
+# beat resolves, so the dispatch patches below target it too.
 _POST = "cqc_lem.app.engagement.posting"
-_RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
 
 _PROFILE_TEXT = "Christopher Queen\nFounder\n4,312 followers\n500+ connections"
@@ -181,7 +180,7 @@ class TestDispatcher:
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1, 2, 3]), \
              patch(f"{_RS}.has_linkedin_session", side_effect=lambda uid: uid != 2), \
-             patch(f"{_RA}.capture_follower_stats", task):
+             patch(f"{_POST}.capture_follower_stats", task):
             result = auto_capture_follower_stats.run()
         assert task.apply_async.call_count == 2
         assert "2/3" in result
@@ -190,7 +189,7 @@ class TestDispatcher:
         from cqc_lem.app.run_scheduler import auto_capture_follower_stats
         task = MagicMock()
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \
-             patch(f"{_RA}.capture_follower_stats", task):
+             patch(f"{_POST}.capture_follower_stats", task):
             assert auto_capture_follower_stats.run() == "Automation throttled"
         task.apply_async.assert_not_called()
 

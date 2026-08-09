@@ -3,7 +3,7 @@ import random
 import shutil
 
 from cqc_lem import assets_dir
-from cqc_lem.app.run_automation import post_to_linkedin
+from cqc_lem.app.engagement.posting import post_to_linkedin
 from cqc_lem.app.run_content_plan import (
     auto_create_weekly_content,
     auto_generate_content,

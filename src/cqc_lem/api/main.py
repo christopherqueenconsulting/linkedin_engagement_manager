@@ -53,12 +53,9 @@ from cqc_lem.api.models import (
 )
 from cqc_lem.api.spa_assets import ArchivedStaticFiles, spa_index_headers, sync_build_to_archive
 from cqc_lem.app.aws_test_celery_task import test_get_my_profile
-from cqc_lem.app.run_automation import (
-    automate_invites_to_company_page_for_user,
-    automate_reply_commenting,
-    send_lead_response,
-    sweep_reply_comments,
-)
+from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
+from cqc_lem.app.engagement.outreach import send_lead_response
+from cqc_lem.app.engagement.posting import automate_reply_commenting, sweep_reply_comments
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.auth_factors import (
     enrollment_required,

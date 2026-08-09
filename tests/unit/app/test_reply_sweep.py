@@ -411,8 +411,8 @@ class TestReplyToCommentsOnOpenPost:
         # "Never sent" asserted STRUCTURALLY (#1154): this used to patch `send_private_dm` on
         # `run_automation` and assert the mock was never called, which passed whether the artifact
         # path avoided the direct-send task or merely reached it through another namespace. The DM
-        # tasks stayed in `run_automation`; the delivery module has no binding for one at all, and
-        # an absent binding cannot be reached.
+        # tasks live in `app.engagement.outreach`; the delivery module has no binding for one at
+        # all, and an absent binding cannot be reached.
         from cqc_lem.app.engagement import posting as _posting
         assert not hasattr(_posting, "send_private_dm")
         assert not hasattr(_posting, "send_scheduled_dm")

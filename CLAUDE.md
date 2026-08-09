@@ -31,7 +31,7 @@ Code paths in **Feature Areas** below. Subsections carry `docs/*.md` pointers ho
 src/cqc_lem/
 ├── api/           FastAPI app — engagement_preferences, DM template, PIN endpoints
 ├── app/           Celery tasks (run_scheduler, run_content_plan, generate_variants, my_celery);
-│                  run_automation.py is now a re-export SHIM that defines nothing (#1154)
+│                  run_automation.py is GONE — emptied by #1154, deleted by #1206
 │   └── engagement/  every engagement cluster (#1154): invites (connect rail), newsletter,
 │                    feed (the SDUI feed engine + groups + the roster tail — one graph, one module),
 │                    posting (post_to_linkedin + the post-publish sweeps: replies, comment
@@ -39,7 +39,9 @@ src/cqc_lem/
 │                    outreach (DMs + appreciation, profile-viewer walk, connect scan, funnel,
 │                    catch-up — they all end at the same send and follow-up ladder).
 │                    Every task there pins name='cqc_lem.app.run_automation.<fn>' — moving a task
-│                    RENAMES it, and run_automation re-exports the tasks other modules import by name
+│                    RENAMES it, so that string is a WIRE IDENTIFIER, not a module path. It is still
+│                    correct in celeryconfig.task_routes and must never be "corrected"; nothing
+│                    imports it, and test_task_name_stability.py holds both halves
 ├── utilities/
 │   ├── ai/        LiteLLM helpers (ai_helper.py, client.py) + content_framework/content_research/content_alignment/story_bank/slop_lint
 │   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)
@@ -168,9 +170,9 @@ and the invariant that bites. Flags named here default OFF. Since #1154 every la
 sweeps that measure what a post earned (`post_to_linkedin`, the reply sweep, comment follow-ups,
 comment outcomes, post/audience stats) in `posting.py`; DMs and everything that decides who gets one
 (appreciation, the profile-viewer walk, the connect-candidate scan, the outreach funnel, the
-catch-up lane) in `outreach.py`. **That is where to patch them** — `app/run_automation.py` is a
-shim that defines nothing and only re-exports the TASKS `run_scheduler` and `api/routers/*` import
-by name, so patching it rebinds a name no code reads.
+catch-up lane) in `outreach.py`. **That is where to import and patch them** — `app/run_automation.py`
+was deleted in #1206, so `run_scheduler` and `api/*` now import each task from the module that
+DEFINES it. The only thing still spelled `cqc_lem.app.run_automation.<fn>` is the pinned task name.
 
 | Lane | The ONE place | The invariant that bites |
 |---|---|---|

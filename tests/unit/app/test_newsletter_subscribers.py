@@ -164,7 +164,7 @@ class TestAutoTrackFanout:
         from cqc_lem.app.run_scheduler import auto_track_newsletter_subscribers
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
              patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=[1, 4, 7]), \
-             patch("cqc_lem.app.run_automation.track_newsletter_subscribers") as task:
+             patch("cqc_lem.app.engagement.newsletter.track_newsletter_subscribers") as task:
             result = auto_track_newsletter_subscribers()
         assert task.apply_async.call_count == 3
         assert "3 user" in result
@@ -172,7 +172,7 @@ class TestAutoTrackFanout:
     def test_skips_when_throttled(self):
         from cqc_lem.app.run_scheduler import auto_track_newsletter_subscribers
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \
-             patch("cqc_lem.app.run_automation.track_newsletter_subscribers") as task:
+             patch("cqc_lem.app.engagement.newsletter.track_newsletter_subscribers") as task:
             result = auto_track_newsletter_subscribers()
         task.apply_async.assert_not_called()
         assert "throttled" in result.lower()

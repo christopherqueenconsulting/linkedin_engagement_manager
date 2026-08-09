@@ -64,12 +64,25 @@ NON_SELENIUM_TASKS = [
 ]
 
 
+def _task_object(task_name: str):
+    """The task OBJECT, found in whichever `app.engagement` module owns it.
+
+    These used to be read off `app.run_automation`, which re-exported all of them; #1206 deleted it.
+    The names below are function names, not the pinned wire names — `task.queue` is an attribute of
+    the object, so it has to be reached through the module that defines it.
+    """
+    import importlib
+    for module in ("feed", "invites", "newsletter", "outreach", "posting"):
+        task = getattr(importlib.import_module(f"cqc_lem.app.engagement.{module}"), task_name, None)
+        if task is not None:
+            return task
+    raise AssertionError(f"{task_name} is defined by no cqc_lem.app.engagement module")
+
+
 @pytest.mark.parametrize("task_name,lane", sorted(SELENIUM_TASK_LANES.items()))
 def test_selenium_task_routes_to_its_lane(task_name, lane):
     """Each Selenium task must have its reserved lane queue on the task object."""
-    import importlib
-    mod = importlib.import_module("cqc_lem.app.run_automation")
-    task = getattr(mod, task_name)
+    task = _task_object(task_name)
     assert task.queue == lane, (
         f"{task_name}.queue is '{task.queue}', expected '{lane}'. "
         f"Set queue='{lane}' on its @shared_task.task() decorator."
@@ -79,9 +92,7 @@ def test_selenium_task_routes_to_its_lane(task_name, lane):
 @pytest.mark.parametrize("task_name", NON_SELENIUM_TASKS)
 def test_non_selenium_task_stays_on_default_queue(task_name):
     """Non-Selenium tasks must NOT be routed to a Selenium lane."""
-    import importlib
-    mod = importlib.import_module("cqc_lem.app.run_automation")
-    task = getattr(mod, task_name)
+    task = _task_object(task_name)
     assert getattr(task, "queue", "celery") not in SELENIUM_LANES, (
         f"{task_name} should stay on the default queue, not a Selenium lane."
     )

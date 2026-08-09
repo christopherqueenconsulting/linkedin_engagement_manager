@@ -5,17 +5,17 @@ from datetime import datetime, timedelta
 
 from celery_once import AlreadyQueued
 
-from cqc_lem.app.run_automation import (
+from cqc_lem.app.engagement.feed import comment_on_post, navigate_to_feed
+from cqc_lem.app.engagement.invites import (
     automate_invites_to_company_page_for_user,
-    automate_reply_commenting,
-    check_commented,
-    comment_on_post,
-    engage_with_profile_viewer,
     invite_to_connect,
-    navigate_to_feed,
-    post_to_linkedin,
+)
+from cqc_lem.app.engagement.outreach import (
+    check_commented,
+    engage_with_profile_viewer,
     send_private_dm,
 )
+from cqc_lem.app.engagement.posting import automate_reply_commenting, post_to_linkedin
 from cqc_lem.app.run_scheduler import auto_clean_stale_profiles, organize_videos_by_name_and_timestamp
 from cqc_lem.utilities.ai.ai_helper import (
     generate_ai_response,

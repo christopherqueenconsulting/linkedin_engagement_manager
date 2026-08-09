@@ -70,7 +70,7 @@ def _api_post():
 
 
 def _delete_old():
-    from cqc_lem.app.run_automation import get_current_profile
+    from cqc_lem.utilities.linkedin.session import get_current_profile
     from cqc_lem.utilities.db import get_post_url_from_log_for_user
     from cqc_lem.utilities.selenium_util import wait_for_ajax, quit_gracefully
     from cqc_lem.utilities.logger import log_info
