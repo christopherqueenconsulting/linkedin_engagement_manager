@@ -28,6 +28,13 @@ PAUSED="$BASE/PAUSED"
 LOCK="$BASE/lock"
 MAX_FIX_ATTEMPTS=4
 MAX_PHASEFIX_ATTEMPTS=2
+# Budgets for the three lanes that previously had NONE — each retried a failing run every tick
+# forever, so one wedged PR could burn a 45-minute Claude run per tick indefinitely. Counted in
+# DISPATCHED RUNS via lib/ledger.sh (charged before the run starts, so a timeout consumes budget
+# too); the owner's Decision-Comment answer resets them (route_owner_answer).
+MAX_REVISE_ATTEMPTS="${MAX_REVISE_ATTEMPTS:-2}"
+MAX_REVIEW_ATTEMPTS="${MAX_REVIEW_ATTEMPTS:-3}"
+MAX_SELFREVIEW_ATTEMPTS="${MAX_SELFREVIEW_ATTEMPTS:-2}"
 CLAUDE_TIMEOUT="45m"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -103,7 +110,7 @@ _TICK_LOG="$LOG"
 EXECUTION_ID="tick-$$-$(date +%s)"
 export BASE _TICK_LOG EXECUTION_ID REPO SLUG
 # shellcheck disable=SC1091
-for _l in posthog labels capacity dispatch run_lane gh_app_token; do . "$BASE/lib/$_l.sh" 2>/dev/null || true; done
+for _l in posthog labels capacity dispatch run_lane gh_app_token ledger; do . "$BASE/lib/$_l.sh" 2>/dev/null || true; done
 
 # IDENTITY: prefer the GitHub App over the owner's PAT (USE_GH_APP=1 in config.env). The PAT acts
 # as the OWNER, which makes an owner-approval gate on outside contributions impossible to build
@@ -116,6 +123,15 @@ if command -v gh_app_export_token >/dev/null 2>&1 && gh_app_export_token; then
   [ -n "${GH_APP_BOT_LOGIN:-}" ] || log "GH APP: identity active but the bot login could not be resolved (GET /app) — the trust boundary will refuse this tick's own labels. Pin GH_APP_BOT_LOGIN in secrets.env."
 elif [ "${USE_GH_APP:-0}" = "1" ]; then
   log "GH APP: USE_GH_APP=1 but no installation token could be minted — falling back to AGENT_GH_TOKEN. Check $BASE/secrets/github-app.pem and GH_APP_ID."
+fi
+
+# A box whose lib/ predates ledger.sh (the window between a tick.sh sync and its lib landing, or
+# a DRY_RUN from a checkout) must degrade to the OLD behavior — unbudgeted but working — never to
+# "command not found" inside a lane. Count 0 = budgets never trip; charge is a no-op.
+if ! command -v ledger_count >/dev/null 2>&1; then
+  ledger_count() { echo 0; }
+  ledger_charge() { echo 1; }
+  ledger_reset() { :; }
 fi
 
 ensure_ai_labels 2>/dev/null || true   # idempotent bootstrap of the ai:* labels (first tick only)
@@ -1302,12 +1318,11 @@ fi
 if [ -n "$DEPFIX" ]; then
   DPR="$(echo "$DEPFIX" | jq -r .number)"
   DBR="$(echo "$DEPFIX" | jq -r .headRefName)"
-  # RANGE, not a branch tip: `git log <branch>` walks the WHOLE ancestry, so a branch cut from
-  # main inherits every Claude commit ever merged (measured: 677) and reads as exhausted on its
-  # first tick, before it has attempted anything. `origin/main..` counts only this branch's own.
-  CLAUDE_TRIES="$(git -C "$REPO" log "origin/main..origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  # DISPATCHED RUNS via the ledger, not co-authored commits: the commit grep was free for any run
+  # that died before committing — exactly the run a budget exists to stop repeating.
+  CLAUDE_TRIES="$(ledger_count pr "$DPR" depfix)"
   if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
-    log "Dependabot PR #$DPR still failing after $CLAUDE_TRIES Claude attempts — escalating."
+    log "Dependabot PR #$DPR still failing after $CLAUDE_TRIES depfix runs — escalating."
     TICK_OUTCOME="escalated"; TICK_REASON="depfix_exhausted"; TICK_PR="$DPR"; TICK_BRANCH="$DBR"
     if [ "$DRY_RUN" != "1" ]; then
       gh pr edit "$DPR" --repo "$SLUG" --add-label needs-human --remove-label agent:depfix >/dev/null 2>&1
@@ -1322,6 +1337,7 @@ if [ -n "$DEPFIX" ]; then
   if ! claim_branch "$DBR"; then
     log "Dependabot PR #$DPR already claimed by another slot — moving on."
   else
+    ledger_charge pr "$DPR" depfix >/dev/null
     WT="$(add_worktree "$DBR" origin/main)"
     export MODE=depfix PR="$DPR" BRANCH="$DBR" WORKTREE="$WT"
     run_claude "$WT" "Read $RUNBOOK and follow MODE=depfix. PR=$DPR BRANCH=$DBR."
@@ -1342,12 +1358,10 @@ fi
 if [ -n "$DOCFIX" ]; then
   XPR="$(echo "$DOCFIX" | jq -r .number)"
   XBR="$(echo "$DOCFIX" | jq -r .headRefName)"
-  # RANGE, not a branch tip: `git log <branch>` walks the WHOLE ancestry, so a branch cut from
-  # main inherits every Claude commit ever merged (measured: 677) and reads as exhausted on its
-  # first tick, before it has attempted anything. `origin/main..` counts only this branch's own.
-  CLAUDE_TRIES="$(git -C "$REPO" log "origin/main..origin/$XBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  # DISPATCHED RUNS via the ledger, not co-authored commits (same reasoning as depfix above).
+  CLAUDE_TRIES="$(ledger_count pr "$XPR" docfix)"
   if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
-    log "PR #$XPR still failing the lint gate after $CLAUDE_TRIES Claude attempts — escalating."
+    log "PR #$XPR still failing the lint gate after $CLAUDE_TRIES docfix runs — escalating."
     TICK_OUTCOME="escalated"; TICK_REASON="docfix_exhausted"; TICK_PR="$XPR"; TICK_BRANCH="$XBR"
     if [ "$DRY_RUN" != "1" ]; then
       gh pr edit "$XPR" --repo "$SLUG" --add-label needs-human --remove-label agent:docfix >/dev/null 2>&1
@@ -1362,6 +1376,7 @@ if [ -n "$DOCFIX" ]; then
   if ! claim_branch "$XBR"; then
     log "PR #$XPR already claimed by another slot — moving on."
   else
+    ledger_charge pr "$XPR" docfix >/dev/null
     WT="$(add_worktree "$XBR" origin/main)"
     export MODE=docfix PR="$XPR" BRANCH="$XBR" WORKTREE="$WT"
     run_claude "$WT" "Read $RUNBOOK and follow MODE=docfix. PR=$XPR BRANCH=$XBR."
@@ -1417,10 +1432,14 @@ route_owner_answer() {  # route_owner_answer pr|issue <number>
       # Mirror onto the issue so it stops reading as parked while the PR is being revised.
       [ -n "$TISS" ] && gh issue edit "$TISS" --repo "$SLUG" --add-label agent:working \
         --remove-label needs-human --remove-label agent:blocked >/dev/null 2>&1
-      # The owner's answer is the statement "the world changed — try again": the merge budgets
-      # start fresh, or a merge-parked PR would re-park on its very next merge attempt.
+      # The owner's answer is the statement "the world changed — try again": every budget on this
+      # PR restarts and the park markers clear, so a future park can speak again. Both halves are
+      # needed — the merge budgets, or a merge-parked PR re-parks on its very next merge attempt,
+      # and the lane ledger, or an exhausted fix/review/selfreview lane never dispatches again.
       merge_attempt_clear "$TPR"; merge_stall_clear "$TPR"; merge_stall_cycle_clear "$TPR"
       rm -f "$BASE/state/mergepark-$TPR.sha"
+      ledger_reset pr "$TPR"
+      rm -f "$BASE/state/lanepark-$TPR-"* 2>/dev/null
     fi
   else
     # An issue still parked AFTER its PR merged must not go back on the queue — that redoes shipped
@@ -1554,6 +1573,38 @@ for FJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:phasefix" \
   exit 0
 done
 
+# Park a PR whose lane budget is spent. Same escalation contract as fix-exhausted: labels off the
+# active set, draft (out of the merge queue's reach), owner assigned, issue mirrored, ONE Decision
+# Comment. Un-park is the owner's answer through route_owner_answer, which resets the ledger.
+# The comment is once-guarded per (pr, mode) so a re-scan can never re-post it.
+park_lane_exhausted() {  # $1=pr $2=branch $3=mode $4=count $5=lane label to remove
+  local P="$1" BR="$2" mode="$3" n="$4" lane_label="$5" ISS marker
+  marker="$BASE/state/lanepark-$P-$mode"
+  log "PR #$P — $mode budget spent ($n runs) — parking for the owner instead of burning another run."
+  TICK_OUTCOME="escalated"; TICK_REASON="${mode}_exhausted"; TICK_PR="$P"; TICK_BRANCH="$BR"
+  [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: would park PR #$P (${mode}_exhausted)."; return 0; }
+  gh pr edit "$P" --repo "$SLUG" --add-label needs-human --add-label agent:blocked \
+    --remove-label "$lane_label" >/dev/null 2>&1
+  gh pr ready --undo "$P" --repo "$SLUG" >/dev/null 2>&1
+  gh pr edit "$P" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+  ISS="$(issue_for_pr "$P")"
+  [ -n "$ISS" ] && gh issue edit "$ISS" --repo "$SLUG" --add-label needs-human >/dev/null 2>&1
+  if [ ! -f "$marker" ]; then
+    : > "$marker"
+    gh pr comment "$P" --repo "$SLUG" --body "🛑 **Human decision needed** — the \`$mode\` lane spent its budget ($n runs) on this PR without getting it through.
+
+Each run either failed, timed out, or didn't move the gate. Re-running the same lane would burn the same tokens for the same result, so the PR is parked (draft, lane label off).
+
+1. How should we proceed?
+   - **A)** I've addressed the blocker in the thread above — run the \`$mode\` lane again.
+   - **B)** I'll push the needed change myself; pick the PR back up afterwards ✅ *recommended*.
+   - **C)** Close this PR.
+
+My recommendation: B.
+Reply with the letter (e.g. \`B\`) or \`ok\` for the recommendation — your answer resets the budget." >/dev/null 2>&1
+  fi
+}
+
 # ---- REVISE LANE: the owner reviewed a PR and requested changes (label agent:revise) ----
 # Claude implements the OWNER's feedback (not Copilot's), then hands the PR forward to merge.
 # Iterates candidates so a claim held by another slot doesn't starve the rest of the lane.
@@ -1566,9 +1617,17 @@ for RJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:revise" \
     log "PR #$RPR (revise) claimed by another slot — trying next."
     continue
   fi
-  log "PR #$RPR — owner requested changes (agent:revise) — implementing their feedback."
+  # Previously unbounded: a revise run that failed or timed out was re-dispatched every tick,
+  # forever — the same 45-minute burn on repeat. Budgeted now; the owner's answer resets it.
+  RTRIES="$(ledger_count pr "$RPR" revise)"
+  if [ "$RTRIES" -ge "$MAX_REVISE_ATTEMPTS" ]; then
+    park_lane_exhausted "$RPR" "$RBR" revise "$RTRIES" "agent:revise"
+    continue
+  fi
+  log "PR #$RPR — owner requested changes (agent:revise) — implementing their feedback (run $((RTRIES+1))/$MAX_REVISE_ATTEMPTS)."
   TICK_OUTCOME="dispatched"; TICK_REASON="mode_revise"; TICK_MODE="revise"; TICK_PR="$RPR"; TICK_BRANCH="$RBR"
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=revise for #$RPR ($RBR)."; exit 0; fi
+  ledger_charge pr "$RPR" revise >/dev/null
   WT="$(add_worktree "$RBR" origin/main)"
   export MODE=revise PR="$RPR" BRANCH="$RBR" WORKTREE="$WT"
   run_claude "$WT" "Read $RUNBOOK and follow MODE=revise. PR=$RPR BRANCH=$RBR OWNER=$ASSIGNEE."
@@ -1626,28 +1685,41 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
              | $REQUIRED_CHECKS_JQ]")"
   FAILED="$(echo "$ROLLUP" | jq '[.[]|select(.s=="FAILURE" or .s=="ERROR" or .s=="TIMED_OUT" or .s=="CANCELLED")]|length')"
   PENDING="$(echo "$ROLLUP" | jq '[.[]|select(.s=="PENDING" or .s=="QUEUED" or .s=="IN_PROGRESS" or .s=="EXPECTED")]|length')"
-  ATTEMPTS="$(git -C "$REPO" rev-list --count "origin/main..origin/$BRANCH" 2>/dev/null || echo 1)"
   UNRESOLVED="$(copilot_unresolved_threads "$PR")"
   CP_AT="$(copilot_last_review_at "$PR")"
+
+  # The lane budgets count CONSECUTIVE failures, not lifetime runs: a stage that has PASSED is
+  # proof the lane's last run worked, so its meter restarts. Without this, two SUCCESSFUL
+  # selfreviews over a long PR's life would exhaust the budget and park a healthy PR.
+  # (selfreview resets at its marker check below — the fresh marker is its proof of success.)
+  [ "${FAILED:-0}" -eq 0 ] && ledger_reset pr "$PR" fix
+  [ "${UNRESOLVED:-0}" -eq 0 ] && ledger_reset pr "$PR" review
 
   # 1) CI failing -> fix (or escalate after too many tries)
   if [ "${FAILED:-0}" -gt 0 ]; then
     if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
-    if [ "${ATTEMPTS:-1}" -ge "$MAX_FIX_ATTEMPTS" ]; then
-      log "PR #$PR failing after $ATTEMPTS attempts — escalating to human."
+    # DISPATCHED RUNS, not `rev-list --count origin/main..` — commits are the wrong proxy in both
+    # directions: a branch carrying 4 commits of legitimate feature work arrived pre-exhausted and
+    # escalated before its FIRST fix run, while a fix run that died before committing was free and
+    # retried forever. The ledger charges when the run is dispatched, so both count correctly.
+    ATTEMPTS="$(ledger_count pr "$PR" fix)"
+    if [ "${ATTEMPTS:-0}" -ge "$MAX_FIX_ATTEMPTS" ]; then
+      log "PR #$PR failing after $ATTEMPTS fix runs — escalating to human."
       TICK_OUTCOME="escalated"; TICK_REASON="fix_exhausted"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
       if [ "$DRY_RUN" != "1" ]; then
         gh pr edit "$PR" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --remove-label agent:working >/dev/null 2>&1
         gh pr ready --undo "$PR" --repo "$SLUG" >/dev/null 2>&1
         [ -n "$ISSUE" ] && gh issue edit "$ISSUE" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --add-assignee "$ASSIGNEE" --remove-label agent:working >/dev/null 2>&1
         if ! auto_fix_gave_up_p "$PR"; then
-          gh pr comment "$PR" --repo "$SLUG" --body "🚧 Auto-fix gave up after $ATTEMPTS attempts. Assigning @$ASSIGNEE — CI is still red." >/dev/null 2>&1
+          gh pr comment "$PR" --repo "$SLUG" --body "🚧 Auto-fix gave up after $ATTEMPTS fix runs. Assigning @$ASSIGNEE — CI is still red." >/dev/null 2>&1
         fi
       fi
       exit 0
     fi
-    log "PR #$PR CI failing (attempt $ATTEMPTS) — invoking fix."
+    ATTEMPTS=$((ATTEMPTS + 1))   # this run's number — exported for the RUNBOOK's own give-up rule
+    log "PR #$PR CI failing (fix run $ATTEMPTS/$MAX_FIX_ATTEMPTS) — invoking fix."
     TICK_OUTCOME="dispatched"; TICK_REASON="mode_fix"; TICK_MODE="fix"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
+    if [ "$DRY_RUN" != "1" ]; then ledger_charge pr "$PR" fix >/dev/null; fi
     WT="$(add_worktree "$BRANCH" origin/main)"
     export MODE=fix PR ISSUE WORKTREE="$WT" BRANCH ATTEMPTS
     run_claude "$WT" "Read $RUNBOOK and follow MODE=fix. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." "$(model_for_issue "$ISSUE")"
@@ -1657,8 +1729,15 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   # 2) Copilot has unresolved review threads -> address + resolve them BEFORE any merge
   if [ "${UNRESOLVED:-0}" -gt 0 ]; then
     if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
-    log "PR #$PR — $UNRESOLVED unresolved Copilot thread(s) — invoking review-address."
+    # Previously unbounded — a review run that couldn't resolve the threads re-ran every tick.
+    RVTRIES="$(ledger_count pr "$PR" review)"
+    if [ "$RVTRIES" -ge "$MAX_REVIEW_ATTEMPTS" ]; then
+      park_lane_exhausted "$PR" "$BRANCH" review "$RVTRIES" "agent:working"
+      continue
+    fi
+    log "PR #$PR — $UNRESOLVED unresolved Copilot thread(s) — invoking review-address (run $((RVTRIES+1))/$MAX_REVIEW_ATTEMPTS)."
     TICK_OUTCOME="dispatched"; TICK_REASON="mode_review"; TICK_MODE="review"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
+    if [ "$DRY_RUN" != "1" ]; then ledger_charge pr "$PR" review >/dev/null; fi
     WT="$(add_worktree "$BRANCH" origin/main)"
     export MODE=review PR ISSUE WORKTREE="$WT" BRANCH
     run_claude "$WT" "Read $RUNBOOK and follow MODE=review. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." "$(model_for_issue "$ISSUE")"
@@ -1714,11 +1793,21 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
     # marker comment the gate accepts). One run per stale/missing review.
     if claude_marker_fresh_p "$PR" "$HEAD_DATE"; then
       log "PR #$PR — green, fresh Claude adversarial marker already present."
+      ledger_reset pr "$PR" selfreview   # the marker proves the last selfreview worked
     else
       if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
-      log "PR #$PR — green, no fresh review — invoking Claude adversarial review."
+      # Previously unbounded — a selfreview that kept dying (or kept refusing to post its marker)
+      # re-ran on every tick. Budget it; the escalation contract already covers the "cannot safely
+      # fix" case (RUNBOOK), this covers the silent-failure case the contract can't see.
+      SRTRIES="$(ledger_count pr "$PR" selfreview)"
+      if [ "$SRTRIES" -ge "$MAX_SELFREVIEW_ATTEMPTS" ]; then
+        park_lane_exhausted "$PR" "$BRANCH" selfreview "$SRTRIES" "agent:working"
+        continue
+      fi
+      log "PR #$PR — green, no fresh review — invoking Claude adversarial review (run $((SRTRIES+1))/$MAX_SELFREVIEW_ATTEMPTS)."
       TICK_OUTCOME="dispatched"; TICK_REASON="mode_selfreview"; TICK_MODE="selfreview"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=selfreview for #$PR."; exit 0; fi
+      ledger_charge pr "$PR" selfreview >/dev/null
       WT="$(add_worktree "$BRANCH" origin/main)"
       export MODE=selfreview PR ISSUE WORKTREE="$WT" BRANCH
       run_claude "$WT" "Read $RUNBOOK and follow MODE=selfreview. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='$CLAUDE_REVIEW_MARKER'." "$(model_for_issue "$ISSUE")"
