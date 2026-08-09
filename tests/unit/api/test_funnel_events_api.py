@@ -211,7 +211,7 @@ class TestBillingFunnel:
              patch(f"{_BILL}.update_subscription_from_stripe"), \
              patch(f"{_BILL}.get_user_by_stripe_customer_id",
                    side_effect=RuntimeError("db down")), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+             patch(f"{_BILL}.track_funnel_event") as track:
             resp = client.post(self.BASE, content=b"{}",
                                headers={"Stripe-Signature": "sig",
                                         "Content-Type": "application/json"})

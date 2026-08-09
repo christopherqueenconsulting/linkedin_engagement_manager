@@ -233,13 +233,13 @@ class TestBillingCreateCheckoutSession:
 
     def test_no_stripe_customer_id_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value={"stripe_customer_id": None}):
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value={"stripe_customer_id": None}):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 400
 
     def test_no_subscription_info_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=None):
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=None):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 400
 
@@ -343,7 +343,7 @@ class TestBillingCreatePortalSession:
 
     def test_no_stripe_customer_id_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value={"stripe_customer_id": None}):
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value={"stripe_customer_id": None}):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 400
 
