@@ -806,7 +806,7 @@ class TestAvatarEndpoints:
 
     def test_avatar_checkout_no_customer_400(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_subscription_info", return_value=None):
+             patch(f"{_AV}.get_user_subscription_info", return_value=None):
             resp = client.post("/api/avatar/credits/checkout", json={
                 "session_token": _TOK, "package": "single",
                 "success_url": "https://x/ok", "cancel_url": "https://x/no"})
