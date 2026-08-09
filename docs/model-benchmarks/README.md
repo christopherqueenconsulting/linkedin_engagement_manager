@@ -340,10 +340,12 @@ landed the right config change with the wrong reason attached:
 
 - `/api/tags` on 2026-08-09 lists 18 tags. The bare `deepseek-v4-flash` is not among them;
   `:0731` (167GB, 2026-07-31) and `:preview` (140GB, 2026-04-24) are.
-- ollama.com's tags page for the model still lists all three and publishes a per-tag digest.
-  `deepseek-v4-flash:cloud` and `deepseek-v4-flash:0731-cloud` share one digest (`031ce2a95446`,
-  "1 week ago"); `deepseek-v4-flash:preview-cloud` carries a different one (`dd3d9b94bae4`,
-  "3 months ago").
+- ollama.com's tags page for the model still lists three rows — the `-cloud` spellings, with no
+  bare/`:latest` row — and publishes a per-tag digest. `deepseek-v4-flash:cloud` and
+  `deepseek-v4-flash:0731-cloud` share one digest (`031ce2a95446`, "1 week ago");
+  `deepseek-v4-flash:preview-cloud` carries a different one (`dd3d9b94bae4`, "3 months ago").
+  `:cloud` is the alias of the bare name (probed on #844), so that shared digest is what says where
+  the bare name now points.
 - So the bare name was not deleted and it was not republished as `:preview`. **It was re-pointed
   onto the `:0731` build** — the one #921 declined — and the 140GB build it used to serve was
   published under `:preview`. #1200's config comment reads the other way round; corrected there in
@@ -351,10 +353,14 @@ landed the right config change with the wrong reason attached:
 
 That makes the repoint in #1200 load-bearing rather than cosmetic. Had the bare id been left in
 place — or "corrected" back to it, which is exactly what a reader following the *use the bare
-catalog id* rule would try — `lem-medium` and `lem-complex` would now both be serving a build this
-file rejected on those tiers, with no run and no issue. **A versioned id is the only thing that
-pins a build**; the bare-id rule in `.litellm/config.yaml` is about matching the catalog verbatim,
-and `:preview` matches it verbatim.
+catalog id* rule would try — `lem-medium` and `lem-complex` would both be pointing at a name this
+file no longer controls. Which of two failures that buys was NOT probed, and both are bad: if the
+endpoint still resolves the untagged name the way it resolves `:cloud` (#844), the two tiers serve
+the `:0731` build this file rejected, silently, with no run and no issue; if it does not, they 404 —
+and under latency routing a 404 is the fastest answer in the group, so the dead deployment takes
+the traffic (the ministral-3:8b failure). Don't write it back to find out. **A versioned id is the
+only thing that pins a build**; the bare-id rule in `.litellm/config.yaml` is about matching the
+catalog verbatim, and `:preview` matches it verbatim.
 
 One gap this leaves open, filed separately (#1237): the guard that exists for precisely this — the
 #925 re-point scan — skipped it. `plan_repoints` compares a CONFIGURED tag's `size`/`modified_at`

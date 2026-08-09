@@ -83,8 +83,11 @@ model_list:
   #
   # So `:preview` is not a cosmetic rename. It PRESERVES the build benchmarked at 90%, and it is
   # the only spelling that does: writing the bare id here — which is what note 0's "use the bare
-  # catalog id" rule reads like an instruction to do — now silently serves a rejected build on two
-  # tiers. Note 0's rule is match-the-catalog-VERBATIM, and `:preview` is verbatim.
+  # catalog id" rule reads like an instruction to do — points two tiers at a name this repo no
+  # longer controls. Unprobed which way that fails, and both ways are bad: either the endpoint
+  # resolves the untagged name as it resolves `:cloud` (#844) and both tiers quietly serve the
+  # rejected `:0731` build, or it 404s and wins the latency race under (1). Note 0's rule is
+  # match-the-catalog-VERBATIM, and `:preview` is verbatim.
   #
   # Worth naming which guard did what, because they cover different failures: a silent RE-POINT
   # under an UNCHANGED tag is caught by plan_repoints (#925, closed — it diffs build size and
