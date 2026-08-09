@@ -79,13 +79,21 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     return 1
   fi
 
+  dispatch_lane "$hint"
+
+  # tick.sh snapshots TICK_LANE/TICK_MODEL/TICK_ROUTE_REASON before dispatch_lane() runs (it runs
+  # inside this wrapper), so backfill them here so the EXIT trap's emit_tick_outcome() writes the
+  # real routing dimensions into tick-outcomes.ndjson.
+  TICK_LANE="${LANE:-}"
+  TICK_MODEL="${AGENT_TIER:-${AGENT_MODEL:-}}"
+  TICK_ROUTE_REASON="${ROUTE_REASON:-}"
+  export TICK_LANE TICK_MODEL TICK_ROUTE_REASON
+
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    dispatch_lane "$hint"
     log "DRY_RUN: would run lane=$LANE model=${AGENT_MODEL:-default} tier=${AGENT_TIER:-} in $wt"
     return 0
   fi
 
-  dispatch_lane "$hint"
   _emit "issue_assigned"
   _emit "ai_call_started"
   [ "$ROUTE_REASON" = "fallback" ] && _emit "fallback_triggered"
