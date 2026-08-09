@@ -481,7 +481,7 @@ collect_gh() {
 }
 
 # ── tick rollup ──────────────────────────────────────────────────────────────────────────────────
-ROLLUP=""; LAST_TICK_AGE=-1
+ROLLUP=""; LAST_TICK_AGE=-1; LAST_DISPATCH_AGE=-1; LAST_DISPATCH_MODE=""
 collect_rollup() {
   [ -f "$OUTCOMES" ] || return 0
   # Bounded read: the file is append-only and grows forever; the window of interest is hours.
@@ -493,6 +493,7 @@ window = float(os.environ.get("WINDOW_HOURS", "6")) * 3600
 now = time.time()
 outcomes, modes, reasons, pr_fail = Counter(), Counter(), Counter(), Counter()
 pr_last = {}   # pr -> epoch of its LAST failure, so a resolved PR can be told from a stuck one
+last_dispatch = (0.0, "")   # (epoch, mode) of the most recent tick that actually dispatched work
 total = 0
 newest = 0.0
 dur = []
@@ -512,6 +513,11 @@ for line in sys.stdin:
     except Exception:
         continue
     newest = max(newest, t)
+    # Tracked BEFORE the window filter and independent of it: "when did this pipeline last actually
+    # do something" is the question that separates an idle lull from a stall, and it must stay
+    # answerable when someone passes --hours 1 during a quiet stretch.
+    if (o.get("tick_outcome") or "") == "dispatched" and t > last_dispatch[0]:
+        last_dispatch = (t, o.get("mode") or "?")
     if now - t > window:
         continue
     total += 1
@@ -535,14 +541,27 @@ print("OUTCOMES=" + ",".join("%s:%d" % kv for kv in outcomes.most_common()))
 print("MODES=" + ",".join("%s:%d" % kv for kv in modes.most_common()))
 print("REASONS=" + ",".join("%s:%d" % kv for kv in reasons.most_common(6)))
 print("AVGDUR=%d" % (sum(dur) / len(dur) if dur else 0))
+print("LASTDISPATCH=%d" % (int(now - last_dispatch[0]) if last_dispatch[0] else -1))
+print("LASTDISPATCHMODE=%s" % last_dispatch[1])
 print("PRFAIL=" + ",".join("%s:%d:%d" % (pr, c, int(now - pr_last.get(pr, now)))
                           for pr, c in pr_fail.most_common(3) if c >= 3))
 ' 2>/dev/null)"
   LAST_TICK_AGE="$(printf '%s\n' "$ROLLUP" | grep -m1 '^AGE=' | cut -d= -f2)"
   LAST_TICK_AGE="${LAST_TICK_AGE:--1}"
+  LAST_DISPATCH_AGE="$(printf '%s\n' "$ROLLUP" | grep -m1 '^LASTDISPATCH=' | cut -d= -f2)"
+  LAST_DISPATCH_AGE="${LAST_DISPATCH_AGE:--1}"
+  LAST_DISPATCH_MODE="$(printf '%s\n' "$ROLLUP" | grep -m1 '^LASTDISPATCHMODE=' | cut -d= -f2)"
   # cron fires every 5 minutes; a tick that has not landed in 15 is cron or the runner being dead.
   [ "$LAST_TICK_AGE" -ge 0 ] && [ "$LAST_TICK_AGE" -gt 900 ] && \
     warn "no tick outcome recorded for $(fmt_dur "$LAST_TICK_AGE") — cron may not be firing (expected every 5m)"
+  # The harder failure: ticks keep firing but never dispatch. Cron looks alive, the log fills up,
+  # and no work moves — every tick skipping on all_slots_busy (a wedged slot lock), a WIP gate that
+  # never clears, or degraded lanes. Zero agents on its own is NOT that: agents finish and the next
+  # tick is up to 5 minutes away, so an instantaneous 0 is the normal state between dispatches.
+  # What distinguishes them is whether anything has been dispatched recently WHILE work was waiting.
+  if [ "$LAST_DISPATCH_AGE" -ge 0 ] 2>/dev/null && [ "$LAST_DISPATCH_AGE" -gt 2700 ] && [ "${GH_READY:-0}" -gt 0 ] 2>/dev/null; then
+    warn "ticks are running but nothing has been dispatched for $(fmt_dur "$LAST_DISPATCH_AGE") while $GH_READY issues sit agent:ready — the pipeline is stalled, not idle (check the skip reasons above)"
+  fi
   # A merge that failed repeatedly and then LANDED is history, not a live problem. The first version
   # warned on the raw count, so it kept flagging PR #1120 for hours after it merged — and a warning
   # that outlives its problem teaches the reader to skim the whole NEEDS ATTENTION list. Two guards:
@@ -594,14 +613,29 @@ render_text() {
     "${C_B}${n_agents}${C_RST}/${CAP}$([ "$BUSY_WINDOW" = yes ] && printf ' %s(busy window)%s' "$C_YEL" "$C_RST")$([ "${#OTHER_ROWS[@]}" -gt 0 ] && printf ' %s(+%d other claude)%s' "$C_DIM" "${#OTHER_ROWS[@]}" "$C_RST")"
   printf '  %-14s %s   %-14s %s\n' "backlog:" "$([ "$GH_OK" = 1 ] && echo "${GH_READY} agent:ready" || echo "${C_DIM}n/a${C_RST}")" \
          "last tick:" "$([ "${LAST_TICK_AGE}" -ge 0 ] 2>/dev/null && fmt_dur "$LAST_TICK_AGE" || echo "?") ago"
+  # Printed on EVERY report, not just when zero agents are up: it is the one line that says the
+  # pipeline is alive and moving, which a headcount alone can never do.
+  printf '  %-14s %s\n' "last dispatch:" \
+    "$([ "${LAST_DISPATCH_AGE}" -ge 0 ] 2>/dev/null && printf '%s ago (%s)' "$(fmt_dur "$LAST_DISPATCH_AGE")" "${LAST_DISPATCH_MODE:-?}" || echo "none on record")"
   printf '  %-14s claude %s%d%%%s %-13s ollama %s%d%%%s %s\n' "lanes:" \
     "$([ "$CL_PCT" -gt "$THRESH" ] && echo "$C_GRN" || echo "$C_YEL")" "$CL_PCT" "$C_RST" "($CL_STATUS)" \
     "$([ "$OL_PCT" -gt "$THRESH" ] && echo "$C_GRN" || echo "$C_YEL")" "$OL_PCT" "$C_RST" "($OL_STATUS)"
 
   head2 "RUNNING AGENTS ($n_agents)"
   if [ "$n_agents" = 0 ]; then
-    printf '  %sno agent processes — %s%s\n' "$C_DIM" \
-      "$([ -f "$BASE/PAUSED" ] && echo "pipeline is paused" || echo "ticks are idle or doing housekeeping (merge/label/sweep)")" "$C_RST"
+    # Zero agents is the normal state between dispatches — a tick runs at most every 5 minutes and
+    # an agent that finished leaves nothing behind. Say WHY it is zero instead of leaving the reader
+    # to guess whether the pipeline died.
+    if [ -f "$BASE/PAUSED" ]; then
+      printf '  %sno agent processes — the pipeline is PAUSED%s\n' "$C_RED" "$C_RST"
+    elif [ "${LAST_DISPATCH_AGE}" -ge 0 ] 2>/dev/null && [ "${LAST_DISPATCH_AGE}" -le 2700 ]; then
+      printf '  %sno agent running this second — normal between dispatches. Last one %s ago (%s);%s\n' \
+        "$C_DIM" "$(fmt_dur "$LAST_DISPATCH_AGE")" "${LAST_DISPATCH_MODE:-?}" "$C_RST"
+      printf '  %scron fires every 5m, and a merge/label tick does its work through gh with no agent.%s\n' "$C_DIM" "$C_RST"
+    else
+      printf '  %sno agent processes, and none dispatched %s — see NEEDS ATTENTION%s\n' "$C_YEL" \
+        "$([ "${LAST_DISPATCH_AGE}" -ge 0 ] 2>/dev/null && printf 'for %s' "$(fmt_dur "$LAST_DISPATCH_AGE")" || printf 'on record')" "$C_RST"
+    fi
   else
     local pid tpid slot mode issue pr branch lane model route elapsed tmo remain risk attempts wt tr_age act target row
     printf '  %s%-4s %-8s %-11s %-14s %-30s %-8s %-14s %s%s\n' "$C_DIM" "SLOT" "PID" "MODE" "TARGET" "BRANCH" "RUNTIME" "LANE/MODEL" "LEFT" "$C_RST"
@@ -738,6 +772,8 @@ render_json() {
     printf 'needs_human=%s\n' "$(printf '%s' "$GH_HUMAN" | grep -c .)"
     printf 'open_prs=%s\n' "$(printf '%s' "$GH_PRS" | grep -c .)"
     printf 'last_tick_age_s=%s\n' "$LAST_TICK_AGE"
+    printf 'last_dispatch_age_s=%s\n' "$LAST_DISPATCH_AGE"
+    printf 'last_dispatch_mode=%s\n' "$LAST_DISPATCH_MODE"
     printf 'window_hours=%s\n' "$WINDOW_HOURS"
     printf 'ticks=%s\n' "$(rollup_get TOTAL)"
     printf 'outcomes=%s\n' "$(rollup_get OUTCOMES)"
@@ -802,7 +838,8 @@ print(json.dumps({
     "generated_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
     "pipeline": dict(
         {k: kv.get(k) for k in ("paused", "cap", "max_agents", "busy_window",
-                                "agents_running", "idle_ticks", "last_tick_age_s")},
+                                "agents_running", "idle_ticks", "last_tick_age_s",
+                                "last_dispatch_age_s", "last_dispatch_mode")},
         # Always lists: a single busy slot would otherwise type as an int and a pair as a string,
         # so anything consuming this would need to handle both.
         slots_busy=str(kv.get("slots_busy", "")).split(),
