@@ -461,7 +461,9 @@ class TestReactToPostInline:
         assert all(c.kwargs.get("warn_on_miss") is False for c in cf.call_args_list)
 
     def test_no_warning_when_card_has_no_reaction_affordance(self):
-        """The #899 live run found 9 post-text nodes but only 8 reaction triggers: at least one
+        """A card with no reaction affordance is working behaviour, not an unreadable control.
+
+        The #899 live run found 9 post-text nodes but only 8 reaction triggers: at least one
         normal feed card type carries post text and no reaction affordance. A selector miss there
         is working behaviour, so it stays DEBUG and must not file a RecurringWarning (issue #874).
         """
