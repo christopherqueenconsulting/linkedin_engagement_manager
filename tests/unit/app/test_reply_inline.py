@@ -306,24 +306,11 @@ class TestReplyUnderCommentComposerPick:
         under_comment.find_elements.return_value = [MagicMock(name="reply_btn")]
         driver = MagicMock(); driver.execute_script.return_value = True
         rc = MagicMock(return_value=composer)
-
-        # Each path must be patched on the module that READS the helper. Keeping the two calls in
-        # separate nested functions lets the patch-seam guard see that the composer-module patch is
-        # never active in the same function body as a call into the engagement module.
-        def run_composer_path():
-            with patch(f"{_CMP}.ActionChains"):
-                with patch(f"{_CMP}._reply_composer_for_comment", rc):
-                    assert mod._reply_under_comment_inline(driver, _wait(), under_comment,
-                                                             "reply one", user_id=1) is True
-
-        def run_posting_path():
-            with patch(f"{_POST}.click_first", return_value=MagicMock()), \
-                 patch(f"{_POST}._reply_composer_for_comment", rc):
-                assert posting._reply_to_comment_inline(driver, _wait(), inline_comment,
-                                                          "reply two", user_id=1) is True
-
-        run_composer_path()
-        run_posting_path()
+        with patch(f"{_CMP}.ActionChains"), patch(f"{_POST}.click_first", return_value=MagicMock()), \
+             patch(f"{_CMP}._reply_composer_for_comment", rc), \
+             patch(f"{_POST}._reply_composer_for_comment", rc):
+            assert mod._reply_under_comment_inline(driver, _wait(), under_comment, "reply one", user_id=1) is True
+            assert posting._reply_to_comment_inline(driver, _wait(), inline_comment, "reply two", user_id=1) is True
         assert [c.args[1] for c in rc.call_args_list] == [under_comment, inline_comment]
 
     def test_empty_reply_text_is_never_typed(self):
