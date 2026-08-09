@@ -403,6 +403,13 @@ _POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by
 # names this module already used so every call site (and its tests) keeps one spelling.
 _FEED_CARD_MARKER_SEL = ", ".join(_POST_MARKER_SELECTORS)
 _FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
+# The FEED WALK counts both markers (#1081), and "Hide post by" is one of them — so cross-checking
+# the walk against `_FEED_CARD_CROSSCHECK_SEL` would ask ONE selector both questions and could only
+# ever answer 'empty' (zero_walk.py: "cross-checking a chain against its own selector proves
+# nothing"). The reaction control is the per-card anchor no marker chain reads — live-grounded at 8
+# of 9 cards in the #816 run — so it is the walk's independent cross-check. The sort tripwire keeps
+# `_FEED_CARD_CROSSCHECK_SEL`, which IS independent of the sort control it grades.
+_FEED_WALK_CROSSCHECK_SEL = "button[aria-label^='Reaction button state'], button[aria-label^='React']"
 
 
 _SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
@@ -2290,6 +2297,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # meaningless.
     cards_seen = 0
     textboxes_seen = 0
+    # Did the walk ever READ the feed? The loop is skipped whole when the roster pass already spent
+    # the run's budget, and breaks before its first read when the deadline has passed — both leave
+    # every counter at zero while the page still renders cards, which the tripwire used to grade as
+    # selector drift. "We never looked" is not evidence about the page (#1081).
+    walk_ran = False
     _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
                          + (prefs.get("include_topics") or [])) if f]
     fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
@@ -2301,6 +2313,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         boxes = driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
         textboxes_seen = max(textboxes_seen, len(boxes))
         cards_seen = max(cards_seen, len(driver.find_elements(By.CSS_SELECTOR, _FEED_CARD_MARKER_SEL)))
+        walk_ran = True
         for box in boxes:
             try:
                 content = (box.text or "").strip()
@@ -2427,13 +2440,33 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         posted_key_sources[source] = posted_key_sources.get(source, 0) + count
     feed_commented = posted - roster_stats["posted"]
     off_topic_total = off_topic_skipped + roster_stats["off_topic_skipped"]
-    # Zero post MARKERS across the whole scan is indistinguishable from an empty feed in every
-    # funnel number below — which is exactly how #964 and #1009 stayed invisible for weeks. Ask the
-    # page, through a per-post control the card-marker chain does not use (issue #1013).
-    feed_walk = ("ok" if cards_seen else
-                 _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed card walk",
-                                   user_id=user_id, action_type="comment",
-                                   task_name="comment_on_feed_inline"))
+    # A zero walk is ambiguous FOUR ways and only one of them is a defect (#1013, #1081). Grading
+    # them apart is the whole point — a warning on any of the other three files a grouped
+    # $exception for an ordinary day, which is how #1081 got filed in the first place:
+    #   not_walked — the loop never read the feed (roster spent the budget, or the deadline had
+    #                already passed). We never looked, so nothing about the page is claimed.
+    #   no_text    — cards rendered, none carried a post-text node. A feed of image/video-only
+    #                posts looks exactly like this, and those are not commentable anyway.
+    #   ok         — the walk enumerated post text.
+    #   drift/empty/unknown — no marker matched AT ALL, so ask the page through the reaction
+    #                control, which no marker chain reads (an anchor the walk itself counts could
+    #                only ever answer 'empty'). `drift` is the real defect: cards the walk is blind
+    #                to, which makes every zero below it a lie rather than a quiet day.
+    if not walk_ran:
+        feed_walk = "not_walked"
+        log_debug("Feed card walk never read the feed — budget spent or deadline passed first",
+                  user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
+    elif textboxes_seen:
+        feed_walk = "ok"
+    elif cards_seen:
+        feed_walk = "no_text"
+        log_debug(f"Feed card walk saw {cards_seen} card(s) but no post-text node — image/video "
+                  f"posts carry nothing to comment on", user_id=user_id, action_type="comment",
+                  task_name="comment_on_feed_inline")
+    else:
+        feed_walk = _report_zero_walk(driver, _FEED_WALK_CROSSCHECK_SEL, "Feed card walk",
+                                      user_id=user_id, action_type="comment",
+                                      task_name="comment_on_feed_inline")
     funnel = {
         "examined": len(examined_keys) + roster_stats["examined"],
         "passed_filters": len(hard_keys),      # cleared excludes + recency + min-reactions
@@ -2465,9 +2498,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # other than FEED_SORT_RECENT means the candidate pool was LinkedIn's algorithmic one.
         "feed_sort": feed_sort,
         # How many post-text nodes the walk ever saw, how many card markers (text or "Hide post by")
-        # were visible, and what a zero meant when cross-checked against the page (issue #1013):
-        # ok / empty / drift / unknown. `feed_walk='drift'` says the feed had cards this scan could
-        # not see — every zero below it is a lie, not a quiet day.
+        # were visible, and what a zero meant (issues #1013/#1081): ok / no_text / not_walked /
+        # empty / drift / unknown. `feed_walk='drift'` says the feed had cards this scan could not
+        # see — every zero below it is a lie, not a quiet day. `no_text` says cards rendered with
+        # nothing commentable on them, and `not_walked` that the loop never ran at all: both are
+        # ordinary, and neither is evidence of drift.
         "textboxes_seen": textboxes_seen,
         "cards_seen": cards_seen,
         "feed_walk": feed_walk,
