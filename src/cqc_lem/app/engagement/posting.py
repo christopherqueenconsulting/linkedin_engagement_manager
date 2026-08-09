@@ -182,6 +182,30 @@ from cqc_lem.utilities.selenium_util import (
     quit_gracefully,
 )
 
+__all__ = [
+    # The ten tasks. `run_automation` re-exports every one of these by name, because
+    # `run_scheduler` and `api/*` still import them from there.
+    "auto_scrape_post_stats",
+    "automate_reply_commenting",
+    "capture_follower_stats",
+    "post_to_linkedin",
+    "process_comment_followups_for_url",
+    "reconcile_recent_comment_urns",
+    "sweep_comment_followups",
+    "sweep_comment_outcomes",
+    "sweep_reply_comments",
+    "update_stale_profile",
+    # The reply amplifier's vocabulary. Nothing INSIDE this module reads these three — they are the
+    # in-module names for `utilities/golden_hour.py`'s constants, and `test_reply_sweep.py` /
+    # `test_human_pacing_integration.py` assert the sweep countdowns against them. CodeQL reports
+    # them as unused globals unless the public surface is declared (the `lgtm[]` comments beside
+    # them are the retired suppression syntax and no longer count); `run_automation.__all__` carries
+    # the same declaration for the same reason.
+    "_GOLDEN_HOUR_MAX_SWEEPS",
+    "_GOLDEN_HOUR_MINUTES",
+    "_GOLDEN_HOUR_REPLY_SWEEPS",
+]
+
 # ── zero-walk tripwire (issues #1013, #1021) ────────────────────────────────────────────────────
 # The grading itself lives in utilities/linkedin/zero_walk.py. `run_automation` keeps its own alias
 # of the same module for the catch-up walk: aliasing the upstream original in BOTH modules is what
