@@ -170,9 +170,19 @@ class TestAgentMayNotApproveAtCreateTime:
     @pytest.mark.parametrize("handler", ["schedule_dm_endpoint", "create_outreach_target_endpoint",
                                          "create_connection_request_endpoint"])
     def test_every_create_handler_that_takes_a_status_calls_the_guard(self, main_mod, handler):
-        """A create route that reaches APPROVED without the guard is the whole bug again."""
+        """A create route that reaches APPROVED without the guard is the whole bug again.
+
+        Resolved off the ROUTE TABLE rather than `getattr(main_mod, ...)`. A handler that moves to a
+        per-area router (#1154) is still the thing serving the route, and looking it up by module
+        attribute would raise `AttributeError` on the move — which reads like a deleted guard rather
+        than a relocated one, and invites deleting the parameter to make it pass.
+        """
         import inspect
-        src = inspect.getsource(getattr(main_mod, handler))
+
+        endpoints = {getattr(r.endpoint, "__name__", None): r.endpoint
+                     for r in main_mod._walk_routes(main_mod.app.routes)}
+        assert handler in endpoints, f"{handler} serves no route at all"
+        src = inspect.getsource(endpoints[handler])
         assert "_refuse_agent_approved_status(request.status)" in src, handler
 
     def test_the_account_auto_approve_default_does_not_approve_for_an_agent(self, main_mod, as_agent):
