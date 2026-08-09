@@ -230,3 +230,5 @@ cannot silently pull vendored code back into the gate.
 - `docs/release-fast-lane.md` — `release:now` and who may apply it
 - [GitHub Agentic Workflows security model](https://github.github.com/gh-aw/reference/faq/)
 - [Microsoft: securing CI/CD in an agentic world](https://www.microsoft.com/en-us/security/blog/2026/06/05/securing-ci-cd-in-agentic-world-claude-code-github-action-case/)
+
+<!-- bot-identity probe: verifies app-authored PRs trigger required CI. Deleted with this branch. -->
