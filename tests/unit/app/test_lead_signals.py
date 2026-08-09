@@ -12,6 +12,10 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# Flagging moved down to `utilities/lead_scoring.py` (#1154) — beside `profile_slug`, of which
+# `run_automation._profile_slug` was a byte-identical copy. It took its DB / classifier / LLM
+# imports with it, so those are the bindings it reads.
+_LS = "cqc_lem.utilities.lead_scoring"
 
 
 @pytest.fixture(autouse=True)
@@ -25,38 +29,50 @@ def _fn(name):
     return getattr(importlib.import_module(_RA), name)
 
 
+def _ls(name):
+    """Same, for the half that now lives in `utilities.lead_scoring`."""
+    import importlib
+    return getattr(importlib.import_module(_LS), name)
+
+
 class TestProfileSlug:
+    """The one surviving implementation.
+
+    `run_automation._profile_slug` was deleted in #1154 as a byte-identical duplicate, so these
+    assertions follow `lead_scoring.profile_slug` rather than being deleted with the copy.
+    """
+
     def test_extracts_and_lowercases(self):
-        assert _fn("_profile_slug")("https://www.linkedin.com/in/Jane-Doe/") == "jane-doe"
+        assert _ls("profile_slug")("https://www.linkedin.com/in/Jane-Doe/") == "jane-doe"
 
     def test_strips_query_string(self):
-        assert _fn("_profile_slug")("https://x/in/jane?trk=abc") == "jane"
+        assert _ls("profile_slug")("https://x/in/jane?trk=abc") == "jane"
 
     def test_missing_returns_empty(self):
-        assert _fn("_profile_slug")("https://www.linkedin.com/company/acme") == ""
-        assert _fn("_profile_slug")(None) == ""
+        assert _ls("profile_slug")("https://www.linkedin.com/company/acme") == ""
+        assert _ls("profile_slug")(None) == ""
 
 
 class TestLeadThreadKey:
     def test_same_person_same_thread_is_one_key(self):
-        f = _fn("_lead_thread_key")
+        f = _ls("_lead_thread_key")
         a = f("post_comment", "post:7", "https://www.linkedin.com/in/jane/")
         b = f("post_comment", "post:7", "https://x/in/JANE?trk=1")
         assert a == b
 
     def test_different_threads_differ(self):
-        f = _fn("_lead_thread_key")
+        f = _ls("_lead_thread_key")
         assert f("post_comment", "post:7", "https://x/in/jane") != \
                f("post_comment", "post:8", "https://x/in/jane")
 
     def test_falls_back_to_name_when_no_profile_url(self):
-        f = _fn("_lead_thread_key")
+        f = _ls("_lead_thread_key")
         key = f("dm", "thread", "", "Jane Doe")
         assert key.startswith("lead:dm:thread:") and len(key) > len("lead:dm:thread:")
         assert key == f("dm", "thread", "", " jane doe ")
 
     def test_key_ignores_message_text_entirely(self):
-        f = _fn("_lead_thread_key")
+        f = _ls("_lead_thread_key")
         assert f("comment_reply", "feedurn://urn:li:activity:1", "https://x/in/jane") == \
                f("comment_reply", "feedurn://urn:li:activity:1", "https://x/in/jane")
 
@@ -74,13 +90,13 @@ class TestFlagLeadSignal:
 
     def _run(self, text="How much do you charge?", **over):
         p = self._patches(**over)
-        with patch(f"{_RA}.has_lead_signal", return_value=p["has_lead_signal"]) as has, \
-             patch(f"{_RA}.detect_lead_signals", return_value=p["detect"]) as det, \
-             patch(f"{_RA}.generate_lead_response", return_value=p["draft"]) as gen, \
-             patch(f"{_RA}.insert_lead_signal", return_value=p["insert"]) as ins, \
-             patch(f"{_RA}.log_info"), patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_LS}.has_lead_signal", return_value=p["has_lead_signal"]) as has, \
+             patch(f"{_LS}.detect_lead_signals", return_value=p["detect"]) as det, \
+             patch(f"{_LS}.generate_lead_response", return_value=p["draft"]) as gen, \
+             patch(f"{_LS}.insert_lead_signal", return_value=p["insert"]) as ins, \
+             patch(f"{_LS}.log_info"), patch(f"{_LS}.log_warning") as warn:
             from cqc_lem.utilities.db import LeadSignalSource
-            result = _fn("_flag_lead_signal")(1, text, LeadSignalSource.POST_COMMENT, "post:7",
+            result = _ls("_flag_lead_signal")(1, text, LeadSignalSource.POST_COMMENT, "post:7",
                                               person_name="Jane", person_profile_url="https://x/in/jane",
                                               post_id=7, context_url="https://x/post/7",
                                               my_profile=MagicMock())
@@ -114,23 +130,23 @@ class TestFlagLeadSignal:
 
     def test_draft_failure_still_queues_the_signal(self):
         p = self._patches()
-        with patch(f"{_RA}.has_lead_signal", return_value=False), \
-             patch(f"{_RA}.detect_lead_signals", return_value=p["detect"]), \
-             patch(f"{_RA}.generate_lead_response", side_effect=RuntimeError("llm down")), \
-             patch(f"{_RA}.insert_lead_signal", return_value=9) as ins, \
-             patch(f"{_RA}.log_info"), patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_LS}.has_lead_signal", return_value=False), \
+             patch(f"{_LS}.detect_lead_signals", return_value=p["detect"]), \
+             patch(f"{_LS}.generate_lead_response", side_effect=RuntimeError("llm down")), \
+             patch(f"{_LS}.insert_lead_signal", return_value=9) as ins, \
+             patch(f"{_LS}.log_info"), patch(f"{_LS}.log_warning") as warn:
             from cqc_lem.utilities.db import LeadSignalSource
-            result = _fn("_flag_lead_signal")(1, "how much?", LeadSignalSource.DM, "thread",
+            result = _ls("_flag_lead_signal")(1, "how much?", LeadSignalSource.DM, "thread",
                                               my_profile=MagicMock())
         assert result == 9
         assert ins.call_args.kwargs["draft_response"] is None
         warn.assert_called_once()
 
     def test_detection_errors_are_non_fatal(self):
-        with patch(f"{_RA}.has_lead_signal", side_effect=RuntimeError("db down")), \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_LS}.has_lead_signal", side_effect=RuntimeError("db down")), \
+             patch(f"{_LS}.log_warning") as warn:
             from cqc_lem.utilities.db import LeadSignalSource
-            assert _fn("_flag_lead_signal")(1, "how much?", LeadSignalSource.DM, "t") is None
+            assert _ls("_flag_lead_signal")(1, "how much?", LeadSignalSource.DM, "t") is None
         warn.assert_called_once()
 
 

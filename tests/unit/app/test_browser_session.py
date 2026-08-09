@@ -14,18 +14,22 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MOD = "cqc_lem.app.run_automation"
+# `browser_session` / `get_current_profile` moved down to `utilities/linkedin/session.py` (#1154),
+# so THAT is the module whose bindings the context manager reads — patching them on
+# `run_automation` would rebind a name nothing looks at. The leak guard below still reads
+# run_automation, because the TASKS that acquire a session did not move.
+_SESSION = "cqc_lem.utilities.linkedin.session"
 _SRC = pathlib.Path("src/cqc_lem/app/run_automation.py")
 
 
 class TestBrowserSession:
     def test_yields_the_four_values_and_quits(self):
-        from cqc_lem.app.run_automation import browser_session
+        from cqc_lem.utilities.linkedin.session import browser_session
 
         driver = MagicMock()
-        with patch(f"{_MOD}.get_current_profile",
+        with patch(f"{_SESSION}.get_current_profile",
                    return_value=(driver, "wait", "e@x.com", "profile")) as acquire, \
-             patch(f"{_MOD}.quit_gracefully") as quit_g:
+             patch(f"{_SESSION}.quit_gracefully") as quit_g:
             with browser_session(7, "Sync Groups") as session:
                 assert session.driver is driver
                 assert session.user_email == "e@x.com"
@@ -34,17 +38,17 @@ class TestBrowserSession:
         quit_g.assert_called_once_with(driver)
 
     def test_it_still_unpacks_as_the_historical_4_tuple(self):
-        from cqc_lem.app.run_automation import browser_session
+        from cqc_lem.utilities.linkedin.session import browser_session
 
         driver = MagicMock()
-        with patch(f"{_MOD}.get_current_profile", return_value=(driver, "w", "e", "p")), \
-             patch(f"{_MOD}.quit_gracefully"):
+        with patch(f"{_SESSION}.get_current_profile", return_value=(driver, "w", "e", "p")), \
+             patch(f"{_SESSION}.quit_gracefully"):
             with browser_session(7, "X") as session:
                 d, w, email, profile = session
         assert (d, w, email, profile) == (driver, "w", "e", "p")
 
     def test_the_session_is_returned_even_when_the_body_raises(self):
-        from cqc_lem.app.run_automation import browser_session
+        from cqc_lem.utilities.linkedin.session import browser_session
 
         driver = MagicMock()
 
@@ -52,8 +56,8 @@ class TestBrowserSession:
             with browser_session(7, "X"):
                 raise RuntimeError("task body failed")
 
-        with patch(f"{_MOD}.get_current_profile", return_value=(driver, "w", "e", "p")), \
-             patch(f"{_MOD}.quit_gracefully") as quit_g:
+        with patch(f"{_SESSION}.get_current_profile", return_value=(driver, "w", "e", "p")), \
+             patch(f"{_SESSION}.quit_gracefully") as quit_g:
             with pytest.raises(RuntimeError):
                 blow_up()
 
@@ -61,11 +65,11 @@ class TestBrowserSession:
 
     def test_kwargs_reach_get_current_profile(self):
         """measurement_only and force_refresh are the real per-caller variations."""
-        from cqc_lem.app.run_automation import browser_session
+        from cqc_lem.utilities.linkedin.session import browser_session
 
-        with patch(f"{_MOD}.get_current_profile",
+        with patch(f"{_SESSION}.get_current_profile",
                    return_value=(MagicMock(), "w", "e", "p")) as acquire, \
-             patch(f"{_MOD}.quit_gracefully"):
+             patch(f"{_SESSION}.quit_gracefully"):
             with browser_session(3, "Post Stats", measurement_only=True):
                 pass
 
@@ -73,14 +77,14 @@ class TestBrowserSession:
 
     def test_an_acquisition_failure_is_not_swallowed(self):
         """Each caller answers a 429 / auth wall differently; guessing one would be worse."""
-        from cqc_lem.app.run_automation import browser_session
+        from cqc_lem.utilities.linkedin.session import browser_session
 
         def acquire_fails():
             with browser_session(7, "X"):
                 pass
 
-        with patch(f"{_MOD}.get_current_profile", side_effect=RuntimeError("429")), \
-             patch(f"{_MOD}.quit_gracefully") as quit_g:
+        with patch(f"{_SESSION}.get_current_profile", side_effect=RuntimeError("429")), \
+             patch(f"{_SESSION}.quit_gracefully") as quit_g:
             with pytest.raises(RuntimeError):
                 acquire_fails()
 

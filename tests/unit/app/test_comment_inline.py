@@ -19,16 +19,16 @@ def _no_sleep():
 
 class TestStripNonBmp:
     def test_drops_emoji_keeps_text(self):
-        from cqc_lem.app.run_automation import _strip_non_bmp
+        from cqc_lem.utilities.linkedin_formatter import strip_non_bmp as _strip_non_bmp
         assert _strip_non_bmp("Hooked and not even sorry 😄 nice") == "Hooked and not even sorry  nice"
 
     def test_plain_ascii_unchanged(self):
-        from cqc_lem.app.run_automation import _strip_non_bmp
+        from cqc_lem.utilities.linkedin_formatter import strip_non_bmp as _strip_non_bmp
         assert _strip_non_bmp("plain ascii, nothing fancy here") == "plain ascii, nothing fancy here"
 
     def test_normalizes_rogue_typography(self):
         # Em dashes / smart quotes are AI tell-tale signs — normalized to plain ASCII before typing.
-        from cqc_lem.app.run_automation import _strip_non_bmp
+        from cqc_lem.utilities.linkedin_formatter import strip_non_bmp as _strip_non_bmp
         assert _strip_non_bmp("clean copy—no em dashes and “no” smart quotes") == \
             "clean copy - no em dashes and \"no\" smart quotes"
 

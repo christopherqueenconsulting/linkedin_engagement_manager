@@ -1,4 +1,12 @@
-"""Unit tests for the SDUI inline reply helpers in run_automation."""
+"""Unit tests for the SDUI inline reply helpers.
+
+Since #1154 the two reply paths live in DIFFERENT modules: `_reply_under_comment_inline`, the
+composer resolution they share, and the thread walk all moved down to
+`utilities/linkedin/composer.py`, while `_reply_to_comment_inline` stayed in `run_automation`.
+A collaborator therefore has to be patched on the module that READS it — patching
+`run_automation._comment_container` for code that now lives in composer.py rebinds a name
+nothing looks at, and the test would pass having tested nothing.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -7,11 +15,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+_CMP = "cqc_lem.utilities.linkedin.composer"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_RA}.time.sleep"), patch(f"{_CMP}.time.sleep"):
         yield
 
 
@@ -62,54 +71,54 @@ class TestReplyComposerForComment:
     """
 
     def test_prefers_the_composer_nested_in_this_comment(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         main, mine = _box(100), _box(1030)          # main box is first in document order
         comment = _comment(900, composers=[mine])
-        assert ra._reply_composer_for_comment(_driver(main, mine), comment, user_id=1) is mine
+        assert mod._reply_composer_for_comment(_driver(main, mine), comment, user_id=1) is mine
 
     def test_nested_pick_is_the_box_at_the_end_of_the_reply_list(self):
         # A comment's replies nest inside it and the reply box opens after them, so the box nearest
         # the container's BOTTOM is ours — not the first one in document order.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         a_replys_box, mine = _box(950), _box(1180)
         comment = _comment(900, height=300, composers=[a_replys_box, mine])   # bottom = 1200
-        assert ra._reply_composer_for_comment(_driver(a_replys_box, mine), comment, user_id=1) is mine
+        assert mod._reply_composer_for_comment(_driver(a_replys_box, mine), comment, user_id=1) is mine
 
     def test_takes_the_sibling_box_below_and_never_the_main_box_above(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         main, sibling = _box(100), _box(1030)
         comment = _comment(900)                     # bottom = 1020
-        with patch(f"{_RA}._comment_container", return_value=comment):
-            got = ra._reply_composer_for_comment(_driver(main, sibling), comment, user_id=1)
+        with patch(f"{_CMP}._comment_container", return_value=comment):
+            got = mod._reply_composer_for_comment(_driver(main, sibling), comment, user_id=1)
         assert got is sibling
 
     def test_skips_when_the_only_composer_is_above_the_comment(self):
         # Acceptance: borrow nothing. A composer above the comment cannot be its reply box, and
         # answering into the main comment box posts our reply as a new top-level comment.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         main = _box(100)
-        assert ra._reply_composer_for_comment(_driver(main), _comment(900), user_id=1) is None
+        assert mod._reply_composer_for_comment(_driver(main), _comment(900), user_id=1) is None
 
     def test_skips_when_the_nearest_composer_belongs_to_another_comment(self):
         # Our reply box never opened and a LATER comment has one — replying there answers the
         # wrong person, so skip and let the sweep log the miss.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         theirs = _box(1300)
         driver = _driver(theirs)
         driver.execute_script.return_value = False          # neither element contains the other
-        with patch(f"{_RA}._comment_container", return_value=_comment(1200)):
-            got = ra._reply_composer_for_comment(driver, _comment(900), user_id=1)
+        with patch(f"{_CMP}._comment_container", return_value=_comment(1200)):
+            got = mod._reply_composer_for_comment(driver, _comment(900), user_id=1)
         assert got is None
 
     def test_accepts_a_sibling_box_whose_owner_wraps_this_comment(self):
         # The walk-up can stop on a wrapper that HOLDS the comment (reply lists sit inside one);
         # that is still this comment's thread, not another's.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         sibling = _box(1030)
         driver = _driver(sibling)
         driver.execute_script.return_value = True           # wrapper contains the comment
-        with patch(f"{_RA}._comment_container", return_value=_comment(880, height=400)):
-            got = ra._reply_composer_for_comment(driver, _comment(900), user_id=1)
+        with patch(f"{_CMP}._comment_container", return_value=_comment(880, height=400)):
+            got = mod._reply_composer_for_comment(driver, _comment(900), user_id=1)
         assert got is sibling
 
     def test_unresolvable_owner_still_takes_the_box_below_this_comment(self):
@@ -118,43 +127,43 @@ class TestReplyComposerForComment:
         # it can return null for a perfectly valid reply box. Demanding it resolve would make this
         # branch skip EVERY sibling render, silently. Unresolved is not proof the box is another
         # comment's; the hard above-filter is what keeps the post's main box out.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         main, sibling = _box(100), _box(1030)
-        with patch(f"{_RA}._comment_container", return_value=None):
-            got = ra._reply_composer_for_comment(_driver(main, sibling), _comment(900), user_id=1)
+        with patch(f"{_CMP}._comment_container", return_value=None):
+            got = mod._reply_composer_for_comment(_driver(main, sibling), _comment(900), user_id=1)
         assert got is sibling
 
     def test_hidden_composers_are_not_candidates(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         collapsed = _box(1030, height=0)                    # display:none renders 0x0
-        assert ra._reply_composer_for_comment(_driver(collapsed), _comment(900), user_id=1) is None
+        assert mod._reply_composer_for_comment(_driver(collapsed), _comment(900), user_id=1) is None
 
     def test_none_when_the_comment_itself_is_not_rendered(self):
         # #886 dropped the callers' own miss log, so EVERY None out of here has to say so itself —
         # a stale comment must not drop a reply with no trace at any level.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         comment = MagicMock()
         type(comment).rect = property(lambda self: (_ for _ in ()).throw(Exception("stale")))
-        with patch(f"{_RA}.log_debug") as ld:
-            assert ra._reply_composer_for_comment(_driver(_box(1030)), comment, user_id=1) is None
+        with patch(f"{_CMP}.log_debug") as ld:
+            assert mod._reply_composer_for_comment(_driver(_box(1030)), comment, user_id=1) is None
         ld.assert_called_once()
 
 
 class TestInSameComment:
     def test_identity_needs_no_dom_call(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         comment = MagicMock(); driver = MagicMock()
-        assert ra._in_same_comment(driver, comment, comment) is True
+        assert mod._in_same_comment(driver, comment, comment) is True
         driver.execute_script.assert_not_called()
 
     def test_unresolved_owner_is_not_ours(self):
-        from cqc_lem.app import run_automation as ra
-        assert ra._in_same_comment(MagicMock(), MagicMock(), None) is False
+        from cqc_lem.utilities.linkedin import composer as mod
+        assert mod._in_same_comment(MagicMock(), MagicMock(), None) is False
 
     def test_dom_failure_is_not_ours(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         driver = MagicMock(); driver.execute_script.side_effect = Exception("stale")
-        assert ra._in_same_comment(driver, MagicMock(), MagicMock()) is False
+        assert mod._in_same_comment(driver, MagicMock(), MagicMock()) is False
 
 
 class TestReplyInline:
@@ -251,76 +260,82 @@ class TestReplyUnderCommentComposerPick:
     """
 
     def test_main_comment_box_as_the_only_composer_is_never_borrowed(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         main = _box(100)                                    # the post's own 'Add a comment' box
         comment = _thread_comment(900)
         driver = _driver(main)
-        with patch(f"{_RA}.ActionChains"):
-            ok = ra._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
+        with patch(f"{_CMP}.ActionChains"):
+            ok = mod._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
         assert ok is False
         main.send_keys.assert_not_called()
         main.click.assert_not_called()
 
     def test_another_comments_composer_is_never_typed_into(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         theirs = _box(1300)                                 # a LATER comment's open reply box
         comment = _thread_comment(900)
         driver = _driver(theirs)
         driver.execute_script.return_value = False          # neither element contains the other
-        with patch(f"{_RA}.ActionChains"), \
-             patch(f"{_RA}._comment_container", return_value=_comment(1200)):
-            ok = ra._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
+        with patch(f"{_CMP}.ActionChains"), \
+             patch(f"{_CMP}._comment_container", return_value=_comment(1200)):
+            ok = mod._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
         assert ok is False
         theirs.send_keys.assert_not_called()
 
     def test_types_into_our_own_box_below_the_comment(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         main, mine = _box(100), _box(1030, text="")
         comment = _thread_comment(900, composers=[mine])
         driver = _driver(main, mine); driver.execute_script.return_value = True
-        with patch(f"{_RA}.ActionChains"):
-            ok = ra._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
+        with patch(f"{_CMP}.ActionChains"):
+            ok = mod._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
         assert ok is True
         mine.send_keys.assert_called_once()
         main.send_keys.assert_not_called()
 
     def test_both_reply_paths_use_the_same_composer_resolver(self):
         # Acceptance: ONE composer-resolution helper. Kept as a test so a future edit can't quietly
-        # reintroduce a second, softer pick on one of the two paths.
+        # reintroduce a second, softer pick on one of the two paths. Since #1154 the two paths sit in
+        # different modules, so "the same helper" has to be asserted in both senses: the two module
+        # bindings are the SAME object, and the same mock stands in for both of them.
         from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
+        assert ra._reply_composer_for_comment is mod._reply_composer_for_comment
         composer = MagicMock(); composer.text = ""
         under_comment, inline_comment = MagicMock(), MagicMock()
         under_comment.find_elements.return_value = [MagicMock(name="reply_btn")]
         driver = MagicMock(); driver.execute_script.return_value = True
-        with patch(f"{_RA}.ActionChains"), patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}._reply_composer_for_comment", return_value=composer) as rc:
-            assert ra._reply_under_comment_inline(driver, _wait(), under_comment, "reply one", user_id=1) is True
+        rc = MagicMock(return_value=composer)
+        with patch(f"{_CMP}.ActionChains"), patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_CMP}._reply_composer_for_comment", rc), \
+             patch(f"{_RA}._reply_composer_for_comment", rc):
+            assert mod._reply_under_comment_inline(driver, _wait(), under_comment, "reply one", user_id=1) is True
             assert ra._reply_to_comment_inline(driver, _wait(), inline_comment, "reply two", user_id=1) is True
         assert [c.args[1] for c in rc.call_args_list] == [under_comment, inline_comment]
 
     def test_empty_reply_text_is_never_typed(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         composer = MagicMock()
         comment = MagicMock(); comment.find_elements.return_value = [MagicMock(name="reply_btn")]
-        with patch(f"{_RA}.ActionChains"), \
-             patch(f"{_RA}._reply_composer_for_comment", return_value=composer):
-            ok = ra._reply_under_comment_inline(MagicMock(), _wait(), comment, "   ", user_id=1)
+        with patch(f"{_CMP}.ActionChains"), \
+             patch(f"{_CMP}._reply_composer_for_comment", return_value=composer):
+            ok = mod._reply_under_comment_inline(MagicMock(), _wait(), comment, "   ", user_id=1)
         assert ok is False
         composer.send_keys.assert_not_called()
 
 
 class TestCommentItemsFromThread:
     def test_walks_up_from_reply_buttons(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin import composer as mod
         rb1, rb2 = MagicMock(), MagicMock()
         item1, item2 = MagicMock(), MagicMock()
         driver = MagicMock()
         driver.execute_script.side_effect = [item1, item2]  # JS walk-up returns a container each
-        with patch(f"{_RA}.find_all_first", return_value=[rb1, rb2]):
-            items = ra._comment_items_from_thread(driver)
+        with patch(f"{_CMP}.find_all_first", return_value=[rb1, rb2]):
+            items = mod._comment_items_from_thread(driver)
         assert items == [item1, item2]
 
     def test_empty_when_no_reply_buttons(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.find_all_first", return_value=[]):
-            assert ra._comment_items_from_thread(MagicMock()) == []
+        from cqc_lem.utilities.linkedin import composer as mod
+        with patch(f"{_CMP}.find_all_first", return_value=[]):
+            assert mod._comment_items_from_thread(MagicMock()) == []

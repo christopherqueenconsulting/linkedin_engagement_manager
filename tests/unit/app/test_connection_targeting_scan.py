@@ -9,6 +9,9 @@ pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
+# `_draft_connect_note` moved down to `utilities/dm_templates.py` (#1154) and took its LLM
+# import with it, so the refinement call resolves THERE now.
+_DM = "cqc_lem.utilities.dm_templates"
 
 _ENGAGERS = [{"person_name": "Jane Doe",
               "person_profile_url": "https://www.linkedin.com/in/jane-doe",
@@ -36,7 +39,7 @@ def _scan(prefs=None, engagers=None, requested=None, open_reqs=0, sent_today=0, 
         "get_profile_facts": facts or {},
     }
     with patch.multiple(_RA, **{k: MagicMock(return_value=v) for k, v in patches.items()}), \
-         patch(f"{_RA}.get_ai_message_refinement", return_value="Refined note"), \
+         patch(f"{_DM}.get_ai_message_refinement", return_value="Refined note"), \
          patch(f"{_RA}.insert_connection_request", return_value=insert_id) as insert, \
          patch(f"{_RA}._adjacent_author_signals", return_value=adjacent or []), \
          patch(f"{_RA}.get_current_profile") as profile, \
@@ -172,7 +175,7 @@ class TestScanFiling:
              patch(f"{_RA}.get_engager_candidates", return_value=_ENGAGERS), \
              patch(f"{_RA}.get_requested_person_keys", return_value=set()), \
              patch(f"{_RA}.get_profile_facts", return_value={}), \
-             patch(f"{_RA}.get_ai_message_refinement", return_value="Refined note"), \
+             patch(f"{_DM}.get_ai_message_refinement", return_value="Refined note"), \
              patch(f"{_RA}.get_current_profile", side_effect=RuntimeError("no session")), \
              patch(f"{_RA}.insert_connection_request", return_value=7) as insert:
             out = ra.scan_connection_candidates.run(user_id=1)
@@ -181,32 +184,32 @@ class TestScanFiling:
 
 class TestConnectNoteDrafting:
     def test_falls_back_to_the_template_when_the_llm_fails(self):
-        from cqc_lem.app import run_automation as ra
         from cqc_lem.utilities.connection_targeting import CandidateSignal, score_candidate
+        from cqc_lem.utilities.dm_templates import _draft_connect_note
         candidate = score_candidate([CandidateSignal(person_name="Jane Doe",
                                                      person_profile_url="https://x/in/jane-doe")],
                                     datetime(2026, 7, 25))
-        with patch(f"{_RA}.get_ai_message_refinement", side_effect=RuntimeError("llm down")):
-            note = ra._draft_connect_note(1, candidate, topic="ops")
+        with patch(f"{_DM}.get_ai_message_refinement", side_effect=RuntimeError("llm down")):
+            note = _draft_connect_note(1, candidate, topic="ops")
         assert "Jane" in note and "ops" in note
 
     def test_blank_refinement_falls_back_to_the_template(self):
-        from cqc_lem.app import run_automation as ra
         from cqc_lem.utilities.connection_targeting import CandidateSignal, score_candidate
+        from cqc_lem.utilities.dm_templates import _draft_connect_note
         candidate = score_candidate([CandidateSignal(person_name="Jane Doe",
                                                      person_profile_url="https://x/in/jane-doe")],
                                     datetime(2026, 7, 25))
-        with patch(f"{_RA}.get_ai_message_refinement", return_value="  "):
-            assert "Jane" in ra._draft_connect_note(1, candidate)
+        with patch(f"{_DM}.get_ai_message_refinement", return_value="  "):
+            assert "Jane" in _draft_connect_note(1, candidate)
 
     def test_refined_note_is_truncated_to_linkedins_limit(self):
-        from cqc_lem.app import run_automation as ra
         from cqc_lem.utilities.connection_targeting import CONNECT_NOTE_LIMIT, CandidateSignal, score_candidate
+        from cqc_lem.utilities.dm_templates import _draft_connect_note
         candidate = score_candidate([CandidateSignal(person_name="Jane",
                                                      person_profile_url="https://x/in/jane")],
                                     datetime(2026, 7, 25))
-        with patch(f"{_RA}.get_ai_message_refinement", return_value="x" * 500):
-            assert len(ra._draft_connect_note(1, candidate)) == CONNECT_NOTE_LIMIT
+        with patch(f"{_DM}.get_ai_message_refinement", return_value="x" * 500):
+            assert len(_draft_connect_note(1, candidate)) == CONNECT_NOTE_LIMIT
 
 
 class TestAdjacentAuthorHarvest:
