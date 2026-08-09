@@ -908,8 +908,15 @@ release_worktree() {  # $1=path -> remove it unless it is in use or holds unsave
   case "$wt" in "$WORKROOT"/*) ;; *) return 0 ;; esac   # never touch anything outside work/
   br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   if [ -n "$br" ] && ! branch_lock_free "$br"; then return 0; fi
-  if worktree_has_unsaved_work "$wt"; then
-    log "worktree $wt kept: it holds uncommitted or unpushed work."
+  # WORKTREE_MERGED=1 means GitHub confirmed the branch's PR merged, so unpushed-looking commits are
+  # the squash, not lost work. An UNCOMMITTED tree is still kept either way — a merged PR says
+  # nothing about edits made after it landed.
+  if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+    log "worktree $wt kept: uncommitted changes."
+    return 0
+  fi
+  if [ "${WORKTREE_MERGED:-0}" != "1" ] && worktree_has_unsaved_work "$wt"; then
+    log "worktree $wt kept: it holds unpushed work and no merged PR."
     return 0
   fi
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -934,15 +941,30 @@ sweep_stale_worktrees() {
   # the assumption that a PR is closed, when we simply could not ask, is the wrong way to be wrong.
   open="$(gh pr list --repo "$SLUG" --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null)" || return 0
   [ -z "$open" ] && ! gh pr list --repo "$SLUG" --state open --limit 1 >/dev/null 2>&1 && return 0
-  for wt in "$WORKROOT"/*/; do
-    [ -d "$wt" ] || continue
-    wt="${wt%/}"
+  # MERGED branches must be asked about separately, because local git CANNOT tell they landed. The
+  # repo squash-merges and auto-deletes the branch, so a merged worktree has no `origin/<branch>`
+  # and its commits never appear on main — `origin/main..HEAD` stays non-empty forever and the
+  # unsaved-work check reads shipped work as unsaved. Measured: 198 of 255 worktrees here.
+  merged="$(gh pr list --repo "$SLUG" --state merged --limit 400 --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
+  # Iterate GIT'S OWN inventory, not a glob. A branch name contains slashes, so a worktree lands at
+  # work/feature/claude-issue-123 — two levels down. A `"$WORKROOT"/*/` glob sees only the
+  # intermediate `work/feature/` directory, which is not a worktree, so the first version of this
+  # swept 3 entries instead of 255 and reported success. Ask the source of truth.
+  while IFS= read -r wt; do
+    [ -n "$wt" ] && [ -d "$wt" ] || continue
+    case "$wt" in "$WORKROOT"/*) ;; *) continue ;; esac
     # Grace period: a run that just finished may still be opening its PR.
     [ $(( now - $(stat -c %Y "$wt" 2>/dev/null || echo "$now") )) -lt "${WORKTREE_GRACE_SECONDS:-7200}" ] && continue
     br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$br" ] && printf '%s\n' "$open" | grep -qxF "$br" && continue   # still has an open PR
-    release_worktree "$wt" && [ ! -d "$wt" ] && removed=$((removed+1))
-  done
+    if [ -n "$br" ] && printf '%s\n' "$merged" | grep -qxF "$br"; then
+      # GitHub says this landed, so the local divergence is the squash, not lost work.
+      WORKTREE_MERGED=1 release_worktree "$wt"
+    else
+      release_worktree "$wt"
+    fi
+    [ ! -d "$wt" ] && removed=$((removed+1))
+  done < <(git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}')
   [ "$removed" -gt 0 ] && log "worktree sweep: removed $removed stale worktree(s)."
   return 0
 }
