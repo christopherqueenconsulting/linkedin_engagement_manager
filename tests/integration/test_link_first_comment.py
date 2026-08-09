@@ -142,6 +142,14 @@ def _run_publish_and_seed(store):
         stack.enter_context(patch(f"{_FEED}.comment_on_linkedin_post", side_effect=_comment))
         stack.enter_context(patch(f"{_POST}.auto_seed_comment_on_post", seed_task))
         stack.enter_context(patch(f"{_POST}.sweep_reply_comments"))
+        # The second wave is not what this file is about, but leaving its dispatch real is not free
+        # (issue #1197). `auto_second_wave_comment` is a QueueOnce task keyed on (user_id, post_id),
+        # and every test here publishes post 10 — so with a Redis on the box the first test takes the
+        # lock, nothing releases it (`unlock_before_run` frees it when the task RUNS, and no worker
+        # ever runs it), and the next test blocks for the full 30s `blocking_timeout` before
+        # celery-once gives up and gracefully drops the message. Thirty seconds of `time.sleep(0.1)`
+        # inside `redis/lock.py`, asserting nothing.
+        stack.enter_context(patch(f"{_POST}.auto_second_wave_comment"))
         stack.enter_context(patch("cqc_lem.utilities.utils.purge_post_assets"))
         stack.enter_context(patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()))
         stack.enter_context(patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"))
