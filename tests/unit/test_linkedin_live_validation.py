@@ -1235,7 +1235,7 @@ class TestProfileScrapeProbe:
         """
         import re
 
-        from cqc_lem.app.run_automation import _DEGREE_TOKENS
+        from cqc_lem.app.engagement.invites import _DEGREE_TOKENS
         pattern = re.search(r"/(\^.*\$)/i\.test", llv._DEGREE_ANCHOR_JS).group(1)
         badge = re.compile(pattern, re.IGNORECASE)
         for token in _DEGREE_TOKENS:

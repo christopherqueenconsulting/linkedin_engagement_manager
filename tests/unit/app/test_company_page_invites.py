@@ -14,7 +14,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _CPI = "cqc_lem.utilities.linkedin.company_page_inviter"
-_RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -437,13 +439,13 @@ class TestSelectionPacing:
 class TestInviteTask:
     def _run_task(self, plan, paused=False):
         from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
-        with patch(f"{_RA}.is_automation_paused", return_value=paused), \
-             patch(f"{_RA}.plan_daily_invites", return_value=plan), \
-             patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())) as drv, \
-             patch(f"{_RA}.quit_gracefully"), \
-             patch(f"{_RA}.automate_invitations",
+        with patch(f"{_INV}.is_automation_paused", return_value=paused), \
+             patch(f"{_INV}.plan_daily_invites", return_value=plan), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())) as drv, \
+             patch(f"{_INV}.quit_gracefully"), \
+             patch(f"{_INV}.automate_invitations",
                    return_value={"status": "sent", "invites_sent": 3}) as run, \
-             patch(f"{_RA}.track_company_page_invite_run") as track:
+             patch(f"{_INV}.track_company_page_invite_run") as track:
             result = automate_invites_to_company_page_for_user.run(user_id=1)
         return result, drv, run, track
 
@@ -472,14 +474,14 @@ class TestInviteTask:
     def test_a_selenium_failure_still_emits_a_run_and_quits_the_driver(self):
         from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
-        with patch(f"{_RA}.is_automation_paused", return_value=False), \
-             patch(f"{_RA}.plan_daily_invites",
+        with patch(f"{_INV}.is_automation_paused", return_value=False), \
+             patch(f"{_INV}.plan_daily_invites",
                    return_value={"allowance": 5, "status": "sent", "cap": 5, "sent_today": 0}), \
-             patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
-             patch(f"{_RA}.quit_gracefully") as quit_driver, \
-             patch(f"{_RA}.automate_invitations", side_effect=RuntimeError("boom")), \
-             patch(f"{_RA}.log_error"), \
-             patch(f"{_RA}.track_company_page_invite_run") as track:
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_INV}.quit_gracefully") as quit_driver, \
+             patch(f"{_INV}.automate_invitations", side_effect=RuntimeError("boom")), \
+             patch(f"{_INV}.log_error"), \
+             patch(f"{_INV}.track_company_page_invite_run") as track:
             automate_invites_to_company_page_for_user.run(user_id=1)
         quit_driver.assert_called_once()
         assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
@@ -491,14 +493,14 @@ class TestInviteTask:
         """
         from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_SESSION_FAILED
-        with patch(f"{_RA}.is_automation_paused", return_value=False), \
-             patch(f"{_RA}.plan_daily_invites",
+        with patch(f"{_INV}.is_automation_paused", return_value=False), \
+             patch(f"{_INV}.plan_daily_invites",
                    return_value={"allowance": 5, "status": "sent", "cap": 5, "sent_today": 0}), \
-             patch(f"{_RA}.get_driver_wait_pair", side_effect=RuntimeError("no session")), \
-             patch(f"{_RA}.quit_gracefully") as quit_driver, \
-             patch(f"{_RA}.automate_invitations") as run, \
-             patch(f"{_RA}.log_error"), \
-             patch(f"{_RA}.track_company_page_invite_run") as track:
+             patch(f"{_INV}.get_driver_wait_pair", side_effect=RuntimeError("no session")), \
+             patch(f"{_INV}.quit_gracefully") as quit_driver, \
+             patch(f"{_INV}.automate_invitations") as run, \
+             patch(f"{_INV}.log_error"), \
+             patch(f"{_INV}.track_company_page_invite_run") as track:
             automate_invites_to_company_page_for_user.run(user_id=1)
         run.assert_not_called()
         quit_driver.assert_not_called()  # nothing to quit — an unbound driver would raise here

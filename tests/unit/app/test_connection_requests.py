@@ -8,7 +8,9 @@ from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -18,11 +20,11 @@ class TestSendConnectionRequest:
                 "message": "hi jane", "status": status}
 
     def test_sends_and_marks_sent(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", return_value=(True, "Connection Request Sent Successfully")) as send, \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now", return_value=(True, "Connection Request Sent Successfully")) as send, \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             out = ra.send_connection_request(3)
         send.assert_called_once_with(1, "https://x/in/jane", "hi jane")
@@ -31,11 +33,11 @@ class TestSendConnectionRequest:
         assert "sent" in out
 
     def test_failed_send_marks_failed(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             ra.send_connection_request(3)
         from cqc_lem.utilities.db import ConnectionRequestStatus
@@ -43,11 +45,11 @@ class TestSendConnectionRequest:
                                    failure_reason=NO_CONNECT_BUTTON_MESSAGE)
 
     def test_defers_when_cap_reached(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=10), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now") as send, \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now") as send, \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             out = ra.send_connection_request(3)
         send.assert_not_called()  # over cap → never sends
@@ -57,12 +59,12 @@ class TestSendConnectionRequest:
 
     def test_defers_when_throttled(self):
         # Kill-switch / 429 breaker open mid-send → invite_to_connect_now raises → defer, not fail.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", side_effect=LinkedInRateLimited("throttled")), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now", side_effect=LinkedInRateLimited("throttled")), \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             out = ra.send_connection_request(3)
         from cqc_lem.utilities.db import ConnectionRequestStatus
@@ -70,9 +72,9 @@ class TestSendConnectionRequest:
         assert "throttled" in out.lower()
 
     def test_skips_non_sendable_status(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req(status="sent")), \
-             patch(f"{_RA}.invite_to_connect_now") as send:
+             patch(f"{_INV}.invite_to_connect_now") as send:
             out = ra.send_connection_request(3)
         send.assert_not_called()
         assert "not sendable" in out
@@ -80,15 +82,15 @@ class TestSendConnectionRequest:
 
 class TestInviteToConnectWrapper:
     def test_deferred_on_throttle(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
-        with patch(f"{_RA}.invite_to_connect_now", side_effect=LinkedInRateLimited("throttled")):
+        with patch(f"{_INV}.invite_to_connect_now", side_effect=LinkedInRateLimited("throttled")):
             out = ra.invite_to_connect(1, "https://x/in/jane", "hi")
         assert "deferred" in out.lower()
 
     def test_returns_success_string(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.invite_to_connect_now", return_value=(True, "ok")):
+        from cqc_lem.app.engagement import invites as ra
+        with patch(f"{_INV}.invite_to_connect_now", return_value=(True, "ok")):
             out = ra.invite_to_connect(1, "https://x/in/jane")
         assert out == "Connection Request Sent Successfully"
 

@@ -23,6 +23,9 @@ from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 
 _RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 _CPI = "cqc_lem.utilities.linkedin.company_page_inviter"
 _ZW = "cqc_lem.utilities.linkedin.zero_walk"
 
@@ -81,32 +84,32 @@ class _DomDriver:
 
 class TestDegreeBadgeIsReadFromWhatThePageWrites:
     def test_the_chain_leads_with_text_anchors_not_class_anchors(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         leading = ra._PROFILE_DEGREE_LOCATORS[0][1]
         assert "class" not in leading
         assert "1st" in leading and "2nd" in leading
 
     def test_a_first_degree_top_card_reads_as_first_degree(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = _DomDriver(TOP_CARD_HTML.format(degree="1st"))
         assert ra._profile_is_first_degree(driver) is True
 
     @pytest.mark.parametrize("degree", ["2nd", "3rd+", "· 2nd", "3rd degree connection"])
     def test_a_non_first_degree_top_card_does_not_block_the_invite(self, degree):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = _DomDriver(TOP_CARD_HTML.format(degree=degree))
         with patch(f"{_ZW}.log_warning") as warn:
             assert ra._profile_is_first_degree(driver) is False
         warn.assert_not_called()  # the chain SAW a badge — nothing to cross-check
 
     def test_first_degree_written_out_in_full_still_reads(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = _DomDriver(TOP_CARD_HTML.format(degree="1st degree connection"))
         assert ra._profile_is_first_degree(driver) is True
 
     def test_a_headline_containing_a_degree_token_is_not_a_badge(self):
         r"""`\b1st\b` over the page text would fire here forever — the badge is a WHOLE line."""
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         html = TOP_CARD_HTML.format(degree="Winner, 1st place in the 2026 Acme awards")
         driver = _DomDriver(html)
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
@@ -135,7 +138,7 @@ class TestTheBadgeMustBelongToThisProfile:
     """Document order is what attributes a badge to the profile — the top card is first."""
 
     def test_a_mutual_connections_badge_does_not_cancel_the_invite(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = _DomDriver(MUTUALS_HTML.format(degree="· 2nd"))
         with patch(f"{_ZW}.log_warning") as warn:
             assert ra._profile_is_first_degree(driver) is False
@@ -143,12 +146,12 @@ class TestTheBadgeMustBelongToThisProfile:
 
     def test_the_spelled_out_top_card_badge_still_outranks_a_later_bare_one(self):
         """Both text shapes are ONE union locator, so document order decides — not list order."""
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = _DomDriver(MUTUALS_HTML.format(degree="2nd degree connection"))
         assert ra._profile_is_first_degree(driver) is False
 
     def test_a_genuine_first_degree_top_card_is_unaffected(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = _DomDriver(MUTUALS_HTML.format(degree="1st"))
         assert ra._profile_is_first_degree(driver) is True
 
@@ -202,7 +205,7 @@ class TestDegreeBadgeZeroWalk:
         return driver
 
     def test_a_badge_the_chain_cannot_see_warns_as_drift(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = self._blind("Jane Doe\n2nd\nFractional CTO at Acme")
         with patch(f"{_ZW}.log_warning") as warn:
             assert ra._profile_is_first_degree(driver) is False
@@ -211,7 +214,7 @@ class TestDegreeBadgeZeroWalk:
 
     def test_a_profile_with_no_badge_at_all_stays_a_debug_no_op(self):
         """Your own profile carries no degree badge, and every invite run opens a profile."""
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = self._blind("Jane Doe\nFractional CTO at Acme")
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
             assert ra._profile_is_first_degree(driver) is False
@@ -219,7 +222,7 @@ class TestDegreeBadgeZeroWalk:
         debug.assert_called_once()
 
     def test_an_unreadable_page_grounds_nothing(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = MagicMock()
         driver.find_elements.return_value = []
         driver.find_element.side_effect = Exception("no main")
@@ -229,10 +232,10 @@ class TestDegreeBadgeZeroWalk:
         assert "unknown" in debug.call_args[0][0]
 
     def test_an_unreadable_chain_never_reaches_the_cross_check(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = MagicMock()
         driver.find_elements.side_effect = Exception("stale element")
-        with patch(f"{_RA}.log_warning") as warn, patch(f"{_ZW}.log_warning") as drift:
+        with patch(f"{_INV}.log_warning") as warn, patch(f"{_ZW}.log_warning") as drift:
             assert ra._profile_is_first_degree(driver) is False
         warn.assert_called_once()
         drift.assert_not_called()
