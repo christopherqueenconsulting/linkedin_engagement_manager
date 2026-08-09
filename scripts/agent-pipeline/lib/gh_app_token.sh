@@ -19,15 +19,25 @@
 #     one `poetry install` that ran last wins, so a python dependency here would be a lottery.
 #     openssl is in the base image and stable.
 #   - The minted token is cached in $BASE/state/gh-app-token (0600) with its expiry, and reused
-#     until 5 minutes before it lapses. A tick therefore costs zero extra API calls in the
-#     common case; only the first tick of each hour pays the two-call mint.
+#     while it still has more life left than one agent run can consume (see GH_APP_TOKEN_SKEW).
 #   - Never logged, never echoed to stdout except by gh_app_token() itself (whose only caller
 #     assigns it), and never written anywhere but the 0600 cache.
 
 BASE="${BASE:-/home/lem/agent-pipeline}"
+# GH_APP_ID / GH_APP_INSTALLATION_ID live in secrets.env, not config.env — the private key's
+# companions are secrets. Source it here rather than relying on lib/posthog.sh happening to be
+# sourced first: a reorder of tick.sh's lib loop would otherwise leave GH_APP_ID unset and silently
+# drop the pipeline back onto the OWNER's PAT, which is the exact property this file exists to end.
+# shellcheck disable=SC1091
+[ -f "$BASE/secrets.env" ] && . "$BASE/secrets.env" 2>/dev/null
 GH_APP_KEY="${GH_APP_KEY:-$BASE/secrets/github-app.pem}"
 GH_APP_TOKEN_CACHE="${GH_APP_TOKEN_CACHE:-$BASE/state/gh-app-token}"
-GH_APP_TOKEN_SKEW="${GH_APP_TOKEN_SKEW:-300}"   # refresh this many seconds before expiry
+# Refresh this many seconds before expiry. An installation token lives 60 min and is handed to a
+# `claude -p` run that may take CLAUDE_TIMEOUT (45m) before it pushes, so the skew has to exceed a
+# whole run: at 300s a tick could hand an agent a credential with five minutes left, and the run
+# would do all its work and then fail to push. 50 min leaves the shortest usable token still
+# outliving the longest run. Cost of the tighter window is one two-call mint per ~10 min of ticks.
+GH_APP_TOKEN_SKEW="${GH_APP_TOKEN_SKEW:-3000}"
 
 _b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
@@ -46,18 +56,40 @@ _gh_app_jwt() {
 }
 
 # Resolve the installation id once if the owner did not pin it. Cached into the same state dir so
-# this costs one call ever, not one per mint.
+# this costs one call ever, not one per mint. The installation is picked BY ACCOUNT, not as `.[0]`:
+# the cache is never invalidated, so a second installation appearing ahead of ours would pin the
+# wrong one permanently. Falls back to the first entry when the account cannot be matched.
 _gh_app_installation_id() {
-  local jwt f id
+  local jwt f id acct
   f="$BASE/state/gh-app-installation-id"
+  acct="${GH_APP_ACCOUNT:-${SLUG:-}}"; acct="${acct%%/*}"
   if [ -z "${GH_APP_INSTALLATION_ID:-}" ] && [ -s "$f" ]; then GH_APP_INSTALLATION_ID="$(cat "$f")"; fi
   [ -n "${GH_APP_INSTALLATION_ID:-}" ] && { printf '%s' "$GH_APP_INSTALLATION_ID"; return 0; }
   jwt="$(_gh_app_jwt)" || return 1
   id="$(curl -sS --max-time 10 -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
-        https://api.github.com/app/installations 2>/dev/null | jq -r '.[0].id // empty')"
+        https://api.github.com/app/installations 2>/dev/null \
+        | jq -r --arg a "$acct" '[.[] | select((.account.login // "") == $a) | .id] | first // (.[0].id // empty)' 2>/dev/null)"
   [ -n "$id" ] || return 1
   printf '%s' "$id" > "$f"
   printf '%s' "$id"
+}
+
+# The bot login this app acts as on GitHub — "<app slug>[bot]", e.g. cqc-lem-agent-pipeline[bot].
+# It is NOT cosmetic: tick.sh's trust boundary matches label appliers and issue authors by login,
+# and every one of those checks was written when the pipeline was `gitchrisqueen`. Resolved from
+# GET /app (the JWT already exists) and cached, because a wrong or missing login here silently
+# deadlocks the lanes rather than failing loudly.
+_gh_app_bot_login() {
+  local jwt f slug
+  f="$BASE/state/gh-app-bot-login"
+  [ -n "${GH_APP_BOT_LOGIN:-}" ] && { printf '%s' "$GH_APP_BOT_LOGIN"; return 0; }
+  if [ -s "$f" ]; then printf '%s' "$(cat "$f")"; return 0; fi
+  jwt="$(_gh_app_jwt)" || return 1
+  slug="$(curl -sS --max-time 10 -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
+          https://api.github.com/app 2>/dev/null | jq -r '.slug // empty')"
+  [ -n "$slug" ] || return 1
+  printf '%s[bot]' "$slug" > "$f"
+  printf '%s[bot]' "$slug"
 }
 
 # gh_app_token -> prints a usable installation token, or nothing (rc 1) when the app is not
@@ -97,10 +129,13 @@ gh_app_token() {
 # Export GH_TOKEN as the app when possible. Returns 0 when the app identity is in force, 1 when
 # the caller should keep whatever credential it already had.
 gh_app_export_token() {
-  local tok
+  local tok login
   [ "${USE_GH_APP:-0}" = "1" ] || return 1
   tok="$(gh_app_token)" || return 1
   export GH_TOKEN="$tok"
   export GH_APP_IDENTITY_ACTIVE=1
+  # Best-effort: the token works without it, but the trust boundary needs the login to recognise
+  # the pipeline's own writes. tick.sh warns when this comes back empty.
+  login="$(_gh_app_bot_login)" && export GH_APP_BOT_LOGIN="$login"
   return 0
 }

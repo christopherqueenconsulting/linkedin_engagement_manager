@@ -112,7 +112,8 @@ for _l in posthog labels capacity dispatch run_lane gh_app_token; do . "$BASE/li
 # but can never approve. Falls back to the PAT on any failure — a missing key or a GitHub blip
 # must degrade the pipeline's IDENTITY, never its ability to run.
 if command -v gh_app_export_token >/dev/null 2>&1 && gh_app_export_token; then
-  :  # GH_TOKEN is now the app's installation token (~1h life, auto-refreshed)
+  # GH_TOKEN is now the app's installation token (~1h life, auto-refreshed).
+  [ -n "${GH_APP_BOT_LOGIN:-}" ] || log "GH APP: identity active but the bot login could not be resolved (GET /app) — the trust boundary will refuse this tick's own labels. Pin GH_APP_BOT_LOGIN in secrets.env."
 elif [ "${USE_GH_APP:-0}" = "1" ]; then
   log "GH APP: USE_GH_APP=1 but no installation token could be minted — falling back to AGENT_GH_TOKEN. Check $BASE/secrets/github-app.pem and GH_APP_ID."
 fi
@@ -288,6 +289,20 @@ TRUSTED_ASSOCIATIONS="${TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
 # Who may mint `agent:ready`. Deliberately NOT every bot: only automations whose input is not
 # attacker-controlled. The feedback loop is absent on purpose (it files `needs-human` now).
 AGENT_LABEL_TRUSTED_ACTORS="${AGENT_LABEL_TRUSTED_ACTORS:-$ASSIGNEE}"
+# ...plus the pipeline's OWN bot, once it has one. This is not a widening of the gate: the runner
+# re-applies `agent:ready` itself in two places — the stale-claim reaper, and the lane that returns
+# an issue to the queue after the owner answers its Decision Comment — and MODE=phasefix files
+# follow-up issues carrying it. Under the PAT those writes were the OWNER's and passed; under the
+# app they are the bot's, so WITHOUT this every reaped issue, every answered Decision Comment and
+# every phase-2 follow-up would be refused at dispatch and never run again. The standing granted is
+# exactly the standing the credential already had — the outsider path this allowlist exists to
+# close (a stranger's issue labelled by a non-allowlisted actor) is unchanged.
+if [ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]; then
+  case " $AGENT_LABEL_TRUSTED_ACTORS " in
+    *" $GH_APP_BOT_LOGIN "*) ;;
+    *) AGENT_LABEL_TRUSTED_ACTORS="$AGENT_LABEL_TRUSTED_ACTORS $GH_APP_BOT_LOGIN" ;;
+  esac
+fi
 # Who may apply the CI-ROUTED auto-fix labels (`agent:depfix`, `agent:docfix`) — our own workflows,
 # which act as `github-actions[bot]`. Kept apart from the human allowlist above on purpose: these
 # two labels report a CI failure on an existing PR and grant no work, while `agent:ready` and
@@ -339,9 +354,16 @@ author_trusted() {
   # and this function then refuses — correctly for an unreadable answer, but it made EVERY issue
   # unreadable and idled the whole pipeline. The REST issues endpoint does expose
   # `author_association`, and it covers PRs too, because a PR is an issue.
-  local n="$1" assoc
-  assoc="$(gh api "repos/$SLUG/issues/$n" --jq '.author_association // ""' 2>/dev/null)"
+  local n="$1" both assoc author
+  both="$(gh api "repos/$SLUG/issues/$n" \
+            --jq '"\(.author_association // "")\t\(.user.login // "")"' 2>/dev/null)"
+  assoc="${both%%$'\t'*}"; author="${both#*$'\t'}"
   [ -n "$assoc" ] || { log "TRUST: #$n — author_association unreadable; refusing."; return 1; }
+  # An issue the PIPELINE filed. MODE=phasefix's whole job is to file the follow-up issue a held
+  # merge needs, and it labels it `agent:ready` — but a GitHub App is not a repo collaborator, so
+  # its author_association is never one of OWNER/MEMBER/COLLABORATOR and every follow-up it filed
+  # would sit unworkable forever. Nobody but this pipeline can author as this login.
+  if [ -n "${GH_APP_BOT_LOGIN:-}" ] && [ "$author" = "$GH_APP_BOT_LOGIN" ]; then return 0; fi
   case " $TRUSTED_ASSOCIATIONS " in *" $assoc "*) return 0 ;; esac
   log "TRUST: #$n authored by $assoc — not eligible for autonomous work."
   return 1
