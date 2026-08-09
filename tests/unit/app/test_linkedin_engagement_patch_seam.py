@@ -1,4 +1,6 @@
-"""No test may patch a `cqc_lem.utilities.linkedin.*` symbol on its defining module while
+"""Guard the `utilities.linkedin` -> `app.engagement` patch seam.
+
+No test may patch a `cqc_lem.utilities.linkedin.*` symbol on its defining module while
 exercising an `app.engagement.*` module that imported that symbol directly.
 
 Issue #1209. `app/run_automation.py` was deleted in #1206/#1207, removing the stale
@@ -74,8 +76,9 @@ def _reader_functions(path: pathlib.Path, local_names: set[str]) -> dict[str, se
 
 
 def _hazard_set() -> dict[str, dict[str, set[str]]]:
-    """symbol -> {engagement_module: {function_names that read the local binding}}.
+    """Map each moved symbol to the engagement functions that read its LOCAL binding.
 
+    Shape: `symbol -> {engagement_module: {function_names that read the local binding}}`.
     The outer key is the defining-module symbol (`cqc_lem.utilities.linkedin.rate_limit._redis_client`)
     so test scanning can look it up directly.
     """
@@ -208,7 +211,7 @@ def _all_patch_blocks_for_symbols(
         for alias in aliases.get(module, []):
             alias_pats.append(
                 re.escape(alias) + r"\.(" + "|".join(re.escape(n) for n in names) + r")\b")
-    parts = [rf'["\'](' + "|".join(literal_pats) + r')["\']']
+    parts = [r'["\'](' + "|".join(literal_pats) + r')["\']']
     if alias_pats:
         parts.append(r"(" + "|".join(alias_pats) + r")")
     pat = re.compile("|".join(parts))
@@ -218,7 +221,6 @@ def _all_patch_blocks_for_symbols(
         for alias in alias_list:
             alias_to_module[alias] = module
     all_lines = text.splitlines()
-    out: list[tuple[int, str, set[str]]] = []
     seen: dict[tuple[int, int], tuple[int, str, set[str]]] = {}
     for m in pat.finditer(text):
         line_no = text[:m.start()].count("\n") + 1
@@ -370,7 +372,8 @@ class TestLinkedInEngagementPatchSeam:
         for path, text, line_to_best, aliases in test_files:
             if path.name == "test_linkedin_engagement_patch_seam.py":
                 continue
-            for line, block, matched_symbols in _all_patch_blocks_for_symbols(text, line_to_best, aliases, sorted(hazards)):
+            blocks = _all_patch_blocks_for_symbols(text, line_to_best, aliases, sorted(hazards))
+            for line, block, matched_symbols in blocks:
                 called = _engagement_functions_in_block(block, hazards)
                 for symbol in set(called) & matched_symbols:
                     rel = path.relative_to(_REPO)
