@@ -292,6 +292,42 @@ class TestCreateTextPost:
         assert m["tl"].call_args[0][0].full_name == "LinkedIn Member"  # neutral, not a fake persona
         quit_g.assert_called_once_with(driver)
 
+    def test_profile_scrape_returning_none_uses_the_same_fallback(self):
+        # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a
+        # DOM change makes that the normal failure — so it must take the same ladder as the
+        # exception path. Without it None reached the generators and died on model_dump_json().
+        from cqc_lem.app.run_content_plan import create_text_post
+        driver, wait = MagicMock(), MagicMock()
+        with _TextPostHarness() as m, \
+             patch(f"{_RCP}.get_user_password_pair_by_id",
+                   return_value=("a@x.com", "pw")), \
+             patch(f"{_RCP}.get_driver_wait_pair", return_value=(driver, wait)), \
+             patch(f"{_RCP}.get_my_profile", return_value=None), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=None), \
+             patch(f"{_RCP}.quit_gracefully") as quit_g:
+            result = create_text_post(1, "awareness", post_type="thought_leadership",
+                                      refine_final_post=False)
+        assert result == "TL post"
+        assert m["tl"].call_args[0][0].full_name == "LinkedIn Member"
+        quit_g.assert_called_once_with(driver)
+
+    def test_profile_scrape_returning_none_prefers_the_cached_profile(self):
+        # The cached DB profile beats the neutral placeholder on the None path too.
+        from cqc_lem.app.run_content_plan import create_text_post
+        driver, wait = MagicMock(), MagicMock()
+        cached = _profile()
+        with _TextPostHarness() as m, \
+             patch(f"{_RCP}.get_user_password_pair_by_id",
+                   return_value=("a@x.com", "pw")), \
+             patch(f"{_RCP}.get_driver_wait_pair", return_value=(driver, wait)), \
+             patch(f"{_RCP}.get_my_profile", return_value=None), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=cached) as cache_read, \
+             patch(f"{_RCP}.quit_gracefully"):
+            create_text_post(1, "awareness", post_type="thought_leadership",
+                             refine_final_post=False)
+        cache_read.assert_called_once_with(1)
+        assert m["tl"].call_args[0][0] is cached
+
     def test_lead_magnet_cta_included_on_rotation(self):
         from cqc_lem.app.run_content_plan import create_text_post
         with _TextPostHarness(lm_include=True,

@@ -330,23 +330,36 @@ class TestLoginToLinkedIn:
         persist.assert_called_once_with(driver, "a@x.com")
 
     def test_credential_login_success_returns_true(self):
+        """The credential path must be the one that runs — the URL only becomes /feed on click.
+
+        Setting `current_url` to the feed BEFORE the call short-circuits at the "Already logged in"
+        branch, so the test would pass without ever reaching the credential return.
+        """
         from cqc_lem.utilities.linkedin.helper import login_to_linkedin
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/login"
         driver.title = "Feed | LinkedIn"
         driver.find_element.return_value = MagicMock(text="")
+
+        field = MagicMock()
+
+        def _sign_in():
+            driver.current_url = "https://www.linkedin.com/feed/"
+
+        field.click.side_effect = _sign_in
         with patch(f"{_H}.get_cookies", return_value=None), \
              patch(f"{_H}.load_cookies"), \
              patch(f"{_H}._persist_session_cookies", return_value=True) as persist, \
              patch(f"{_H}.clear_rate_limit"), \
-             patch(f"{_H}.get_visible_element_wait_retry", return_value=MagicMock()), \
+             patch(f"{_H}.get_visible_element_wait_retry", return_value=field) as fields, \
              patch(f"{_H}.EC.element_to_be_clickable"), \
              patch(f"{_H}._human_pause"), \
              patch(f"{_H}.time.sleep"):
-            # After the click / title wait we land on /feed
-            driver.current_url = "https://www.linkedin.com/feed/"
             result = login_to_linkedin(driver, MagicMock(), "a@x.com", "pw")
         assert result is True
+        # username field, password field, sign-in button — proof the credential flow ran
+        assert fields.call_count == 3
+        field.send_keys.assert_any_call("a@x.com")
         persist.assert_called_once_with(driver, "a@x.com")
 
     def test_failed_login_returns_false(self):

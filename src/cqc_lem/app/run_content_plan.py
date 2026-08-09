@@ -1924,6 +1924,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         except Exception as e:
             log_info(f"Error getting user profile: {e}")
+            user_profile = None
+        finally:
+            quit_gracefully(driver)
+
+        # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a
+        # DOM change makes that the normal failure — so the fallback ladder has to cover both or
+        # None reaches the generators and dies on `None.model_dump_json()`.
+        if user_profile is None:
             # Prefer the user's cached DB profile (no Selenium) — the old hardcoded "John Doe,
             # Software Developer at ABC Inc." dummy leaked a tech persona into generated posts
             # whenever the live profile load hiccupped. Neutral dummy only as a last resort.
@@ -1934,10 +1942,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 # record here files a duplicate issue for one lost profile (issue #1038).
                 log_debug(f"Cached profile unavailable: {e2}")
                 user_profile = None
-            if user_profile is None:
-                user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
-        finally:
-            quit_gracefully(driver)
+        if user_profile is None:
+            user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
 
     # User-declared focus topics + business/personal goals steer the post's angle and enforce the
     # anti-self-promo guardrail (see _alignment_directive) so posts don't drift into promoting
