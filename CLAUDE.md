@@ -341,12 +341,11 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
   shared archive volume, a loop-guarded one-shot reload on import failure, and `/api/app-info`
   polling that prompts rather than reloads.
 ## Git Safety & Multi-Agent Concurrency Rules
-- **Every agent gets its OWN worktree — always.** `isolation: "worktree"` on the Agent call, and
-  `.claude/agents/*.md` frontmatter carries it too (measured — a definition declaring it lands the
-  subagent in `.claude/worktrees/agent-<id>`). Agents launched into the shared checkout WILL clobber
-  each other: three once did, and one switched the branch under the others inside a minute.
-  `tick.sh` enforces the same for the pipeline in `lib/run_lane.sh` — note `cd ""` SUCCEEDS in bash,
-  so an empty worktree path silently runs the agent in the shared tree rather than failing.
+- **Every agent gets its OWN worktree — always.** `isolation: "worktree"` on the Agent call;
+  `.claude/agents/*.md` frontmatter also carries it (measured). Agents sharing a checkout WILL
+  clobber each other — three once did, one switching the branch under the others inside a minute.
+  `lib/run_lane.sh` enforces it for the pipeline: `cd ""` SUCCEEDS in bash, so an empty worktree
+  path silently runs the agent in the shared tree instead of failing.
 - **NEVER put `model:` in an agent definition.** It overrides the CLI `--model`, and a subagent
   inherits the parent's `ANTHROPIC_BASE_URL` — so on the Ollama lane (~47% of pipeline dispatches,
   LiteLLM serves only `lem-*`) a pinned `opus` 400s in 7s **while the parent exits rc=0**, which
