@@ -12,6 +12,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 _API = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 
 _FINDING = {"gate": "authenticity", "label": "Authenticity", "score": 41, "threshold": 60,
             "demoted": True, "explanation": "scored 41 of 100", "remediation": "add specifics",
@@ -69,8 +70,8 @@ class TestRescoreEndpoint:
         result = {"passed": True, "status": "approved", "authenticity_score": 88,
                   "findings": [], "detail": "Passed every quality gate — approved and queued"}
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.get_post_user_id", return_value=1), \
-             patch(f"{_API}.get_post_status", return_value="pending"), \
+             patch(f"{_USER}.get_post_user_id", return_value=1), \
+             patch(f"{_USER}.get_post_status", return_value="pending"), \
              patch("cqc_lem.app.run_content_plan.rescore_post", return_value=result) as rescore:
             r = _client().post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
@@ -82,8 +83,8 @@ class TestRescoreEndpoint:
         result = {"passed": False, "status": "pending", "authenticity_score": 41,
                   "findings": [_FINDING], "detail": "Still held for review"}
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.get_post_user_id", return_value=1), \
-             patch(f"{_API}.get_post_status", return_value="pending"), \
+             patch(f"{_USER}.get_post_user_id", return_value=1), \
+             patch(f"{_USER}.get_post_status", return_value="pending"), \
              patch("cqc_lem.app.run_content_plan.rescore_post", return_value=result):
             r = _client().post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
@@ -99,7 +100,7 @@ class TestRescoreEndpoint:
 
     def test_404_for_someone_elses_post(self):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.get_post_user_id", return_value=2):
+             patch(f"{_USER}.get_post_user_id", return_value=2):
             r = _client().post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
         assert r.status_code == 404
@@ -107,16 +108,16 @@ class TestRescoreEndpoint:
     @pytest.mark.parametrize("status", ["posted", "rejected", "scheduled"])
     def test_409_outside_the_review_states(self, status):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.get_post_user_id", return_value=1), \
-             patch(f"{_API}.get_post_status", return_value=status):
+             patch(f"{_USER}.get_post_user_id", return_value=1), \
+             patch(f"{_USER}.get_post_status", return_value=status):
             r = _client().post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
         assert r.status_code == 409
 
     def test_500_when_scoring_blows_up(self):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.get_post_user_id", return_value=1), \
-             patch(f"{_API}.get_post_status", return_value="pending"), \
+             patch(f"{_USER}.get_post_user_id", return_value=1), \
+             patch(f"{_USER}.get_post_status", return_value="pending"), \
              patch("cqc_lem.app.run_content_plan.rescore_post", side_effect=RuntimeError("boom")):
             r = _client().post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
@@ -126,7 +127,7 @@ class TestRescoreEndpoint:
 class TestThresholdPreferences:
     def test_thresholds_round_trip_through_the_prefs_endpoints(self):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.update_engagement_preferences", return_value=True) as save:
+             patch(f"{_USER}.update_engagement_preferences", return_value=True) as save:
             r = _client().put("/api/user/engagement-preferences",
                               json={"session_token": "t", "authenticity_score_min": 85,
                                     "post_similarity_max_pct": 40})
@@ -137,7 +138,7 @@ class TestThresholdPreferences:
 
     def test_out_of_range_thresholds_are_clamped_at_the_boundary(self):
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.update_engagement_preferences", return_value=True) as save:
+             patch(f"{_USER}.update_engagement_preferences", return_value=True) as save:
             _client().put("/api/user/engagement-preferences",
                           json={"session_token": "t", "authenticity_score_min": 500,
                                 "post_similarity_max_pct": 1})
@@ -149,12 +150,12 @@ class TestThresholdPreferences:
         monkeypatch.setenv("AUTHENTICITY_SCORE_MIN", "60")
         monkeypatch.setenv("POST_SIMILARITY_MAX", "0.55")
         with patch(f"{_API}.get_session_user_id", return_value=1), \
-             patch(f"{_API}.get_engagement_preferences",
+             patch(f"{_USER}.get_engagement_preferences",
                    return_value={"authenticity_score_min": None,
                                  "post_similarity_max_pct": None}), \
-             patch(f"{_API}.get_or_create_reply_inbound_token", return_value="tok"), \
+             patch(f"{_USER}.get_or_create_reply_inbound_token", return_value="tok"), \
              patch(f"{_API}.get_gmail_forward_confirmation", return_value=None), \
-             patch(f"{_API}.max_catchup_touches_allowed", return_value=5):
+             patch(f"{_USER}.max_catchup_touches_allowed", return_value=5):
             r = _client().get("/api/user/engagement-preferences?session_token=t")
         assert r.json()["detail"]["gate_defaults"] == {"authenticity_score_min": 60,
                                                        "post_similarity_max_pct": 55}

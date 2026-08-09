@@ -36,8 +36,8 @@ _USER = 5
 class TestRegeneratePostEndpoint:
     def test_dispatches_task_with_guidance(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value="pending"), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value="pending"), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": _SESSION, "post_id": 7, "guidance": "punchier"})
@@ -48,8 +48,8 @@ class TestRegeneratePostEndpoint:
 
     def test_blank_guidance_becomes_none(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value="approved"), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value="approved"), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": _SESSION, "post_id": 7, "guidance": "   "})
@@ -60,8 +60,8 @@ class TestRegeneratePostEndpoint:
     def test_409_when_post_not_in_review_state(self, client, status):
         # Regeneration resets a post to PENDING — allowed from pending/approved/rejected.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value=status), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value=status), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": _SESSION, "post_id": 7})
@@ -71,8 +71,8 @@ class TestRegeneratePostEndpoint:
 
     def test_rejected_post_uses_stored_reason_as_guidance(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value="rejected"), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value="rejected"), \
              patch("cqc_lem.utilities.db.get_post_rejection_reason", return_value="Too salesy"), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
@@ -83,8 +83,8 @@ class TestRegeneratePostEndpoint:
 
     def test_rejected_post_explicit_guidance_overrides_stored_reason(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value="rejected"), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value="rejected"), \
              patch("cqc_lem.utilities.db.get_post_rejection_reason") as mock_reason, \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
@@ -95,8 +95,8 @@ class TestRegeneratePostEndpoint:
 
     def test_rejected_post_without_reason_allows_regeneration(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value="rejected"), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value="rejected"), \
              patch("cqc_lem.utilities.db.get_post_rejection_reason", return_value=None), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
@@ -106,7 +106,7 @@ class TestRegeneratePostEndpoint:
 
     def test_404_when_not_owner(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=999), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=999), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": _SESSION, "post_id": 7})
@@ -126,8 +126,8 @@ class TestRegeneratePostEndpointAllTypes:
     @pytest.mark.parametrize("post_type", ["text", "carousel", "document", "video"])
     def test_200_for_any_post_type(self, client, post_type):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_post_status", return_value="pending"), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_post_status", return_value="pending"), \
              patch("cqc_lem.api.main.get_post_type", return_value=post_type), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",

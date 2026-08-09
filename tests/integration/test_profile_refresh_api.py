@@ -24,6 +24,7 @@ from cqc_lem.utilities import db
 pytestmark = pytest.mark.integration
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 _LIMITER = "cqc_lem.utilities.profile_refresh"
 _AUTOMATION = "cqc_lem.app.run_automation"
 _TOK = "session-token"
@@ -71,7 +72,7 @@ def redis():
 class TestTheWindowBoundsTheButton:
     def test_two_presses_ask_for_exactly_one_chrome_session(self, client, redis):
         with patch(f"{_M}.get_session_user_id", return_value=4242), \
-             patch(f"{_M}.update_stale_profile") as task:
+             patch(f"{_USER}.update_stale_profile") as task:
             first = client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
             second = client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
 
@@ -88,8 +89,8 @@ class TestTheWindowBoundsTheButton:
 
     def test_the_profile_get_reports_the_window_the_press_spent(self, client, redis):
         with patch(f"{_M}.get_session_user_id", return_value=4243), \
-             patch(f"{_M}.update_stale_profile"), \
-             patch(f"{_M}.get_linkedin_profile_url_by_user_id", return_value=None):
+             patch(f"{_USER}.update_stale_profile"), \
+             patch(f"{_USER}.get_linkedin_profile_url_by_user_id", return_value=None):
             before = client.get(f"/api/user/linkedin-profile?session_token={_TOK}")
             client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
             after = client.get(f"/api/user/linkedin-profile?session_token={_TOK}")
@@ -98,7 +99,7 @@ class TestTheWindowBoundsTheButton:
         assert after.json()["detail"]["refresh_available_in_seconds"] > 0
 
     def test_one_user_pressing_the_button_never_bounds_another(self, client, redis):
-        with patch(f"{_M}.update_stale_profile") as task:
+        with patch(f"{_USER}.update_stale_profile") as task:
             with patch(f"{_M}.get_session_user_id", return_value=4244):
                 client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})
                 client.post("/api/user/linkedin-profile/refresh", json={"session_token": _TOK})

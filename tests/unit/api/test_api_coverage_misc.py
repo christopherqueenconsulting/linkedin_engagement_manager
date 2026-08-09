@@ -15,6 +15,7 @@ _M = "cqc_lem.api.main"
 # call are read from THAT module's globals now. `get_session_user_id` stays on main -- the
 # handlers reach it as a host-module attribute at request time.
 _BILL = "cqc_lem.api.routers.billing"
+_USER = "cqc_lem.api.routers.user"
 # The avatar handlers moved to their own router (#1154), so the db functions they call are
 # read from THAT module's globals now. `get_session_user_id` still patches on `_M`: the
 # handlers reach it as an attribute of the host module at request time.
@@ -372,7 +373,7 @@ class TestLinkedInOAuth:
 class TestUserSettingsAndGroups:
     def test_update_user_settings(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_preferences", return_value=True) as upd:
+             patch(f"{_USER}.update_user_preferences", return_value=True) as upd:
             resp = client.put("/api/user/settings", json={
                 "session_token": _TOK, "last_login_inactivate_delay": 30,
                 "auto_schedule_posts": False})
@@ -383,7 +384,7 @@ class TestUserSettingsAndGroups:
     def test_update_omits_content_buffer_when_not_sent(self, client):
         """The Account UI doesn't send the buffer knobs — they must not be reset (issue #544)."""
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_preferences", return_value=True) as upd:
+             patch(f"{_USER}.update_user_preferences", return_value=True) as upd:
             resp = client.put("/api/user/settings", json={
                 "session_token": _TOK, "last_login_inactivate_delay": 30,
                 "auto_schedule_posts": False})
@@ -393,7 +394,7 @@ class TestUserSettingsAndGroups:
 
     def test_update_passes_content_buffer_through(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_preferences", return_value=True) as upd:
+             patch(f"{_USER}.update_user_preferences", return_value=True) as upd:
             resp = client.put("/api/user/settings", json={
                 "session_token": _TOK, "auto_schedule_posts": True,
                 "content_buffer_days": 7, "content_buffer_max_posts": 4})
@@ -408,14 +409,14 @@ class TestUserSettingsAndGroups:
     def test_out_of_range_content_buffer_is_422(self, client, payload):
         """Forward generation spend is capped server-side, not just in the UI."""
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_preferences", return_value=True):
+             patch(f"{_USER}.update_user_preferences", return_value=True):
             resp = client.put("/api/user/settings",
                               json={"session_token": _TOK, **payload})
         assert resp.status_code == 422
 
     def test_update_user_settings_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_preferences", return_value=False):
+             patch(f"{_USER}.update_user_preferences", return_value=False):
             resp = client.put("/api/user/settings", json={"session_token": _TOK})
         assert resp.status_code == 500
 
@@ -423,8 +424,8 @@ class TestUserSettingsAndGroups:
         groups = [{"group_id": "g1", "group_name": "AI", "enabled": True, "post_enabled": True},
                   {"group_id": "g2", "group_name": "Sales", "enabled": True, "post_enabled": True}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_groups", return_value=groups), \
-             patch(f"{_M}.get_next_group_for_post", return_value={"group_id": "g2", "group_name": "Sales"}):
+             patch(f"{_USER}.get_user_groups", return_value=groups), \
+             patch(f"{_USER}.get_next_group_for_post", return_value={"group_id": "g2", "group_name": "Sales"}):
             resp = client.get(f"/api/user/groups?session_token={_TOK}")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -434,14 +435,14 @@ class TestUserSettingsAndGroups:
     def test_get_groups_none_opted_in_for_posting(self, client):
         groups = [{"group_id": "g1", "group_name": "AI", "enabled": True, "post_enabled": False}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_groups", return_value=groups), \
-             patch(f"{_M}.get_next_group_for_post", return_value=None):
+             patch(f"{_USER}.get_user_groups", return_value=groups), \
+             patch(f"{_USER}.get_next_group_for_post", return_value=None):
             resp = client.get(f"/api/user/groups?session_token={_TOK}")
         assert resp.json()["detail"][0]["is_next_post"] is False
 
     def test_put_groups(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.set_groups_enabled", return_value=True) as setg:
+             patch(f"{_USER}.set_groups_enabled", return_value=True) as setg:
             resp = client.put("/api/user/groups", json={
                 "session_token": _TOK, "groups": {"g1": False}})
         assert resp.status_code == 200
@@ -449,7 +450,7 @@ class TestUserSettingsAndGroups:
 
     def test_put_groups_accepts_per_group_post_flag(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.set_groups_enabled", return_value=True) as setg:
+             patch(f"{_USER}.set_groups_enabled", return_value=True) as setg:
             resp = client.put("/api/user/groups", json={
                 "session_token": _TOK,
                 "groups": {"g1": {"enabled": True, "post_enabled": False}}})
@@ -458,7 +459,7 @@ class TestUserSettingsAndGroups:
 
     def test_put_groups_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.set_groups_enabled", return_value=False):
+             patch(f"{_USER}.set_groups_enabled", return_value=False):
             resp = client.put("/api/user/groups", json={"session_token": _TOK})
         assert resp.status_code == 500
 
@@ -466,8 +467,8 @@ class TestUserSettingsAndGroups:
         rows = [("2026-07-01T15:00:00", 10, 2, 1)]
         recs = [{"weekday_num": 2, "hour": 15}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_post_engagement_rows", return_value=rows), \
-             patch(f"{_M}.get_user_timezone", return_value="America/New_York"), \
+             patch(f"{_USER}.get_post_engagement_rows", return_value=rows), \
+             patch(f"{_USER}.get_user_timezone", return_value="America/New_York"), \
              patch("cqc_lem.utilities.post_stats.recommend_post_times",
                    return_value=recs) as mock_recs:
             resp = client.get(f"/api/user/post-stats?session_token={_TOK}")
@@ -485,8 +486,8 @@ class TestEngagementAnalytics:
         # The endpoint also scores comment outcomes (#628), rolls up content quality (#630) and
         # reports post coverage (#809); default all three to an empty window so the post-stats
         # assertions below stay about post stats.
-        with patch(f"{_M}.get_comment_outcomes", return_value=[]), \
-             patch(f"{_M}.get_post_coverage_counts",
+        with patch(f"{_USER}.get_comment_outcomes", return_value=[]), \
+             patch(f"{_USER}.get_post_coverage_counts",
                    return_value={"posted_total": 0, "posted_in_window": 0}), \
              patch("cqc_lem.utilities.db.get_content_quality_scores", return_value=[]):
             yield
@@ -500,8 +501,8 @@ class TestEngagementAnalytics:
         ]
         mix_counts = {"value": 7, "authority": 2, "promo": 1, "unclassified": 3}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value=mix_counts) as mix, \
-             patch(f"{_M}.get_post_performance_rows", return_value=rows) as fetch:
+             patch(f"{_USER}.get_content_mix_counts", return_value=mix_counts) as mix, \
+             patch(f"{_USER}.get_post_performance_rows", return_value=rows) as fetch:
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=30")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -527,10 +528,10 @@ class TestEngagementAnalytics:
                  "comments": 0, "reposts": 0, "saves": 0, "impressions": 100, "archetype": None,
                  "hook_style": None, "format": None, "topic": None, "buyer_stage": None}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_coverage_counts",
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_coverage_counts",
                    return_value={"posted_total": 30, "posted_in_window": 11}) as cov, \
-             patch(f"{_M}.get_post_performance_rows", return_value=rows):
+             patch(f"{_USER}.get_post_performance_rows", return_value=rows):
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=90")
         detail = resp.json()["detail"]
         assert cov.call_args[1]["days"] == 90
@@ -548,25 +549,25 @@ class TestEngagementAnalytics:
                  "saves": 0, "impressions": None, "archetype": None, "hook_style": None,
                  "format": None, "topic": None, "buyer_stage": None} for i in range(3)]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_coverage_counts",
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_coverage_counts",
                    return_value={"posted_total": 1, "posted_in_window": 1}), \
-             patch(f"{_M}.get_post_performance_rows", return_value=rows):
+             patch(f"{_USER}.get_post_performance_rows", return_value=rows):
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
         assert resp.json()["detail"]["coverage"]["awaiting_capture"] == 0
 
     def test_flags_a_plan_over_the_promo_ceiling(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
-             patch(f"{_M}.get_content_mix_counts",
+             patch(f"{_USER}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_USER}.get_content_mix_counts",
                    return_value={"value": 4, "authority": 1, "promo": 3}):
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
         assert resp.json()["detail"]["content_mix"]["compliant"] is False
 
     def test_days_clamped_to_valid_window(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_performance_rows", return_value=[]) as fetch:
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_performance_rows", return_value=[]) as fetch:
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=9999")
         assert resp.status_code == 200
         assert fetch.call_args[1]["days"] == 365          # clamped upper bound
@@ -583,9 +584,9 @@ class TestEngagementAnalytics:
                  "visible_most_relevant": 1, "our_reply_sent": 0},
                 {"status": "skipped", "skip_reason": "comment-not-found"}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
-             patch(f"{_M}.get_comment_outcomes", return_value=rows), \
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_USER}.get_comment_outcomes", return_value=rows), \
              patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
                    return_value=3600), \
              patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_reason",
@@ -600,9 +601,9 @@ class TestEngagementAnalytics:
 
     def test_comment_quality_is_empty_not_zero_without_readings(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
-             patch(f"{_M}.get_comment_outcomes", return_value=[]), \
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_USER}.get_comment_outcomes", return_value=[]), \
              patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
                    return_value=0):
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
@@ -627,8 +628,8 @@ class TestEngagementAnalytics:
         rows = ([_row(today - timedelta(days=1), slop_score=5.0) for _ in range(6)]
                 + [_row(today - timedelta(days=9)) for _ in range(6)])
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_performance_rows", return_value=[]), \
              patch("cqc_lem.utilities.db.get_content_quality_scores", return_value=rows) as fetch, \
              patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
                    return_value=0):
@@ -644,8 +645,8 @@ class TestEngagementAnalytics:
 
     def test_content_quality_is_empty_not_zero_without_scores(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_content_mix_counts", return_value={}), \
-             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_USER}.get_content_mix_counts", return_value={}), \
+             patch(f"{_USER}.get_post_performance_rows", return_value=[]), \
              patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
                    return_value=0):
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
@@ -696,8 +697,8 @@ class TestAudienceGrowth:
         from datetime import datetime, timezone
         activity = [{"date": datetime.now(timezone.utc).date(), "action_type": "comment", "count": 6}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_follower_stats", return_value=self._rows()) as fetch, \
-             patch(f"{_M}.get_daily_action_counts", return_value=activity) as acts:
+             patch(f"{_USER}.get_follower_stats", return_value=self._rows()) as fetch, \
+             patch(f"{_USER}.get_daily_action_counts", return_value=activity) as acts:
             resp = client.get(f"/api/user/audience-growth?session_token={_TOK}&days=30")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -712,8 +713,8 @@ class TestAudienceGrowth:
 
     def test_days_clamped(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_follower_stats", return_value=[]) as fetch, \
-             patch(f"{_M}.get_daily_action_counts", return_value=[]):
+             patch(f"{_USER}.get_follower_stats", return_value=[]) as fetch, \
+             patch(f"{_USER}.get_daily_action_counts", return_value=[]):
             resp = client.get(f"/api/user/audience-growth?session_token={_TOK}&days=9999")
         assert resp.status_code == 200
         assert fetch.call_args[1]["days"] == 395           # 365 clamp + the 30-day baseline reach
@@ -729,13 +730,13 @@ class TestLeadMagnetAndPassword:
     def test_get_lead_magnet(self, client):
         settings = {"enabled": True, "keyword": "GUIDE", "message": "here you go"}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_lead_magnet_settings", return_value=settings):
+             patch(f"{_USER}.get_lead_magnet_settings", return_value=settings):
             resp = client.get(f"/api/user/lead-magnet?session_token={_TOK}")
         assert resp.json()["detail"] == settings
 
     def test_put_lead_magnet_excludes_session_token(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_lead_magnet_settings", return_value=True) as upd:
+             patch(f"{_USER}.update_lead_magnet_settings", return_value=True) as upd:
             resp = client.put("/api/user/lead-magnet", json={
                 "session_token": _TOK, "enabled": True, "keyword": "GUIDE"})
         assert resp.status_code == 200
@@ -747,7 +748,7 @@ class TestLeadMagnetAndPassword:
         # Keywords that trip the engagement-bait filter would be stripped from generated posts —
         # reject at config time with a clear message.
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_lead_magnet_settings", return_value=True) as upd:
+             patch(f"{_USER}.update_lead_magnet_settings", return_value=True) as upd:
             resp = client.put("/api/user/lead-magnet", json={
                 "session_token": _TOK, "enabled": True, "keyword": bad_kw})
         assert resp.status_code == 422
@@ -756,14 +757,14 @@ class TestLeadMagnetAndPassword:
 
     def test_put_lead_magnet_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_lead_magnet_settings", return_value=False):
+             patch(f"{_USER}.update_lead_magnet_settings", return_value=False):
             resp = client.put("/api/user/lead-magnet", json={
                 "session_token": _TOK, "enabled": False})
         assert resp.status_code == 500
 
     def test_linkedin_password_saved(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_linkedin_password", return_value=True) as upd:
+             patch(f"{_USER}.update_user_linkedin_password", return_value=True) as upd:
             resp = client.put("/api/user/linkedin-password", json={
                 "session_token": _TOK, "linkedin_password": "dummy-test-value"})
         assert resp.status_code == 200
@@ -777,7 +778,7 @@ class TestLeadMagnetAndPassword:
 
     def test_linkedin_password_save_failure_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.update_user_linkedin_password", return_value=False):
+             patch(f"{_USER}.update_user_linkedin_password", return_value=False):
             resp = client.put("/api/user/linkedin-password", json={
                 "session_token": _TOK, "linkedin_password": "dummy-test-value"})
         assert resp.status_code == 500

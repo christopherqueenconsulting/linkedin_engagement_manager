@@ -89,11 +89,11 @@ def store(tmp_path):
     settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly",
                 "last_published_at": None, "max_queued_drafts": 1, "generate_lead_days": 3}
     with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-         patch("cqc_lem.api.main.get_newsletter_edition", side_effect=s.get), \
-         patch("cqc_lem.api.main.get_pending_newsletter_editions", side_effect=s.pending), \
-         patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
-         patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
-         patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"), \
+         patch("cqc_lem.api.routers.user.get_newsletter_edition", side_effect=s.get), \
+         patch("cqc_lem.api.routers.user.get_pending_newsletter_editions", side_effect=s.pending), \
+         patch("cqc_lem.api.routers.user.get_latest_edition_scheduled_for", return_value=None), \
+         patch("cqc_lem.api.routers.user.get_newsletter_settings", return_value=settings), \
+         patch("cqc_lem.api.routers.user.get_user_timezone", return_value="UTC"), \
          patch("cqc_lem.utilities.db.set_edition_cover_image", side_effect=s.set_cover), \
          patch("cqc_lem.utilities.db.set_edition_cover_status", side_effect=s.set_status), \
          patch("cqc_lem.utilities.db.clear_edition_cover_image", side_effect=s.clear_cover), \
@@ -192,7 +192,7 @@ class TestCoverOwnership:
     def test_another_users_edition_is_a_404_on_every_cover_route(self, client, tmp_path):
         foreign = _EditionStore(user_id=_OTHER_USER)
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", side_effect=foreign.get), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", side_effect=foreign.get), \
              patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
              patch("cqc_lem.utilities.db.set_edition_cover_image") as store_cover, \
              patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:

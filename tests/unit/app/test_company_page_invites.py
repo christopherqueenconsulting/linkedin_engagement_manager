@@ -578,7 +578,7 @@ class TestCountCompanyPageInvitesToday:
 
 class TestPreferenceColumn:
     def test_the_cap_round_trips_through_the_api_model(self):
-        from cqc_lem.api.main import EngagementPreferencesRequest as P
+        from cqc_lem.api.routers.user import EngagementPreferencesRequest as P
 
         def prefs(**over):
             return P(session_token="t", **over)

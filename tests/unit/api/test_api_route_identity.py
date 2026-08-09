@@ -11,12 +11,16 @@ So the claim lives here instead, checked mechanically against the real route tab
 has to reach ONE of the two credentials that actually authorise something: the session (seeded from
 `get_session_user_id`, the ONE resolver) or the admin secret (`_require_admin` /
 `_require_api_and_admin`, which is what `/api/admin/*` runs on and which was never in the bundle).
-Both sets are DERIVED, not hardcoded — closed over every helper in `main` that reaches a seed — so a
-new wrapper (`_require_user_admin`, `_owned_edition`, the next one) counts automatically and only a
-genuinely unguarded route fails.
+Both sets are DERIVED, not hardcoded — closed over every helper that reaches a seed — so a new
+wrapper (`_require_user_admin`, `_owned_edition`, the next one) counts automatically and only a
+genuinely unguarded route fails. The closure spans `main` AND every `api/routers/*.py` module,
+because #1154 moved handlers and their wrappers out of `main` while the SEEDS stayed: a wrapper the
+derivation cannot see reads as an unguarded route, which is a false alarm on the one check whose
+whole value is that it never cries wolf.
 """
 
 import inspect
+import pkgutil
 import re
 from typing import Iterator, List, Set
 
@@ -56,6 +60,18 @@ def main_mod():
     return main
 
 
+def _handler_modules(main_mod) -> List[object]:
+    """`main` plus every per-area router — discovered, never listed, so a new slice is covered."""
+    import importlib
+
+    from cqc_lem.api import routers
+
+    found = [main_mod]
+    for info in pkgutil.iter_modules(routers.__path__):
+        found.append(importlib.import_module(f"cqc_lem.api.routers.{info.name}"))
+    return found
+
+
 def _iter_routes(routes) -> Iterator[object]:
     """Flatten the route table, descending through included routers and mounts."""
     for route in routes:
@@ -81,11 +97,18 @@ def _references(source: str, name: str) -> bool:
     return re.search(rf"\b{re.escape(name)}\b", source) is not None
 
 
+def _functions(main_mod) -> dict:
+    """Every function across `main` and the routers, by name."""
+    out = {}
+    for module in _handler_modules(main_mod):
+        out.update({name: obj for name, obj in vars(module).items() if inspect.isfunction(obj)})
+    return out
+
+
 def _closure_over(main_mod, seeds) -> Set[str]:
-    """The seeds plus every function in `main` that transitively reaches one of them."""
+    """The seeds plus every handler-module function that transitively reaches one of them."""
     names = set(seeds)
-    sources = {name: _source_of(obj) for name, obj in vars(main_mod).items()
-               if inspect.isfunction(obj)}
+    sources = {name: _source_of(obj) for name, obj in _functions(main_mod).items()}
     changed = True
     while changed:
         changed = False
@@ -116,7 +139,7 @@ class TestEveryGatedApiRouteResolvesItsCaller:
         assert {"get_session_user_id", "require_session_user_id", "_require_user_admin",
                 "_owned_edition", "_require_admin", "_require_api_and_admin"} <= gates
         # A closure that swallowed most of the module would call every route guarded.
-        functions = [n for n, o in vars(main_mod).items() if inspect.isfunction(o)]
+        functions = list(_functions(main_mod))
         assert len(gates) < len(functions) / 2, (
             f"the gate closure reached {len(gates)} of {len(functions)} functions — too wide to "
             "distinguish a guarded route from an unguarded one"

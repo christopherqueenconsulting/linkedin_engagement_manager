@@ -81,14 +81,21 @@ class _PostStore:
 @pytest.fixture
 def store(tmp_path):
     s = _PostStore()
+    # `get_session_user_id` stays on `main` — the router reaches the kernel as a host-module
+    # attribute at request time. Everything else here is read from the ROUTER's own globals by the
+    # `/api/user/post/image/*` handlers, and a fixture names no route, so both modules are covered
+    # where `main` still binds the name too.
     with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
          patch("cqc_lem.api.main.get_user_email", return_value="user@example.com"), \
+         patch("cqc_lem.api.routers.user.get_user_email", return_value="user@example.com"), \
          patch("cqc_lem.api.main.record_auth_event", return_value=True), \
+         patch("cqc_lem.api.routers.user.record_auth_event", return_value=True), \
          patch("cqc_lem.api.main.get_post_user_id", side_effect=s.owner), \
-         patch("cqc_lem.api.main.get_post_status", side_effect=s.status), \
-         patch("cqc_lem.api.main.get_post_content", side_effect=s.content), \
-         patch("cqc_lem.api.main.get_post_image_url", side_effect=s.image_url), \
-         patch("cqc_lem.api.main.update_db_post_image_url", side_effect=s.set_image_url), \
+         patch("cqc_lem.api.routers.user.get_post_user_id", side_effect=s.owner), \
+         patch("cqc_lem.api.routers.user.get_post_status", side_effect=s.status), \
+         patch("cqc_lem.api.routers.user.get_post_content", side_effect=s.content), \
+         patch("cqc_lem.api.routers.user.get_post_image_url", side_effect=s.image_url), \
+         patch("cqc_lem.api.routers.user.update_db_post_image_url", side_effect=s.set_image_url), \
          patch("cqc_lem.api.main.insert_post", side_effect=s.insert), \
          patch("cqc_lem.utilities.post_image.assets_dir", str(tmp_path)):
         s.assets_dir = str(tmp_path)
@@ -191,7 +198,7 @@ class TestComposeTimePreview:
 @pytest.mark.integration
 class TestGenerate:
     def test_generation_attaches_the_render_and_prefers_the_text_on_screen(self, client, store):
-        with patch("cqc_lem.api.main.generate_image_for_post",
+        with patch("cqc_lem.api.routers.user.generate_image_for_post",
                    return_value=("https://api.test/api/assets?file_name=images/posts/42/g.png",
                                  None)) as gen:
             resp = _generate(client, post_id=_POST, content="Unsaved edit")
@@ -200,7 +207,7 @@ class TestGenerate:
         assert store.row["image_url"].endswith("g.png")
 
     def test_generation_falls_back_to_the_stored_draft(self, client, store):
-        with patch("cqc_lem.api.main.generate_image_for_post",
+        with patch("cqc_lem.api.routers.user.generate_image_for_post",
                    return_value=("https://api.test/api/assets?file_name=images/posts/42/g.png",
                                  None)) as gen:
             assert _generate(client, post_id=_POST).status_code == 200
@@ -208,7 +215,7 @@ class TestGenerate:
 
     def test_a_compose_time_generation_needs_no_post(self, client, store):
         preview = f"https://api.test/api/assets?file_name=images/post_previews/{_USER}/g.png"
-        with patch("cqc_lem.api.main.generate_image_for_post", return_value=(preview, None)):
+        with patch("cqc_lem.api.routers.user.generate_image_for_post", return_value=(preview, None)):
             resp = _generate(client, content="Fresh copy")
         assert resp.status_code == 200
         assert resp.json()["detail"] == {"post_id": None, "image_url": preview}
@@ -219,7 +226,7 @@ class TestGenerate:
         a 3000-char field cap here would answer 422 — whose `detail` is a list the SPA cannot
         render, leaving the author with an unexplainable failure on their own post.
         """
-        with patch("cqc_lem.api.main.generate_image_for_post",
+        with patch("cqc_lem.api.routers.user.generate_image_for_post",
                    return_value=("https://api.test/api/assets?file_name=images/posts/42/g.png",
                                  None)) as gen:
             resp = _generate(client, post_id=_POST, content="x" * 4000)
@@ -227,12 +234,12 @@ class TestGenerate:
         assert len(gen.call_args[0][1]) == 4000
 
     def test_nothing_written_is_a_400_before_any_spend(self, client, store):
-        with patch("cqc_lem.api.main.generate_image_for_post") as gen:
+        with patch("cqc_lem.api.routers.user.generate_image_for_post") as gen:
             assert _generate(client, content="   ").status_code == 400
         gen.assert_not_called()
 
     def test_a_failed_render_is_a_502_carrying_the_reason(self, client, store):
-        with patch("cqc_lem.api.main.generate_image_for_post",
+        with patch("cqc_lem.api.routers.user.generate_image_for_post",
                    return_value=(None, "Image generation failed")):
             resp = _generate(client, post_id=_POST)
         assert resp.status_code == 502
@@ -240,8 +247,8 @@ class TestGenerate:
         assert store.row["image_url"] is None
 
     def test_the_hourly_cap_refuses_before_the_render(self, client, store):
-        with patch("cqc_lem.api.main.claim_manual_generation", return_value=False), \
-             patch("cqc_lem.api.main.generate_image_for_post") as gen:
+        with patch("cqc_lem.api.routers.user.claim_manual_generation", return_value=False), \
+             patch("cqc_lem.api.routers.user.generate_image_for_post") as gen:
             resp = _generate(client, post_id=_POST, content="More please")
         assert resp.status_code == 429
         gen.assert_not_called()
@@ -252,12 +259,12 @@ class TestOwnershipAndState:
     def test_another_users_post_is_a_404_on_every_image_route(self, client, tmp_path):
         foreign = _PostStore(user_id=_OTHER_USER)
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.record_auth_event", return_value=True), \
-             patch("cqc_lem.api.main.get_post_user_id", side_effect=foreign.owner), \
-             patch("cqc_lem.api.main.get_post_status", side_effect=foreign.status), \
+             patch("cqc_lem.api.routers.user.record_auth_event", return_value=True), \
+             patch("cqc_lem.api.routers.user.get_post_user_id", side_effect=foreign.owner), \
+             patch("cqc_lem.api.routers.user.get_post_status", side_effect=foreign.status), \
              patch("cqc_lem.utilities.post_image.assets_dir", str(tmp_path)), \
-             patch("cqc_lem.api.main.update_db_post_image_url") as write, \
-             patch("cqc_lem.api.main.generate_image_for_post") as gen:
+             patch("cqc_lem.api.routers.user.update_db_post_image_url") as write, \
+             patch("cqc_lem.api.routers.user.generate_image_for_post") as gen:
             assert _upload(client).status_code == 404
             assert _generate(client, post_id=_POST, content="x").status_code == 404
             assert client.post("/api/user/post/image/remove", json={
@@ -268,7 +275,7 @@ class TestOwnershipAndState:
 
     def test_a_published_post_is_a_409(self, client, store):
         store.row["status"] = "posted"
-        with patch("cqc_lem.api.main.generate_image_for_post") as gen:
+        with patch("cqc_lem.api.routers.user.generate_image_for_post") as gen:
             assert _upload(client).status_code == 409
             assert _generate(client, post_id=_POST, content="x").status_code == 409
             assert client.post("/api/user/post/image/remove", json={
@@ -278,7 +285,7 @@ class TestOwnershipAndState:
 
     def test_no_session_is_a_401(self, client, tmp_path):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
-             patch("cqc_lem.api.main.record_auth_event", return_value=True), \
+             patch("cqc_lem.api.routers.user.record_auth_event", return_value=True), \
              patch("cqc_lem.utilities.post_image.assets_dir", str(tmp_path)):
             assert _upload(client, post_id=None).status_code == 401
             assert _generate(client, content="x").status_code == 401

@@ -37,7 +37,7 @@ _VALID = "AQEDAReallyLongLinkedInSessionTokenValue1234567890"
 class TestStoreLinkedInCookie:
     def test_stores_valid_li_at(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True) as store:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": _VALID,
             })
@@ -48,7 +48,7 @@ class TestStoreLinkedInCookie:
 
     def test_strips_surrounding_quotes(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True) as store:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": f'  "{_VALID}"  ',
             })
@@ -57,7 +57,7 @@ class TestStoreLinkedInCookie:
 
     def test_passes_jsessionid_through(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True) as store:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": _VALID, "jsessionid": "ajax:123",
             })
@@ -74,7 +74,7 @@ class TestStoreLinkedInCookie:
     @pytest.mark.parametrize("bad", ["short", "has space inside", "semi;colon", ""])
     def test_422_invalid_li_at(self, client, bad):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True) as store:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": bad,
             })
@@ -83,7 +83,7 @@ class TestStoreLinkedInCookie:
 
     def test_500_when_store_fails(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=False):
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=False):
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": _VALID,
             })
@@ -98,8 +98,8 @@ class TestCookieOnlyMigration:
         delete the user's password.
         """
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True), \
-             patch("cqc_lem.api.main.clear_user_linkedin_password") as clear:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True), \
+             patch("cqc_lem.api.routers.user.clear_user_linkedin_password") as clear:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": _VALID,
             })
@@ -108,8 +108,8 @@ class TestCookieOnlyMigration:
 
     def test_password_dropped_when_requested(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True), \
-             patch("cqc_lem.api.main.clear_user_linkedin_password", return_value=True) as clear:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True), \
+             patch("cqc_lem.api.routers.user.clear_user_linkedin_password", return_value=True) as clear:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": _VALID, "drop_password": True,
             })
@@ -120,8 +120,8 @@ class TestCookieOnlyMigration:
     def test_password_not_dropped_when_the_cookie_could_not_be_stored(self, client):
         """Dropping it first would leave the account with no working login at all."""
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=False), \
-             patch("cqc_lem.api.main.clear_user_linkedin_password") as clear:
+             patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=False), \
+             patch("cqc_lem.api.routers.user.clear_user_linkedin_password") as clear:
             resp = client.post("/api/user/linkedin-cookie", json={
                 "session_token": _SESSION, "li_at": _VALID, "drop_password": True,
             })

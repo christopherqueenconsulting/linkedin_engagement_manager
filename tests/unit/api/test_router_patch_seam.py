@@ -24,6 +24,7 @@ the host module, resolved at request time, so patching it on `main` is CORRECT a
 import ast
 import pathlib
 import pkgutil
+import re
 
 import pytest
 
@@ -33,6 +34,10 @@ pytestmark = pytest.mark.unit
 REACHED_THROUGH_THE_HOST_MODULE = {"get_session_user_id"}
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
+
+# Any `/api/...` URL literal. Used only to ask whether a test names its OWN route, which decides
+# whether the enclosing class's URL is relevant to it.
+_API_ROUTE = re.compile(r'["\']/api/')
 
 
 def _module_globals(path: pathlib.Path) -> set[str]:
@@ -64,8 +69,8 @@ def _routers() -> list[tuple[str, str, set[str]]]:
     return out
 
 
-def _main_aliases(path: pathlib.Path) -> list[str]:
-    """`{_M}`-style f-string spellings of `cqc_lem.api.main` bound in this file.
+def _aliases_for(path: pathlib.Path, module: str) -> list[str]:
+    """`{_M}`-style f-string spellings of `module` bound in this file.
 
     Returned as the braced form so the caller can match the literal text of an f-string patch
     target. Assuming ONE alias name is what made this check blind to half the suite.
@@ -74,13 +79,24 @@ def _main_aliases(path: pathlib.Path) -> list[str]:
     out = []
     for node in tree.body:
         if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
-                and node.value.value == "cqc_lem.api.main"):
+                and node.value.value == module):
             out += ["{" + t.id + "}" for t in node.targets if isinstance(t, ast.Name)]
     return out
 
 
 def _tests_touching(prefix: str):
-    """Test functions whose body mentions this router's prefix — i.e. exercise its routes."""
+    """Functions that exercise this router's routes, and whether they name a route at all.
+
+    Not just `test_*`. A module-scoped `client`, an autouse `_quiet_audit`, a `_patches()` helper —
+    each stubs on behalf of every test in the file, and each is where a blanket silencer of the
+    audit write tends to live. Skipping them is how the `/api/user` slice shipped six broken
+    fixtures to CI: the mock bound a name the moved handlers no longer read, the real function ran,
+    and a database that is absent in CI turned every one of those routes into a 500.
+
+    The last element of each yield says which: True when the function (or its class) names a route
+    and so speaks for that router alone, False when it names none and therefore speaks for the whole
+    file — which since #1154 means more than one module.
+    """
     for path in sorted((_REPO / "tests").rglob("test_*.py")):
         source = path.read_text(encoding="utf-8")
         if prefix not in source or "cqc_lem.api.main" not in source:
@@ -103,8 +119,24 @@ def _tests_touching(prefix: str):
                                     "\n".join(lines[child.lineno - 1:child.end_lineno]))
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     body = "\n".join(lines[child.lineno - 1:child.end_lineno])
-                    if prefix in body or prefix in cls_text:
-                        yield path, cls, child.name, body
+                    # The class text is a FALLBACK, not an addition. A test that names its own URL
+                    # has already said which router it drives, and the class around it routinely
+                    # holds siblings driving a different one — `TestCookieResolution` calls
+                    # `/api/auth/session` next to a sibling calling `/api/user/sessions/revoke`.
+                    # Reading both together reported 14 correct `main` patches as mistakes when the
+                    # `/api/user` slice landed; re-pointing them would have broken every one.
+                    if _API_ROUTE.search(body):
+                        if prefix in body:
+                            yield path, cls, child.name, body, True
+                    elif _API_ROUTE.search(cls_text):
+                        if prefix in cls_text:
+                            yield path, cls, child.name, body, True
+                    elif not child.name.startswith("test"):
+                        # A FIXTURE or helper that names no route stands in for every route in the
+                        # file. A `test_` that names none is calling a function directly — its
+                        # target is its own business, and `_deny`'s logging tests legitimately
+                        # patch `main`'s logger while sitting in a file full of `/api/user` routes.
+                        yield path, cls, child.name, body, False
 
         yield from walk(tree)
 
@@ -117,16 +149,21 @@ class TestNoTestPatchesAMovedSymbolOnMain:
     def test_every_router_route_test_patches_the_module_its_code_reads(self):
         offenders = []
         for name, prefix, owned in _routers():
-            for path, cls, test, body in _tests_touching(prefix):
+            module = f"cqc_lem.api.routers.{name}"
+            for path, cls, test, body, names_a_route in _tests_touching(prefix):
                 # Every spelling a patch target is written in, NOT just the common one. Files pick
                 # their own alias — `_M`, `_MAIN`, `_MOD` — and a check that only knew `{_M}` was
                 # blind to `test_early_adopter_trial.py`'s `{_MAIN}`, which CI then caught. So the
                 # alias is resolved from the file's OWN assignments rather than assumed.
-                spellings = [f"{alias}." for alias in _main_aliases(path)]
+                spellings = [f"{alias}." for alias in _aliases_for(path, "cqc_lem.api.main")]
                 spellings.append("cqc_lem.api.main.")
+                # A function that names NO route stands in for every route in the file, so `main`
+                # may well be one of the modules it has to cover — it just may not be the ONLY one.
+                covers = [f"{alias}." for alias in _aliases_for(path, module)] + [f"{module}."]
                 wrong = sorted(
                     symbol for symbol in owned
                     if any(spelling + symbol in body for spelling in spellings)
+                    and (names_a_route or not any(c + symbol in body for c in covers))
                 )
                 if wrong:
                     rel = path.relative_to(_REPO)

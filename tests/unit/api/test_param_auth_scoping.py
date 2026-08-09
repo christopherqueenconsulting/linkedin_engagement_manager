@@ -24,6 +24,7 @@ from tests.unit.api.conftest import SESSION_EMAIL, SESSION_TOKEN, SESSION_USER_I
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 
 _OTHER_EMAIL = "victim@example.com"
 _OTHER_USER_ID = SESSION_USER_ID + 1
@@ -110,13 +111,24 @@ def _ids(cases):
     return [f"{m} {p}" for m, p, _, _, _ in cases]
 
 
+def _owner(path):
+    """The module whose binding of the db call this route's handler actually reads.
+
+    Since #1154 the answer depends on the path: `/api/user/*` is served from `api/routers/user.py`,
+    which imported the db functions itself. Patching them on `main` would rebind a name nothing
+    reads, and this table's whole assertion is that the call was NOT made — which an unbound mock
+    satisfies for free.
+    """
+    return _USER if path.startswith("/api/user/") else _M
+
+
 class TestNoSessionIs401:
     """A valid bearer token is not an identity — every converted route needs a session."""
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _ALL_CASES, ids=_ids(_ALL_CASES))
     def test_returns_401_and_touches_nothing(self, client, no_session, method, path, params, body,
                                              db_call):
-        with patch(f"{_M}.{db_call}") as touched:
+        with patch(f"{_owner(path)}.{db_call}") as touched:
             resp = _call(client, method, path, params, body)
         assert resp.status_code == 401, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} without a session"
@@ -128,7 +140,7 @@ class TestAnotherAccountsTargetIs403:
     @pytest.mark.parametrize("method,path,params,body,db_call", _CASES, ids=_ids(_CASES))
     def test_returns_403_and_touches_nothing(self, client, signed_in, method, path, params, body,
                                              db_call):
-        with patch(f"{_M}.{db_call}") as touched:
+        with patch(f"{_owner(path)}.{db_call}") as touched:
             resp = _call(client, method, path, params, body, token=SESSION_TOKEN)
         assert resp.status_code == 403, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} for another account"
@@ -206,7 +218,7 @@ class TestEmailChangeIsNotHere:
         """400 and a pointer, never a silent 200 — a client that believes it moved the address
         while the account still answers to the old one is its own failure mode.
         """
-        with patch(f"{_M}.update_user", return_value=True) as upd:
+        with patch(f"{_USER}.update_user", return_value=True) as upd:
             resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
                                                   "new_email": "attacker@evil.example",
                                                   "blog_url": "https://blog.example.com"})
@@ -215,7 +227,7 @@ class TestEmailChangeIsNotHere:
         upd.assert_not_called()
 
     def test_settings_without_new_email_still_save(self, client, signed_in):
-        with patch(f"{_M}.update_user", return_value=True) as upd:
+        with patch(f"{_USER}.update_user", return_value=True) as upd:
             resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
                                                   "blog_url": "https://blog.example.com"})
         assert resp.status_code == 200
@@ -362,7 +374,8 @@ class TestACredentialNeverRendersInAModelRepr:
     def test_session_token_is_absent_from_the_model_repr(self):
         from datetime import datetime, timezone
 
-        from cqc_lem.api.main import BulkDeleteRequest, BulkUpdateRequest, PostRequest, UserSettingsRequest
+        from cqc_lem.api.main import BulkDeleteRequest, BulkUpdateRequest, PostRequest
+        from cqc_lem.api.routers.user import UserSettingsRequest
 
         models = [
             PostRequest(session_token="live-secret", content="hi",

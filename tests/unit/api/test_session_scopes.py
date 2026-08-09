@@ -20,6 +20,24 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
+
+
+def _kernel():
+    """The `main` MODULE, for the refusals decided before any handler runs.
+
+    A scope refusal happens in the auth kernel, so the audit row is written by the kernel's own
+    binding of the audit function — not by the router module serving the path under test. The
+    per-area router imported that same name for its own handlers, so naming the target as a STRING
+    would be ambiguous: `test_router_patch_seam.py` reads that spelling as the moved-symbol mistake
+    and has no way to tell the two call sites apart. Patching the module OBJECT says which of the
+    two bindings is meant.
+    """
+    from cqc_lem.api import main
+
+    return main
+
+
 _UID = 21
 _EMAIL = "held@example.com"
 _TOKEN = "scoped-token"
@@ -66,7 +84,13 @@ def _account_without_a_strong_factor():
 
 @pytest.fixture(autouse=True)
 def _quiet():
+    """Silence the audit write in BOTH modules that bind it.
+
+    A fixture names no route, so it covers every route in the file — and since #1154 those are
+    served from two modules.
+    """
     with patch(f"{_M}.record_auth_event", return_value=True), \
+         patch(f"{_USER}.record_auth_event", return_value=True), \
          patch(f"{_M}.mark_email_verified", return_value=True), \
          patch(f"{_M}.clear_auth_limits"):
         yield
@@ -165,11 +189,11 @@ class TestExtensionScope:
             self, client, method, path, body):
         """The whole point of 2c.1. Before it, this token read and wrote everything the SPA can."""
         with _session("extension"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL) as email, \
-             patch(f"{_M}.revoke_other_sessions") as revoke, \
-             patch(f"{_M}.create_session") as create_session, \
-             patch(f"{_M}.create_pin_for_email") as create_pin, \
-             patch(f"{_M}.list_user_sessions", return_value=[]):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL) as email, \
+             patch(f"{_USER}.revoke_other_sessions") as revoke, \
+             patch(f"{_USER}.create_session") as create_session, \
+             patch(f"{_USER}.create_pin_for_email") as create_pin, \
+             patch(f"{_USER}.list_user_sessions", return_value=[]):
             if body is None:
                 resp = getattr(client, method)(path, params={"session_token": _TOKEN})
             else:
@@ -182,8 +206,8 @@ class TestExtensionScope:
 
     def test_the_one_endpoint_the_extension_actually_calls_still_works(self, client):
         with _session("extension"), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.store_linkedin_li_at", return_value=True) as store:
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie",
                                json={"session_token": _TOKEN, "li_at": "a" * 40})
         assert resp.status_code == 200
@@ -196,8 +220,8 @@ class TestExtensionScope:
         from cqc_lem.utilities.db import AuthAuditEvent
 
         with _session("extension"), \
-             patch(f"{_M}.record_auth_event") as recorded, \
-             patch(f"{_M}.list_user_sessions", return_value=[]):
+             patch.object(_kernel(), "record_auth_event") as recorded, \
+             patch(f"{_USER}.list_user_sessions", return_value=[]):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN},
                               headers={"CF-Connecting-IP": "203.0.113.9"})
         assert resp.status_code == 403
@@ -211,8 +235,8 @@ class TestExtensionScope:
     def test_a_failed_audit_write_does_not_turn_a_refusal_into_a_500(self, client):
         """The refusal IS the control; the row is only the record of it."""
         with _session("extension"), \
-             patch(f"{_M}.record_auth_event", side_effect=RuntimeError("db down")), \
-             patch(f"{_M}.list_user_sessions", return_value=[]):
+             patch.object(_kernel(), "record_auth_event", side_effect=RuntimeError("db down")), \
+             patch(f"{_USER}.list_user_sessions", return_value=[]):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 403
 
@@ -221,18 +245,18 @@ class TestExtensionScope:
         bury the one row that means something.
         """
         with _deadline(_PAST), _session("enroll"), \
-             patch(f"{_M}.record_auth_event") as recorded, \
-             patch(f"{_M}.list_user_sessions", return_value=[]):
+             patch.object(_kernel(), "record_auth_event") as recorded, \
+             patch(f"{_USER}.list_user_sessions", return_value=[]):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 403
         recorded.assert_not_called()
 
     def test_a_full_session_is_untouched_by_the_narrowing(self, client):
         with _session("full"), \
-             patch(f"{_M}.list_user_sessions", return_value=[]), \
-             patch(f"{_M}.get_auth_audit_events", return_value=[]), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL):
+             patch(f"{_USER}.list_user_sessions", return_value=[]), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
 
@@ -242,10 +266,10 @@ class TestExtensionScope:
         """
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": None} if t == _TOKEN else None), \
-             patch(f"{_M}.list_user_sessions", return_value=[]), \
-             patch(f"{_M}.get_auth_audit_events", return_value=[]), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL):
+             patch(f"{_USER}.list_user_sessions", return_value=[]), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
 
@@ -257,8 +281,8 @@ class TestExtensionScope:
             return {"user_id": _UID, "scope": "extension" if token == _TOKEN else "full"}
 
         with patch(f"{_M}._db_resolve_session", side_effect=resolve), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.list_user_sessions", return_value=[]):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.list_user_sessions", return_value=[]):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN},
                               cookies={"lem_session": "browser-cookie"})
         assert resp.status_code == 403
@@ -346,9 +370,9 @@ class TestEnrollmentHold:
     @pytest.mark.parametrize("method,path,body", OFF_SURFACE)
     def test_a_held_session_reaches_nothing_but_enrolment(self, client, method, path, body):
         with _deadline(_PAST), _session("enroll"), \
-             patch(f"{_M}.store_linkedin_li_at") as store_cookie, \
-             patch(f"{_M}.revoke_other_sessions") as revoke, \
-             patch(f"{_M}.list_user_sessions", return_value=[]):
+             patch(f"{_USER}.store_linkedin_li_at") as store_cookie, \
+             patch(f"{_USER}.revoke_other_sessions") as revoke, \
+             patch(f"{_USER}.list_user_sessions", return_value=[]):
             if body is None:
                 resp = getattr(client, method)(path, params={"session_token": _TOKEN})
             else:
@@ -362,10 +386,10 @@ class TestEnrollmentHold:
 
     def test_a_held_session_can_still_enrol(self, client):
         with _deadline(_PAST), _session("enroll"), \
-             patch(f"{_M}.enrollment_allowed", return_value=True), \
-             patch(f"{_M}.has_confirmed_totp", return_value=False), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.begin_totp_enrollment", return_value=(1, "SEED", "otpauth://x")):
+             patch(f"{_USER}.enrollment_allowed", return_value=True), \
+             patch(f"{_USER}.has_confirmed_totp", return_value=False), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.begin_totp_enrollment", return_value=(1, "SEED", "otpauth://x")):
             resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"]["secret"] == "SEED"
@@ -373,8 +397,8 @@ class TestEnrollmentHold:
     def test_a_held_session_can_still_save_recovery_codes(self, client):
         """Forced to enrol and then unable to save the sheet would be the worst possible order."""
         with _deadline(_PAST), _session("enroll"), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.generate_recovery_codes", return_value=["AAA", "BBB"]):
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.generate_recovery_codes", return_value=["AAA", "BBB"]):
             resp = client.post("/api/user/recovery-codes/regenerate",
                                json={"session_token": _TOKEN})
         assert resp.status_code == 200
@@ -405,11 +429,11 @@ class TestEnrollmentHold:
     def test_enrolling_a_factor_releases_the_hold(self, client):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.enrollment_allowed", return_value=True), \
-             patch(f"{_M}.confirm_totp_enrollment", return_value=True), \
-             patch(f"{_M}.count_recovery_codes", return_value=(0, 0)), \
-             patch(f"{_M}.session_signed_in_with_recovery_code", return_value=False), \
-             patch(f"{_M}.record_step_up", return_value=True), \
+             patch(f"{_USER}.enrollment_allowed", return_value=True), \
+             patch(f"{_USER}.confirm_totp_enrollment", return_value=True), \
+             patch(f"{_USER}.count_recovery_codes", return_value=(0, 0)), \
+             patch(f"{_USER}.session_signed_in_with_recovery_code", return_value=False), \
+             patch(f"{_USER}.record_step_up", return_value=True), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released:
             resp = client.post("/api/user/totp/enroll/confirm",
                                json={"session_token": _TOKEN, "code": "123456"})
@@ -422,10 +446,10 @@ class TestEnrollmentHold:
         """
         with _deadline(""), _session("enroll"), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released, \
-             patch(f"{_M}.list_user_sessions", return_value=[]), \
-             patch(f"{_M}.get_auth_audit_events", return_value=[]), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL):
+             patch(f"{_USER}.list_user_sessions", return_value=[]), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
         # ...and the row is promoted, so the next request costs no extra question.
@@ -440,10 +464,10 @@ class TestEnrollmentHold:
         with _deadline(_PAST), _session("enroll"), \
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released, \
-             patch(f"{_M}.list_user_sessions", return_value=[]), \
-             patch(f"{_M}.get_auth_audit_events", return_value=[]), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL):
+             patch(f"{_USER}.list_user_sessions", return_value=[]), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
         released.assert_called_once_with(_TOKEN)
@@ -455,10 +479,10 @@ class TestEnrollmentHold:
         with _deadline(_PAST), _session("enroll"), \
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", side_effect=RuntimeError("db down")), \
-             patch(f"{_M}.list_user_sessions", return_value=[]), \
-             patch(f"{_M}.get_auth_audit_events", return_value=[]), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL):
+             patch(f"{_USER}.list_user_sessions", return_value=[]), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = client.get("/api/user/security", params={"session_token": _TOKEN})
         assert resp.status_code == 200
 
@@ -492,11 +516,11 @@ class TestEnrollmentHold:
         """
         with _deadline(""), _session("full"), \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.enrollment_allowed", return_value=True), \
-             patch(f"{_M}.confirm_totp_enrollment", return_value=True), \
-             patch(f"{_M}.count_recovery_codes", return_value=(0, 0)), \
-             patch(f"{_M}.session_signed_in_with_recovery_code", return_value=False), \
-             patch(f"{_M}.record_step_up", return_value=True), \
+             patch(f"{_USER}.enrollment_allowed", return_value=True), \
+             patch(f"{_USER}.confirm_totp_enrollment", return_value=True), \
+             patch(f"{_USER}.count_recovery_codes", return_value=(0, 0)), \
+             patch(f"{_USER}.session_signed_in_with_recovery_code", return_value=False), \
+             patch(f"{_USER}.record_step_up", return_value=True), \
              patch(f"{_M}.release_enrollment_scope") as released:
             resp = client.post("/api/user/totp/enroll/confirm",
                                json={"session_token": _TOKEN, "code": "123456"})

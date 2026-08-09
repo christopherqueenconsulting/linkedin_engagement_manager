@@ -36,7 +36,7 @@ _USER = 5
 class TestGetDmTemplates:
     def test_returns_list(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_dm_templates", return_value=[{"event_type": "manual", "step": 0}]):
+             patch("cqc_lem.api.routers.user.get_dm_templates", return_value=[{"event_type": "manual", "step": 0}]):
             resp = client.get(f"/api/user/dm-templates?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"][0]["event_type"] == "manual"
@@ -50,7 +50,7 @@ class TestGetDmTemplates:
 class TestUpdateDmTemplates:
     def test_upserts(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_dm_templates", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_dm_templates", return_value=True) as upd:
             resp = client.put("/api/user/dm-templates", json={
                 "session_token": _SESSION,
                 "templates": [{"event_type": "connection_accepted", "step": 0,
@@ -60,7 +60,7 @@ class TestUpdateDmTemplates:
 
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_dm_templates", return_value=False):
+             patch("cqc_lem.api.routers.user.upsert_dm_templates", return_value=False):
             resp = client.put("/api/user/dm-templates", json={"session_token": _SESSION, "templates": []})
         assert resp.status_code == 500
 

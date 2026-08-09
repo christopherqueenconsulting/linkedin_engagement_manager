@@ -37,7 +37,7 @@ _USER_ID = 42
 class TestGetUserTimezone:
     def test_returns_timezone_for_valid_session(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.get_user_timezone", return_value="America/New_York"):
+             patch("cqc_lem.api.routers.user.get_user_timezone", return_value="America/New_York"):
             resp = client.get(f"{_BASE}?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["timezone"] == "America/New_York"
@@ -51,7 +51,7 @@ class TestGetUserTimezone:
 class TestPutUserTimezone:
     def test_updates_valid_iana_timezone(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.update_user_timezone", return_value=True):
+             patch("cqc_lem.api.routers.user.update_user_timezone", return_value=True):
             resp = client.put(_BASE, json={"session_token": _SESSION, "timezone": "America/New_York"})
         assert resp.status_code == 200
 
@@ -67,6 +67,6 @@ class TestPutUserTimezone:
 
     def test_returns_500_when_db_update_fails(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.update_user_timezone", return_value=False):
+             patch("cqc_lem.api.routers.user.update_user_timezone", return_value=False):
             resp = client.put(_BASE, json={"session_token": _SESSION, "timezone": "UTC"})
         assert resp.status_code == 500

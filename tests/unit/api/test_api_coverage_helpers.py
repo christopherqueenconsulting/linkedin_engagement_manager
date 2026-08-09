@@ -11,6 +11,7 @@ from fastapi import HTTPException
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 
 
 @pytest.fixture(scope="module")
@@ -223,11 +224,11 @@ class TestComputeNextPublish:
     def test_bad_timezone_falls_back_to_utc(self):
         import pytz
 
-        from cqc_lem.api.main import _compute_next_publish
-        with patch(f"{_M}.get_newsletter_settings", return_value={
+        from cqc_lem.api.routers.user import _compute_next_publish
+        with patch(f"{_USER}.get_newsletter_settings", return_value={
                 "publish_day": 1, "publish_hour": 9, "cadence": "weekly",
                 "last_published_at": None}), \
-             patch(f"{_M}.get_user_timezone", return_value="Not/AZone"), \
+             patch(f"{_USER}.get_user_timezone", return_value="Not/AZone"), \
              patch("cqc_lem.utilities.newsletter.next_publish_datetime",
                    return_value=datetime(2026, 7, 13, 9, 0)) as npd:
             result = _compute_next_publish(1)

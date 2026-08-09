@@ -37,6 +37,7 @@ from starlette.datastructures import Headers
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 # The avatar handlers moved to their own router (#1154), so the db functions they call are
 # read from THAT module's globals now. `get_session_user_id` still patches on `_M`: the
 # handlers reach it as an attribute of the host module at request time.
@@ -94,7 +95,8 @@ def cookie_session() -> Iterator[None]:
     with patch(f"{_M}._db_resolve_session",
                side_effect=lambda t: {"user_id": _UID, "scope": "full"} if t == _COOKIE else None), \
          patch(f"{_M}.user_owns_posts", return_value=True), \
-         patch(f"{_M}.record_auth_event", return_value=True):
+         patch(f"{_M}.record_auth_event", return_value=True), \
+         patch(f"{_USER}.record_auth_event", return_value=True):
         yield
 
 
@@ -299,7 +301,7 @@ class TestTheMultipartWrites:
 
     def test_a_newsletter_cover_upload_without_the_header_is_refused(
             self, client: Any, cookie_session: None) -> None:
-        with patch(f"{_M}.get_newsletter_edition") as edition:
+        with patch(f"{_USER}.get_newsletter_edition") as edition:
             resp = client.post("/api/user/newsletter-draft/cover",
                                data={"session_token": "cookie", "edition_id": 1},
                                files={"file": ("c.png", b"not-a-png", "image/png")},

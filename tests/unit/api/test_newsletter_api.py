@@ -37,14 +37,15 @@ _USER = 5
 class TestNewsletterSettings:
     def test_get_returns_settings(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_settings", return_value={"enabled": True, "cadence": "weekly"}):
+             patch("cqc_lem.api.routers.user.get_newsletter_settings",
+                   return_value={"enabled": True, "cadence": "weekly"}):
             resp = client.get(f"/api/user/newsletter-settings?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["cadence"] == "weekly"
 
     def test_put_updates(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True, "title": "Weekly Wins", "cadence": "weekly"})
         assert resp.status_code == 200
@@ -53,7 +54,7 @@ class TestNewsletterSettings:
 
     def test_put_passes_publish_day_hour(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True, "publish_day": 3, "publish_hour": 14})
         assert resp.status_code == 200
@@ -62,7 +63,7 @@ class TestNewsletterSettings:
 
     def test_put_clamps_draft_config(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True,
                 "max_queued_drafts": 15, "generate_lead_days": 100})
@@ -72,7 +73,7 @@ class TestNewsletterSettings:
 
     def test_put_clamps_draft_config_low(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True,
                 "max_queued_drafts": 0, "generate_lead_days": -5})
@@ -82,7 +83,7 @@ class TestNewsletterSettings:
 
     def test_put_enabled_triggers_queue_topup(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True), \
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True), \
              patch("cqc_lem.app.run_scheduler.generate_newsletter_drafts_for_user") as task:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True, "max_queued_drafts": 3})
@@ -91,7 +92,7 @@ class TestNewsletterSettings:
 
     def test_put_disabled_does_not_trigger_topup(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True), \
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True), \
              patch("cqc_lem.app.run_scheduler.generate_newsletter_drafts_for_user") as task:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": False, "max_queued_drafts": 3})
@@ -100,7 +101,7 @@ class TestNewsletterSettings:
 
     def test_put_clamps_max_invites_high(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True,
                 "invite_connections_enabled": True, "max_invites_per_run": 9999})
@@ -110,7 +111,7 @@ class TestNewsletterSettings:
 
     def test_put_clamps_max_invites_low(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True, "max_invites_per_run": -10})
         assert resp.status_code == 200
@@ -126,7 +127,7 @@ class TestNewsletterSubscribers:
     def test_get_returns_history_and_latest(self, client):
         history = [{"subscriber_count": 130, "invites_sent": 0, "captured_at": "2026-07-20T00:00:00"}]
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_settings",
+             patch("cqc_lem.api.routers.user.get_newsletter_settings",
                    return_value={"enabled": True, "newsletter_url": "https://li/news"}), \
              patch("cqc_lem.utilities.db.count_artifact_cta_deliveries",
                    return_value={"window_days": 90, "lead_magnet_dms": 2, "newsletter_links": 3}), \
@@ -140,7 +141,7 @@ class TestNewsletterSubscribers:
     def test_get_includes_owned_asset_delivery_attribution(self, client):
         """Issue #624: growth is only readable against the CTAs that actually delivered."""
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_settings",
+             patch("cqc_lem.api.routers.user.get_newsletter_settings",
                    return_value={"enabled": True, "newsletter_url": "https://li/news"}), \
              patch("cqc_lem.utilities.db.count_artifact_cta_deliveries",
                    return_value={"window_days": 90, "lead_magnet_dms": 2,
@@ -167,10 +168,10 @@ class TestNewsletterDraft:
         settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None,
                     "max_queued_drafts": 3, "generate_lead_days": 14}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_pending_newsletter_editions", return_value=editions), \
-             patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
-             patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
+             patch("cqc_lem.api.routers.user.get_pending_newsletter_editions", return_value=editions), \
+             patch("cqc_lem.api.routers.user.get_latest_edition_scheduled_for", return_value=None), \
+             patch("cqc_lem.api.routers.user.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.routers.user.get_user_timezone", return_value="UTC"):
             resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -186,10 +187,10 @@ class TestNewsletterDraft:
         settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None,
                     "max_queued_drafts": 1, "generate_lead_days": 3}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_pending_newsletter_editions", return_value=[]), \
-             patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
-             patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
+             patch("cqc_lem.api.routers.user.get_pending_newsletter_editions", return_value=[]), \
+             patch("cqc_lem.api.routers.user.get_latest_edition_scheduled_for", return_value=None), \
+             patch("cqc_lem.api.routers.user.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.routers.user.get_user_timezone", return_value="UTC"):
             resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["editions"] == []
@@ -201,8 +202,8 @@ class TestNewsletterDraft:
 
     def test_put_approve(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
-             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.routers.user.update_newsletter_edition", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-draft", json={
                 "session_token": _SESSION, "edition_id": 4, "action": "approve"})
         assert resp.status_code == 200
@@ -210,8 +211,8 @@ class TestNewsletterDraft:
 
     def test_put_skip(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
-             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.routers.user.update_newsletter_edition", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-draft", json={
                 "session_token": _SESSION, "edition_id": 4, "action": "skip"})
         assert resp.status_code == 200
@@ -219,8 +220,8 @@ class TestNewsletterDraft:
 
     def test_put_save_leaves_status_none(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
-             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.routers.user.update_newsletter_edition", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-draft", json={
                 "session_token": _SESSION, "edition_id": 4, "title": "New", "action": "save"})
         assert resp.status_code == 200
@@ -228,8 +229,8 @@ class TestNewsletterDraft:
 
     def test_put_forwards_scheduled_datetime(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
-             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.routers.user.update_newsletter_edition", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-draft", json={
                 "session_token": _SESSION, "edition_id": 4, "action": "approve",
                 "scheduled_datetime": "2026-07-10T19:00:00"})
@@ -239,7 +240,7 @@ class TestNewsletterDraft:
 
     def test_put_404_when_not_owner(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}):
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": 999}):
             resp = client.put("/api/user/newsletter-draft", json={
                 "session_token": _SESSION, "edition_id": 4, "action": "save"})
         assert resp.status_code == 404
@@ -254,7 +255,7 @@ class TestNewsletterDraft:
 class TestNewsletterRegenerate:
     def test_dispatches_task_with_guidance(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
              patch("cqc_lem.app.run_scheduler.regenerate_newsletter_edition") as task:
             resp = client.post("/api/user/newsletter-draft/regenerate", json={
                 "session_token": _SESSION, "edition_id": 4, "guidance": "Make it about pricing"})
@@ -264,7 +265,7 @@ class TestNewsletterRegenerate:
 
     def test_blank_guidance_becomes_none(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
              patch("cqc_lem.app.run_scheduler.regenerate_newsletter_edition") as task:
             resp = client.post("/api/user/newsletter-draft/regenerate", json={
                 "session_token": _SESSION, "edition_id": 4, "guidance": "   "})
@@ -273,7 +274,7 @@ class TestNewsletterRegenerate:
 
     def test_404_when_not_owner(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
              patch("cqc_lem.app.run_scheduler.regenerate_newsletter_edition") as task:
             resp = client.post("/api/user/newsletter-draft/regenerate", json={
                 "session_token": _SESSION, "edition_id": 4})
@@ -304,7 +305,7 @@ class TestNewsletterCoverUpload:
 
     def test_upload_stores_the_cover_as_approved(self, client, tmp_path):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
              patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
              patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=True) as store:
             resp = client.post("/api/user/newsletter-draft/cover",
@@ -317,7 +318,7 @@ class TestNewsletterCoverUpload:
 
     def test_a_rejected_image_is_a_400_and_stores_nothing(self, client, tmp_path):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
              patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
              patch("cqc_lem.utilities.db.set_edition_cover_image") as store:
             resp = client.post("/api/user/newsletter-draft/cover",
@@ -329,7 +330,7 @@ class TestNewsletterCoverUpload:
 
     def test_a_failed_write_leaves_no_orphan_file(self, client, tmp_path):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
              patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
              patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=False), \
              patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
@@ -342,7 +343,7 @@ class TestNewsletterCoverUpload:
     def test_replacing_a_cover_deletes_the_previous_file(self, client, tmp_path):
         existing = dict(_OWNED, cover_image_path="images/newsletter_covers/5/old.png")
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=existing), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=existing), \
              patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
              patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=True), \
              patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
@@ -354,7 +355,7 @@ class TestNewsletterCoverUpload:
 
     def test_404_when_not_owner(self, client, tmp_path):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
              patch("cqc_lem.utilities.db.set_edition_cover_image") as store:
             resp = client.post("/api/user/newsletter-draft/cover",
                                data={"session_token": _SESSION, "edition_id": 4},
@@ -373,7 +374,7 @@ class TestNewsletterCoverUpload:
 class TestNewsletterCoverGenerate:
     def test_dispatches_the_task(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
              patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
             resp = client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": 4})
@@ -383,7 +384,7 @@ class TestNewsletterCoverGenerate:
 
     def test_per_edition_avatar_choice_rides_through(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
              patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
             resp = client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": 4, "use_avatar": True})
@@ -392,7 +393,7 @@ class TestNewsletterCoverGenerate:
 
     def test_404_when_not_owner_spends_nothing(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
              patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
             resp = client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": 4})
@@ -412,7 +413,7 @@ class TestNewsletterCoverDecision:
 
     def test_approve_clears_the_cover_for_publish(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
              patch("cqc_lem.utilities.db.set_edition_cover_status", return_value=True) as upd:
             resp = client.post("/api/user/newsletter-draft/cover/decision", json={
                 "session_token": _SESSION, "edition_id": 4, "action": "approve"})
@@ -421,7 +422,7 @@ class TestNewsletterCoverDecision:
 
     def test_remove_drops_the_row_and_the_file(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
              patch("cqc_lem.utilities.db.clear_edition_cover_image", return_value=True) as clear, \
              patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
             resp = client.post("/api/user/newsletter-draft/cover/decision", json={
@@ -432,7 +433,7 @@ class TestNewsletterCoverDecision:
 
     def test_404_when_there_is_no_cover(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(_OWNED)), \
              patch("cqc_lem.utilities.db.set_edition_cover_status") as upd:
             resp = client.post("/api/user/newsletter-draft/cover/decision", json={
                 "session_token": _SESSION, "edition_id": 4, "action": "approve"})
@@ -441,7 +442,7 @@ class TestNewsletterCoverDecision:
 
     def test_unknown_action_is_a_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
              patch("cqc_lem.utilities.db.set_edition_cover_status") as upd, \
              patch("cqc_lem.utilities.db.clear_edition_cover_image") as clear:
             resp = client.post("/api/user/newsletter-draft/cover/decision", json={
@@ -466,10 +467,10 @@ class TestNewsletterDraftCoverSurface:
         settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly",
                     "last_published_at": None, "max_queued_drafts": 1, "generate_lead_days": 3}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_pending_newsletter_editions", return_value=editions), \
-             patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
-             patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
+             patch("cqc_lem.api.routers.user.get_pending_newsletter_editions", return_value=editions), \
+             patch("cqc_lem.api.routers.user.get_latest_edition_scheduled_for", return_value=None), \
+             patch("cqc_lem.api.routers.user.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.routers.user.get_user_timezone", return_value="UTC"):
             resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
         edition = resp.json()["detail"]["editions"][0]
         assert "cover_image_path" not in edition
@@ -479,7 +480,7 @@ class TestNewsletterDraftCoverSurface:
 
     def test_settings_put_forwards_the_cover_opt_in(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             resp = client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True, "cover_image_auto": True})
         assert resp.status_code == 200
@@ -487,7 +488,7 @@ class TestNewsletterDraftCoverSurface:
 
     def test_cover_opt_in_defaults_off(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_newsletter_settings", return_value=True) as upd:
             client.put("/api/user/newsletter-settings", json={
                 "session_token": _SESSION, "enabled": True})
         assert upd.call_args[0][1]["cover_image_auto"] is False
