@@ -837,6 +837,41 @@ _REACTION_OPENER_LOCATORS = [
 ]
 
 
+def _card_has_reaction_affordance(card) -> bool:
+    """True when the card renders any reaction control at all.
+
+    LinkedIn surfaces post text without reaction affordances on some cards (e.g., followed
+    hashtags, promoted modules, third-party embeds). The #899 live run found 9 post-text nodes but
+    only 8 reaction triggers, so at least one normal card type is commentable but not reactable.
+    A selector miss on those cards is working behaviour and must stay DEBUG; only cards that DO
+    carry reactions should warn when the state button can't be read.
+    """
+    try:
+        for by, sel in _REACTION_TRIGGER_LOCATORS + _REACTION_OPENER_LOCATORS:
+            for el in card.find_elements(by, sel):
+                try:
+                    if el.is_displayed():
+                        return True
+                except Exception:
+                    continue
+        for el in card.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
+            try:
+                if not el.is_displayed():
+                    continue
+            except Exception:
+                continue
+            label = (el.get_attribute("aria-label") or "").lower()
+            text = (el.text or "").lower()
+            testid = (el.get_attribute("data-testid") or "").lower()
+            if any(token in label or token in text or token in testid for token in (
+                "reaction", "react", "like", "celebrate", "support", "love", "insightful", "funny"
+            )):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _reaction_option_locators(reaction: str) -> list:
     """Ordered routes to ONE reaction inside the open fly-out.
 
@@ -876,9 +911,17 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     (the toggle no longer reads 'no reaction').
     """
     try:
+        has_reaction_affordance = _card_has_reaction_affordance(card)
+        if not has_reaction_affordance:
+            # The #899 live run found 9 post-text nodes and 8 reaction triggers — some commentable
+            # cards carry no reaction affordance at all. Skipping them silently is working behaviour;
+            # warning on every such card would escalate to ERROR and file a defect (issue #874).
+            log_debug("Card has no reaction affordance — skipping inline reaction", user_id=user_id,
+                      action_type="comment")
+            return False
         state = find_first(driver, wait, _REACTION_TRIGGER_LOCATORS,
                            "Reaction state", parent_element=card, required=False, visible_only=True,
-                           user_id=user_id)
+                           warn_on_miss=has_reaction_affordance, user_id=user_id)
         if state is not None and "no reaction" not in (state.get_attribute("aria-label") or "").lower():
             return None  # already reacted on this post — a no-op, not a failure
 
