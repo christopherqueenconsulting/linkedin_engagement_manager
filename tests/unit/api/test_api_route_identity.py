@@ -42,6 +42,11 @@ _NO_IDENTITY_BY_DESIGN = {
 # the admin pair is the other credential a gated route may run on — `/api/admin/*` demands the
 # `X-Admin-Secret`, which (unlike the bearer) was never shipped in the SPA bundle.
 _IDENTITY_SEEDS = frozenset({"get_session_user_id"})
+# Both admin seeds now live in `api/routers/admin.py`, not `main` — they are `Depends()` DEFAULT
+# arguments, which bind at import time and so could not be reached as `_main.<name>` (#1154). They
+# are named here as STRINGS and closed over `_functions()`, which spans every discovered router, so
+# the move needed no edit. Narrowing that span back to `main` would drop `_require_user_admin` out
+# of the closure and report three real admin routes as unguarded — verified by sabotage, and loud.
 _ADMIN_SEEDS = frozenset({"_require_admin", "_require_api_and_admin"})
 
 # The three gates an `/api/admin/*` route may run on. `_require_api_and_admin` re-checks the bearer

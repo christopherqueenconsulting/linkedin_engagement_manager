@@ -30,12 +30,12 @@ def client():
 
 class TestGenerateMediaVariantsEndpoint:
     def test_forbidden_without_secret(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", "s3cret"):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", "s3cret"):
             r = client.post("/api/admin/generate-media-variants", json={"text": "hi"})
         assert r.status_code == 403
 
     def test_unprocessable_without_source(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", "s3cret"):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", "s3cret"):
             r = client.post("/api/admin/generate-media-variants", json={},
                             headers={"x-admin-secret": "s3cret"})
         assert r.status_code == 422
@@ -43,7 +43,7 @@ class TestGenerateMediaVariantsEndpoint:
     def test_ok(self, client):
         payload = {"batch_id": "1_abc", "variants": [],
                    "total_estimated_cost_usd": 0.0, "metadata_url": "u"}
-        with patch("cqc_lem.api.main.ADMIN_SECRET", "s3cret"), \
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", "s3cret"), \
              patch("cqc_lem.app.generate_variants.generate_media_variants", return_value=payload) as gen:
             r = client.post("/api/admin/generate-media-variants",
                             json={"text": "hi", "user_id": 1},

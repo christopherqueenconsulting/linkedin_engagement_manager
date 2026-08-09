@@ -136,7 +136,7 @@ class TestAdminRoutesAreNotInTheSchema:
         from cqc_lem.api.main import _walk_routes, app
         paths = {getattr(r, "path", "") for r in _walk_routes(app.routes)}
         assert "/api/admin/automation-pause" in paths
-        with patch("cqc_lem.api.main.ADMIN_SECRET", "s3cret"):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", "s3cret"):
             assert client.post("/api/admin/automation-pause",
                                params={"user_id": 1}).status_code == 403
 
@@ -149,7 +149,9 @@ class TestSecuritySchemeDescriptions:
     """
 
     def test_no_env_var_name_is_disclosed(self):
-        from cqc_lem.api.main import _admin_secret_scheme, _bearer_scheme
+        # Both schemes moved with the admin router (#1154): only `_require_api_and_admin` reads
+        # them, and it takes them as `Depends()` DEFAULTS, which bind at import time.
+        from cqc_lem.api.routers.admin import _admin_secret_scheme, _bearer_scheme
         for scheme in (_bearer_scheme, _admin_secret_scheme):
             description = scheme.model.description or ""
             assert "API_ACCESS_TOKENS" not in description

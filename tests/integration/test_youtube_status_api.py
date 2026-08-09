@@ -15,6 +15,10 @@ import pytest
 pytestmark = pytest.mark.integration
 
 _M = "cqc_lem.api.main"
+# The admin handlers — and the gates they run on — moved to their own router (#1154), so
+# `ADMIN_SECRET` and `is_user_admin` are read from THAT module's globals now. `get_session_user_id`
+# still patches on `_M`: the gate reaches it as an attribute of the host module at request time.
+_ADMIN = "cqc_lem.api.routers.admin"
 
 
 class _FakeRedis:
@@ -62,7 +66,7 @@ def env(monkeypatch):
 
 def _status(client, response, live=False):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
-         patch(f"{_M}.is_user_admin", return_value=True), \
+         patch(f"{_ADMIN}.is_user_admin", return_value=True), \
          patch("requests.post", return_value=response):
         return client.get(f"/api/admin/youtube-status?session_token=t&live={str(live).lower()}")
 
@@ -87,7 +91,7 @@ def test_a_dead_grant_reads_as_needs_reauth_with_the_reason(client, env):
 
 def test_an_unreachable_google_reads_as_unknown_not_broken(client, env):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
-         patch(f"{_M}.is_user_admin", return_value=True), \
+         patch(f"{_ADMIN}.is_user_admin", return_value=True), \
          patch("requests.post", side_effect=OSError("network down")):
         detail = client.get("/api/admin/youtube-status?session_token=t").json()["detail"]
     assert detail["status"] == "unknown" and detail["connected"] is False
@@ -100,7 +104,7 @@ def test_the_refresh_token_is_never_returned(client, env):
 
 def test_a_non_admin_session_is_refused(client, env):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
-         patch(f"{_M}.is_user_admin", return_value=False), \
+         patch(f"{_ADMIN}.is_user_admin", return_value=False), \
          patch("requests.post") as post:
         response = client.get("/api/admin/youtube-status?session_token=t")
     assert response.status_code == 403
@@ -115,7 +119,7 @@ def test_an_expired_session_is_refused(client, env):
 def test_installing_a_token_stores_it_probes_it_and_takes_precedence_over_env(client, env,
                                                                              monkeypatch):
     from cqc_lem.utilities.marketing import youtube_auth as ya
-    monkeypatch.setattr(f"{_M}.ADMIN_SECRET", "s3cret")
+    monkeypatch.setattr(f"{_ADMIN}.ADMIN_SECRET", "s3cret")
     with patch("requests.post", return_value=_response(payload={"access_token": "at"})) as post:
         response = client.post("/api/admin/youtube-token",
                                json={"refresh_token": "  db-token  "},
@@ -128,7 +132,7 @@ def test_installing_a_token_stores_it_probes_it_and_takes_precedence_over_env(cl
 
 
 def test_installing_a_token_requires_the_admin_secret(client, env, monkeypatch):
-    monkeypatch.setattr(f"{_M}.ADMIN_SECRET", "s3cret")
+    monkeypatch.setattr(f"{_ADMIN}.ADMIN_SECRET", "s3cret")
     with patch("requests.post") as post:
         response = client.post("/api/admin/youtube-token", json={"refresh_token": "x"})
     assert response.status_code == 403
@@ -136,7 +140,7 @@ def test_installing_a_token_requires_the_admin_secret(client, env, monkeypatch):
 
 
 def test_an_empty_token_is_rejected_before_anything_is_stored(client, env, monkeypatch):
-    monkeypatch.setattr(f"{_M}.ADMIN_SECRET", "s3cret")
+    monkeypatch.setattr(f"{_ADMIN}.ADMIN_SECRET", "s3cret")
     response = client.post("/api/admin/youtube-token", json={"refresh_token": "   "},
                            headers={"x-admin-secret": "s3cret"})
     assert response.status_code == 422 and env == {}

@@ -176,7 +176,10 @@ So the SPA ships none, and the token's contract is now written down rather than 
   build artifact has to match it.
 - **`/api/admin/*` is NOT uniformly a two-credential surface, and #950 is why — say so plainly.**
   Eighteen admin routes run on three different gates, and the middleware used to add the bearer on
-  top of all of them:
+  top of all of them. All three live in `api/routers/admin.py` alongside the routes since #1154 —
+  unlike every other router slice, which reaches the auth kernel as `_main.<name>` at request time,
+  these could not: six handlers take `_require_api_and_admin` as a `Depends()` default argument,
+  which binds at import time. Nothing outside `/api/admin/*` reads any of them.
 
   | Gate | Routes | Credentials after #950 |
   |---|---|---|
