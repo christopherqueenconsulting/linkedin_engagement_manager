@@ -41,11 +41,22 @@ def pooled(monkeypatch):
 
 
 def _threads_connected() -> int:
-    connection = mysql.connector.connect(connect_timeout=3, **db._get_mysql_config())
+    """Connections this test's own database is holding open on the server.
+
+    Counted off `information_schema.processlist` scoped to our schema rather than the server-wide
+    `Threads_connected`, because that counter answers for the whole server: under pytest-xdist the
+    other workers open and close connections continuously, so a global count would move underneath
+    the before/after deltas below and fail a pool that leaked nothing. Each worker gets its own
+    database (tests/integration/conftest.py), which makes the scoped count exactly this test's
+    connections — the question it was always asking.
+    """
+    config = db._get_mysql_config()
+    connection = mysql.connector.connect(connect_timeout=3, **config)
     try:
         cursor = connection.cursor()
-        cursor.execute("SHOW STATUS LIKE 'Threads_connected'")
-        value = int(cursor.fetchone()[1])
+        cursor.execute("SELECT COUNT(*) FROM information_schema.processlist WHERE db = %s",
+                       (config["database"],))
+        value = int(cursor.fetchone()[0])
         cursor.close()
         return value
     finally:

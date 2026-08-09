@@ -52,6 +52,14 @@ jobs:
       OPENAI_API_KEY: test-key-not-real
       LITELLM_BASE_URL: http://localhost:4000
       LITELLM_MASTER_KEY: test-master-key
+      # There is no LiteLLM proxy on this runner, and there is not meant to be — the tests that
+      # reach one are asserting the failure branch. The production default rides out ~24s of refused
+      # connections per call so a deploy restart does not lose a generation (issue #986), which here
+      # is 24s of sleeping for an answer we already have. Four tests that fall through to an
+      # unmocked call were spending 311s of the lane's 354s doing it. `1` is the documented way to
+      # turn the wait off; the retry schedule itself is covered in the unit lane, which sets this
+      # env var per test.
+      LLM_CONNECT_RETRY_ATTEMPTS: 1
 
     steps:
       - uses: actions/checkout@v7
@@ -82,11 +90,23 @@ jobs:
           docker run --rm --network host mysql:8 \
             mysql -h 127.0.0.1 -P 3306 -uroot -ptest_root linkedin_manager \
             -e 'SELECT 1 FROM comment_outcomes LIMIT 1'
+          # Each xdist worker clones the schema above into a database of its own
+          # (tests/integration/conftest.py). The service container grants MYSQL_USER rights on
+          # MYSQL_DATABASE and nothing else, so widen that to the sibling names the workers build.
+          # `\_` is a literal underscore: unescaped, `_` is a single-character wildcard in a GRANT.
+          docker run --rm --network host mysql:8 \
+            mysql -h 127.0.0.1 -P 3306 -uroot -ptest_root \
+            -e "GRANT ALL PRIVILEGES ON \`linkedin\_manager\_%\`.* TO 'test_user'@'%'; FLUSH PRIVILEGES;"
 
+      # -n 4 matches the width of a GitHub-hosted runner. `loadfile` keeps a file on one worker,
+      # which is what the module-scoped TestClient fixtures in this lane are built for; row
+      # isolation does NOT come from the distribution mode, it comes from the per-worker database in
+      # tests/integration/conftest.py.
       - name: Run integration tests
         run: |
           set +e
           poetry run pytest tests/integration \
+            -n 4 --dist loadfile \
             -v --tb=short \
             --cov=src/cqc_lem \
             --cov-report=xml \

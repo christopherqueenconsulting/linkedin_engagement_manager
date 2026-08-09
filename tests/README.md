@@ -242,12 +242,13 @@ there to verify — do not mock it away:
 | `test_geocoding.py::TestGeocodeCity` (3 tests) | 1.3s | Real `timezonefinder` lat/long→IANA lookups; the assertions are on real timezone output. |
 | `test_carousel_image_selection.py::TestPillowComposition` | 1.5s | Real Pillow slide composition; the assertions inspect the rendered pixels. |
 
-### Parallelism (`pytest-xdist`) — measured, not adopted
+### Parallelism (`pytest-xdist`) — a dependency, but not for this lane
 
-`-n auto --dist loadfile` was benchmarked on this suite: 12.5s on an 8-core box, but only ~19s at
-`-n 4` (the width of a GitHub-hosted runner) versus ~20s serial. At ~3200 fast tests the worker
-startup and coverage-combine overhead eats the gain, so xdist is **not** a dependency here. Re-run
-the benchmark before adding it — it becomes worthwhile if the suite grows well past ~60s.
+`pytest-xdist` is installed (issue #1185) and the **integration** lane runs on it. The unit lane
+does not, and adding `-n` here would make it slower: `-n auto --dist loadfile` was benchmarked on
+this suite at 12.5s on an 8-core box, but only ~19s at `-n 4` (the width of a GitHub-hosted runner)
+versus ~20s serial. Worker startup and the coverage combine eat the gain at this test size. Re-run
+the benchmark before changing that.
 
 ### Re-profiling
 
@@ -257,6 +258,63 @@ poetry run pytest tests/unit -m "not slow" --durations=50
 
 # cProfile a single offender
 poetry run pytest tests/unit/path/to/test_x.py::TestY::test_z --profile
+```
+
+## Integration-Suite Performance
+
+The six required contexts run in parallel, so the slowest of them sets the wall clock for every
+merge. That was this lane: 353.7s of pytest inside a 438s job. Issue #1185 took it apart.
+
+### 1. Most of it was sleeping, not testing
+
+Four tests were spending **311s of the 354s**. None of them was doing work. Each falls through to an
+LLM call the test did not mock, and there is no LiteLLM proxy on the runner — so each unmocked call
+paid the production connect-retry schedule, which deliberately rides out ~24s of refused connections
+so a proxy restart cannot lose a generation (issue #986). The lane sets
+`LLM_CONNECT_RETRY_ATTEMPTS: 1`, which the client documents as the way to turn that wait off. There
+is nothing to ride out on a runner that never had a proxy, and the retry schedule itself is covered
+in the unit lane, which sets the env var per test.
+
+Measured on an 8-core box against a dead LiteLLM port, which reproduces CI's numbers to within 1%:
+
+| Configuration | pytest |
+|---|---|
+| Serial, as CI ran it | 367.7s |
+| Serial, `LLM_CONNECT_RETRY_ATTEMPTS=1` | 102.0s |
+| `-n 4 --dist loadfile`, retry off | 49.9s |
+| …the same, with `--cov` (what CI runs) | 53.1s |
+
+**When you add a test here, mock the LLM.** A test that leaves a real call in place is now cheap
+enough not to notice, which is exactly how the 311s accumulated in the first place.
+
+### 2. Each worker owns a database (`tests/integration/conftest.py`)
+
+The DB-touching tests key their rows on a per-file email constant and delete either side of the
+test. That works while one process owns the server and breaks immediately when it does not — run
+`test_comment_outcomes_db.py` at `-n 4 --dist load` without the fixture and 5 of its 11 tests fail.
+
+So each xdist worker clones the migrated schema into `linkedin_manager_gw<N>` and points
+`platform.db.connection.MYSQL_DATABASE` at it for the session, dropping it at the end. **A serial
+run is untouched** — no `PYTEST_XDIST_WORKER`, no clone, same database as before.
+
+It is a database rather than a per-test transaction because nothing here routes through one
+connection: `db_cursor` opens its own per call and commits explicitly, and committing is what
+several of these tests exist to prove (`ON DELETE CASCADE`, the UNIQUE single-use claim, the pool's
+session reset). A rollback fixture would have to disable the behaviour under test.
+
+Two consequences worth knowing:
+
+- **Server-global state is still shared.** A per-worker database isolates rows, not the server. That
+  is why `test_db_pooling.py` counts its connections off `information_schema.processlist` scoped to
+  its own schema instead of the server-wide `Threads_connected`, which the other workers move.
+- **The test user needs rights on the sibling databases.** CI grants
+  `` `linkedin\_manager\_%` `` after migrating; without it the fixture fails loudly rather than
+  quietly sharing one database, because a silent fallback under `-n 4` is the flaky suite it exists
+  to prevent.
+
+```bash
+# The lane, the way CI runs it
+poetry run pytest tests/integration -n 4 --dist loadfile
 ```
 
 ## Fixtures
