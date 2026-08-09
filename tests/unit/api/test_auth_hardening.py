@@ -94,7 +94,7 @@ class _Blocked:
 # ---------------------------------------------------------------------------
 
 class TestSessionCookie:
-    def test_verify_sets_an_httponly_session_cookie(self, client):
+    def test_verify_sets_an_httponly_session_cookie(self, client, signed_in):
         with patch(f"{_AUTH}.hash_pin", return_value="h"), \
              patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
              patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
@@ -108,7 +108,7 @@ class TestSessionCookie:
         assert "HttpOnly" in set_cookie
         assert "Path=/" in set_cookie
 
-    def test_bypass_login_sets_the_cookie_too(self, client):
+    def test_bypass_login_sets_the_cookie_too(self, client, signed_in):
         with patch(f"{_AUTH}.get_user_id", return_value=_UID), \
              patch(f"{_AUTH}.generate_pin", return_value="123456"), \
              patch(f"{_AUTH}.hash_pin", return_value="h"), \
@@ -118,7 +118,7 @@ class TestSessionCookie:
         assert resp.status_code == 200
         assert f"{_COOKIE}=tok_bypass" in resp.headers.get("set-cookie", "")
 
-    def test_the_bypass_login_does_not_claim_the_email_was_verified(self, client):
+    def test_the_bypass_login_does_not_claim_the_email_was_verified(self, client, signed_in):
         """No mail provider means no PIN reached the address, so nothing proved control of it.
         email_verified_at records that proof and must stay empty here.
         """
@@ -132,7 +132,7 @@ class TestSessionCookie:
         assert resp.status_code == 200
         mev.assert_not_called()
 
-    def test_a_verified_pin_does_stamp_the_email_as_verified(self, client):
+    def test_a_verified_pin_does_stamp_the_email_as_verified(self, client, signed_in):
         with patch(f"{_AUTH}.hash_pin", return_value="h"), \
              patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
              patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
@@ -208,7 +208,7 @@ class TestCookieResolution:
         assert resp.status_code == 200
         ds.assert_called_once_with("real")
 
-    def test_revoke_all_others_keeps_the_cookie_session_not_a_stale_token(self, client):
+    def test_revoke_all_others_keeps_the_cookie_session_not_a_stale_token(self, client, signed_in):
         with _live_session(), \
              patch(f"{_USER}.revoke_other_sessions", return_value=1) as ro:
             # A cookie-authenticated write, so it carries the SPA's client header like the real one
@@ -273,7 +273,7 @@ class TestAuthRateLimiting:
         assert resp.status_code == 429
         vp.assert_not_called()
 
-    def test_a_successful_login_clears_the_counters(self, client):
+    def test_a_successful_login_clears_the_counters(self, client, signed_in):
         with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
              patch(f"{_AUTH}.hash_pin", return_value="h"), \
@@ -297,7 +297,7 @@ class TestSessionManagement:
             resp = client.get("/api/user/security", params={"session_token": "bad"})
         assert resp.status_code == 401
 
-    def test_security_endpoint_returns_devices_and_history(self, client):
+    def test_security_endpoint_returns_devices_and_history(self, client, signed_in):
         rows = [{"id": 1, "label": "Chrome on macOS", "created_at": None, "last_seen_at": None,
                  "expires_at": None, "is_current": True}]
         events = [{"event": "login_success", "success": 1, "user_agent": "UA", "created_at": None}]
@@ -313,7 +313,7 @@ class TestSessionManagement:
         # No token material of any kind leaves the API.
         assert "session_token" not in str(detail)
 
-    def test_revoke_one_device_is_scoped_to_the_caller(self, client):
+    def test_revoke_one_device_is_scoped_to_the_caller(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.revoke_session", return_value=True) as rs:
             resp = client.post("/api/user/sessions/revoke",
@@ -321,14 +321,14 @@ class TestSessionManagement:
         assert resp.status_code == 200
         rs.assert_called_once_with(_UID, 3)
 
-    def test_revoking_someone_elses_session_is_a_404(self, client):
+    def test_revoking_someone_elses_session_is_a_404(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.revoke_session", return_value=False):
             resp = client.post("/api/user/sessions/revoke",
                                json={"session_token": "tok", "session_id": 999})
         assert resp.status_code == 404
 
-    def test_revoke_all_others_keeps_this_device(self, client):
+    def test_revoke_all_others_keeps_this_device(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.revoke_other_sessions", return_value=2) as ro:
             resp = client.post("/api/user/sessions/revoke",
@@ -337,7 +337,7 @@ class TestSessionManagement:
         assert resp.json()["detail"]["revoked"] == 2
         assert ro.call_args[1]["keep_token"] == "tok"
 
-    def test_the_extension_gets_its_own_labelled_session(self, client):
+    def test_the_extension_gets_its_own_labelled_session(self, client, signed_in):
         """The SPA has no token to hand over any more, so the extension is minted one — a device of
         its own that can be revoked without signing the person out of the app.
         """
@@ -353,7 +353,7 @@ class TestSessionManagement:
             resp = client.post("/api/user/extension-token", json={"session_token": "bad"})
         assert resp.status_code == 401
 
-    def test_revoke_without_a_target_is_a_400(self, client):
+    def test_revoke_without_a_target_is_a_400(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID):
             resp = client.post("/api/user/sessions/revoke", json={"session_token": "tok"})
         assert resp.status_code == 400
@@ -367,7 +367,7 @@ class TestEmailChange:
     BASE_INIT = "/api/user/email/change/init"
     BASE_VERIFY = "/api/user/email/change/verify"
 
-    def test_init_sends_the_code_to_the_new_address(self, client):
+    def test_init_sends_the_code_to_the_new_address(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
              patch(f"{_USER}.check_auth_init", return_value=_Allowed()), \
@@ -382,7 +382,7 @@ class TestEmailChange:
         assert cp.call_args[0][0] == "new@example.com"
         assert sp.call_args_list[-1][0][0] == "new@example.com"
 
-    def test_init_rejects_an_address_owned_by_someone_else(self, client):
+    def test_init_rejects_an_address_owned_by_someone_else(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
              patch(f"{_USER}.check_auth_init", return_value=_Allowed()), \
@@ -394,14 +394,14 @@ class TestEmailChange:
         assert resp.status_code == 400
         cp.assert_not_called()
 
-    def test_init_rejects_the_address_already_on_the_account(self, client):
+    def test_init_rejects_the_address_already_on_the_account(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.get_user_email", return_value="same@example.com"):
             resp = client.post(self.BASE_INIT,
                                json={"session_token": "tok", "new_email": "SAME@example.com"})
         assert resp.status_code == 400
 
-    def test_init_is_unavailable_when_no_mail_provider_is_configured(self, client):
+    def test_init_is_unavailable_when_no_mail_provider_is_configured(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
              patch(f"{_USER}.check_auth_init", return_value=_Allowed()), \
@@ -413,7 +413,7 @@ class TestEmailChange:
         assert resp.status_code == 503
         cp.assert_not_called()
 
-    def test_verify_moves_the_account_and_revokes_other_devices(self, client):
+    def test_verify_moves_the_account_and_revokes_other_devices(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_USER}.get_pin_lockout", return_value=None), \
@@ -431,7 +431,7 @@ class TestEmailChange:
         ce.assert_called_once_with(_UID, "new@example.com", changed_by_session_id=11)
         assert ro.call_args[1]["keep_token"] == "tok"
 
-    def test_verify_with_a_bad_pin_changes_nothing(self, client):
+    def test_verify_with_a_bad_pin_changes_nothing(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_USER}.get_pin_lockout", return_value=None), \

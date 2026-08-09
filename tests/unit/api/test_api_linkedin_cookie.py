@@ -35,7 +35,7 @@ _VALID = "AQEDAReallyLongLinkedInSessionTokenValue1234567890"
 
 
 class TestStoreLinkedInCookie:
-    def test_stores_valid_li_at(self, client):
+    def test_stores_valid_li_at(self, client, signed_in):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
@@ -46,7 +46,7 @@ class TestStoreLinkedInCookie:
         assert store.call_args.args[0] == _USER_ID
         assert store.call_args.args[1] == _VALID
 
-    def test_strips_surrounding_quotes(self, client):
+    def test_strips_surrounding_quotes(self, client, signed_in):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
@@ -55,7 +55,7 @@ class TestStoreLinkedInCookie:
         assert resp.status_code == 200
         assert store.call_args.args[1] == _VALID
 
-    def test_passes_jsessionid_through(self, client):
+    def test_passes_jsessionid_through(self, client, signed_in):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
@@ -72,7 +72,7 @@ class TestStoreLinkedInCookie:
         assert resp.status_code == 401
 
     @pytest.mark.parametrize("bad", ["short", "has space inside", "semi;colon", ""])
-    def test_422_invalid_li_at(self, client, bad):
+    def test_422_invalid_li_at(self, client, signed_in, bad):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie", json={
@@ -81,7 +81,7 @@ class TestStoreLinkedInCookie:
         assert resp.status_code == 422
         store.assert_not_called()
 
-    def test_500_when_store_fails(self, client):
+    def test_500_when_store_fails(self, client, signed_in):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=False):
             resp = client.post("/api/user/linkedin-cookie", json={
@@ -93,7 +93,7 @@ class TestStoreLinkedInCookie:
 class TestCookieOnlyMigration:
     """Issue #745 §5.4 — the cookie replaces the stored password rather than sitting beside it."""
 
-    def test_password_kept_by_default(self, client):
+    def test_password_kept_by_default(self, client, signed_in):
         """The browser extension posts this body on every reconnect; it must never silently
         delete the user's password.
         """
@@ -106,7 +106,7 @@ class TestCookieOnlyMigration:
         assert resp.status_code == 200
         clear.assert_not_called()
 
-    def test_password_dropped_when_requested(self, client):
+    def test_password_dropped_when_requested(self, client, signed_in):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=True), \
              patch("cqc_lem.api.routers.user.clear_user_linkedin_password", return_value=True) as clear:
@@ -117,7 +117,7 @@ class TestCookieOnlyMigration:
         clear.assert_called_once_with(_USER_ID)
         assert "deleted" in resp.json()["detail"]
 
-    def test_password_not_dropped_when_the_cookie_could_not_be_stored(self, client):
+    def test_password_not_dropped_when_the_cookie_could_not_be_stored(self, client, signed_in):
         """Dropping it first would leave the account with no working login at all."""
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
              patch("cqc_lem.api.routers.user.store_linkedin_li_at", return_value=False), \

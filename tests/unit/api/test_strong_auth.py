@@ -345,7 +345,7 @@ class TestPasskeyLogin:
 # ---------------------------------------------------------------------------
 
 class TestEnrollment:
-    def test_the_first_factor_needs_a_session_but_not_step_up(self, client):
+    def test_the_first_factor_needs_a_session_but_not_step_up(self, client, signed_in):
         """An account with nothing enrolled has nothing to prove with — gating the first factor
         would mean no account could ever get one.
         """
@@ -400,7 +400,7 @@ class TestEnrollment:
             resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 200
 
-    def test_a_recovery_code_session_is_not_stepped_up_by_enrolling(self, client):
+    def test_a_recovery_code_session_is_not_stepped_up_by_enrolling(self, client, signed_in):
         """Otherwise a found sheet of codes IS a LinkedIn session: sign in, enrol, get stamped,
         read the cookie. It runs the ordinary step-up with the new factor instead — one touch, and
         an audited one.
@@ -424,7 +424,7 @@ class TestEnrollment:
         assert resp.status_code == 200
         stepped_up.assert_not_called()
 
-    def test_a_second_authenticator_app_is_refused(self, client):
+    def test_a_second_authenticator_app_is_refused(self, client, signed_in):
         """A second confirmed TOTP row would count towards has_strong_factor and show on the
         Security card while only the newer seed's codes were ever checked.
         """
@@ -435,7 +435,7 @@ class TestEnrollment:
         assert resp.status_code == 400
         began.assert_not_called()
 
-    def test_a_registration_challenge_belonging_to_someone_else_is_refused(self, client):
+    def test_a_registration_challenge_belonging_to_someone_else_is_refused(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
              patch(f"{_USER}.consume_auth_challenge",
@@ -446,7 +446,7 @@ class TestEnrollment:
         assert resp.status_code == 400
         verify.assert_not_called()
 
-    def test_a_verified_registration_steps_the_session_up(self, client):
+    def test_a_verified_registration_steps_the_session_up(self, client, signed_in):
         """The ceremony IS a fresh proof of possession — otherwise a user who just touched their
         sensor would be asked to touch it again to save recovery codes.
         """
@@ -469,7 +469,7 @@ class TestEnrollment:
         assert resp.json()["detail"]["recovery_codes_needed"] is True
         stepped_up.assert_called_once()
 
-    def test_an_unverifiable_registration_stores_nothing(self, client):
+    def test_an_unverifiable_registration_stores_nothing(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
              patch(f"{_USER}.consume_auth_challenge",
@@ -481,14 +481,14 @@ class TestEnrollment:
         assert resp.status_code == 400
         store.assert_not_called()
 
-    def test_totp_enrolment_returns_the_secret_exactly_once(self, client):
+    def test_totp_enrolment_returns_the_secret_exactly_once(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
              patch(f"{_USER}.begin_totp_enrollment", return_value=(9, "SEED", "otpauth://x")):
             resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
         assert resp.json()["detail"]["secret"] == "SEED"
 
-    def test_a_wrong_totp_code_does_not_confirm_the_factor(self, client):
+    def test_a_wrong_totp_code_does_not_confirm_the_factor(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.confirm_totp_enrollment", return_value=False), \
              patch(f"{_USER}.record_step_up") as stepped_up:
@@ -743,7 +743,7 @@ class TestFailedWrites:
             resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 500
 
-    def test_a_duplicate_passkey_is_reported_not_silently_dropped(self, client):
+    def test_a_duplicate_passkey_is_reported_not_silently_dropped(self, client, signed_in):
         class _Result:
             credential_id = "cred"
             public_key = "pk"
@@ -1001,7 +1001,7 @@ class TestSecondFactorBudget:
         assert resp.status_code == 429
         challenge.assert_not_called()
 
-    def test_a_duplicate_passkey_is_not_a_cross_account_oracle(self, client):
+    def test_a_duplicate_passkey_is_not_a_cross_account_oracle(self, client, signed_in):
         """Credential ids are globally unique, so "already registered" would tell this caller a
         passkey they hold is enrolled on somebody ELSE's account.
         """

@@ -241,7 +241,7 @@ class TestAuthCheckSession:
             resp = client.get(self.BASE, params={"session_token": "bad-token"})
         assert resp.status_code == 401
 
-    def test_valid_session_returns_user_id_and_email(self, client):
+    def test_valid_session_returns_user_id_and_email(self, client, signed_in):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
              patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
              patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
@@ -253,7 +253,7 @@ class TestAuthCheckSession:
         assert detail["email"] == "me@example.com"
         assert detail["is_admin"] is False
 
-    def test_returns_person_facts_for_posthog_identify(self, client):
+    def test_returns_person_facts_for_posthog_identify(self, client, signed_in):
         profile = {
             "subscription_tier": "premium",
             "subscription_status": "active",
@@ -277,7 +277,7 @@ class TestAuthCheckSession:
         assert detail["posts_approved"] == 12
         assert detail["is_admin"] is True
 
-    def test_missing_profile_row_leaves_person_facts_null(self, client):
+    def test_missing_profile_row_leaves_person_facts_null(self, client, signed_in):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
              patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
              patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
@@ -306,7 +306,7 @@ class TestGetUserSettings:
             resp = client.get(self.BASE, params={"session_token": "bad-token"})
         assert resp.status_code == 401
 
-    def test_valid_session_returns_subscription_and_preferences(self, client):
+    def test_valid_session_returns_subscription_and_preferences(self, client, signed_in):
         from datetime import datetime
         sub = {
             "subscription_status": "active",
@@ -338,7 +338,7 @@ class TestGetUserSettings:
         assert detail["blog_url"] == "https://blog.example.com"
         assert detail["sitemap_url"] == "https://blog.example.com/sitemap.xml"
 
-    def test_none_subscription_returns_null_subscription(self, client):
+    def test_none_subscription_returns_null_subscription(self, client, signed_in):
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
              patch(f"{_USER}.get_user_subscription_info", return_value=None), \
              patch(f"{_USER}.get_user_preferences", return_value=None), \
@@ -364,7 +364,7 @@ class TestGetUserLinkedInProfile:
             resp = client.get(self.BASE, params={"session_token": "bad-token"})
         assert resp.status_code == 401
 
-    def test_valid_session_returns_profile_url(self, client):
+    def test_valid_session_returns_profile_url(self, client, signed_in):
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
              patch(f"{_USER}.get_linkedin_profile_url_by_user_id",
                    return_value="https://www.linkedin.com/in/christopherqueen/"):
@@ -373,7 +373,7 @@ class TestGetUserLinkedInProfile:
         assert resp.json()["detail"]["linkedin_profile_url"] == \
             "https://www.linkedin.com/in/christopherqueen/"
 
-    def test_missing_profile_returns_null(self, client):
+    def test_missing_profile_returns_null(self, client, signed_in):
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
              patch(f"{_USER}.get_linkedin_profile_url_by_user_id", return_value=None):
             resp = client.get(self.BASE, params={"session_token": "valid-tok"})

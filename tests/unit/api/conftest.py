@@ -1,91 +1,180 @@
-"""Shared defaults for the API unit lane.
+"""Shared test helpers for the API unit lane.
 
-Issue #745 (2c) put a step-up gate in front of every credential-touching endpoint and made the
-email PIN conditional on whether the account holds a strong factor. Both ask the database two
-questions that the ~40 test modules in this directory never mocked, because they did not exist —
-and an unmocked read here is not a failed query, it is a `TypeError` out of the connection pool.
-
-So this fixture answers those questions with the state EVERY account is in until it enrols
-something: no passkey, no authenticator app, therefore nothing to step up with, nothing to demote
-the PIN for, and enrolment wide open. That is the pre-2c behaviour these modules were written
-against.
-
-`tests/unit/api/test_strong_auth.py` patches over it per-test to exercise both sides of the gate —
-a nested `patch` wins over this one.
-
-Since #1154 these names are bound in more than one module: the enrolment and step-up handlers live
-in `api/routers/user.py`, the login ones in `api/routers/auth.py`, and a few are read by both.
-A blanket default has to rebind every module that reads the name — patching only `main` would leave
-the router calling the real function against a dead database. `_default_everywhere` does that, and
-still fails loudly if NO module binds the name (a rename must not silently stop being defaulted).
+Issue #1212 removed the blanket autouse patch over account state. A test that needs
+a signed-in caller or a particular strong-auth state must now state it explicitly
+via the fixtures exported here. A test that states nothing runs against the real
+app and real (mocked) database layer, so missing setup FAILS rather than defaulting.
 """
 
-import pkgutil
-from contextlib import ExitStack, contextmanager
-from unittest.mock import patch
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 
 import pytest
 
-
-def _handler_modules() -> list[str]:
-    """Every module an `/api` handler's dependencies can be bound in — DISCOVERED, not listed.
-
-    The list version said "add a slice's module when the next one lands", and the `/api/auth` slice
-    is what proved a reminder is not a mechanism: `has_strong_factor` moved to `routers/auth.py`,
-    the default kept rebinding `main`'s dead copy, and every PIN-login test 500'd on a real database
-    call. Reading the package means the next split inherits this instead of remembering it.
-    """
-    from cqc_lem.api import routers
-
-    return ["cqc_lem.api.main"] + [
-        f"cqc_lem.api.routers.{info.name}" for info in pkgutil.iter_modules(routers.__path__)
-    ]
-
-
-@contextmanager
-def _default_everywhere(name: str, **kwargs):
-    """Patch `name` in every handler module that binds it."""
-    import importlib
-
-    hosts = [m for m in _handler_modules() if hasattr(importlib.import_module(m), name)]
-    assert hosts, f"nothing binds {name!r} any more — this default is patching a dead name"
-    with ExitStack() as stack:
-        for host in hosts:
-            stack.enter_context(patch(f"{host}.{name}", **kwargs))
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _account_without_a_strong_factor():
-    with _default_everywhere("has_strong_factor", return_value=False), \
-         _default_everywhere("step_up_satisfied", return_value=True), \
-         _default_everywhere("enrollment_allowed", return_value=True), \
-         _default_everywhere("session_signed_in_with_recovery_code", return_value=False), \
-         _default_everywhere("has_confirmed_totp", return_value=False), \
-         _default_everywhere("enrollment_required", return_value=False), \
-         _default_everywhere("enrollment_hold_active", return_value=False):
-        yield
-
-
-# Issue #914: the routes that used to read the acting user out of an `email` / `user_id` request
-# parameter now resolve it from the session, so a module exercising one of them needs a signed-in
-# caller. Opt in with the fixture — it is deliberately NOT autouse, because "no session" is the
-# state half of `test_param_auth_scoping.py` is asserting on.
+# Issue #914: shared constants for tests that opt in to a signed-in session.
 SESSION_USER_ID = 42
 SESSION_EMAIL = "user@example.com"
 SESSION_TOKEN = "session-token-abc"
 
 
+# The modules where the API layer binds the functions we override.
+_MAIN = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
+_USER = "cqc_lem.api.routers.user"
+
+
+@contextmanager
+def _stated_account_state(
+    *,
+    user_id: Optional[int],
+    email: Optional[str] = None,
+    owns_posts: bool = True,
+    no_strong_factor: bool = True,
+    step_up_satisfied: bool = True,
+    enrollment_allowed: bool = True,
+    enrollment_required: bool = False,
+    enrollment_hold_active: bool = False,
+    recovery_code_session: bool = False,
+    has_confirmed_totp: bool = False,
+) -> Iterator[None]:
+    """Temporarily replace the API's account-state helpers.
+
+    The handlers do NOT use FastAPI ``Depends()`` for these helpers: they call them
+    as ordinary module-level functions (e.g. ``_main.get_session_user_id(...)`` inside
+    a router). ``app.dependency_overrides`` therefore does not reach them. This
+    context manager patches the helpers on every module that binds them, so a test
+    that opts in to a state sees that state no matter which router serves the route.
+
+    A context manager is used instead of an autouse fixture so every test must
+    NAME the state it wants; silence means the real functions run and the test fails
+    hard, which is exactly the point of issue #1212.
+    """
+    import importlib
+
+    from cqc_lem.utilities import auth_factors
+
+    # Build the stubbed helpers for this state.
+    def _get_session_user_id(_token: Optional[str] = None) -> Optional[int]:
+        return user_id
+
+    def _require_session_user_id(_token: Optional[str] = None) -> int:
+        if user_id is None:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+        return user_id
+
+    def _get_user_email(_user_id: int) -> Optional[str]:
+        return email
+
+    def _user_owns_posts(_user_id: int, _post_ids: list[int]) -> bool:
+        return owns_posts
+
+    def _has_strong_factor(_user_id: int) -> bool:
+        return not no_strong_factor
+
+    def _step_up_satisfied(
+        _user_id: int, _token: Optional[str] = None, extension_scope_ok: bool = False
+    ) -> bool:
+        return step_up_satisfied
+
+    def _enrollment_allowed(_user_id: int, _token: Optional[str] = None) -> bool:
+        return enrollment_allowed
+
+    def _enrollment_required(_user_id: int) -> bool:
+        return enrollment_required
+
+    def _enrollment_hold_active() -> bool:
+        return enrollment_hold_active
+
+    def _session_signed_in_with_recovery_code(_token: Optional[str] = None) -> bool:
+        return recovery_code_session
+
+    def _has_confirmed_totp(_user_id: int) -> bool:
+        return has_confirmed_totp
+
+    overrides_by_name = {
+        "get_session_user_id": _get_session_user_id,
+        "require_session_user_id": _require_session_user_id,
+        "get_user_email": _get_user_email,
+        "user_owns_posts": _user_owns_posts,
+    }
+    auth_factor_overrides_by_name = {
+        "has_strong_factor": _has_strong_factor,
+        "step_up_satisfied": _step_up_satisfied,
+        "enrollment_allowed": _enrollment_allowed,
+        "enrollment_required": _enrollment_required,
+        "enrollment_hold_active": _enrollment_hold_active,
+        "session_signed_in_with_recovery_code": _session_signed_in_with_recovery_code,
+        "has_confirmed_totp": _has_confirmed_totp,
+    }
+
+    # Patch every API module that binds these names. Because the routers import helpers from
+    # `auth_factors` into their own namespace, patching only `auth_factors.<name>` is not enough;
+    # the stubs have to replace the bound name in each router too.
+    hosts = [importlib.import_module(m) for m in (_MAIN, _AUTH, _USER)]
+    patched: list[tuple[Any, str, Any]] = []
+    for module in hosts:
+        for name, stub in {**overrides_by_name, **auth_factor_overrides_by_name}.items():
+            if hasattr(module, name):
+                original = getattr(module, name)
+                setattr(module, name, stub)
+                patched.append((module, name, original))
+
+    # Also patch auth_factors itself, so imports that happen later or code that reads the module
+    # directly see the same stubs.
+    auth_factor_patched: list[tuple[Any, str, Any]] = []
+    for name, stub in auth_factor_overrides_by_name.items():
+        if hasattr(auth_factors, name):
+            original = getattr(auth_factors, name)
+            setattr(auth_factors, name, stub)
+            auth_factor_patched.append((auth_factors, name, original))
+
+    # `record_auth_event` is re-exported to several modules; silence it so foreign-target
+    # 403 cases do not attempt a real DB write.
+    audit_patched: list[tuple[Any, str, Any]] = []
+    _record_auth_event = lambda *_args, **_kwargs: True  # noqa: E731
+    for module in hosts:
+        if hasattr(module, "record_auth_event"):
+            original = getattr(module, "record_auth_event")
+            setattr(module, "record_auth_event", _record_auth_event)
+            audit_patched.append((module, "record_auth_event", original))
+
+    try:
+        yield
+    finally:
+        for module, name, original in patched + audit_patched:
+            setattr(module, name, original)
+        for module, name, original in auth_factor_patched:
+            setattr(module, name, original)
+
+
 @pytest.fixture
-def signed_in():
+def signed_in() -> Iterator[int]:
     """Any token resolves to SESSION_USER_ID, who owns every post named.
 
-    `record_auth_event` is stubbed because a denied foreign target writes an `auth_audit_log` row
-    (`_deny`) — best effort in production, but an unmocked one here is a real connection attempt on
-    every 403 case.
+    This is the pre-2c state most API tests were written against: the account has no
+    strong factor, step-up is trivially satisfied, enrolment is not required, and the
+    caller owns every post. Tests that need a different state should use a narrower
+    patch or a dedicated fixture.
     """
-    with patch("cqc_lem.api.main.get_session_user_id", return_value=SESSION_USER_ID), \
-         _default_everywhere("get_user_email", return_value=SESSION_EMAIL), \
-         _default_everywhere("record_auth_event", return_value=True), \
-         _default_everywhere("user_owns_posts", return_value=True):
+    with _stated_account_state(
+        user_id=SESSION_USER_ID,
+        email=SESSION_EMAIL,
+        owns_posts=True,
+        no_strong_factor=True,
+        step_up_satisfied=True,
+        enrollment_allowed=True,
+        enrollment_required=False,
+        enrollment_hold_active=False,
+        recovery_code_session=False,
+        has_confirmed_totp=False,
+    ):
         yield SESSION_USER_ID
+
+
+@pytest.fixture
+def no_session() -> Iterator[None]:
+    """Every token resolves to no user, so 401 paths can be exercised."""
+    with _stated_account_state(user_id=None):
+        yield
