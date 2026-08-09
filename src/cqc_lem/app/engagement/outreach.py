@@ -1554,8 +1554,10 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
         )
         return f"Failed to start profile viewer engagement: {e}"
 
-    result = "Profile Viewer DMs Started"
-
+    # `result` is deliberately NOT seeded here: every path out of the block below assigns it (the
+    # completion line, or the `except Exception` handler), so a seed value is dead — CodeQL's
+    # `py/multiple-definition`, latent in `run_automation` and surfaced by the move because the
+    # alert is keyed by location (#1154).
     try:
 
         # Navigate to profile view page
