@@ -4,7 +4,7 @@ QueueOnce + the 1/m task rate limit pace them.
 
 Run:  sudo docker exec -i celery_worker python - < scripts/tmp_redispatch_invites.py
 """
-from cqc_lem.app.run_automation import invite_to_connect
+from cqc_lem.app.engagement.invites import invite_to_connect
 
 TARGETS = [
     "https://www.linkedin.com/in/trusha-parmar-7b05771bb/",

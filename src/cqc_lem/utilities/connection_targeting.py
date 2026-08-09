@@ -1,7 +1,7 @@
 """Smart connection targeting from content engagers (issue #486, extends #398).
 
 Pure ranking logic — no DB, no Selenium, no LLM — so WHO we ask to connect with is deterministic and
-cheap to test. The sourcing task (`run_automation.scan_connection_candidates`) supplies the raw
+cheap to test. The sourcing task (`app.engagement.outreach.scan_connection_candidates`) supplies the raw
 signals it read/scraped and files what comes back as #398 connection requests.
 
 The premise: someone who just commented on our post (or on an adjacent thought-leader's post about
@@ -244,7 +244,7 @@ def first_name(name: str = None) -> str:
 
     Never empty and never raises on junk: a missing or unscrapable name becomes ``"there"``, so
     `default_connect_note` writes "Hi there, ..." instead of "Hi , ...". That is the same fallback
-    `run_automation.render_dm_placeholders` fills `{first_name}` with, so a connect note and a DM
+    `dm_templates.render_dm_placeholders` fills `{first_name}` with, so a connect note and a DM
     read the same way when the name is unknown.
     """
     cleaned = " ".join(str(name or "").split()).strip()

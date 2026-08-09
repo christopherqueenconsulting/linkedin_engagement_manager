@@ -119,13 +119,13 @@ class TestSecondWaveComment:
         """The 6-8h wait is served in hops: a single long countdown sits unacked past the broker's
         visibility timeout and gets redelivered — which would post several self-comments.
         """
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as feed_mod
         from cqc_lem.utilities import golden_hour as g
         with patch(f"{_FEED}.get_post_age_minutes", return_value=30.0), \
              patch(f"{_FEED}.generate_second_wave_comment") as gen, \
              patch(f"{_FEED}.comment_on_linkedin_post") as api, \
-             patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
-            result = ra.auto_second_wave_comment.run(user_id=1, post_id=9)
+             patch.object(feed_mod.auto_second_wave_comment, "apply_async") as rearm:
+            result = feed_mod.auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "re-armed" in result
         gen.assert_not_called()
         api.assert_not_called()
@@ -136,21 +136,21 @@ class TestSecondWaveComment:
         """The pause is checked at the DUE time, not on every hop — a pause that lifts in the
         meantime must not silently cancel the amplification.
         """
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as feed_mod
         with patch(f"{_FEED}.get_post_age_minutes", return_value=30.0), \
              patch(f"{_FEED}.is_automation_paused", return_value=True), \
-             patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
-            result = ra.auto_second_wave_comment.run(user_id=1, post_id=9)
+             patch.object(feed_mod.auto_second_wave_comment, "apply_async") as rearm:
+            result = feed_mod.auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "re-armed" in result
         rearm.assert_called_once()
 
     def test_an_unknown_publish_time_acts_rather_than_hopping_forever(self, _happy_path):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as feed_mod
         with patch(f"{_FEED}.get_post_age_minutes", return_value=None), \
              patch(f"{_FEED}.generate_second_wave_comment", return_value="insight"), \
              patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)") as api, \
-             patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
-            ra.auto_second_wave_comment.run(user_id=1, post_id=9)
+             patch.object(feed_mod.auto_second_wave_comment, "apply_async") as rearm:
+            feed_mod.auto_second_wave_comment.run(user_id=1, post_id=9)
         api.assert_called_once()
         rearm.assert_not_called()
 

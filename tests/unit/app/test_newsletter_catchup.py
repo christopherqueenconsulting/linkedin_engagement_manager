@@ -91,7 +91,7 @@ class TestAutoPublishScheduledEditions:
         from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
         due = [{"id": 2, "user_id": 1}, {"id": 3, "user_id": 1}, {"id": 9, "user_id": 2}]
         with patch(f"{_RS}._skip_if_throttled", return_value=False), \
-             patch("cqc_lem.app.run_automation.auto_publish_edition", MagicMock()), \
+             patch("cqc_lem.app.engagement.newsletter.auto_publish_edition", MagicMock()), \
              patch(f"{_DB}.get_editions_due_to_publish", return_value=due), \
              patch(f"{_RS}._publish_next_due_edition_for_user", return_value=1) as pnext:
             res = auto_publish_scheduled_editions.run()

@@ -39,7 +39,7 @@ from cqc_lem.api.models import (
     SessionTokenField,
     error_responses,
 )
-from cqc_lem.app.run_automation import update_stale_profile
+from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY,
     METHOD_TOTP,
@@ -1787,7 +1787,7 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     # Read-only: the last feed scan's reach funnel so the user can see when their targeting is too
     # strict (posts examined -> matched their filters -> commented).
     try:
-        from cqc_lem.app.run_automation import get_feed_funnel
+        from cqc_lem.app.engagement.feed import get_feed_funnel
         prefs["feed_reach"] = get_feed_funnel(user_id)
     except Exception:
         prefs["feed_reach"] = None

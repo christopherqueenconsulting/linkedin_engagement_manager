@@ -2,7 +2,7 @@
 
 Issue #1013. Every Selenium touchpoint in `app/engagement/*` (the feed, group and roster walks, the
 newsletter rail, the connect rail, the publish/sweep lane and the DM/outreach lane all moved there
-in #1154, leaving `app/run_automation.py` a re-export shim) and `utilities/linkedin/*`, the
+in #1154, and `app/run_automation.py` was deleted in #1206) and `utilities/linkedin/*`, the
 read-only probe flag that grounds it, and the production-path tripwire that stops a zero result
 from reading as "nothing to do".
 

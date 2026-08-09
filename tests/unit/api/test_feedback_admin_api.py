@@ -36,8 +36,8 @@ def _auth_hardening_side_effects():
 def client():
     patches = [
         patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.run_automation.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.run_automation.automate_reply_commenting"),
+        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
+        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
         patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
         patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
     ]

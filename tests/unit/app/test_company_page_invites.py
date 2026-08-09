@@ -438,7 +438,7 @@ class TestSelectionPacing:
 
 class TestInviteTask:
     def _run_task(self, plan, paused=False):
-        from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
+        from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
         with patch(f"{_INV}.is_automation_paused", return_value=paused), \
              patch(f"{_INV}.plan_daily_invites", return_value=plan), \
              patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())) as drv, \
@@ -472,7 +472,7 @@ class TestInviteTask:
         assert "3 people" in result
 
     def test_a_selenium_failure_still_emits_a_run_and_quits_the_driver(self):
-        from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
+        from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
         with patch(f"{_INV}.is_automation_paused", return_value=False), \
              patch(f"{_INV}.plan_daily_invites",
@@ -491,7 +491,7 @@ class TestInviteTask:
         session that can't be acquired (grid full, container restart) must not be the one path
         that emits nothing — that reads exactly like a day paced down to zero.
         """
-        from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
+        from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_SESSION_FAILED
         with patch(f"{_INV}.is_automation_paused", return_value=False), \
              patch(f"{_INV}.plan_daily_invites",

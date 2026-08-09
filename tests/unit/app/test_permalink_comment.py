@@ -238,18 +238,17 @@ class TestNoPreSduiAnchorsRemain:
     def test_removed_linkedin_classes_are_never_keyed_on_again(self):
         # These anchors were deleted with LinkedIn's SDUI rewrite; keying on them is the silent
         # failure #966 exists to end, so a LOCATOR using one again is a regression. Prose that
-        # merely names them (this file's own docstrings, the history in run_automation's) is fine —
-        # the check is for a class-keyed selector, which is what `@class` marks.
+        # merely names them (this file's own docstrings) is fine — the check is for a class-keyed
+        # selector, which is what `@class` marks.
         #
         # EVERY engagement module is scanned, by glob rather than by name. The feed engine that
         # owns most of these locators moved to `app.engagement.feed` in #1154 and the comment-thread
-        # walk to `app.engagement.posting`, so a run_automation-only scan would have kept passing
-        # while going blind to the file the regression would actually land in — and a scan that
-        # names its modules one by one goes blind again on the next slice.
+        # walk to `app.engagement.posting`, so the old `run_automation`-only scan would have kept
+        # passing while going blind to the file the regression would actually land in — and a scan
+        # that names its modules one by one goes blind again on the next slice.
         from pathlib import Path
 
-        sources = [Path("src/cqc_lem/app/run_automation.py"),
-                   *sorted(Path("src/cqc_lem/app/engagement").glob("*.py"))]
+        sources = sorted(Path("src/cqc_lem/app/engagement").glob("*.py"))
         assert len(sources) > 2, f"the scan lost its input: {sources}"
         dead = ("comments-comment-texteditor", "comments-comment-box__submit-button",
                 "comments-comment-list__container")

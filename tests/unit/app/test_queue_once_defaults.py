@@ -17,25 +17,25 @@ SHIM = SRC / "app" / "queue_once.py"
 
 class TestRestrictedKeyDefaults:
     def test_omitted_defaulted_key_does_not_raise(self):
-        from cqc_lem.app.run_automation import sweep_reply_comments
+        from cqc_lem.app.engagement.posting import sweep_reply_comments
         # This is the exact enqueue shape that raised KeyError: 'sweep_slot'.
         assert sweep_reply_comments.get_key(kwargs={"user_id": 7})
 
     def test_omitted_default_and_explicit_default_are_the_same_lock(self):
-        from cqc_lem.app.run_automation import sweep_reply_comments
+        from cqc_lem.app.engagement.posting import sweep_reply_comments
         assert (sweep_reply_comments.get_key(kwargs={"user_id": 7})
                 == sweep_reply_comments.get_key(kwargs={"user_id": 7, "sweep_slot": 0}))
 
     def test_distinct_slots_stay_distinct_locks(self):
         """The whole point of keying on sweep_slot: concurrent golden-hour sweeps must not collapse
-        into one lock (run_automation dispatches a distinct slot per sweep).
+        into one lock (the golden-hour dispatcher sends a distinct slot per sweep).
         """
-        from cqc_lem.app.run_automation import sweep_reply_comments
+        from cqc_lem.app.engagement.posting import sweep_reply_comments
         assert (sweep_reply_comments.get_key(kwargs={"user_id": 7, "sweep_slot": 1})
                 != sweep_reply_comments.get_key(kwargs={"user_id": 7, "sweep_slot": 2}))
 
     def test_users_stay_distinct_locks(self):
-        from cqc_lem.app.run_automation import sweep_reply_comments
+        from cqc_lem.app.engagement.posting import sweep_reply_comments
         assert (sweep_reply_comments.get_key(kwargs={"user_id": 7})
                 != sweep_reply_comments.get_key(kwargs={"user_id": 8}))
 

@@ -299,7 +299,7 @@ def _post_social_counts(card) -> dict:
             "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
             "saves": _num(_SAVES_RE, "saves")}
 
-# Declared because this module exists to be imported FROM: `run_automation` reads these
+# Declared because this module exists to be imported FROM: the `app.engagement.*` lanes read these
 # selectors and helpers, and nothing in this file uses several of them, so CodeQL reports
 # them as unused globals without it (py/unused-global-variable).
 __all__ = [

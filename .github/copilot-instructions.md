@@ -4,7 +4,7 @@
 
 LinkedIn Engagement Manager (LEM) automates LinkedIn engagement: Selenium-based scraping, AI-generated content (via LiteLLM proxy routing to OpenAI / Claude / Ollama / OpenRouter), Celery task queue, React SPA frontend, MySQL persistence, and FastAPI backend.
 
-Two pillars: (1) **content generation & scheduling** — a 30-day buyer-journey content plan (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak hours with sentiment checks and a preview/approval workflow; (2) **engagement automation** — SDUI-resilient feed commenting with a recency-dominant scoring matrix, replies + seed/pin on own posts, reciprocity tracking, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invites. All shaped by per-user targeting, voice/tone, and per-day caps (`engagement_preferences`). Code paths: `app/run_content_plan.py`, `app/run_scheduler.py`, `app/run_automation.py`, `utilities/ai/ai_helper.py`.
+Two pillars: (1) **content generation & scheduling** — a 30-day buyer-journey content plan (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak hours with sentiment checks and a preview/approval workflow; (2) **engagement automation** — SDUI-resilient feed commenting with a recency-dominant scoring matrix, replies + seed/pin on own posts, reciprocity tracking, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invites. All shaped by per-user targeting, voice/tone, and per-day caps (`engagement_preferences`). Code paths: `app/run_content_plan.py`, `app/run_scheduler.py`, `app/engagement/*.py`, `utilities/ai/ai_helper.py`.
 
 ## Tech Stack
 
@@ -26,7 +26,8 @@ Two pillars: (1) **content generation & scheduling** — a 30-day buyer-journey 
 ```
 src/cqc_lem/
 ├── api/           FastAPI app (main.py, routers)
-├── app/           Celery tasks (run_scheduler.py, run_automation.py, run_content_plan.py, my_celery.py)
+├── app/           Celery tasks (run_scheduler.py, run_content_plan.py, my_celery.py)
+│   └── engagement/  the engagement lanes: feed, posting, outreach, invites, newsletter
 ├── utilities/
 │   ├── ai/        LiteLLM-backed AI helpers (ai_helper.py, client.py)
 │   ├── linkedin/  Selenium automation (scrapper.py, poster.py, commenter.py)

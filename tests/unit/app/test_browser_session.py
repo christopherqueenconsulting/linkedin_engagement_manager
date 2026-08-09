@@ -20,11 +20,10 @@ pytestmark = pytest.mark.unit
 _SESSION = "cqc_lem.utilities.linkedin.session"
 # The leak guard reads EVERY module that can open a Chrome session. Scanning `run_automation` alone
 # was correct until the clusters started leaving it (#1154): each move quietly shrank the guard's
-# input, and a guard that reads fewer files each release is one that stops looking. The pool is
-# shared across all of them, so the guard has to be too — a new module under `app/engagement/`
-# is picked up by the glob rather than by someone remembering.
-_SRCS = [pathlib.Path("src/cqc_lem/app/run_automation.py"),
-         *sorted(pathlib.Path("src/cqc_lem/app/engagement").glob("*.py"))]
+# input, and a guard that reads fewer files each release is one that stops looking. That file is
+# gone entirely since #1206, which is exactly why the input is a GLOB — the pool is shared across
+# every module under `app/engagement/`, so a new one is picked up rather than remembered.
+_SRCS = sorted(pathlib.Path("src/cqc_lem/app/engagement").glob("*.py"))
 
 
 class TestBrowserSession:

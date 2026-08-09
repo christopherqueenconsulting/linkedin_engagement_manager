@@ -9,9 +9,11 @@ roster tail are `feed.py`, the connect rail `invites.py`, the newsletter rail `n
 publishing plus the post-publish sweeps (`post_to_linkedin`, the reply sweep, comment follow-ups,
 comment outcomes, post/audience stats) `posting.py`, and DMs plus outreach (appreciation, the
 profile-viewer walk, the connect-candidate scan, the outreach funnel, the catch-up lane)
-`outreach.py`. `app/run_automation.py` is now a re-export shim that defines nothing: **patch the
-module that OWNS the code**. Every task still answers to its ORIGINAL wire name
-(`cqc_lem.app.run_automation.<fn>`), so nothing about routing or the beat changed.
+`outreach.py`. `app/run_automation.py` is GONE — #1154 emptied it to a re-export shim and #1206
+deleted it — so **patch the module that OWNS the code**; there is nothing else left to patch. Every
+task still answers to its ORIGINAL wire name (`cqc_lem.app.run_automation.<fn>`), pinned in its own
+decorator, so nothing about routing or the beat changed. That spelling is a wire identifier, not a
+module path: it is still correct in `celeryconfig.task_routes` and must never be "corrected".
 
 ## Feed commenting on the SDUI feed (`comment_on_feed_inline`, issues #622 / #817)
 

@@ -11,8 +11,8 @@ pytestmark = pytest.mark.unit
 def client():
     patches = [
         patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.run_automation.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.run_automation.automate_reply_commenting"),
+        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
+        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
         patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
         patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
     ]
@@ -296,7 +296,7 @@ class TestFeedFallbackAndReach:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.routers.user.get_engagement_preferences", return_value={}), \
              patch("cqc_lem.api.routers.user.get_or_create_reply_inbound_token", return_value=None), \
-             patch("cqc_lem.app.run_automation.get_feed_funnel", return_value=funnel):
+             patch("cqc_lem.app.engagement.feed.get_feed_funnel", return_value=funnel):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["feed_reach"] == funnel

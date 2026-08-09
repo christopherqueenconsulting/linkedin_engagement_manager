@@ -326,7 +326,7 @@ def contains_meeting_ask(content: Optional[str]) -> bool:
 # G3 made every promo CTA an artifact ask; this is the map that makes the ask DELIVER something. It
 # is the ONE place a CTA is resolved to the asset behind it, and it names the CHANNEL because the
 # two assets arrive completely differently: the lead magnet is the comment-keyword mechanic whose
-# payload is an APPROVAL-GATED DM (run_automation._queue_artifact_delivery — never an auto-send),
+# payload is an APPROVAL-GATED DM (`posting._queue_artifact_delivery` — never an auto-send),
 # while the newsletter is a subscribe LINK the reader clicks, which is why its URL has to ride the
 # first comment (#392's split) instead of the body.
 ARTIFACT_KIND_LEAD_MAGNET = "lead_magnet"
@@ -671,7 +671,7 @@ def alignment_directive(prefs: dict = None, lead_magnet_cta: str = "",
 
 # The lead-magnet soft-ask ("comment KEYWORD and I'll DM it to you") is the compliant way to share a
 # resource on LinkedIn — links in the post body get down-ranked, and it's what fires the keyword
-# listener in run_automation. But it must NOT appear on every post: a repeated CTA reads as spam and
+# listener in `app.engagement.posting`. But it must NOT appear on every post: a repeated CTA reads
 # gets pattern-flagged. So it rides a deterministic 1-in-N rotation (default N=3, env-overridable).
 LEAD_MAGNET_CTA_EVERY_N = int(os.getenv("LEAD_MAGNET_CTA_EVERY_N", "3") or "3")
 _DEFAULT_CTA_EVERY_N = 3

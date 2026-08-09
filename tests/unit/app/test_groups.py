@@ -495,7 +495,7 @@ class TestGroupDispatchers:
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_DB}.get_next_group_for_post",
                    side_effect=lambda u: {"group_id": "g9", "group_name": "Sales"} if u == 1 else None), \
-             patch("cqc_lem.app.run_automation.auto_draft_group_post") as t:
+             patch("cqc_lem.app.engagement.feed.auto_draft_group_post") as t:
             result = auto_group_post_drafts()
         t.apply_async.assert_called_once_with(
             kwargs={'user_id': 1, 'group_id': "g9", 'group_name': "Sales"})
@@ -507,7 +507,7 @@ class TestGroupDispatchers:
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=False), \
              patch(f"{_DB}.get_next_group_for_post") as nxt, \
-             patch("cqc_lem.app.run_automation.auto_draft_group_post") as t:
+             patch("cqc_lem.app.engagement.feed.auto_draft_group_post") as t:
             result = auto_group_post_drafts()
         nxt.assert_not_called()
         t.apply_async.assert_not_called()
@@ -520,7 +520,7 @@ class TestGroupDispatchers:
              patch(f"{_DB}.get_open_group_post_draft",
                    side_effect=lambda u: dict(_READY_DRAFT, group_id="g9", group_name="Sales") if u == 1 else None), \
              patch(f"{_DB}.get_post_enabled_group_ids", return_value=["g9"]), \
-             patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
+             patch("cqc_lem.app.engagement.feed.auto_post_to_group") as t:
             result = auto_group_posts()
         t.apply_async.assert_called_once_with(
             kwargs={'user_id': 1, 'group_id': "g9", 'group_name': "Sales", 'draft_id': 11})
@@ -531,7 +531,7 @@ class TestGroupDispatchers:
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=False), \
              patch(f"{_DB}.get_open_group_post_draft") as draft, \
-             patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
+             patch("cqc_lem.app.engagement.feed.auto_post_to_group") as t:
             result = auto_group_posts()
         draft.assert_not_called()
         t.apply_async.assert_not_called()
@@ -545,7 +545,7 @@ class TestGroupDispatchers:
              patch(f"{_DB}.get_open_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_DB}.get_post_enabled_group_ids", return_value=["other"]), \
              patch(f"{_DB}.update_group_post_draft") as upd, \
-             patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
+             patch("cqc_lem.app.engagement.feed.auto_post_to_group") as t:
             result = auto_group_posts()
         t.apply_async.assert_not_called()
         assert str(upd.call_args.kwargs["status"]) == "skipped"
@@ -561,7 +561,7 @@ class TestGroupDispatchers:
              patch(f"{_DB}.get_open_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_DB}.get_post_enabled_group_ids", return_value=None), \
              patch(f"{_DB}.update_group_post_draft") as upd, \
-             patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
+             patch("cqc_lem.app.engagement.feed.auto_post_to_group") as t:
             result = auto_group_posts()
         t.apply_async.assert_not_called()
         upd.assert_not_called()
@@ -573,7 +573,7 @@ class TestGroupDispatchers:
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_RS}.has_linkedin_session", side_effect=lambda u: u == 1), \
              patch(f"{_RS}._stagger_due", return_value=True), \
-             patch("cqc_lem.app.run_automation.auto_comment_in_groups") as t:
+             patch("cqc_lem.app.engagement.feed.auto_comment_in_groups") as t:
             result = auto_group_engagement()
         t.apply_async.assert_called_once()
         assert "1/2" in result
@@ -586,7 +586,7 @@ class TestGroupDispatchers:
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", side_effect=lambda u, *_: u == 2) as due, \
-             patch("cqc_lem.app.run_automation.auto_comment_in_groups") as t:
+             patch("cqc_lem.app.engagement.feed.auto_comment_in_groups") as t:
             result = auto_group_engagement()
         t.apply_async.assert_called_once_with(kwargs={'user_id': 2})
         assert due.call_args[0][1] is STAGGER_GROUP_ENGAGEMENT

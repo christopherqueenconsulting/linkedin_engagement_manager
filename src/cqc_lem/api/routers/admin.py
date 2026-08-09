@@ -32,13 +32,9 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from pydantic import BaseModel, model_validator
 
 from cqc_lem.api.models import ResponseModel
-from cqc_lem.app.run_automation import (
-    automate_appreciation_dms_for_user,
-    automate_commenting,
-    automate_reply_commenting,
-    consolidate_duplicate_comments_for_user,
-    send_private_dm,
-)
+from cqc_lem.app.engagement.feed import automate_commenting, consolidate_duplicate_comments_for_user
+from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user, send_private_dm
+from cqc_lem.app.engagement.posting import automate_reply_commenting
 from cqc_lem.utilities.db import (
     FeedbackStatus,
     PostType,

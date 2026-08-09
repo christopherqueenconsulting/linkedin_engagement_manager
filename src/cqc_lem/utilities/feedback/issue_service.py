@@ -198,8 +198,8 @@ _COMMIT_TYPES: dict[FeedbackCategory, str] = {
 # Component -> the files an implementer starts in. This is the `## Files` hint MODE=start reads; it
 # is a STARTING POINT, not a contract, which is why every entry ends with the generic test dirs.
 _COMPONENT_FILES: dict[str, tuple] = {
-    # `run_automation.py` is a re-export shim since #1154 — every engagement lane lives under
-    # `app/engagement/`, so that is where an implementer has to start.
+    # `run_automation.py` was emptied by #1154 and deleted by #1206 — every engagement lane lives
+    # under `app/engagement/`, so that is where an implementer has to start.
     'feed-commenting': ('src/cqc_lem/app/engagement/feed.py',
                         'src/cqc_lem/utilities/linkedin/helper.py'),
     'replies': ('src/cqc_lem/app/engagement/posting.py',),

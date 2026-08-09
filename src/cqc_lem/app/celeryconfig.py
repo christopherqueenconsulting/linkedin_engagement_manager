@@ -204,10 +204,13 @@ task_routes = {
     'cqc_lem.app.run_automation.send_private_dm': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.automate_profile_viewer_engagement': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.engage_with_profile_viewer': {'queue': 'se_outreach'},
-    # These keys are WIRE NAMES, not module paths. `invite_to_connect`, `clean_stale_invites` and
-    # `automate_invites_to_company_page_for_user` live in `app.engagement.invites` since #1154 and
-    # pin `name=` back to this spelling, so the keys below stay correct and must not be "corrected"
-    # to the new module. `tests/unit/app/test_task_name_stability.py` is what holds that.
+    # EVERY key here is a WIRE NAME, not a module path — and since #1206 deleted
+    # `app/run_automation.py` there is no module by that name at all. The tasks live in
+    # `app.engagement.{feed,invites,newsletter,outreach,posting}` and each pins `name=` back to this
+    # spelling, so the keys stay correct and must NOT be "corrected" to the module that now defines
+    # them: doing so renames every task, drops in-flight messages as `NotRegistered`, and re-keys
+    # the `QueueOnce` locks mid-deploy. `tests/unit/app/test_task_name_stability.py` holds both
+    # halves — the names still resolve, and no module answers to that path.
     'cqc_lem.app.run_automation.invite_to_connect': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.process_user_followups': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.automate_invites_to_company_page_for_user': {'queue': 'se_outreach'},

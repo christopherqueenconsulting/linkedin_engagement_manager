@@ -194,7 +194,7 @@ class TestMeasurementKeepsRunning:
             es.enter_context(patch(f"{RS}.get_active_user_ids", return_value=[1]))
             es.enter_context(patch(f"{RS}.has_linkedin_session", return_value=True))
             dispatched = es.enter_context(
-                patch(f"cqc_lem.app.run_automation.{task_name}"))
+                patch(f"cqc_lem.app.engagement.posting.{task_name}"))
             result = (rs.auto_scrape_stats() if task_name == "auto_scrape_post_stats"
                       else rs.auto_capture_follower_stats())
         return result, dispatched

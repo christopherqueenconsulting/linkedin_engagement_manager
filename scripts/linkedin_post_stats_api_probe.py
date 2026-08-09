@@ -3,7 +3,7 @@
 
 Impressions and saves reach LEM through a **Selenium scrape** of
 ``/analytics/post-summary/<activity-urn>/`` (``_post_analytics_counts`` in
-``app/run_automation.py``). That works, but it breaks on any SDUI relayout and rides the
+``app/engagement/posting.py``). That works, but it breaks on any SDUI relayout and rides the
 same 429 breaker as the rest of the Selenium lanes.
 
 LinkedIn's versioned ``GET /rest/memberCreatorPostAnalytics`` returns the same numbers for the
