@@ -89,7 +89,11 @@ class TestFindFirst:
             find_first(driver, wait, [("css", "a")], "Feed sort control",
                        required=False, warn_on_miss=False, max_try=2)
         warn.assert_not_called()
-        debug.assert_called_once()
+        # The retry pass logs its own DEBUG bookkeeping line, so count the MISS record itself:
+        # exactly one verdict for the lookup, no matter how many attempts it took (issue #1184).
+        misses = [c for c in debug.call_args_list
+                  if c.args and c.args[0] == "Selector miss: Feed sort control"]
+        assert len(misses) == 1
 
     def test_visible_only_skips_hidden(self):
         from cqc_lem.utilities.selenium_util import find_first

@@ -21,7 +21,7 @@ from cqc_lem.platform.db.enums import (
     AffiliateRewardKind,
     ReferralStatus,
 )
-from cqc_lem.utilities.logger import log_error, log_info
+from cqc_lem.utilities.logger import log_debug, log_error, log_info
 
 
 def insert_cost_ledger_entry(feature: str, category: str, usd: float,
@@ -45,7 +45,7 @@ def insert_cost_ledger_entry(feature: str, category: str, usd: float,
             )
             return True
     except mysql.connector.Error as err:
-        log_info(f"Could not insert cost_ledger entry ({category}/{feature}) | Error: {err}")
+        log_error(f"Could not insert cost_ledger entry ({category}/{feature})", exc=err)
         return False
 def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
     """Write this month's fixed-cost accruals (proxy per user, infra amortization) idempotently.
@@ -85,7 +85,7 @@ def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
         connection.commit()
         return written
     except mysql.connector.Error as err:
-        log_info(f"Could not accrue monthly fixed costs for {period} | Error: {err}")
+        log_error(f"Could not accrue monthly fixed costs for {period}", exc=err)
         return written
     finally:
         cursor.close()
@@ -251,7 +251,9 @@ def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, refe
             return cursor.lastrowid
     except mysql.connector.Error as err:
         if err.errno == errorcode.ER_DUP_ENTRY:
-            log_info("Referral already attributed — ignoring duplicate", user_id=referred_user_id)
+            # DEBUG, not INFO: the UNIQUE key on referred_user_id is the mechanism that makes a
+            # replayed signup a no-op, so this fires on working behaviour every time one replays.
+            log_debug("Referral already attributed — ignoring duplicate", user_id=referred_user_id)
             return None
         log_error("Could not record affiliate referral", exc=err, user_id=referred_user_id)
         return None

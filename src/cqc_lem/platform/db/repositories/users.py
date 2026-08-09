@@ -37,7 +37,7 @@ from cqc_lem.utilities.crypto import (
     needs_reencrypt,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.utils import get_top_level_domain
 
 _ONBOARDING_COLS: tuple = tuple(f"{step.value}_at" for step in ONBOARDING_STEPS)
@@ -96,7 +96,7 @@ def _store_cookie_rows(cursor: MySQLCursorAbstract, cookies: list[dict],
                 user_id
             ))
         except mysql.connector.Error as err:
-            log_info(f"Could not add cookie to database | Error: {err}")
+            log_error("Could not add cookie to database", exc=err)
             failed.append(str(cookie.get('name')))
     return failed
 def prune_superseded_cookies(user_id: int) -> int:
@@ -129,7 +129,7 @@ def prune_superseded_cookies(user_id: int) -> int:
         if deleted:
             log_info(f"Pruned {deleted} superseded cookie(s) for user_id {user_id}")
     except mysql.connector.Error as err:
-        log_info(f"Could not prune superseded cookies for user_id {user_id} | Error: {err}")
+        log_error("Could not prune superseded cookies", exc=err, user_id=user_id)
     finally:
         cursor.close()
         connection.close()
@@ -169,7 +169,7 @@ def get_cookies(url: str, user_email: str):
         # empty li_at and LEM would report "logged in" against a dead session.
         cookies = [c for c in (cookies or []) if c.get('value')]
     except mysql.connector.Error as err:
-        log_info(f"Could not get cookies from DB | Error: {err}")
+        log_error("Could not get cookies from DB", exc=err)
         cookies = None
     finally:
         cursor.close()
@@ -186,7 +186,7 @@ def has_linkedin_session(user_id: int) -> bool:
             )
             return cursor.fetchone() is not None
     except mysql.connector.Error as err:
-        log_info(f"Could not check linkedin session for user_id {user_id} | Error: {err}")
+        log_error("Could not check linkedin session", exc=err, user_id=user_id)
         return False
 def get_linkedin_session_email_sent_at(user_id: int):
     """Return the datetime the last session notification email was sent, or None."""
@@ -198,7 +198,7 @@ def get_linkedin_session_email_sent_at(user_id: int):
             row = cursor.fetchone()
             return row[0] if row else None
     except mysql.connector.Error as err:
-        log_info(f"Could not read session email timestamp for user_id {user_id} | Error: {err}")
+        log_error("Could not read session email timestamp", exc=err, user_id=user_id)
         return None
 def set_linkedin_session_email_sent_at(user_id: int) -> bool:
     """Stamp now() as the last session notification email time (throttle)."""
@@ -209,7 +209,7 @@ def set_linkedin_session_email_sent_at(user_id: int) -> bool:
             )
             return True
     except mysql.connector.Error as err:
-        log_info(f"Could not set session email timestamp for user_id {user_id} | Error: {err}")
+        log_error("Could not set session email timestamp", exc=err, user_id=user_id)
         return False
 def add_user(email: str, password: str):
     """Create a user from an email + password, sealing the password against the id the INSERT allocates.
@@ -228,9 +228,11 @@ def add_user(email: str, password: str):
                            (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
     except mysql.connector.Error as e:
         if e.errno == errorcode.ER_DUP_ENTRY:
-            log_info(f"User with email {email} already exists.")
+            # DEBUG: the docstring calls a duplicate email logged-and-swallowed — the caller learns
+            # the outcome by looking the user up, so a replayed signup is working behaviour.
+            log_debug(f"User with email {email} already exists.")
         else:
-            log_info(f"An error occurred: {e}")
+            log_error("Could not create user", exc=e)
 def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str, access_token_expires_in: str,
                                refresh_token: str = None,
                                refresh_token_expires_in: str = None):
@@ -295,9 +297,10 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
         connection.commit()
     except mysql.connector.Error as e:
         if e.errno == errorcode.ER_DUP_ENTRY:
-            log_info(f"User with email {email} already exists.")
+            # DEBUG: an OAuth callback for an existing account is the normal repeat path.
+            log_debug(f"User with email {email} already exists.")
         else:
-            log_info(f"An error occurred: {e}")
+            log_error("Could not upsert user from OAuth callback", exc=e)
     finally:
         cursor.close()
         connection.close()
@@ -312,7 +315,7 @@ def get_user_linked_sub_id(user_id: int):
 
             linked_sub_id = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user linked sub id | Error: {err}")
+        log_error("Could not get user linked sub id", exc=err)
         linked_sub_id = None
 
     return linked_sub_id['linked_sub_id'] if linked_sub_id else None
@@ -336,7 +339,7 @@ def get_user_access_token(user_id: int):
 
             access_token = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user access token | Error: {err}")
+        log_error("Could not get user access token", exc=err)
         access_token = None
 
     if not access_token:
@@ -354,7 +357,7 @@ def get_user_id(email: str):
 
             user_id = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user id | Error: {err}")
+        log_error("Could not get user id", exc=err)
         user_id = None
 
     return user_id['id'] if user_id else None
@@ -372,7 +375,7 @@ def get_default_video_quality(user_id: int) -> str:
             quality = row.get("default_video_quality") if row else None
             return quality if quality in VALID_VIDEO_QUALITIES else "standard"
     except mysql.connector.Error as err:
-        log_info(f"Could not get default video quality for user {user_id} | Error: {err}")
+        log_error("Could not get default video quality", exc=err, user_id=user_id)
         return "standard"
 def get_user_password_pair_by_id(user_id: int):
     """The (email, decrypted password) pair the Selenium login uses.
@@ -386,7 +389,7 @@ def get_user_password_pair_by_id(user_id: int):
 
             user_password_pair = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user password pair for user id: {user_id} | Error: {err}")
+        log_error(f"Could not get user password pair for user id: {user_id}", exc=err)
         user_password_pair = None
 
     if user_password_pair:
@@ -415,7 +418,7 @@ def add_linkedin_profile(profile: LinkedInProfile, user_id: Optional[int] = None
 
             success = True
     except mysql.connector.Error as err:
-        log_info(f"Could not add linkedin profile | Error: {err}")
+        log_error("Could not add linkedin profile", exc=err)
         success = False
     return success
 def get_linked_in_profile_by_url(profile_url: str, updated_less_than_days_ago: int = 1):
@@ -438,7 +441,7 @@ def get_linked_in_profile_by_url(profile_url: str, updated_less_than_days_ago: i
         profile_data = cursor.fetchone()
     except mysql.connector.Error as err:
         profile_data = None
-        log_info(f"Could not get linkedin profile by url | Error: {err}")
+        log_error("Could not get linkedin profile by url", exc=err)
     finally:
         cursor.close()
         connection.close()
@@ -456,7 +459,7 @@ def get_linked_in_profile_by_email(profile_email: str, updated_less_than_days_ag
                            (profile_email, updated_less_than_days_ago))
             profile_data = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get linkedin profile data by email | Error: {err}")
+        log_error("Could not get linkedin profile data by email", exc=err)
         profile_data = None
 
     return profile_data
@@ -472,7 +475,7 @@ def get_linked_in_profile_by_user_id(user_id: int, updated_less_than_days_ago: i
                            (user_id, updated_less_than_days_ago))
             profile_data = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get linkedin profile data by user_id | Error: {err}")
+        log_error("Could not get linkedin profile data by user_id", exc=err)
         profile_data = None
 
     return profile_data
@@ -487,7 +490,7 @@ def get_profile_synthesis(user_id: int) -> Optional[tuple]:
                 "SELECT synthesis, synthesis_generated_at FROM profiles WHERE user_id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get profile synthesis for user_id={user_id} | Error: {err}")
+        log_error("Could not get profile synthesis", exc=err, user_id=user_id)
         row = None
 
     if not row or row[0] is None:
@@ -504,7 +507,7 @@ def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
                 (synthesis, user_id))
             success = cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_info(f"Could not set profile synthesis for user_id={user_id} | Error: {err}")
+        log_error("Could not set profile synthesis", exc=err, user_id=user_id)
         success = False
     return success
 def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
@@ -520,7 +523,7 @@ def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
                 (stale_days,))
             rows = cursor.fetchall()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user_ids needing profile synthesis | Error: {err}")
+        log_error("Could not get user_ids needing profile synthesis", exc=err)
         rows = []
     return [row[0] for row in rows]
 def remove_linked_in_profile_by_user_id(user_id: int):
@@ -533,7 +536,7 @@ def remove_linked_in_profile_by_user_id(user_id: int):
             cursor.execute("DELETE FROM profiles WHERE user_id = %s", (user_id,))
             success = True
     except mysql.connector.Error as err:
-        log_info(f"Could not remove linkedin profile by user_id | Error: {err}")
+        log_error("Could not remove linkedin profile by user_id", exc=err)
         success = False
     return success
 def remove_linked_in_profile_by_url(profile_url: str):
@@ -546,7 +549,7 @@ def remove_linked_in_profile_by_url(profile_url: str):
             cursor.execute("DELETE FROM profiles WHERE profile_url = %s", (profile_url,))
             success = True
     except mysql.connector.Error as err:
-        log_info(f"Could not remove linkedin profile by url | Error: {err}")
+        log_error("Could not remove linkedin profile by url", exc=err)
         success = False
     return success
 def remove_linked_in_profile_by_email(profile_email: str):
@@ -559,7 +562,7 @@ def remove_linked_in_profile_by_email(profile_email: str):
             cursor.execute("DELETE FROM profiles WHERE email = %s", (profile_email,))
             success = True
     except mysql.connector.Error as err:
-        log_info(f"Could not remove linkedin profile by email | Error: {err}")
+        log_error("Could not remove linkedin profile by email", exc=err)
         success = False
     return success
 MAX_CONTENT_BUFFER_POSTS = 30
@@ -570,7 +573,7 @@ def get_user_blog_url(user_id: int):
             cursor.execute("SELECT blog_url FROM users WHERE id = %s", (user_id,))
             blog_url = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user blog url | Error: {err}")
+        log_error("Could not get user blog url", exc=err)
         blog_url = None
 
     return blog_url[0] if blog_url else None
@@ -581,7 +584,7 @@ def get_user_sitemap_url(user_id: int):
             cursor.execute("SELECT sitemap_url FROM users WHERE id = %s", (user_id,))
             sitemap_url = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user sitemap url | Error: {err}")
+        log_error("Could not get user sitemap url", exc=err)
         sitemap_url = None
 
     return sitemap_url[0] if sitemap_url else None
@@ -594,7 +597,7 @@ def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
             cursor.execute("SELECT profile_url FROM profiles WHERE user_id = %s LIMIT 1", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user linkedin profile url | Error: {err}")
+        log_error("Could not get user linkedin profile url", exc=err)
         row = None
 
     return row[0] if row else None
@@ -632,7 +635,7 @@ def update_user(user_id: int, blog_url: Optional[str] = None,
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update user {user_id} | Error: {err}")
+        log_error(f"Could not update user {user_id}", exc=err)
         return False
     finally:
         cursor.close()
@@ -678,7 +681,7 @@ def get_active_user_ids():
             """)
             active_user_ids = [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
-        log_info(f"Could not get active user ids | Error: {err}")
+        log_error("Could not get active user ids", exc=err)
         active_user_ids = []
 
     return active_user_ids
@@ -705,7 +708,7 @@ def get_linkedin_token_user_ids() -> list[int]:
             """)
             return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
-        log_info(f"Could not get linkedin token user ids | Error: {err}")
+        log_error("Could not get linkedin token user ids", exc=err)
         return []
 def get_user_location(user_id: int) -> tuple[float, float] | None:
     """The user's Login Location as `(latitude, longitude)`, or None when it is not usable.
@@ -718,7 +721,7 @@ def get_user_location(user_id: int) -> tuple[float, float] | None:
             cursor.execute("SELECT latitude, longitude FROM users WHERE id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user location | Error: {err}")
+        log_error("Could not get user location", exc=err)
         row = None
     return (float(row[0]), float(row[1])) if row and row[0] and row[1] else None
 def get_company_linked_in_url_for_user(user_id: int):
@@ -731,7 +734,7 @@ def get_company_linked_in_url_for_user(user_id: int):
             cursor.execute("SELECT company_linked_in_url FROM users WHERE id = %s", (user_id,))
             company_linked_in_url = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user company linked in url | Error: {err}")
+        log_error("Could not get user company linked in url", exc=err)
         company_linked_in_url = None
 
     return company_linked_in_url[0] if company_linked_in_url else None
@@ -747,7 +750,7 @@ def update_company_linked_in_url_for_user(user_id: int, company_linked_in_url: O
             )
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update company linked in url for user {user_id} | Error: {err}")
+        log_error("Could not update company linked in url", exc=err, user_id=user_id)
         return False
 def get_user_linkedin_display_name(user_id: int) -> Optional[str]:
     """The user's own name exactly as LinkedIn renders it on their messages (issue #731), or None.
@@ -760,7 +763,7 @@ def get_user_linkedin_display_name(user_id: int) -> Optional[str]:
             cursor.execute("SELECT linkedin_display_name FROM users WHERE id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get LinkedIn display name for user {user_id} | Error: {err}")
+        log_error("Could not get LinkedIn display name", exc=err, user_id=user_id)
         return None
     name = (row[0] if row else None) or ""
     return name.strip() or None
@@ -774,7 +777,7 @@ def update_user_linkedin_display_name(user_id: int, display_name: Optional[str])
             )
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update LinkedIn display name for user {user_id} | Error: {err}")
+        log_error("Could not update LinkedIn display name", exc=err, user_id=user_id)
         return False
 def update_user_linkedin_password(user_id: int, password: str) -> bool:
     """Store the user's LinkedIn login password for Selenium-driven automation.
@@ -793,7 +796,7 @@ def update_user_linkedin_password(user_id: int, password: str) -> bool:
             )
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update LinkedIn password for user_id {user_id} | Error: {err}")
+        log_error("Could not update LinkedIn password", exc=err, user_id=user_id)
         return False
 def clear_user_linkedin_password(user_id: int) -> bool:
     """Drop the stored LinkedIn password once the user has a session cookie instead (design §5.4).
@@ -932,7 +935,7 @@ def update_user_settings(user_id: int, blog_url: str = None, sitemap_url: str = 
             )
             success = cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update user settings | Error: {err}")
+        log_error("Could not update user settings", exc=err)
         success = False
 
     return success
@@ -970,12 +973,16 @@ def add_user_by_email(email: str) -> Optional[int]:
                 )
                 connection.commit()
         except Exception as se:
-            log_info(f"Stripe customer creation non-fatal error for {email}: {se}")
+            # WARNING, not INFO: create_stripe_customer swallows its own failures and returns None,
+            # so anything reaching here is the stripe_customer_id UPDATE failing — the account is
+            # created but unbillable until someone backfills it. Once is a warning; a run of them
+            # is the defect.
+            log_warning("Stripe customer id was not stored on the new user", exc=se, user_id=user_id)
         return user_id
     except mysql.connector.Error as err:
         if err.errno == errorcode.ER_DUP_ENTRY:
             return get_user_id(email)
-        log_info(f"Could not create user for {email} | Error: {err}")
+        log_error(f"Could not create user for {email}", exc=err)
         return None
     finally:
         cursor.close()
@@ -999,7 +1006,7 @@ def get_user_public_uid(user_id: int) -> Optional[str]:
         connection.commit()
         return public_uid
     except mysql.connector.Error as err:
-        log_info(f"Could not get public_uid for user_id {user_id} | Error: {err}")
+        log_error("Could not get public_uid", exc=err, user_id=user_id)
         return None
     finally:
         cursor.close()
@@ -1015,7 +1022,7 @@ def get_user_id_by_public_uid(public_uid: str) -> Optional[int]:
             row = cursor.fetchone()
             return row['id'] if row else None
     except mysql.connector.Error as err:
-        log_info(f"Could not resolve public_uid | Error: {err}")
+        log_error("Could not resolve public_uid", exc=err)
         return None
 def mark_email_verified(user_id: int) -> bool:
     """Stamp `users.email_verified_at` — the email is an attribute of the account, and this is the
@@ -1027,7 +1034,7 @@ def mark_email_verified(user_id: int) -> bool:
                            (datetime.now(timezone.utc), user_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not mark email verified for user_id {user_id} | Error: {err}")
+        log_error("Could not mark email verified", exc=err, user_id=user_id)
         return False
 def change_user_email(user_id: int, new_email: str,
                       changed_by_session_id: Optional[int] = None) -> bool:
@@ -1066,7 +1073,7 @@ def change_user_email(user_id: int, new_email: str,
         if err.errno == errorcode.ER_DUP_ENTRY:
             log_warning("Email change rejected — address already in use", user_id=user_id)
             return False
-        log_info(f"Could not change email for user_id {user_id} | Error: {err}")
+        log_error("Could not change email", exc=err, user_id=user_id)
         return False
     finally:
         cursor.close()
@@ -1079,7 +1086,7 @@ def get_user_email(user_id: int) -> Optional[str]:
             row = cursor.fetchone()
             return row['email'] if row else None
     except mysql.connector.Error as err:
-        log_info(f"Could not get email for user_id {user_id} | Error: {err}")
+        log_error("Could not get email", exc=err, user_id=user_id)
         return None
 def get_user_analytics_profile(user_id: int) -> dict:
     """The non-sensitive person facts the SPA sets on the PostHog person at $identify (issue #646):
@@ -1107,7 +1114,7 @@ def get_user_analytics_profile(user_id: int) -> dict:
             row = cursor.fetchone()
             return row or {}
     except mysql.connector.Error as err:
-        log_info(f"Could not get analytics profile for user_id {user_id} | Error: {err}")
+        log_error("Could not get analytics profile", exc=err, user_id=user_id)
         return {}
 def get_user_token_info(user_id: int) -> Optional[dict]:
     """The LinkedIn OAuth token row with both tokens decrypted, or None.
@@ -1132,7 +1139,7 @@ def get_user_token_info(user_id: int) -> Optional[dict]:
                     row.get('refresh_token'), user_id, SECRET_FIELD_REFRESH_TOKEN)
             return row
     except mysql.connector.Error as err:
-        log_info(f"Could not get token info for user_id {user_id} | Error: {err}")
+        log_error("Could not get token info", exc=err, user_id=user_id)
         return None
 def update_user_access_token(
     user_id: int,
@@ -1177,7 +1184,7 @@ def update_user_access_token(
                 )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update access token for user_id {user_id} | Error: {err}")
+        log_error("Could not update access token", exc=err, user_id=user_id)
         return False
 def update_user_linkedin_token(
     user_id: int,
@@ -1231,7 +1238,7 @@ def update_user_linkedin_token(
                 )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update LinkedIn token for user_id {user_id} | Error: {err}")
+        log_error("Could not update LinkedIn token", exc=err, user_id=user_id)
         return False
 def update_linkedin_connection_status(user_id: int, status: str) -> bool:
     """Set linkedin_connection_status to 'connected', 'expired', or 'disconnected'."""
@@ -1243,7 +1250,7 @@ def update_linkedin_connection_status(user_id: int, status: str) -> bool:
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update linkedin_connection_status for user_id {user_id} | Error: {err}")
+        log_error("Could not update linkedin_connection_status", exc=err, user_id=user_id)
         return False
 def get_user_subscription_info(user_id: int) -> Optional[dict]:
     """Return subscription fields for the given user."""
@@ -1258,7 +1265,7 @@ def get_user_subscription_info(user_id: int) -> Optional[dict]:
             )
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get subscription info for user_id {user_id} | Error: {err}")
+        log_error("Could not get subscription info", exc=err, user_id=user_id)
         return None
 def update_subscription_from_stripe(
     stripe_customer_id: str,
@@ -1296,7 +1303,7 @@ def update_subscription_from_stripe(
                 )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update subscription from Stripe for customer {stripe_customer_id} | Error: {err}")
+        log_error(f"Could not update subscription from Stripe for customer {stripe_customer_id}", exc=err)
         return False
 def get_users_with_stripe_subscriptions() -> list[dict]:
     """Return all users that have a Stripe subscription ID (for periodic sync)."""
@@ -1311,7 +1318,7 @@ def get_users_with_stripe_subscriptions() -> list[dict]:
             )
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        log_info(f"Could not fetch Stripe subscribers | Error: {err}")
+        log_error("Could not fetch Stripe subscribers", exc=err)
         return []
 def get_user_preferences(user_id: int) -> dict:
     """Return user preference fields with safe defaults.
@@ -1333,7 +1340,7 @@ def get_user_preferences(user_id: int) -> dict:
             row = cursor.fetchone()
             return row if row is not None else _defaults
     except mysql.connector.Error as err:
-        log_info(f"Could not get preferences for user_id {user_id} | Error: {err}")
+        log_error("Could not get preferences", exc=err, user_id=user_id)
         return _defaults
 def update_user_preferences(
     user_id: int,
@@ -1371,7 +1378,7 @@ def update_user_preferences(
             # rowcount==0 means the row existed but values were unchanged — still a success
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update preferences for user_id {user_id} | Error: {err}")
+        log_error("Could not update preferences", exc=err, user_id=user_id)
         return False
 def engagement_preferences_are_configured(user_id: int) -> Optional[bool]:
     """Whether the user has SAVED an engagement-preferences row of their own.
@@ -1408,7 +1415,7 @@ def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
         connection.commit()
         return token
     except mysql.connector.Error as err:
-        log_info(f"Could not get/create reply inbound token for user_id {user_id} | Error: {err}")
+        log_error("Could not get/create reply inbound token", exc=err, user_id=user_id)
         return None
     finally:
         cursor.close()
@@ -1423,7 +1430,7 @@ def get_user_id_by_reply_token(token: str) -> Optional[int]:
             row = cursor.fetchone()
             return row[0] if row else None
     except mysql.connector.Error as err:
-        log_info(f"Could not look up user by reply token | Error: {err}")
+        log_error("Could not look up user by reply token", exc=err)
         return None
 def get_users_with_reply_mode(mode: str) -> list:
     """user_ids whose engagement prefs set reply_check_mode = mode (drives the scheduled sweep
@@ -1434,7 +1441,7 @@ def get_users_with_reply_mode(mode: str) -> list:
             cursor.execute("SELECT user_id FROM engagement_preferences WHERE reply_check_mode = %s", (mode,))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        log_info(f"Could not get users with reply mode {mode} | Error: {err}")
+        log_error(f"Could not get users with reply mode {mode}", exc=err)
         return []
 def get_user_geo(user_id: int) -> Optional[dict]:
     """Return the user's full geo profile for Selenium spoofing.
@@ -1450,7 +1457,7 @@ def get_user_geo(user_id: int) -> Optional[dict]:
             )
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get user geo for user_id {user_id} | Error: {err}")
+        log_error("Could not get user geo", exc=err, user_id=user_id)
         row = None
     if not row:
         return None
@@ -1477,14 +1484,16 @@ def get_user_content_language(user_id: Optional[int]) -> str:
     try:
         connection = _connection.get_db_connection()
     except Exception as err:
-        log_info(f"Could not get content language for user_id {user_id} | Error: {err}")
+        # Distinct from the query failure below so the two stay two problems: this one is the pool
+        # refusing a connection at all.
+        log_error("Could not connect to read content language", exc=err, user_id=user_id)
         return DEFAULT_CONTENT_LANGUAGE
     cursor = connection.cursor()
     try:
         cursor.execute("SELECT content_language, locale FROM users WHERE id = %s", (user_id,))
         row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get content language for user_id {user_id} | Error: {err}")
+        log_error("Could not get content language", exc=err, user_id=user_id)
         row = None
     finally:
         cursor.close()
@@ -1515,7 +1524,7 @@ def update_user_location(user_id: int, latitude: float, longitude: float,
                 )
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update location for user_id {user_id} | Error: {err}")
+        log_error("Could not update location", exc=err, user_id=user_id)
         return False
 def get_user_proxy(user_id: int) -> Optional[str]:
     """Return the user's egress proxy URL (scheme://[user:pass@]host:port) or None.
@@ -1529,7 +1538,7 @@ def get_user_proxy(user_id: int) -> Optional[str]:
             cursor.execute("SELECT proxy_url FROM users WHERE id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get proxy for user_id {user_id} | Error: {err}")
+        log_error("Could not get proxy", exc=err, user_id=user_id)
         row = None
     if not row or not row[0]:
         return None
@@ -1544,7 +1553,7 @@ def update_user_proxy(user_id: int, proxy_url: Optional[str]) -> bool:
             )
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update proxy for user_id {user_id} | Error: {err}")
+        log_error("Could not update proxy", exc=err, user_id=user_id)
         return False
 def get_user_timezone(user_id: int) -> str:
     """Return the IANA timezone string for the user. Defaults to America/New_York to match the
@@ -1556,7 +1565,7 @@ def get_user_timezone(user_id: int) -> str:
             row = cursor.fetchone()
             return row[0] if row and row[0] else 'America/New_York'
     except mysql.connector.Error as err:
-        log_info(f"Could not get timezone for user_id {user_id} | Error: {err}")
+        log_error("Could not get timezone", exc=err, user_id=user_id)
         return 'America/New_York'
 def update_user_timezone(user_id: int, tz: str) -> bool:
     """Persist the user's preferred IANA timezone string."""
@@ -1565,7 +1574,7 @@ def update_user_timezone(user_id: int, tz: str) -> bool:
             cursor.execute("UPDATE users SET timezone = %s WHERE id = %s", (tz, user_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update timezone for user_id {user_id} | Error: {err}")
+        log_error("Could not update timezone", exc=err, user_id=user_id)
         return False
 def get_user_by_stripe_customer_id(stripe_customer_id: str) -> Optional[dict]:
     """Return the user row matching a Stripe customer ID, regardless of subscription status."""
@@ -1577,7 +1586,7 @@ def get_user_by_stripe_customer_id(stripe_customer_id: str) -> Optional[dict]:
             )
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not look up user by stripe_customer_id={stripe_customer_id} | Error: {err}")
+        log_error(f"Could not look up user by stripe_customer_id={stripe_customer_id}", exc=err)
         return None
 def get_avatar_preferences(user_id: int) -> dict:
     """Per-user avatar guardrails (issue #744, decision 4A).
@@ -1600,7 +1609,7 @@ def get_avatar_preferences(user_id: int) -> dict:
                 prefs = {key: bool(row.get(key)) for key in prefs}
             return prefs
     except mysql.connector.Error as err:
-        log_info(f"Could not fetch avatar preferences for user_id {user_id} | Error: {err}")
+        log_error("Could not fetch avatar preferences", exc=err, user_id=user_id)
         return prefs
 def update_avatar_preferences(user_id: int, prefs: dict) -> bool:
     """Update only the avatar guardrail flags the caller actually supplied."""
@@ -1619,7 +1628,7 @@ def update_avatar_preferences(user_id: int, prefs: dict) -> bool:
             )
             return True
     except mysql.connector.Error as err:
-        log_info(f"Could not update avatar preferences for user_id {user_id} | Error: {err}")
+        log_error("Could not update avatar preferences", exc=err, user_id=user_id)
         return False
 def get_users_proxy_config(user_ids: list) -> list:
     """(user_id, proxy_url, country) for the given users — the inputs proxy.resolve_proxy() needs
@@ -1640,7 +1649,7 @@ def get_users_proxy_config(user_ids: list) -> list:
                 for row in (cursor.fetchall() or [])
             ]
     except mysql.connector.Error as err:
-        log_info(f"Could not fetch proxy config for users | Error: {err}")
+        log_error("Could not fetch proxy config for users", exc=err)
         return []
 def get_margin_users() -> list:
     """Users the margin report covers: everyone on an active/past-due subscription or an open trial.
@@ -1658,7 +1667,7 @@ def get_margin_users() -> list:
             )
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        log_info(f"Could not fetch margin users | Error: {err}")
+        log_error("Could not fetch margin users", exc=err)
         return []
 def get_survey_candidate_user_ids() -> list:
     """Users worth surveying: on an active plan or an unexpired trial. Unlike the onboarding

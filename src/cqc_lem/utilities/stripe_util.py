@@ -21,7 +21,7 @@ from cqc_lem.utilities.env_constants import (
     STRIPE_PRICE_ID_STARTER,
     STRIPE_WEBHOOK_SECRET,
 )
-from cqc_lem.utilities.logger import log_info
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
 # Map tier names → Stripe price IDs (populated from env at import time)
 TIER_PRICE_MAP: dict[str, Optional[str]] = {
@@ -54,7 +54,7 @@ def create_stripe_customer(email: str, user_id: int) -> Optional[str]:
         log_info(f"Stripe customer created: {customer.id} for user_id={user_id}")
         return customer.id
     except Exception as e:
-        log_info(f"Stripe customer creation failed for user_id={user_id}: {e}")
+        log_error("Stripe customer creation failed", exc=e, user_id=user_id)
         return None
 
 
@@ -106,7 +106,7 @@ def create_checkout_session(
         )
         return session.url
     except Exception as e:
-        log_info(f"Stripe checkout session creation failed for customer={stripe_customer_id}: {e}")
+        log_error("Stripe checkout session creation failed", exc=e)
         return None
 
 
@@ -125,7 +125,7 @@ def create_portal_session(stripe_customer_id: str, return_url: str) -> Optional[
         )
         return session.url
     except Exception as e:
-        log_info(f"Stripe portal session creation failed for customer={stripe_customer_id}: {e}")
+        log_error("Stripe portal session creation failed", exc=e)
         return None
 
 
@@ -151,10 +151,10 @@ def validate_webhook(payload: bytes, sig_header: str) -> Optional[dict]:
         # Return the raw payload as a plain dict for consistent .get() access
         return json.loads(payload.decode("utf-8"))
     except SignatureVerificationError as e:
-        log_info(f"Stripe webhook signature invalid: {e}")
+        log_warning("Stripe webhook signature invalid", exc=e)
         return None
     except Exception as e:
-        log_info(f"Stripe webhook validation failed: {e}")
+        log_warning("Stripe webhook validation failed", exc=e)
         return None
 
 
@@ -191,7 +191,7 @@ def upgrade_subscription(stripe_subscription_id: str, tier: str) -> bool:
         log_info(f"Subscription {stripe_subscription_id} upgraded to tier '{tier}'")
         return True
     except Exception as e:
-        log_info(f"Could not upgrade subscription {stripe_subscription_id} to '{tier}': {e}")
+        log_error(f"Could not upgrade subscription to '{tier}'", exc=e)
         return False
 
 
@@ -234,7 +234,7 @@ def fetch_subscription(stripe_subscription_id: str) -> Optional[dict]:
         # to JSON, allowing callers to use plain .get() field access.
         return json.loads(str(sub))
     except Exception as e:
-        log_info(f"Could not fetch Stripe subscription {stripe_subscription_id}: {e}")
+        log_error("Could not fetch Stripe subscription", exc=e)
         return None
 
 
@@ -300,7 +300,7 @@ def create_avatar_credits_checkout(
         )
         return session.url
     except Exception as e:
-        log_info(f"Avatar credits checkout failed for customer={stripe_customer_id}: {e}")
+        log_error("Avatar credits checkout failed", exc=e)
         return None
 
 
@@ -363,7 +363,7 @@ def create_video_credits_checkout(
         )
         return session.url
     except Exception as e:
-        log_info(f"Video credits checkout failed for customer={stripe_customer_id}: {e}")
+        log_error("Video credits checkout failed", exc=e)
         return None
 
 
@@ -377,5 +377,5 @@ def get_checkout_session_by_payment_intent(payment_intent_id: str) -> Optional[d
         data = sessions.get("data", [])
         return data[0] if data else None
     except Exception as e:
-        log_info(f"Could not look up checkout session for payment_intent={payment_intent_id}: {e}")
+        log_error("Could not look up checkout session by payment_intent", exc=e)
         return None

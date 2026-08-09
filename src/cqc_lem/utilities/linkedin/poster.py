@@ -29,7 +29,7 @@ from pydantic.types import StringConstraints
 
 from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.env_constants import LI_API_VERSION
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 
@@ -212,7 +212,10 @@ def share_on_linkedin(user_id: int, content: str,
     access_token = get_user_access_token(user_id)
 
     if not linked_sub_id or not access_token:
-        log_info(f"No LinkedIn credentials found for user {user_id} — cannot post")
+        # DEBUG: the docstring is explicit that this None is an ACCOUNT STATE for the caller to
+        # surface, not a failure here — an account that never connected LinkedIn would otherwise
+        # file a defect on every scheduled post.
+        log_debug(f"No LinkedIn credentials found for user {user_id} — cannot post")
         return None
 
     media_objects = []
@@ -324,7 +327,8 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     access_token = get_user_access_token(user_id)
 
     if not linked_sub_id or not access_token:
-        log_info(f"No LinkedIn credentials found for user {user_id} — cannot post carousel")
+        # DEBUG: same account state as share_on_linkedin.
+        log_debug(f"No LinkedIn credentials found for user {user_id} — cannot post carousel")
         return None
 
     # NO placeholder/default image. Every slide must resolve to a REAL image — a provided
@@ -343,7 +347,9 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
             image_path = get_pexels_image_path(slide)  # text query; None if Pexels unavailable
 
         if not image_path or (not _is_image_url(image_path) and not os.path.isfile(image_path)):
-            log_info(f"Carousel slide has no real image (slide={slide!r}) — refusing to use a placeholder")
+            # DEBUG: the per-slide detail. ONE condition gets ONE record, and the aggregate below
+            # is the one that says the carousel did not ship.
+            log_debug(f"Carousel slide has no real image (slide={slide!r}) — refusing to use a placeholder")
             missing += 1
             continue
         urn = upload_media(access_token, linked_sub_id, image_path, "IMAGE")
@@ -354,6 +360,10 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
 
     # Don't post a partial/placeholder carousel — require a real image for every slide.
     if missing > 0 or not media_urns:
+        # Stays INFO: the ONLY caller already logs this lost post at ERROR, flags it 'error' and
+        # writes the durable FAILURE row, so raising the level here would file a second record for
+        # one failure — the #1038 wrapper hazard. This line is the diagnostic detail (which slides),
+        # not the verdict.
         log_info(f"Carousel for user {user_id}: {missing} slide(s) without a real image — not posting (flag error).")
         return None
 
@@ -644,7 +654,8 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
     sub_id = get_user_linked_sub_id(user_id)
     access_token = get_user_access_token(user_id)
     if not sub_id or not access_token:
-        log_info(f"No LinkedIn credentials for user {user_id} — cannot comment via API")
+        # DEBUG: same account state as share_on_linkedin.
+        log_debug(f"No LinkedIn credentials for user {user_id} — cannot comment via API")
         return None
     if not object_urn or not (text or "").strip():
         return None
