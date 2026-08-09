@@ -810,12 +810,19 @@ merge_comment_once() {  # $1=pr $2=head sha $3=body -> 0 when it commented, 1 wh
 # Stall-recovery cycles: how many times the disable-auto + re-enqueue recovery has fired for this
 # PR. One recovery is the automated fix that worked for #1067; a SECOND exhaustion at the same
 # head means the recovery does not work here, and repeating it forever is the #1120 pattern.
-merge_stall_cycle_count() {  # $1=pr
-  local c; c="$(cat "$BASE/state/mergestallcycle-$1.count" 2>/dev/null || echo 0)"
-  case "$c" in ''|*[!0-9]*) c=0 ;; esac
-  echo "$c"
+# HEAD-SCOPED, exactly like the queue budget: a push is new code and earns a fresh recovery
+# allowance. A lifetime counter would park a PR on its FIRST stall after a fix landed, which is
+# the opposite of what "the recovery does not work HERE" means. An old plain-integer record from
+# before this change has no sha, so it reads as 0 — a stale file can only be lenient, never park.
+merge_stall_cycle_count() {  # $1=pr $2=head sha -> recovery cycles already spent at this head
+  local rec sha n
+  rec="$(cat "$BASE/state/mergestallcycle-$1.count" 2>/dev/null)"
+  sha="${rec%% *}"; n="${rec##* }"
+  [ -n "$sha" ] && [ "$sha" = "$2" ] || { echo 0; return 0; }
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  echo "$n"
 }
-merge_stall_cycle_bump()  { echo "$(( $(merge_stall_cycle_count "$1") + 1 ))" > "$BASE/state/mergestallcycle-$1.count"; }
+merge_stall_cycle_bump()  { printf '%s %s\n' "$2" "$(( $(merge_stall_cycle_count "$1" "$2") + 1 ))" > "$BASE/state/mergestallcycle-$1.count"; }
 merge_stall_cycle_clear() { rm -f "$BASE/state/mergestallcycle-$1.count"; }
 
 # Best-effort link to the failing merge_group run: the queue builds on a temporary
@@ -858,7 +865,12 @@ park_merge_stuck() {  # $1=pr $2=head sha $3=one-line reason for the log/comment
     --remove-label "agent:working" >/dev/null 2>&1
   gh pr edit "$P" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
   ISS="$(issue_for_pr "$P")"
-  [ -n "$ISS" ] && gh issue edit "$ISS" --repo "$SLUG" --add-label "needs-human" >/dev/null 2>&1
+  # Mirror the FULL hold, not just needs-human: route_owner_answer un-parks by adding agent:working
+  # and removing needs-human + agent:blocked, so an issue left reading agent:working while its PR is
+  # parked makes the two threads disagree about whether this work is in flight.
+  [ -n "$ISS" ] && gh issue edit "$ISS" --repo "$SLUG" \
+    --add-label "needs-human" --add-label "agent:blocked" \
+    --remove-label "agent:working" >/dev/null 2>&1
   runlink="$(failing_merge_group_run "$P")"
   merge_park_once "$P" "$SHA" "🛑 **Human decision needed** — the merge queue keeps rejecting this PR.
 
@@ -866,14 +878,19 @@ The queue has taken and dropped head \`${SHA:0:8}\` **$asked** times ($reason). 
 
 Failing merge_group run: ${runlink:-not readable — check the merge_group runs on the Actions tab}
 
-1. How should we proceed?
-   - **A)** I fixed the failing merge_group check — re-enqueue this head as-is.
-   - **B)** Rebase onto latest main and re-run the gate ✅ *recommended* — a queue failure at one head usually means main moved underneath it.
-   - **C)** Close this PR; I'll handle it manually.
+### 1. How should we proceed?
+- **A. Re-enqueue this head as-is** — I fixed the failing merge_group check.
+- **B. Rebase onto latest main and re-run the gate** — a queue failure at one head usually means main moved underneath it.  ✅ *recommended*
+- **C. Close this PR** — I'll handle it manually.
 
-My recommendation: B.
-Reply with the letter (e.g. \`B\`) or \`ok\` for the recommendation."
-  TICK_OUTCOME="dispatched"; TICK_REASON="merge_parked"; TICK_PR="$P"
+**My recommendation: \`1B\`.** A merge_group failure at a head that main has moved past clears on a rebase far more often than it clears on a retry.
+
+Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation. (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+  # `escalated`, not `dispatched` — the vocabulary the other human handoffs already use
+  # (depfix/docfix/phasefix/fix_exhausted). A park that reported itself as a dispatch would show up
+  # in the tick_outcome dashboards as productive work, which is exactly the "why nobody noticed"
+  # half of #1082 and #1120.
+  TICK_OUTCOME="escalated"; TICK_REASON="merge_parked"; TICK_PR="$P"
 }
 
 merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely queued
@@ -897,12 +914,12 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
   if [ "$stall" -ge "$MERGE_STALE_TICKS" ]; then
     # The recovery gets a budget of its own: cycle 1 is the automated fix that worked for #1067;
     # a repeat exhaustion at the same head means the recovery does not work HERE — park, don't loop.
-    merge_stall_cycle_bump "$P"
-    if [ "$(merge_stall_cycle_count "$P")" -gt "$MERGE_STALL_CYCLES_MAX" ]; then
-      park_merge_stuck "$P" "$SHA" "auto-merge keeps arming without a queue entry after $(merge_stall_cycle_count "$P") disable-auto recovery cycles"
+    merge_stall_cycle_bump "$P" "$SHA"
+    if [ "$(merge_stall_cycle_count "$P" "$SHA")" -gt "$MERGE_STALL_CYCLES_MAX" ]; then
+      park_merge_stuck "$P" "$SHA" "auto-merge keeps arming without a queue entry after $(merge_stall_cycle_count "$P" "$SHA") disable-auto recovery cycles"
       return 1
     fi
-    log "MERGE: PR #$P — stalled for $stall consecutive tick(s) with no live merge-queue entry; clearing the dangling auto-merge/queue state (--disable-auto) before re-enqueueing (recovery cycle $(merge_stall_cycle_count "$P")/$MERGE_STALL_CYCLES_MAX)."
+    log "MERGE: PR #$P — stalled for $stall consecutive tick(s) with no live merge-queue entry; clearing the dangling auto-merge/queue state (--disable-auto) before re-enqueueing (recovery cycle $(merge_stall_cycle_count "$P" "$SHA")/$MERGE_STALL_CYCLES_MAX)."
     gh pr merge "$P" --repo "$SLUG" --disable-auto >/dev/null 2>&1
     merge_stall_clear "$P"
   fi

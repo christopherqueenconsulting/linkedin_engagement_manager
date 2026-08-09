@@ -30,6 +30,10 @@ BLOCK = re.search(
     r"# ---- MERGE EXECUTION:.*?\n# ---- end merge execution -+\n", SOURCE, re.S
 ).group(0)
 
+# The park's Decision Comment is only useful if the reply it requests reaches route_owner_answer,
+# so the shape judge is lifted verbatim too and the two are tested against each other.
+ANSWER_VERDICT_BLOCK = re.search(r"^answer_verdict\(\) \{.*?^\}$", SOURCE, re.S | re.M).group(0)
+
 # A stub `gh` covering exactly the reads/writes merge_pr makes, driven by three env vars so each
 # test can pose a different GitHub state. Every invocation is appended to $BASE/calls.
 HARNESS = """
@@ -243,7 +247,7 @@ def test_a_queue_that_keeps_taking_and_dropping_the_pr_is_parked(tmp_path):
     )
     assert "PARKING PR #1067" in out.stdout
     assert "queue took and dropped this head 4 times" in out.stdout
-    assert "dispatched/merge_parked" in out.stdout
+    assert "escalated/merge_parked" in out.stdout
     # The point of the park: the 5th tick does NOT ask the queue again.
     assert len([c for c in _calls(tmp_path) if c.startswith("gh pr merge --auto")]) == 4
     # …and it stays one "merging" comment plus exactly one Decision Comment, not one per tick.
@@ -271,8 +275,46 @@ def test_the_park_drafts_the_pr_before_disabling_auto_merge(tmp_path):
     for expected in ("--add-label needs-human", "--add-label agent:blocked",
                      "--add-label agent:merge-parked", "--remove-label agent:working"):
         assert expected in labels
-    # The issue is mirrored so it stops reading as in-flight work.
-    assert any(c.startswith("gh issue edit 1200") for c in calls)
+    # The issue mirrors the FULL hold — route_owner_answer un-parks by adding agent:working and
+    # removing needs-human + agent:blocked, so a park that left agent:working on makes the PR and
+    # the issue disagree about whether the work is in flight.
+    iss = next(c for c in calls if c.startswith("gh issue edit 1200"))
+    for expected in ("--add-label needs-human", "--add-label agent:blocked",
+                     "--remove-label agent:working"):
+        assert expected in iss
+
+
+def test_the_park_comment_asks_for_an_answer_the_answer_lane_can_parse(tmp_path):
+    """The park is a one-way trapdoor if the reply it asks for is not a recognised answer.
+
+    `answer_verdict()` accepts `ok` or `<number><letter>` (`1B`) — a BARE letter is deliberately
+    rejected, because "B" and "A rebase would be better" are indistinguishable on the first line.
+    So the Decision Comment must ask for the numbered form, or the owner follows the instructions,
+    the answer lane ignores the reply, and the PR stays parked forever.
+    """
+    _run(
+        tmp_path,
+        'merge_pr 1067 "merging." || true',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="UNMERGEABLE",
+    )
+    # The stub logs one line per gh arg, so read the RAW file — the body spans several lines.
+    body = (tmp_path / "calls").read_text(encoding="utf-8")
+    assert len(_park_comments(tmp_path)) == 1
+    assert "### 1." in body                       # the question is numbered, so `1B` names an option
+    assert re.search(r"e\.g\.\s*`1B`", body)
+    assert "**My recommendation: `1B`.**" in body
+    # The detection key the answer lane matches on must survive any rewording.
+    assert "Human decision needed" in body
+
+
+def test_the_answer_lane_accepts_the_reply_the_park_comment_asks_for():
+    """Bind the two halves: whatever the comment tells the owner to type must parse as an answer."""
+    verdict = subprocess.run(
+        ["bash", "-c", ANSWER_VERDICT_BLOCK + '\nanswer_verdict "1B"'],
+        capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"},
+    )
+    assert verdict.stdout.strip() == "answer"
 
 
 def test_a_healthy_queue_wait_is_never_called_stuck(tmp_path):
@@ -318,7 +360,7 @@ def test_an_unmergeable_entry_is_not_progress(tmp_path):
         FAKE_QUEUE="UNMERGEABLE",
     )
     assert "rc=1" in out.stdout
-    assert "dispatched/merge_parked" in out.stdout
+    assert "escalated/merge_parked" in out.stdout
     assert "PARKING PR #1067 (merge-queue entry UNMERGEABLE" in out.stdout
     assert _merging_comments(tmp_path) == []  # never claim "merging" over a failing merge_group
     assert len(_park_comments(tmp_path)) == 1
@@ -406,6 +448,47 @@ def test_the_stall_recovery_gets_its_cycles_before_parking(tmp_path):
         'for _ in 1 2 3 4; do merge_pr 1067 "merging." || true; done',
         FAKE_PR_STATE="OPEN|0",
         MERGE_STALE_TICKS="3",
+        MERGE_STALL_CYCLES_MAX="2",
+    )
+    assert "recovery cycle 1/2" in out.stdout
+    assert "PARKING" not in out.stdout
+
+
+def test_a_new_push_gives_the_stall_recovery_a_fresh_budget(tmp_path):
+    """The recovery allowance is HEAD-scoped, exactly like the queue budget.
+
+    "The recovery does not work HERE" is a claim about a specific head. A lifetime counter would
+    spend both cycles early, and then a PR that was fixed and pushed would park on its very FIRST
+    stall at the new head — a park no human action can be expected to pre-empt.
+    """
+    out = _run(
+        tmp_path,
+        """
+        printf 'dead0000 2\\n' > "$BASE/state/mergestallcycle-1067.count"
+        printf '2\\n'          > "$BASE/state/mergestall-1067.count"
+        merge_pr 1067 "merging." || true
+        """,
+        FAKE_SHA="beef5678",
+        FAKE_PR_STATE="OPEN|0",
+        MERGE_STALE_TICKS="2",
+        MERGE_STALL_CYCLES_MAX="2",
+    )
+    assert "recovery cycle 1/2" in out.stdout
+    assert "PARKING" not in out.stdout
+    assert (tmp_path / "state" / "mergestallcycle-1067.count").read_text().split() == ["beef5678", "1"]
+
+
+def test_a_pre_existing_plain_integer_cycle_record_is_lenient_not_a_park(tmp_path):
+    """State written before the record gained a sha must never park a PR on sight."""
+    out = _run(
+        tmp_path,
+        """
+        printf '9\\n' > "$BASE/state/mergestallcycle-1067.count"
+        printf '2\\n' > "$BASE/state/mergestall-1067.count"
+        merge_pr 1067 "merging." || true
+        """,
+        FAKE_PR_STATE="OPEN|0",
+        MERGE_STALE_TICKS="2",
         MERGE_STALL_CYCLES_MAX="2",
     )
     assert "recovery cycle 1/2" in out.stdout
