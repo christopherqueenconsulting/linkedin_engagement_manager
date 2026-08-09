@@ -1,5 +1,6 @@
-"""Unit tests for the persistent at-most-once feed-comment dedup guard in comment_on_feed_inline
-and the URL-based comment_on_post task.
+"""Unit tests for the persistent at-most-once feed-comment dedup guard.
+
+Covers `comment_on_feed_inline` and the URL-based `comment_on_post` task.
 """
 
 from contextlib import ExitStack
@@ -28,16 +29,18 @@ def _box(text):
 
 
 def _messages(mock, needle):
-    """Log messages recorded on a patched logger call that mention `needle`. Matched on the bare
-    word 'hash' rather than either message's own phrasing, so the #1064 guard still fires if the
-    warning comes back worded the way it was before ('unstable content-hash key').
+    """Return log messages recorded on a patched logger call that mention `needle`.
+
+    Matched on the bare word 'hash' rather than either message's own phrasing, so the #1064 guard
+    still fires if the warning comes back worded the way it was before ('unstable content-hash key').
     """
     return [c.args[0] for c in mock.call_args_list if c.args and needle in c.args[0]]
 
 
 def _card_for(box):
-    """A card mock that remembers which post text it was resolved from, so a test can answer the
-    URN scan per post rather than once for the whole run.
+    """Return a card mock that remembers which post text it was resolved from.
+
+    This lets a test answer the URN scan per post rather than once for the whole run.
     """
     card = MagicMock()
     card.box_text = box.text
@@ -52,14 +55,13 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
               prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None,
               urn_by_text=None, is_group_feed=False, click_first_return=_UNSET,
               post_composer_return=_UNSET):
-    """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
-    the key mocks so assertions can inspect calls.
+    """Drive `comment_on_feed_inline` with all the SDUI/DB collaborators mocked.
 
-    `find_elements` overrides the driver's element lookup wholesale, so a test can answer the post-
-    text selector and the zero-walk cross-check selector differently (issue #1013).
-    `urn_by_text` maps a post's text to the URN its card carries, so one scan can mix cards that
-    resolve a URN with cards that fall back to the content hash.
-    `is_group_feed` exercises the group-feed composer-probe path (issue #1084).
+    Returns a dict of the key mocks so assertions can inspect calls. `find_elements` overrides the
+    driver's element lookup wholesale, so a test can answer the post-text selector and the zero-walk
+    cross-check selector differently (issue #1013). `urn_by_text` maps a post's text to the URN its
+    card carries, so one scan can mix cards that resolve a URN with cards that fall back to the
+    content hash. `is_group_feed` exercises the group-feed composer-probe path (issue #1084).
     `click_first_return` / `post_composer_return` control the probe's two resolution steps; both
     default to a truthy mock so the probe succeeds unless the caller overrides one to None.
     """
@@ -99,7 +101,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         post_composer_return = None if post_composer_return is _UNSET else post_composer_return
 
     with ExitStack() as es:
-        p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
+        def p(name, **kw):
+            return es.enter_context(patch(f"{_FEED}.{name}", **kw))
         # Reactions ship OFF by default while #816 is open; these tests exercise the reaction
         # path itself, so they opt in explicitly rather than depending on the shipped default.
         p("INLINE_REACTIONS_ENABLED", new=True)
@@ -250,7 +253,8 @@ class TestFeedDedup:
         driver = MagicMock()
         driver.find_elements.return_value = [_box("A post whose comment submit will fail here.")]
         with ExitStack() as es:
-            p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
+            def p(name, **kw):
+                return es.enter_context(patch(f"{_FEED}.{name}", **kw))
             p("get_engagement_preferences", return_value={"max_comments_per_day": 20})
             p("get_recent_engagers", return_value=set())
             p("get_recent_comment_texts", return_value=[])
@@ -313,13 +317,15 @@ class TestFeedReactions:
 class TestAuthorIsMe:
     def test_matches_own_name_case_insensitively(self):
         from cqc_lem.app.engagement.feed import _author_is_me
-        prof = MagicMock(); prof.full_name = "Chris Queen"
+        prof = MagicMock()
+        prof.full_name = "Chris Queen"
         assert _author_is_me("chris queen", prof) is True
         assert _author_is_me("Someone Else", prof) is False
 
     def test_blank_profile_name_is_not_me(self):
         from cqc_lem.app.engagement.feed import _author_is_me
-        prof = MagicMock(); prof.full_name = ""
+        prof = MagicMock()
+        prof.full_name = ""
         assert _author_is_me("Anybody", prof) is False
 
 
@@ -409,8 +415,10 @@ class TestFeedFunnelAndFallback:
 
 
 class TestGroupFeedComposerProbe:
-    """Issue #1084: on group feeds, the composer is resolved BEFORE the lem-medium generation is
-    spent. A miss must cost zero LLM calls and be countable on the feed_scan funnel.
+    """Group-feed composer probe (issue #1084).
+
+    On group feeds, the composer is resolved BEFORE the lem-medium generation is spent. A miss must
+    cost zero LLM calls and be countable on the feed_scan funnel.
     """
 
     def test_group_feed_composer_miss_skips_without_generation(self):
@@ -455,9 +463,11 @@ class TestGroupFeedComposerProbe:
 
 
 class TestFeedZeroWalkTripwire:
-    """#1013/#1081: zero post MARKERS across a whole scan is indistinguishable from an empty feed
-    in every funnel number — which is how #964 and #1009 stayed invisible for weeks. The scan asks
-    the page through a per-post control the card-marker chain does not use.
+    """Zero-walk tripwire (issues #1013 / #1081).
+
+    Zero post MARKERS across a whole scan is indistinguishable from an empty feed in every funnel
+    number — which is how #964 and #1009 stayed invisible for weeks. The scan asks the page through
+    a per-post control the card-marker chain does not use.
     """
 
     def test_a_walk_that_saw_cards_is_ok(self):
@@ -486,8 +496,10 @@ class TestFeedZeroWalkTripwire:
         assert r["funnel"]["feed_walk"] == "drift"
 
     def test_image_only_posts_do_not_read_as_drift(self):
-        """#1081: a card with a "Hide post by" control but no text node is still a card. The tripwire
-        must not fire a selector-drift warning for a feed of image/video-only posts.
+        """Image/video-only cards must not read as drift (issue #1081).
+
+        A card with a "Hide post by" control but no text node is still a card. The tripwire must not
+        fire a selector-drift warning for a feed of image/video-only posts.
         """
         from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_CARD_MARKER_SEL, _FEED_POST_TEXT_SEL
 
@@ -506,8 +518,10 @@ class TestFeedZeroWalkTripwire:
         assert r["funnel"]["feed_walk"] == "ok"
 
     def test_only_drift_warns(self):
-        """The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a
-        grouped $exception, so an empty feed or an unreadable cross-check must stay DEBUG.
+        """Only drift warns at WARNING level.
+
+        The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a grouped
+        $exception, so an empty feed or an unreadable cross-check must stay DEBUG.
         """
         from cqc_lem.app.engagement.feed import _report_zero_walk
         driver = MagicMock()

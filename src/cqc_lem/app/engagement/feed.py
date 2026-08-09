@@ -256,10 +256,10 @@ COMMENT_NOT_POSTED_MESSAGE = "Comment did not post"
                   bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'post_link']},
                   reject_on_worker_lost=True, rate_limit='4/m', queue='se_engage')
 def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
-    """Post a comment on the post a permalink points at (profile-viewer engagement + the outreach
-    funnel's COMMENT stage both fire through here).
+    """Post a comment on the post a permalink points at.
 
-    Runs on the SAME SDUI engine as the feed walk — `_permalink_post_card` resolves the post's card,
+    Profile-viewer engagement and the outreach funnel's COMMENT stage both fire through here. Runs on
+    the SAME SDUI engine as the feed walk — `_permalink_post_card` resolves the post's card,
     `react_to_post_inline` / `post_comment_inline` do the work — rather than the class-keyed
     `comments-comment-texteditor` / `comments-comment-box__submit-button--cr` XPaths it used to
     carry. Those anchors were removed with LinkedIn's SDUI rewrite, so the composer lookup could
@@ -420,17 +420,20 @@ return scope;
 
 
 def _post_author_from_card(card) -> str:
-    """Author name is embedded in the card's 'Hide post by <Name>' control's aria-label."""
+    """Return the author name from the card's 'Hide post by <Name>' control aria-label."""
     try:
-        label = card.find_element(By.CSS_SELECTOR, "button[aria-label^='Hide post by']").get_attribute("aria-label") or ""
+        hide_btn = card.find_element(By.CSS_SELECTOR, "button[aria-label^='Hide post by']")
+        label = hide_btn.get_attribute("aria-label") or ""
         return label.replace("Hide post by ", "").strip()
     except Exception:
         return ""
 
 
 def _author_is_me(author: str, my_profile: LinkedInProfile) -> bool:
-    """True if a feed card's author is the logged-in user — used to skip reacting/engaging on our
-    OWN posts (the reply-to-own-post path handles those separately).
+    """Return True if a feed card's author is the logged-in user.
+
+    Used to skip reacting/engaging on our OWN posts (the reply-to-own-post path handles those
+    separately).
     """
     try:
         me = (getattr(my_profile, "full_name", "") or "").strip().lower()
@@ -456,25 +459,28 @@ def _content_digest(author: str, content: str, limit: int) -> str:
 
 
 def _feed_post_key(author: str, content: str) -> str:
-    """Last-resort dedup key when no stable URN/permalink is available. Hashes the author plus a
-    NORMALIZED, truncation-proof body prefix (see _norm_prefix) so the collapsed and the expanded
-    render of one post produce ONE key.
+    """Last-resort dedup key when no stable URN/permalink is available.
+
+    Hashes the author plus a NORMALIZED, truncation-proof body prefix (see _norm_prefix) so the
+    collapsed and the expanded render of one post produce ONE key.
     """
     return f"feedpost://{_content_digest(author, content, _FEED_KEY_PREFIX_CHARS)}"
 
 
 def _feed_content_fingerprints(author: str, content: str) -> "set[str]":
-    """Render-stable per-run fingerprints of a post's text at several prefix lengths — a second
-    dedup guard so that even on the URN-less fallback path (or when a URN is found on one pass and
-    not the next) a re-render can't re-key the post and earn it a second comment.
+    """Render-stable per-run fingerprints of a post's text at several prefix lengths.
+
+    A second dedup guard so that even on the URN-less fallback path (or when a URN is found on one
+    pass and not the next) a re-render can't re-key the post and earn it a second comment.
     """
     return {f"fp{n}:{_content_digest(author, content, n)}" for n in _FEED_FP_PREFIX_CHARS}
 
 
 def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
-    """(dedup key, key SOURCE) for a feed post. Source is 'permalink' | 'card' | 'hash' — recorded
-    on the run so we can confirm live that feed comments key on the stable activity URN and not on
-    the volatile content hash (issue #580).
+    """(dedup key, key SOURCE) for a feed post.
+
+    Source is 'permalink' | 'card' | 'hash' — recorded on the run so we can confirm live that feed
+    comments key on the stable activity URN and not on the volatile content hash (issue #580).
     """
     permalink = _post_permalink_from_card(card)
     if permalink:
@@ -488,10 +494,11 @@ def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[
 
 
 def _stable_feed_post_key(card, author: str, content: str, driver=None) -> str:
-    """Single canonical dedup key for a feed post, stable across re-renders. Prefers the URN
-    (from the permalink anchor OR the card/ancestor data attributes) so permalink-present and
-    permalink-absent renders of the same post map to ONE key; only falls back to the normalized
-    content hash when no URN can be found.
+    """Single canonical dedup key for a feed post, stable across re-renders.
+
+    Prefers the URN (from the permalink anchor OR the card/ancestor data attributes) so
+    permalink-present and permalink-absent renders of the same post map to ONE key; only falls back
+    to the normalized content hash when no URN can be found.
     """
     return _feed_post_identity(card, author, content, driver=driver)[0]
 
@@ -502,8 +509,10 @@ _AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
 
 
 def _post_age_minutes(driver, card) -> "int | None":
-    """Minutes since the post was published, from the card's relative timestamp span ('now', '3h',
-    '5d', '2w', '10mo'). None if not found — the caller treats unknown age as mid-priority, not top.
+    """Minutes since the post was published, from the card's relative timestamp span.
+
+    Reads tokens like 'now', '3h', '5d', '2w', '10mo'. None if not found — the caller treats unknown
+    age as mid-priority, not top.
     """
     try:
         token = driver.execute_script(
@@ -570,7 +579,8 @@ def _passes_hard_excludes(content: str, author: str, prefs: dict) -> bool:
         return True
     text = (content or "").lower()
     auth = (author or "").lower()
-    if any(str(k).lower() in text for k in (prefs.get("exclude_keywords") or []) + (prefs.get("exclude_topics") or []) if k):
+    exclude_kws = (prefs.get("exclude_keywords") or []) + (prefs.get("exclude_topics") or [])
+    if any(str(k).lower() in text for k in exclude_kws if k):
         return False
     if any(str(a).lower() in auth for a in (prefs.get("exclude_authors") or []) if a):
         return False
@@ -578,9 +588,11 @@ def _passes_hard_excludes(content: str, author: str, prefs: dict) -> bool:
 
 
 def _literal_relevant(content: str, author: str, prefs: dict) -> bool:
-    """Positive relevance signal without an LLM call: no include constraints (everything on-topic
-    by config) OR a literal include keyword/author match. Topic-only relevance is confirmed by the
-    LLM on the selected post, so this is just the scoring hint.
+    """Positive relevance signal without an LLM call.
+
+    No include constraints means everything is on-topic by config. Otherwise a literal include
+    keyword/author match qualifies. Topic-only relevance is confirmed by the LLM on the selected post,
+    so this is just the scoring hint.
     """
     if not prefs:
         return True
@@ -597,8 +609,10 @@ def _literal_relevant(content: str, author: str, prefs: dict) -> bool:
 
 
 def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
-    """Prioritize which feed post to comment on: recency-dominant, then relevance, reciprocity
-    (author engaged with us / is a target), and a healthy-activity bonus. Higher = comment first.
+    """Prioritize which feed post to comment on.
+
+    Recency-dominant, then relevance, reciprocity (author engaged with us / is a target), and a
+    healthy-activity bonus. Higher = comment first.
     """
     engagers = engagers or set()
     recency = _recency_score(meta.get("age_minutes"))
@@ -623,9 +637,10 @@ _COMPOSER_MOUNT_POLL_SECONDS = 1.0
 
 
 def _is_post_comment_box(box: WebElement) -> bool:
-    """True for the box LinkedIn labels as the POST's own comment composer. A reply box under an
-    existing comment is a role=textbox too, and typing this post's comment into one answers a
-    stranger instead of the author.
+    """Return True for the box LinkedIn labels as the POST's own comment composer.
+
+    A reply box under an existing comment is a role=textbox too, and typing this post's comment into
+    one answers a stranger instead of the author.
     """
     try:
         return "creating comment" in (box.get_attribute("aria-label") or "").lower()
@@ -634,7 +649,7 @@ def _is_post_comment_box(box: WebElement) -> bool:
 
 
 def _single_post_scope(driver: WebDriver, card: WebElement) -> WebElement | None:
-    """The widest ancestor of `card` that still covers this post alone — no neighbouring post."""
+    """Return the widest ancestor of `card` that still covers this post alone — no neighbouring post."""
     try:
         return driver.execute_script(_SINGLE_POST_SCOPE_JS, card)
     except Exception:
@@ -660,7 +675,7 @@ def _composer_in_post_scope(driver: WebDriver, card: WebElement, anchor: dict) -
 
 def _post_composer_for_card(driver: WebDriver, card: WebElement,
                             user_id: int = None) -> WebElement | None:
-    """The comment composer belonging to THIS post card — never a page-wide first match.
+    """Return the comment composer belonging to THIS post card — never a page-wide first match.
 
     A composer nested in the card is unambiguous and still wins (#876). What is new (issue #916) is
     that a card WITHOUT one is not automatically a dead end: `_card_for_textbox` only walks up to the
@@ -689,9 +704,10 @@ def _post_composer_for_card(driver: WebDriver, card: WebElement,
 
 def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None,
                         composer: WebElement | None = None) -> bool:
-    """Open the card's inline comment composer, type the comment, and submit via the composer's
-    own Comment/Post button (the SDUI composer has no <form>). Returns True only if the comment
-    actually lands (composer clears / appears in the list), not just because text was typed.
+    """Open the card's inline comment composer, type the comment, and submit via the button.
+
+    The SDUI composer has no <form>. Returns True only if the comment actually lands (composer
+    clears / appears in the list), not just because text was typed.
 
     A failure names the STEP it died on: one `try` over the whole sequence reported every failure
     mode as the same 'Inline comment post failed' warning, which both hid the real cause and
@@ -742,9 +758,10 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
 
 
 def _post_text_from_card(card) -> str:
-    """The post's own body text read off its card — what the reaction chooser is given. `card.text`
-    would fold the whole comment thread in, so a permalink page (which renders every comment) would
-    hand the classifier someone else's words instead of the post's.
+    """Return the post's own body text read off its card — what the reaction chooser is given.
+
+    `card.text` would fold the whole comment thread in, so a permalink page (which renders every
+    comment) would hand the classifier someone else's words instead of the post's.
     """
     try:
         parts = [(el.text or "").strip() for el in card.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)]
@@ -754,7 +771,7 @@ def _post_text_from_card(card) -> str:
 
 
 def _permalink_post_card(driver, post_link: str, user_id: int = None) -> "WebElement | None":
-    """The card for the post a `/feed/update/…` permalink points at, or None.
+    """Return the card for the post a `/feed/update/…` permalink points at, or None.
 
     A permalink page is NOT a one-post page — LinkedIn stacks "More posts for you" recommendations
     under the post it was asked for, and each of those is a full card with its own comment action.
@@ -970,7 +987,8 @@ def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
         return True
     text = (content or "").lower()
     auth = (author or "").lower()
-    if any(str(k).lower() in text for k in (prefs.get("exclude_keywords") or []) + (prefs.get("exclude_topics") or []) if k):
+    exclude_keys = (prefs.get("exclude_keywords") or []) + (prefs.get("exclude_topics") or [])
+    if any(str(k).lower() in text for k in exclude_keys if k):
         return False
     if any(str(a).lower() in auth for a in (prefs.get("exclude_authors") or []) if a):
         return False
@@ -989,8 +1007,10 @@ def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
 
 
 def _topic_gate_topics(prefs: dict) -> list:
-    """The topics a candidate post is judged on-topic against: the user's focus_topics (what they
-    want authority in), falling back to include_topics when no focus is set.
+    """Return the topics a candidate post is judged on-topic against.
+
+    Uses the user's focus_topics (what they want authority in), falling back to include_topics when
+    no focus is set.
     """
     focus = [t for t in ((prefs or {}).get("focus_topics") or []) if t]
     if focus:
@@ -999,10 +1019,12 @@ def _topic_gate_topics(prefs: dict) -> list:
 
 
 def passes_topic_gate(content: str, prefs: dict) -> bool:
-    """Hard on-topic gate (issue #616). Under 2026 Topic Authority ranking an off-topic comment
-    actively damages distribution, so a post that isn't about the user's focus topics is NEVER
-    commented on — not by the strict path and not by the empty-filter fallback, which is exactly
-    how the 2026-07-25 funnel ended up commenting on AI-in-HR posts for a non-HR account.
+    """Hard on-topic gate (issue #616).
+
+    Under 2026 Topic Authority ranking an off-topic comment actively damages distribution, so a post
+    that isn't about the user's focus topics is NEVER commented on — not by the strict path and not by
+    the empty-filter fallback, which is exactly how the 2026-07-25 funnel ended up commenting on
+    AI-in-HR posts for a non-HR account.
 
     With no topics configured there is nothing to be off-topic against, so the gate is inert. A
     literal topic mention short-circuits the classifier; the classifier itself fails OPEN (a
@@ -1018,9 +1040,10 @@ def passes_topic_gate(content: str, prefs: dict) -> bool:
 
 
 def _mentions_topic(text: str, topic: str) -> bool:
-    """Whole-term match for the gate's literal short-circuit. Substring matching would let a short
-    topic ("HR") fire on an unrelated word ("thrive") and skip the classifier entirely, so the term
-    has to be bounded by non-word characters on both sides.
+    """Whole-term match for the gate's literal short-circuit.
+
+    Substring matching would let a short topic ("HR") fire on an unrelated word ("thrive") and skip
+    the classifier entirely, so the term has to be bounded by non-word characters on both sides.
     """
     term = str(topic or "").strip().lower()
     if not term:
@@ -1048,8 +1071,10 @@ def _target_staleness(target: dict) -> tuple:
 
 
 def select_roster_targets(targets: list, limit: int) -> list:
-    """Which roster authors to engage this run: active targets still under their per-author weekly
-    cap, drawn in the 50/30/20 peer/ICP/creator blend, least-recently-engaged first.
+    """Which roster authors to engage this run.
+
+    Active targets still under their per-author weekly cap, drawn in the 50/30/20 peer/ICP/creator
+    blend, least-recently-engaged first.
     """
     if limit <= 0:
         return []
@@ -1077,7 +1102,7 @@ def select_roster_targets(targets: list, limit: int) -> list:
 
 
 def _roster_activity_url(profile_url: str) -> str:
-    """A roster author's recent-activity page — the roster's equivalent of the home feed."""
+    """Return a roster author's recent-activity page — the roster's equivalent of the home feed."""
     base = str(profile_url or "").strip().rstrip("/")
     if not base:
         return ""
@@ -1194,10 +1219,11 @@ _FOLLOW_FLIP_WAIT_SECONDS = 2.0
 
 
 def _activity_page_owner_name(driver: WebDriver) -> str:
-    """The page owner's display name, read from the activity page's own <title>
-    ("(8) Activity | Arvid Kahl | LinkedIn"). LinkedIn writes the title and the follow controls'
-    aria-labels from the same display name, so this is the one spelling guaranteed to match — a
-    roster row's stored name is only a fallback, because users type those freehand.
+    """Return the page owner's display name from the activity page's own <title>.
+
+    Example: "(8) Activity | Arvid Kahl | LinkedIn". LinkedIn writes the title and the follow
+    controls' aria-labels from the same display name, so this is the one spelling guaranteed to match
+    — a roster row's stored name is only a fallback, because users type those freehand.
     """
     try:
         parts = [p.strip() for p in str(driver.title or "").split("|")]
@@ -1211,6 +1237,7 @@ def _activity_page_owner_name(driver: WebDriver) -> str:
 def _resolve_follow_control(driver: WebDriver, profile_url: str,
                             name: str = "") -> tuple[FollowStatus, WebElement | None]:
     """`(state, element)` for a roster target's follow control on the activity page already open.
+
     The control must carry the page owner's name in its label — see `_FOLLOW_CONTROL_JS` for why
     that, and not top-card geometry, is the scoping rule.
 
@@ -1240,10 +1267,12 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
 
 
 def roster_follow_budget(user_id: int, prefs: dict) -> int:
-    """How many roster targets this user may follow right now (issue #962), or 0 when the lane is
-    off. Re-read before EVERY follow rather than decremented from a per-run local: a click is
-    recorded the moment it is dispatched, so re-reading is what makes two overlapping runs for the
-    same user share one daily allowance instead of each spending the whole of it.
+    """How many roster targets this user may follow right now (issue #962).
+
+    Returns 0 when the lane is off. Re-read before EVERY follow rather than decremented from a
+    per-run local: a click is recorded the moment it is dispatched, so re-reading is what makes two
+    overlapping runs for the same user share one daily allowance instead of each spending the whole
+    of it.
 
     The cap draws its own paced daily budget (`ACTION_FOLLOW`) so a follow never eats the comment
     lane's, and `caps` still engages the shared account envelope — an account that has spent its
@@ -1265,12 +1294,12 @@ def roster_follow_budget(user_id: int, prefs: dict) -> int:
 
 
 def _outbound_hold_reason(user_id: int) -> str:
-    """Why an outbound roster action (a follow, a connect invite) must not go out right now — ''
-    when every hard gate is clear.
+    """Why an outbound roster action (a follow, a connect invite) must not go out right now.
 
-    Pacing only ever slows a lane down; these are the harder gates, re-read per action because the
-    breaker can trip mid-run. The suppression tripwire (#629) rides `is_automation_paused` too, so
-    one check covers the manual pause, the deploy pause and a suppression hold.
+    Returns '' when every hard gate is clear. Pacing only ever slows a lane down; these are the
+    harder gates, re-read per action because the breaker can trip mid-run. The suppression tripwire
+    (#629) rides `is_automation_paused` too, so one check covers the manual pause, the deploy pause
+    and a suppression hold.
     """
     if is_automation_paused():
         return automation_pause_reason() or "automation paused"
@@ -1299,8 +1328,9 @@ def _await_follow_flip(driver: WebDriver, profile_url: str, name: str,
 
 
 def reconcile_roster_follow_state(driver: WebDriver, user_id: int, target: dict) -> FollowStatus:
-    """Read-only follow-state correction for a target the lane already gave up on, from the activity
-    page that is open anyway. Clicks NOTHING and spends no budget.
+    """Read-only follow-state correction for a target the lane already gave up on.
+
+    Uses the activity page that is open anyway. Clicks NOTHING and spends no budget.
 
     This is what keeps `follow_failed` from being a life sentence: an unverified flip is recorded as
     a failure precisely because it may have landed, so the next visit has to be allowed to notice
@@ -1476,8 +1506,10 @@ return 'unknown';
 
 
 def _connect_status_of(target: dict) -> ConnectStatus:
-    """A roster row's stored connect state as a member. Anything unrecognised (a row written before
-    the migration, a column read back NULL) is `UNKNOWN` — the resting state, which does nothing.
+    """Return a roster row's stored connect state as a member.
+
+    Anything unrecognised (a row written before the migration, a column read back NULL) is `UNKNOWN`
+    — the resting state, which does nothing.
     """
     stored = str((target or {}).get("connect_status") or "")
     try:
@@ -1487,7 +1519,7 @@ def _connect_status_of(target: dict) -> ConnectStatus:
 
 
 def _resolve_connect_state(driver: WebDriver, profile_url: str, name: str = "") -> ConnectStatus:
-    """What the OPEN activity page says about our connection to its owner (issue #979).
+    """Read what the open activity page says about our connection to its owner (issue #979).
 
     Three readings only: `REQUESTED` (a Pending control), `CONNECTED` (a 1st-degree badge in the
     owner's own card, or a Message control with no Connect offered), and `UNKNOWN` — which means "we
@@ -1510,8 +1542,9 @@ def _resolve_connect_state(driver: WebDriver, profile_url: str, name: str = "") 
 
 
 def reconcile_roster_connect_state(driver: WebDriver, user_id: int, target: dict) -> ConnectStatus:
-    """Advance a roster target's connect state from the activity page that is open anyway (issue
-    #979). Clicks NOTHING and spends no budget — the `reconcile_roster_follow_state` pattern.
+    """Advance a roster target's connect state from the activity page that is open anyway (issue #979).
+
+    Clicks NOTHING and spends no budget — the `reconcile_roster_follow_state` pattern.
 
     This is the free half of the ladder: LinkedIn already shows whether our invite is pending or
     whether we are connected, so the state advances without a single extra action. It only ever
@@ -1544,14 +1577,13 @@ ROSTER_CONNECT_BUDGET_DIVISOR = 3
 
 
 def roster_connect_budget(user_id: int, prefs: dict) -> int:
-    """How many roster connect invites this user may send right now (issue #979), or 0 when the lane
-    is off.
+    """How many roster connect invites this user may send right now (issue #979).
 
-    There is no separate roster invite cap on purpose: an invite is an invite to LinkedIn, so the
-    ladder spends the SAME `max_invites_per_day` the profile-viewer and proactive flows spend
-    (`ACTION_INVITE`, the account envelope's own field). Already-queued requests count as spent for
-    the same reason `_connect_target_budget` counts them — they will spend tomorrow's cap the moment
-    it opens.
+    Returns 0 when the lane is off. There is no separate roster invite cap on purpose: an invite is
+    an invite to LinkedIn, so the ladder spends the SAME `max_invites_per_day` the profile-viewer
+    and proactive flows spend (`ACTION_INVITE`, the account envelope's own field). Already-queued
+    requests count as spent for the same reason `_connect_target_budget` counts them — they will
+    spend tomorrow's cap the moment it opens.
     """
     if not (prefs or {}).get("roster_auto_connect"):
         return 0
@@ -1573,9 +1605,11 @@ def roster_connect_budget(user_id: int, prefs: dict) -> int:
 
 
 def _roster_connect_note(user_id: int, target: dict, prefs: dict) -> str:
-    """The invite note for a roster target — the SAME voice-aligned path #486 uses
-    (`_draft_connect_note` → grounded template + `lem-simple` refinement), with the roster's own
-    honest shared ground: we read and comment on their posts. Never a pitch.
+    """Draft the invite note for a roster target.
+
+    Uses the SAME voice-aligned path #486 does (`_draft_connect_note` → grounded template +
+    `lem-simple` refinement), with the roster's own honest shared ground: we read and comment on
+    their posts. Never a pitch.
     """
     profile_url = str(target.get("profile_url") or "").strip()
     name = str(target.get("name") or "").strip() or _author_display_name(profile_url)
@@ -1587,13 +1621,12 @@ def _roster_connect_note(user_id: int, target: dict, prefs: dict) -> str:
 
 def queue_roster_connect_invite(user_id: int, target: dict, prefs: dict,
                                 queued_this_run: int = 0) -> bool:
-    """Send the ladder's ONE connection request for a roster target following did not unlock
-    (issue #979). Returns True when an invite was dispatched.
+    """Send one connection request for a roster target following did not unlock (issue #979).
 
-    It goes out through the EXISTING invite rail (`invite_to_connect_now`, via the `se_outreach`
-    task below) — no second invite mechanic, and deliberately NOT through Outreach/Leads, whose unit
-    of work is a DM sequence for a prospect. A curated peer or creator needs comment access, not a
-    sales journey.
+    This is the ladder's single connect rung. Returns True when an invite was dispatched. It goes out
+    through the EXISTING invite rail (`invite_to_connect_now`, via the `se_outreach` task below) — no
+    second invite mechanic, and deliberately NOT through Outreach/Leads, whose unit of work is a DM
+    sequence for a prospect. A curated peer or creator needs comment access, not a sales journey.
 
     `requested` is written BEFORE the dispatch, not after: this is the one-shot guarantee. A
     dispatch that is lost, or a worker that dies mid-send, must not leave the target eligible for a
@@ -1639,9 +1672,11 @@ def queue_roster_connect_invite(user_id: int, target: dict, prefs: dict,
 
 
 class RosterConnectOutcome(NamedTuple):
-    """What the connect rung did for one target: the state it left behind, and whether THIS run is
-    what sent the invite. The two are not the same — a target read as `requested` because the user
-    invited them by hand is not a send the run may claim in its funnel.
+    """What the connect rung did for one target.
+
+    Records the state it left behind, and whether THIS run is what sent the invite. The two are not
+    the same — a target read as `requested` because the user invited them by hand is not a send the
+    run may claim in its funnel.
     """
     state: ConnectStatus
     invited: bool
@@ -1649,7 +1684,7 @@ class RosterConnectOutcome(NamedTuple):
 
 def advance_roster_connect(driver: WebDriver, user_id: int, target: dict, prefs: dict,
                            queued_this_run: int = 0) -> RosterConnectOutcome:
-    """The connect rung for ONE roster target, on the activity page already open (issue #979).
+    """Advance the connect rung for one roster target, on the activity page already open (issue #979).
 
     Read-only advancement runs whatever the toggle says — a user who connected by hand must not keep
     a badge telling them to connect — and it runs FIRST, so a target LinkedIn already shows as
@@ -1728,13 +1763,13 @@ _FEED_RECENT_OPTION_LOCATORS = [
 
 
 def _is_home_feed(driver) -> bool:
-    """True only on linkedin.com/feed itself. Group feeds and a roster author's recent-activity page
-    reuse the same commenting engine but never had a home-feed sort control, so a miss there is an
-    expected no-op — warning on it would file a defect for working behaviour.
+    """Return True only on linkedin.com/feed itself.
 
-    An unreadable URL counts as NOT the home feed (issue #872): a dead session cannot say which
-    surface it was on, and escalating on a guess costs a triage for working behaviour. A false
-    silence loses one signal; a false defect costs a person.
+    Group feeds and a roster author's recent-activity page reuse the same commenting engine but never
+    had a home-feed sort control, so a miss there is an expected no-op — warning on it would file a
+    defect for working behaviour. An unreadable URL counts as NOT the home feed (issue #872): a dead
+    session cannot say which surface it was on, and escalating on a guess costs a triage for working
+    behaviour. A false silence loses one signal; a false defect costs a person.
     """
     try:
         path = str(driver.current_url or "").split("?")[0].split("#")[0].lower()
@@ -1744,13 +1779,14 @@ def _is_home_feed(driver) -> bool:
 
 
 def _feed_sort_state(control) -> str:
-    """Which sort a found control reports — FEED_SORT_RECENT / FEED_SORT_TOP, or '' when its label
-    is unreadable. '' is load-bearing: 'we could not tell' must never be recorded as 'recent'.
+    """Return which sort a found control reports.
 
-    A label naming BOTH sorts is unreadable too. Some dropdown triggers spell their options into
-    the accessible name ('Sort by, currently Top, options Top and Recent'), and taking 'recent' from
-    one would do the two worst things at once: skip the flip below (the label already 'says' Recent)
-    and record the run as sorted — the exact lie #817 exists to stop.
+    Values are FEED_SORT_RECENT / FEED_SORT_TOP, or '' when the label is unreadable. '' is
+    load-bearing: 'we could not tell' must never be recorded as 'recent'. A label naming BOTH sorts
+    is unreadable too. Some dropdown triggers spell their options into the accessible name ('Sort by,
+    currently Top, options Top and Recent'), and taking 'recent' from one would do the two worst
+    things at once: skip the flip below (the label already 'says' Recent) and record the run as sorted
+    — the exact lie #817 exists to stop.
     """
     if control is None:
         return ""
@@ -1827,8 +1863,10 @@ _FEED_FALLBACK_AFTER_MISSES = 6
 
 
 def set_feed_funnel(user_id: int, funnel: dict) -> None:
-    """Persist the last feed scan's reach funnel (posts examined -> matched -> commented) so the UI
-    can show the user how strict their targeting is. Best-effort; no-op without Redis.
+    """Persist the last feed scan's reach funnel.
+
+    Stores posts examined -> matched -> commented so the UI can show the user how strict their
+    targeting is. Best-effort; no-op without Redis.
     """
     client = _redis_client()
     if client is None:
@@ -1860,9 +1898,11 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
                  content: str, author: str, prefs: dict, profile_synthesis,
                  used_comment_shapes: list, recent_comments: list = None,
                  is_group_feed: bool = False) -> bool:
-    """Claim -> generate -> react -> comment on ONE post card. True only when the comment actually
-    landed. Shared by the roster pass and the feed walk so both go through the same at-most-once
-    claim, the same per-run blueprint rotation, and the same react-before-submit ordering.
+    """Claim, generate, react, and comment on ONE post card.
+
+    True only when the comment actually landed. Shared by the roster pass and the feed walk so both
+    go through the same at-most-once claim, the same per-run blueprint rotation, and the same
+    react-before-submit ordering.
 
     `recent_comments` is the user's own recent comment history (newest first) that the quality gate
     dedups this draft against; a comment that lands is prepended to it, so two posts in the SAME run
@@ -1959,13 +1999,13 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
 def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: int, max_posts: int,
                             prefs: dict, profile_synthesis, used_comment_shapes: list, seen: set,
                             deadline_ts: float = None, recent_comments: list = None) -> dict:
-    """Comment on the user's CURATED engagement roster before the home feed ever gets a look
-    (issue #616): each selected target's recent-activity page is opened, and the first post that
-    clears hard excludes, the dedup ledger and the on-topic gate gets a comment.
+    """Comment on the user's curated engagement roster before the home feed gets a look (issue #616).
 
-    Fail-closed by design — an author page that renders no commentable card (selector drift, an
-    auth wall, a profile with only reshares) is logged and skipped, never guessed at. Returns the
-    run counters the caller folds into the feed funnel.
+    Each selected target's recent-activity page is opened, and the first post that clears hard
+    excludes, the dedup ledger and the on-topic gate gets a comment. Fail-closed by design — an
+    author page that renders no commentable card (selector drift, an auth wall, a profile with only
+    reshares) is logged and skipped, never guessed at. Returns the run counters the caller folds
+    into the feed funnel.
 
     That skip used to be INVISIBLE (issue #962). A target whose posts render but whose cards carry
     no comment affordance at all is the restricted-comments signature — the author only accepts
@@ -2121,13 +2161,13 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
 
 def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: int) -> None:
     """Persist the run's restricted-comments findings, unless the run itself is the suspect.
-    `blocked_visits` holds the roster ROWS as the run loaded them — the connect escalation is
-    announced by comparing what came back against that pre-run state.
 
-    `_card_for_textbox` returning None for EVERY card of EVERY target is far more likely to be that
-    helper drifting against LinkedIn's SDUI than a roster where nobody accepts comments — and the
-    badge it would raise tells the user something false about other people's accounts. Small rosters
-    are exempt from the check: two restricted authors out of two visited is an ordinary roster.
+    `blocked_visits` holds the roster ROWS as the run loaded them — the connect escalation is
+    announced by comparing what came back against that pre-run state. `_card_for_textbox` returning
+    None for EVERY card of EVERY target is far more likely to be that helper drifting against
+    LinkedIn's SDUI than a roster where nobody accepts comments — and the badge it would raise tells
+    the user something false about other people's accounts. Small rosters are exempt from the check:
+    two restricted authors out of two visited is an ordinary roster.
     """
     if targets_visited >= 3 and len(blocked_visits) == targets_visited:
         log_warning(f"Every roster target visited ({targets_visited}) rendered posts with no "
@@ -2157,8 +2197,9 @@ def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: 
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
                            max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
                            engagers: set = None, is_group_feed: bool = False) -> int:
-    """Comment on the user's curated engagement ROSTER first (issue #616), then walk the SDUI feed
-    for whatever budget is left, prioritizing by a scoring matrix instead of DOM order:
+    """Comment on the user's curated engagement roster first, then walk the SDUI feed (issue #616).
+
+    Uses whatever budget is left, prioritizing by a scoring matrix instead of DOM order:
     recency-dominant (golden hour), then relevance, reciprocity (people who engaged with us), and
     healthy activity. Applies targeting filters + per-day cap + a max-post-age gate, and never
     comments on a post that fails the on-topic gate. Returns the total number of comments posted.
@@ -2499,10 +2540,11 @@ _CONFIRM_DELETE_MODAL_JS = (
 
 
 def _delete_extra_own_comments_on_post(driver, my_full_name: str, dry_run: bool = True) -> Tuple[int, int]:
-    """On the CURRENTLY-OPEN post page, keep our earliest comment and delete the rest so the post ends
-    with exactly ONE comment from us. Returns (own_comments_found, deleted). In dry_run mode it only
-    counts what WOULD be deleted (deleted stays 0). Only comments authored by `my_full_name` are ever
-    touched — replies/comments by others are never affected.
+    """On the currently-open post page, keep our earliest comment and delete the rest.
+
+    The post ends with exactly ONE comment from us. Returns (own_comments_found, deleted). In
+    dry_run mode it only counts what WOULD be deleted (deleted stays 0). Only comments authored by
+    `my_full_name` are ever touched — replies/comments by others are never affected.
     """
     try:
         found = int(driver.execute_script(_COUNT_OWN_COMMENT_MENUS_JS, my_full_name) or 0)
@@ -2545,10 +2587,12 @@ def _delete_extra_own_comments_on_post(driver, my_full_name: str, dry_run: bool 
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_engage')
 def consolidate_duplicate_comments_for_user(self, user_id: int, dry_run: bool = True, hours: int = 168):
-    """One-off cleanup: for each post this user commented on MORE THAN ONCE in the last `hours`,
-    delete the extra comments so exactly ONE remains. dry_run=True (default) only REPORTS what it
-    would delete — pass dry_run=False to actually delete. Only real post URLs are actionable; feed
-    comments logged under a synthetic key (no navigable URL) are reported as skipped.
+    """One-off cleanup for posts the user commented on more than once.
+
+    For each post commented on MORE THAN ONCE in the last `hours`, delete the extra comments so exactly
+    ONE remains. dry_run=True (default) only REPORTS what it would delete — pass dry_run=False to
+    actually delete. Only real post URLs are actionable; feed comments logged under a synthetic key
+    (no navigable URL) are reported as skipped.
     """
     dupes = get_duplicate_comment_posts(user_id, hours)
     if not dupes:
@@ -2594,18 +2638,19 @@ def consolidate_duplicate_comments_for_user(self, user_id: int, dry_run: bool = 
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_seed_comment_on_post',
-                  bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_id']},
+                  bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
+                                                   'keys': ['user_id', 'post_id']},
                   queue='se_content')
 def auto_seed_comment_on_post(self, user_id: int, post_id: int):
-    """After the user's post publishes, leave a value-adding FIRST comment on it (an open question
-    or a behind-the-scenes insight — no links) to seed the comment thread that drives reach, and
-    beat LinkedIn's suppression of link-in-first-comment by adding real value instead.
+    """After the user's post publishes, leave a value-adding FIRST comment on it.
 
-    Posts via LinkedIn's socialActions API (w_member_social — the same token that publishes posts),
-    NOT Selenium: commenting on the user's OWN post needs no browser and no login, so it is immune
-    to the feed-navigation 429 rate limit. Everything it needs (post body, voice synthesis, profile,
-    prefs) is read from the DB. Pinning is skipped here — LinkedIn exposes no pin API and the seed
-    comment's thread-starting value stands without it.
+    This is an open question or a behind-the-scenes insight — no links — to seed the comment thread
+    that drives reach, and beat LinkedIn's suppression of link-in-first-comment by adding real value
+    instead. Posts via LinkedIn's socialActions API (w_member_social — the same token that publishes
+    posts), NOT Selenium: commenting on the user's OWN post needs no browser and no login, so it is
+    immune to the feed-navigation 429 rate limit. Everything it needs (post body, voice synthesis,
+    profile, prefs) is read from the DB. Pinning is skipped here — LinkedIn exposes no pin API and the
+    seed comment's thread-starting value stands without it.
 
     When the publish step held an external link back (issue #392 — C3), that link is appended to the
     comment: this is the delivery half of the link-in-first-comment mechanic.
@@ -2634,7 +2679,8 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         # The generated comment never contains links (the prompt forbids them); the link held back at
         # publish time is appended deterministically here. A link on its own still ships when the
         # generator came back empty — losing the link entirely would be the worse failure.
-        held_links = [l for l in (get_post_first_comment_link(post_id) or "").split("\n") if l.strip()]
+        raw_links = (get_post_first_comment_link(post_id) or "").split("\n")
+        held_links = [link for link in raw_links if link.strip()]
         seed = append_link_to_comment(seed, held_links, post_id=post_id)
         if not seed:
             return "No seed comment generated"
@@ -2651,8 +2697,9 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
 
 
 def _second_wave_story_directive(user_id: int, post_message: str, prefs: dict) -> tuple:
-    """The story-bank injection for the second wave and the entry it came from (issue #620): the
-    added insight must be the user's OWN material, so the writer gets one relevant entry and the
+    """Return the story-bank injection for the second wave and the entry it came from (issue #620).
+
+    The added insight must be the user's OWN material, so the writer gets one relevant entry and the
     hard rule that its facts are the only personal specifics it may state. An empty or irrelevant
     bank yields the explicit no-fabrication fallback rather than an invented anecdote.
     """
@@ -2671,17 +2718,17 @@ def _second_wave_story_directive(user_id: int, post_message: str, prefs: dict) -
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
                                                    'keys': ['user_id', 'post_id']})
 def auto_second_wave_comment(self, user_id: int, post_id: int):
-    """The SECOND WAVE (issue #622 / G7): 6–8 hours after publishing, add ONE self-comment that
-    brings a substantive insight the post itself didn't carry — the evening re-surface of a post
-    that is still earning engagement is a second distribution window, and a comment with real value
-    in it is what re-opens the thread.
+    """Add ONE self-comment 6–8 hours after publishing (the second wave, issue #622 / G7).
 
-    Like the #344 seed comment it publishes through the socialActions API (no Selenium, no login),
-    so it is immune to the feed-navigation 429 — but unlike the seed it IS discretionary
-    amplification, so it stands down while automation is paused (the #629 suppression tripwire and
-    any manual pause). The self-comment cap is enforced on the COUNT of our own comments on this
-    post, so the seed and the second wave can never stack into thread-stuffing however they are
-    re-dispatched. A draft that can't clear the comment quality contract ships NOTHING.
+    The comment brings a substantive insight the post itself didn't carry — the evening re-surface of a
+    post that is still earning engagement is a second distribution window, and a comment with real
+    value in it is what re-opens the thread. Like the #344 seed comment it publishes through the
+    socialActions API (no Selenium, no login), so it is immune to the feed-navigation 429 — but
+    unlike the seed it IS discretionary amplification, so it stands down while automation is paused
+    (the #629 suppression tripwire and any manual pause). The self-comment cap is enforced on the
+    COUNT of our own comments on this post, so the seed and the second wave can never stack into
+    thread-stuffing however they are re-dispatched. A draft that can't clear the comment quality
+    contract ships NOTHING.
 
     The 6–8h wait is served in HOPS, not one long countdown: with `task_acks_late` the broker
     redelivers any message left unacked past `visibility_timeout` (~75 min), so a single 8-hour
@@ -2837,11 +2884,11 @@ def _group_walk_deadline(task: Task, started_ts: float) -> Optional[float]:
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_engage')
 def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
-    """Comment (value-add, scored) on posts in each of the user's ENABLED groups. Reuses the feed
-    commenting engine pointed at each group's feed. Shares the per-day comment cap.
+    """Comment (value-add, scored) on posts in each of the user's enabled groups.
 
-    Bounded by `_group_walk_deadline`: a run that is out of time stops between groups and keeps
-    what it already posted, rather than being cut down mid-comment by the soft time limit.
+    Reuses the feed commenting engine pointed at each group's feed. Shares the per-day comment cap.
+    Bounded by `_group_walk_deadline`: a run that is out of time stops between groups and keeps what
+    it already posted, rather than being cut down mid-comment by the soft time limit.
     """
     started_ts = time.time()
     enabled = get_enabled_group_ids(user_id)
@@ -2851,7 +2898,8 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Commenting")
     except Exception as e:
-        log_error("Error getting profile for group commenting", exc=e, user_id=user_id, task_name="auto_comment_in_groups")
+        log_error("Error getting profile for group commenting", exc=e, user_id=user_id,
+                  task_name="auto_comment_in_groups")
         return f"Failed: {e}"
     prefs = get_engagement_preferences(user_id)
     engagers = get_recent_engagers(user_id)
@@ -2904,13 +2952,12 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
 @shared_task.task(name='cqc_lem.app.run_automation.auto_draft_group_post',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']})
 def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = None):
-    """Write the coming week's group post AHEAD of the publish slot and park it where the user can
-    read and revise it (issue #932). This is the ONE place a group post's text is written — the
-    publish run consumes the draft and generates nothing — so no group post can ever ship without
-    having been previewable first.
+    """Write the coming week's group post ahead of the publish slot and park it for review (issue #932).
 
-    Opens no browser: the voice comes from the CACHED profile, so a draft costs one LLM call and no
-    Chrome session slot.
+    This is the ONE place a group post's text is written — the publish run consumes the draft and
+    generates nothing — so no group post can ever ship without having been previewable first. Opens no
+    browser: the voice comes from the CACHED profile, so a draft costs one LLM call and no Chrome
+    session slot.
     """
     if get_open_group_post_draft(user_id):
         log_debug("Group post draft already waiting for review", user_id=user_id,
@@ -2959,13 +3006,15 @@ _GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_post_to_group',
-                  bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
+                  bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
+                                                   'keys': ['user_id', 'group_id']},
                   queue='se_content')
 def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None,
                        draft_id: int = None):
-    """Publish the user's reviewed group-post draft into that group via its share box. The text is
-    never written here (issue #932) — it comes from the draft the user has had days to read and
-    edit, and a run with no usable draft publishes NOTHING rather than falling back to an
+    """Publish the user's reviewed group-post draft into that group via its share box.
+
+    The text is never written here (issue #932) — it comes from the draft the user has had days to
+    read and edit, and a run with no usable draft publishes NOTHING rather than falling back to an
     un-previewed generation. Best-effort — the group composer selectors are validated in the live
     pass.
     """
@@ -3052,10 +3101,12 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
                   queue='se_engage')
 def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60,
                         post_id: int = None):
-    """Walk the feed and comment. `post_id` is set only by the pre-post warm-up dispatch
-    (auto_check_scheduled_posts) — it makes each pass record a per-post engagement-window marker so
-    a report can confirm the warm-up before that post actually happened (issue #547). It rides the
-    self-requeue kwargs, so every pass in the window accumulates onto the same marker.
+    """Walk the feed and comment.
+
+    `post_id` is set only by the pre-post warm-up dispatch (`auto_check_scheduled_posts`) — it makes
+    each pass record a per-post engagement-window marker so a report can confirm the warm-up before
+    that post actually happened (issue #547). It rides the self-requeue kwargs, so every pass in the
+    window accumulates onto the same marker.
     """
     log_info("Starting Automate Commenting Thread...")
 
@@ -3087,7 +3138,8 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting")
     except Exception as e:
-        log_error("Error while getting profile for auto commenting", exc=e, user_id=user_id, task_name="automate_commenting")
+        log_error("Error while getting profile for auto commenting", exc=e, user_id=user_id,
+                  task_name="automate_commenting")
         release_run_lock(lock_name, lock_token)
         return f"Failed to start auto commenting: {e}"
 
