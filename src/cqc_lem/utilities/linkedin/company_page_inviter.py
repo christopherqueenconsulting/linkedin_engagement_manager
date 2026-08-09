@@ -57,7 +57,7 @@ from cqc_lem.utilities.human_pacing import (
 )
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
 from cqc_lem.utilities.linkedin.zero_walk import report_zero_walk
-from cqc_lem.utilities.logger import log_info
+from cqc_lem.utilities.logger import log_debug, log_info
 from cqc_lem.utilities.selenium_util import (
     click_element_wait_retry,
     get_element_wait_retry,
@@ -178,7 +178,9 @@ def get_available_credits(driver, wait):
         credit_text = getText(credit_text_element)
         current_credits, total_credits = map(int, credit_text.split('/'))
     except TimeoutException:
-        log_info("No remaining invite credits")
+        # DEBUG: the unconditional line below reports the same 0/0 either way, and an empty credit
+        # pool is the expected state for most of the month. ONE condition, ONE record.
+        log_debug("No remaining invite credits")
 
     log_info(f"Credits available: {current_credits}/{total_credits}")
     return current_credits, total_credits
@@ -281,7 +283,9 @@ def select_connection_checkboxes(driver, wait, limit):
                                                                "//div[contains(@class,'scaffold-finite-scroll__content')]//li",
                                                                "Finding Connections List", max_retry=0)
         except TimeoutException:
-            log_info("No invitee list rendered.")
+            # DEBUG: this is the scroll loop's exit condition — never warn on the thing you loop
+            # until. The counts are logged unconditionally a few lines down.
+            log_debug("No invitee list rendered.")
             connections_list = []
         new_connections_list_count = len(connections_list)
 
@@ -289,7 +293,8 @@ def select_connection_checkboxes(driver, wait, limit):
             checkboxes = get_elements_as_list_wait_stale(wait, "//input[@type='checkbox' and contains(@id, 'invitee')]",
                                                          "Finding Checkboxes", max_retry=0)
         except TimeoutException:
-            log_info("No checkboxes found.")
+            # DEBUG: same loop, same exit condition.
+            log_debug("No checkboxes found.")
             checkboxes = []
 
         new_checkbox_count = len(checkboxes)

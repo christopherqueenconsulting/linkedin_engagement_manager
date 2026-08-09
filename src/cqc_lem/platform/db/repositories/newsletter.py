@@ -15,7 +15,7 @@ from cqc_lem.platform.db.connection import (
     db_cursor,
     to_naive_utc,
 )
-from cqc_lem.utilities.logger import log_error, log_info
+from cqc_lem.utilities.logger import log_error
 
 _NEWSLETTER_DEFAULTS: dict = {
     "enabled": False, "title": None, "topic": None, "cadence": "weekly",
@@ -52,7 +52,7 @@ def get_newsletter_settings(user_id: int) -> dict:
                 row.get("max_invites_per_run") if row.get("max_invites_per_run") is not None else 50)
             return row
     except mysql.connector.Error as err:
-        log_info(f"Could not get newsletter settings for user {user_id} | Error: {err}")
+        log_error("Could not get newsletter settings", exc=err, user_id=user_id)
         return dict(_NEWSLETTER_DEFAULTS)
 def update_newsletter_settings(user_id: int, settings: dict) -> bool:
     """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog,
@@ -72,7 +72,7 @@ def update_newsletter_settings(user_id: int, settings: dict) -> bool:
                 f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update newsletter settings for user {user_id} | Error: {err}")
+        log_error("Could not update newsletter settings", exc=err, user_id=user_id)
         return False
 def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
     """Stamp the newsletter as published now, and record its URL when we managed to read one.
@@ -89,7 +89,7 @@ def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
                 cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW() WHERE user_id=%s", (user_id,))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not mark newsletter published for user {user_id} | Error: {err}")
+        log_error("Could not mark newsletter published", exc=err, user_id=user_id)
         return False
 def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | None" = None,
                                       invites_sent: int = 0) -> bool:
@@ -105,7 +105,7 @@ def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | Non
                 (user_id, subscriber_count, int(invites_sent or 0)))
             return cursor.rowcount == 1
     except mysql.connector.Error as err:
-        log_info(f"Could not record newsletter subscriber stat for user {user_id} | Error: {err}")
+        log_error("Could not record newsletter subscriber stat", exc=err, user_id=user_id)
         return False
 def get_newsletter_subscriber_stats(user_id: int, limit: int = 52) -> list:
     """Return the user's subscriber-growth snapshots, most recent first (default last 52 runs — a
@@ -118,7 +118,7 @@ def get_newsletter_subscriber_stats(user_id: int, limit: int = 52) -> list:
                 "WHERE user_id = %s ORDER BY captured_at DESC, id DESC LIMIT %s", (user_id, limit))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
-        log_info(f"Could not get newsletter subscriber stats for user {user_id} | Error: {err}")
+        log_error("Could not get newsletter subscriber stats", exc=err, user_id=user_id)
         return []
 def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
     """Most recent non-NULL subscriber_count for the user, or None if never captured."""
@@ -131,7 +131,7 @@ def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else None
     except mysql.connector.Error as err:
-        log_info(f"Could not get latest newsletter subscriber count for user {user_id} | Error: {err}")
+        log_error("Could not get latest newsletter subscriber count", exc=err, user_id=user_id)
         return None
 def get_newsletter_due_user_ids(now) -> list:
     """User IDs whose newsletter is enabled and due per its cadence (weekly/biweekly/monthly)."""
@@ -146,7 +146,7 @@ def get_newsletter_due_user_ids(now) -> list:
                 (now, now, now))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        log_info(f"Could not get newsletter-due users | Error: {err}")
+        log_error("Could not get newsletter-due users", exc=err)
         return []
 def get_enabled_newsletter_user_ids() -> list:
     """User IDs whose newsletter is enabled (regardless of cadence timing)."""
@@ -155,7 +155,7 @@ def get_enabled_newsletter_user_ids() -> list:
             cursor.execute("SELECT user_id FROM newsletter_settings WHERE enabled=1")
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        log_info(f"Could not get enabled newsletter users | Error: {err}")
+        log_error("Could not get enabled newsletter users", exc=err)
         return []
 def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str,
                               scheduled_for, subject: str = None, edition_format: str = None,
@@ -179,10 +179,10 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
         # errno 1062 = ER_DUP_ENTRY: uq_user_slot already covers this user+slot — expected, not an
         # error. Other integrity failures (e.g. FK on user_id) are real problems worth surfacing.
         if getattr(err, "errno", None) != 1062:
-            log_info(f"Could not create newsletter edition for user {user_id} | Error: {err}")
+            log_error("Could not create newsletter edition", exc=err, user_id=user_id)
         return 0
     except mysql.connector.Error as err:
-        log_info(f"Could not create newsletter edition for user {user_id} | Error: {err}")
+        log_error("Could not create newsletter edition", exc=err, user_id=user_id)
         return 0
 def get_pending_newsletter_edition(user_id: int) -> "dict | None":
     """The most recent edition still under review (status draft/approved) for this user."""
@@ -195,7 +195,7 @@ def get_pending_newsletter_edition(user_id: int) -> "dict | None":
                 "ORDER BY id DESC LIMIT 1", (user_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get pending newsletter edition for user {user_id} | Error: {err}")
+        log_error("Could not get pending newsletter edition", exc=err, user_id=user_id)
         return None
 def count_pending_newsletter_editions(user_id: int) -> int:
     """How many editions are still queued (status draft/approved) for this user."""
@@ -207,7 +207,7 @@ def count_pending_newsletter_editions(user_id: int) -> int:
             row = cursor.fetchone()
             return int(row[0]) if row else 0
     except mysql.connector.Error as err:
-        log_info(f"Could not count pending newsletter editions for user {user_id} | Error: {err}")
+        log_error("Could not count pending newsletter editions", exc=err, user_id=user_id)
         return 0
 def get_pending_newsletter_editions(user_id: int) -> list:
     """All editions still under review (status draft/approved), soonest slot first — the review queue."""
@@ -221,7 +221,7 @@ def get_pending_newsletter_editions(user_id: int) -> list:
                 "ORDER BY scheduled_for ASC", (user_id,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        log_info(f"Could not get pending newsletter editions for user {user_id} | Error: {err}")
+        log_error("Could not get pending newsletter editions", exc=err, user_id=user_id)
         return []
 def get_latest_edition_scheduled_for(user_id: int) -> "datetime | None":
     """The latest slot already covered by ANY edition (any status), so the next slot never re-covers it."""
@@ -232,7 +232,7 @@ def get_latest_edition_scheduled_for(user_id: int) -> "datetime | None":
             row = cursor.fetchone()
             return row[0] if row else None
     except mysql.connector.Error as err:
-        log_info(f"Could not get latest edition slot for user {user_id} | Error: {err}")
+        log_error("Could not get latest edition slot", exc=err, user_id=user_id)
         return None
 def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
                               subtitle: str = None, body: str = None,
@@ -258,7 +258,7 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
                  edition_id, user_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not update newsletter edition {edition_id} | Error: {err}")
+        log_error(f"Could not update newsletter edition {edition_id}", exc=err)
         return False
 def set_edition_cover_image(edition_id: int, user_id: int, cover_image_path: str,
                             source: str, status: str) -> bool:
@@ -276,7 +276,7 @@ def set_edition_cover_image(edition_id: int, user_id: int, cover_image_path: str
                 (cover_image_path, source, status, edition_id, user_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not set cover image on edition {edition_id} | Error: {err}")
+        log_error(f"Could not set cover image on edition {edition_id}", exc=err)
         return False
 def set_edition_cover_status(edition_id: int, user_id: int, status: str) -> bool:
     """Move an edition's cover between 'pending_review' and 'approved' — the human half of the
@@ -290,7 +290,7 @@ def set_edition_cover_status(edition_id: int, user_id: int, status: str) -> bool
                 (status, edition_id, user_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not set cover status on edition {edition_id} | Error: {err}")
+        log_error(f"Could not set cover status on edition {edition_id}", exc=err)
         return False
 def clear_edition_cover_image(edition_id: int, user_id: int) -> bool:
     """Drop an edition's cover entirely. `update_newsletter_edition` is COALESCE-based and so can
@@ -303,7 +303,7 @@ def clear_edition_cover_image(edition_id: int, user_id: int) -> bool:
                 "cover_image_status=NULL WHERE id=%s AND user_id=%s", (edition_id, user_id))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not clear cover image on edition {edition_id} | Error: {err}")
+        log_error(f"Could not clear cover image on edition {edition_id}", exc=err)
         return False
 def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
     """Recent edition SUBJECTS (published, queued draft/approved, AND skipped) for a user — the dedup
@@ -319,7 +319,7 @@ def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
                 "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
             return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        log_info(f"Could not get recent newsletter subjects for user {user_id} | Error: {err}")
+        log_error("Could not get recent newsletter subjects", exc=err, user_id=user_id)
         return []
 def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> list:
     """Recent editions' SHAPE history — {subject, format, hook_style, opening_line} dicts, most-recent
@@ -335,7 +335,7 @@ def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> li
                 "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        log_info(f"Could not get newsletter blueprint history for user {user_id} | Error: {err}")
+        log_error("Could not get newsletter blueprint history", exc=err, user_id=user_id)
         return []
 def get_editions_due_to_publish(now) -> list:
     """Editions whose scheduled slot has arrived and are still awaiting publish (draft/approved)."""
@@ -346,7 +346,7 @@ def get_editions_due_to_publish(now) -> list:
                 "WHERE scheduled_for <= %s AND status IN ('draft', 'approved')", (now,))
             return cursor.fetchall()
     except mysql.connector.Error as err:
-        log_info(f"Could not get editions due to publish | Error: {err}")
+        log_error("Could not get editions due to publish", exc=err)
         return []
 def get_newsletter_edition(edition_id: int) -> "dict | None":
     """Fetch a single newsletter edition by id."""
@@ -359,7 +359,7 @@ def get_newsletter_edition(edition_id: int) -> "dict | None":
                 "FROM newsletter_editions WHERE id = %s", (edition_id,))
             return cursor.fetchone()
     except mysql.connector.Error as err:
-        log_info(f"Could not get newsletter edition {edition_id} | Error: {err}")
+        log_error(f"Could not get newsletter edition {edition_id}", exc=err)
         return None
 def mark_edition_published(edition_id: int, url: str) -> bool:
     """Mark an edition published and roll the user's newsletter cadence forward."""
@@ -373,7 +373,7 @@ def mark_edition_published(edition_id: int, url: str) -> bool:
                 "WHERE user_id = (SELECT user_id FROM newsletter_editions WHERE id=%s)", (edition_id,))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not mark edition {edition_id} published | Error: {err}")
+        log_error(f"Could not mark edition {edition_id} published", exc=err)
         return False
 def mark_edition_failed(edition_id: int) -> bool:
     """Mark an edition as failed to publish."""
@@ -382,7 +382,7 @@ def mark_edition_failed(edition_id: int) -> bool:
             cursor.execute("UPDATE newsletter_editions SET status='failed' WHERE id=%s", (edition_id,))
             return cursor.rowcount >= 0
     except mysql.connector.Error as err:
-        log_info(f"Could not mark edition {edition_id} failed | Error: {err}")
+        log_error(f"Could not mark edition {edition_id} failed", exc=err)
         return False
 def get_shipped_notice_by_issue(github_issue_number: int) -> Optional[dict]:
     """The changelog notice already recorded for this issue, or None."""

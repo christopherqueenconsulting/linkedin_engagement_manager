@@ -262,5 +262,7 @@ def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_fo
             log_info(f"Sent newsletter draft-ready email to user_id {user_id}")
         return sent
     except Exception as e:
-        log_info(f"Could not send newsletter draft-ready email to user_id {user_id} | Error: {e}")
+        # WARNING: the user is never told their draft is waiting, and it auto-publishes on the
+        # slot either way. One bounced send is a warning; a broken mailer is the defect.
+        log_warning("Could not send newsletter draft-ready email", exc=e, user_id=user_id)
         return False

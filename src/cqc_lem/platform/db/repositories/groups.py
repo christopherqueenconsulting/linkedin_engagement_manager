@@ -11,7 +11,7 @@ import mysql.connector
 
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import GroupPostDraftStatus
-from cqc_lem.utilities.logger import log_error, log_info
+from cqc_lem.utilities.logger import log_error
 
 
 def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
@@ -29,7 +29,7 @@ def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bo
                 (user_id, str(group_id), group_name))
             return True
     except mysql.connector.Error as err:
-        log_info(f"Could not upsert group for user {user_id} | Error: {err}")
+        log_error("Could not upsert group", exc=err, user_id=user_id)
         return False
 def get_user_groups(user_id: int) -> list:
     """The user's LinkedIn groups for the Account UI, JSON-safe (flags as bools, timestamps as ISO strings).
@@ -51,7 +51,7 @@ def get_user_groups(user_id: int) -> list:
                 r["last_posted_at"] = posted.isoformat() if hasattr(posted, "isoformat") else posted
             return rows
     except mysql.connector.Error as err:
-        log_info(f"Could not list groups for user {user_id} | Error: {err}")
+        log_error("Could not list groups", exc=err, user_id=user_id)
         return []
 def get_enabled_group_ids(user_id: int) -> list:
     """Group ids the user has enabled for engagement.
@@ -87,7 +87,7 @@ def get_next_group_for_post(user_id: int) -> Optional[dict]:
             row = cursor.fetchone()
             return dict(row) if row else None
     except mysql.connector.Error as err:
-        log_info(f"Could not resolve next post group for user {user_id} | Error: {err}")
+        log_error("Could not resolve next post group", exc=err, user_id=user_id)
         return None
 def record_group_post(user_id: int, group_id: str) -> bool:
     """Stamp a group as just-posted-in so the rotation moves on to the next one. A successful post
@@ -100,7 +100,7 @@ def record_group_post(user_id: int, group_id: str) -> bool:
                            (user_id, str(group_id)))
             return True
     except mysql.connector.Error as err:
-        log_info(f"Could not record group post for user {user_id} | Error: {err}")
+        log_error("Could not record group post", exc=err, user_id=user_id)
         return False
 def record_group_post_run(user_id: int, group_id: str) -> bool:
     """Stamp a group as just-TRIED (issue #858) — the rotation moves on, but `last_posted_at` is
@@ -140,7 +140,7 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
                     (*(v for _, v in updates), user_id, str(gid)))
             return True
     except mysql.connector.Error as err:
-        log_info(f"Could not update group states for user {user_id} | Error: {err}")
+        log_error("Could not update group states", exc=err, user_id=user_id)
         return False
 def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
     """The groups the user has opted into for POSTING. Separate from get_enabled_group_ids, which

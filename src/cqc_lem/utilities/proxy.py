@@ -27,7 +27,7 @@ import json
 import os
 from typing import Optional
 
-from cqc_lem.utilities.logger import log_info
+from cqc_lem.utilities.logger import log_warning
 
 
 def _region_proxies() -> dict:
@@ -38,7 +38,10 @@ def _region_proxies() -> dict:
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except (ValueError, TypeError) as e:
-        log_info(f"Invalid REGION_PROXIES JSON — ignoring: {e}")
+        # WARNING: an unreadable REGION_PROXIES silently drops every region-based session onto
+        # direct egress. Nothing about that is expected, and it stays wrong until someone fixes
+        # the env var — which is exactly what escalation is for.
+        log_warning("Invalid REGION_PROXIES JSON — ignoring", exc=e)
         return {}
 
 

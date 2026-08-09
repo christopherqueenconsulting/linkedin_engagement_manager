@@ -1309,7 +1309,9 @@ def post_is_relevant(post_content: str, include_topics: list) -> bool:
         ans = (resp.choices[0].message.content or "").strip().lower()
         return ans.startswith("y")
     except Exception as e:
-        log_info(f"post_is_relevant classifier failed (allowing): {e}")
+        # WARNING: this fails OPEN — every post is treated as relevant, so the user's targeting is
+        # silently off. A single blip is fine; a classifier that keeps failing is the defect.
+        log_warning("post_is_relevant classifier failed — allowing the post", exc=e)
         return True
 
 

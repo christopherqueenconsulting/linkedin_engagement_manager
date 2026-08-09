@@ -61,7 +61,9 @@ def quit_gracefully(driver: WebDriver):
         driver.quit()
         log_info("Driver session closed.")
     except Exception as e:
-        log_info(f"Error while quitting driver: {e}")
+        # DEBUG: the docstring is the reason — teardown runs on paths that are already finishing or
+        # already failing, so this must never become the error the caller reports.
+        log_debug(f"Error while quitting driver: {e}")
 
 
 # What the Grid says when the session a call names is gone. The exception type covers the normal
@@ -269,7 +271,10 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     try:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": stealth_js})
     except Exception as e:
-        log_info(f"Could not apply stealth init script | Error: {e}")
+        # WARNING, like the missing-geolocation fallback below: a session that kept
+        # navigator.webdriver is a degraded, more-detectable session, not a neutral one.
+        log_warning("Could not apply stealth init script", exc=e, user_id=user_id,
+                    action_type="login")
 
     if coordinates is None:
         # lat/lng come from the user's stored Login Location (get_user_geo above). The constants are
@@ -294,7 +299,9 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
         driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {"timezoneId": user_timezone})
         driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": user_locale})
     except Exception as e:
-        log_info(f"Could not apply timezone/locale override | Error: {e}")
+        # WARNING for the same reason: a timezone that contradicts the egress IP is itself a signal.
+        log_warning("Could not apply timezone/locale override", exc=e, user_id=user_id,
+                    action_type="login")
 
     return driver
 
@@ -414,7 +421,11 @@ def apply_proxy(options: Options, proxy_url: str) -> None:
         scheme = parsed.scheme or "http"
         host = parsed.hostname or ""
         if not host:
-            log_info(f"Invalid proxy_url (no host) — ignoring: {proxy_url}")
+            # WARNING: a proxy that was configured and then ignored means this session egresses
+            # from the datacentre IP, which is what #372 exists to prevent. The URL itself is not
+            # interpolated — it carries credentials.
+            log_warning("Invalid proxy_url (no host) — session will egress unproxied",
+                        action_type="login")
             return
         hostport = f"{host}:{parsed.port}" if parsed.port else host
         options.add_argument(f"--proxy-server={scheme}://{hostport}")
@@ -427,7 +438,9 @@ def apply_proxy(options: Options, proxy_url: str) -> None:
             log_info("Proxy URL has a username but no password; sending host:port only. "
                     "Use user:pass or an IP-allowlisted proxy (see docs/PER_USER_PROXY.md).")
     except Exception as e:
-        log_info(f"Could not apply proxy '{proxy_url}': {e}")
+        # Same consequence as the no-host branch: the browser starts, unproxied.
+        log_warning("Could not apply proxy — session will egress unproxied", exc=e,
+                    action_type="login")
 
 
 def add_headless_options(options: Options) -> Options:
@@ -550,7 +563,9 @@ def click_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_val
 
     except ElementNotInteractableException as se:
         if max_retry > 1:
-            log_info(wait_text + " | Not Interactable | .....retrying")
+            # DEBUG: this is the retry loop's own bookkeeping, not an outcome. A miss that still
+            # has attempts left has not failed yet.
+            log_debug(wait_text + " | Not Interactable | .....retrying")
             time.sleep(5)  # wait 5 seconds
             driver.implicitly_wait(5)  # wait on driver 5 seconds
             element = click_element_wait_retry(driver, wait, find_by_value, wait_text, find_by, max_retry - 1,
@@ -567,7 +582,9 @@ def click_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_val
                 element = None
 
     except (StaleElementReferenceException, TimeoutException) as st:
-        log_info(wait_text + " | Stale or Timed out | ")
+        # DEBUG: either the caller declared the element optional (a legitimate absence) or this
+        # re-raises and the caller reports it. Neither wants a second record here.
+        log_debug(wait_text + " | Stale or Timed out | ")
         if element_always_expected:
             raise st
         else:
@@ -604,7 +621,8 @@ def get_element_wait_retry(driver: WebDriver, wait: WebDriverWait, find_by_value
 
     except (StaleElementReferenceException, TimeoutException) as se:
         if max_try > 1:
-            log_info(wait_text + " | Stale | .....retrying")
+            # DEBUG: retry bookkeeping — see click_element_wait_retry.
+            log_debug(wait_text + " | Stale | .....retrying")
             time.sleep(5)  # wait 5 seconds
             driver.implicitly_wait(5)  # wait on driver 5 seconds
             element = get_element_wait_retry(driver, wait, find_by_value, wait_text, find_by, max_try - 1,
@@ -649,7 +667,8 @@ def get_visible_element_wait_retry(driver: WebDriver, wait: WebDriverWait,
         return wait.until(_find_visible, wait_text)
     except (StaleElementReferenceException, TimeoutException) as se:
         if max_try > 1:
-            log_info(wait_text + " | Not visible | .....retrying")
+            # DEBUG: retry bookkeeping — see click_element_wait_retry.
+            log_debug(wait_text + " | Not visible | .....retrying")
             time.sleep(5)
             return get_visible_element_wait_retry(driver, wait, locators, wait_text,
                                                   max_try - 1, element_always_expected)
@@ -700,7 +719,9 @@ def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str,
         return wait.until(_find, label)
     except (StaleElementReferenceException, TimeoutException) as se:
         if max_try > 1:
-            log_info(label + " | not found | .....retrying")
+            # DEBUG, and this one matters: a caller that passed warn_on_miss=False asked for the
+            # FINAL miss to be silent, so the retries in between must not be louder than it.
+            log_debug(label + " | not found | .....retrying")
             time.sleep(5)
             return find_first(driver, wait, locators, label, required=required,
                               parent_element=parent_element, max_try=max_try - 1,
@@ -780,7 +801,8 @@ def get_elements_as_list_wait_stale(wait: WebDriverWait, find_by_value: str, wai
         elements = wait.until(lambda d: d.find_elements(find_by, find_by_value), wait_text)
         # elements_list = list(map(lambda x: getText(x), elements))
     except (StaleElementReferenceException, TimeoutException) as se:
-        log_info(wait_text + " | Stale | .....retrying")
+        # DEBUG: retry bookkeeping — the last attempt re-raises, so the caller reports the failure.
+        log_debug(wait_text + " | Stale | .....retrying")
         time.sleep(5)  # wait 5 seconds
         if max_retry > 1:
             elements = get_elements_as_list_wait_stale(wait, find_by_value, wait_text, find_by, max_retry - 1)
@@ -862,12 +884,13 @@ def close_tab(driver: WebDriver, handles: list[str] = None, max_retry=3):
     try:
         driver.close()
     except WebDriverException:
-        log_info("Failed to close browser/tab. Retrying.....")
+        # DEBUG: the docstring says this gives up silently — the caller is tearing down anyway.
+        log_debug("Failed to close browser/tab. Retrying.....")
         try:
             # Wait to close the new window or tab
             wait.until(EC.number_of_windows_to_be(len(handles) - 1), "Waiting for browser/tab to close.")
         except TimeoutException as te:
-            log_info(te)
+            log_debug(f"Timed out waiting for browser/tab to close: {te}")
             if (max_retry > 0):
                 close_tab(driver, handles, max_retry - 1)
         
@@ -980,6 +1003,8 @@ def load_cookies(driver: WebDriver, cookies: list[dict]):
                 'httpOnly': bool(cookie['http_only']) if cookie['http_only'] is not None else False,
             })
         except selenium.common.exceptions.InvalidArgumentException as e:
-            log_info(f"Error loading cookie: {cookie}")
-            log_info(f"Exception: {e}")
+            # DEBUG, and ONE line for ONE condition: the docstring calls a partial restore a NORMAL
+            # outcome and puts the signed-in verdict on the caller, so a refused cookie is not this
+            # function's failure to report. The cookie value is never interpolated — it is a secret.
+            log_debug(f"Chrome refused a stored cookie ({cookie.get('name', '?')}): {e}")
 

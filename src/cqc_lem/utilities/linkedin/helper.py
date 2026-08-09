@@ -745,7 +745,11 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         clear_rate_limit()
         _persist_session_cookies(driver, user_email)
     else:
-        log_info("Login failed. Check your credentials.")
+        # ERROR, not INFO: this is the fall-through where the whole login flow ran and did not
+        # reach a signed-in state. Everything downstream then does nothing, quietly, for as long
+        # as it lasts — which is exactly how engagement sat dead for weeks. No exc= : there is no
+        # exception here, so this is a loud log line rather than a filed $exception.
+        log_error("LinkedIn login did not reach a signed-in state", action_type="login")
 
 
 def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: Optional[int] = None,
@@ -778,7 +782,9 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
         profile_json = get_linked_in_profile_by_email(user_email)
 
     if profile_json is None:
-        log_info(f"Previous Profile not found (or stale) in DB: {user_email}")
+        # DEBUG: the docstring says a row past the freshness window reads as absent, so this is
+        # the daily cache miss the function is built around — an expected no-op.
+        log_debug(f"Previous Profile not found (or stale) in DB: {user_email}")
         login_to_linkedin(driver, wait, user_email, user_password)
 
         profile_url = "https://www.linkedin.com/in/"
@@ -800,9 +806,15 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
             if add_linkedin_profile(profile, user_id=user_id):
                 log_info(f"Profile saved to DB: {profile.full_name}")
             else:
-                log_info(f"Failed to save profile to DB: {profile.full_name}")
+                # DEBUG: add_linkedin_profile logs the write failure where it happens, at ERROR.
+                # Warn where you detect, not where you notice (issue #1038).
+                log_debug(f"Failed to save profile to DB: {profile.full_name}")
         else:
-            log_info("Failed to get my profile data")
+            # WARNING: the docstring names this the NORMAL failure when the DOM changes, and it
+            # costs every caller its voice/profile grounding. Once is SDUI noise; repeatedly is
+            # drift, and that is the defect worth an issue.
+            log_warning("Failed to get my profile data — scrape returned nothing",
+                        user_id=user_id, action_type="login")
     else:
         # Ensure profile_json is a string
         profile_json_str = profile_json[0] if isinstance(profile_json, tuple) else profile_json
@@ -822,7 +834,9 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
     try:
         raw = get_linked_in_profile_by_user_id(user_id)
     except Exception as e:
-        log_info(f"load_profile_for_user: lookup failed for user_id={user_id}: {e}")
+        # WARNING: the repository swallows its own mysql errors and returns None, so anything
+        # arriving here is an unexpected fault, and the caller loses its prompt grounding.
+        log_warning("load_profile_for_user: lookup failed", exc=e, user_id=user_id)
         return None
     if not raw:
         return None
@@ -830,7 +844,10 @@ def load_profile_for_user(user_id: int) -> "LinkedInProfile | None":
     try:
         return LinkedInProfile.model_validate_json(profile_json_str)
     except Exception as e:
-        log_info(f"load_profile_for_user: could not parse profile for user_id={user_id}: {e}")
+        # WARNING: a stored profile that will not parse is corrupt data — it fails identically on
+        # every run until the row is rewritten, which is what escalation should surface.
+        log_warning("load_profile_for_user: could not parse the stored profile", exc=e,
+                    user_id=user_id)
         return None
 
 

@@ -776,7 +776,9 @@ def publish_to_youtube(mp4_path: str, title: str, description: str,
     still a usable asset, so this never fails the whole production.
     """
     if not youtube_configured():
-        log_info("YouTube publish skipped — no OAuth credentials configured", task_name=TASK_NAME)
+        # DEBUG: the whole feature is off by default, so "not configured" is the resting state,
+        # not an incident. The docstring already says an unpublished MP4 is a usable asset.
+        log_debug("YouTube publish skipped — no OAuth credentials configured", task_name=TASK_NAME)
         return None
     import requests
     try:
