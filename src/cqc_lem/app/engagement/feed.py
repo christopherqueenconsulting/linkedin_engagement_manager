@@ -837,6 +837,16 @@ _REACTION_OPENER_LOCATORS = [
 ]
 
 
+# What the probe below accepts as evidence of a reaction control. It is the trigger chain plus the
+# opener's LABEL-based routes only: the opener's trailing `.//button[@aria-haspopup]` matches any
+# popup control the card happens to ship — the "…" control menu, a comment sort dropdown — so it
+# names a different entity than the reaction (the #1012 rail hazard) and would make the probe
+# answer True on nearly every card, silently re-opening issue #874.
+_REACTION_AFFORDANCE_LOCATORS = _REACTION_TRIGGER_LOCATORS + [
+    (by, sel) for by, sel in _REACTION_OPENER_LOCATORS if "aria-haspopup" not in sel
+]
+
+
 def _card_has_reaction_affordance(card, user_id: int = None) -> bool:
     """True when the card renders any reaction control at all.
 
@@ -847,7 +857,7 @@ def _card_has_reaction_affordance(card, user_id: int = None) -> bool:
     carry reactions should warn when the state button can't be read.
     """
     try:
-        for by, sel in _REACTION_TRIGGER_LOCATORS + _REACTION_OPENER_LOCATORS:
+        for by, sel in _REACTION_AFFORDANCE_LOCATORS:
             for el in card.find_elements(by, sel):
                 try:
                     if el.is_displayed():

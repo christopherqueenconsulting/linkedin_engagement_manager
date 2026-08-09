@@ -380,6 +380,82 @@ def _state(label):
     return el
 
 
+def _button(label="", text="", testid="", displayed=True):
+    el = MagicMock()
+    el.is_displayed.return_value = displayed
+    el.text = text
+    el.get_attribute.side_effect = lambda name: {"aria-label": label, "data-testid": testid}.get(name)
+    return el
+
+
+_ANY_BUTTON = "button, [role='button']"
+
+
+def _card_with(matches=None, buttons=None):
+    """A card whose find_elements answers per selector — anything unlisted matches nothing."""
+    card = MagicMock()
+
+    def _find(by, sel):
+        if sel == _ANY_BUTTON:
+            return list(buttons or [])
+        return list((matches or {}).get(sel, []))
+
+    card.find_elements.side_effect = _find
+    return card
+
+
+class TestCardHasReactionAffordance:
+    """The probe deciding whether a 'Reaction state' miss is rot or a card that simply can't react."""
+
+    def test_a_popup_menu_button_is_not_a_reaction_affordance(self):
+        """`.//button[@aria-haspopup]` matches the card's '…' control menu and comment sort control.
+
+        Counting it would answer True on nearly every card, which silently re-opens #874 — the
+        probe must key on controls that name the REACTION entity (the #1012 rail hazard).
+        """
+        from cqc_lem.app.engagement import feed as ra
+        card = _card_with(matches={".//button[@aria-haspopup]": [_button(label="Open control menu")]},
+                          buttons=[_button(label="Open control menu"), _button(label="Comment")])
+        assert ra._card_has_reaction_affordance(card, user_id=1) is False
+
+    def test_a_hidden_reaction_button_alone_is_not_an_affordance(self):
+        from cqc_lem.app.engagement import feed as ra
+        card = _card_with(buttons=[_button(label="React Like", displayed=False)])
+        assert ra._card_has_reaction_affordance(card, user_id=1) is False
+
+    def test_a_data_testid_reaction_control_counts(self):
+        from cqc_lem.app.engagement import feed as ra
+        card = _card_with(buttons=[_button(testid="social-actions-reaction-button")])
+        assert ra._card_has_reaction_affordance(card, user_id=1) is True
+
+    def test_a_stale_element_does_not_end_the_scan(self):
+        """The feed re-renders under us; one detached node must not decide the whole card."""
+        from selenium.common import StaleElementReferenceException
+
+        from cqc_lem.app.engagement import feed as ra
+        stale = MagicMock()
+        stale.is_displayed.side_effect = StaleElementReferenceException("gone")
+        stale_button = MagicMock()
+        stale_button.is_displayed.side_effect = StaleElementReferenceException("gone")
+        card = _card_with(
+            matches={"button[aria-label^='Reaction button state']": [stale]},
+            buttons=[stale_button, _button(text="Like")],
+        )
+        assert ra._card_has_reaction_affordance(card, user_id=1) is True
+
+    def test_an_unreachable_card_probes_false_at_debug(self):
+        """A card ripped out of the DOM can't be reacted to either — and that is not a warning."""
+        from selenium.common import WebDriverException
+
+        from cqc_lem.app.engagement import feed as ra
+        card = MagicMock()
+        card.find_elements.side_effect = WebDriverException("card detached")
+        with patch(f"{_FEED}.log_debug") as ld, patch(f"{_FEED}.log_warning") as lw:
+            assert ra._card_has_reaction_affordance(card, user_id=1) is False
+        lw.assert_not_called()
+        assert ld.call_args.args[0] == "Could not probe card for reaction affordance"
+
+
 class TestReactToPostInline:
     @pytest.fixture
     def card(self):
@@ -482,6 +558,23 @@ class TestReactToPostInline:
         cf.assert_not_called()
         ld.assert_called_once_with("Card has no reaction affordance — skipping inline reaction",
                                    user_id=1, action_type="comment")
+
+    def test_a_like_labelled_button_counts_as_affordance_and_keeps_the_warning(self):
+        """No locator in the chains matches, but the card ships a visible 'Like' control.
+
+        That card CAN be reacted to, so an unreadable state button there is real SDUI rot and must
+        still warn — the token scan is what keeps issue #874's silencing narrow.
+        """
+        from cqc_lem.app.engagement import feed as ra
+        card = _card_with(buttons=[_button(label="React Like")])
+        with patch(f"{_FEED}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first", return_value=None) as ff, \
+             patch(f"{_FEED}.click_first", return_value=None):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), card, user_id=1)
+        assert ok is False
+        trigger = [c for c in ff.call_args_list if c.args[3] == "Reaction state"]
+        assert trigger[0].kwargs.get("warn_on_miss", True) is True
 
     def test_the_obsolete_opener_never_warns(self, card):
         """'Open reactions menu' matched ZERO elements on the live feed — hovering the trigger is
