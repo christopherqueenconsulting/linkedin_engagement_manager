@@ -58,9 +58,16 @@ _NON_ADMIN_USER = {"id": 8, "email": "user@example.com", "is_admin": False}
 
 
 def _auth(user):
+    """Patch targets for the `/api/admin/feedback` routes, which moved to their own router (#1154).
+
+    `is_user_admin` moved with `_require_user_admin` and is read from the ROUTER's globals; the two
+    kernel functions stay in `main`, which the router reaches as a host-module attribute at request
+    time. `/api/auth/session` reports the same flag off `main`'s own binding, so that test patches
+    `main.is_user_admin` and this one does not speak for it.
+    """
     return {
         "get_session": patch("cqc_lem.api.main.get_session_user_id", return_value=user["id"]),
-        "is_admin": patch("cqc_lem.api.main.is_user_admin", return_value=user["is_admin"]),
+        "is_admin": patch("cqc_lem.api.routers.admin.is_user_admin", return_value=user["is_admin"]),
         "get_email": patch("cqc_lem.api.main.get_user_email", return_value=user["email"]),
     }
 
@@ -99,7 +106,7 @@ class TestListFeedback:
             "created_at": "2026-07-29T12:00:00Z",
         }
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_list", return_value=[row]) as lister:
+             patch("cqc_lem.api.routers.admin.get_feedback_list", return_value=[row]) as lister:
             r = client.get("/api/admin/feedback", params={
                 "session_token": "tok", "status": "new", "source": "widget",
                 "limit": 10, "offset": 5,
@@ -118,8 +125,8 @@ class TestListFeedback:
 class TestReviewFeedback:
     def test_dismiss_action_for_admin(self, client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 3}), \
-             patch("cqc_lem.api.main.record_feedback_review", return_value=True) as recorder:
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 3}), \
+             patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True) as recorder:
             r = client.post("/api/admin/feedback/3/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
@@ -129,10 +136,10 @@ class TestReviewFeedback:
 
     def test_approve_action_runs_filer_and_records_reviewer(self, client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 5}), \
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 5}), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
                    return_value={"action": "filed", "issue_number": 101}) as filer, \
-             patch("cqc_lem.api.main.record_feedback_review", return_value=True) as recorder:
+             patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True) as recorder:
             r = client.post("/api/admin/feedback/5/review", json={
                 "session_token": "tok", "action": "approve",
             })
@@ -146,10 +153,10 @@ class TestReviewFeedback:
 
     def test_deduped_approve_still_counts_as_filed(self, client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 6}), \
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 6}), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
                    return_value={"action": "deduped", "issue_number": 77}), \
-             patch("cqc_lem.api.main.record_feedback_review", return_value=True):
+             patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True):
             r = client.post("/api/admin/feedback/6/review", json={
                 "session_token": "tok", "action": "approve",
             })
@@ -162,10 +169,10 @@ class TestReviewFeedback:
         from a successful approve (issue #1036).
         """
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value={"id": 12}), \
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 12}), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
                    return_value={"action": "error", "reason": "issue creation failed"}), \
-             patch("cqc_lem.api.main.record_feedback_review", return_value=True):
+             patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True):
             r = client.post("/api/admin/feedback/12/review", json={
                 "session_token": "tok", "action": "approve",
             })
@@ -181,9 +188,9 @@ class TestReviewFeedback:
         """
         row = {"id": 9, "status": "issue_created", "github_issue_number": 404}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=row), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue") as filer, \
-             patch("cqc_lem.api.main.record_feedback_review") as recorder:
+             patch("cqc_lem.api.routers.admin.record_feedback_review") as recorder:
             r = client.post("/api/admin/feedback/9/review", json={
                 "session_token": "tok", "action": "approve",
             })
@@ -194,8 +201,8 @@ class TestReviewFeedback:
     def test_already_clustered_row_cannot_be_dismissed(self, client):
         row = {"id": 10, "status": "clustered", "github_issue_number": None}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \
-             patch("cqc_lem.api.main.record_feedback_review") as recorder:
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=row), \
+             patch("cqc_lem.api.routers.admin.record_feedback_review") as recorder:
             r = client.post("/api/admin/feedback/10/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
@@ -205,8 +212,8 @@ class TestReviewFeedback:
     def test_new_row_is_still_reviewable(self, client):
         row = {"id": 11, "status": "new", "github_issue_number": None}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \
-             patch("cqc_lem.api.main.record_feedback_review", return_value=True):
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=row), \
+             patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True):
             r = client.post("/api/admin/feedback/11/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
@@ -214,7 +221,7 @@ class TestReviewFeedback:
 
     def test_404_when_feedback_row_missing(self, client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
-             patch("cqc_lem.api.main.get_feedback_by_id", return_value=None):
+             patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=None):
             r = client.post("/api/admin/feedback/99/review", json={
                 "session_token": "tok", "action": "dismiss",
             })

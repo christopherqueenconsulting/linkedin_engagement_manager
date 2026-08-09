@@ -20,6 +20,10 @@ _USER = "cqc_lem.api.routers.user"
 # read from THAT module's globals now. `get_session_user_id` still patches on `_M`: the
 # handlers reach it as an attribute of the host module at request time.
 _AV = "cqc_lem.api.routers.avatar"
+# The admin handlers moved too, and unlike every other slice they took their GATES with them: a
+# `Depends()` default argument binds at import time, which is too early to reach `_main`. So
+# `ADMIN_SECRET` and the db functions these routes call are read from the admin router's globals.
+_ADMIN = "cqc_lem.api.routers.admin"
 
 
 @pytest.fixture(scope="module")
@@ -948,13 +952,13 @@ class TestAdminEndpoints:
     _HDR = {"X-Admin-Secret": "sekret"}
 
     def test_forbidden_without_secret(self, client):
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"):
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"):
             resp = client.post("/api/admin/fix-video-urls", json={
                 "old_base": "http://a", "new_base": "http://b"})
         assert resp.status_code == 403
 
     def test_automation_pause(self, client):
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.pause_automation", return_value=True) as pause:
             resp = client.post("/api/admin/automation-pause?hours=6", headers=self._HDR)
         assert resp.status_code == 200
@@ -962,19 +966,19 @@ class TestAdminEndpoints:
         assert pause.call_args[0][0] == 6 * 3600
 
     def test_automation_pause_forbidden_without_secret(self, client):
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"):
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"):
             resp = client.post("/api/admin/automation-pause", headers={})
         assert resp.status_code == 403
 
     def test_automation_resume(self, client):
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.resume_automation", return_value=True):
             resp = client.post("/api/admin/automation-resume", headers=self._HDR)
         assert resp.status_code == 200
         assert resp.json()["detail"] == {"resumed": True}
 
     def test_automation_status(self, client):
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.automation_pause_remaining", return_value=120), \
              patch("cqc_lem.utilities.linkedin.rate_limit.rate_limit_cooldown_remaining", return_value=900):
             resp = client.get("/api/admin/automation-status", headers=self._HDR)
@@ -983,8 +987,8 @@ class TestAdminEndpoints:
         assert d == {"paused": True, "pause_remaining_s": 120, "breaker_remaining_s": 900}
 
     def test_fix_video_urls(self, client):
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.replace_video_url_base", return_value=3) as rep:
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.replace_video_url_base", return_value=3) as rep:
             resp = client.post("/api/admin/fix-video-urls", headers=self._HDR, json={
                 "old_base": "http://old", "new_base": "http://new"})
         assert resp.status_code == 200
@@ -993,9 +997,9 @@ class TestAdminEndpoints:
 
     def test_regenerate_carousel_success(self, client):
         from cqc_lem.utilities.db import PostType
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.get_post_type", return_value=PostType.CAROUSEL), \
-             patch(f"{_M}.get_post_buyer_stage", return_value=None), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.get_post_type", return_value=PostType.CAROUSEL), \
+             patch(f"{_ADMIN}.get_post_buyer_stage", return_value=None), \
              patch("cqc_lem.app.run_content_plan.create_carousel_content",
                    return_value="new caption") as gen, \
              patch("cqc_lem.utilities.db.update_db_post_content") as upd:
@@ -1007,17 +1011,17 @@ class TestAdminEndpoints:
 
     def test_regenerate_carousel_404_for_non_carousel(self, client):
         from cqc_lem.utilities.db import PostType
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.get_post_type", return_value=PostType.TEXT):
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.get_post_type", return_value=PostType.TEXT):
             resp = client.post("/api/admin/regenerate-carousel", headers=self._HDR,
                                json={"post_id": 9, "user_id": 1})
         assert resp.status_code == 404
 
     def test_regenerate_carousel_500_on_failure(self, client):
         from cqc_lem.utilities.db import PostType
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.get_post_type", return_value=PostType.CAROUSEL), \
-             patch(f"{_M}.get_post_buyer_stage", return_value="awareness"), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.get_post_type", return_value=PostType.CAROUSEL), \
+             patch(f"{_ADMIN}.get_post_buyer_stage", return_value="awareness"), \
              patch("cqc_lem.app.run_content_plan.create_carousel_content",
                    side_effect=RuntimeError("AI fail")):
             resp = client.post("/api/admin/regenerate-carousel", headers=self._HDR,
@@ -1026,8 +1030,8 @@ class TestAdminEndpoints:
 
     def test_regenerate_video_success(self, client):
         from cqc_lem.utilities.db import PostType
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.get_post_type", return_value=PostType.VIDEO), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.get_post_type", return_value=PostType.VIDEO), \
              patch("cqc_lem.app.run_content_plan.regenerate_video_for_post",
                    return_value="https://api/assets?file_name=v.mp4"):
             resp = client.post("/api/admin/regenerate-video", headers=self._HDR,
@@ -1037,16 +1041,16 @@ class TestAdminEndpoints:
 
     def test_regenerate_video_404_for_non_video(self, client):
         from cqc_lem.utilities.db import PostType
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.get_post_type", return_value=PostType.TEXT):
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.get_post_type", return_value=PostType.TEXT):
             resp = client.post("/api/admin/regenerate-video", headers=self._HDR,
                                json={"post_id": 9, "user_id": 1})
         assert resp.status_code == 404
 
     def test_regenerate_video_500_when_no_asset(self, client):
         from cqc_lem.utilities.db import PostType
-        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_M}.get_post_type", return_value=PostType.VIDEO), \
+        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
+             patch(f"{_ADMIN}.get_post_type", return_value=PostType.VIDEO), \
              patch("cqc_lem.app.run_content_plan.regenerate_video_for_post",
                    return_value=None):
             resp = client.post("/api/admin/regenerate-video", headers=self._HDR,

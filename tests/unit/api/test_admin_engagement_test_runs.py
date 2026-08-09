@@ -44,35 +44,36 @@ def _async_result(task_id="task-123"):
 
 class TestComment:
     def test_forbidden_without_secret(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             r = client.post("/api/admin/test/comment", params={"user_id": 1})
         assert r.status_code == 403
 
     def test_queues_task(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.automate_commenting.apply_async", return_value=_async_result()) as t:
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.automate_commenting.apply_async", return_value=_async_result()) as t:
             r = client.post("/api/admin/test/comment", params={"user_id": 7}, headers=_ADMIN_HEADER)
         assert r.status_code == 200
         assert r.json()["detail"]["task_id"] == "task-123"
         assert t.call_args.kwargs["kwargs"]["user_id"] == 7
 
     def test_missing_required_user_id_is_422(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             r = client.post("/api/admin/test/comment", headers=_ADMIN_HEADER)
         assert r.status_code == 422
 
 
 class TestReply:
     def test_404_when_post_user_missing(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=None):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.get_post_user_id", return_value=None):
             r = client.post("/api/admin/test/reply", params={"post_id": 99}, headers=_ADMIN_HEADER)
         assert r.status_code == 404
 
     def test_queues_task(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
-             patch("cqc_lem.api.main.automate_reply_commenting.apply_async", return_value=_async_result()) as t:
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.get_post_user_id", return_value=5), \
+             patch("cqc_lem.api.routers.admin.automate_reply_commenting.apply_async",
+                   return_value=_async_result()) as t:
             r = client.post("/api/admin/test/reply", params={"post_id": 12}, headers=_ADMIN_HEADER)
         assert r.status_code == 200
         assert t.call_args.kwargs["kwargs"]["post_id"] == 12
@@ -81,13 +82,13 @@ class TestReply:
 
 class TestDM:
     def test_forbidden_without_secret(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             r = client.post("/api/admin/test/dm", params={"user_id": 1})
         assert r.status_code == 403
 
     def test_queues_appreciation_dm(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.automate_appreciation_dms_for_user.apply_async",
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.automate_appreciation_dms_for_user.apply_async",
                    return_value=_async_result()) as t:
             r = client.post("/api/admin/test/dm", params={"user_id": 3}, headers=_ADMIN_HEADER)
         assert r.status_code == 200
@@ -96,8 +97,8 @@ class TestDM:
 
 class TestDirectDM:
     def test_queues_direct_dm(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.send_private_dm.apply_async", return_value=_async_result()) as t:
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.send_private_dm.apply_async", return_value=_async_result()) as t:
             r = client.post("/api/admin/test/dm-direct",
                             params={"user_id": 1, "profile_url": "https://linkedin.com/in/x",
                                     "message": "Hi there"},
@@ -107,7 +108,7 @@ class TestDirectDM:
         assert t.call_args.kwargs["kwargs"]["message"] == "Hi there"
 
     def test_forbidden_without_secret(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             r = client.post("/api/admin/test/dm-direct",
                             params={"user_id": 1, "profile_url": "u", "message": "m"})
         assert r.status_code == 403
@@ -119,7 +120,7 @@ class TestTaskStatus:
         res.state = "SUCCESS"
         res.ready.return_value = True
         res.result = "done"
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
              patch("cqc_lem.app.my_celery.app.AsyncResult", return_value=res):
             r = client.get("/api/admin/task-status/task-123", headers=_ADMIN_HEADER)
         assert r.status_code == 200
@@ -127,20 +128,20 @@ class TestTaskStatus:
         assert r.json()["detail"]["result"] == "done"
 
     def test_forbidden_without_secret(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             r = client.get("/api/admin/task-status/task-123")
         assert r.status_code == 403
 
 
 class TestConsolidateDuplicateComments:
     def test_forbidden_without_secret(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             r = client.post("/api/admin/consolidate-duplicate-comments", params={"user_id": 1})
         assert r.status_code == 403
 
     def test_defaults_to_dry_run(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.consolidate_duplicate_comments_for_user.apply_async",
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.consolidate_duplicate_comments_for_user.apply_async",
                    return_value=_async_result()) as t:
             r = client.post("/api/admin/consolidate-duplicate-comments",
                             params={"user_id": 3}, headers=_ADMIN_HEADER)
@@ -150,8 +151,8 @@ class TestConsolidateDuplicateComments:
         assert t.call_args.kwargs["queue"] == "se_engage"
 
     def test_can_request_real_delete(self, client):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.consolidate_duplicate_comments_for_user.apply_async",
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.consolidate_duplicate_comments_for_user.apply_async",
                    return_value=_async_result()) as t:
             r = client.post("/api/admin/consolidate-duplicate-comments",
                             params={"user_id": 3, "dry_run": False, "hours": 48}, headers=_ADMIN_HEADER)
@@ -178,7 +179,7 @@ class TestAdminCredentialsAreNotAdvertised:
 
     def test_admin_secret_is_still_enforced_at_runtime(self, client):
         """Hiding is not gating: the same route that vanished from the schema must still 403."""
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET):
             assert client.post("/api/admin/automation-pause",
                                params={"user_id": 1}).status_code == 403
 
@@ -217,18 +218,18 @@ class TestAGracefulRejectionIsNotASuccess:
 
     @pytest.mark.parametrize("route,task,params", _QUEUE_ONCE_ROUTES)
     def test_already_running_answers_409(self, client, route, task, params):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
-             patch(f"cqc_lem.api.main.{task}.apply_async", return_value=_rejected_result()):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.get_post_user_id", return_value=5), \
+             patch(f"cqc_lem.api.routers.admin.{task}.apply_async", return_value=_rejected_result()):
             r = client.post(route, params=params, headers=_ADMIN_HEADER)
         assert r.status_code == 409, route
         assert "already queued or in progress" in r.json()["detail"]
 
     @pytest.mark.parametrize("route,task,params", _QUEUE_ONCE_ROUTES)
     def test_a_real_dispatch_still_answers_200_with_its_id(self, client, route, task, params):
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
-             patch(f"cqc_lem.api.main.{task}.apply_async", return_value=_async_result()):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.get_post_user_id", return_value=5), \
+             patch(f"cqc_lem.api.routers.admin.{task}.apply_async", return_value=_async_result()):
             r = client.post(route, params=params, headers=_ADMIN_HEADER)
         assert r.status_code == 200, route
         assert r.json()["detail"]["task_id"] == "task-123"
@@ -237,9 +238,9 @@ class TestAGracefulRejectionIsNotASuccess:
     @pytest.mark.parametrize("route,task,params", _QUEUE_ONCE_ROUTES)
     def test_no_route_can_ever_publish_a_null_task_id(self, client, route, task, params):
         """The property that matters, independent of how the rejection is spelled."""
-        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
-             patch("cqc_lem.api.main.get_post_user_id", return_value=5), \
-             patch(f"cqc_lem.api.main.{task}.apply_async", return_value=_rejected_result()):
+        with patch("cqc_lem.api.routers.admin.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.routers.admin.get_post_user_id", return_value=5), \
+             patch(f"cqc_lem.api.routers.admin.{task}.apply_async", return_value=_rejected_result()):
             r = client.post(route, params=params, headers=_ADMIN_HEADER)
         body = r.json()
         assert not (isinstance(body.get("detail"), dict)
