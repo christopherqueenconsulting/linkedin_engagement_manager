@@ -79,13 +79,25 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     return 1
   fi
 
+  dispatch_lane "$hint"
+
+  # tick.sh snapshots TICK_LANE/TICK_MODEL/TICK_ROUTE_REASON before dispatch_lane() runs (it runs
+  # inside this wrapper), so backfill them here so the EXIT trap's emit_tick_outcome() writes the
+  # real routing dimensions into tick-outcomes.ndjson.
+  TICK_LANE="${LANE:-}"
+  TICK_MODEL="${AGENT_TIER:-${AGENT_MODEL:-}}"
+  # A Claude run with no agent:model:* hint uses the CLI default — that is a REAL model choice, not
+  # an absent one. Name it the way dispatch.sh's routing_decision_made event already does, so an
+  # empty `model` in the file means "no lane ran on this tick", never "the default model ran".
+  [ -z "$TICK_MODEL" ] && [ "${LANE:-}" = "claude" ] && TICK_MODEL="default"
+  TICK_ROUTE_REASON="${ROUTE_REASON:-}"
+  export TICK_LANE TICK_MODEL TICK_ROUTE_REASON
+
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    dispatch_lane "$hint"
     log "DRY_RUN: would run lane=$LANE model=${AGENT_MODEL:-default} tier=${AGENT_TIER:-} in $wt"
     return 0
   fi
 
-  dispatch_lane "$hint"
   _emit "issue_assigned"
   _emit "ai_call_started"
   [ "$ROUTE_REASON" = "fallback" ] && _emit "fallback_triggered"
@@ -123,6 +135,15 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   fi
   ms=$(( ($(date +%s) - t0) * 1000 ))
   cat "$out" >> "${LOG:-/dev/null}"
+
+  # The lane alone does not answer #1229's motivating question ("do Ollama-lane runs fail more often
+  # than Claude-lane runs?"): a tick that dispatched an agent records tick_outcome="dispatched"
+  # whether the agent exited 0 or 45 minutes into a timeout, and every `failed` row in the file is a
+  # PRE-dispatch failure (worktree_create_failed, merge_not_taken) that carries no lane at all. So
+  # record the agent's exit status as its own field. Additive on purpose: flipping tick_outcome to
+  # "failed" here would break status.sh's stall detector (a failed agent run IS the pipeline doing
+  # something) and inflate its per-PR failure counter. -1 = no agent ran on this tick.
+  TICK_AGENT_RC="$rc"; export TICK_AGENT_RC
 
   # Usage-limit detection — only on a FAILED run. Lane-specific: a Claude usage-limit pauses ONLY
   # the Claude lane (Ollama keeps working the backlog); an Ollama usage-limit pauses only Ollama.

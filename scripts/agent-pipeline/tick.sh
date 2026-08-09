@@ -196,11 +196,15 @@ TICK_BRANCH=""                           # branch
 TICK_LANE="${LANE:-}"                    # claude | ollama
 TICK_MODEL="${AGENT_MODEL:-${AGENT_TIER:-}}"  # model or tier alias
 TICK_ROUTE_REASON="${ROUTE_REASON:-}"    # healthy | fallback | degraded
+TICK_AGENT_RC="-1"                       # exit status of the agent run; -1 = no agent ran this tick
 TICK_CLAUDE_PCT="${CLAUDE_PCT:-}"
 TICK_OLLAMA_PCT="${OLLAMA_PCT:-}"
 TICK_READY_COUNT="${READY_COUNT:-0}"
 TICK_CAP="${CAP:-1}"
-export TICK_OUTCOME TICK_REASON TICK_MODE TICK_ISSUE TICK_PR TICK_BRANCH TICK_LANE TICK_MODEL TICK_ROUTE_REASON TICK_CLAUDE_PCT TICK_OLLAMA_PCT TICK_READY_COUNT TICK_CAP
+# LANE/MODEL/ROUTE_REASON/AGENT_RC above are placeholders: the routing decision (dispatch_lane) and
+# the agent run both happen later, inside run_lane(). run_lane.sh backfills all four before this
+# block is read by the EXIT trap.
+export TICK_OUTCOME TICK_REASON TICK_MODE TICK_ISSUE TICK_PR TICK_BRANCH TICK_LANE TICK_MODEL TICK_ROUTE_REASON TICK_AGENT_RC TICK_CLAUDE_PCT TICK_OLLAMA_PCT TICK_READY_COUNT TICK_CAP
 
 # Build and emit the tick_outcome event. Reads the var block above; called once by the EXIT
 # trap below so every code path (success, skip, error, kill) emits exactly one event.
@@ -227,6 +231,7 @@ out = {
   "lane":         os.environ.get("TICK_LANE",""),
   "model":        os.environ.get("TICK_MODEL",""),
   "route_reason": os.environ.get("TICK_ROUTE_REASON",""),
+  "agent_rc":     int(os.environ.get("TICK_AGENT_RC","-1") or -1),
   "claude_pct":   int(os.environ.get("TICK_CLAUDE_PCT","0") or 0),
   "ollama_pct":   int(os.environ.get("TICK_OLLAMA_PCT","0") or 0),
   "issue_number": int(os.environ.get("TICK_ISSUE","0") or 0),
