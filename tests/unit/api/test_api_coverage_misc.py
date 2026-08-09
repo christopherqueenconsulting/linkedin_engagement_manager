@@ -767,7 +767,7 @@ class TestLeadMagnetAndPassword:
                 "session_token": _TOK, "enabled": False})
         assert resp.status_code == 500
 
-    def test_linkedin_password_saved(self, client):
+    def test_linkedin_password_saved(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.update_user_linkedin_password", return_value=True) as upd:
             resp = client.put("/api/user/linkedin-password", json={
@@ -775,7 +775,7 @@ class TestLeadMagnetAndPassword:
         assert resp.status_code == 200
         upd.assert_called_once_with(_UID, "dummy-test-value")
 
-    def test_linkedin_password_empty_400(self, client):
+    def test_linkedin_password_empty_400(self, client, signed_in):
         with patch(f"{_M}.get_session_user_id", return_value=_UID):
             resp = client.put("/api/user/linkedin-password", json={
                 "session_token": _TOK, "linkedin_password": ""})

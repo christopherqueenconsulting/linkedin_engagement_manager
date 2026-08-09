@@ -118,7 +118,7 @@ class TestSignupFunnel:
         assert resp.status_code == 200
         assert track.call_args.kwargs["attribution"] == {}
 
-    def test_bypass_signup_completes_and_starts_the_trial(self, client):
+    def test_bypass_signup_completes_and_starts_the_trial(self, client, signed_in):
         with patch(f"{_AUTH}.get_user_id", return_value=None), \
              patch(f"{_AUTH}.generate_pin", return_value="123456"), \
              patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
@@ -138,7 +138,7 @@ class TestSignupFunnel:
         assert completed["alias_from"] == track.call_args_list[0].kwargs["distinct_id"]
         assert track.call_args_list[2].kwargs["trial_days"] > 0
 
-    def test_verify_completes_the_funnel_for_a_new_user(self, client):
+    def test_verify_completes_the_funnel_for_a_new_user(self, client, signed_in):
         with patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
              patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
              patch(f"{_AUTH}.get_user_id", return_value=None), \
@@ -153,7 +153,7 @@ class TestSignupFunnel:
         assert track.call_args_list[0].kwargs["pin_bypassed"] is False
         assert track.call_args_list[1].kwargs["attribution"]["utm_campaign"] == "beta"
 
-    def test_verify_emits_nothing_for_a_returning_user(self, client):
+    def test_verify_emits_nothing_for_a_returning_user(self, client, signed_in):
         with patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
              patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
              patch(f"{_AUTH}.get_user_id", return_value=8), \
