@@ -7,6 +7,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 
 
 @pytest.fixture(scope="module")
@@ -34,14 +35,15 @@ def client():
 def _patches(*, oauth, session, password, sub_status, lat, display_name="Jordan Alvarez"):
     return [
         patch(f"{_M}.get_session_user_id", return_value=42),
-        patch(f"{_M}.get_user_linkedin_display_name", return_value=display_name),
-        patch(f"{_M}.get_user_token_info",
+        patch(f"{_USER}.get_user_linkedin_display_name", return_value=display_name),
+        patch(f"{_USER}.get_user_token_info",
               return_value={"access_token": "tok"} if oauth else None),
-        patch(f"{_M}.has_linkedin_session", return_value=session),
-        patch(f"{_M}.has_linkedin_password", return_value=password),
-        patch(f"{_M}.get_user_subscription_info",
+        patch(f"{_USER}.has_linkedin_session", return_value=session),
+        patch(f"{_USER}.has_linkedin_password", return_value=password),
+        patch(f"{_USER}.get_user_subscription_info",
               return_value={"subscription_status": sub_status}),
-        patch(f"{_M}.get_user_geo", return_value={"latitude": lat} if lat is not None else None),
+        patch(f"{_USER}.get_user_geo",
+              return_value={"latitude": lat} if lat is not None else None),
     ]
 
 

@@ -26,6 +26,17 @@ def main_mod():
     return main
 
 
+@pytest.fixture(scope="module")
+def user_mod():
+    """The `/api/user` handlers and their own imports, since #1154 moved them out of `main`.
+
+    The scope machinery below still comes from `main` — the router reads it as `_main.<name>` at
+    request time — so a test that drives a moved handler needs BOTH modules, not one or the other.
+    """
+    from cqc_lem.api.routers import user
+    return user
+
+
 _QUEUE_PATHS = ("/connection_requests", "/outreach/targets", "/dms", "/lead_signals", "/leads",
                 "/catchup/touches", "/user/engagement-preferences", "/user/automation-status",
                 "/dashboard/stats/", "/connection_request", "/outreach/target", "/schedule_dm",
@@ -224,28 +235,28 @@ class TestAgentMayNotConfigure:
     modes and the per-day caps, i.e. it re-opens everything else.
     """
 
-    def test_an_agent_cannot_write_engagement_preferences(self, main_mod):
+    def test_an_agent_cannot_write_engagement_preferences(self, main_mod, user_mod):
         from fastapi import HTTPException
         token = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_AGENT)
         try:
             with patch.object(main_mod, "get_session_user_id", return_value=7), \
-                 patch.object(main_mod, "update_engagement_preferences") as upd:
+                 patch.object(user_mod, "update_engagement_preferences") as upd:
                 with pytest.raises(HTTPException) as exc:
-                    main_mod.update_engagement_preferences_endpoint(
-                        main_mod.EngagementPreferencesRequest(session_token="t"))
+                    user_mod.update_engagement_preferences_endpoint(
+                        user_mod.EngagementPreferencesRequest(session_token="t"))
             assert exc.value.status_code == 403
             assert exc.value.detail["code"] == "agent_may_not_configure"
             upd.assert_not_called()
         finally:
             main_mod._request_session_scope.reset(token)
 
-    def test_a_human_session_may_still_write_them(self, main_mod):
+    def test_a_human_session_may_still_write_them(self, main_mod, user_mod):
         token = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_FULL)
         try:
             with patch.object(main_mod, "get_session_user_id", return_value=7), \
-                 patch.object(main_mod, "update_engagement_preferences", return_value=True) as upd:
-                main_mod.update_engagement_preferences_endpoint(
-                    main_mod.EngagementPreferencesRequest(session_token="t"))
+                 patch.object(user_mod, "update_engagement_preferences", return_value=True) as upd:
+                user_mod.update_engagement_preferences_endpoint(
+                    user_mod.EngagementPreferencesRequest(session_token="t"))
             upd.assert_called_once()
         finally:
             main_mod._request_session_scope.reset(token)
@@ -263,8 +274,8 @@ class TestAgentTokenTTL:
         src = inspect.getsource(db.create_session)
         assert "ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS" in src
 
-    def test_the_mint_defaults_to_90_days_and_is_bounded(self, main_mod):
-        f = main_mod.AgentTokenRequest.model_fields["ttl_days"]
+    def test_the_mint_defaults_to_90_days_and_is_bounded(self, user_mod):
+        f = user_mod.AgentTokenRequest.model_fields["ttl_days"]
         assert f.default == 90
         meta = str(f.metadata)
         assert "1" in meta and "365" in meta   # ge=1, le=365
@@ -312,14 +323,14 @@ class TestAgentTokenTTL:
 
 
 class TestAgentTokenMint:
-    def test_minting_requires_a_session(self, main_mod):
+    def test_minting_requires_a_session(self, main_mod, user_mod):
         from fastapi import HTTPException
         with patch.object(main_mod, "get_session_user_id", return_value=None):
             with pytest.raises(HTTPException) as exc:
-                main_mod.mint_agent_token(main_mod.AgentTokenRequest(session_token="nope"))
+                user_mod.mint_agent_token(user_mod.AgentTokenRequest(session_token="nope"))
             assert exc.value.status_code == 401
 
-    def test_minting_is_step_up_gated_and_never_exempts_the_agent_scope(self, main_mod):
+    def test_minting_is_step_up_gated_and_never_exempts_the_agent_scope(self, user_mod):
         """The ceremony happens once, with a human. An agent token must not mint its successor.
 
         Read off the AST rather than the source TEXT. A substring check answers "does this string
@@ -332,7 +343,7 @@ class TestAgentTokenMint:
         import inspect
         import textwrap
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(main_mod.mint_agent_token)))
+        tree = ast.parse(textwrap.dedent(inspect.getsource(user_mod.mint_agent_token)))
         calls = [n for n in ast.walk(tree)
                  if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_require_step_up"]
         assert len(calls) == 1, "minting must be step-up gated exactly once"

@@ -13,6 +13,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 _COOKIE = "lem_session"
 _UID = 7
 
@@ -198,7 +199,7 @@ class TestCookieResolution:
 
     def test_revoke_all_others_keeps_the_cookie_session_not_a_stale_token(self, client):
         with _live_session(), \
-             patch(f"{_M}.revoke_other_sessions", return_value=1) as ro:
+             patch(f"{_USER}.revoke_other_sessions", return_value=1) as ro:
             # A cookie-authenticated write, so it carries the SPA's client header like the real one
             # does (issue #957); `test_csrf_client_header.py` is where its absence is the subject.
             resp = client.post("/api/user/sessions/revoke",
@@ -290,10 +291,10 @@ class TestSessionManagement:
                  "expires_at": None, "is_current": True}]
         events = [{"event": "login_success", "success": 1, "user_agent": "UA", "created_at": None}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.list_user_sessions", return_value=rows), \
-             patch(f"{_M}.get_auth_audit_events", return_value=events), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_email", return_value="me@example.com"):
+             patch(f"{_USER}.list_user_sessions", return_value=rows), \
+             patch(f"{_USER}.get_auth_audit_events", return_value=events), \
+             patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_USER}.get_user_email", return_value="me@example.com"):
             resp = client.get("/api/user/security", params={"session_token": "tok"})
         detail = resp.json()["detail"]
         assert detail["sessions"][0]["is_current"] is True
@@ -303,7 +304,7 @@ class TestSessionManagement:
 
     def test_revoke_one_device_is_scoped_to_the_caller(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.revoke_session", return_value=True) as rs:
+             patch(f"{_USER}.revoke_session", return_value=True) as rs:
             resp = client.post("/api/user/sessions/revoke",
                                json={"session_token": "tok", "session_id": 3})
         assert resp.status_code == 200
@@ -311,14 +312,14 @@ class TestSessionManagement:
 
     def test_revoking_someone_elses_session_is_a_404(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.revoke_session", return_value=False):
+             patch(f"{_USER}.revoke_session", return_value=False):
             resp = client.post("/api/user/sessions/revoke",
                                json={"session_token": "tok", "session_id": 999})
         assert resp.status_code == 404
 
     def test_revoke_all_others_keeps_this_device(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.revoke_other_sessions", return_value=2) as ro:
+             patch(f"{_USER}.revoke_other_sessions", return_value=2) as ro:
             resp = client.post("/api/user/sessions/revoke",
                                json={"session_token": "tok", "all_others": True})
         assert resp.status_code == 200
@@ -330,7 +331,7 @@ class TestSessionManagement:
         its own that can be revoked without signing the person out of the app.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.create_session", return_value="tok_ext") as cs:
+             patch(f"{_USER}.create_session", return_value="tok_ext") as cs:
             resp = client.post("/api/user/extension-token", json={"session_token": "tok"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["session_token"] == "tok_ext"
@@ -357,13 +358,13 @@ class TestEmailChange:
 
     def test_init_sends_the_code_to_the_new_address(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value="old@example.com"), \
-             patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_id", return_value=None), \
-             patch(f"{_M}.generate_pin", return_value="123456"), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.create_pin_for_email", return_value=True) as cp, \
-             patch(f"{_M}.send_pin_email", side_effect=[(False, False), (True, False)]) as sp:
+             patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
+             patch(f"{_USER}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_USER}.get_user_id", return_value=None), \
+             patch(f"{_USER}.generate_pin", return_value="123456"), \
+             patch(f"{_USER}.hash_pin", return_value="h"), \
+             patch(f"{_USER}.create_pin_for_email", return_value=True) as cp, \
+             patch(f"{_USER}.send_pin_email", side_effect=[(False, False), (True, False)]) as sp:
             resp = client.post(self.BASE_INIT,
                                json={"session_token": "tok", "new_email": "New@Example.com "})
         assert resp.status_code == 200
@@ -372,11 +373,11 @@ class TestEmailChange:
 
     def test_init_rejects_an_address_owned_by_someone_else(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value="old@example.com"), \
-             patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.send_pin_email", return_value=(False, False)), \
-             patch(f"{_M}.get_user_id", return_value=99), \
-             patch(f"{_M}.create_pin_for_email") as cp:
+             patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
+             patch(f"{_USER}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_USER}.send_pin_email", return_value=(False, False)), \
+             patch(f"{_USER}.get_user_id", return_value=99), \
+             patch(f"{_USER}.create_pin_for_email") as cp:
             resp = client.post(self.BASE_INIT,
                                json={"session_token": "tok", "new_email": "taken@example.com"})
         assert resp.status_code == 400
@@ -384,18 +385,18 @@ class TestEmailChange:
 
     def test_init_rejects_the_address_already_on_the_account(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value="same@example.com"):
+             patch(f"{_USER}.get_user_email", return_value="same@example.com"):
             resp = client.post(self.BASE_INIT,
                                json={"session_token": "tok", "new_email": "SAME@example.com"})
         assert resp.status_code == 400
 
     def test_init_is_unavailable_when_no_mail_provider_is_configured(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value="old@example.com"), \
-             patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_id", return_value=None), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.create_pin_for_email") as cp:
+             patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
+             patch(f"{_USER}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_USER}.get_user_id", return_value=None), \
+             patch(f"{_USER}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_USER}.create_pin_for_email") as cp:
             resp = client.post(self.BASE_INIT,
                                json={"session_token": "tok", "new_email": "new@example.com"})
         assert resp.status_code == 503
@@ -403,14 +404,14 @@ class TestEmailChange:
 
     def test_verify_moves_the_account_and_revokes_other_devices(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_email", return_value="old@example.com"), \
-             patch(f"{_M}.get_session_id", return_value=11), \
-             patch(f"{_M}.change_user_email", return_value=True) as ce, \
-             patch(f"{_M}.revoke_other_sessions", return_value=3) as ro:
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.get_pin_lockout", return_value=None), \
+             patch(f"{_USER}.hash_pin", return_value="h"), \
+             patch(f"{_USER}.verify_pin_for_email", return_value=True), \
+             patch(f"{_USER}.get_user_email", return_value="old@example.com"), \
+             patch(f"{_USER}.get_session_id", return_value=11), \
+             patch(f"{_USER}.change_user_email", return_value=True) as ce, \
+             patch(f"{_USER}.revoke_other_sessions", return_value=3) as ro:
             resp = client.post(self.BASE_VERIFY, json={"session_token": "tok",
                                                        "new_email": "new@example.com",
                                                        "pin": "123456"})
@@ -421,11 +422,11 @@ class TestEmailChange:
 
     def test_verify_with_a_bad_pin_changes_nothing(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=False), \
-             patch(f"{_M}.change_user_email") as ce:
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.get_pin_lockout", return_value=None), \
+             patch(f"{_USER}.hash_pin", return_value="h"), \
+             patch(f"{_USER}.verify_pin_for_email", return_value=False), \
+             patch(f"{_USER}.change_user_email") as ce:
             resp = client.post(self.BASE_VERIFY, json={"session_token": "tok",
                                                        "new_email": "new@example.com",
                                                        "pin": "000000"})

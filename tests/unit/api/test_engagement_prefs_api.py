@@ -36,8 +36,8 @@ _USER = 5
 class TestGetEngagementPreferences:
     def test_returns_prefs(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.has_engagement_preferences", return_value=True), \
-             patch("cqc_lem.api.main.get_engagement_preferences",
+             patch("cqc_lem.api.routers.user.has_engagement_preferences", return_value=True), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences",
                    return_value={"tone": "warm", "comment_length": "short"}):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
@@ -47,8 +47,8 @@ class TestGetEngagementPreferences:
     def test_flags_a_never_configured_account(self, client):
         """The Settings hub starts these — and only these — on the Balanced preset (#558)."""
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.has_engagement_preferences", return_value=False), \
-             patch("cqc_lem.api.main.get_engagement_preferences",
+             patch("cqc_lem.api.routers.user.has_engagement_preferences", return_value=False), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences",
                    return_value={"tone": None, "comment_length": "medium"}):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
@@ -63,7 +63,7 @@ class TestGetEngagementPreferences:
 class TestUpdateEngagementPreferences:
     def test_updates_and_excludes_session_token(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "tone": "bold", "include_topics": ["AI"]})
         assert resp.status_code == 200
@@ -73,7 +73,7 @@ class TestUpdateEngagementPreferences:
 
     def test_accepts_focus_and_goals(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "focus_topics": ["B2B sales"],
                                     "business_goals": "book calls", "personal_goals": "grow authority"})
@@ -85,7 +85,7 @@ class TestUpdateEngagementPreferences:
 
     def test_default_video_quality_passthrough(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "default_video_quality": "premium"})
         assert resp.status_code == 200
@@ -93,14 +93,14 @@ class TestUpdateEngagementPreferences:
 
     def test_default_video_quality_defaults_standard_when_omitted(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences", json={"session_token": _SESSION})
         assert resp.status_code == 200
         assert upd.call_args[0][1]["default_video_quality"] == "standard"
 
     def test_invalid_video_quality_coerced_to_standard(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "default_video_quality": "bogus"})
         assert resp.status_code == 200
@@ -108,7 +108,7 @@ class TestUpdateEngagementPreferences:
 
     def test_comment_length_passthrough(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "comment_length": "long"})
         assert resp.status_code == 200
@@ -116,14 +116,14 @@ class TestUpdateEngagementPreferences:
 
     def test_comment_length_defaults_medium_when_omitted(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences", json={"session_token": _SESSION})
         assert resp.status_code == 200
         assert upd.call_args[0][1]["comment_length"] == "medium"
 
     def test_invalid_comment_length_coerced_to_medium(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "comment_length": "bogus"})
         assert resp.status_code == 200
@@ -131,7 +131,7 @@ class TestUpdateEngagementPreferences:
 
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=False):
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=False):
             resp = client.put("/api/user/engagement-preferences", json={"session_token": _SESSION})
         assert resp.status_code == 500
 
@@ -146,7 +146,7 @@ class TestUpdateEngagementPreferences:
         long_tone = "direct, warm, credible, plainspoken - a practitioner, not a pitch, and then some"
         assert len(long_tone) > 64
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "tone": long_tone})
         assert resp.status_code == 200
@@ -156,9 +156,9 @@ class TestUpdateEngagementPreferences:
 class TestReplyCheckConfig:
     def test_get_includes_reply_inbound_address(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_engagement_preferences",
+             patch("cqc_lem.api.routers.user.get_engagement_preferences",
                    return_value={"reply_check_mode": "event"}), \
-             patch("cqc_lem.api.main.get_or_create_reply_inbound_token", return_value="tok9"), \
+             patch("cqc_lem.api.routers.user.get_or_create_reply_inbound_token", return_value="tok9"), \
              patch.dict("os.environ", {"LINKEDIN_PARSE_DOMAIN": "parse.example.com"}):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
@@ -166,7 +166,7 @@ class TestReplyCheckConfig:
 
     def test_reply_mode_passthrough_and_clamps(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "reply_check_mode": "scheduled",
                                     "reply_sweeps_per_day": 99, "reply_max_post_age_days": 0})
@@ -178,7 +178,7 @@ class TestReplyCheckConfig:
 
     def test_bad_reply_mode_coerced_to_event(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "reply_check_mode": "bogus"})
         assert resp.status_code == 200
@@ -190,7 +190,7 @@ class TestPostsPerWeek:
 
     def test_defaults_to_three_when_omitted(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION})
         assert resp.status_code == 200
@@ -199,7 +199,7 @@ class TestPostsPerWeek:
     def test_passthrough_and_clamps(self, client):
         for given, expected in ((2, 2), (7, 7), (0, 2), (99, 7)):
             with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                 patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
                 resp = client.put("/api/user/engagement-preferences",
                                   json={"session_token": _SESSION, "posts_per_week": given})
             assert resp.status_code == 200
@@ -211,7 +211,7 @@ class TestPostingDays:
 
     def test_defaults_to_monday_to_friday_when_omitted(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION})
         assert resp.status_code == 200
@@ -219,7 +219,7 @@ class TestPostingDays:
 
     def test_all_seven_days_are_accepted(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "posting_days": [6, 5, 4, 3, 2, 1, 0]})
         assert resp.status_code == 200
@@ -230,7 +230,7 @@ class TestPostingDays:
         # the user's tone, caps and targeting down with it.
         for given in ([], None, "nonsense", [9, -1], ["mon"]):
             with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                 patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
                 resp = client.put("/api/user/engagement-preferences",
                                   json={"session_token": _SESSION, "posting_days": given})
             assert resp.status_code == 200, given
@@ -243,7 +243,7 @@ class TestEngagementPersistenceRegression:
     def test_every_request_field_has_a_db_column(self):
         # If a settings field exists on the API model but not in the DB column set, saves that
         # include it would fail/no-op — exactly the failure mode we fixed. Keep them in lockstep.
-        from cqc_lem.api.main import EngagementPreferencesRequest
+        from cqc_lem.api.routers.user import EngagementPreferencesRequest
         from cqc_lem.utilities.db import _ENGAGEMENT_DEFAULTS
         fields = set(EngagementPreferencesRequest.model_fields) - {"session_token"}
         missing = fields - set(_ENGAGEMENT_DEFAULTS)
@@ -253,7 +253,7 @@ class TestEngagementPersistenceRegression:
         # Both-sides alignment: a value longer than the DB column returns a clean 422 (Pydantic
         # max_length) and never reaches the DB, instead of a 500 MySQL 1406.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "tone": "x" * 256})
         assert resp.status_code == 422
@@ -272,7 +272,7 @@ class TestEngagementPersistenceRegression:
 class TestFeedFallbackAndReach:
     def test_feed_fallback_passthrough(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "feed_fallback_when_empty": False})
         assert resp.status_code == 200
@@ -281,7 +281,7 @@ class TestFeedFallbackAndReach:
     def test_link_in_first_comment_passthrough(self, client):
         """The #392 opt-out reaches the DB layer, and defaults ON when the client omits it."""
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             off = client.put("/api/user/engagement-preferences",
                              json={"session_token": _SESSION, "link_in_first_comment": False})
             default = client.put("/api/user/engagement-preferences",
@@ -294,8 +294,8 @@ class TestFeedFallbackAndReach:
         funnel = {"examined": 40, "passed_filters": 12, "matched_topics": 0,
                   "commented": 3, "fallback_used": True}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_engagement_preferences", return_value={}), \
-             patch("cqc_lem.api.main.get_or_create_reply_inbound_token", return_value=None), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences", return_value={}), \
+             patch("cqc_lem.api.routers.user.get_or_create_reply_inbound_token", return_value=None), \
              patch("cqc_lem.app.run_automation.get_feed_funnel", return_value=funnel):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
@@ -306,8 +306,8 @@ class TestGmailForwardConfirmationInPrefs:
     def test_get_includes_gmail_forward_confirmation(self, client):
         conf = {"code": "12345678", "confirmed": False, "url_found": True}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_engagement_preferences", return_value={}), \
-             patch("cqc_lem.api.main.get_or_create_reply_inbound_token", return_value=None), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences", return_value={}), \
+             patch("cqc_lem.api.routers.user.get_or_create_reply_inbound_token", return_value=None), \
              patch("cqc_lem.api.main.get_gmail_forward_confirmation", return_value=conf):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
@@ -319,7 +319,7 @@ class TestConnectionTargetingPrefs:
 
     def test_targeting_fields_passthrough(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION,
                                     "connection_targeting_mode": "auto_queue",
@@ -333,7 +333,7 @@ class TestConnectionTargetingPrefs:
 
     def test_defaults_to_suggest_when_omitted(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION})
         assert resp.status_code == 200
@@ -343,7 +343,7 @@ class TestConnectionTargetingPrefs:
 
     def test_bad_mode_coerced_and_icp_clamped(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION,
                                     "connection_targeting_mode": "blast_everyone",
@@ -361,7 +361,7 @@ class TestRosterAutoFollow:
         # lane on), but the CAP is not written at all when omitted — writing the code default would
         # overwrite a deliberate 0 and restart the lane at 3/day.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION})
         assert resp.status_code == 200
@@ -370,7 +370,7 @@ class TestRosterAutoFollow:
 
     def test_the_toggle_round_trips(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION, "roster_auto_follow": True})
         assert resp.status_code == 200
@@ -382,7 +382,7 @@ class TestRosterAutoFollow:
         from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_MAX
         for given, expected in ((0, 0), (3, 3), (-5, 0), (999, ROSTER_FOLLOWS_PER_DAY_MAX)):
             with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                 patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
                 resp = client.put("/api/user/engagement-preferences",
                                   json={"session_token": _SESSION, "max_follows_per_day": given})
             assert resp.status_code == 200
@@ -401,8 +401,8 @@ class TestCatchupContactFrequencyPrefs:
             CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX,
         )
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.has_engagement_preferences", return_value=True), \
-             patch("cqc_lem.api.main.get_engagement_preferences", return_value={"tone": "wry"}):
+             patch("cqc_lem.api.routers.user.has_engagement_preferences", return_value=True), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences", return_value={"tone": "wry"}):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
         prefs = resp.json()["detail"]
@@ -414,7 +414,7 @@ class TestCatchupContactFrequencyPrefs:
         from cqc_lem.utilities.db import CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX
         for given, expected in ((0, 0), (14, 14), (-3, 0), (99999, CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX)):
             with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                 patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
                 resp = client.put("/api/user/engagement-preferences",
                                   json={"session_token": _SESSION,
                                         "min_catchup_contact_interval_days": given})
@@ -425,7 +425,7 @@ class TestCatchupContactFrequencyPrefs:
         from cqc_lem.utilities.db import CATCHUP_MAX_PER_CONTACT_DAYS_MAX
         for given, expected in ((0, 0), (2, 2), (-1, 0), (99999, CATCHUP_MAX_PER_CONTACT_DAYS_MAX)):
             with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                 patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
                 resp = client.put("/api/user/engagement-preferences",
                                   json={"session_token": _SESSION,
                                         "max_catchup_touches_per_contact_days": given})

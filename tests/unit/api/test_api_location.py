@@ -36,7 +36,7 @@ _USER_ID = 42
 class TestGetLocation:
     def test_returns_geo(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.get_user_geo", return_value={"latitude": 1.0, "longitude": 2.0}):
+             patch("cqc_lem.api.routers.user.get_user_geo", return_value={"latitude": 1.0, "longitude": 2.0}):
             resp = client.get(f"/api/user/location?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["latitude"] == 1.0
@@ -50,7 +50,7 @@ class TestGetLocation:
 class TestPutLocation:
     def test_updates_valid_location(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.update_user_location", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.update_user_location", return_value=True) as upd:
             resp = client.put("/api/user/location", json={
                 "session_token": _SESSION, "latitude": 40.0, "longitude": -73.0,
                 "city": "NYC", "country": "US", "locale": "en-US",
@@ -92,8 +92,8 @@ class TestAutocaptureLocation:
 
     def test_captures_from_client_ip_header(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.update_user_location", return_value=True) as upd, \
-             patch("cqc_lem.api.main.requests.get", return_value=self._ipapi_response()) as rget:
+             patch("cqc_lem.api.routers.user.update_user_location", return_value=True) as upd, \
+             patch("cqc_lem.api.routers.user.requests.get", return_value=self._ipapi_response()) as rget:
             resp = client.post(
                 "/api/user/location/autocapture",
                 json={"session_token": _SESSION},
@@ -107,7 +107,7 @@ class TestAutocaptureLocation:
 
     def test_502_when_geolocation_fails(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.requests.get", side_effect=Exception("boom")):
+             patch("cqc_lem.api.routers.user.requests.get", side_effect=Exception("boom")):
             resp = client.post(
                 "/api/user/location/autocapture",
                 json={"session_token": _SESSION},
@@ -128,8 +128,8 @@ class TestLocationByCity:
 
     def test_geocodes_and_saves_manual(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.geocode_city", return_value=self.GEO), \
-             patch("cqc_lem.api.main.update_user_location", return_value=True) as save:
+             patch("cqc_lem.api.routers.user.geocode_city", return_value=self.GEO), \
+             patch("cqc_lem.api.routers.user.update_user_location", return_value=True) as save:
             resp = client.post(self.BASE, json={"session_token": _SESSION, "city": "Orlando", "state": "Florida"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["timezone"] == "America/New_York"
@@ -138,7 +138,7 @@ class TestLocationByCity:
     def test_bad_city_returns_422(self, client):
         from cqc_lem.utilities.geocoding import GeocodeError
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
-             patch("cqc_lem.api.main.geocode_city", side_effect=GeocodeError("no match")):
+             patch("cqc_lem.api.routers.user.geocode_city", side_effect=GeocodeError("no match")):
             resp = client.post(self.BASE, json={"session_token": _SESSION, "city": "Nowhere"})
         assert resp.status_code == 422
 

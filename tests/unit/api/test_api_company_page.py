@@ -7,6 +7,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 
 
 @pytest.fixture(scope="module")
@@ -37,7 +38,7 @@ _VALID = "https://www.linkedin.com/company/acme/"
 class TestUpdateCompanyPage:
     def test_saves_valid_url(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=42), \
-             patch(f"{_M}.update_company_linked_in_url_for_user", return_value=True) as upd:
+             patch(f"{_USER}.update_company_linked_in_url_for_user", return_value=True) as upd:
             resp = client.put("/api/user/company-page",
                               json={"session_token": "t", "company_linked_in_url": _VALID})
         assert resp.status_code == 200
@@ -45,7 +46,7 @@ class TestUpdateCompanyPage:
 
     def test_clears_when_empty(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=42), \
-             patch(f"{_M}.update_company_linked_in_url_for_user", return_value=True) as upd:
+             patch(f"{_USER}.update_company_linked_in_url_for_user", return_value=True) as upd:
             resp = client.put("/api/user/company-page",
                               json={"session_token": "t", "company_linked_in_url": ""})
         assert resp.status_code == 200
@@ -53,7 +54,7 @@ class TestUpdateCompanyPage:
 
     def test_rejects_non_linkedin_url(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=42), \
-             patch(f"{_M}.update_company_linked_in_url_for_user", return_value=True) as upd:
+             patch(f"{_USER}.update_company_linked_in_url_for_user", return_value=True) as upd:
             resp = client.put("/api/user/company-page",
                               json={"session_token": "t", "company_linked_in_url": "https://example.com/x"})
         assert resp.status_code == 422

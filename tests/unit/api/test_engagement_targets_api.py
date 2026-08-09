@@ -37,9 +37,9 @@ _URL = "https://www.linkedin.com/in/jane"
 class TestGetEngagementTargets:
     def test_returns_targets_and_suggestions(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_engagement_targets",
+             patch("cqc_lem.api.routers.user.get_engagement_targets",
                    return_value=[{"profile_url": _URL, "category": "peer"}]), \
-             patch("cqc_lem.api.main.suggest_engagement_targets",
+             patch("cqc_lem.api.routers.user.suggest_engagement_targets",
                    return_value=[{"profile_url": "https://x/in/bob", "category": "icp"}]):
             resp = client.get(f"/api/user/engagement-targets?session_token={_SESSION}")
         assert resp.status_code == 200
@@ -56,7 +56,7 @@ class TestGetEngagementTargets:
 class TestUpdateEngagementTargets:
     def test_upserts(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_engagement_targets", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_engagement_targets", return_value=True) as upd:
             resp = client.put("/api/user/engagement-targets", json={
                 "session_token": _SESSION,
                 "targets": [{"profile_url": _URL, "name": "Jane", "category": "creator",
@@ -66,7 +66,7 @@ class TestUpdateEngagementTargets:
 
     def test_unknown_category_falls_back_to_peer(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_engagement_targets", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_engagement_targets", return_value=True) as upd:
             resp = client.put("/api/user/engagement-targets", json={
                 "session_token": _SESSION,
                 "targets": [{"profile_url": _URL, "category": "influencer"}]})
@@ -75,7 +75,7 @@ class TestUpdateEngagementTargets:
 
     def test_out_of_range_weekly_cap_is_clamped_not_rejected(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_engagement_targets", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_engagement_targets", return_value=True) as upd:
             resp = client.put("/api/user/engagement-targets", json={
                 "session_token": _SESSION,
                 "targets": [{"profile_url": _URL, "max_comments_per_week": 999}]})
@@ -90,7 +90,7 @@ class TestUpdateEngagementTargets:
 
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_engagement_targets", return_value=False):
+             patch("cqc_lem.api.routers.user.upsert_engagement_targets", return_value=False):
             resp = client.put("/api/user/engagement-targets",
                               json={"session_token": _SESSION, "targets": []})
         assert resp.status_code == 500
@@ -105,7 +105,7 @@ class TestUpdateEngagementTargets:
 class TestDeleteEngagementTarget:
     def test_deletes(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.delete_engagement_target", return_value=True) as dele:
+             patch("cqc_lem.api.routers.user.delete_engagement_target", return_value=True) as dele:
             resp = client.request("DELETE", "/api/user/engagement-targets",
                                   json={"session_token": _SESSION, "profile_url": _URL})
         assert resp.status_code == 200
@@ -113,7 +113,7 @@ class TestDeleteEngagementTarget:
 
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.delete_engagement_target", return_value=False):
+             patch("cqc_lem.api.routers.user.delete_engagement_target", return_value=False):
             resp = client.request("DELETE", "/api/user/engagement-targets",
                                   json={"session_token": _SESSION, "profile_url": _URL})
         assert resp.status_code == 500

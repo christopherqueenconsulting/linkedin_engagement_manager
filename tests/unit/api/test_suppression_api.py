@@ -14,6 +14,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 _RL = "cqc_lem.utilities.linkedin.rate_limit"
 _START = datetime(2026, 7, 1, 9, 0)
 
@@ -50,9 +51,9 @@ def _rows(baseline: int, recent: int) -> list:
 
 def _stack(es, *, user_id=42, rows=None, trip=None, pause_reason=None, pause_remaining=0):
     es.enter_context(patch(f"{_M}.get_session_user_id", return_value=user_id))
-    es.enter_context(patch(f"{_M}.get_post_performance_rows",
+    es.enter_context(patch(f"{_USER}.get_post_performance_rows",
                            return_value=list(rows if rows is not None else _rows(8500, 8400))))
-    es.enter_context(patch(f"{_M}.get_comment_outcomes", return_value=[]))
+    es.enter_context(patch(f"{_USER}.get_comment_outcomes", return_value=[]))
     es.enter_context(patch(f"{_RL}.suppression_trip_state", return_value=trip))
     es.enter_context(patch(f"{_RL}.automation_pause_remaining", return_value=pause_remaining))
     es.enter_context(patch(f"{_RL}.automation_pause_reason", return_value=pause_reason))

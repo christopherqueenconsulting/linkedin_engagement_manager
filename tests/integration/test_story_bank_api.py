@@ -42,7 +42,7 @@ class TestGetStoryBank:
                  "body": "We cut it from 12 days to 3.", "happened_at": None,
                  "used_count": 0, "last_used_at": None, "active": True}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_story_bank_entries", return_value=[entry]) as get:
+             patch("cqc_lem.api.routers.user.get_story_bank_entries", return_value=[entry]) as get:
             resp = client.get(f"/api/user/story-bank?session_token={_SESSION}")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -61,7 +61,7 @@ class TestGetStoryBank:
 class TestUpdateStoryBank:
     def test_seeds_new_entries(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_story_bank_entries", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_story_bank_entries", return_value=True) as upd:
             resp = client.put("/api/user/story-bank", json={
                 "session_token": _SESSION,
                 "entries": [{"kind": "mistake", "body": "I shipped a migration on a Friday.",
@@ -74,7 +74,7 @@ class TestUpdateStoryBank:
 
     def test_unknown_kind_falls_back_to_anecdote(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_story_bank_entries", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_story_bank_entries", return_value=True) as upd:
             resp = client.put("/api/user/story-bank", json={
                 "session_token": _SESSION,
                 "entries": [{"kind": "rumour", "body": "Something that happened."}]})
@@ -83,7 +83,7 @@ class TestUpdateStoryBank:
 
     def test_editing_an_existing_entry_keeps_its_id(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_story_bank_entries", return_value=True) as upd:
+             patch("cqc_lem.api.routers.user.upsert_story_bank_entries", return_value=True) as upd:
             client.put("/api/user/story-bank", json={
                 "session_token": _SESSION,
                 "entries": [{"id": 9, "body": "edited", "active": False}]})
@@ -104,7 +104,7 @@ class TestUpdateStoryBank:
 
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.upsert_story_bank_entries", return_value=False):
+             patch("cqc_lem.api.routers.user.upsert_story_bank_entries", return_value=False):
             resp = client.put("/api/user/story-bank",
                               json={"session_token": _SESSION, "entries": []})
         assert resp.status_code == 500
@@ -120,7 +120,7 @@ class TestUpdateStoryBank:
 class TestDeleteStoryBankEntry:
     def test_deletes_scoped_to_the_session_user(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.delete_story_bank_entry", return_value=True) as dele:
+             patch("cqc_lem.api.routers.user.delete_story_bank_entry", return_value=True) as dele:
             resp = client.request("DELETE", "/api/user/story-bank",
                                   json={"session_token": _SESSION, "entry_id": 9})
         assert resp.status_code == 200
@@ -128,7 +128,7 @@ class TestDeleteStoryBankEntry:
 
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.delete_story_bank_entry", return_value=False):
+             patch("cqc_lem.api.routers.user.delete_story_bank_entry", return_value=False):
             resp = client.request("DELETE", "/api/user/story-bank",
                                   json={"session_token": _SESSION, "entry_id": 9})
         assert resp.status_code == 500

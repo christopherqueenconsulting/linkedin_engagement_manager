@@ -9,6 +9,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 
 from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
 
@@ -170,14 +171,14 @@ class TestUpdateUser:
         assert resp.status_code == 401
 
     def test_no_update_fields_returns_unchanged(self, client, signed_in):
-        with patch(f"{_MAIN}.update_user") as upd:
+        with patch(f"{_USER}.update_user") as upd:
             resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert "unchanged" in resp.json()["detail"]
         upd.assert_not_called()
 
     def test_valid_update_returns_200(self, client, signed_in):
-        with patch(f"{_MAIN}.update_user", return_value=True) as upd:
+        with patch(f"{_USER}.update_user", return_value=True) as upd:
             resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
                                                "blog_url": "https://blog.example.com"})
         assert resp.status_code == 200
@@ -185,14 +186,14 @@ class TestUpdateUser:
         assert upd.call_args[0][0] == SESSION_USER_ID
 
     def test_update_user_returns_false_gives_404(self, client, signed_in):
-        with patch(f"{_MAIN}.update_user", return_value=False):
+        with patch(f"{_USER}.update_user", return_value=False):
             resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
                                                "blog_url": "https://blog.example.com"})
         assert resp.status_code == 404
 
     def test_new_email_is_no_longer_an_account_takeover_lever(self, client, signed_in):
         """`new_email` no longer moves the address — and says so rather than answering 200."""
-        with patch(f"{_MAIN}.update_user", return_value=True) as upd:
+        with patch(f"{_USER}.update_user", return_value=True) as upd:
             resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
                                                "new_email": "attacker@evil.example",
                                                "blog_url": "https://blog.example.com"})
@@ -314,11 +315,11 @@ class TestGetUserSettings:
             "auto_schedule_posts": False,
         }
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_user_subscription_info", return_value=sub), \
-             patch(f"{_MAIN}.get_user_preferences", return_value=prefs), \
-             patch(f"{_MAIN}.get_user_blog_url", return_value="https://blog.example.com"), \
-             patch(f"{_MAIN}.get_user_sitemap_url", return_value="https://blog.example.com/sitemap.xml"), \
-             patch(f"{_MAIN}.get_company_linked_in_url_for_user", return_value=None):
+             patch(f"{_USER}.get_user_subscription_info", return_value=sub), \
+             patch(f"{_USER}.get_user_preferences", return_value=prefs), \
+             patch(f"{_USER}.get_user_blog_url", return_value="https://blog.example.com"), \
+             patch(f"{_USER}.get_user_sitemap_url", return_value="https://blog.example.com/sitemap.xml"), \
+             patch(f"{_USER}.get_company_linked_in_url_for_user", return_value=None):
             resp = client.get(self.BASE, params={"session_token": "valid-tok"})
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -334,11 +335,11 @@ class TestGetUserSettings:
 
     def test_none_subscription_returns_null_subscription(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_user_subscription_info", return_value=None), \
-             patch(f"{_MAIN}.get_user_preferences", return_value=None), \
-             patch(f"{_MAIN}.get_user_blog_url", return_value=None), \
-             patch(f"{_MAIN}.get_user_sitemap_url", return_value=None), \
-             patch(f"{_MAIN}.get_company_linked_in_url_for_user", return_value=None):
+             patch(f"{_USER}.get_user_subscription_info", return_value=None), \
+             patch(f"{_USER}.get_user_preferences", return_value=None), \
+             patch(f"{_USER}.get_user_blog_url", return_value=None), \
+             patch(f"{_USER}.get_user_sitemap_url", return_value=None), \
+             patch(f"{_USER}.get_company_linked_in_url_for_user", return_value=None):
             resp = client.get(self.BASE, params={"session_token": "valid-tok"})
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -360,7 +361,7 @@ class TestGetUserLinkedInProfile:
 
     def test_valid_session_returns_profile_url(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_linkedin_profile_url_by_user_id",
+             patch(f"{_USER}.get_linkedin_profile_url_by_user_id",
                    return_value="https://www.linkedin.com/in/christopherqueen/"):
             resp = client.get(self.BASE, params={"session_token": "valid-tok"})
         assert resp.status_code == 200
@@ -369,7 +370,7 @@ class TestGetUserLinkedInProfile:
 
     def test_missing_profile_returns_null(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_linkedin_profile_url_by_user_id", return_value=None):
+             patch(f"{_USER}.get_linkedin_profile_url_by_user_id", return_value=None):
             resp = client.get(self.BASE, params={"session_token": "valid-tok"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["linkedin_profile_url"] is None

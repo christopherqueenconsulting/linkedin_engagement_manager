@@ -14,6 +14,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_USER = "cqc_lem.api.routers.user"
 _UID = 11
 _EMAIL = "user@example.com"
 _TOKEN = "sess-token"
@@ -339,12 +340,12 @@ class TestEnrollment:
         would mean no account could ever get one.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=False), \
+             patch(f"{_USER}.step_up_satisfied", return_value=False), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.get_user_passkey_credential_ids", return_value=[]), \
-             patch(f"{_M}.build_registration_options", return_value=({"rp": {}}, "chal")), \
-             patch(f"{_M}.create_auth_challenge", return_value="handle"):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.get_user_passkey_credential_ids", return_value=[]), \
+             patch(f"{_USER}.build_registration_options", return_value=({"rp": {}}, "chal")), \
+             patch(f"{_USER}.create_auth_challenge", return_value="handle"):
             resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 200
 
@@ -361,12 +362,12 @@ class TestEnrollment:
         walk into the LinkedIn credentials with it (threat T4).
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.enrollment_allowed", return_value=False), \
-             patch(f"{_M}.available_methods", return_value=["passkey"]), \
+             patch(f"{_USER}.enrollment_allowed", return_value=False), \
+             patch(f"{_USER}.available_methods", return_value=["passkey"]), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge") as consumed, \
-             patch(f"{_M}.begin_totp_enrollment") as began, \
-             patch(f"{_M}.confirm_totp_enrollment") as confirmed:
+             patch(f"{_USER}.consume_auth_challenge") as consumed, \
+             patch(f"{_USER}.begin_totp_enrollment") as began, \
+             patch(f"{_USER}.confirm_totp_enrollment") as confirmed:
             resp = client.post(path, json=body)
         assert resp.status_code == 403
         assert resp.json()["detail"]["code"] == "step_up_required"
@@ -379,13 +380,13 @@ class TestEnrollment:
         one who lost it, and a recovery code is how they get back to enrol another.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.enrollment_allowed", return_value=True), \
-             patch(f"{_M}.session_signed_in_with_recovery_code", return_value=True), \
+             patch(f"{_USER}.enrollment_allowed", return_value=True), \
+             patch(f"{_USER}.session_signed_in_with_recovery_code", return_value=True), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.get_user_passkey_credential_ids", return_value=["old"]), \
-             patch(f"{_M}.build_registration_options", return_value=({"rp": {}}, "chal")), \
-             patch(f"{_M}.create_auth_challenge", return_value="handle"):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.get_user_passkey_credential_ids", return_value=["old"]), \
+             patch(f"{_USER}.build_registration_options", return_value=({"rp": {}}, "chal")), \
+             patch(f"{_USER}.create_auth_challenge", return_value="handle"):
             resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 200
 
@@ -400,14 +401,14 @@ class TestEnrollment:
             sign_count = 0
 
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.session_signed_in_with_recovery_code", return_value=True), \
+             patch(f"{_USER}.session_signed_in_with_recovery_code", return_value=True), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": "chal"}), \
-             patch(f"{_M}.verify_passkey_registration", return_value=_Result()), \
-             patch(f"{_M}.add_passkey_factor", return_value=7), \
-             patch(f"{_M}.count_recovery_codes", return_value=(2, 10)), \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.verify_passkey_registration", return_value=_Result()), \
+             patch(f"{_USER}.add_passkey_factor", return_value=7), \
+             patch(f"{_USER}.count_recovery_codes", return_value=(2, 10)), \
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/passkeys/register/complete",
                                json={"session_token": _TOKEN, "handle": "h", "credential": {}})
         assert resp.status_code == 200
@@ -418,8 +419,8 @@ class TestEnrollment:
         Security card while only the newer seed's codes were ever checked.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.has_confirmed_totp", return_value=True), \
-             patch(f"{_M}.begin_totp_enrollment") as began:
+             patch(f"{_USER}.has_confirmed_totp", return_value=True), \
+             patch(f"{_USER}.begin_totp_enrollment") as began:
             resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 400
         began.assert_not_called()
@@ -427,9 +428,9 @@ class TestEnrollment:
     def test_a_registration_challenge_belonging_to_someone_else_is_refused(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": 999, "challenge": "chal"}), \
-             patch(f"{_M}.verify_passkey_registration") as verify:
+             patch(f"{_USER}.verify_passkey_registration") as verify:
             resp = client.post("/api/user/passkeys/register/complete",
                                json={"session_token": _TOKEN, "handle": "h", "credential": {}})
         assert resp.status_code == 400
@@ -446,12 +447,12 @@ class TestEnrollment:
 
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": "chal"}), \
-             patch(f"{_M}.verify_passkey_registration", return_value=_Result()), \
-             patch(f"{_M}.add_passkey_factor", return_value=7), \
-             patch(f"{_M}.count_recovery_codes", return_value=(0, 0)), \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.verify_passkey_registration", return_value=_Result()), \
+             patch(f"{_USER}.add_passkey_factor", return_value=7), \
+             patch(f"{_USER}.count_recovery_codes", return_value=(0, 0)), \
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/passkeys/register/complete",
                                json={"session_token": _TOKEN, "handle": "h", "credential": {}})
         assert resp.status_code == 200
@@ -461,10 +462,10 @@ class TestEnrollment:
     def test_an_unverifiable_registration_stores_nothing(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": "chal"}), \
-             patch(f"{_M}.verify_passkey_registration", return_value=None), \
-             patch(f"{_M}.add_passkey_factor") as store:
+             patch(f"{_USER}.verify_passkey_registration", return_value=None), \
+             patch(f"{_USER}.add_passkey_factor") as store:
             resp = client.post("/api/user/passkeys/register/complete",
                                json={"session_token": _TOKEN, "handle": "h", "credential": {}})
         assert resp.status_code == 400
@@ -472,15 +473,15 @@ class TestEnrollment:
 
     def test_totp_enrolment_returns_the_secret_exactly_once(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.begin_totp_enrollment", return_value=(9, "SEED", "otpauth://x")):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.begin_totp_enrollment", return_value=(9, "SEED", "otpauth://x")):
             resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
         assert resp.json()["detail"]["secret"] == "SEED"
 
     def test_a_wrong_totp_code_does_not_confirm_the_factor(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.confirm_totp_enrollment", return_value=False), \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.confirm_totp_enrollment", return_value=False), \
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/totp/enroll/confirm",
                                json={"session_token": _TOKEN, "code": "000000"})
         assert resp.status_code == 400
@@ -488,9 +489,9 @@ class TestEnrollment:
 
     def test_removing_a_factor_is_step_up_gated(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=False), \
-             patch(f"{_M}.available_methods", return_value=["passkey"]), \
-             patch(f"{_M}.delete_auth_factor") as delete:
+             patch(f"{_USER}.step_up_satisfied", return_value=False), \
+             patch(f"{_USER}.available_methods", return_value=["passkey"]), \
+             patch(f"{_USER}.delete_auth_factor") as delete:
             resp = client.post("/api/user/auth-factors/delete",
                                json={"session_token": _TOKEN, "factor_id": 4})
         assert resp.status_code == 403
@@ -502,9 +503,9 @@ class TestEnrollment:
         owner out of their own recovery path without touching a factor.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=False), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.generate_recovery_codes") as generate:
+             patch(f"{_USER}.step_up_satisfied", return_value=False), \
+             patch(f"{_USER}.available_methods", return_value=["totp"]), \
+             patch(f"{_USER}.generate_recovery_codes") as generate:
             resp = client.post("/api/user/recovery-codes/regenerate",
                                json={"session_token": _TOKEN})
         assert resp.status_code == 403
@@ -512,8 +513,8 @@ class TestEnrollment:
 
     def test_recovery_codes_are_returned_once_when_the_gate_passes(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.generate_recovery_codes", return_value=["AAAA111111", "BBBB222222"]):
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.generate_recovery_codes", return_value=["AAAA111111", "BBBB222222"]):
             resp = client.post("/api/user/recovery-codes/regenerate",
                                json={"session_token": _TOKEN})
         assert resp.json()["detail"]["codes"] == ["AAAA111111", "BBBB222222"]
@@ -536,13 +537,13 @@ class TestStepUpGate:
     def test_every_credential_touching_endpoint_refuses_without_a_fresh_factor(
             self, client, method, path, body):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=False), \
-             patch(f"{_M}.available_methods", return_value=["passkey", "totp"]), \
-             patch(f"{_M}.store_linkedin_li_at") as store_cookie, \
-             patch(f"{_M}.update_user_linkedin_password") as store_password, \
-             patch(f"{_M}.revoke_other_sessions") as revoke, \
-             patch(f"{_M}.create_session") as create_session, \
-             patch(f"{_M}.create_pin_for_email") as create_pin:
+             patch(f"{_USER}.step_up_satisfied", return_value=False), \
+             patch(f"{_USER}.available_methods", return_value=["passkey", "totp"]), \
+             patch(f"{_USER}.store_linkedin_li_at") as store_cookie, \
+             patch(f"{_USER}.update_user_linkedin_password") as store_password, \
+             patch(f"{_USER}.revoke_other_sessions") as revoke, \
+             patch(f"{_USER}.create_session") as create_session, \
+             patch(f"{_USER}.create_pin_for_email") as create_pin:
             resp = getattr(client, method)(path, json={"session_token": _TOKEN, **body})
         assert resp.status_code == 403
         detail = resp.json()["detail"]
@@ -557,16 +558,16 @@ class TestStepUpGate:
         instead of asking them anything.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=False), \
-             patch(f"{_M}.available_methods", return_value=[]):
+             patch(f"{_USER}.step_up_satisfied", return_value=False), \
+             patch(f"{_USER}.available_methods", return_value=[]):
             resp = client.post("/api/user/linkedin-cookie",
                                json={"session_token": _TOKEN, "li_at": "a" * 40})
         assert resp.status_code == 403
 
     def test_a_fresh_factor_lets_the_write_through(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.store_linkedin_li_at", return_value=True) as store:
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.store_linkedin_li_at", return_value=True) as store:
             resp = client.post("/api/user/linkedin-cookie",
                                json={"session_token": _TOKEN, "li_at": "a" * 40})
         assert resp.status_code == 200
@@ -583,9 +584,9 @@ class TestStepUpGate:
             return True
 
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", side_effect=record), \
-             patch(f"{_M}.store_linkedin_li_at", return_value=True), \
-             patch(f"{_M}.revoke_other_sessions", return_value=0):
+             patch(f"{_USER}.step_up_satisfied", side_effect=record), \
+             patch(f"{_USER}.store_linkedin_li_at", return_value=True), \
+             patch(f"{_USER}.revoke_other_sessions", return_value=0):
             client.post("/api/user/linkedin-cookie",
                         json={"session_token": _TOKEN, "li_at": "a" * 40})
             cookie_flag = seen["0"]
@@ -598,8 +599,8 @@ class TestStepUpGate:
     def test_the_extension_token_is_minted_with_its_own_scope(self, client):
         from cqc_lem.utilities.db import SESSION_SCOPE_EXTENSION
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.create_session", return_value="ext-token") as create_session:
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.create_session", return_value="ext-token") as create_session:
             resp = client.post("/api/user/extension-token", json={"session_token": _TOKEN})
         assert resp.status_code == 200
         assert create_session.call_args.kwargs["scope"] == SESSION_SCOPE_EXTENSION
@@ -608,10 +609,10 @@ class TestStepUpGate:
 class TestStepUpVerify:
     def test_a_totp_code_stamps_this_session(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.verify_totp_code", return_value=True), \
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "totp", "code": "123456"})
         assert resp.status_code == 200
@@ -622,10 +623,10 @@ class TestStepUpVerify:
         credentials, or a stolen recovery sheet is a stolen LinkedIn session.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.verify_recovery_code", return_value=True) as verify, \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "recovery_code",
                                      "code": "ABCD234XYZ"})
@@ -635,16 +636,16 @@ class TestStepUpVerify:
 
     def test_another_accounts_passkey_cannot_step_this_session_up(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": "chal"}), \
              patch(f"{_M}.credential_id_from_response", return_value="cred"), \
              patch(f"{_M}.get_passkey_by_credential_id",
                    return_value={"id": 5, "user_id": 999, "public_key": "pk", "sign_count": 0}), \
              patch(f"{_M}.verify_passkey_assertion", return_value=1) as verify, \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "passkey",
                                      "handle": "h", "credential": {"id": "cred"}})
@@ -654,12 +655,12 @@ class TestStepUpVerify:
 
     def test_a_step_up_challenge_issued_for_another_account_is_refused(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": 999, "challenge": "chal"}), \
-             patch(f"{_M}.record_step_up") as stepped_up:
+             patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "passkey",
                                      "handle": "h", "credential": {"id": "cred"}})
@@ -668,9 +669,9 @@ class TestStepUpVerify:
 
     def test_step_up_attempts_are_rate_limited(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.check_auth_verify", return_value=_Blocked()), \
-             patch(f"{_M}.verify_totp_code") as verify:
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Blocked()), \
+             patch(f"{_USER}.verify_totp_code") as verify:
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "totp", "code": "123456"})
         assert resp.status_code == 429
@@ -679,7 +680,7 @@ class TestStepUpVerify:
     def test_beginning_a_step_up_without_a_passkey_is_a_400(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.get_user_passkey_credential_ids", return_value=[]):
+             patch(f"{_USER}.get_user_passkey_credential_ids", return_value=[]):
             resp = client.post("/api/user/step-up/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 400
 
@@ -704,10 +705,10 @@ class TestSessionRequired:
     def test_no_session_is_a_401(self, client, method, path, body):
         with patch(f"{_M}.get_session_user_id", return_value=None), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.begin_totp_enrollment") as enroll, \
-             patch(f"{_M}.confirm_totp_enrollment") as confirm, \
-             patch(f"{_M}.delete_auth_factor") as delete, \
-             patch(f"{_M}.generate_recovery_codes") as generate:
+             patch(f"{_USER}.begin_totp_enrollment") as enroll, \
+             patch(f"{_USER}.confirm_totp_enrollment") as confirm, \
+             patch(f"{_USER}.delete_auth_factor") as delete, \
+             patch(f"{_USER}.generate_recovery_codes") as generate:
             resp = getattr(client, method)(path, json={"session_token": "nope", **body})
         assert resp.status_code == 401
         for should_not_run in (enroll, confirm, delete, generate):
@@ -720,10 +721,10 @@ class TestFailedWrites:
     def test_a_challenge_that_cannot_be_stored_aborts_the_registration(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.get_user_passkey_credential_ids", return_value=[]), \
-             patch(f"{_M}.build_registration_options", return_value=({}, "chal")), \
-             patch(f"{_M}.create_auth_challenge", return_value=None):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.get_user_passkey_credential_ids", return_value=[]), \
+             patch(f"{_USER}.build_registration_options", return_value=({}, "chal")), \
+             patch(f"{_USER}.create_auth_challenge", return_value=None):
             resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 500
 
@@ -735,10 +736,10 @@ class TestFailedWrites:
 
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": "chal"}), \
-             patch(f"{_M}.verify_passkey_registration", return_value=_Result()), \
-             patch(f"{_M}.add_passkey_factor", return_value=None):
+             patch(f"{_USER}.verify_passkey_registration", return_value=_Result()), \
+             patch(f"{_USER}.add_passkey_factor", return_value=None):
             resp = client.post("/api/user/passkeys/register/complete",
                                json={"session_token": _TOKEN, "handle": "h", "credential": {}})
         assert resp.status_code == 400
@@ -746,8 +747,8 @@ class TestFailedWrites:
     def test_recovery_codes_that_could_not_be_written_are_never_shown(self, client):
         """Showing a sheet the database rejected would hand the user ten codes that do not work."""
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.generate_recovery_codes", return_value=[]):
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.generate_recovery_codes", return_value=[]):
             resp = client.post("/api/user/recovery-codes/regenerate",
                                json={"session_token": _TOKEN})
         assert resp.status_code == 500
@@ -758,17 +759,17 @@ class TestFailedWrites:
                               passkeys_supported=True, has_strong_factor=False,
                               pin_is_bootstrap_only=False)
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.factor_summary", return_value=empty), \
-             patch(f"{_M}.delete_auth_factor", return_value=False):
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.factor_summary", return_value=empty), \
+             patch(f"{_USER}.delete_auth_factor", return_value=False):
             resp = client.post("/api/user/auth-factors/delete",
                                json={"session_token": _TOKEN, "factor_id": 99})
         assert resp.status_code == 404
 
     def test_a_totp_enrolment_that_could_not_start_is_a_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.begin_totp_enrollment", return_value=None):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.begin_totp_enrollment", return_value=None):
             resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 500
 
@@ -829,8 +830,8 @@ class TestFactorSummaryEndpoint:
             recovery_unused=7, recovery_total=10, passkeys_supported=True,
             has_strong_factor=True, pin_is_bootstrap_only=True)
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.factor_summary", return_value=summary), \
-             patch(f"{_M}.step_up_satisfied", return_value=False):
+             patch(f"{_USER}.factor_summary", return_value=summary), \
+             patch(f"{_USER}.step_up_satisfied", return_value=False):
             resp = client.get(f"/api/user/auth-factors?session_token={_TOKEN}")
         detail = resp.json()["detail"]
         assert detail["pin_is_bootstrap_only"] is True
@@ -991,12 +992,12 @@ class TestSecondFactorBudget:
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge",
+             patch(f"{_USER}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": "chal"}), \
-             patch(f"{_M}.verify_passkey_registration",
+             patch(f"{_USER}.verify_passkey_registration",
                    return_value=type("R", (), {"credential_id": "c", "public_key": "pk",
                                                "sign_count": 0})()), \
-             patch(f"{_M}.add_passkey_factor", return_value=None):
+             patch(f"{_USER}.add_passkey_factor", return_value=None):
             resp = client.post("/api/user/passkeys/register/complete",
                                json={"session_token": _TOKEN, "handle": "h",
                                      "credential": {"id": "c"}})
@@ -1008,10 +1009,10 @@ class TestSecondFactorBudget:
         anywhere — the failure mode is invisible, so it has to be loud.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.record_step_up", return_value=False):
+             patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_USER}.verify_totp_code", return_value=True), \
+             patch(f"{_USER}.record_step_up", return_value=False):
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "totp", "code": "123456"})
         assert resp.status_code == 500
@@ -1021,10 +1022,10 @@ class TestSecondFactorBudget:
         accounts unlimited at step-up.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_email", return_value=None), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()) as limiter, \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.record_step_up", return_value=True):
+             patch(f"{_USER}.get_user_email", return_value=None), \
+             patch(f"{_USER}.check_auth_verify", return_value=_Allowed()) as limiter, \
+             patch(f"{_USER}.verify_totp_code", return_value=True), \
+             patch(f"{_USER}.record_step_up", return_value=True):
             client.post("/api/user/step-up/verify",
                         json={"session_token": _TOKEN, "method": "totp", "code": "123456"})
         assert limiter.call_args.args[0] == f"user-{_UID}"
@@ -1034,9 +1035,9 @@ class TestSecondFactorBudget:
         without ip/user-agent on it there is nothing to chase.
         """
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=False), \
-             patch(f"{_M}.available_methods", return_value=["passkey"]), \
-             patch(f"{_M}.record_auth_event") as audit:
+             patch(f"{_USER}.step_up_satisfied", return_value=False), \
+             patch(f"{_USER}.available_methods", return_value=["passkey"]), \
+             patch(f"{_USER}.record_auth_event") as audit:
             resp = client.post("/api/user/linkedin-cookie",
                                json={"session_token": _TOKEN, "li_at": "x" * 40},
                                headers={"User-Agent": "test-agent"})
@@ -1054,11 +1055,11 @@ class TestSecondFactorBudget:
             recovery_unused=5, recovery_total=10, passkeys_supported=True,
             has_strong_factor=True, pin_is_bootstrap_only=True)
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.step_up_satisfied", return_value=True), \
-             patch(f"{_M}.factor_summary", return_value=summary), \
-             patch(f"{_M}.delete_auth_factor", return_value=True), \
-             patch(f"{_M}.has_strong_factor", return_value=False), \
-             patch(f"{_M}.record_auth_event") as audit:
+             patch(f"{_USER}.step_up_satisfied", return_value=True), \
+             patch(f"{_USER}.factor_summary", return_value=summary), \
+             patch(f"{_USER}.delete_auth_factor", return_value=True), \
+             patch(f"{_USER}.has_strong_factor", return_value=False), \
+             patch(f"{_USER}.record_auth_event") as audit:
             resp = client.post("/api/user/auth-factors/delete",
                                json={"session_token": _TOKEN, "factor_id": 3})
         assert resp.status_code == 200
