@@ -66,7 +66,7 @@ class TestCommentActionPredicate:
         A `contains('comment')` match returns the count happily, and clicking a count opens the
         thread instead of the composer — a silent wrong-action, not a visible failure.
         """
-        from cqc_lem.app.run_automation import _COMMENT_ACTION_JS
+        from cqc_lem.utilities.linkedin.cards import _COMMENT_ACTION_JS
         assert "=== 'comment'" in _COMMENT_ACTION_JS or "text === 'comment'" in _COMMENT_ACTION_JS
         assert "includes('comment')" not in _COMMENT_ACTION_JS.replace(
             "testid.includes('comment') && text === 'comment'", "")
@@ -75,7 +75,11 @@ class TestCommentActionPredicate:
         """The card walk and the URN-scan boundary must agree on what a comment action is. When
         they disagreed, the scan climbed past the card and returned a neighbour's URN.
         """
-        from cqc_lem.app.run_automation import _CARD_FOR_TEXTBOX_JS, _COMMENT_ACTION_JS, _URN_SCAN_JS
+        from cqc_lem.utilities.linkedin.cards import (
+            _CARD_FOR_TEXTBOX_JS,
+            _COMMENT_ACTION_JS,
+            _URN_SCAN_JS,
+        )
         assert _CARD_FOR_TEXTBOX_JS.startswith(_COMMENT_ACTION_JS)
         assert _URN_SCAN_JS.startswith(_COMMENT_ACTION_JS)
 

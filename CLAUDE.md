@@ -34,6 +34,7 @@ src/cqc_lem/
 ├── utilities/
 │   ├── ai/        LiteLLM helpers (ai_helper.py, client.py) + content_framework/content_research/content_alignment/story_bank/slop_lint
 │   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)
+│   │              + the shared engagement core (#1154): session (get_current_profile / browser_session), composer, cards
 │   ├── marketing/ video_tutorials.py — automated SPA tutorial videos
 │   ├── human_pacing.py  ONE cadence engine
 │   ├── db.py      DB facade — re-exports platform/db/ (no raw SQL outside those two)

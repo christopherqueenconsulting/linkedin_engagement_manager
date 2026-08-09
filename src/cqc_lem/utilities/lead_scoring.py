@@ -1,20 +1,39 @@
 """Lead scoring for the CRM-lite pipeline (issue #484).
 
-Pure scoring math — no DB, no I/O — so the ranking that decides who the owner talks to today is
-deterministic and cheap to test. `run_scheduler._rebuild_leads_for_user` supplies the activity rows
-(read from data the automation already records) and persists what comes back.
+The SCORING half is pure math — no DB, no I/O — so the ranking that decides who the owner talks to
+today is deterministic and cheap to test. `run_scheduler._rebuild_leads_for_user` supplies the
+activity rows (read from data the automation already records) and persists what comes back.
 
 The score is ICP fit weighted by engagement recency and frequency: engagement decides HOW MUCH they
 care, ICP fit decides how much that is worth. Neither alone is a lead.
+
+The FLAGGING half at the bottom (`_flag_lead_signal` and the identity helpers around it) moved down
+from `app.run_automation` in #1154: it reads text the automation already had in hand, classifies it,
+and — on a buying-intent hit — files an approval-gated `lead_signals` row. It is the one part of this
+module that touches the DB and an LLM, and it is deliberately NON-FATAL: lead detection must never
+break the sweep it rides on. `profile_slug` is why it landed here — `run_automation` carried a
+byte-identical private copy of it, and one identity function is the point.
 """
 
+import hashlib
 import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterable, Optional
 
-from cqc_lem.utilities.db import LeadSignalKind, LeadStage
+from cqc_lem.utilities.ai.ai_helper import generate_lead_response
+from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
+from cqc_lem.utilities.db import (
+    LeadSignalChannel,
+    LeadSignalKind,
+    LeadSignalSource,
+    LeadStage,
+    has_lead_signal,
+    insert_lead_signal,
+)
+from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.observability import FEATURE_DM, llm_attribution
 
 # Base points per signal, before recency/frequency weighting. An inbound buying question dwarfs
 # everything else — it is the only signal where THEY started the sales conversation.
@@ -309,3 +328,81 @@ def score_leads(rows: Iterable[dict], now: datetime, facts_by_url: dict = None,
                                 facts=facts, target_terms=target_terms))
     leads.sort(key=lambda l: (l.score, l.signal_count), reverse=True)
     return leads
+
+
+# ── inbound hot-lead flagging (moved verbatim from `app.run_automation`, #1154) ──────────────────
+# Every read path in the automation already HAS the text — someone asking "how much?" or "can you
+# help with X?" is the warmest lead we get, and we were dropping it. Detection rides those existing
+# reads: no new scraping, no extra navigation. `run_automation._profile_slug` was a byte-identical
+# copy of `profile_slug` above and is gone; these three call it directly.
+def _lead_thread_key(source: str, thread_ref: str, person_profile_url: str, person_name: str = "") -> str:
+    """Stable dedup id for ONE conversation with ONE person, so a re-scan (or a second buying-intent
+    line in the same thread) never re-flags a lead the operator has already seen. Keyed on identity
+    + thread — never on the message text (the #474 lesson).
+    """
+    who = profile_slug(person_profile_url)
+    if not who:
+        who = hashlib.sha1((person_name or "").strip().lower().encode("utf-8", "ignore")).hexdigest()[:12]
+    return f"lead:{source}:{thread_ref}:{who}"
+
+
+def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", thread_ref: str,
+                      person_name: str = None, person_profile_url: str = None,
+                      channel: "LeadSignalChannel" = LeadSignalChannel.REPLY,
+                      post_id: int = None, context_url: str = None, context_text: str = None,
+                      my_profile=None, prefs: dict = None, profile_synthesis: str = None) -> "int | None":
+    """Classify one piece of inbound text and, on a buying-intent hit, queue it as a hot lead with a
+    drafted response awaiting approval. Returns the new signal id, or None (no intent, already
+    flagged, or an error). Best-effort and NON-FATAL — lead detection must never break a reply sweep.
+    """
+    try:
+        if not text or not str(text).strip():
+            return None
+        key = _lead_thread_key(str(source), thread_ref, person_profile_url or "", person_name or "")
+        if has_lead_signal(user_id, key):
+            return None
+        verdict = detect_lead_signals(text)
+        if not verdict.get("is_lead"):
+            return None
+        draft = None
+        try:
+            with llm_attribution(user_id=user_id, feature=FEATURE_DM):
+                draft = generate_lead_response(text, my_profile, channel=str(channel), context=context_text,
+                                               prefs=prefs, profile_synthesis=profile_synthesis)
+        except Exception as e:
+            log_warning("Lead response draft failed; queueing the signal without one", exc=e,
+                        user_id=user_id, action_type="engaged")
+        signal_id = insert_lead_signal(
+            user_id, source, key, person_name=person_name, person_profile_url=person_profile_url,
+            snippet=str(text)[:2000], score=int(verdict.get("score") or 0),
+            matched_signals=",".join(verdict.get("matched") or [])[:512], post_id=post_id,
+            context_url=context_url, draft_response=draft, channel=channel)
+        if signal_id:
+            log_info(f"Hot lead detected ({verdict.get('method')}, score {verdict.get('score')}) "
+                     f"from {person_name or person_profile_url or 'unknown'}",
+                     user_id=user_id, post_id=post_id, action_type="engaged")
+        return signal_id
+    except Exception as e:
+        log_warning("Lead-signal detection failed", exc=e, user_id=user_id, action_type="engaged")
+        return None
+
+
+def _href_is_profile(href: str, slug: str) -> bool:
+    """True when a profile href belongs to EXACTLY `slug`. A substring test — `f"/in/{slug}" in
+    href` — also matches every slug ours is a PREFIX of ('/in/chris' inside '/in/chris-queen-9b1'),
+    which would let a stranger's comment be read as ours and their reply be discounted as our own.
+    """
+    if not slug:
+        return False
+    return profile_slug(href or "") == str(slug).strip().lower()
+
+
+def _author_display_name(profile_url: str) -> str:
+    """Readable name for an adjacent author from their /in/ slug (we don't scrape their profile just
+    to write a note). 'jane-doe-1a2b3c' -> 'Jane Doe'.
+    """
+    slug = profile_slug(profile_url)
+    if not slug:
+        return ""
+    words = [w for w in slug.split("-") if w and not any(ch.isdigit() for ch in w)]
+    return " ".join(w.capitalize() for w in words[:3])

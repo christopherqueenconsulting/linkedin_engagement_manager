@@ -7,6 +7,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The reporting pair moved down to `utilities/golden_hour.py` (#1154) and took the post-age read
+# and the PostHog ship with it, so those collaborators resolve THERE now. The sweep TASK stayed,
+# so its own view of `_record_golden_hour_report` is still patched on `run_automation`.
+_GH = "cqc_lem.utilities.golden_hour"
 
 # What _reply_to_comments_on_open_post returns since #622: counts, not just a sentence.
 _OUTCOME = {"status": "ok", "summary": "Replied to 1 comments", "comments_found": 2,
@@ -97,11 +101,11 @@ class TestGoldenHourReporting:
         return float(minutes_ago)   # get_post_age_minutes returns minutes, computed in SQL
 
     def test_in_window_sweep_logs_info_and_tracks(self):
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(22)), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
-             patch(f"{_RA}.log_info") as info, \
-             patch(f"{_RA}.log_warning") as warn:
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", return_value=self._published(22)), \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.log_info") as info, \
+             patch(f"{_GH}.log_warning") as warn:
             report = _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s", 3, 2))
         assert report["within_window"] is True
         assert report["comments_found"] == 3 and report["replies_sent"] == 2
@@ -111,10 +115,10 @@ class TestGoldenHourReporting:
         warn.assert_not_called()
 
     def test_late_sweep_warns(self):
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(120)), \
-             patch(f"{_RA}.track_golden_hour_report"), \
-             patch(f"{_RA}.log_warning") as warn:
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", return_value=self._published(120)), \
+             patch(f"{_GH}.track_golden_hour_report"), \
+             patch(f"{_GH}.log_warning") as warn:
             report = _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s"))
         assert report["within_window"] is False
         warn.assert_called_once()
@@ -123,9 +127,9 @@ class TestGoldenHourReporting:
         """The sweep walks the last couple of days on purpose; only fresh posts say anything about
         the amplifier's timing, so old ones emit nothing rather than permanent out-of-window noise.
         """
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(3 * 24 * 60)), \
-             patch(f"{_RA}.track_golden_hour_report") as track:
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", return_value=self._published(3 * 24 * 60)), \
+             patch(f"{_GH}.track_golden_hour_report") as track:
             assert _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s")) is None
         track.assert_not_called()
 
@@ -133,31 +137,34 @@ class TestGoldenHourReporting:
         """Every sweep walks yesterday's post too. Grading those revisits would put a permanent
         stream of out-of-window readings into the on-time rate — and a WARNING per sweep.
         """
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(10 * 60)), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
-             patch(f"{_RA}.log_warning") as warn:
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", return_value=self._published(10 * 60)), \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.log_warning") as warn:
             assert _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s")) is None
         track.assert_not_called()
         warn.assert_not_called()
 
     def test_the_second_wave_is_graded_against_its_own_horizon(self):
         """The same 10h-old post IS the second wave's business — its window is 6-8h, not 90 min."""
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        from cqc_lem.utilities.golden_hour import PHASE_SECOND_WAVE
-        with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(7 * 60)), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
-             patch(f"{_RA}.log_info"):
+        from cqc_lem.utilities.golden_hour import (
+            PHASE_SECOND_WAVE,
+            _record_golden_hour_report,
+            _reply_outcome,
+        )
+        with patch(f"{_GH}.get_post_age_minutes", return_value=self._published(7 * 60)), \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.log_info"):
             report = _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s", replies_sent=1),
                                                 phase=PHASE_SECOND_WAVE)
         assert report["within_window"] is True
         track.assert_called_once()
 
     def test_unknown_publish_time_still_reports_out_of_window(self):
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", return_value=None), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
-             patch(f"{_RA}.log_warning"):
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", return_value=None), \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.log_warning"):
             report = _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s"))
         assert report["latency_minutes"] is None and report["within_window"] is False
         track.assert_called_once()
@@ -166,19 +173,19 @@ class TestGoldenHourReporting:
         """Measurement must not abort the thing it measures — a DB hiccup on the age read reports
         an unknown latency instead of killing the sweep mid-post.
         """
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", side_effect=RuntimeError("db down")), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
-             patch(f"{_RA}.log_warning"):
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", side_effect=RuntimeError("db down")), \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.log_warning"):
             report = _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s"))
         assert report["latency_minutes"] is None and report["within_window"] is False
         track.assert_called_once()
 
     def test_a_posthog_failure_never_breaks_the_sweep(self):
-        from cqc_lem.app.run_automation import _record_golden_hour_report, _reply_outcome
-        with patch(f"{_RA}.get_post_age_minutes", return_value=self._published(10)), \
-             patch(f"{_RA}.track_golden_hour_report", side_effect=RuntimeError("posthog down")), \
-             patch(f"{_RA}.log_info"), patch(f"{_RA}.log_warning") as warn:
+        from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
+        with patch(f"{_GH}.get_post_age_minutes", return_value=self._published(10)), \
+             patch(f"{_GH}.track_golden_hour_report", side_effect=RuntimeError("posthog down")), \
+             patch(f"{_GH}.log_info"), patch(f"{_GH}.log_warning") as warn:
             report = _record_golden_hour_report(1, 9, 0, _reply_outcome("ok", "s"))
         assert report is not None
         warn.assert_called_once()
@@ -191,8 +198,8 @@ class TestGoldenHourSweepRetry:
     def test_schedules_one_more_sweep_while_the_window_is_open(self):
         from cqc_lem.app.run_automation import _retry_golden_hour_sweep
         with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[10]), \
-             patch(f"{_RA}.get_post_age_minutes", return_value=self._published(15)), \
-             patch(f"{_RA}.track_golden_hour_report"), \
+             patch(f"{_GH}.get_post_age_minutes", return_value=self._published(15)), \
+             patch(f"{_GH}.track_golden_hour_report"), \
              patch(f"{_RA}.sweep_reply_comments") as task, \
              patch(f"{_RA}.log_info"):
             assert _retry_golden_hour_sweep(1, 2, 0, "rate_limited") is True
@@ -206,8 +213,8 @@ class TestGoldenHourSweepRetry:
         """
         from cqc_lem.app.run_automation import _retry_golden_hour_sweep
         with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[10]), \
-             patch(f"{_RA}.get_post_age_minutes", return_value=self._published(15)), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.get_post_age_minutes", return_value=self._published(15)), \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
              patch(f"{_RA}.sweep_reply_comments"), \
              patch(f"{_RA}.log_info"):
             _retry_golden_hour_sweep(1, 0, 0, "rate_limited")
@@ -218,8 +225,8 @@ class TestGoldenHourSweepRetry:
     def test_no_retry_once_the_window_has_closed(self):
         from cqc_lem.app.run_automation import _retry_golden_hour_sweep
         with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[10]), \
-             patch(f"{_RA}.get_post_age_minutes", return_value=self._published(120)), \
-             patch(f"{_RA}.track_golden_hour_report"), \
+             patch(f"{_GH}.get_post_age_minutes", return_value=self._published(120)), \
+             patch(f"{_GH}.track_golden_hour_report"), \
              patch(f"{_RA}.log_warning"), \
              patch(f"{_RA}.sweep_reply_comments") as task:
             assert _retry_golden_hour_sweep(1, 0, 0, "rate_limited") is False
@@ -228,7 +235,7 @@ class TestGoldenHourSweepRetry:
     def test_no_retry_without_a_recent_post(self):
         from cqc_lem.app.run_automation import _retry_golden_hour_sweep
         with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[]), \
-             patch(f"{_RA}.track_golden_hour_report") as track, \
+             patch(f"{_GH}.track_golden_hour_report") as track, \
              patch(f"{_RA}.sweep_reply_comments") as task:
             assert _retry_golden_hour_sweep(1, 0, 0, "session_failed") is False
         task.apply_async.assert_not_called()
@@ -238,8 +245,8 @@ class TestGoldenHourSweepRetry:
         from cqc_lem.app.run_automation import _retry_golden_hour_sweep
         from cqc_lem.utilities.golden_hour import GOLDEN_HOUR_MAX_RETRIES
         with patch(f"{_RA}.get_recent_posted_post_ids", return_value=[10]), \
-             patch(f"{_RA}.get_post_age_minutes", return_value=self._published(5)), \
-             patch(f"{_RA}.track_golden_hour_report"), \
+             patch(f"{_GH}.get_post_age_minutes", return_value=self._published(5)), \
+             patch(f"{_GH}.track_golden_hour_report"), \
              patch(f"{_RA}.log_info"), \
              patch(f"{_RA}.sweep_reply_comments") as task:
             assert _retry_golden_hour_sweep(1, 0, GOLDEN_HOUR_MAX_RETRIES, "429") is False

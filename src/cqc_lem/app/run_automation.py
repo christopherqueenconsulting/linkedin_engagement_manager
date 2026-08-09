@@ -25,8 +25,6 @@ import os
 import random
 import re
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Callable, List, NamedTuple, Optional, Tuple
@@ -34,7 +32,6 @@ from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
 from selenium.common import (
-    ElementClickInterceptedException,
     ElementNotInteractableException,
     JavascriptException,
     NoSuchElementException,
@@ -45,7 +42,6 @@ from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support.wait import WebDriverWait
 
 # The connect rail moved to `app.engagement.invites` (#1154). Two of these are load-bearing here —
 # `engage_with_profile_viewer` and `queue_roster_connect_invite` dispatch them by `.apply_async` —
@@ -76,7 +72,6 @@ from cqc_lem.utilities.ai.ai_helper import (
     generate_ai_response,
     generate_comment_reply_followup,
     generate_group_post,
-    generate_lead_response,
     generate_newsletter_edition,
     generate_nurture_dm,
     generate_second_wave_comment,
@@ -98,7 +93,6 @@ from cqc_lem.utilities.ai.content_alignment import (
 )
 from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
-from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
 from cqc_lem.utilities.audience_stats import (
     parse_connection_count,
     parse_follower_count,
@@ -107,13 +101,11 @@ from cqc_lem.utilities.audience_stats import (
 )
 from cqc_lem.utilities.blog_source import resolve_blog_source
 from cqc_lem.utilities.connection_targeting import (
-    CONNECT_NOTE_LIMIT,
     SOURCE_ADJACENT_POST,
     SOURCE_OWN_POST,
     SOURCE_ROSTER,
     CandidateSignal,
     ScoredCandidate,
-    default_connect_note,
     rank_candidates,
     target_terms_from_prefs,
 )
@@ -203,13 +195,11 @@ from cqc_lem.utilities.db import (
     has_catchup_touch,
     has_commented_post,
     has_engaged_url_with_x_days,
-    has_lead_signal,
     has_open_scheduled_dm,
     has_received_lead_magnet,
     has_user_commented_on_post_url,
     insert_catchup_touch,
     insert_connection_request,
-    insert_lead_signal,
     insert_new_log,
     insert_outreach_target,
     insert_scheduled_dm,
@@ -252,8 +242,10 @@ from cqc_lem.utilities.db import (
     upsert_engager,
     upsert_user_group,
 )
+from cqc_lem.utilities.dm_templates import _draft_connect_note, render_dm_placeholders
 from cqc_lem.utilities.engagement_window import record_pre_post_run
 from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
+from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
 from cqc_lem.utilities.human_pacing import (
     ACTION_COMMENT,
     ACTION_DM,
@@ -266,14 +258,57 @@ from cqc_lem.utilities.human_pacing import (
     record_action,
     remaining_actions,
 )
-from cqc_lem.utilities.lead_scoring import person_key
+from cqc_lem.utilities.lead_scoring import (
+    _author_display_name,
+    _flag_lead_signal,
+    _href_is_profile,
+    person_key,
+    profile_slug,
+)
 from cqc_lem.utilities.linkedin import zero_walk as _zw
 from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
+
+# The SDUI mechanics every engagement cluster shares moved down to `utilities/linkedin/*` (#1154).
+# They are imported by their ORIGINAL names, underscore and all: the bodies moved verbatim, so one
+# spelling still greps to one place, and the test patches that follow them are a pure module-path
+# change. Nothing here is re-exported — a symbol this module no longer reads is simply gone, so a
+# stale `patch("...run_automation._card_for_textbox")` raises AttributeError instead of binding a
+# name nothing reads and passing having tested nothing.
+from cqc_lem.utilities.linkedin.cards import (
+    _BARE_COUNT_RE,
+    _FEED_POST_TEXT_SEL,
+    _URN_RE,
+    _X_LOWER_ARIA,
+    _X_LOWER_TEXT,
+    _card_for_textbox,
+    _feed_post_urn_from_card,
+    _norm_prefix,
+    _normalize_post_text,
+    _parse_count,
+    _post_permalink_from_card,
+    _post_social_counts,
+    _x_lower,
+)
+from cqc_lem.utilities.linkedin.composer import (
+    _COMMENTLIST_TEXTBOX,
+    _COMPOSER_ABOVE_SLACK_PX,
+    _SUBMIT_NEAR_COMPOSER_JS,
+    _comment_container,
+    _comment_header_author,
+    _comment_items,
+    _comment_items_from_thread,
+    _composer_submitted,
+    _focus_composer,
+    _reply_composer_for_comment,
+    _reply_under_comment_inline,
+    _type_and_submit_reply,
+    _visible_composers,
+    _visible_rect,
+)
 from cqc_lem.utilities.linkedin.helper import (
     clean_person_name,
     connection_degree,
     get_linkedin_profile_from_url,
-    get_my_profile,
     is_first_degree,
     load_profile_for_user,
     login_to_linkedin,
@@ -307,6 +342,7 @@ from cqc_lem.utilities.linkedin.rate_limit import (
     rate_limit_cooldown_remaining,
     release_run_lock,
 )
+from cqc_lem.utilities.linkedin.session import get_current_profile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text, strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
@@ -319,7 +355,6 @@ from cqc_lem.utilities.observability import (
     track_catchup_run,
     track_comment_outcome,
     track_feed_scan,
-    track_golden_hour_report,
     track_post_outcome,
 )
 from cqc_lem.utilities.selenium_util import (
@@ -614,7 +649,7 @@ def _thread_carries_our_comment(driver, my_profile: LinkedInProfile) -> bool:
     then inherits — for a check the ledger already covers. Only the comments LinkedIn renders by
     default are read, and a miss falls through to commenting exactly as it did before.
     """
-    slug = _profile_slug(str(getattr(my_profile, "profile_url", "") or ""))
+    slug = profile_slug(str(getattr(my_profile, "profile_url", "") or ""))
     if not slug:
         return False
     rendered = -1
@@ -661,69 +696,14 @@ def check_commented(driver, wait, user_id: int = None, post_url: str = None,
 # feed-shared-* / comments-comment-* classes and permalink navigation are gone. Posts are now
 # anchored by stable data-testid / aria-label attributes and commenting happens INLINE on the
 # feed card (no per-post permalink). Verified live 2026-07-03.
-# SDUI home feed uses data-testid='expandable-text-box'; classic Group feeds still render posts as
-# feed-shared-update-v2 with .update-components-text — include both so group commenting finds posts.
-# Content-hash dedup (_feed_post_key) covers any overlap between the two selectors on a page.
-_FEED_POST_TEXT_SEL = "[data-testid='expandable-text-box'], .feed-shared-update-v2 .update-components-text"
-
-
-# XPath 1.0 has no lower-case(), so translate() is the case fold. Every case-insensitive comparison
-# against a LinkedIn label goes through it — sort controls, comment actions, reaction anchors —
-# because LinkedIn renders 'Most recent' / 'Recent' / 'Comment' / 'Like' with casing that varies by
-# surface, and a literal case-sensitive match against any other casing silently never fires.
-# Defined HERE, above the first locator chain that uses it: these are module-level constants
-# evaluated at import, so a chain declared before them raises NameError on import.
-_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
-
-
-def _x_lower(expression: str) -> str:
-    """`expression` case-folded inside an XPath predicate."""
-    return f"translate({expression},'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
-
-
-_X_LOWER_TEXT = _x_lower("normalize-space()")
-_X_LOWER_ARIA = _x_lower("@aria-label")
+#
+# Reading a card — its identity, permalink and counts — moved down to `utilities/linkedin/cards.py`
+# in #1154, along with the `_x_lower` XPath case fold every locator chain below goes through. What
+# stays here is the WALK: which cards this run engages, in what order, under whose caps.
 _X_LOWER_TESTID = _x_lower("@data-testid")
 
-
-# The comment ACTION button, resolved by several routes at once (issue #816 grounding run).
-#
-# Live on the current SDUI the button carries NO aria-label — only the visible text "Comment":
-#     {"tag": "button", "type": "button", "text": "Comment"}
-# so the long-standing `button[aria-label='Comment']` matched ZERO elements on a feed with 9 posts.
-# That single anchor was load-bearing in three places (the card walk, the URN-scan boundary and the
-# composer opener), which is why one label rotation took out commenting AND reactions at once.
-#
-# The text route matches the trimmed label EXACTLY. The feed also renders comment-COUNT affordances
-# (`{"tag":"div","role":"button","text":"7 comments"}`); a `contains` match would happily return one
-# of those, and clicking a count opens the thread rather than the composer.
-_COMMENT_ACTION_JS = r"""
-const isCommentAction = (b) => {
-  if (!b || !b.getAttribute) return false;
-  const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-  if (aria === 'comment' || aria.startsWith('comment on')) return true;
-  const testid = (b.getAttribute('data-testid') || '').toLowerCase();
-  const text = (b.textContent || '').trim().toLowerCase();
-  if (testid.includes('comment') && text === 'comment') return true;
-  return text === 'comment';
-};
-const commentButton = (root) => {
-  if (!root || !root.querySelectorAll) return null;
-  for (const b of root.querySelectorAll("button, [role='button']")) {
-    if (isCommentAction(b)) return b;
-  }
-  return null;
-};
-"""
-
-_CARD_FOR_TEXTBOX_JS = _COMMENT_ACTION_JS + r"""
-let el = arguments[0], d = 0;
-while (el && d < 15) { if (commentButton(el)) return el; el = el.parentElement; d++; }
-return null;
-"""
-
-# The card above is the NEAREST ancestor carrying the comment action, which is not always the node
+# The card `_card_for_textbox` finds is the NEAREST ancestor carrying the comment action, which is
+# not always the node
 # LinkedIn mounts the composer into — on the group feed the comment section renders as that node's
 # SIBLING. This walks back UP, keeping the widest ancestor that still covers THIS post and no
 # neighbour, so widening the composer lookup can never reach the post next to it (the #876 failure).
@@ -765,16 +745,6 @@ return scope;
 """
 
 
-def _card_for_textbox(driver, box):
-    """Nearest ancestor of a post's text box that carries its comment action — i.e. the post card.
-
-    Multi-route by necessity: LinkedIn rotates which of aria-label / data-testid / visible text is
-    canonical and often keeps several alive at once, so keying on one is a single point of failure
-    that fails SILENTLY — a null card is indistinguishable from an empty feed.
-    """
-    return driver.execute_script(_CARD_FOR_TEXTBOX_JS, box)
-
-
 def _post_author_from_card(card) -> str:
     """Author name is embedded in the card's 'Hide post by <Name>' control's aria-label."""
     try:
@@ -795,26 +765,6 @@ def _author_is_me(author: str, my_profile: LinkedInProfile) -> bool:
     return bool(me) and (author or "").strip().lower() == me
 
 
-# Canonical LinkedIn post identity. The activity/ugcPost/share URN is stable across re-renders;
-# it's the only reliable dedup anchor. A content hash is NOT — a "…see more" toggle or our own
-# just-posted comment mutates the card's text and yields a different hash for the SAME post,
-# which is how feed commenting posted two comments on one post (issue #474).
-_URN_RE = re.compile(r"urn:li:(?:activity|ugcPost|share):\d+", re.I)
-
-
-def _normalize_post_text(content: str) -> str:
-    """Collapse the volatile bits of a card's rendered text so the SAME post hashes the same
-    across re-renders: drop the 'see more'/'…more' expander tokens and ellipses, collapse all
-    whitespace, lowercase. Used only for the no-URN fallback key + the per-run fingerprint.
-    """
-    t = (content or "").lower()
-    t = re.sub(r"\s*(?:…|\.\.\.)?\s*see\s+more\b", " ", t)
-    t = re.sub(r"\s*(?:…|\.\.\.)\s*more\b", " ", t)
-    t = t.replace("…", " ")
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-
 # The URN-less fallback hashes a PREFIX of the body, not all of it: LinkedIn's collapsed card
 # truncates a long post (~3 lines) while the expanded render carries the whole thing, so hashing
 # everything mints TWO keys for one post across a re-render — which is how #474 recurred as #580.
@@ -823,17 +773,6 @@ _FEED_KEY_PREFIX_CHARS = 120
 # Extra shorter prefix for the per-run fingerprint set: it still matches when a render truncates
 # even earlier than the canonical prefix (narrow window, aggressive "…more" collapse).
 _FEED_FP_PREFIX_CHARS = (60, _FEED_KEY_PREFIX_CHARS)
-
-
-def _norm_prefix(content: str, limit: int) -> str:
-    """Normalized post text cut to `limit` chars on a word boundary — the same prefix for the
-    collapsed and the expanded render of one post.
-    """
-    norm = _normalize_post_text(content)
-    if len(norm) <= limit:
-        return norm
-    head, sep, _tail = norm[:limit].rpartition(" ")
-    return head if sep else norm[:limit]
 
 
 def _content_digest(author: str, content: str, limit: int) -> str:
@@ -856,71 +795,6 @@ def _feed_content_fingerprints(author: str, content: str) -> "set[str]":
     not the next) a re-render can't re-key the post and earn it a second comment.
     """
     return {f"fp{n}:{_content_digest(author, content, n)}" for n in _FEED_FP_PREFIX_CHARS}
-
-
-# The activity URN lives in a data-* attribute on the feed-update CONTAINER, which sits ABOVE the
-# comment-button ancestor `_card_for_textbox` returns — so scanning only that card's outerHTML found
-# nothing on the live 2026 feed and every comment fell back to the content hash (issue #580). Walk
-# UP instead, reading each element's OWN attribute values, and stop at the first ancestor spanning
-# more than one post card so we can never pick up a SIBLING post's URN. Descendant attributes are
-# checked last (a reshare embeds the original post's URN, so containers outrank children).
-_URN_SCAN_JS = _COMMENT_ACTION_JS + r"""
-const countCommentActions = (root) => {
-  if (!root || !root.querySelectorAll) return 0;
-  let n = 0;
-  for (const b of root.querySelectorAll("button, [role='button']")) { if (isCommentAction(b)) n++; }
-  return n;
-};
-const RE = /urn:li:(?:activity|ugcPost|share):\d+/i;
-const attrHit = (el) => {
-  if (!el || !el.attributes) return null;
-  for (const a of el.attributes) { const m = RE.exec(a.value || ''); if (m) return m[0]; }
-  return null;
-};
-const el = arguments[0];
-let hit = attrHit(el);
-if (hit) return hit;
-let p = el.parentElement, depth = 0;
-while (p && depth < 12) {
-  // Stop before an ancestor that spans TWO posts. Counting comment actions is the boundary test,
-  // so it must use the same multi-route resolver as the card walk — with the old aria-label-only
-  // count this hit 0 everywhere and the scan climbed straight past the card into the feed root,
-  // returning a neighbouring post's URN.
-  if (p.querySelectorAll && countCommentActions(p) > 1) break;
-  hit = attrHit(p);
-  if (hit) return hit;
-  p = p.parentElement; depth++;
-}
-if (el.querySelectorAll) {
-  for (const d of el.querySelectorAll('*')) { hit = attrHit(d); if (hit) return hit; }
-}
-return null;
-"""
-
-
-def _feed_post_urn_from_card(card, driver=None) -> "str | None":
-    """The canonical urn:li:(activity|ugcPost|share):<id> for a feed card. Reads data-* attributes
-    on the card, on its ancestors (never past an element that spans more than one post) and on its
-    descendants, then falls back to a regex over the card's own HTML. Lowercased URN or None.
-    """
-    runner = driver if driver is not None else getattr(card, "parent", None)
-    if runner is not None:
-        try:
-            found = runner.execute_script(_URN_SCAN_JS, card)
-        except Exception:
-            found = None
-        if isinstance(found, str):
-            m = _URN_RE.search(found)
-            if m:
-                return m.group(0).lower()
-    try:
-        html = card.get_attribute("outerHTML")
-    except Exception:
-        return None
-    if not isinstance(html, str):
-        return None
-    m = _URN_RE.search(html)
-    return m.group(0).lower() if m else None
 
 
 def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
@@ -948,63 +822,9 @@ def _stable_feed_post_key(card, author: str, content: str, driver=None) -> str:
     return _feed_post_identity(card, author, content, driver=driver)[0]
 
 
-def _post_permalink_from_card(card):
-    """Real LinkedIn permalink for a feed post, read from its /feed/update/ anchor (the SDUI
-    card has no data-urn). Returns a normalized https URL or None.
-    """
-    try:
-        for a in card.find_elements(By.CSS_SELECTOR, "a[href*='/feed/update/']"):
-            href = (a.get_attribute("href") or "").split("?")[0]
-            if "/feed/update/" in href:
-                return href.rstrip("/") + "/"
-        return None
-    except Exception:
-        return None
-
-
 # Relative-age units → minutes. The SDUI card shows a token like "3h •", "5d •", "2w •", "10mo •".
 _AGE_UNIT_MIN = {"s": 0, "m": 1, "h": 60, "d": 1440, "w": 10080, "mo": 43200, "y": 525600}
 _AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
-# LinkedIn renders social counts as "1,234", "1.2K", or "3M" depending on magnitude — parse all
-# three. Anchored on the trailing label word so a bare reaction glyph count never masquerades as,
-# say, impressions. The separator is horizontal-only (`[^\S\n]`): on the stacked analytics layout
-# each count sits on its own line, so allowing \s+ here would let the PREVIOUS row's value bind to
-# the next row's label ("Comments\n1\nReposts\n0" → reposts=1). _stacked_counts handles that layout.
-_COUNT = r"([\d,]+(?:\.\d+)?[KMBkmb]?)"
-_SEP = r"[^\S\n]+"
-_COMMENTS_RE = re.compile(_COUNT + _SEP + r"comments?", re.I)
-_REACTIONS_RE = re.compile(_COUNT + _SEP + r"(?:reactions?|likes?)", re.I)
-_IMPRESSIONS_RE = re.compile(_COUNT + _SEP + r"impressions?", re.I)
-# LinkedIn labels shares as "reposts" on the SDUI social bar (older UIs said "shares"); accept both.
-_REPOSTS_RE = re.compile(_COUNT + _SEP + r"(?:reposts?|shares?)", re.I)
-# Saves surface only in the author's post analytics ("N saves"); 0 when the bar doesn't expose it.
-_SAVES_RE = re.compile(_COUNT + _SEP + r"saves?", re.I)
-
-# Live post-analytics capture (/analytics/post-summary/urn:li:activity:…/, owner grab 2026-07-23)
-# puts every label and its value in SEPARATE elements — driver.text renders one per line — and the
-# two blocks stack in OPPOSITE orders: Discovery hero stats read "72\nImpressions" (value first),
-# the Engagement breakdown reads "Reposts\n0" (label first). Matching on whole lines (not a loose
-# regex over the blob) is what keeps prose like "Save this checklist" out of the numbers.
-_STACKED_VALUE_FIRST = {"impressions"}
-_STACKED_LABEL_FIRST = {"reactions": "reactions", "comments": "comments", "reposts": "reposts",
-                        "shares": "reposts", "saves": "saves"}
-_BARE_COUNT_RE = re.compile(r"^[\d,]+(?:\.\d+)?[KMBkmb]?$")
-
-_COUNT_MULT = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
-
-
-def _parse_count(raw: "str | None") -> int:
-    """'1,234' → 1234, '1.2K' → 1200, '3M' → 3000000. 0 on anything unparseable."""
-    s = (raw or "").strip().replace(",", "")
-    if not s:
-        return 0
-    mult = _COUNT_MULT.get(s[-1].lower(), 1)
-    if mult != 1:
-        s = s[:-1]
-    try:
-        return int(round(float(s) * mult))
-    except ValueError:
-        return 0
 
 
 def _post_age_minutes(driver, card) -> "int | None":
@@ -1029,50 +849,6 @@ def _post_age_minutes(driver, card) -> "int | None":
     if not m:
         return None
     return int(m.group(1)) * _AGE_UNIT_MIN.get(m.group(2), 60)
-
-
-def _stacked_counts(text: str) -> dict:
-    """Counts for the post-analytics layout, where a label and its value are on adjacent lines.
-    Only exact label lines pair up, and only with a neighbour that is a bare count — so a row's
-    value can never be read as the next row's, and post body text is ignored.
-    """
-    lines = [ln.strip() for ln in (text or "").splitlines()]
-    lines = [ln for ln in lines if ln]
-    out: dict = {}
-    for i, line in enumerate(lines):
-        label = line.lower().rstrip(":")
-        if label in _STACKED_LABEL_FIRST:
-            nxt = lines[i + 1] if i + 1 < len(lines) else ""
-            if _BARE_COUNT_RE.match(nxt):
-                out.setdefault(_STACKED_LABEL_FIRST[label], _parse_count(nxt))
-        elif label in _STACKED_VALUE_FIRST:
-            prev = lines[i - 1] if i else ""
-            if _BARE_COUNT_RE.match(prev):
-                out.setdefault(label, _parse_count(prev))
-    return out
-
-
-def _post_social_counts(card) -> dict:
-    """Best-effort reaction/comment/repost/impression/save counts parsed from the card's social-counts
-    bar text. Returns {reactions, comments, reposts, impressions, saves} (0 on miss). Impressions and
-    saves show only on the author's own post detail/analytics view; reposts weigh 2× in the
-    engagement score (#387); reactions/comments feed the low-weight feed 'activity' scoring signal.
-    """
-    zero = {"reactions": 0, "comments": 0, "reposts": 0, "impressions": 0, "saves": 0}
-    try:
-        text = card.text or ""
-    except Exception:
-        return dict(zero)
-
-    stacked = _stacked_counts(text)
-
-    def _num(rx, key):
-        m = rx.search(text)
-        return _parse_count(m.group(1)) if m else stacked.get(key, 0)
-
-    return {"reactions": _num(_REACTIONS_RE, "reactions"), "comments": _num(_COMMENTS_RE, "comments"),
-            "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
-            "saves": _num(_SAVES_RE, "saves")}
 
 
 # The zero-walk cross-check for a stats read that scored EVERY signal 0 (issue #1021): a post with
@@ -1200,71 +976,6 @@ def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
             + _env_float("FEED_SCORE_W_ACTIVITY", _SCORE_W_ACTIVITY) * activity)
 
 
-# Moved to `utilities.linkedin_formatter` (#1154) so `app.engagement.invites` can reach it without
-# importing this module back. Kept under the private alias: the seven call sites below read it from
-# THIS module's globals, so `patch("...run_automation._strip_non_bmp")` still binds what they read.
-_strip_non_bmp = strip_non_bmp
-
-
-# The SDUI comment/reply composer has NO <form> ancestor, so walk up from the textbox and click
-# the enabled submit button whose text is Comment/Post/Reply — excluding the aria-label
-# Comment/Reply buttons that OPEN a composer. Returns True if a button was clicked.
-_SUBMIT_NEAR_COMPOSER_JS = (
-    "let root=arguments[0]; for(let i=0;i<7 && root.parentElement;i++) root=root.parentElement;"
-    "const b=[...root.querySelectorAll('button')].find(x=>!x.disabled && x.offsetParent!==null &&"
-    "['comment','post','reply'].includes((x.innerText||'').trim().toLowerCase()) &&"
-    "!['comment','reply'].includes((x.getAttribute('aria-label')||'').toLowerCase()));"
-    "if(b){b.click(); return true;} return false;")
-
-
-def _composer_submitted(driver, composer, text: str) -> bool:
-    """True only if the text actually posted: the composer cleared (or detached), or the text now
-    shows in the nearby comment list — NOT merely still sitting in a full composer (the old
-    'text in body' check false-positived on that, so comments silently never posted).
-    """
-    try:
-        if (composer.text or "").strip() == "":
-            return True
-    except Exception:
-        return True  # composer detached/re-rendered after posting
-    try:
-        return bool(driver.execute_script(
-            "let r=arguments[0]; for(let i=0;i<9 && r.parentElement;i++) r=r.parentElement;"
-            "const cl=r.querySelector(\"[data-testid*='-commentList']\");"
-            "return cl ? cl.innerText.includes(arguments[1]) : false;", composer, text[:25]))
-    except Exception:
-        return False
-
-
-def _scroll_into_center(driver, element) -> None:
-    """Best-effort: park `element` in the MIDDLE of the viewport. Positioning is never fatal on its
-    own, so a failure here is swallowed and left to the click that follows.
-    """
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
-        time.sleep(random.uniform(0.3, 0.8))
-    except Exception:
-        pass  # a stale element or a rejected scroll is not a failure — the click below decides
-
-
-def _focus_composer(driver, composer) -> None:
-    """Click into a comment/reply composer, centered first.
-
-    LinkedIn's global nav is STICKY, so whatever the previous action on the card left on screen can
-    leave the composer pinned to the very top of the viewport — the nav's own <svg> then receives
-    the click and Chrome raises ElementClickInterceptedException at y≈9 (issue #815). Centering is
-    the actual fix; a JS click would also dodge the nav but would equally dodge a genuine modal or
-    overlay, so the one retry re-centers and clicks for real and a second interception is allowed
-    to raise (the caller names the step it died on).
-    """
-    _scroll_into_center(driver, composer)
-    try:
-        composer.click()
-    except ElementClickInterceptedException:
-        _scroll_into_center(driver, composer)
-        composer.click()
-
-
 # How long a composer gets to mount after the Comment click. The old `find_first` chain spent
 # WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1) — ~35s — on every card that never opened one, and on
 # the group feed that was every card of every run. A composer that is going to mount does so in well
@@ -1356,7 +1067,7 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
     """
     step = "prepare text"
     try:
-        comment_text = _strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
+        comment_text = strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
         if not comment_text.strip():
             return False
         if composer is None:
@@ -1869,7 +1580,7 @@ def _resolve_follow_control(driver: WebDriver, profile_url: str,
                   action_type="follow", task_name="_resolve_follow_control")
         return FollowStatus.UNKNOWN, None
     try:
-        result = driver.execute_script(_FOLLOW_CONTROL_JS, _profile_slug(profile_url), owner)
+        result = driver.execute_script(_FOLLOW_CONTROL_JS, profile_slug(profile_url), owner)
     except Exception as e:
         log_debug(f"Follow control resolution JS failed ({type(e).__name__}: {e})",
                   action_type="follow", task_name="_resolve_follow_control")
@@ -2145,7 +1856,7 @@ def _resolve_connect_state(driver: WebDriver, profile_url: str, name: str = "") 
                   action_type="invite_connect", task_name="_resolve_connect_state")
         return ConnectStatus.UNKNOWN
     try:
-        state = driver.execute_script(_CONNECT_STATE_JS, _profile_slug(profile_url), owner)
+        state = driver.execute_script(_CONNECT_STATE_JS, profile_slug(profile_url), owner)
     except Exception as e:
         log_debug(f"Connect state resolution JS failed ({type(e).__name__}: {e})",
                   action_type="invite_connect", task_name="_resolve_connect_state")
@@ -3102,122 +2813,6 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     return posted
 
 
-# How far ABOVE a comment's own top edge a composer may still start and count as its reply box.
-# Only absorbs sub-pixel/rounding drift — a real reply box opens below the comment, never above it.
-_COMPOSER_ABOVE_SLACK_PX = 8
-
-
-def _visible_rect(element: WebElement) -> dict | None:
-    """Page-coordinate rect of a RENDERED element, else None. Zero-size IS the hidden case here —
-    the same width>0 && height>0 test #478 applies to composer candidates.
-    """
-    try:
-        r = element.rect or {}
-    except Exception:
-        return None  # stale/detached element is not a candidate
-    if not r.get("width") or not r.get("height"):
-        return None
-    return r
-
-
-def _visible_composers(root: WebDriver | WebElement) -> list[tuple[WebElement, dict]]:
-    """`(element, rect)` for every rendered role=textbox under `root` — a WebElement to search one
-    comment's subtree, or the driver to search the page.
-    """
-    found = []
-    try:
-        for box in root.find_elements(By.CSS_SELECTOR, "div[role='textbox']"):
-            rect = _visible_rect(box)
-            if rect:
-                found.append((box, rect))
-    except Exception:
-        pass  # a stale root has no candidates; the caller skips
-    return found
-
-
-def _in_same_comment(driver: WebDriver, comment_el: WebElement, other: WebElement | None) -> bool:
-    """True when `other` is this comment or shares its subtree (a reply wrapper inside it, or a
-    wrapper holding it) — i.e. the composer that resolved to it is ours to type into.
-    """
-    if other is None:
-        return False
-    if other == comment_el:
-        return True
-    try:
-        return bool(driver.execute_script(
-            "return arguments[0].contains(arguments[1]) || arguments[1].contains(arguments[0]);",
-            comment_el, other))
-    except Exception:
-        return False
-
-
-def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
-                                user_id: int = None) -> WebElement | None:
-    """The reply composer belonging to THIS comment — never a page-wide first match.
-
-    A document-wide role=textbox lookup returns the first VISIBLE composer in DOM order, so the reply
-    was typed into the post's main 'Add a comment' box (it posts as a standalone comment) or into one
-    left mounted by a comment replied to earlier in the same sweep. Same bug class as #478 on the
-    other reply path and #876 on the post card; this is issue #883.
-
-    Two rules, in order. A composer inside the comment's own subtree is unambiguous — LinkedIn nests
-    a comment's replies, and the box that opens at the end of them, in the comment container. If this
-    render puts it outside, fall back to #478's geometry: the visible composer NEAREST the comment's
-    bottom edge, with anything above the comment rejected OUTRIGHT — that hard above-filter is what
-    keeps the post's main box out, where #478 merely penalises it and still hands it back when it is
-    the only candidate — and with a box that resolves to a DIFFERENT comment rejected too. No
-    candidate means skip; we never borrow a composer.
-    """
-    anchor = _visible_rect(comment_el)
-    if anchor is None:
-        # The callers now rely on THIS function to log every miss (#886 dropped their own warning),
-        # so a stale/unrendered comment must not return None silently.
-        log_debug("Comment is not rendered; no reply composer to resolve",
-                  action_type="reply", user_id=user_id)
-        return None
-    bottom = anchor["y"] + anchor["height"]
-    nested = _visible_composers(comment_el)
-    candidates = nested or [(box, rect) for box, rect in _visible_composers(driver)
-                            if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
-    best = min(candidates, key=lambda br: abs(br[1]["y"] - bottom), default=None)
-    if best is None:
-        log_debug("No reply composer belongs to this comment", action_type="reply", user_id=user_id)
-        return None
-    if nested:
-        return best[0]
-    # Sibling render: reject a box that resolves to a DIFFERENT comment — the nearest box below can
-    # belong to a LATER comment when our own reply box never opened, and borrowing it answers the
-    # wrong person. An UNRESOLVED owner is not proof of that: `_comment_container` was written for a
-    # comment BODY (`expandable-text-box`) and rejects any ancestor holding a GIF/Emoji composer
-    # button, which is the composer's OWN toolbar here — requiring it to resolve would make this
-    # branch skip every time, silently, whenever LinkedIn renders the reply box outside the comment.
-    # Unresolved therefore falls through to #478's proven geometry, still under the hard above-filter
-    # that is what actually keeps the post's main comment box out.
-    owner = _comment_container(driver, best[0])
-    if owner is not None and not _in_same_comment(driver, comment_el, owner):
-        log_debug("Nearest reply composer belongs to another comment", action_type="reply", user_id=user_id)
-        return None
-    return best[0]
-
-
-def _type_and_submit_reply(driver: WebDriver, composer: WebElement, reply_text: str,
-                           user_id: int = None) -> bool:
-    """Type into an ALREADY-resolved composer and submit (role=textbox + Ctrl+Enter fallback). Both
-    reply paths share this so the submit/verify contract can never drift between them. True only when
-    `_composer_submitted` confirms the post.
-    """
-    reply_text = _strip_non_bmp(reply_text)
-    if not reply_text.strip():
-        return False
-    _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
-    composer.send_keys(reply_text)
-    time.sleep(random.uniform(1, 2))
-    if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
-        composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
-    time.sleep(random.uniform(3, 5))
-    return _composer_submitted(driver, composer, reply_text)
-
-
 def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
     post_comment_inline: role=textbox composer + Ctrl+Enter fallback). The composer is resolved
@@ -3235,24 +2830,6 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
     except Exception as e:
         log_warning("Inline reply post failed", exc=e, action_type="reply", user_id=user_id)
         return False
-
-
-def _comment_items_from_thread(driver):
-    """Comment items on the SDUI thread — walk up from each Reply button to the container that
-    also holds the author link + text (comments are no longer <article> elements).
-    """
-    items = []
-    reply_btns = find_all_first(driver, [
-        (By.CSS_SELECTOR, "[data-testid*='-commentList'] button[aria-label='Reply']"),
-        (By.CSS_SELECTOR, "button[aria-label='Reply']")])
-    for rb in reply_btns:
-        item = driver.execute_script(
-            "let el=arguments[0],d=0;while(el&&d<8){"
-            "if(el.querySelector&&el.querySelector(\"a[href*='/in/']\"))return el;"
-            "el=el.parentElement;d++;}return arguments[0].parentElement;", rb)
-        if item is not None:
-            items.append(item)
-    return items
 
 
 def _fill_edition_description(driver, wait, subtitle: str) -> bool:
@@ -3276,7 +2853,7 @@ def _fill_edition_description(driver, wait, subtitle: str) -> bool:
         if desc_el is None:
             return False
         desc_el.click()
-        desc_el.send_keys(_strip_non_bmp(subtitle))
+        desc_el.send_keys(strip_non_bmp(subtitle))
         time.sleep(random.uniform(1, 2))
         return True
     except Exception:
@@ -3295,7 +2872,7 @@ def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str
     `(published_url, None)` on success, or `(None, failed_step)` on failure.
     """
     return fill_article_editor(
-        driver, wait, _strip_non_bmp(title), _strip_non_bmp(body),
+        driver, wait, strip_non_bmp(title), strip_non_bmp(body),
         user_id=user_id,
         subtitle=subtitle,
         cover_image_path=cover_image_path,
@@ -4145,7 +3722,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
                   task_name="auto_draft_group_post")
         return "No cached profile to draft from"
     with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
-        text = _strip_non_bmp(generate_group_post(
+        text = strip_non_bmp(generate_group_post(
             my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
             profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
     if not text.strip():
@@ -4195,7 +3772,7 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
         log_info("No reviewed group post draft to publish", user_id=user_id,
                  task_name="auto_post_to_group")
         return "No group post draft to publish"
-    text = _strip_non_bmp(draft.get("content") or "")
+    text = strip_non_bmp(draft.get("content") or "")
     if not text.strip():
         return "No group post draft to publish"
     try:
@@ -4386,12 +3963,6 @@ _golden_hour_sweep_countdowns = _golden.sweep_countdowns
 _MAX_LEAD_FLAGS_PER_SWEEP = 10  # volume backstop: a draft costs an LLM call, so bound them per run
 
 
-def _profile_slug(profile_url: str) -> str:
-    """The /in/<slug> identity from a profile URL — the stable half of a lead's dedup key."""
-    m = re.search(r"/in/([^/?#]+)", profile_url or "")
-    return (m.group(1).lower() if m else "")
-
-
 def _reply_target_key(user_id: int, post_id: int, commenter_slug: str, comment_text: str) -> str:
     """Stable Redis key for a specific comment on a specific post so the reply sweep never replies
     to the SAME comment twice across golden-hour sweeps. Keyed on identity (commenter slug) + a
@@ -4434,67 +4005,6 @@ def _record_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, 
     except Exception as e:
         log_warning("Could not record replied-to-comment marker", exc=e, user_id=user_id,
                     post_id=post_id, action_type="reply")
-
-
-def _lead_thread_key(source: str, thread_ref: str, person_profile_url: str, person_name: str = "") -> str:
-    """Stable dedup id for ONE conversation with ONE person, so a re-scan (or a second buying-intent
-    line in the same thread) never re-flags a lead the operator has already seen. Keyed on identity
-    + thread — never on the message text (the #474 lesson).
-    """
-    who = _profile_slug(person_profile_url)
-    if not who:
-        who = hashlib.sha1((person_name or "").strip().lower().encode("utf-8", "ignore")).hexdigest()[:12]
-    return f"lead:{source}:{thread_ref}:{who}"
-
-
-def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", thread_ref: str,
-                      person_name: str = None, person_profile_url: str = None,
-                      channel: "LeadSignalChannel" = LeadSignalChannel.REPLY,
-                      post_id: int = None, context_url: str = None, context_text: str = None,
-                      my_profile=None, prefs: dict = None, profile_synthesis: str = None) -> "int | None":
-    """Classify one piece of inbound text and, on a buying-intent hit, queue it as a hot lead with a
-    drafted response awaiting approval. Returns the new signal id, or None (no intent, already
-    flagged, or an error). Best-effort and NON-FATAL — lead detection must never break a reply sweep.
-    """
-    try:
-        if not text or not str(text).strip():
-            return None
-        key = _lead_thread_key(str(source), thread_ref, person_profile_url or "", person_name or "")
-        if has_lead_signal(user_id, key):
-            return None
-        verdict = detect_lead_signals(text)
-        if not verdict.get("is_lead"):
-            return None
-        draft = None
-        try:
-            with llm_attribution(user_id=user_id, feature=FEATURE_DM):
-                draft = generate_lead_response(text, my_profile, channel=str(channel), context=context_text,
-                                               prefs=prefs, profile_synthesis=profile_synthesis)
-        except Exception as e:
-            log_warning("Lead response draft failed; queueing the signal without one", exc=e,
-                        user_id=user_id, action_type="engaged")
-        signal_id = insert_lead_signal(
-            user_id, source, key, person_name=person_name, person_profile_url=person_profile_url,
-            snippet=str(text)[:2000], score=int(verdict.get("score") or 0),
-            matched_signals=",".join(verdict.get("matched") or [])[:512], post_id=post_id,
-            context_url=context_url, draft_response=draft, channel=channel)
-        if signal_id:
-            log_info(f"Hot lead detected ({verdict.get('method')}, score {verdict.get('score')}) "
-                     f"from {person_name or person_profile_url or 'unknown'}",
-                     user_id=user_id, post_id=post_id, action_type="engaged")
-        return signal_id
-    except Exception as e:
-        log_warning("Lead-signal detection failed", exc=e, user_id=user_id, action_type="engaged")
-        return None
-
-
-def _reply_outcome(status: str, summary: str, comments_found: int = 0,
-                   replies_sent: int = 0) -> dict:
-    """One post's reply-sweep outcome. A dict, not a string, because the golden-hour report
-    (issue #622) needs the counts the old summary line only ever rendered.
-    """
-    return {"status": status, "summary": summary, "comments_found": int(comments_found),
-            "replies_sent": int(replies_sent)}
 
 
 def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, comment_text: str,
@@ -4601,7 +4111,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     log_info(f"Comments Found: {len(comments)}")
 
     # our profile slug — used to detect comments we AUTHORED or already replied to (the loop-breaker).
-    our_slug = _profile_slug(str(my_profile.profile_url))
+    our_slug = profile_slug(str(my_profile.profile_url))
     # LOOP SAFETY: without our slug we can't tell our own comments / already-replied ones apart, so a
     # sweep could reply to our own comments and re-reply every run. Fail SAFE — skip replying entirely.
     if not our_slug:
@@ -4640,7 +4150,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
             _ename = clean_person_name(_eraw)
             _edegree = connection_degree(_eraw)
             _eprofile = (_link.get_attribute("href") or "").split("?")[0]
-            commenter_slug = _profile_slug(_eprofile)
+            commenter_slug = profile_slug(_eprofile)
             # Never reply to a comment WE authored (seed, second-wave, or manual). It reads as the
             # user talking to themselves in the activity feed and stacks "responses" on their own post.
             if _href_is_profile(_eprofile, our_slug):
@@ -4705,49 +4215,6 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                            result=LogResultType.FAILURE, post_url=post_url, message=response)
     return _reply_outcome("ok", f"Replied to {comments_replied_count} comments",
                           comments_found=len(comments), replies_sent=comments_replied_count)
-
-
-def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outcome: dict,
-                               phase: str = _golden.PHASE_REPLY_SWEEP) -> "dict | None":
-    """Build, log and ship ONE post's golden-hour report (issue #622), or None for a post too old to
-    be the amplifier's business. Latency is measured from the post's real publish time, so the
-    report answers the audit's question — did this sweep land inside the window, and did it find
-    anything? A sweep that arrived late is logged as a WARNING: that is the queue-backlog signal the
-    #401 audit had no way to see.
-    """
-    outcome = dict(outcome or {})
-    try:
-        minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_id))
-    except Exception as e:
-        # Measurement must never break the thing it measures — an unreadable age reports as unknown
-        # (and therefore out-of-window), it does not abort the sweep mid-post.
-        log_warning("Golden-hour latency unreadable", exc=e, user_id=user_id, post_id=post_id)
-        minutes = None
-    # Scoped to the phase's own horizon: the sweep also walks older posts by design, and grading
-    # those revisits would bury the real reading under permanent out-of-window noise.
-    if not _golden.should_report(minutes, phase):
-        return None
-    report = _golden.golden_hour_report(
-        post_id, minutes, comments_found=outcome.get("comments_found"),
-        replies_sent=outcome.get("replies_sent"), status=outcome.get("status") or "ok",
-        sweep_slot=sweep_slot, phase=phase)
-    summary = _golden.report_summary(report)
-    second_wave = phase == _golden.PHASE_SECOND_WAVE
-    task_name = "auto_second_wave_comment" if second_wave else "sweep_reply_comments"
-    action_type = "comment" if second_wave else "reply"
-    if report["within_window"]:
-        log_info(summary, user_id=user_id, post_id=post_id, action_type=action_type,
-                 task_name=task_name)
-    else:
-        # Out of window on a post young enough to still matter (should_report already dropped the
-        # older ones) — that is the queue-backlog / rate-limit signal, so it goes out as a WARNING.
-        log_warning(summary, user_id=user_id, post_id=post_id, action_type=action_type,
-                    task_name=task_name)
-    try:
-        track_golden_hour_report(user_id, report)
-    except Exception as e:
-        log_warning("Golden-hour report not tracked", exc=e, user_id=user_id, post_id=post_id)
-    return report
 
 
 def _retry_golden_hour_sweep(user_id: int, sweep_slot: int, attempt: int, status: str) -> bool:
@@ -4892,45 +4359,6 @@ def _followup_reply_key(post_key: str, replier_href: str, reply_text: str) -> st
     return f"{post_key}#reply:{slug}:{digest}"
 
 
-# SDUI comment thread (validated live 2026-07-24 on a moderated group post, issue #478):
-#   * comments render as [data-testid='expandable-text-box'] INSIDE [data-testid*='commentList']
-#     — but ONLY once scrolled into view (a long post pushes them far below the fold);
-#   * a comment's author is the header /in/ link that is NOT inside the text box (an @mention in a
-#     reply body is also an /in/ link — that was the false "mine" match);
-#   * replies are nested inside their parent comment's container (DOM containment);
-#   * the like control is a button whose aria-label starts "React " (e.g. "React Like"); the reply
-#     control is aria-label="Reply". "…more" truncates long replies until expanded.
-_COMMENTLIST_TEXTBOX = "[data-testid*='commentList'] [data-testid='expandable-text-box']"
-
-
-def _comment_header_author(driver, container) -> str:
-    """A comment's author profile href from its HEADER link — never an @mention inside the body
-    text box (that false match flagged a reply that mentioned us as 'ours').
-    """
-    try:
-        return driver.execute_script(
-            "const c=arguments[0];"
-            "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
-            "  if(!a.closest(\"[data-testid='expandable-text-box']\")) return (a.href||'').split('?')[0];"
-            "}return '';", container) or ""
-    except Exception:
-        return ""
-
-
-def _comment_container(driver, textbox):
-    """Smallest ancestor of a comment text box that carries a HEADER author link and is not the
-    post wrapper (which uniquely has the GIF/Repost/Emoji composer buttons).
-    """
-    try:
-        return driver.execute_script(
-            "let el=arguments[0],d=0;while(el&&d<10){"
-            " const hdr=[...el.querySelectorAll(\"a[href*='/in/']\")].some(a=>!a.closest(\"[data-testid='expandable-text-box']\"));"
-            " const post=[...el.querySelectorAll('button')].some(b=>/GIF|Repost|Emoji Picker/.test(b.getAttribute('aria-label')||''));"
-            " if(hdr&&!post) return el; el=el.parentElement;d++;}return null;", textbox)
-    except Exception:
-        return None
-
-
 def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> bool:
     """Like a comment/reply (best-effort, non-fatal). The action bar is HOVER-HIDDEN (the react
     button is zero-size until the comment is hovered), so hover first, then click the react control
@@ -4980,43 +4408,6 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
         return False
 
 
-def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
-    """Reply UNDER a specific comment — NOT as a new top-level comment. The bug: clicking a comment's
-    Reply then taking the first page-wide role=textbox grabbed the post's main 'Add a comment' box, so
-    the reply posted as a standalone comment (#478).
-
-    #478's own fix only PENALISED a composer above the comment, so the main box still won when it was
-    the only visible one — the exact failure this function exists to prevent (#886). Composer
-    resolution is now `_reply_composer_for_comment`, shared with `_reply_to_comment_inline` (#883):
-    a box inside this comment wins, a box above it is rejected outright, a box owned by a DIFFERENT
-    comment is rejected, and no box of ours means skip. This function keeps only its own way of
-    OPENING the box — the #478 thread path needs the scroll + hover that renders a hover-hidden Reply
-    button before it can be clicked.
-    """
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
-        try:
-            ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
-        except Exception:
-            pass  # hover is best-effort; the Reply button lookup below still runs
-        rbtns = comment_el.find_elements(By.CSS_SELECTOR, "button[aria-label='Reply']")
-        if not rbtns:
-            log_warning("Reply-under-comment: no Reply button found", action_type="reply", user_id=user_id)
-            return False
-        try:
-            ActionChains(driver).move_to_element(rbtns[0]).pause(0.2).click(rbtns[0]).perform()
-        except Exception:
-            driver.execute_script("arguments[0].click();", rbtns[0])
-        time.sleep(random.uniform(1.5, 2.8))
-        composer = _reply_composer_for_comment(driver, comment_el, user_id=user_id)
-        if composer is None:
-            return False  # expected no-op (the box never opened) — `_reply_composer_for_comment` logs it DEBUG
-        return _type_and_submit_reply(driver, composer, reply_text, user_id=user_id)
-    except Exception as e:
-        log_warning("Reply-under-comment failed", exc=e, action_type="reply", user_id=user_id)
-        return False
-
-
 def _load_comment_thread(driver) -> None:
     """Make a post's comment thread actually render: a TALL viewport is what lazy-renders comments a
     long post pushes far below the fold (scrolling alone on the default 1080-tall window did not —
@@ -5042,20 +4433,6 @@ def _load_comment_thread(driver) -> None:
             driver.execute_script("arguments[0].click();", exp[0]); time.sleep(random.uniform(1.2, 2))
         except Exception:
             break
-
-
-def _comment_items(driver) -> list:
-    """[(text_box, container, author_href)] for every comment/reply currently rendered in the
-    thread. Text boxes with no resolvable container are dropped — a comment we can't scope to a
-    container has no author and no action bar, so it is not addressable.
-    """
-    items = []
-    for tb in driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX):
-        cont = _comment_container(driver, tb)
-        if cont is None:
-            continue
-        items.append((tb, cont, _comment_header_author(driver, cont)))
-    return items
 
 
 def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
@@ -5536,16 +4913,6 @@ def _comment_text_matches(rendered: str, logged: str) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
-def _href_is_profile(href: str, slug: str) -> bool:
-    """True when a profile href belongs to EXACTLY `slug`. A substring test — `f"/in/{slug}" in
-    href` — also matches every slug ours is a PREFIX of ('/in/chris' inside '/in/chris-queen-9b1'),
-    which would let a stranger's comment be read as ours and their reply be discounted as our own.
-    """
-    if not slug:
-        return False
-    return _profile_slug(href or "") == str(slug).strip().lower()
-
-
 def _find_our_comment(items: list, our_slug: str, comment_text: str):
     """Our comment's container within a rendered thread, or None.
 
@@ -5662,7 +5029,7 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
 
     replies = _thread_replies(driver, ours, items)
     author_href = _post_author_href(driver)
-    author_slug = _profile_slug(author_href)
+    author_slug = profile_slug(author_href)
     outcome["like_count"] = _comment_like_count(driver, ours)
     outcome["reply_count"] = sum(1 for _c, a in replies if not _href_is_profile(a, our_slug))
     outcome["our_reply_sent"] = any(_href_is_profile(a, our_slug) for _c, a in replies)
@@ -5708,7 +5075,7 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
         release_run_lock(lock_name, lock_token)
         return f"Failed to start comment outcome sweep: {e}"
     try:
-        our_slug = _profile_slug(str(my_profile.profile_url))
+        our_slug = profile_slug(str(my_profile.profile_url))
         if not our_slug:
             log_warning("Comment outcomes: no profile slug — cannot identify our own comments",
                         user_id=user_id, task_name="sweep_comment_outcomes")
@@ -6263,38 +5630,6 @@ def _own_profile_url(driver, user_id: "int | None") -> str:
         log_debug(f"Could not resolve own profile URL: {e}", user_id=user_id, action_type="scrape")
         return ""
     return resolved if "/in/" in resolved else ""
-
-
-class _SafePlaceholders(dict):
-    """format_map backing dict that leaves unknown {tokens} literal instead of raising —
-    so a user typo like {frst_name} never drops the whole message.
-    """
-    def __missing__(self, key):
-        return "{" + key + "}"
-
-
-def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "",
-                           blog_url: str = "", event_detail: str = "") -> str:
-    """Single source of truth for filling DM / lead-magnet {placeholders}: {first_name},
-    {headline}, {blog_url}, {event_detail}. Used by BOTH the DM-template path and the Comment->DM
-    lead magnet so their substitution can never drift. Tolerates unknown/malformed tokens gracefully.
-    """
-    if not text:
-        return text or ""
-    ctx = _SafePlaceholders(first_name=first_name or "there",
-                            headline=headline or "my professional field",
-                            blog_url=blog_url or "",
-                            # Catch-up templates (issue #482) reference the specific milestone; the
-                            # fallback keeps the sentence grammatical if the detail didn't scrape.
-                            event_detail=event_detail or "the news")
-    try:
-        return text.format_map(ctx)
-    except (IndexError, ValueError):
-        # malformed/positional braces (e.g. a stray "{") — replace known tokens only
-        out = text
-        for k in ("first_name", "headline", "blog_url", "event_detail"):
-            out = out.replace("{" + k + "}", str(ctx[k]))
-        return out
 
 
 @attribute_llm_cost(FEATURE_DM)
@@ -7422,7 +6757,7 @@ def _reply_to_person_on_post(driver, wait, post_url: str, person_profile_url: st
     an approved hot-lead response (issue #483). Reuses the #478 comment-thread helpers: a tall
     viewport + scrolling is what actually makes comments lazy-render on a long post.
     """
-    slug = _profile_slug(person_profile_url)
+    slug = profile_slug(person_profile_url)
     if not slug:
         log_warning("Lead response: no profile slug to target", user_id=user_id, action_type="reply")
         return False
@@ -7521,17 +6856,6 @@ _MAX_ENGAGERS_PER_ADJACENT_POST = 15
 _CONNECT_ENGAGER_LOOKBACK_DAYS = 30
 
 
-def _author_display_name(profile_url: str) -> str:
-    """Readable name for an adjacent author from their /in/ slug (we don't scrape their profile just
-    to write a note). 'jane-doe-1a2b3c' -> 'Jane Doe'.
-    """
-    slug = _profile_slug(profile_url)
-    if not slug:
-        return ""
-    words = [w for w in slug.split("-") if w and not any(ch.isdigit() for ch in w)]
-    return " ".join(w.capitalize() for w in words[:3])
-
-
 def _harvest_post_commenters(driver, post_url: str, author_name: str, now: datetime,
                              limit: int = _MAX_ENGAGERS_PER_ADJACENT_POST) -> list:
     """Commenters on ONE post as connection-targeting signals. Reuses the SDUI comment-thread walker
@@ -7596,21 +6920,6 @@ def _connect_target_budget(user_id: int, prefs: dict, max_new: int = None) -> in
     remaining = cap - count_invites_sent_today(user_id) - count_open_connection_requests(user_id)
     ceiling = _MAX_NEW_CONNECT_TARGETS_PER_SCAN if max_new is None else int(max_new)
     return max(0, min(remaining, ceiling))
-
-
-def _draft_connect_note(user_id: int, candidate: ScoredCandidate, topic: str = None) -> str:
-    """Personalized connect note for one candidate: a grounded template (it names the actual shared
-    context) refined into the user's voice. Falls back to the template if the LLM is unavailable —
-    a missing note must never block the target.
-    """
-    base = default_connect_note(candidate, topic=topic)
-    try:
-        refined = (get_ai_message_refinement(base, character_limit=CONNECT_NOTE_LIMIT) or "").strip()
-    except Exception as e:
-        log_warning("Connect-note refinement failed", exc=e, user_id=user_id,
-                    action_type="connection_targeting")
-        return base
-    return (refined or base)[:CONNECT_NOTE_LIMIT]
 
 
 def _target_status_for_mode(mode: str, prefs: dict) -> "ConnectionRequestStatus":
@@ -8828,106 +8137,6 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
             log_warning("Could not refresh profile synthesis after scrape", exc=e, user_id=user_id,
                         task_name="update_stale_profile")
     return "Profile Updated Successfully"
-
-
-def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
-                        measurement_only: bool = False, debug: bool = False,
-                        force_refresh: bool = False) -> Tuple[
-    WebDriver, WebDriverWait, str, LinkedInProfile]:
-    """Update the profile of the user.
-
-    `measurement_only` marks a read-only stat-capture session, which keeps running under the
-    suppression tripwire's own pause (and only that one) so recovery stays measurable — see
-    rate_limit.is_measurement_paused.
-
-    `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
-    back to the normal pool when the node is busy or absent.
-
-    `force_refresh` makes the scrape bypass the profile cache (issue #1076). The cached FALLBACK
-    below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
-    the caller learns from the synthesis it gets back, not from a missing profile.
-    """
-    log_info("Getting Updated Profile")
-
-    user_email, user_password = get_user_password_pair_by_id(user_id)
-
-    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug)
-
-    # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
-    # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.
-    try:
-        login_to_linkedin(driver, wait, user_email, user_password,
-                          measurement_only=measurement_only)
-    except Exception as e:
-        log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
-        quit_gracefully(driver)
-        raise e
-
-    # A live profile refresh can fail independently (auth-wall on the profile view,
-    # transient DOM change) even when the feed is reachable. Don't let that abort the
-    # whole task — fall back to the user's cached profile so commenting can proceed.
-    try:
-        my_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id,
-                                    force_refresh=force_refresh)
-    except Exception as e:
-        log_warning("Live profile refresh failed; falling back to cached profile", exc=e, user_id=user_id)
-        my_profile = None
-
-    if my_profile is None and user_id is not None:
-        my_profile = load_profile_for_user(user_id)
-
-    if my_profile is None:
-        log_error("No profile available (live scrape failed and no cached profile)", user_id=user_id)
-        quit_gracefully(driver)
-        raise RuntimeError("Profile unavailable: live scrape failed and no cached profile to fall back on")
-
-    return driver, wait, user_email, my_profile
-
-
-class LinkedInSession(NamedTuple):
-    """The four values every browser-driven task carries around together.
-
-    A NamedTuple on purpose: `driver, wait, user_email, my_profile = session` still unpacks exactly
-    as the bare tuple did, so this is additive for anything that already destructures the result of
-    `get_current_profile`.
-    """
-
-    driver: WebDriver
-    wait: WebDriverWait
-    user_email: str
-    my_profile: LinkedInProfile
-
-
-@contextmanager
-def browser_session(user_id: int, session_name: str, **kwargs) -> "Iterator[LinkedInSession]":
-    """Hold a logged-in LinkedIn session for the duration of a block, and always give it back.
-
-    Chrome capacity is a FIXED pool of session slots shared by the Selenium lanes
-    (`SE_NODE_MAX_SESSIONS`), so a driver that is acquired and not quit does not degrade
-    performance — it permanently removes one of about eight slots until the worker process is
-    recycled. That teardown is currently a `try/finally` written out by hand in 24 task bodies, and
-    nothing stops the 25th from forgetting it.
-
-    Deliberately does NOT catch the acquisition failure. `get_current_profile` raises on a 429, an
-    auth wall, or a profile that will not resolve, and each caller answers that differently — some
-    return a message string the beat records, some re-raise for a retry, one is a measurement-only
-    run that must stay quiet. Guessing one of those would be worse than the four lines it saves.
-
-    Args:
-        user_id: Whose stored credentials and proxy the session runs as.
-        session_name: The label the Grid session is tagged with, for VNC and logs.
-        **kwargs: Forwarded to `get_current_profile` — `measurement_only`, `debug`, `force_refresh`.
-
-    Yields:
-        A `LinkedInSession`, which also unpacks as the historical
-        `(driver, wait, user_email, my_profile)` 4-tuple.
-    """
-    driver, wait, user_email, my_profile = get_current_profile(
-        user_id=user_id, session_name=session_name, **kwargs)
-    try:
-        yield LinkedInSession(driver=driver, wait=wait, user_email=user_email, my_profile=my_profile)
-    finally:
-        quit_gracefully(driver)
 
 
 def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,

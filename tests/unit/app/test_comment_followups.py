@@ -11,6 +11,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 RA = "cqc_lem.app.run_automation"
+# The composer/comment DOM helpers moved down to `utilities/linkedin/composer.py` (#1154)
+# and took their imports with them, so a collaborator THEY read has to be patched there —
+# patching it on `run_automation` rebinds a name they never look at.
+COMPOSER = "cqc_lem.utilities.linkedin.composer"
 
 
 @pytest.fixture(autouse=True)
@@ -116,9 +120,10 @@ class TestReplyUnderComment:
         composer = MagicMock()
         driver = MagicMock()
         driver.execute_script.return_value = True  # scrollIntoView, then the submit-button JS
-        with patch(f"{RA}.ActionChains"), patch(f"{RA}._strip_non_bmp", side_effect=lambda s: s), \
-             patch(f"{RA}._reply_composer_for_comment", return_value=composer) as rc, \
-             patch(f"{RA}._composer_submitted", return_value=True):
+        with patch(f"{COMPOSER}.ActionChains"), \
+             patch(f"{COMPOSER}.strip_non_bmp", side_effect=lambda s: s), \
+             patch(f"{COMPOSER}._reply_composer_for_comment", return_value=composer) as rc, \
+             patch(f"{COMPOSER}._composer_submitted", return_value=True):
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "Great point!", user_id=1) is True
         composer.send_keys.assert_called()
         assert rc.call_args.args[1] is comment  # resolution is anchored to THIS comment
@@ -127,7 +132,7 @@ class TestReplyUnderComment:
         from cqc_lem.app.run_automation import _reply_under_comment_inline
         comment = MagicMock(); comment.find_elements.return_value = []
         driver = MagicMock()
-        with patch(f"{RA}.ActionChains"), patch(f"{RA}.log_warning"):
+        with patch(f"{COMPOSER}.ActionChains"), patch(f"{COMPOSER}.log_warning"):
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "hi", user_id=1) is False
 
     def test_no_composer_of_ours_is_a_clean_skip_not_an_exception(self):
@@ -137,8 +142,8 @@ class TestReplyUnderComment:
         from cqc_lem.app.run_automation import _reply_under_comment_inline
         comment = MagicMock(); comment.find_elements.return_value = [MagicMock()]
         driver = MagicMock()
-        with patch(f"{RA}.ActionChains"), patch(f"{RA}.log_warning") as lw, \
-             patch(f"{RA}._reply_composer_for_comment", return_value=None):
+        with patch(f"{COMPOSER}.ActionChains"), patch(f"{COMPOSER}.log_warning") as lw, \
+             patch(f"{COMPOSER}._reply_composer_for_comment", return_value=None):
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "hi", user_id=1) is False
         lw.assert_not_called()
 
@@ -187,8 +192,9 @@ def _worker_env(es, reply_text="Thanks! How do you test drift?", followup_state=
     def author(_drv, cont):
         return "https://www.linkedin.com/in/me/" if cont is our_cont else "https://www.linkedin.com/in/glenda/"
 
-    _p(es, "_comment_container", side_effect=container)
-    _p(es, "_comment_header_author", side_effect=author)
+    # `_comment_items` is composer.py's now, and it calls ITS OWN container/author readers.
+    es.enter_context(patch(f"{COMPOSER}._comment_container", side_effect=container))
+    es.enter_context(patch(f"{COMPOSER}._comment_header_author", side_effect=author))
     _p(es, "get_comment_followup", return_value=followup_state)
     rec = _p(es, "record_comment_followup", return_value=True)
     _p(es, "insert_new_log")

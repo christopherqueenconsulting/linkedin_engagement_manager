@@ -17,16 +17,24 @@ different fix, so this module makes the sweep ANSWERABLE:
   wave's schedule — including the hop that keeps its 6–8h wait under the broker's visibility
   timeout — and the hard ceiling that keeps it from colliding with the #344 seed comment.
 
-Everything here is a PURE function of its arguments and the environment — no DB, no LLM, no Celery
-— so the timing decisions are unit-testable in isolation (the `story_bank.py` / `suppression.py`
-pattern). The wiring lives in `app.run_automation`.
+Every TIMING decision here is a PURE function of its arguments and the environment — no DB, no LLM,
+no Celery — so it is unit-testable in isolation (the `story_bank.py` / `suppression.py` pattern).
+
+The one exception is the RECORDING pair at the bottom (`_reply_outcome`, `_record_golden_hour_report`,
+moved down from `app.run_automation` in #1154): building the report needs the post's real publish
+time from the DB and ships it to PostHog. It is kept here rather than in a task module because two
+clusters call it and neither owns it — and because the rule it enforces, that latency is measured off
+the REAL publish time and an unmeasurable one is never on-time, belongs beside `latency_minutes`.
 """
 
 import os
 import random
 from typing import Optional
 
+from cqc_lem.utilities.db import get_post_age_minutes
 from cqc_lem.utilities.human_pacing import PACE_RESPONSIVE, dispatch_jitter_seconds
+from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.observability import track_golden_hour_report
 
 # The distribution window itself: LinkedIn decides a post's fate on what happens in roughly the
 # first hour, so that is the span the sweeps cover.
@@ -299,3 +307,59 @@ def self_comment_cap() -> int:
     zero would silently disable the seed comment, and anything above a handful is thread-stuffing.
     """
     return max(1, min(5, _env_int("SELF_COMMENT_MAX_PER_POST", SELF_COMMENT_MAX_PER_POST)))
+
+
+# ── recording a sweep (moved verbatim from `app.run_automation`, #1154) ──────────────────────────
+# The only impure code in this module: reading a post's real publish time and shipping the report.
+# `_golden.<name>` was how run_automation reached this module's own helpers, so those prefixes are
+# the one edit the move made.
+def _reply_outcome(status: str, summary: str, comments_found: int = 0,
+                   replies_sent: int = 0) -> dict:
+    """One post's reply-sweep outcome. A dict, not a string, because the golden-hour report
+    (issue #622) needs the counts the old summary line only ever rendered.
+    """
+    return {"status": status, "summary": summary, "comments_found": int(comments_found),
+            "replies_sent": int(replies_sent)}
+
+
+def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outcome: dict,
+                               phase: str = PHASE_REPLY_SWEEP) -> "dict | None":
+    """Build, log and ship ONE post's golden-hour report (issue #622), or None for a post too old to
+    be the amplifier's business. Latency is measured from the post's real publish time, so the
+    report answers the audit's question — did this sweep land inside the window, and did it find
+    anything? A sweep that arrived late is logged as a WARNING: that is the queue-backlog signal the
+    #401 audit had no way to see.
+    """
+    outcome = dict(outcome or {})
+    try:
+        minutes = latency_minutes(get_post_age_minutes(user_id, post_id))
+    except Exception as e:
+        # Measurement must never break the thing it measures — an unreadable age reports as unknown
+        # (and therefore out-of-window), it does not abort the sweep mid-post.
+        log_warning("Golden-hour latency unreadable", exc=e, user_id=user_id, post_id=post_id)
+        minutes = None
+    # Scoped to the phase's own horizon: the sweep also walks older posts by design, and grading
+    # those revisits would bury the real reading under permanent out-of-window noise.
+    if not should_report(minutes, phase):
+        return None
+    report = golden_hour_report(
+        post_id, minutes, comments_found=outcome.get("comments_found"),
+        replies_sent=outcome.get("replies_sent"), status=outcome.get("status") or "ok",
+        sweep_slot=sweep_slot, phase=phase)
+    summary = report_summary(report)
+    second_wave = phase == PHASE_SECOND_WAVE
+    task_name = "auto_second_wave_comment" if second_wave else "sweep_reply_comments"
+    action_type = "comment" if second_wave else "reply"
+    if report["within_window"]:
+        log_info(summary, user_id=user_id, post_id=post_id, action_type=action_type,
+                 task_name=task_name)
+    else:
+        # Out of window on a post young enough to still matter (should_report already dropped the
+        # older ones) — that is the queue-backlog / rate-limit signal, so it goes out as a WARNING.
+        log_warning(summary, user_id=user_id, post_id=post_id, action_type=action_type,
+                    task_name=task_name)
+    try:
+        track_golden_hour_report(user_id, report)
+    except Exception as e:
+        log_warning("Golden-hour report not tracked", exc=e, user_id=user_id, post_id=post_id)
+    return report
