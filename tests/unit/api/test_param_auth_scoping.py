@@ -122,13 +122,27 @@ def _owner(path):
     return _USER if path.startswith("/api/user/") else _M
 
 
+# The ONE case whose owner does not bind the call it must never make. #914 deleted the
+# `get_user_id(email)` oracle out of `get_user_id_from_email` outright, and #1154 moved the last
+# handler in `main` that still imported the name (`/api/auth/email/init`) into its own router — so
+# `main` has no binding left to patch. `create=True` keeps the tripwire STANDING rather than
+# deleting the case: re-import the oracle into `main` and this patch binds the global the handler
+# would read, and the assertion goes live again. Everywhere else the attribute must already exist,
+# or a renamed db call would pass silently for the wrong reason.
+_UNBOUND_ON_OWNER = {"/api/user_id/"}
+
+
+def _watch(path, db_call):
+    return patch(f"{_owner(path)}.{db_call}", create=path in _UNBOUND_ON_OWNER)
+
+
 class TestNoSessionIs401:
     """A valid bearer token is not an identity — every converted route needs a session."""
 
     @pytest.mark.parametrize("method,path,params,body,db_call", _ALL_CASES, ids=_ids(_ALL_CASES))
     def test_returns_401_and_touches_nothing(self, client, no_session, method, path, params, body,
                                              db_call):
-        with patch(f"{_owner(path)}.{db_call}") as touched:
+        with _watch(path, db_call) as touched:
             resp = _call(client, method, path, params, body)
         assert resp.status_code == 401, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} without a session"
@@ -140,7 +154,7 @@ class TestAnotherAccountsTargetIs403:
     @pytest.mark.parametrize("method,path,params,body,db_call", _CASES, ids=_ids(_CASES))
     def test_returns_403_and_touches_nothing(self, client, signed_in, method, path, params, body,
                                              db_call):
-        with patch(f"{_owner(path)}.{db_call}") as touched:
+        with _watch(path, db_call) as touched:
             resp = _call(client, method, path, params, body, token=SESSION_TOKEN)
         assert resp.status_code == 403, f"{method} {path} answered {resp.status_code}"
         assert not _touched(touched), f"{method} {path} reached {db_call} for another account"

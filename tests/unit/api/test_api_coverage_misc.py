@@ -11,6 +11,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 # The billing handlers moved to their own router (#1154), so the Stripe/ledger functions they
 # call are read from THAT module's globals now. `get_session_user_id` stays on main -- the
 # handlers reach it as a host-module attribute at request time.
@@ -199,7 +200,7 @@ class TestAutomationTriggerEndpoints:
 
 class TestAuthLogoutAndTokenStatus:
     def test_logout_deletes_session(self, client):
-        with patch(f"{_M}.delete_session") as ds:
+        with patch(f"{_AUTH}.delete_session") as ds:
             resp = client.post("/api/auth/logout", json={"session_token": _TOK})
         assert resp.status_code == 200
         ds.assert_called_once_with(_TOK)
