@@ -53,7 +53,8 @@ def main() -> int:
     parser.add_argument("--rewrite", action="store_true", help="delete the blocks from the source")
     args = parser.parse_args()
 
-    source = open(args.path, encoding="utf-8").read()
+    with open(args.path, encoding="utf-8") as handle:
+        source = handle.read()
     lines = source.splitlines(keepends=True)
     tree = ast.parse(source)
 
@@ -101,7 +102,8 @@ def main() -> int:
         kept = [ln for n, ln in enumerate(lines, 1) if n not in drop]
         text = "".join(kept)
         ast.parse(text)  # never write a module the interpreter would reject
-        open(args.path, "w", encoding="utf-8").write(text)
+        with open(args.path, "w", encoding="utf-8") as handle:
+            handle.write(text)
         print(f"removed {len(drop)} line(s) from {args.path}", file=sys.stderr)
 
     return 0

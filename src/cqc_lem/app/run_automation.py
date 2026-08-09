@@ -337,11 +337,21 @@ from cqc_lem.utilities.selenium_util import (
 )
 
 __all__ = [
+    # The connect-rail tasks re-exported above.
     "automate_invites_to_company_page_for_user",
     "clean_stale_invites",
     "invite_to_connect",
     "send_connection_request",
     "send_roster_connect_invite",
+    # Names this module DEFINES for other modules to import. `run_scheduler` reads all four and
+    # `zero_walk_verdict` is also read by tests, but nothing inside this file uses them — so CodeQL
+    # reports them as unused globals unless the public surface is declared. Removing the 547 lines
+    # of the connect rail re-fingerprinted those alerts as new, which is what surfaced them; the
+    # names themselves are long-standing and live.
+    "CATCHUP_PHASE_SEND",
+    "CATCHUP_STATUS_DISPATCHED",
+    "CATCHUP_STATUS_INACTIVE",
+    "zero_walk_verdict",
 ]
 
 # Load .env file
