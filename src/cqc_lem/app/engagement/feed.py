@@ -837,7 +837,7 @@ _REACTION_OPENER_LOCATORS = [
 ]
 
 
-def _card_has_reaction_affordance(card) -> bool:
+def _card_has_reaction_affordance(card, user_id: int = None) -> bool:
     """True when the card renders any reaction control at all.
 
     LinkedIn surfaces post text without reaction affordances on some cards (e.g., followed
@@ -852,23 +852,28 @@ def _card_has_reaction_affordance(card) -> bool:
                 try:
                     if el.is_displayed():
                         return True
-                except Exception:
+                except StaleElementReferenceException:
+                    # Element detached while probing; keep scanning the card.
                     continue
         for el in card.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
             try:
                 if not el.is_displayed():
                     continue
-            except Exception:
+                label = (el.get_attribute("aria-label") or "").lower()
+                text = (el.text or "").lower()
+                testid = (el.get_attribute("data-testid") or "").lower()
+                if any(token in label or token in text or token in testid for token in (
+                    "reaction", "react", "like", "celebrate", "support", "love", "insightful", "funny"
+                )):
+                    return True
+            except StaleElementReferenceException:
+                # Element detached while probing; keep scanning the card.
                 continue
-            label = (el.get_attribute("aria-label") or "").lower()
-            text = (el.text or "").lower()
-            testid = (el.get_attribute("data-testid") or "").lower()
-            if any(token in label or token in text or token in testid for token in (
-                "reaction", "react", "like", "celebrate", "support", "love", "insightful", "funny"
-            )):
-                return True
-    except Exception:
-        pass
+    except WebDriverException as e:
+        # The card itself became unreachable (e.g., removed from DOM); treat as no affordance.
+        # Logging at DEBUG because this is a best-effort probe, not the main action.
+        log_debug("Could not probe card for reaction affordance", user_id=user_id,
+                  action_type="comment", exc=e)
     return False
 
 
@@ -911,7 +916,7 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     (the toggle no longer reads 'no reaction').
     """
     try:
-        has_reaction_affordance = _card_has_reaction_affordance(card)
+        has_reaction_affordance = _card_has_reaction_affordance(card, user_id=user_id)
         if not has_reaction_affordance:
             # The #899 live run found 9 post-text nodes and 8 reaction triggers — some commentable
             # cards carry no reaction affordance at all. Skipping them silently is working behaviour;
