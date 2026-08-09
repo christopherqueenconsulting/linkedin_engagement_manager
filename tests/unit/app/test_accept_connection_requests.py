@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 
 
 def _card(href="https://www.linkedin.com/in/jane?trk=x", link_text="Jane Doe", accept=True):
@@ -44,23 +44,23 @@ def _no_sleeps():
 def _session():
     """Patch out login/driver/teardown so only the invitation logic is exercised."""
     driver = MagicMock()
-    with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("u@e.com", "pw")), \
-         patch(f"{_RA}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
-         patch(f"{_RA}.login_to_linkedin"), \
-         patch(f"{_RA}.wait_for_ajax"), \
-         patch(f"{_RA}.quit_gracefully") as quit_mock:
+    with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("u@e.com", "pw")), \
+         patch(f"{_OUT}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
+         patch(f"{_OUT}.login_to_linkedin"), \
+         patch(f"{_OUT}.wait_for_ajax"), \
+         patch(f"{_OUT}.quit_gracefully") as quit_mock:
         yield driver, quit_mock
 
 
 class TestAcceptConnectionRequest:
     def test_no_pending_invitations_is_not_an_error(self, _session):
         """The common case: zero invitations returns {} and never calls log_error (#570)."""
-        from cqc_lem.app.run_automation import accept_connection_request
+        from cqc_lem.app.engagement.outreach import accept_connection_request
         driver, quit_mock = _session
-        with patch(f"{_RA}.find_all_first", return_value=[]), \
-             patch(f"{_RA}.log_error") as err, \
-             patch(f"{_RA}.log_warning") as warn, \
-             patch(f"{_RA}.log_info") as info:
+        with patch(f"{_OUT}.find_all_first", return_value=[]), \
+             patch(f"{_OUT}.log_error") as err, \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.log_info") as info:
             assert accept_connection_request(1) == {}
         err.assert_not_called()
         warn.assert_not_called()
@@ -68,10 +68,10 @@ class TestAcceptConnectionRequest:
         quit_mock.assert_called_once_with(driver)
 
     def test_accepts_each_card_and_returns_profile_url_to_name(self, _session):
-        from cqc_lem.app.run_automation import accept_connection_request
+        from cqc_lem.app.engagement.outreach import accept_connection_request
         jane = _card(href="https://www.linkedin.com/in/jane/?trk=x", link_text="Jane Doe")
         john = _card(href="https://www.linkedin.com/in/john", link_text="John Smith")
-        with patch(f"{_RA}.find_all_first", return_value=[jane, john]):
+        with patch(f"{_OUT}.find_all_first", return_value=[jane, john]):
             result = accept_connection_request(1)
         assert result == {"https://www.linkedin.com/in/jane": "Jane Doe",
                           "https://www.linkedin.com/in/john": "John Smith"}
@@ -80,9 +80,9 @@ class TestAcceptConnectionRequest:
 
     def test_does_not_reaccept_a_card_linkedin_left_in_place(self, _session):
         """LinkedIn sometimes keeps the accepted card rendered — the URL ledger stops a double click."""
-        from cqc_lem.app.run_automation import accept_connection_request
+        from cqc_lem.app.engagement.outreach import accept_connection_request
         jane = _card(href="https://www.linkedin.com/in/jane", link_text="Jane Doe")
-        with patch(f"{_RA}.find_all_first", return_value=[jane, jane]):
+        with patch(f"{_OUT}.find_all_first", return_value=[jane, jane]):
             result = accept_connection_request(1)
         assert result == {"https://www.linkedin.com/in/jane": "Jane Doe"}
         jane.accept_button.click.assert_called_once()
@@ -91,29 +91,29 @@ class TestAcceptConnectionRequest:
         """A stale/blocked accept must not enter the return dict — we only DM people we connected with."""
         from selenium.common import ElementNotInteractableException
 
-        from cqc_lem.app.run_automation import accept_connection_request
+        from cqc_lem.app.engagement.outreach import accept_connection_request
         jane = _card(href="https://www.linkedin.com/in/jane", link_text="Jane Doe")
         jane.accept_button.click.side_effect = ElementNotInteractableException("covered")
-        with patch(f"{_RA}.find_all_first", return_value=[jane]), \
-             patch(f"{_RA}.log_error") as err, \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.find_all_first", return_value=[jane]), \
+             patch(f"{_OUT}.log_error") as err, \
+             patch(f"{_OUT}.log_warning") as warn:
             assert accept_connection_request(1) == {}
         err.assert_not_called()
         warn.assert_called_once()
 
     def test_cards_without_an_accept_button_are_skipped(self, _session):
-        from cqc_lem.app.run_automation import accept_connection_request
+        from cqc_lem.app.engagement.outreach import accept_connection_request
         pending = _card(href="https://www.linkedin.com/in/jane", link_text="Jane Doe")
         already = _card(href="https://www.linkedin.com/in/john", link_text="John Smith", accept=False)
-        with patch(f"{_RA}.find_all_first", return_value=[already, pending]):
+        with patch(f"{_OUT}.find_all_first", return_value=[already, pending]):
             result = accept_connection_request(1)
         assert result == {"https://www.linkedin.com/in/jane": "Jane Doe"}
 
     def test_unexpected_failure_warns_instead_of_paging_the_error_cron(self, _session):
-        from cqc_lem.app.run_automation import accept_connection_request
+        from cqc_lem.app.engagement.outreach import accept_connection_request
         driver, quit_mock = _session
         driver.get.side_effect = RuntimeError("browser died")
-        with patch(f"{_RA}.log_error") as err, patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.log_error") as err, patch(f"{_OUT}.log_warning") as warn:
             assert accept_connection_request(1) == {}
         err.assert_not_called()
         warn.assert_called_once()
@@ -122,23 +122,23 @@ class TestAcceptConnectionRequest:
 
 class TestNextPendingInvitation:
     def test_returns_none_when_no_card_has_an_accept_button(self):
-        from cqc_lem.app.run_automation import _next_pending_invitation
+        from cqc_lem.app.engagement.outreach import _next_pending_invitation
         card = _card(href="https://www.linkedin.com/in/jane", accept=False)
-        with patch(f"{_RA}.find_all_first", return_value=[card]):
+        with patch(f"{_OUT}.find_all_first", return_value=[card]):
             assert _next_pending_invitation(MagicMock(), set()) is None
 
     def test_accepts_a_card_with_no_readable_profile_link(self):
         """A missing name/url must not block the accept — it just yields no DM target."""
-        from cqc_lem.app.run_automation import _next_pending_invitation
+        from cqc_lem.app.engagement.outreach import _next_pending_invitation
         card = _card(href="", link_text="")
-        with patch(f"{_RA}.find_all_first", return_value=[card]):
+        with patch(f"{_OUT}.find_all_first", return_value=[card]):
             profile_url, name, button = _next_pending_invitation(MagicMock(), set())
         assert profile_url == ""
         assert name == ""
         assert button is card.accept_button
 
     def test_skips_already_accepted_urls(self):
-        from cqc_lem.app.run_automation import _next_pending_invitation
+        from cqc_lem.app.engagement.outreach import _next_pending_invitation
         card = _card(href="https://www.linkedin.com/in/jane")
-        with patch(f"{_RA}.find_all_first", return_value=[card]):
+        with patch(f"{_OUT}.find_all_first", return_value=[card]):
             assert _next_pending_invitation(MagicMock(), {"https://www.linkedin.com/in/jane"}) is None

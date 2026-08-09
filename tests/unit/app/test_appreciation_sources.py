@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ def _card(text: str, href: str = "https://www.linkedin.com/in/jane?trk=x", name:
 class TestFlagAndWindow:
     def test_sources_are_off_by_default(self, monkeypatch):
         """An ungrounded scraper must not send DMs — the flip is the owner's."""
-        from cqc_lem.app.run_automation import (
+        from cqc_lem.app.engagement.outreach import (
             appreciation_sources_enabled,
             get_recent_collaborators,
             get_recent_recommendations,
@@ -52,7 +52,7 @@ class TestFlagAndWindow:
         driver.get.assert_not_called()
 
     def test_lookback_defaults_and_survives_garbage(self, monkeypatch):
-        from cqc_lem.app.run_automation import appreciation_lookback_days
+        from cqc_lem.app.engagement.outreach import appreciation_lookback_days
         assert appreciation_lookback_days() == 30
         monkeypatch.setenv("APPRECIATION_LOOKBACK_DAYS", "7")
         assert appreciation_lookback_days() == 7
@@ -64,7 +64,7 @@ class TestDateParsers:
     def test_recommendation_date_age(self):
         from datetime import datetime, timezone
 
-        from cqc_lem.app.run_automation import _parse_recommendation_date
+        from cqc_lem.app.engagement.outreach import _parse_recommendation_date
         now = datetime(2026, 8, 3, tzinfo=timezone.utc)
         assert _parse_recommendation_date("July 24, 2026, Jane worked with me", now) == pytest.approx(10.0)
         # Two dates on one card (the recommendation text can quote another) -> the NEWEST wins.
@@ -72,7 +72,7 @@ class TestDateParsers:
 
     def test_undated_recommendation_is_none_not_zero(self):
         """None means SKIP. Treating 'no date' as 'today' would blast every historical recommender."""
-        from cqc_lem.app.run_automation import _parse_recommendation_date
+        from cqc_lem.app.engagement.outreach import _parse_recommendation_date
         assert _parse_recommendation_date("Jane worked with me") is None
         assert _parse_recommendation_date("") is None
         assert _parse_recommendation_date("Februray 30, 2026") is None
@@ -82,11 +82,11 @@ class TestDateParsers:
                                            ("2 months", 60.0), ("45 minutes", 0.0),
                                            ("3 days", 3.0), ("1 week", 7.0), ("2 years", 730.0)])
     def test_relative_age(self, text, days):
-        from cqc_lem.app.run_automation import _parse_relative_age_days
+        from cqc_lem.app.engagement.outreach import _parse_relative_age_days
         assert _parse_relative_age_days(f"Jane mentioned you in a post {text}") == days
 
     def test_relative_age_none_when_unreadable(self):
-        from cqc_lem.app.run_automation import _parse_relative_age_days
+        from cqc_lem.app.engagement.outreach import _parse_relative_age_days
         assert _parse_relative_age_days("Jane mentioned you in a post") is None
 
     @pytest.mark.parametrize("quoted", ["we hit $5m ARR", "shipped v2h of the SDK", "up 40% in Q3"])
@@ -95,12 +95,12 @@ class TestDateParsers:
         so without the standalone-token rule a two-year-old mention reads as posted minutes ago —
         and gets thanked.
         """
-        from cqc_lem.app.run_automation import _parse_relative_age_days
+        from cqc_lem.app.engagement.outreach import _parse_relative_age_days
         assert _parse_relative_age_days(f"Jane mentioned you: '{quoted}' 2h") == 0.0
 
     def test_a_glued_timestamp_still_parses(self):
         """LinkedIn separates the age with a bullet on some surfaces and a newline on others."""
-        from cqc_lem.app.run_automation import _parse_relative_age_days
+        from cqc_lem.app.engagement.outreach import _parse_relative_age_days
         assert _parse_relative_age_days("Jane mentioned you in a post • 3d") == 3.0
         assert _parse_relative_age_days("Jane mentioned you in a post\n3d") == 3.0
         assert _parse_relative_age_days("3d") == 3.0
@@ -120,14 +120,14 @@ class TestRecommendations:
     """
 
     def _run(self, rows, own="https://www.linkedin.com/in/me", page_dated=None):
-        from cqc_lem.app.run_automation import get_recent_recommendations
+        from cqc_lem.app.engagement.outreach import get_recent_recommendations
         driver = MagicMock()
         driver.execute_script.return_value = {
             "rows": rows, "anchors": len(rows) or 3,
             "page_dated": bool(rows) if page_dated is None else page_dated}
-        with patch(f"{_RA}.click_first"), \
-             patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.click_first"), \
+             patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.log_warning") as warn:
             got = get_recent_recommendations(driver, MagicMock(), 1, own)
         return got, driver, warn
 
@@ -183,11 +183,11 @@ class TestRecommendations:
     def test_an_unreadable_page_is_not_a_recommendation(self):
         from selenium.common.exceptions import WebDriverException
 
-        from cqc_lem.app.run_automation import get_recent_recommendations
+        from cqc_lem.app.engagement.outreach import get_recent_recommendations
         driver = MagicMock()
         driver.execute_script.side_effect = WebDriverException("no such execution context")
-        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.click_first"), patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.log_warning") as warn:
             assert get_recent_recommendations(driver, MagicMock(), 1,
                                               "https://www.linkedin.com/in/me") == {}
         assert warn.called
@@ -196,11 +196,11 @@ class TestRecommendations:
         """An `undefined`/None answer from `execute_script` must read as 'nothing', not blow up the
         appreciation pass that called it.
         """
-        from cqc_lem.app.run_automation import get_recent_recommendations
+        from cqc_lem.app.engagement.outreach import get_recent_recommendations
         driver = MagicMock()
         driver.execute_script.return_value = None
-        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.click_first"), patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.log_warning") as warn:
             assert get_recent_recommendations(driver, MagicMock(), 1,
                                               "https://www.linkedin.com/in/me") == {}
         warn.assert_not_called()
@@ -214,14 +214,14 @@ class TestRecommendations:
         """The SDUI page paints asynchronously — an immediate zero is not evidence of an empty
         section, so an empty read is re-tried before it is believed.
         """
-        from cqc_lem.app.run_automation import _RECOMMENDATION_RENDER_ATTEMPTS, get_recent_recommendations
+        from cqc_lem.app.engagement.outreach import _RECOMMENDATION_RENDER_ATTEMPTS, get_recent_recommendations
         driver = MagicMock()
         empty = {"rows": [], "anchors": 4, "page_dated": False}
         painted = {"rows": [_rec_row("July 24, 2026, Jane was my client")], "anchors": 4,
                    "page_dated": True}
         driver.execute_script.side_effect = [empty, empty, painted]
-        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.click_first"), patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.log_warning") as warn:
             got = get_recent_recommendations(driver, MagicMock(), 1,
                                              "https://www.linkedin.com/in/me")
         assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
@@ -230,21 +230,21 @@ class TestRecommendations:
         warn.assert_not_called()
 
     def test_falls_back_to_the_stored_profile_url(self):
-        from cqc_lem.app.run_automation import get_recent_recommendations
+        from cqc_lem.app.engagement.outreach import get_recent_recommendations
         driver = MagicMock()
         driver.execute_script.return_value = {"rows": [], "anchors": 0, "page_dated": False}
-        with patch(f"{_RA}.click_first"), patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.get_linkedin_profile_url_by_user_id",
+        with patch(f"{_OUT}.click_first"), patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.get_linkedin_profile_url_by_user_id",
                    return_value="https://www.linkedin.com/in/stored/"):
             get_recent_recommendations(driver, MagicMock(), 1, "")
         assert driver.get.call_args[0][0] == ("https://www.linkedin.com/in/stored"
                                               "/details/recommendations/")
 
     def test_no_resolvable_profile_url_is_a_quiet_no_op(self):
-        from cqc_lem.app.run_automation import get_recent_recommendations
+        from cqc_lem.app.engagement.outreach import get_recent_recommendations
         driver = MagicMock()
-        with patch(f"{_RA}._own_profile_url", return_value=""), \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}._own_profile_url", return_value=""), \
+             patch(f"{_OUT}.log_warning") as warn:
             assert get_recent_recommendations(driver, MagicMock(), 1, "") == {}
         warn.assert_not_called()
         driver.get.assert_not_called()
@@ -252,11 +252,11 @@ class TestRecommendations:
 
 class TestCollaborators:
     def _run(self, cards):
-        from cqc_lem.app.run_automation import get_recent_collaborators
+        from cqc_lem.app.engagement.outreach import get_recent_collaborators
         driver = MagicMock()
-        with patch(f"{_RA}.find_all_first", return_value=cards), \
-             patch(f"{_RA}.wait_for_ajax"), \
-             patch(f"{_RA}.getText", side_effect=lambda el: el.text):
+        with patch(f"{_OUT}.find_all_first", return_value=cards), \
+             patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.getText", side_effect=lambda el: el.text):
             got = get_recent_collaborators(driver, MagicMock(), 1)
         return got, driver
 
@@ -299,7 +299,7 @@ class TestCollaborators:
 
     def test_notification_chrome_is_never_read_as_a_name(self):
         """Same line as the verb, so the bound on the fallback is what keeps it honest."""
-        from cqc_lem.app.run_automation import _mention_actor_name
+        from cqc_lem.app.engagement.outreach import _mention_actor_name
         assert _mention_actor_name("Unread notification. Jane Doe mentioned you in a post") == "Jane Doe"
         assert _mention_actor_name("mentioned you in a post 2h") == ""
         assert _mention_actor_name("") == ""
@@ -312,7 +312,7 @@ class TestCollaborators:
         """SDUI escapes the hyphens in a vanity slug. Encoded and decoded must key the ledger the
         same way or the once-ever guarantee quietly breaks.
         """
-        from cqc_lem.app.run_automation import _normalize_profile_url
+        from cqc_lem.app.engagement.outreach import _normalize_profile_url
         assert (_normalize_profile_url("https://www.linkedin.com/in/jane%2Ddoe%2D1234?trk=x")
                 == _normalize_profile_url("https://www.linkedin.com/in/jane-doe-1234/")
                 == "https://www.linkedin.com/in/jane-doe-1234")
@@ -324,12 +324,12 @@ class TestDispatchDedup:
     """
 
     def _dispatch(self, thanked: bool, claimed: bool = True):
-        from cqc_lem.app.run_automation import _dispatch_appreciation_dms
-        with patch(f"{_RA}.has_appreciation_touch", return_value=thanked) as has, \
-             patch(f"{_RA}.claim_appreciation_touch", return_value=claimed) as claim, \
-             patch(f"{_RA}.build_dm_from_template", return_value="Thanks Jane!") as build, \
-             patch(f"{_RA}.send_private_dm") as send, \
-             patch(f"{_RA}.enqueue_next_followup"):
+        from cqc_lem.app.engagement.outreach import _dispatch_appreciation_dms
+        with patch(f"{_OUT}.has_appreciation_touch", return_value=thanked) as has, \
+             patch(f"{_OUT}.claim_appreciation_touch", return_value=claimed) as claim, \
+             patch(f"{_OUT}.build_dm_from_template", return_value="Thanks Jane!") as build, \
+             patch(f"{_OUT}.send_private_dm") as send, \
+             patch(f"{_OUT}.enqueue_next_followup"):
             sent = _dispatch_appreciation_dms(
                 1, MagicMock(), "recommendation_received",
                 {"https://www.linkedin.com/in/jane": "Jane Doe"})
@@ -355,12 +355,12 @@ class TestDispatchDedup:
         send.apply_async.assert_not_called()
 
     def test_missing_template_does_not_burn_the_claim(self):
-        from cqc_lem.app.run_automation import _dispatch_appreciation_dms
-        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
-             patch(f"{_RA}.claim_appreciation_touch") as claim, \
-             patch(f"{_RA}.build_dm_from_template", return_value=None), \
-             patch(f"{_RA}.send_private_dm") as send, \
-             patch(f"{_RA}.log_warning"):
+        from cqc_lem.app.engagement.outreach import _dispatch_appreciation_dms
+        with patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+             patch(f"{_OUT}.claim_appreciation_touch") as claim, \
+             patch(f"{_OUT}.build_dm_from_template", return_value=None), \
+             patch(f"{_OUT}.send_private_dm") as send, \
+             patch(f"{_OUT}.log_warning"):
             assert _dispatch_appreciation_dms(1, MagicMock(), "collaboration",
                                               {"https://x/in/jane": "Jane"}) == 0
         claim.assert_not_called()
@@ -376,12 +376,12 @@ class TestDailyDmBudget:
     _PEOPLE = {f"https://www.linkedin.com/in/p{i}": f"Person {i}" for i in range(5)}
 
     def _dispatch(self, budget):
-        from cqc_lem.app.run_automation import _dispatch_appreciation_dms
-        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
-             patch(f"{_RA}.claim_appreciation_touch", return_value=True) as claim, \
-             patch(f"{_RA}.build_dm_from_template", return_value="Thanks!"), \
-             patch(f"{_RA}.send_private_dm") as send, \
-             patch(f"{_RA}.enqueue_next_followup"):
+        from cqc_lem.app.engagement.outreach import _dispatch_appreciation_dms
+        with patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+             patch(f"{_OUT}.claim_appreciation_touch", return_value=True) as claim, \
+             patch(f"{_OUT}.build_dm_from_template", return_value="Thanks!"), \
+             patch(f"{_OUT}.send_private_dm") as send, \
+             patch(f"{_OUT}.enqueue_next_followup"):
             sent = _dispatch_appreciation_dms(1, MagicMock(), "collaboration", dict(self._PEOPLE),
                                               budget)
         return sent, claim, send
@@ -409,21 +409,21 @@ class TestDailyDmBudget:
         assert send.apply_async.call_count == len(self._PEOPLE)
 
     def test_budget_is_the_shared_dm_allowance_not_a_new_one(self):
-        from cqc_lem.app.run_automation import _appreciation_dm_budget
-        with patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 20}), \
-             patch(f"{_RA}.count_dms_sent_today", return_value=18), \
-             patch(f"{_RA}.engagement_caps_from_prefs", return_value={"dm": 20}), \
-             patch(f"{_RA}.remaining_actions", return_value=2) as remaining:
+        from cqc_lem.app.engagement.outreach import _appreciation_dm_budget
+        with patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 20}), \
+             patch(f"{_OUT}.count_dms_sent_today", return_value=18), \
+             patch(f"{_OUT}.engagement_caps_from_prefs", return_value={"dm": 20}), \
+             patch(f"{_OUT}.remaining_actions", return_value=2) as remaining:
             assert _appreciation_dm_budget(1) == 2
         assert remaining.call_args[0][1] == "dm"
         assert remaining.call_args[1]["caps"] == {"dm": 20}
 
     def test_a_negative_remainder_is_clamped_to_zero(self):
-        from cqc_lem.app.run_automation import _appreciation_dm_budget
-        with patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
-             patch(f"{_RA}.count_dms_sent_today", return_value=9), \
-             patch(f"{_RA}.engagement_caps_from_prefs", return_value={}), \
-             patch(f"{_RA}.remaining_actions", return_value=-4):
+        from cqc_lem.app.engagement.outreach import _appreciation_dm_budget
+        with patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
+             patch(f"{_OUT}.count_dms_sent_today", return_value=9), \
+             patch(f"{_OUT}.engagement_caps_from_prefs", return_value={}), \
+             patch(f"{_OUT}.remaining_actions", return_value=-4):
             assert _appreciation_dm_budget(1) == 0
 
 
@@ -433,17 +433,17 @@ class TestTheBeatSpendsOneBudget:
     """
 
     def _run(self, budget, dispatched=0):
-        from cqc_lem.app.run_automation import automate_appreciation_dms_for_user
-        with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
-             patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
-             patch(f"{_RA}.login_to_linkedin"), \
-             patch(f"{_RA}.quit_gracefully"), \
-             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock(profile_url="")), \
-             patch(f"{_RA}.accept_connection_request", return_value={}), \
-             patch(f"{_RA}._appreciation_dm_budget", return_value=budget), \
-             patch(f"{_RA}._dispatch_appreciation_dms", return_value=dispatched) as dispatch, \
-             patch(f"{_RA}.get_recent_recommendations", return_value={}) as recs, \
-             patch(f"{_RA}.get_recent_collaborators", return_value={}) as mentions:
+        from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin"), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(f"{_OUT}.load_profile_for_user", return_value=MagicMock(profile_url="")), \
+             patch(f"{_OUT}.accept_connection_request", return_value={}), \
+             patch(f"{_OUT}._appreciation_dm_budget", return_value=budget), \
+             patch(f"{_OUT}._dispatch_appreciation_dms", return_value=dispatched) as dispatch, \
+             patch(f"{_OUT}.get_recent_recommendations", return_value={}) as recs, \
+             patch(f"{_OUT}.get_recent_collaborators", return_value={}) as mentions:
             automate_appreciation_dms_for_user.run(user_id=1)
         return dispatch, recs, mentions
 

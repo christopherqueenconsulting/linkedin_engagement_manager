@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 
 _AI = "cqc_lem.utilities.ai.ai_helper"
 _RCP = "cqc_lem.app.run_content_plan"
-_RAU = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 
 # A clean, specific, human draft — the control every check is measured against.
 _CLEAN = ("Three years ago I shipped a pricing change on a Friday afternoon and took down checkout "
@@ -586,20 +586,20 @@ class TestNewsletterWiring:
 
 class TestDmWiring:
     def test_a_slopped_dm_is_re_refined_then_sent(self):
-        from cqc_lem.app import run_automation as rau
+        from cqc_lem.app.engagement import outreach as rau
         slopped = "It's not just a tool, it's a mindset. Thoughts?"
-        with patch(f"{_RAU}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
-             patch(f"{_RAU}.get_ai_message_refinement", side_effect=[slopped, "Nice to meet you."]), \
-             patch(f"{_RAU}.humanize_text", side_effect=lambda t, **k: t):
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
+             patch(f"{_OUT}.get_ai_message_refinement", side_effect=[slopped, "Nice to meet you."]), \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t):
             out = rau.build_dm_from_template(1, "connection", "Ana", _profile())
         assert out == "Nice to meet you."
 
     def test_a_still_slopped_dm_is_sent_rather_than_dropped(self):
-        from cqc_lem.app import run_automation as rau
+        from cqc_lem.app.engagement import outreach as rau
         slopped = "It's not just a tool, it's a mindset. Thoughts?"
-        with patch(f"{_RAU}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
-             patch(f"{_RAU}.get_ai_message_refinement", return_value=slopped), \
-             patch(f"{_RAU}.humanize_text", side_effect=lambda t, **k: t), \
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
+             patch(f"{_OUT}.get_ai_message_refinement", return_value=slopped), \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda t, **k: t), \
              patch(f"{_AI}.log_warning"):
             out = rau.build_dm_from_template(1, "connection", "Ana", _profile())
         # Dropping it would silently break the outreach sequence.

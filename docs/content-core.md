@@ -191,7 +191,7 @@ by `replace_meeting_ask_cta`, and any that survives HOLDS the post at PENDING vi
 
 `align_with_blog` is a user-facing toggle that **defaults ON** and promises the edition repurposes
 the author's own writing. `resolve_blog_source(user_id, settings)` is the ONE place that toggle
-becomes source text — the three call sites (`run_automation.auto_generate_newsletter_edition`, and
+becomes source text — the three call sites (`engagement.newsletter.auto_publish_newsletter_edition`, and
 both edition paths in `run_scheduler`) pass its return value straight into the generator as
 `blog_content`.
 

@@ -198,11 +198,14 @@ _COMMIT_TYPES: dict[FeedbackCategory, str] = {
 # Component -> the files an implementer starts in. This is the `## Files` hint MODE=start reads; it
 # is a STARTING POINT, not a contract, which is why every entry ends with the generic test dirs.
 _COMPONENT_FILES: dict[str, tuple] = {
-    'feed-commenting': ('src/cqc_lem/app/run_automation.py',
+    # `run_automation.py` is a re-export shim since #1154 — every engagement lane lives under
+    # `app/engagement/`, so that is where an implementer has to start.
+    'feed-commenting': ('src/cqc_lem/app/engagement/feed.py',
                         'src/cqc_lem/utilities/linkedin/helper.py'),
-    'replies': ('src/cqc_lem/app/run_automation.py',),
-    'dms': ('src/cqc_lem/app/run_automation.py', 'src/cqc_lem/utilities/ai/dm_nurture.py'),
-    'connections': ('src/cqc_lem/app/run_automation.py',
+    'replies': ('src/cqc_lem/app/engagement/posting.py',),
+    'dms': ('src/cqc_lem/app/engagement/outreach.py', 'src/cqc_lem/utilities/ai/dm_nurture.py'),
+    'connections': ('src/cqc_lem/app/engagement/invites.py',
+                    'src/cqc_lem/app/engagement/outreach.py',
                     'src/cqc_lem/utilities/linkedin/company_page_inviter.py'),
     'content-generation': ('src/cqc_lem/app/run_content_plan.py',
                            'src/cqc_lem/utilities/ai/ai_helper.py',

@@ -11,10 +11,11 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
-# The own-post reply rail moved to `app.engagement.posting` (#1154); the lead RESPONDER
-# (`_send_lead_response`, `_reply_to_person_on_post`) stayed with the DM cluster, so both
-# spellings are live here and each test uses the one its own code reads.
+# The lead RESPONDER (`_send_lead_response`, `_reply_to_person_on_post`, `_last_inbound_message`)
+# went with the DM cluster to `app.engagement.outreach` (#1154).
+_OUT = "cqc_lem.app.engagement.outreach"
+# The own-post reply rail went to `app.engagement.posting` instead, so both spellings are live in
+# this file and each test uses the one its own code reads.
 _POST = "cqc_lem.app.engagement.posting"
 # Flagging moved down to `utilities/lead_scoring.py` (#1154) — beside `profile_slug`, of which
 # `run_automation._profile_slug` was a byte-identical copy. It took its DB / classifier / LLM
@@ -24,13 +25,13 @@ _LS = "cqc_lem.utilities.lead_scoring"
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_OUT}.time.sleep"):
         yield
 
 
 def _fn(name):
     import importlib
-    return getattr(importlib.import_module(_RA), name)
+    return getattr(importlib.import_module(_OUT), name)
 
 
 def _post(name):
@@ -190,9 +191,9 @@ class TestReplyToPersonOnPost:
     def test_replies_under_the_right_persons_comment(self):
         driver, wait, boxes = self._driver_with(["https://x/in/bob", "https://x/in/jane"])
         conts = [MagicMock(name="c0"), MagicMock(name="c1")]
-        with patch(f"{_RA}._comment_container", side_effect=conts), \
-             patch(f"{_RA}._comment_header_author", side_effect=["https://x/in/bob", "https://x/in/jane"]), \
-             patch(f"{_RA}._reply_under_comment_inline", return_value=True) as rep:
+        with patch(f"{_OUT}._comment_container", side_effect=conts), \
+             patch(f"{_OUT}._comment_header_author", side_effect=["https://x/in/bob", "https://x/in/jane"]), \
+             patch(f"{_OUT}._reply_under_comment_inline", return_value=True) as rep:
             ok = _fn("_reply_to_person_on_post")(driver, wait, "https://x/post/1",
                                                  "https://x/in/jane", "hi", user_id=1)
         assert ok is True
@@ -200,10 +201,10 @@ class TestReplyToPersonOnPost:
 
     def test_person_not_found_returns_false(self):
         driver, wait, _ = self._driver_with(["https://x/in/bob"])
-        with patch(f"{_RA}._comment_container", return_value=MagicMock()), \
-             patch(f"{_RA}._comment_header_author", return_value="https://x/in/bob"), \
-             patch(f"{_RA}._reply_under_comment_inline") as rep, \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}._comment_container", return_value=MagicMock()), \
+             patch(f"{_OUT}._comment_header_author", return_value="https://x/in/bob"), \
+             patch(f"{_OUT}._reply_under_comment_inline") as rep, \
+             patch(f"{_OUT}.log_warning") as warn:
             ok = _fn("_reply_to_person_on_post")(driver, wait, "https://x/post/1",
                                                  "https://x/in/jane", "hi")
         assert ok is False
@@ -212,7 +213,7 @@ class TestReplyToPersonOnPost:
 
     def test_no_slug_never_navigates(self):
         driver, wait = MagicMock(), MagicMock()
-        with patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.log_warning") as warn:
             assert _fn("_reply_to_person_on_post")(driver, wait, "https://x/post/1", "", "hi") is False
         driver.get.assert_not_called()
         warn.assert_called_once()
@@ -230,9 +231,9 @@ class TestSendLeadResponse:
 
     def test_dm_channel_sends_and_marks_sent(self):
         from cqc_lem.utilities.db import LeadSignalStatus
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal()), \
-             patch(f"{_RA}.send_dm_now", return_value=True) as send, \
-             patch(f"{_RA}.update_lead_signal") as upd:
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal()), \
+             patch(f"{_OUT}.send_dm_now", return_value=True) as send, \
+             patch(f"{_OUT}.update_lead_signal") as upd:
             result = _fn("_send_lead_response")(3)
         send.assert_called_once_with(1, "https://x/in/jane", "Happy to help!")
         assert upd.call_args.kwargs["status"] == LeadSignalStatus.SENT
@@ -240,21 +241,21 @@ class TestSendLeadResponse:
 
     def test_failed_dm_marks_failed(self):
         from cqc_lem.utilities.db import LeadSignalStatus
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal()), \
-             patch(f"{_RA}.send_dm_now", return_value=False), \
-             patch(f"{_RA}.update_lead_signal") as upd:
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal()), \
+             patch(f"{_OUT}.send_dm_now", return_value=False), \
+             patch(f"{_OUT}.update_lead_signal") as upd:
             _fn("_send_lead_response")(3)
         assert upd.call_args.kwargs["status"] == LeadSignalStatus.FAILED
 
     def test_reply_channel_posts_under_their_comment(self):
         from cqc_lem.utilities.db import LeadSignalStatus
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal(channel="reply")), \
-             patch(f"{_RA}.get_current_profile",
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(channel="reply")), \
+             patch(f"{_OUT}.get_current_profile",
                    return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._reply_to_person_on_post", return_value=True) as rep, \
-             patch(f"{_RA}.insert_new_log") as log, \
-             patch(f"{_RA}.update_lead_signal") as upd, \
-             patch(f"{_RA}.quit_gracefully") as quit_:
+             patch(f"{_OUT}._reply_to_person_on_post", return_value=True) as rep, \
+             patch(f"{_OUT}.insert_new_log") as log, \
+             patch(f"{_OUT}.update_lead_signal") as upd, \
+             patch(f"{_OUT}.quit_gracefully") as quit_:
             result = _fn("_send_lead_response")(3)
         rep.assert_called_once()
         assert upd.call_args.kwargs["status"] == LeadSignalStatus.SENT
@@ -263,52 +264,52 @@ class TestSendLeadResponse:
         assert "sent" in result
 
     def test_unapproved_signal_is_never_sent(self):
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal(status="new")), \
-             patch(f"{_RA}.send_dm_now") as send, \
-             patch(f"{_RA}.update_lead_signal") as upd:
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(status="new")), \
+             patch(f"{_OUT}.send_dm_now") as send, \
+             patch(f"{_OUT}.update_lead_signal") as upd:
             result = _fn("_send_lead_response")(3)
         send.assert_not_called()
         upd.assert_not_called()
         assert "not sendable" in result
 
     def test_missing_signal(self):
-        with patch(f"{_RA}.get_lead_signal", return_value=None):
+        with patch(f"{_OUT}.get_lead_signal", return_value=None):
             assert "not found" in _fn("_send_lead_response")(3)
 
     def test_empty_draft_fails_instead_of_sending_nothing(self):
         from cqc_lem.utilities.db import LeadSignalStatus
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal(draft_response="  ")), \
-             patch(f"{_RA}.send_dm_now") as send, \
-             patch(f"{_RA}.update_lead_signal") as upd:
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(draft_response="  ")), \
+             patch(f"{_OUT}.send_dm_now") as send, \
+             patch(f"{_OUT}.update_lead_signal") as upd:
             _fn("_send_lead_response")(3)
         send.assert_not_called()
         assert upd.call_args.kwargs["status"] == LeadSignalStatus.FAILED
 
     def test_reply_without_a_post_url_fails(self):
         from cqc_lem.utilities.db import LeadSignalStatus
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal(channel="reply", context_url=None)), \
-             patch(f"{_RA}.get_current_profile") as gcp, \
-             patch(f"{_RA}.update_lead_signal") as upd:
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(channel="reply", context_url=None)), \
+             patch(f"{_OUT}.get_current_profile") as gcp, \
+             patch(f"{_OUT}.update_lead_signal") as upd:
             _fn("_send_lead_response")(3)
         gcp.assert_not_called()
         assert upd.call_args.kwargs["status"] == LeadSignalStatus.FAILED
 
     def test_rate_limited_session_leaves_it_approved_for_a_retry(self):
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal(channel="reply")), \
-             patch(f"{_RA}.get_current_profile", side_effect=LinkedInRateLimited("429")), \
-             patch(f"{_RA}.update_lead_signal") as upd, \
-             patch(f"{_RA}.log_warning") as warn:
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(channel="reply")), \
+             patch(f"{_OUT}.get_current_profile", side_effect=LinkedInRateLimited("429")), \
+             patch(f"{_OUT}.update_lead_signal") as upd, \
+             patch(f"{_OUT}.log_warning") as warn:
             result = _fn("_send_lead_response")(3)
         upd.assert_not_called()  # still APPROVED, so a later run retries it
         warn.assert_called_once()
         assert "rate limited" in result.lower()
 
     def test_session_failure_reports_without_marking_sent(self):
-        with patch(f"{_RA}.get_lead_signal", return_value=self._signal(channel="reply")), \
-             patch(f"{_RA}.get_current_profile", side_effect=RuntimeError("no driver")), \
-             patch(f"{_RA}.update_lead_signal") as upd, \
-             patch(f"{_RA}.log_error"):
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(channel="reply")), \
+             patch(f"{_OUT}.get_current_profile", side_effect=RuntimeError("no driver")), \
+             patch(f"{_OUT}.update_lead_signal") as upd, \
+             patch(f"{_OUT}.log_error"):
             result = _fn("_send_lead_response")(3)
         upd.assert_not_called()
         assert "Failed to start" in result
@@ -317,20 +318,20 @@ class TestSendLeadResponse:
 class TestReadPathWiring:
     def test_dm_followup_flags_their_reply(self):
         """A follow-up that detects a reply reads that reply once and checks it for intent (#483)."""
-        from cqc_lem.app.run_automation import process_user_followups
+        from cqc_lem.app.engagement.outreach import process_user_followups
         from cqc_lem.utilities.db import LeadSignalSource
         due = [{"id": 1, "user_id": 1, "profile_url": "https://x/in/jane", "first_name": "Jane",
                 "event_type": "manual", "next_step": 1}]
-        with patch(f"{_RA}.get_due_followups", return_value=due), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED), \
-             patch(f"{_RA}._last_inbound_message", return_value="How much for the full program?"), \
-             patch(f"{_RA}._flag_lead_signal", return_value=5) as flag, \
-             patch(f"{_RA}.stop_followups_for_profile"), \
-             patch(f"{_RA}.mark_followup"), \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_OUT}.get_due_followups", return_value=due), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.get_engagement_preferences", return_value={}), \
+             patch(f"{_OUT}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.REPLIED), \
+             patch(f"{_OUT}._last_inbound_message", return_value="How much for the full program?"), \
+             patch(f"{_OUT}._flag_lead_signal", return_value=5) as flag, \
+             patch(f"{_OUT}.stop_followups_for_profile"), \
+             patch(f"{_OUT}.mark_followup"), \
+             patch(f"{_OUT}.quit_gracefully"):
             process_user_followups.run(user_id=1)
         flag.assert_called_once()
         assert flag.call_args.args[1] == "How much for the full program?"

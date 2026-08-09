@@ -11,12 +11,12 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 # The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
 # is the module whose globals the invite code reads.
 _INV = "cqc_lem.app.engagement.invites"
 # Same for the feed / groups / roster engine (#1154): `comment_on_feed_inline` and
-# `_engage_card` read `feed`'s globals, the DM and scheduler lanes below still read `_RA`.
+# `_engage_card` read `feed`'s globals, the DM and scheduler lanes below still read `_OUT`.
 _FEED = "cqc_lem.app.engagement.feed"
 _RS = "cqc_lem.app.run_scheduler"
 
@@ -140,15 +140,15 @@ class TestPacedBudgetsAtTheLanes:
         assert remaining.call_args[1]["caps"]                       # governor engaged
 
     def test_scheduled_dms_defer_on_the_paced_budget(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         from cqc_lem.utilities.db import ScheduledDmStatus
         dm = {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane",
               "message": "hi jane", "status": "approved"}
         with patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=dm), \
              patch("cqc_lem.utilities.db.count_dms_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
-             patch(f"{_RA}.remaining_actions", return_value=0), \
-             patch(f"{_RA}.send_dm_now") as send, \
+             patch(f"{_OUT}.get_engagement_preferences", return_value={"max_dms_per_day": 10}), \
+             patch(f"{_OUT}.remaining_actions", return_value=0), \
+             patch(f"{_OUT}.send_dm_now") as send, \
              patch("cqc_lem.utilities.db.update_scheduled_dm_status") as upd:
             out = ra.send_scheduled_dm(3)
         send.assert_not_called()
@@ -261,24 +261,24 @@ class TestGovernorAccounting:
                 recorded.assert_not_called()
 
     def test_a_sent_dm_is_reported_and_a_failed_one_is_not(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         from cqc_lem.utilities.human_pacing import ACTION_DM
         from cqc_lem.utilities.linkedin.message_thread import ComposerOpen
         addressed = ComposerOpen(opened=True, recipient="Jane Doe", urn="urn:li:fsd_profile:X")
         for sent in (True, False):
-            with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e", "p")), \
-                 patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
-                 patch(f"{_RA}.login_to_linkedin"), \
-                 patch(f"{_RA}.open_addressed_composer", return_value=addressed), \
-                 patch(f"{_RA}.click_element_wait_retry"), \
-                 patch(f"{_RA}.get_element_wait_retry",
+            with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
+                 patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+                 patch(f"{_OUT}.login_to_linkedin"), \
+                 patch(f"{_OUT}.open_addressed_composer", return_value=addressed), \
+                 patch(f"{_OUT}.click_element_wait_retry"), \
+                 patch(f"{_OUT}.get_element_wait_retry",
                        return_value=MagicMock() if sent else None), \
-                 patch(f"{_RA}._dm_send_landed", return_value=True), \
-                 patch(f"{_RA}.simulate_typing"), \
-                 patch(f"{_RA}.time.sleep"), \
-                 patch(f"{_RA}.insert_new_log"), \
-                 patch(f"{_RA}.quit_gracefully"), \
-                 patch(f"{_RA}.record_action") as recorded:
+                 patch(f"{_OUT}._dm_send_landed", return_value=True), \
+                 patch(f"{_OUT}.simulate_typing"), \
+                 patch(f"{_OUT}.time.sleep"), \
+                 patch(f"{_OUT}.insert_new_log"), \
+                 patch(f"{_OUT}.quit_gracefully"), \
+                 patch(f"{_OUT}.record_action") as recorded:
                 result = ra.send_dm_now(1, "https://x/in/jane", "hi")
             assert result is sent
             if sent:

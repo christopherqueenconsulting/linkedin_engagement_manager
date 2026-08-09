@@ -364,9 +364,11 @@ class TestIssueBody:
         assert "Only one comment posts." in body
 
     def test_files_hint_points_at_the_component(self):
+        # `feed-commenting` lives in `app/engagement/feed.py` since #1154 — `run_automation.py` is a
+        # re-export shim, so pointing an implementer at it would start them in an empty file.
         svc = _mod()
         body = svc.build_issue_body(_classification(), feedback_id=1)
-        assert "src/cqc_lem/app/run_automation.py" in body
+        assert "src/cqc_lem/app/engagement/feed.py" in body
         assert "tests/unit/" in body
 
     def test_unknown_component_still_hints_the_tests(self):

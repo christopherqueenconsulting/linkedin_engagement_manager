@@ -4,11 +4,13 @@ Full design detail for the engagement subsystems that CLAUDE.md's "Engagement au
 section only names. This doc is the load-bearing detail; CLAUDE.md keeps the one-line invariant +
 pointer.
 
-The code lives in `app/run_automation.py` and, since #1154, in `app/engagement/` — the feed walk,
-the group composer and the roster tail are `app/engagement/feed.py`, the connect rail
-`invites.py`, the newsletter rail `newsletter.py`, and publishing plus the post-publish sweeps
-(`post_to_linkedin`, the reply sweep, comment follow-ups, comment outcomes, post/audience stats)
-`posting.py`. Every task there still answers to its ORIGINAL wire name
+Since #1154 the code lives entirely in `app/engagement/` — the feed walk, the group composer and the
+roster tail are `feed.py`, the connect rail `invites.py`, the newsletter rail `newsletter.py`,
+publishing plus the post-publish sweeps (`post_to_linkedin`, the reply sweep, comment follow-ups,
+comment outcomes, post/audience stats) `posting.py`, and DMs plus outreach (appreciation, the
+profile-viewer walk, the connect-candidate scan, the outreach funnel, the catch-up lane)
+`outreach.py`. `app/run_automation.py` is now a re-export shim that defines nothing: **patch the
+module that OWNS the code**. Every task still answers to its ORIGINAL wire name
 (`cqc_lem.app.run_automation.<fn>`), so nothing about routing or the beat changed.
 
 ## Feed commenting on the SDUI feed (`comment_on_feed_inline`, issues #622 / #817)

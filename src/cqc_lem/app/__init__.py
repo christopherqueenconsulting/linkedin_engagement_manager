@@ -6,10 +6,10 @@ importing this package is what actually pulls in the modules carrying `@app.task
 are exactly the ones that define one. Dropping one as an "unused import" unregisters its tasks: the
 worker starts clean and every message on those queues is rejected as unknown.
 
-`engagement` is listed explicitly for that reason, even though `run_automation` imports it today for
-two tasks it dispatches. That import is a fact about the current code, not a guarantee; the day a
-context leaves `run_automation` with nothing dispatching back, the only thing still registering its
-tasks would be this line.
+`engagement` is listed explicitly for that reason. Since #1154 finished, `run_automation` is a
+re-export shim that defines no task of its own — every engagement task is registered by
+`cqc_lem.app.engagement.__init__`, which names all five modules, so this line is the one that
+matters and the shim's import of them is redundant rather than load-bearing.
 """
 from . import (
     aws_test_celery_task,

@@ -57,6 +57,19 @@ FROZEN_TASK_NAMES = frozenset({
     "cqc_lem.app.run_automation.reconcile_recent_comment_urns",
     "cqc_lem.app.run_automation.sweep_comment_outcomes",
     "cqc_lem.app.run_automation.automate_reply_commenting",
+    # DMs + outreach -> app.engagement.outreach (#1154 step 5, the last cluster)
+    "cqc_lem.app.run_automation.process_user_followups",
+    "cqc_lem.app.run_automation.automate_appreciation_dms_for_user",
+    "cqc_lem.app.run_automation.automate_profile_viewer_engagement",
+    "cqc_lem.app.run_automation.engage_with_profile_viewer",
+    "cqc_lem.app.run_automation.send_private_dm",
+    "cqc_lem.app.run_automation.send_scheduled_dm",
+    "cqc_lem.app.run_automation.send_lead_response",
+    "cqc_lem.app.run_automation.scan_connection_candidates",
+    "cqc_lem.app.run_automation.process_outreach_funnel",
+    "cqc_lem.app.run_automation.scan_outreach_funnel_targets",
+    "cqc_lem.app.run_automation.automate_catchup_touches",
+    "cqc_lem.app.run_automation.send_catchup_touch",
 })
 
 

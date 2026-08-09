@@ -2,7 +2,9 @@
 
 ## What this graph does
 
-The outreach/DM half of `app/run_automation.py` + `app/run_scheduler.py` — everything that puts a
+The outreach/DM half of `app/engagement/outreach.py` (moved out of `run_automation.py` in #1154,
+still answering to its `cqc_lem.app.run_automation.<fn>` wire names) + `app/run_scheduler.py` —
+everything that puts a
 message in a specific person's inbox or a connection request on their profile, as opposed to
 commenting on the public feed (the sibling graph). Eight distinct trigger lanes converge on two
 shared backbones: a **direct-send path** (Selenium dispatches immediately once deterministic gates
@@ -178,11 +180,12 @@ couldn't be confidently read.
 - `docs/engagement-automation.md` — DM nurture, appreciation sources, message-thread ladder
   (#731/#1030), owned-asset CTA loop (#624), stale-invite withdrawal (#969), roster connect
   escalation (#979), company-page invitations (#732).
-- `src/cqc_lem/app/run_automation.py` — `_nurture_after_reply`, `process_user_followups`,
-  `build_dm_from_template`, `enqueue_next_followup`, `_dispatch_appreciation_dms`,
-  `automate_profile_viewer_engagement` / `engage_with_profile_viewer`, `send_dm_now`,
-  `send_private_dm`, `send_scheduled_dm`, `queue_roster_connect_invite`, `advance_roster_connect`,
-  `send_roster_connect_invite`.
+- `src/cqc_lem/app/engagement/outreach.py` (moved out of `run_automation.py` in #1154) —
+  `_nurture_after_reply`, `process_user_followups`, `build_dm_from_template`,
+  `enqueue_next_followup`, `_dispatch_appreciation_dms`, `automate_profile_viewer_engagement` /
+  `engage_with_profile_viewer`, `send_dm_now`, `send_private_dm`, `send_scheduled_dm`.
+- `src/cqc_lem/app/engagement/feed.py` — `queue_roster_connect_invite`, `advance_roster_connect`;
+  `src/cqc_lem/app/engagement/invites.py` — `send_roster_connect_invite`.
 - `src/cqc_lem/app/run_scheduler.py` — `auto_check_scheduled_dms` beat.
 - `src/cqc_lem/utilities/ai/dm_nurture.py` — `classify_reply_intent`, `generate_nurture_dm`,
   `nurture_delay_hours`, `is_stop_intent`.

@@ -30,11 +30,14 @@ Code paths in **Feature Areas** below. Subsections carry `docs/*.md` pointers ho
 ```
 src/cqc_lem/
 ├── api/           FastAPI app — engagement_preferences, DM template, PIN endpoints
-├── app/           Celery tasks (run_scheduler, run_automation, run_content_plan, generate_variants, my_celery)
-│   └── engagement/  clusters leaving run_automation (#1154): invites (connect rail), newsletter,
+├── app/           Celery tasks (run_scheduler, run_content_plan, generate_variants, my_celery);
+│                  run_automation.py is now a re-export SHIM that defines nothing (#1154)
+│   └── engagement/  every engagement cluster (#1154): invites (connect rail), newsletter,
 │                    feed (the SDUI feed engine + groups + the roster tail — one graph, one module),
 │                    posting (post_to_linkedin + the post-publish sweeps: replies, comment
-│                    follow-ups, comment outcomes, post/audience stats — publish then measure).
+│                    follow-ups, comment outcomes, post/audience stats — publish then measure),
+│                    outreach (DMs + appreciation, profile-viewer walk, connect scan, funnel,
+│                    catch-up — they all end at the same send and follow-up ladder).
 │                    Every task there pins name='cqc_lem.app.run_automation.<fn>' — moving a task
 │                    RENAMES it, and run_automation re-exports the tasks other modules import by name
 ├── utilities/
@@ -157,14 +160,17 @@ generation/posting failures needing a manual fix.
 | **Newsletter covers** (#893) | `utilities/newsletter_cover.py`; `_approved_cover_path` (in `app/engagement/newsletter.py`) is the ONLY thing letting a cover reach LinkedIn | An **upload** is the author's own artwork so it lands `approved`; a **generated** cover always lands `pending_review` (it is a public brand asset). Opt-in (`cover_image_auto`), best-effort — `STEP_COVER` is never a graded editor step | `docs/newsletter-covers.md` |
 | **Blog alignment** (#967) | `resolve_blog_source` in `utilities/blog_source.py` | The ONE place `align_with_blog` (default ON) becomes source text — blog URL first, sitemap fallback. Never blocking: nothing readable → `None` and the edition writes from topic + profile. Resolved PER edition, so queued drafts repurpose DIFFERENT articles. ON with nothing configured is an expected no-op (DEBUG) | `docs/content-core.md` |
 | **Occasion / milestone posts** (#1074) | `project_launch` / `educational_milestone` in `content_framework.py` | LinkedIn's "Celebrate an occasion" composer has NO API entity, so LEM drafts the copy and the author pastes it. These are the ONLY archetypes nothing picks automatically — absent from rotation, variety repair, the planner menu, the `POST_DAY_TYPES` cadence and the 70/20/10 mix. `posts.manual_publish` is the enforcement: the scheduler never returns one and `post_to_linkedin` refuses one that reaches it. `POST /user/post/mark-posted` is refused for anything NOT `manual_publish` | same |
-### Engagement automation (`app/run_automation.py` + `app/engagement/{feed,posting}.py`)
+### Engagement automation (`app/engagement/{feed,posting,outreach,invites,newsletter}.py`)
 
 Full posture for every row: **`docs/engagement-automation.md`**. One row per lane — the ONE place,
-and the invariant that bites. Flags named here default OFF. The feed walk, the group composer and
-the roster tail moved to `app/engagement/feed.py` (#1154); publishing and the sweeps that measure
-what a post earned — `post_to_linkedin`, the reply sweep, comment follow-ups, comment outcomes,
-post/audience stats — moved to `app/engagement/posting.py`. That is where to patch them, though
-`run_automation` still re-exports their TASKS for `run_scheduler` and `api/routers/*`.
+and the invariant that bites. Flags named here default OFF. Since #1154 every lane lives in
+`app/engagement/`: the feed walk, group composer and roster tail in `feed.py`; publishing and the
+sweeps that measure what a post earned (`post_to_linkedin`, the reply sweep, comment follow-ups,
+comment outcomes, post/audience stats) in `posting.py`; DMs and everything that decides who gets one
+(appreciation, the profile-viewer walk, the connect-candidate scan, the outreach funnel, the
+catch-up lane) in `outreach.py`. **That is where to patch them** — `app/run_automation.py` is a
+shim that defines nothing and only re-exports the TASKS `run_scheduler` and `api/routers/*` import
+by name, so patching it rebinds a name no code reads.
 
 | Lane | The ONE place | The invariant that bites |
 |---|---|---|

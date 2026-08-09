@@ -17,7 +17,7 @@ from cqc_lem.utilities.linkedin.message_thread import ComposerOpen
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 
 ADDRESSED = ComposerOpen(opened=True, recipient="Jane Doe", urn="urn:li:fsd_profile:X",
                          surface="page")
@@ -25,19 +25,19 @@ ADDRESSED = ComposerOpen(opened=True, recipient="Jane Doe", urn="urn:li:fsd_prof
 
 def _send(composer=ADDRESSED, landed=True, **extra):
     """Run send_dm_now with every I/O boundary stubbed; returns (result, log_mock, composer_mock)."""
-    from cqc_lem.app import run_automation as ra
-    with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e", "p")), \
-         patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
-         patch(f"{_RA}.login_to_linkedin"), \
-         patch(f"{_RA}.open_addressed_composer", return_value=composer) as opened, \
-         patch(f"{_RA}.click_element_wait_retry") as clicked, \
-         patch(f"{_RA}.get_element_wait_retry", return_value=MagicMock()), \
-         patch(f"{_RA}._dm_send_landed", return_value=landed), \
-         patch(f"{_RA}.simulate_typing") as typed, \
-         patch(f"{_RA}.time.sleep"), \
-         patch(f"{_RA}.insert_new_log") as logged, \
-         patch(f"{_RA}.record_action"), \
-         patch(f"{_RA}.quit_gracefully") as quit_driver:
+    from cqc_lem.app.engagement import outreach as ra
+    with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
+         patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+         patch(f"{_OUT}.login_to_linkedin"), \
+         patch(f"{_OUT}.open_addressed_composer", return_value=composer) as opened, \
+         patch(f"{_OUT}.click_element_wait_retry") as clicked, \
+         patch(f"{_OUT}.get_element_wait_retry", return_value=MagicMock()), \
+         patch(f"{_OUT}._dm_send_landed", return_value=landed), \
+         patch(f"{_OUT}.simulate_typing") as typed, \
+         patch(f"{_OUT}.time.sleep"), \
+         patch(f"{_OUT}.insert_new_log") as logged, \
+         patch(f"{_OUT}.record_action"), \
+         patch(f"{_OUT}.quit_gracefully") as quit_driver:
         result = ra.send_dm_now(1, "https://www.linkedin.com/in/jane", "Congrats Jane!", **extra)
     return result, {"log": logged, "opened": opened, "typed": typed, "clicked": clicked,
                     "quit": quit_driver}
@@ -104,34 +104,34 @@ class TestSendLanded:
         return driver
 
     def test_our_text_as_the_newest_message_confirms_the_send(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.read_last_message", return_value="Congrats Jane!"):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.read_last_message", return_value="Congrats Jane!"):
             assert ra._dm_send_landed(self._driver(), "Congrats Jane!") is True
 
     def test_text_still_sitting_in_the_composer_disproves_it(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.read_last_message", return_value="an older message"), \
-             patch(f"{_RA}.DM_SEND_CONFIRM_SECONDS", 0):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.read_last_message", return_value="an older message"), \
+             patch(f"{_OUT}.DM_SEND_CONFIRM_SECONDS", 0):
             assert ra._dm_send_landed(self._driver("Congrats Jane!"), "Congrats Jane!") is False
 
     def test_an_unreadable_thread_trusts_the_click_rather_than_inviting_a_duplicate(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.read_last_message", return_value=""), \
-             patch(f"{_RA}.DM_SEND_CONFIRM_SECONDS", 0):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.read_last_message", return_value=""), \
+             patch(f"{_OUT}.DM_SEND_CONFIRM_SECONDS", 0):
             assert ra._dm_send_landed(self._driver(), "Congrats Jane!") is True
 
     def test_a_driver_that_raises_on_the_composer_read_still_trusts_the_click(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         driver = MagicMock()
         driver.find_elements.side_effect = WebDriverException("gone")
-        with patch(f"{_RA}.read_last_message", return_value=""), \
-             patch(f"{_RA}.DM_SEND_CONFIRM_SECONDS", 0):
+        with patch(f"{_OUT}.read_last_message", return_value=""), \
+             patch(f"{_OUT}.DM_SEND_CONFIRM_SECONDS", 0):
             assert ra._dm_send_landed(driver, "Congrats Jane!") is True
 
     def test_a_long_message_is_matched_on_its_head(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         message = "Congrats on the new role, Jane! " + "x" * 400
-        with patch(f"{_RA}.read_last_message", return_value=message):
+        with patch(f"{_OUT}.read_last_message", return_value=message):
             assert ra._dm_send_landed(self._driver(), message) is True
 
 
@@ -156,38 +156,38 @@ class TestTypingSurvivesTheComposerRemount:
         return box
 
     def test_a_stale_box_is_re_found_and_the_message_still_goes_in(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         boxes = [self._box(stale_on_send=1), self._box()]
-        with patch(f"{_RA}.get_element_wait_retry", side_effect=boxes), \
-             patch(f"{_RA}.simulate_typing") as typed, \
-             patch(f"{_RA}.time.sleep"):
+        with patch(f"{_OUT}.get_element_wait_retry", side_effect=boxes), \
+             patch(f"{_OUT}.simulate_typing") as typed, \
+             patch(f"{_OUT}.time.sleep"):
             ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
         typed.assert_called_once()
         assert typed.call_args[0][1] is boxes[1]  # the RE-FOUND box, never the stale handle
 
     def test_every_attempt_clears_first_so_a_retry_cannot_double_type(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         box = self._box()
-        with patch(f"{_RA}.get_element_wait_retry", return_value=box), \
-             patch(f"{_RA}.simulate_typing"), \
-             patch(f"{_RA}.time.sleep"):
+        with patch(f"{_OUT}.get_element_wait_retry", return_value=box), \
+             patch(f"{_OUT}.simulate_typing"), \
+             patch(f"{_OUT}.time.sleep"):
             ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
         assert box.send_keys.call_count == 2  # select-all then delete, before any typing
 
     def test_a_composer_stale_on_every_attempt_raises_rather_than_sending_blind(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_element_wait_retry",
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.get_element_wait_retry",
                    side_effect=lambda *a, **k: self._box(stale_on_send=99)), \
-             patch(f"{_RA}.simulate_typing") as typed, \
-             patch(f"{_RA}.time.sleep"):
+             patch(f"{_OUT}.simulate_typing") as typed, \
+             patch(f"{_OUT}.time.sleep"):
             with pytest.raises(StaleElementReferenceException):
                 ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")
         typed.assert_not_called()
 
     def test_no_composer_at_all_is_an_error_not_a_silent_skip(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_element_wait_retry", return_value=None), \
-             patch(f"{_RA}.simulate_typing"), \
-             patch(f"{_RA}.time.sleep"):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.get_element_wait_retry", return_value=None), \
+             patch(f"{_OUT}.simulate_typing"), \
+             patch(f"{_OUT}.time.sleep"):
             with pytest.raises(NoSuchElementException):
                 ra._type_dm_into_composer(MagicMock(), MagicMock(), "Congrats Jane!")

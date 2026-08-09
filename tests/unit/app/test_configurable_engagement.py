@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 _RCP = "cqc_lem.app.run_content_plan"
 
 
@@ -56,7 +56,7 @@ class TestFeedScoreEnvOverrides:
 
 class TestProfileViewerCommentPrefs:
     def test_generate_and_post_comment_passes_engagement_prefs(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         my_profile = LinkedInProfile(full_name="Me User", email="me@example.com")
         driver, wait = MagicMock(), MagicMock()
@@ -65,13 +65,13 @@ class TestProfileViewerCommentPrefs:
                  "comment_length": "short"}
         el = MagicMock()
         el.get_attribute.return_value = None
-        with patch(f"{_RA}.get_user_id", return_value=1), \
-             patch(f"{_RA}.check_commented", return_value=False), \
-             patch(f"{_RA}.get_element_wait_retry", return_value=el), \
-             patch(f"{_RA}.getText", return_value="A post about supply chains."), \
-             patch(f"{_RA}.pace_read", return_value=0.0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value=prefs) as get_prefs, \
-             patch(f"{_RA}.generate_ai_response", return_value="Nice point.") as gen, \
+        with patch(f"{_OUT}.get_user_id", return_value=1), \
+             patch(f"{_OUT}.check_commented", return_value=False), \
+             patch(f"{_OUT}.get_element_wait_retry", return_value=el), \
+             patch(f"{_OUT}.getText", return_value="A post about supply chains."), \
+             patch(f"{_OUT}.pace_read", return_value=0.0), \
+             patch(f"{_OUT}.get_engagement_preferences", return_value=prefs) as get_prefs, \
+             patch(f"{_OUT}.generate_ai_response", return_value="Nice point.") as gen, \
              patch.object(ra.comment_on_post, "apply_async"):
             ok = ra.generate_and_post_comment(driver, wait,
                                               driver.current_url, my_profile,
@@ -81,20 +81,20 @@ class TestProfileViewerCommentPrefs:
         assert gen.call_args.kwargs.get("prefs") == prefs
 
     def test_prefs_load_failure_never_blocks_comment(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         my_profile = LinkedInProfile(full_name="Me User", email="me@example.com")
         driver, wait = MagicMock(), MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
         el = MagicMock()
         el.get_attribute.return_value = None
-        with patch(f"{_RA}.get_user_id", return_value=1), \
-             patch(f"{_RA}.check_commented", return_value=False), \
-             patch(f"{_RA}.get_element_wait_retry", return_value=el), \
-             patch(f"{_RA}.getText", return_value="A post."), \
-             patch(f"{_RA}.pace_read", return_value=0.0), \
-             patch(f"{_RA}.get_engagement_preferences", side_effect=RuntimeError("db down")), \
-             patch(f"{_RA}.generate_ai_response", return_value="Nice point.") as gen, \
+        with patch(f"{_OUT}.get_user_id", return_value=1), \
+             patch(f"{_OUT}.check_commented", return_value=False), \
+             patch(f"{_OUT}.get_element_wait_retry", return_value=el), \
+             patch(f"{_OUT}.getText", return_value="A post."), \
+             patch(f"{_OUT}.pace_read", return_value=0.0), \
+             patch(f"{_OUT}.get_engagement_preferences", side_effect=RuntimeError("db down")), \
+             patch(f"{_OUT}.generate_ai_response", return_value="Nice point.") as gen, \
              patch.object(ra.comment_on_post, "apply_async"):
             ok = ra.generate_and_post_comment(driver, wait,
                                               driver.current_url, my_profile,

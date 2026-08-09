@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_AUTO = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 _PLAN = "cqc_lem.app.run_content_plan"
 
 
@@ -27,11 +27,11 @@ def seen_attribution():
 
 class TestDmAttribution:
     def test_build_dm_from_template_attributes_the_dm_feature(self, seen_attribution):
-        from cqc_lem.app.run_automation import build_dm_from_template
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
         captured, capture = seen_attribution
-        with patch(f"{_AUTO}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
-             patch(f"{_AUTO}.get_ai_message_refinement", side_effect=capture), \
-             patch(f"{_AUTO}.humanize_text", side_effect=lambda text, **k: text):
+        with patch(f"{_OUT}.get_dm_template", return_value={"template_text": "Hi {first_name}"}), \
+             patch(f"{_OUT}.get_ai_message_refinement", side_effect=capture), \
+             patch(f"{_OUT}.humanize_text", side_effect=lambda text, **k: text):
             out = build_dm_from_template(42, "connection_accepted", "Ada", None)
 
         assert out == "refined text"

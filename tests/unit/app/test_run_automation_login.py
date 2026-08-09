@@ -12,13 +12,13 @@ from selenium.common.exceptions import TimeoutException
 
 pytestmark = pytest.mark.unit
 
-_MOD = "cqc_lem.app.run_automation"
-_PATCH_GET_PROFILE = f"{_MOD}.get_current_profile"
-_PATCH_LOG_ERROR = f"{_MOD}.log_error"
 # This file drives FIVE tasks that no longer share a module (#1154), so three spellings are live
-# here and each class uses the one its own task reads: `automate_commenting` from
-# `app.engagement.feed`, `automate_reply_commenting` + `update_stale_profile` from
-# `app.engagement.posting`, and the two profile-viewer tasks still from `run_automation`.
+# here and each class uses the one its own task reads: the two profile-viewer tasks from
+# `app.engagement.outreach`, `automate_commenting` from `app.engagement.feed`, and
+# `automate_reply_commenting` + `update_stale_profile` from `app.engagement.posting`.
+_OUT = "cqc_lem.app.engagement.outreach"
+_PATCH_GET_PROFILE = f"{_OUT}.get_current_profile"
+_PATCH_LOG_ERROR = f"{_OUT}.log_error"
 _FEED = "cqc_lem.app.engagement.feed"
 _FEED_GET_PROFILE = f"{_FEED}.get_current_profile"
 _FEED_LOG_ERROR = f"{_FEED}.log_error"
@@ -111,7 +111,7 @@ class TestAutomateProfileViewerEngagementLoginError:
         """automate_profile_viewer_engagement returns error string instead of re-raising."""
         with patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
              patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+            from cqc_lem.app.engagement.outreach import automate_profile_viewer_engagement
 
             result = automate_profile_viewer_engagement.run(user_id=1)
 
@@ -122,7 +122,7 @@ class TestAutomateProfileViewerEngagementLoginError:
         """automate_profile_viewer_engagement returns error string on TimeoutException."""
         with patch(_PATCH_GET_PROFILE, side_effect=_timeout_error()), \
              patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+            from cqc_lem.app.engagement.outreach import automate_profile_viewer_engagement
 
             result = automate_profile_viewer_engagement.run(user_id=1)
 
@@ -133,7 +133,7 @@ class TestAutomateProfileViewerEngagementLoginError:
         """automate_profile_viewer_engagement must never raise — even on LinkedIn challenge."""
         with patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
              patch(_PATCH_LOG_ERROR):
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+            from cqc_lem.app.engagement.outreach import automate_profile_viewer_engagement
 
             try:
                 automate_profile_viewer_engagement.run(user_id=1)
@@ -218,10 +218,10 @@ class TestUpdateStaleProfileLoginError:
 class TestEngageWithProfileViewerLoginError:
     def test_returns_error_string_on_runtime_error(self):
         """engage_with_profile_viewer returns error string when login challenge occurs."""
-        with patch(f"{_MOD}.has_engaged_url_with_x_days", return_value=False), \
+        with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=False), \
              patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
              patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import engage_with_profile_viewer
+            from cqc_lem.app.engagement.outreach import engage_with_profile_viewer
 
             result = engage_with_profile_viewer.run(
                 user_id=1, viewer_url="https://linkedin.com/in/test", viewer_name="Test User"
@@ -232,10 +232,10 @@ class TestEngageWithProfileViewerLoginError:
 
     def test_returns_error_string_on_timeout_exception(self):
         """engage_with_profile_viewer returns error string on TimeoutException."""
-        with patch(f"{_MOD}.has_engaged_url_with_x_days", return_value=False), \
+        with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=False), \
              patch(_PATCH_GET_PROFILE, side_effect=_timeout_error()), \
              patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import engage_with_profile_viewer
+            from cqc_lem.app.engagement.outreach import engage_with_profile_viewer
 
             result = engage_with_profile_viewer.run(
                 user_id=1, viewer_url="https://linkedin.com/in/test", viewer_name="Test User"
@@ -246,9 +246,9 @@ class TestEngageWithProfileViewerLoginError:
 
     def test_skips_login_when_already_engaged_today(self):
         """If already engaged today, get_current_profile is never called."""
-        with patch(f"{_MOD}.has_engaged_url_with_x_days", return_value=True), \
+        with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=True), \
              patch(_PATCH_GET_PROFILE) as mock_profile:
-            from cqc_lem.app.run_automation import engage_with_profile_viewer
+            from cqc_lem.app.engagement.outreach import engage_with_profile_viewer
 
             result = engage_with_profile_viewer.run(
                 user_id=1, viewer_url="https://linkedin.com/in/test", viewer_name="Test User"

@@ -599,14 +599,14 @@ class TestRecommendationReadCopy:
     A copy that drifts grounds a read nothing ships, which is worse than not probing at all.
     """
 
-    def test_carried_read_is_identical_to_the_one_run_automation_uses(self):
-        from cqc_lem.app import run_automation as ra
+    def test_carried_read_is_identical_to_the_one_outreach_uses(self):
+        from cqc_lem.app.engagement import outreach as ra
 
         assert llv.FALLBACK_RECOMMENDATION_ROWS_JS == ra._RECOMMENDATION_ROWS_JS
         assert llv.FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS == ra._RECOMMENDATION_RENDER_ATTEMPTS
 
     def test_the_running_image_wins_when_it_has_the_read(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import outreach as ra
 
         read, attempts, source = llv.recommendation_read()
         assert source == "image"
@@ -618,7 +618,7 @@ class TestRecommendationReadCopy:
         real_import = builtins.__import__
 
         def _no_read(name, *a, **k):
-            if name == "cqc_lem.app.run_automation":
+            if name == "cqc_lem.app.engagement.outreach":
                 raise ImportError("cannot import name '_recommendation_reading'")
             return real_import(name, *a, **k)
 
@@ -721,8 +721,8 @@ class TestAppreciationSourcesProbe:
             "anchors": 24, "page_dated": True}
         with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
              patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
-             patch("cqc_lem.app.run_automation.getText", side_effect=lambda el: el.text), \
-             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+             patch("cqc_lem.app.engagement.outreach.getText", side_effect=lambda el: el.text), \
+             patch("cqc_lem.app.engagement.outreach._parse_recommendation_date", return_value=3.0):
             report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
                                                     sleep=lambda s: None)
 
@@ -775,7 +775,7 @@ class TestAppreciationSourcesProbe:
                       "text": "Jane Doe\nJuly 24, 2026, Jane was my client"}],
             "anchors": 24, "page_dated": True}
         with patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
-             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+             patch("cqc_lem.app.engagement.outreach._parse_recommendation_date", return_value=3.0):
             report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
                                                     sleep=lambda s: None)
 
@@ -794,7 +794,7 @@ class TestAppreciationSourcesProbe:
         real_import = builtins.__import__
 
         def _no_read(name, *a, **k):
-            if name == "cqc_lem.app.run_automation" and "_recommendation_reading" in (a[2] or ()):
+            if name == "cqc_lem.app.engagement.outreach" and "_recommendation_reading" in (a[2] or ()):
                 raise ImportError("cannot import name '_recommendation_reading'")
             return real_import(name, *a, **k)
 
@@ -806,7 +806,7 @@ class TestAppreciationSourcesProbe:
             "anchors": 24, "page_dated": True}
         with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
              patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
-             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+             patch("cqc_lem.app.engagement.outreach._parse_recommendation_date", return_value=3.0):
             report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
                                                     sleep=lambda s: None)
 
@@ -829,7 +829,7 @@ class TestAppreciationSourcesProbe:
         driver.execute_script.side_effect = [{"rows": [], "anchors": 0, "page_dated": False}, rows]
         with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[]), \
              patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
-             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+             patch("cqc_lem.app.engagement.outreach._parse_recommendation_date", return_value=3.0):
             report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
                                                     sleep=lambda s: None)
 
@@ -851,7 +851,7 @@ class TestAppreciationSourcesProbe:
         driver = _fake_driver(current_url="https://www.linkedin.com/notifications/")
         with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
              patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
-             patch("cqc_lem.app.run_automation.getText", side_effect=lambda el: el.text):
+             patch("cqc_lem.app.engagement.outreach.getText", side_effect=lambda el: el.text):
             report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
                                                     sleep=lambda s: None)
 
@@ -1306,12 +1306,16 @@ def _stubbed_group_modules(share_box):
     package = types.ModuleType("cqc_lem")
     app = types.ModuleType("cqc_lem.app")
     utilities = types.ModuleType("cqc_lem.utilities")
-    run_automation = types.ModuleType("cqc_lem.app.run_automation")
-    run_automation._GROUP_SHARE_BOX_LOCATORS = [("xpath", "//button")]
+    # The group composer moved to `app.engagement.feed` in #1154, and this stub kept naming
+    # `run_automation` — so it had been inert ever since: the probe imported the REAL module and
+    # the docstring's promise above was false. Named after the module the probe actually imports.
+    engagement = types.ModuleType("cqc_lem.app.engagement")
+    feed = types.ModuleType("cqc_lem.app.engagement.feed")
+    feed._GROUP_SHARE_BOX_LOCATORS = [("xpath", "//button")]
     selenium_util = types.ModuleType("cqc_lem.utilities.selenium_util")
     selenium_util.find_first = lambda *a, **k: share_box
     return {"cqc_lem": package, "cqc_lem.app": app, "cqc_lem.utilities": utilities,
-            "cqc_lem.app.run_automation": run_automation,
+            "cqc_lem.app.engagement": engagement, "cqc_lem.app.engagement.feed": feed,
             "cqc_lem.utilities.selenium_util": selenium_util}
 
 

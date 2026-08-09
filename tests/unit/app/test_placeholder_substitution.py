@@ -6,50 +6,50 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"  # lgtm[py/unused-global-variable]
+_OUT = "cqc_lem.app.engagement.outreach"  # lgtm[py/unused-global-variable]
 _RCP = "cqc_lem.app.run_content_plan"  # lgtm[py/unused-global-variable]
 
 
 class TestRenderDmPlaceholders:
     def test_fills_all_known_tokens(self):
-        from cqc_lem.app.run_automation import render_dm_placeholders
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
         out = render_dm_placeholders("Hi {first_name}, re {headline} — see {blog_url}",
                                      first_name="Jane", headline="AI Ops", blog_url="https://x.co/b")
         assert out == "Hi Jane, re AI Ops — see https://x.co/b"
 
     def test_first_name_only_leaves_link_literal(self):
         # Lead magnet supports {first_name} + a literal link in the message body.
-        from cqc_lem.app.run_automation import render_dm_placeholders
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
         out = render_dm_placeholders("Here you go, {first_name} — https://x.co/audit", first_name="Chris")
         assert out == "Here you go, Chris — https://x.co/audit"
 
     def test_empty_first_name_defaults_to_there(self):
-        from cqc_lem.app.run_automation import render_dm_placeholders
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
         assert render_dm_placeholders("Hi {first_name}", first_name="") == "Hi there"
 
     def test_unknown_token_left_literal_not_crash(self):
-        from cqc_lem.app.run_automation import render_dm_placeholders
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
         assert render_dm_placeholders("Hi {first_name} {frst_nme}", first_name="Jane") == "Hi Jane {frst_nme}"
 
     def test_malformed_brace_degrades_to_known_replacement(self):
-        from cqc_lem.app.run_automation import render_dm_placeholders
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
         # A stray "{" would make str.format_map raise — we fall back to replacing known tokens.
         out = render_dm_placeholders("50% off { for {first_name}", first_name="Jane")
         assert "Jane" in out
 
     def test_empty_and_none(self):
-        from cqc_lem.app.run_automation import render_dm_placeholders
+        from cqc_lem.utilities.dm_templates import render_dm_placeholders
         assert render_dm_placeholders("") == ""
         assert render_dm_placeholders(None) == ""
 
 
 class TestBuildDmRoutesThroughEngine:
     def test_template_still_fills_first_name(self):
-        from cqc_lem.app.run_automation import build_dm_from_template
+        from cqc_lem.app.engagement.outreach import build_dm_from_template
         prof = MagicMock(); prof.job_title = "AI Engineer"
-        with patch(f"{_RA}.get_dm_template",
+        with patch(f"{_OUT}.get_dm_template",
                    return_value={"template_text": "Hi {first_name}, re {headline}", "step": 0}), \
-             patch(f"{_RA}.get_ai_message_refinement", side_effect=lambda m, character_limit=300: m):
+             patch(f"{_OUT}.get_ai_message_refinement", side_effect=lambda m, character_limit=300: m):
             msg = build_dm_from_template(1, "connection_accepted", "Jane", prof)
         assert msg == "Hi Jane, re AI Engineer"
 

@@ -62,10 +62,10 @@ Defaults are the real code defaults: `_ENGAGEMENT_DEFAULTS` (`db.py:3012`), `_NE
 | `post_similarity_max_pct` | Review thresholds | `NULL` → 55 | Word-overlap ceiling vs the user's own recent posts; over it, held `pending`. |
 | `include_topics` / `include_keywords` / `include_authors` | Targeting | `[]` | If ANY is set, a feed post must match one (keyword/author literal, topic via LLM relevance). |
 | `exclude_topics` / `exclude_keywords` / `exclude_authors` | Targeting | `[]` | Always win over includes. |
-| `min_reactions` | Targeting | `NULL` → 0 | Hard gate before scoring (`run_automation.py:1148`). |
-| `max_post_age_hours` | Targeting | `24` | Hard recency gate (`run_automation.py:1070`). |
-| `feed_fallback_when_empty` | Targeting | `true` | Comment on best feed posts when includes match nothing — **only active when at least one include filter is set** (`run_automation.py:1103`). |
-| `max_comments_per_day` | Targeting | `20` | Hard daily cap; run exits immediately when reached (`run_automation.py:1064`). |
+| `min_reactions` | Targeting | `NULL` → 0 | Hard gate before scoring (`app/engagement/feed.py`, `_score_feed_post`). |
+| `max_post_age_hours` | Targeting | `24` | Hard recency gate (`app/engagement/feed.py`, `_score_feed_post`). |
+| `feed_fallback_when_empty` | Targeting | `true` | Comment on best feed posts when includes match nothing — **only active when at least one include filter is set** (`app/engagement/feed.py`, `automate_commenting`). |
+| `max_comments_per_day` | Targeting | `20` | Hard daily cap; run exits immediately when reached (`app/engagement/feed.py`, `automate_commenting`). |
 | `max_dms_per_day` | Targeting | `20` | Hard daily cap across appreciation, outreach, nurture **and catch-up** DMs. |
 | `max_invites_per_day` | Targeting | `10` | Combined cap for proactive connect targets + profile-viewer invites. Does **not** cover newsletter invites, and is the hard ceiling on (but not the cap for) company-page invites. |
 | `max_company_page_invites_per_day` | Volume | `5` | Daily company-page invite drip (issue #732). Effective ceiling is `min(this, max_invites_per_day)`, further bounded by the Page's remaining monthly credits spread over the days left in the month. |
@@ -134,7 +134,7 @@ Read-only fields the GET adds for the UI: `reply_inbound_address`, `gmail_forwar
 | **F3** | `reply_max_post_age_days` (1–14) has no control anywhere. | Unreachable setting. |
 | **F4** | `content_buffer_days` / `content_buffer_max_posts` are read by the content plan but have no UI. | Users can't control how far ahead drafts are generated. |
 | **F5** | "invites" means three different things — `max_invites_per_day` (connects + profile-viewer), newsletter `max_invites_per_run`, and company-page invites (own cap since #732, but ceilinged by `max_invites_per_day`). | Users assume one cap governs all outbound invites. |
-| **F6** | `feed_fallback_when_empty` is presented as an unconditional toggle but is a **no-op when no include filter is set** (`run_automation.py:1103`). | The safety net looks on and isn't. |
+| **F6** | `feed_fallback_when_empty` is presented as an unconditional toggle but is a **no-op when no include filter is set** (`app/engagement/feed.py`, `automate_commenting`). | The safety net looks on and isn't. |
 | **F7** | The "Engagement Targeting" card is a grab-bag: it also holds catch-up config, connection targeting, video quality and link-in-first-comment. Its title describes ~1/3 of its contents. | Nothing is findable. |
 | **F8** | Three separate save buttons ("Save Voice & Tone", "Save Focus & Goals", "Save Targeting") all PUT the **same** row. One over-long field fails all three at once — the V52 incident. Save-All and the unsaved-changes guard exist on the automation tab only. | Inconsistent, and a known silent-rollback class of bug. |
 | **F9** | Catch-up touches consume `max_dms_per_day`; connection targeting consumes `max_invites_per_day`. Both are disclosed in a single line of grey microcopy. | Caps interact invisibly. |

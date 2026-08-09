@@ -10,7 +10,7 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_OUT = "cqc_lem.app.engagement.outreach"
 
 
 def _followup(**kw):
@@ -33,14 +33,14 @@ def _nurture_patches(**overrides):
         "get_dm_history_for_profile": [],
     }
     defaults.update(overrides)
-    return {name: patch(f"{_RA}.{name}", return_value=val) for name, val in defaults.items()}
+    return {name: patch(f"{_OUT}.{name}", return_value=val) for name, val in defaults.items()}
 
 
 def _run_nurture(followup=None, **overrides):
-    from cqc_lem.app.run_automation import _nurture_after_reply
+    from cqc_lem.app.engagement.outreach import _nurture_after_reply
     patches = _nurture_patches(**overrides)
     started = {name: p.start() for name, p in patches.items()}
-    enq = patch(f"{_RA}.enqueue_followup").start()
+    enq = patch(f"{_OUT}.enqueue_followup").start()
     try:
         got = _nurture_after_reply(1, followup or _followup(), "Sounds good, let's talk",
                                    MagicMock(), prefs={}, profile_synthesis="voice")
@@ -89,7 +89,7 @@ class TestNurtureAfterReply:
         """Issue #624: the owned-asset delivery writes to the SAME thread, so the one-open-draft
         rule has to hold across both mechanics — otherwise the person gets two pending messages.
         """
-        from cqc_lem.app.run_automation import _nurture_after_reply
+        from cqc_lem.app.engagement.outreach import _nurture_after_reply
         from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_ARTIFACT
 
         def _open(user_id, url, source=None):
@@ -97,7 +97,7 @@ class TestNurtureAfterReply:
 
         patches = _nurture_patches()
         started = {name: p.start() for name, p in patches.items()}
-        patch(f"{_RA}.enqueue_followup").start()
+        patch(f"{_OUT}.enqueue_followup").start()
         started["has_open_scheduled_dm"].side_effect = _open
         try:
             got = _nurture_after_reply(1, _followup(), "Sounds good", MagicMock(), prefs={},
@@ -121,8 +121,8 @@ class TestNurtureAfterReply:
         mocks["classify_reply_intent"].assert_not_called()
 
     def test_blank_reply_is_ignored(self):
-        from cqc_lem.app.run_automation import _nurture_after_reply
-        with patch(f"{_RA}.classify_reply_intent") as cls:
+        from cqc_lem.app.engagement.outreach import _nurture_after_reply
+        with patch(f"{_OUT}.classify_reply_intent") as cls:
             assert _nurture_after_reply(1, _followup(), "   ", MagicMock()) is None
         cls.assert_not_called()
 
@@ -141,10 +141,10 @@ class TestNurtureAfterReply:
         assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
 
     def test_falls_back_to_the_template_when_the_llm_fails(self):
-        from cqc_lem.app.run_automation import _nurture_after_reply
+        from cqc_lem.app.engagement.outreach import _nurture_after_reply
         patches = _nurture_patches()
         started = {n: p.start() for n, p in patches.items()}
-        patch(f"{_RA}.enqueue_followup").start()
+        patch(f"{_OUT}.enqueue_followup").start()
         started["generate_nurture_dm"].side_effect = RuntimeError("llm down")
         try:
             got = _nurture_after_reply(1, _followup(), "Sounds good", MagicMock())
@@ -180,8 +180,8 @@ class TestNurtureAfterReply:
         enq.assert_not_called()  # step 2 is the last touch — no further re-check
 
     def test_unexpected_errors_are_swallowed(self):
-        from cqc_lem.app.run_automation import _nurture_after_reply
-        with patch(f"{_RA}.classify_reply_intent", side_effect=RuntimeError("boom")):
+        from cqc_lem.app.engagement.outreach import _nurture_after_reply
+        with patch(f"{_OUT}.classify_reply_intent", side_effect=RuntimeError("boom")):
             assert _nurture_after_reply(1, _followup(), "Sounds good", MagicMock()) is None
 
 
@@ -190,21 +190,21 @@ class TestProcessUserFollowupsNurture:
         """Run the follow-up task with the driver/DB collaborators stubbed, returning
         (result, {name: mock}) for the caller's own patches.
         """
-        from cqc_lem.app.run_automation import process_user_followups
+        from cqc_lem.app.engagement.outreach import process_user_followups
         base = {
-            "get_due_followups": patch(f"{_RA}.get_due_followups", return_value=due_rows),
-            "get_current_profile": patch(f"{_RA}.get_current_profile",
+            "get_due_followups": patch(f"{_OUT}.get_due_followups", return_value=due_rows),
+            "get_current_profile": patch(f"{_OUT}.get_current_profile",
                                          return_value=(MagicMock(), MagicMock(), "e", MagicMock())),
-            "quit_gracefully": patch(f"{_RA}.quit_gracefully"),
-            "sleep": patch(f"{_RA}.time.sleep"),
-            "insert_new_log": patch(f"{_RA}.insert_new_log"),
-            "get_engagement_preferences": patch(f"{_RA}.get_engagement_preferences", return_value={}),
-            "get_or_create_profile_synthesis": patch(f"{_RA}.get_or_create_profile_synthesis",
+            "quit_gracefully": patch(f"{_OUT}.quit_gracefully"),
+            "sleep": patch(f"{_OUT}.time.sleep"),
+            "insert_new_log": patch(f"{_OUT}.insert_new_log"),
+            "get_engagement_preferences": patch(f"{_OUT}.get_engagement_preferences", return_value={}),
+            "get_or_create_profile_synthesis": patch(f"{_OUT}.get_or_create_profile_synthesis",
                                                      return_value="voice"),
-            "_flag_lead_signal": patch(f"{_RA}._flag_lead_signal"),
-            "stop_followups_for_profile": patch(f"{_RA}.stop_followups_for_profile"),
-            "mark_followup": patch(f"{_RA}.mark_followup"),
-            "send_private_dm": patch(f"{_RA}.send_private_dm"),
+            "_flag_lead_signal": patch(f"{_OUT}._flag_lead_signal"),
+            "stop_followups_for_profile": patch(f"{_OUT}.stop_followups_for_profile"),
+            "mark_followup": patch(f"{_OUT}.mark_followup"),
+            "send_private_dm": patch(f"{_OUT}.send_private_dm"),
         }
         base.update(extra)
         mocks = {name: p.start() for name, p in base.items()}
@@ -216,12 +216,12 @@ class TestProcessUserFollowupsNurture:
     def test_a_reply_nurtures_the_thread_after_stopping_the_old_sequence(self):
         order = []
         result, mocks = self._run([_followup()], {
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED),
-            "_last_inbound_message": patch(f"{_RA}._last_inbound_message",
+            "check_dm_replied": patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.REPLIED),
+            "_last_inbound_message": patch(f"{_OUT}._last_inbound_message",
                                            return_value="Sounds good, let's talk"),
-            "stop_followups_for_profile": patch(f"{_RA}.stop_followups_for_profile",
+            "stop_followups_for_profile": patch(f"{_OUT}.stop_followups_for_profile",
                                                 side_effect=lambda *a: order.append("stop")),
-            "_nurture_after_reply": patch(f"{_RA}._nurture_after_reply",
+            "_nurture_after_reply": patch(f"{_OUT}._nurture_after_reply",
                                           side_effect=lambda *a, **k: order.append("nurture") or 5),
         })
         # The blanket stop must come FIRST or it would cancel the re-check the nurture just queued.
@@ -232,17 +232,17 @@ class TestProcessUserFollowupsNurture:
 
     def test_the_inbound_text_is_read_once_and_used_by_both_lead_detection_and_nurture(self):
         _result, mocks = self._run([_followup()], {
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED),
-            "_last_inbound_message": patch(f"{_RA}._last_inbound_message", return_value="How much?"),
-            "_nurture_after_reply": patch(f"{_RA}._nurture_after_reply", return_value=None),
+            "check_dm_replied": patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.REPLIED),
+            "_last_inbound_message": patch(f"{_OUT}._last_inbound_message", return_value="How much?"),
+            "_nurture_after_reply": patch(f"{_OUT}._nurture_after_reply", return_value=None),
         })
         mocks["_last_inbound_message"].assert_called_once()
         assert mocks["_flag_lead_signal"].call_args[0][1] == "How much?"
 
     def test_a_nurture_followup_never_auto_sends_a_template(self):
         result, mocks = self._run([_followup(event_type="nurture", next_step=0)], {
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.NOT_REPLIED),
-            "build_dm_from_template": patch(f"{_RA}.build_dm_from_template"),
+            "check_dm_replied": patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.NOT_REPLIED),
+            "build_dm_from_template": patch(f"{_OUT}.build_dm_from_template"),
         })
         mocks["build_dm_from_template"].assert_not_called()
         mocks["send_private_dm"].apply_async.assert_not_called()

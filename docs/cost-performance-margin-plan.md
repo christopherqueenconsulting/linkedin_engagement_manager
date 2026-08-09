@@ -97,7 +97,7 @@ def track_llm_call(model, prompt_tokens, completion_tokens, latency_ms,
 
 Thread `user_id` + `feature` through `ai_helper._call_llm(**kwargs)` — accept optional
 `_track_user_id` / `_track_feature` kwargs (popped before the LiteLLM call) so callers in
-`run_content_plan.py`, `run_automation.py`, and the newsletter path can attribute cost. Where a
+`run_content_plan.py`, `app/engagement/*`, and the newsletter path can attribute cost. Where a
 caller can't supply it, derive `feature` from the active Celery `task_name`.
 
 **(2) `track_media_cost` — new event `media_cost`.**
