@@ -31,6 +31,9 @@ Code paths in **Feature Areas** below. Subsections carry `docs/*.md` pointers ho
 src/cqc_lem/
 ├── api/           FastAPI app — engagement_preferences, DM template, PIN endpoints
 ├── app/           Celery tasks (run_scheduler, run_automation, run_content_plan, generate_variants, my_celery)
+│   └── engagement/  clusters leaving run_automation (#1154): invites (connect rail), newsletter.
+│                    Every task there pins name='cqc_lem.app.run_automation.<fn>' — moving a task
+│                    RENAMES it, and run_automation re-exports the tasks other modules import by name
 ├── utilities/
 │   ├── ai/        LiteLLM helpers (ai_helper.py, client.py) + content_framework/content_research/content_alignment/story_bank/slop_lint
 │   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)
@@ -148,7 +151,7 @@ generation/posting failures needing a manual fix.
 | Area | The ONE place | The invariant that bites | Doc |
 |---|---|---|---|
 | **Cadence** (#621) | `POST_DAY_TYPES` | The plan is NOT one post a day — it fills `posts_per_week` slots (2–7, default 3) of a fixed calendar that also sets each post's stage and archetype. `posting_days` (#581, default Mon–Fri) is the separate, HARDER bound on which days may carry a slot — weekends are opt-in | `docs/content-scheduling.md` |
-| **Newsletter covers** (#893) | `utilities/newsletter_cover.py`; `_approved_cover_path` is the ONLY thing letting a cover reach LinkedIn | An **upload** is the author's own artwork so it lands `approved`; a **generated** cover always lands `pending_review` (it is a public brand asset). Opt-in (`cover_image_auto`), best-effort — `STEP_COVER` is never a graded editor step | `docs/newsletter-covers.md` |
+| **Newsletter covers** (#893) | `utilities/newsletter_cover.py`; `_approved_cover_path` (in `app/engagement/newsletter.py`) is the ONLY thing letting a cover reach LinkedIn | An **upload** is the author's own artwork so it lands `approved`; a **generated** cover always lands `pending_review` (it is a public brand asset). Opt-in (`cover_image_auto`), best-effort — `STEP_COVER` is never a graded editor step | `docs/newsletter-covers.md` |
 | **Blog alignment** (#967) | `resolve_blog_source` in `utilities/blog_source.py` | The ONE place `align_with_blog` (default ON) becomes source text — blog URL first, sitemap fallback. Never blocking: nothing readable → `None` and the edition writes from topic + profile. Resolved PER edition, so queued drafts repurpose DIFFERENT articles. ON with nothing configured is an expected no-op (DEBUG) | `docs/content-core.md` |
 | **Occasion / milestone posts** (#1074) | `project_launch` / `educational_milestone` in `content_framework.py` | LinkedIn's "Celebrate an occasion" composer has NO API entity, so LEM drafts the copy and the author pastes it. These are the ONLY archetypes nothing picks automatically — absent from rotation, variety repair, the planner menu, the `POST_DAY_TYPES` cadence and the 70/20/10 mix. `posts.manual_publish` is the enforcement: the scheduler never returns one and `post_to_linkedin` refuses one that reaches it. `POST /user/post/mark-posted` is refused for anything NOT `manual_publish` | same |
 ### Engagement automation (`app/run_automation.py`)

@@ -120,4 +120,4 @@ Because no API can replace it, the de-risking lever is *observability*, not migr
 - [Posts API — Microsoft Learn (`li-lms-2026-07`)](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api?view=li-lms-2026-07)
 - [Recent Marketing API Changes — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/recent-changes?view=li-lms-2026-04)
 - [Documents API — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/documents-api)
-- In-repo: `src/cqc_lem/utilities/linkedin/poster.py` (document API path), `src/cqc_lem/app/run_automation.py` (`auto_publish_newsletter_edition`, `_fill_and_publish_article`).
+- In-repo: `src/cqc_lem/utilities/linkedin/poster.py` (document API path), `src/cqc_lem/app/engagement/newsletter.py` (`auto_publish_newsletter_edition`, `_fill_and_publish_article`).

@@ -33,6 +33,9 @@ FROZEN_TASK_NAMES = frozenset({
     "cqc_lem.app.run_automation.send_connection_request",
     "cqc_lem.app.run_automation.clean_stale_invites",
     "cqc_lem.app.run_automation.automate_invites_to_company_page_for_user",
+    "cqc_lem.app.run_automation.auto_publish_newsletter_edition",
+    "cqc_lem.app.run_automation.auto_publish_edition",
+    "cqc_lem.app.run_automation.track_newsletter_subscribers",
 })
 
 

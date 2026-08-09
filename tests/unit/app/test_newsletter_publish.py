@@ -6,34 +6,34 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"  # lgtm[py/unused-global-variable]
+_NL = "cqc_lem.app.engagement.newsletter"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_NL}.time.sleep"):
         yield
 
 
 class TestAutoPublishNewsletterEdition:
     def test_skips_when_disabled(self):
-        from cqc_lem.app.run_automation import auto_publish_newsletter_edition
-        with patch(f"{_RA}.get_newsletter_settings", return_value={"enabled": False}), \
-             patch(f"{_RA}.get_current_profile") as gp:
+        from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
+        with patch(f"{_NL}.get_newsletter_settings", return_value={"enabled": False}), \
+             patch(f"{_NL}.get_current_profile") as gp:
             result = auto_publish_newsletter_edition.run(user_id=1)
         assert "not enabled" in result
         gp.assert_not_called()
 
     def test_publishes_and_marks(self):
-        from cqc_lem.app.run_automation import auto_publish_newsletter_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
         edition = {"title": "5 Levers", "subtitle": "The reach levers most creators miss.",
                    "body": "Hook\n\nSECTION\n\nBody."}
-        with patch(f"{_RA}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach", "align_with_blog": False}), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.generate_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/5-levers", None)) as fill, \
-             patch(f"{_RA}.mark_newsletter_published") as mark, \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_NL}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach", "align_with_blog": False}), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}.generate_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/5-levers", None)) as fill, \
+             patch(f"{_NL}.mark_newsletter_published") as mark, \
+             patch(f"{_NL}.quit_gracefully"):
             result = auto_publish_newsletter_edition.run(user_id=1)
         mark.assert_called_once()
         assert "Published newsletter: 5 Levers" in result
@@ -42,16 +42,16 @@ class TestAutoPublishNewsletterEdition:
 
     def test_align_with_blog_reaches_the_generator(self):
         """#967: the toggle used to change nothing — blog_content was hardcoded None."""
-        from cqc_lem.app.run_automation import auto_publish_newsletter_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
         edition = {"title": "T", "subtitle": "S", "body": "B"}
         settings = {"enabled": True, "topic": "reach", "align_with_blog": True}
-        with patch(f"{_RA}.get_newsletter_settings", return_value=settings), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.resolve_blog_source", return_value="my blog words") as resolve, \
-             patch(f"{_RA}.generate_newsletter_edition", return_value=edition) as gen, \
-             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
-             patch(f"{_RA}.mark_newsletter_published"), \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_NL}.get_newsletter_settings", return_value=settings), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}.resolve_blog_source", return_value="my blog words") as resolve, \
+             patch(f"{_NL}.generate_newsletter_edition", return_value=edition) as gen, \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
+             patch(f"{_NL}.mark_newsletter_published"), \
+             patch(f"{_NL}.quit_gracefully"):
             auto_publish_newsletter_edition.run(user_id=1)
         resolve.assert_called_once_with(1, settings)
         assert gen.call_args.kwargs.get("blog_content") == "my blog words"
@@ -59,49 +59,49 @@ class TestAutoPublishNewsletterEdition:
 
 class TestFillEditionDescription:
     def test_returns_false_on_empty_subtitle(self):
-        from cqc_lem.app.run_automation import _fill_edition_description
+        from cqc_lem.app.engagement.newsletter import _fill_edition_description
         assert _fill_edition_description(MagicMock(), MagicMock(), "") is False
 
     def test_non_fatal_when_field_absent(self):
-        from cqc_lem.app.run_automation import _fill_edition_description
-        with patch(f"{_RA}.find_first", return_value=None):
+        from cqc_lem.app.engagement.newsletter import _fill_edition_description
+        with patch(f"{_NL}.find_first", return_value=None):
             assert _fill_edition_description(MagicMock(), MagicMock(), "about this edition") is False
 
     def test_fills_when_field_present(self):
-        from cqc_lem.app.run_automation import _fill_edition_description
+        from cqc_lem.app.engagement.newsletter import _fill_edition_description
         el = MagicMock()
-        with patch(f"{_RA}.find_first", return_value=el):
+        with patch(f"{_NL}.find_first", return_value=el):
             assert _fill_edition_description(MagicMock(), MagicMock(), "about this edition") is True
         el.send_keys.assert_called_once()
 
 
 class TestAutoPublishEdition:
     def test_skips_when_not_publishable(self):
-        from cqc_lem.app.run_automation import auto_publish_edition
-        with patch(f"{_RA}.get_newsletter_edition", return_value={"user_id": 1, "status": "published"}), \
-             patch(f"{_RA}.get_current_profile") as gp:
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        with patch(f"{_NL}.get_newsletter_edition", return_value={"user_id": 1, "status": "published"}), \
+             patch(f"{_NL}.get_current_profile") as gp:
             result = auto_publish_edition.run(edition_id=9)
         assert "not publishable" in result
         gp.assert_not_called()
 
     def test_skips_when_missing(self):
-        from cqc_lem.app.run_automation import auto_publish_edition
-        with patch(f"{_RA}.get_newsletter_edition", return_value=None), \
-             patch(f"{_RA}.get_current_profile") as gp:
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
+        with patch(f"{_NL}.get_newsletter_edition", return_value=None), \
+             patch(f"{_NL}.get_current_profile") as gp:
             result = auto_publish_edition.run(edition_id=9)
         assert "not publishable" in result
         gp.assert_not_called()
 
     def test_publishes_and_marks(self):
-        from cqc_lem.app.run_automation import auto_publish_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
         edition = {"id": 9, "user_id": 1, "status": "approved", "title": "5 Levers",
                    "subtitle": "The reach levers.", "body": "Hook\n\nSECTION\n\nBody."}
-        with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/5-levers", None)) as fill, \
-             patch(f"{_RA}.mark_edition_published") as mark, \
-             patch(f"{_RA}.mark_edition_failed") as fail, \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/5-levers", None)) as fill, \
+             patch(f"{_NL}.mark_edition_published") as mark, \
+             patch(f"{_NL}.mark_edition_failed") as fail, \
+             patch(f"{_NL}.quit_gracefully"):
             result = auto_publish_edition.run(edition_id=9)
         mark.assert_called_once_with(9, "https://x/pulse/5-levers")
         fail.assert_not_called()
@@ -109,15 +109,15 @@ class TestAutoPublishEdition:
         assert fill.call_args.kwargs.get("subtitle") == "The reach levers."
 
     def test_marks_failed_when_flow_incomplete(self):
-        from cqc_lem.app.run_automation import auto_publish_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
         edition = {"id": 9, "user_id": 1, "status": "draft", "title": "T", "subtitle": None, "body": "B"}
-        with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=(None, "article_publish")), \
-             patch(f"{_RA}.mark_edition_published") as mark, \
-             patch(f"{_RA}.mark_edition_failed") as fail, \
-             patch(f"{_RA}.log_error") as log_err, \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=(None, "article_publish")), \
+             patch(f"{_NL}.mark_edition_published") as mark, \
+             patch(f"{_NL}.mark_edition_failed") as fail, \
+             patch(f"{_NL}.log_error") as log_err, \
+             patch(f"{_NL}.quit_gracefully"):
             result = auto_publish_edition.run(edition_id=9)
         mark.assert_not_called()
         fail.assert_called_once_with(9)
@@ -129,15 +129,15 @@ class TestAutoPublishEdition:
         assert "did not complete" in result
 
     def test_logs_error_when_flow_incomplete_for_generated_edition(self):
-        from cqc_lem.app.run_automation import auto_publish_newsletter_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_newsletter_edition
         edition = {"title": "5 Levers", "subtitle": "S", "body": "B"}
-        with patch(f"{_RA}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach"}), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.generate_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=(None, "article_title")), \
-             patch(f"{_RA}.mark_newsletter_published") as mark, \
-             patch(f"{_RA}.log_error") as log_err, \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_NL}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach"}), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}.generate_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=(None, "article_title")), \
+             patch(f"{_NL}.mark_newsletter_published") as mark, \
+             patch(f"{_NL}.log_error") as log_err, \
+             patch(f"{_NL}.quit_gracefully"):
             result = auto_publish_newsletter_edition.run(user_id=1)
         mark.assert_not_called()
         log_err.assert_called_once()
@@ -596,7 +596,7 @@ class TestApprovedCoverPath:
     """Issue #893 — the ONE place that decides a cover may reach LinkedIn."""
 
     def test_pending_review_cover_is_never_published(self):
-        from cqc_lem.app.run_automation import _approved_cover_path
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
         edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/a.png",
                    "cover_image_status": "pending_review"}
         with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path",
@@ -605,7 +605,7 @@ class TestApprovedCoverPath:
         resolve.assert_not_called()
 
     def test_approved_cover_resolves_to_a_path(self):
-        from cqc_lem.app.run_automation import _approved_cover_path
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
         edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/a.png",
                    "cover_image_status": "approved"}
         with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path",
@@ -613,42 +613,42 @@ class TestApprovedCoverPath:
             assert _approved_cover_path(edition) == "/assets/a.png"
 
     def test_no_cover_at_all_is_none(self):
-        from cqc_lem.app.run_automation import _approved_cover_path
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
         assert _approved_cover_path({"user_id": 1}) is None
 
     def test_approved_cover_whose_file_vanished_warns_and_publishes_without_it(self):
-        from cqc_lem.app.run_automation import _approved_cover_path
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
         edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/gone.png",
                    "cover_image_status": "approved"}
         with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path", return_value=None), \
-             patch(f"{_RA}.log_warning") as warn:
+             patch(f"{_NL}.log_warning") as warn:
             assert _approved_cover_path(edition) is None
         warn.assert_called_once()
 
     def test_publish_threads_the_approved_cover_to_the_editor(self):
-        from cqc_lem.app.run_automation import auto_publish_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
         edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": "S",
                    "body": "B", "cover_image_path": "images/newsletter_covers/1/a.png",
                    "cover_image_status": "approved"}
-        with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch("cqc_lem.utilities.newsletter_cover.cover_abs_path", return_value="/assets/a.png"), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/t", None)) as fill, \
-             patch(f"{_RA}.mark_edition_published"), \
-             patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)) as fill, \
+             patch(f"{_NL}.mark_edition_published"), \
+             patch(f"{_NL}.quit_gracefully"):
             auto_publish_edition.run(edition_id=9)
         assert fill.call_args.kwargs.get("cover_image_path") == "/assets/a.png"
 
     def test_publish_sends_no_cover_when_one_is_still_pending(self):
-        from cqc_lem.app.run_automation import auto_publish_edition
+        from cqc_lem.app.engagement.newsletter import auto_publish_edition
         edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": "S",
                    "body": "B", "cover_image_path": "images/newsletter_covers/1/a.png",
                    "cover_image_status": "pending_review"}
-        with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/t", None)) as fill, \
-             patch(f"{_RA}.mark_edition_published"), \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_NL}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_NL}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_NL}._fill_and_publish_article", return_value=("https://x/pulse/t", None)) as fill, \
+             patch(f"{_NL}.mark_edition_published"), \
+             patch(f"{_NL}.quit_gracefully"):
             auto_publish_edition.run(edition_id=9)
         assert fill.call_args.kwargs.get("cover_image_path") is None
 

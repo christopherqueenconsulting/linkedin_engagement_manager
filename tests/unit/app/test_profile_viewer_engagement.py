@@ -60,7 +60,6 @@ def _run(driver, render_wait: int = 0, **kwargs):
          patch(f"{_MOD}.get_user_id", return_value=1), \
          patch(f"{_MOD}.time.sleep"), \
          patch(f"{_MOD}._PROFILE_VIEWER_RENDER_WAIT_SECONDS", render_wait), \
-         patch(f"{_MOD}.get_elements_as_list_wait_stale") as mock_wait_locator, \
          patch(f"{_MOD}.log_debug") as mock_debug, \
          patch(f"{_MOD}.log_warning") as mock_warning, \
          patch(f"{_MOD}.log_error") as mock_error, \
@@ -70,8 +69,7 @@ def _run(driver, render_wait: int = 0, **kwargs):
         result = automate_profile_viewer_engagement.run(user_id=1, **kwargs)
 
     return result, {"quit": mock_quit, "debug": mock_debug, "warning": mock_warning,
-                    "error": mock_error, "engage": mock_engage,
-                    "wait_locator": mock_wait_locator}
+                    "error": mock_error, "engage": mock_engage}
 
 
 def _engaged_urls(mocks) -> list[str]:
@@ -106,12 +104,24 @@ class TestNoPollingWaitOnTheViewerList:
     run raised TimeoutException, the handler warned, and the repeats escalated into a grouped
     `$exception`. Rows come from one `execute_script` pass now: a page that has not painted yet is
     waited out and re-read, never polled into a raised exception.
+
+    This used to be asserted by patching `run_automation.get_elements_as_list_wait_stale` and
+    checking the mock was never called. Since the newsletter rail left (#1154) that name is not
+    bound in `run_automation` at ALL, and a patch of it raises. Asserting the ABSENCE of the binding
+    is the stronger form anyway: a mock-not-called check would go silently green if the walk ever
+    re-imported the helper and called it through another module's namespace.
     """
+
+    def test_the_polling_locator_is_not_even_importable_into_the_walk(self):
+        import cqc_lem.app.run_automation as ra
+
+        assert not hasattr(ra, "get_elements_as_list_wait_stale"), (
+            "run_automation re-bound the polling locator whose unresolvable wait raised the "
+            "escalated 'Finding Profile Viewers' TimeoutException (#1040)")
 
     def test_empty_page_never_touches_the_polling_locator(self):
         _, mocks = _run(_driver_scripting([[]], headline_stat=None))
 
-        mocks["wait_locator"].assert_not_called()
         mocks["error"].assert_not_called()
 
     def test_late_painting_page_is_re_read_not_raised(self):
@@ -119,7 +129,6 @@ class TestNoPollingWaitOnTheViewerList:
 
         result, mocks = _run(_driver_scripting([[], rows, rows]), render_wait=30)
 
-        mocks["wait_locator"].assert_not_called()
         mocks["warning"].assert_not_called()
         mocks["error"].assert_not_called()
         mocks["debug"].assert_not_called()

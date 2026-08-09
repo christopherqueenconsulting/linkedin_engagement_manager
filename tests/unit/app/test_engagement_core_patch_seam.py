@@ -50,7 +50,13 @@ _RA_FILE = "src/cqc_lem/app/run_automation.py"
 # Where the shared core landed. Everything under `utilities/linkedin/` is derived, so the next slice
 # to push a helper down there inherits this guard instead of depending on someone extending a list.
 # The three record-writers went to their EXISTING owners instead of a new module, so those are named.
-_MOVED_DIRS = ("src/cqc_lem/utilities/linkedin",)
+#
+# `app/engagement/` is the OTHER destination, and it carries the same hazard for a different reason:
+# `run_automation` re-exports the TASKS a cluster took with it, so `run_automation.log_error` still
+# resolves for a test driving `newsletter.auto_publish_edition` while the task reads its own
+# module's binding. Listing the directory rather than its files means every later cluster (feed,
+# posting, outreach) inherits this guard on arrival instead of needing someone to remember.
+_MOVED_DIRS = ("src/cqc_lem/utilities/linkedin", "src/cqc_lem/app/engagement")
 _MOVED_FILES = (
     "src/cqc_lem/utilities/golden_hour.py",
     "src/cqc_lem/utilities/lead_scoring.py",
@@ -244,7 +250,8 @@ class TestNoTestPatchesAMovedSymbolOnRunAutomation:
     def test_there_are_moved_modules_to_check(self):
         """Anti-vacuity: with no destination modules found, everything below reads nothing."""
         names = {m.name for m in _moved_modules(_REPO)}
-        assert {"cards.py", "composer.py", "session.py", "dm_templates.py"} <= names, names
+        assert {"cards.py", "composer.py", "session.py", "dm_templates.py",
+                "invites.py", "newsletter.py"} <= names, names
 
     def test_the_derivation_finds_reads_of_every_binding_kind(self, tmp_path):
         """A defined callee, a module constant and an IMPORTED name are all the same hazard."""
