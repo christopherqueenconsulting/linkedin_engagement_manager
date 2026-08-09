@@ -160,7 +160,7 @@ from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_u
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.notifications import notify_content_generation_ready
 from cqc_lem.utilities.observability import FEATURE_CONTENT, attribute_llm_cost, llm_attribution, llm_pipeline, llm_step
 from cqc_lem.utilities.quality_gates import (
@@ -527,8 +527,8 @@ def _generate_text_post_image(user_id: int, text_content: str, post_id: "int | N
         log_info(f"_generate_text_post_image: post_id={post_id} -> {api_image_url}")
         return api_image_url
     except Exception as e:
-        log_info(f"_generate_text_post_image failed for post {post_id} "
-                f"({type(e).__name__}: {e}) — post ships without an image")
+        log_warning("Could not generate the post image — the post ships without one", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
         return None
 
 
@@ -561,7 +561,8 @@ def _profile_synthesis_or_none(user_id: int) -> Optional[str]:
     try:
         return get_or_create_profile_synthesis(user_id, load_profile_for_user(user_id))
     except Exception as e:
-        log_info(f"No profile synthesis for user {user_id}: {e}")
+        log_warning("Could not load the profile synthesis — writing without the user's voice", exc=e,
+                    user_id=user_id, task_name="create_content")
         return None
 
 
@@ -580,7 +581,8 @@ def _fact_anchors(user_id: int) -> list:
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
-        log_info(f"Story bank unavailable (no verified fact anchors): {e}")
+        log_warning("Story bank unreadable — running the fact gates with no verified anchors",
+                    exc=e, user_id=user_id, task_name="create_content")
         return []
     return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
 
@@ -608,12 +610,14 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
     try:
         shape_history = get_recent_post_shape_history(user_id)
     except Exception as e:
-        log_info(f"Could not load post shape history (rotating without it): {e}")
+        log_warning("Could not load the post shape history — rotating without it", exc=e,
+                    user_id=user_id, task_name="create_content")
         shape_history = []
     try:
         performance = get_shape_performance(user_id)
     except Exception as e:
-        log_info(f"Could not load shape performance (selecting without it): {e}")
+        log_warning("Could not load shape performance — selecting without it", exc=e,
+                    user_id=user_id, task_name="create_content")
         performance = None
     return select_blueprint(
         "post",
@@ -644,7 +648,8 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
             user_id, prefer_save_targeted=bool(anchors),
             exclude_formats=None if anchors else fact_anchored_formats("post"))
     except Exception as e:
-        log_info(f"Could not select a carousel archetype (using generic slide guidance): {e}")
+        log_warning("Could not select a carousel archetype — using generic slide guidance", exc=e,
+                    user_id=user_id, task_name="create_carousel_content")
         return None
 
 
@@ -671,7 +676,8 @@ def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], bluepr
                         "images: " + ", ".join(report["placeholders"][:5]),
                         user_id=user_id, post_id=post_id, task_name="create_carousel_content")
     except Exception as e:
-        log_info(f"Could not grade carousel fact grounding for post {post_id}: {e}")
+        log_warning("Could not grade the carousel's fact grounding", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_carousel_content")
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
@@ -697,12 +703,14 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     try:
         prefs = get_engagement_preferences(user_id)
     except Exception as e:
-        log_info(f"Could not load engagement preferences for carousel: {e}")
+        log_warning("Could not load engagement preferences for the carousel", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
         prefs = None
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id)
     except Exception as e:
-        log_info(f"Could not load profile synthesis for carousel: {e}")
+        log_warning("Could not load the profile synthesis for the carousel", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
         profile_synthesis = None
 
     # ONE story-bank anchor per piece (issue #728), the same split text posts have always had: the
@@ -745,7 +753,12 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         try:
             record_story_bank_use(user_id, int(story["id"]))
         except Exception as e:
-            log_info(f"Could not record story bank use for entry {story.get('id')}: {e}")
+            # WARNING, not INFO: the write is what ADVANCES the bank's least-used ordering. Lose it
+            # and every deck (and the next text post) is handed the SAME anchor forever, which is
+            # the failure the comment above exists to prevent.
+            log_warning("Could not record the story bank entry as used — the next post will reuse "
+                        "the same anchor", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_carousel_content")
 
     # Map stage to carousel model class
     stage_lower = (stage or "").lower()
@@ -775,7 +788,11 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     try:
         carousel_obj = model_cls(**carousel_dict)
     except Exception as e:
-        log_info(f"Could not parse carousel dict into {model_cls.__name__}: {e} — using raw slide texts")
+        # ERROR, not INFO: there is no raw-slide fallback any more — a deck that will not parse
+        # flags the post 'error' below and a human has to fix it. This is where the fault is
+        # DETECTED and the only place the exception is in hand, so it is the one that files.
+        log_error("Could not parse the generated carousel into a slide model", exc=e,
+                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
 
     slide_urls = []
     if carousel_obj is not None and post_id is not None:
@@ -804,17 +821,24 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                     task_name="create_carousel_content",
                 )
         except Exception as img_err:
-            log_info(f"Carousel image generation failed: {img_err}")
+            # ERROR, not INFO: the comment below is explicit that there is no degraded fallback —
+            # the post is flagged 'error' and waits for a human. Nothing upstream logs this, so
+            # without it a user's carousel fails silently and only the DB row knows.
+            log_error("Carousel slide image generation failed", exc=img_err, user_id=user_id,
+                      post_id=post_id, task_name="create_carousel_content")
             # Do NOT fall back to text/placeholder images — that produced carousels of a
             # single repeated default image. Flag the post 'error' for manual/dev fix.
             if post_id is not None:
                 update_db_post_status(post_id, PostStatus.ERROR)
-                log_info(f"Post {post_id} flagged 'error' — carousel slide images could not be generated.")
+                # DEBUG: the status write is the record, and the failure already logged above.
+                # One condition gets ONE record (issue #1038).
+                log_debug(f"Post {post_id} flagged 'error' — carousel slide images could not be generated.")
 
     elif carousel_obj is None and post_id is not None:
         # Couldn't build a valid carousel model — flag for manual fix rather than degrade.
         update_db_post_status(post_id, PostStatus.ERROR)
-        log_info(f"Post {post_id} flagged 'error' — could not generate a valid carousel model.")
+        # DEBUG: restates the parse failure already logged at ERROR where it was detected.
+        log_debug(f"Post {post_id} flagged 'error' — could not generate a valid carousel model.")
 
     # Same V51 shape history text posts write, so a carousel's archetype/hook is what the NEXT
     # piece rotates away from — one rotation across both, never two drifting ones.
@@ -823,7 +847,9 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
             update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
                                  topic=blueprint.get("subject"))
         except Exception as e:
-            log_info(f"Could not persist carousel shape for post {post_id}: {e}")
+            log_warning("Could not persist the carousel's shape — future posts will not rotate "
+                        "away from it", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_carousel_content")
 
     return post_text
 
@@ -965,7 +991,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
         return src
     except Exception as e:
-        log_info(f"_generate_video_src failed ({type(e).__name__}: {e}) — refunding any credits, trying Pexels")
+        log_warning("Video generation failed — refunding any credits and falling back to Pexels",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_video_content")
         if deducted and user_id:
             refund_video_credits(user_id, deducted, post_id)
         try:
@@ -974,7 +1001,10 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             create_folder_if_not_exists(videos_dir)
             return download_pexels_video(text_content[:50], videos_dir)
         except Exception as pe:
-            log_info(f"_generate_video_src: Pexels fallback failed ({type(pe).__name__}: {pe})")
+            # DEBUG: the OUTCOME — a video post with no asset — is already warned by the caller,
+            # which holds the post PENDING with a durable missing_asset finding. A second warning
+            # here forks a second grouped issue for the same lost video (issue #1038).
+            log_debug(f"_generate_video_src: Pexels fallback failed ({type(pe).__name__}: {pe})")
             return None
 
 
@@ -1010,7 +1040,11 @@ def _store_video_asset(post_id: int, video_src_url: str) -> str:
             from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
             add_ai_content_credentials(video_file_path)
         except Exception as e:
-            log_info(f"_store_video_asset: C2PA signing skipped for post {post_id}: {e}")
+            # WARNING: c2pa_helper's own docstring promises it "never raises into the generation
+            # pipeline" and logs its own skips, so anything arriving here is the best-effort module
+            # itself broken — which recurs on every AI video until someone looks.
+            log_warning("C2PA signing raised — the video ships without content credentials", exc=e,
+                        post_id=post_id, task_name="regenerate_post_video_task")
     video_file_name = os.path.basename(video_file_path)
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
     update_db_post_video_url(post_id, api_video_url)
@@ -1037,7 +1071,9 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
         user_id = get_post_user_id(post_id)
         user_profile = load_profile_for_user(user_id)
     except Exception as e:
-        log_info(f"regenerate_video_for_post: profile load skipped: {e}")
+        log_warning("Could not resolve the post's owner or profile — regenerating the video "
+                    "without either", exc=e, post_id=post_id,
+                    task_name="regenerate_post_video_task")
 
     # Honors the post's video_quality tier + premium video credits (deduct/refund).
     video_src_url = _generate_video_src(user_id, text_content, user_profile, post_id)
@@ -1125,7 +1161,11 @@ def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
             content = ensure_lead_magnet_cta(content, get_lead_magnet_settings(user_id), post_id,
                                              use_emojis=bool((prefs or {}).get("use_emojis")))
     except Exception as e:
-        log_info(f"regenerate_post: guidance pass failed for post {post_id} ({e}); keeping base regen")
+        # WARNING: the user typed a revision request and it was silently not applied — they get a
+        # regenerated post that ignored what they asked for.
+        log_warning("Could not apply the user's guidance to the regenerated post — keeping the "
+                    "base regeneration", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="regenerate_post")
     return content
 
 
@@ -1137,7 +1177,8 @@ def _post_is_flagged_error(post_id: int) -> bool:
         from cqc_lem.utilities.db import get_post_status
         return get_post_status(post_id) == PostStatus.ERROR.value
     except Exception as e:
-        log_info(f"Could not read the status for post {post_id}: {e}")
+        log_warning("Could not read the post's status — falling back to the normal PENDING reset",
+                    exc=e, post_id=post_id, task_name="regenerate_post")
         return False
 
 
@@ -1327,7 +1368,8 @@ def _post_content_mix(post_id: int) -> Optional[str]:
     try:
         return get_post_content_mix(post_id)
     except Exception as e:
-        log_info(f"Could not read the content mix class for post {post_id}: {e}")
+        log_warning("Could not read the post's 70/20/10 mix class — the plan's mix will drift",
+                    exc=e, post_id=post_id, task_name="regenerate_post")
         return None
 
 
@@ -1392,7 +1434,8 @@ def _select_story_for_post(user_id: int, prefs: dict = None,
     try:
         entries = get_story_bank_entries(user_id, active_only=True)
     except Exception as e:
-        log_info(f"Story bank unavailable (writing without a fact anchor): {e}")
+        log_warning("Story bank unreadable — writing this post without a fact anchor", exc=e,
+                    user_id=user_id, task_name="create_text_post")
         return None
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
     return _story_bank.select_story(entries, subject=(blueprint or {}).get("subject"),
@@ -1423,7 +1466,10 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
             log_info(f"Post authenticity score {result.get('score')}",
                      user_id=user_id, post_id=post_id, task_name="create_text_post")
     except Exception as e:
-        log_info(f"Authenticity scoring skipped for post {post_id}: {e}")
+        # WARNING: score_authenticity already fails open on its own, so anything raising here means
+        # the gate silently did not run and the draft auto-approves unscored.
+        log_warning("Authenticity scoring raised — this post is not scored by the gate", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
 
 
 def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
@@ -1443,7 +1489,8 @@ def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
             return False
         return is_affiliate_content(content, user_id=owner)
     except Exception as e:
-        log_info(f"Could not evaluate affiliate promotion for post {post_id}: {e}")
+        log_warning("Could not evaluate whether this post is affiliate promotion", exc=e,
+                    post_id=post_id, task_name="create_content")
         return False
 
 
@@ -1538,8 +1585,10 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
         score = get_post_authenticity_score(post_id)
     except Exception as e:
         # An unreadable score only silences THAT gate — the media check still has to run, or a
-        # DB hiccup would let an assetless video post auto-approve.
-        log_info(f"Could not read the authenticity score for post {post_id}: {e}")
+        # DB hiccup would let an assetless video post auto-approve. WARNING to match the sibling
+        # handler ten lines below, which has always logged this same shape at WARNING.
+        log_warning("Could not read the authenticity score — that gate is skipped for this post",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
         score = None
     archetype = _post_archetype_or_none(post_id)
     try:
@@ -1564,7 +1613,9 @@ def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
     try:
         lead_magnet = get_lead_magnet_settings(user_id)
     except Exception as e:
-        log_info(f"Could not read lead-magnet settings for user {user_id}: {e}")
+        log_warning("Could not read the lead-magnet settings — the slop lint will not exempt this "
+                    "post's sanctioned CTA", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_content")
         return None
     if not lead_magnet or not should_include_lead_magnet_cta(lead_magnet, post_id):
         return None
@@ -1579,7 +1630,8 @@ def _post_archetype_or_none(post_id: int) -> Optional[str]:
         from cqc_lem.utilities.db import get_post_archetype
         return get_post_archetype(post_id)
     except Exception as e:
-        log_info(f"Could not read the archetype for post {post_id}: {e}")
+        log_warning("Could not read the post's archetype — the archetype-specific gates are "
+                    "skipped for this pass", exc=e, post_id=post_id, task_name="create_content")
         return None
 
 
@@ -1590,7 +1642,8 @@ def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> 
     try:
         update_db_post_gate_reason(post_id, findings)
     except Exception as e:
-        log_info(f"Could not persist gate findings for post {post_id}: {e}")
+        log_warning("Could not persist the gate findings — a held post will show no reason", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
 
 
 def _engagement_prefs_or_empty(user_id: int) -> dict:
@@ -1600,7 +1653,8 @@ def _engagement_prefs_or_empty(user_id: int) -> dict:
     try:
         return get_engagement_preferences(user_id) or {}
     except Exception as e:
-        log_info(f"Could not load engagement preferences for user {user_id}: {e}")
+        log_warning("Could not load engagement preferences — the gates fall back to the deploy-wide "
+                    "defaults", exc=e, user_id=user_id, task_name="create_content")
         return {}
 
 
@@ -1629,7 +1683,8 @@ def rescore_post(post_id: int) -> dict:
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
     except Exception as e:
-        log_info(f"rescore_post: no profile synthesis for user {user_id}: {e}")
+        log_warning("Could not load the profile synthesis — re-scoring without the user's voice",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="rescore_post")
         profile_synthesis = None
 
     # Re-judge authenticity against the edited text — a stale score would let an unchanged hold
@@ -1693,7 +1748,8 @@ def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Option
                      user_id=user_id, post_id=post_id, task_name="create_content")
         return score
     except Exception as e:
-        log_info(f"Dwell scoring skipped for post {post_id}: {e}")
+        log_warning("Dwell scoring raised — this post carries no dwell-proxy score", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
         return None
 
 
@@ -1874,7 +1930,9 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             try:
                 user_profile = load_profile_for_user(user_id)
             except Exception as e2:
-                log_info(f"Cached profile unavailable: {e2}")
+                # DEBUG: load_profile_for_user warns on both of its own failure paths, so a second
+                # record here files a duplicate issue for one lost profile (issue #1038).
+                log_debug(f"Cached profile unavailable: {e2}")
                 user_profile = None
             if user_profile is None:
                 user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
@@ -1901,7 +1959,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             recent_texts = get_recent_post_texts(user_id)
         except Exception as e:
-            log_info(f"Could not load recent post history (skipping dedup steering): {e}")
+            log_warning("Could not load the recent post history — writing with no dedup steering",
+                        exc=e, user_id=user_id, post_id=post_id, task_name="create_text_post")
     if history_directive is None:
         history_directive = history_avoidance_directive(recent_texts)
 
@@ -1921,7 +1980,10 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             log_info(f"Story bank anchor for post_id={post_id}: "
                     f"[{story.get('kind')}] {story.get('title')}")
         else:
-            log_info("No story bank entry available — writing a non-story archetype")
+            # DEBUG: an empty bank is the documented resting state for a user who has not filled
+            # one in, and it fires on EVERY post they write. Same shape as db.get_ready_to_post_posts
+            # logging INFO only when the list is non-empty.
+            log_debug("No story bank entry available — writing a non-story archetype")
 
     # Integration seam (#618 x #620): the promo slot demands a case study built on ONE real outcome
     # number, but without a story-bank anchor the fabrication detector has no allow-list and is
@@ -1982,7 +2044,9 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 log_info(f"Lead-magnet CTA included on post_id={post_id} "
                         f"(keyword '{lead_magnet.get('keyword')}')")
         except Exception as e:
-            log_info(f"Lead-magnet CTA skipped (settings unavailable): {e}")
+            log_warning("Could not read the lead-magnet settings — this post ships without the "
+                        "comment-keyword mechanic", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
             lead_magnet, include_cta, lead_magnet_cta = None, False, ""
 
     # Generate the post based on the selected type
@@ -2140,7 +2204,9 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             newsletter = get_newsletter_settings(user_id)
         except Exception as e:
-            log_info(f"Newsletter settings unavailable for artifact-CTA routing: {e}")
+            log_warning("Could not read the newsletter settings — the meeting-ask CTA has no "
+                        "artifact to be replaced with", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
             newsletter = None
         repaired = replace_meeting_ask_cta(
             final_content, lead_magnet=lead_magnet, newsletter=newsletter, post_id=post_id,
@@ -2171,7 +2237,11 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         try:
             record_story_bank_use(user_id, int(story["id"]))
         except Exception as e:
-            log_info(f"Could not record story bank use for entry {story.get('id')}: {e}")
+            # WARNING for the same reason as the carousel's copy of this write: without it the
+            # bank never advances and every post reuses the same anchor.
+            log_warning("Could not record the story bank entry as used — the next post will reuse "
+                        "the same anchor", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
 
     # Persist the assigned shape so FUTURE posts rotate away from it (the newsletter's V50 shape
     # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
@@ -2180,7 +2250,9 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
                                  topic=blueprint.get("subject"))
         except Exception as e:
-            log_info(f"Could not persist post shape for post {post_id}: {e}")
+            log_warning("Could not persist the post's shape — future posts will not rotate away "
+                        "from it", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
 
     return final_content
 
@@ -2504,9 +2576,9 @@ def fetch_sitemap_urls(sitemap_url):
                 urls.extend(fetch_sitemap_urls(sub_sitemap_url))  # Recursive call
 
     except requests.RequestException as e:
-        print(f"Error fetching sitemap: {e}")
+        log_info(f"Error fetching sitemap: {e}")
     except ElementTree.ParseError as e:
-        print(f"Error parsing sitemap XML: {e}")
+        log_info(f"Error parsing sitemap XML: {e}")
 
     return urls
 
@@ -2548,7 +2620,9 @@ def extract_page_content(page_url):
 
         return title, main_content
     except requests.RequestException as e:
-        log_info(f"Error fetching page content: {e}")
+        # DEBUG: generate_website_content_post loops over candidate URLs and drops each one that
+        # yields nothing, so this fires per rejected candidate as ordinary loop bookkeeping.
+        log_debug(f"Error fetching page content: {e}")
         return None, None
 
 
@@ -2763,12 +2837,18 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         content, video_url = create_content(user_id, post_type, stage, post_id=post_id,
                                             content_mix=content_mix, day_weekday=day_weekday)
     except Exception as e:
-        log_info(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
+        # ERROR, symmetric with the storing-half handler at the bottom of this function, which has
+        # always been log_error: both end the same way — record_post_failed, and the user's planned
+        # slot produces nothing.
+        log_error("Skipping post: content generation failed", exc=e, user_id=user_id,
+                  post_id=post_id, task_name="auto_create_weekly_content")
         record_post_failed(user_id, post_id)
         return False
 
     if content is None:
-        log_info(f"Skipping post_id {post_id}: content generation returned None")
+        # ERROR with no exc=: there is no exception to file, but the user still lost the post.
+        log_error("Skipping post: content generation returned nothing", user_id=user_id,
+                  post_id=post_id, task_name="auto_create_weekly_content")
         record_post_failed(user_id, post_id)
         return False
 
@@ -2792,7 +2872,11 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                     from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
                     add_ai_content_credentials(video_file_path)
                 except Exception as e:
-                    log_info(f"C2PA signing skipped for post_id={post_id}: {e}")
+                    # Same as _store_video_asset: c2pa_helper never raises by contract, so this
+                    # handler only sees the best-effort module itself failing.
+                    log_warning("C2PA signing raised — the video ships without content credentials",
+                                exc=e, user_id=user_id, post_id=post_id,
+                                task_name="auto_create_weekly_content")
             # Get the file name from the video file path
             video_file_name = os.path.basename(video_file_path)
 
@@ -2883,7 +2967,9 @@ def is_blog_post_by_metadata(url):
         if soup.find('meta', {'name': 'author'}):
             return True
     except Exception as e:
-        log_info(f"Error fetching URL: {e}")
+        # DEBUG: the docstring calls this out as expected — "an unreadable page is not evidence of
+        # an article" — and filter_relevant_urls runs it over every URL in a user's sitemap.
+        log_debug(f"Error fetching URL: {e}")
     return False
 
 
