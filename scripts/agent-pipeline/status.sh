@@ -37,7 +37,7 @@ SLUG="${SLUG:-christopherqueenconsulting/linkedin_engagement_manager}"
 CLAUDE_PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-/home/lem/.claude/projects}"
 LOGDIR="$BASE/logs"
 STATE_DIR="$BASE/state"
-OUTCOMES="$LOGDIR/tick-outcomes.ndjson"
+OUTCOMES="${OUTCOMES:-$LOGDIR/tick-outcomes.ndjson}"   # overridable so the rollup can be tested
 
 WINDOW_HOURS=6
 WATCH=0
@@ -492,6 +492,7 @@ from collections import Counter
 window = float(os.environ.get("WINDOW_HOURS", "6")) * 3600
 now = time.time()
 outcomes, modes, reasons, pr_fail = Counter(), Counter(), Counter(), Counter()
+pr_last = {}   # pr -> epoch of its LAST failure, so a resolved PR can be told from a stuck one
 total = 0
 newest = 0.0
 dur = []
@@ -526,6 +527,7 @@ for line in sys.stdin:
             reasons["%s/%s" % (oc, r)] += 1
     if oc == "failed" and o.get("pr_number"):
         pr_fail[o["pr_number"]] += 1
+        pr_last[o["pr_number"]] = max(pr_last.get(o["pr_number"], 0), t)
 
 print("TOTAL=%d" % total)
 print("AGE=%d" % (int(now - newest) if newest else -1))
@@ -533,15 +535,32 @@ print("OUTCOMES=" + ",".join("%s:%d" % kv for kv in outcomes.most_common()))
 print("MODES=" + ",".join("%s:%d" % kv for kv in modes.most_common()))
 print("REASONS=" + ",".join("%s:%d" % kv for kv in reasons.most_common(6)))
 print("AVGDUR=%d" % (sum(dur) / len(dur) if dur else 0))
-print("PRFAIL=" + ",".join("%s:%d" % kv for kv in pr_fail.most_common(3) if kv[1] >= 3))
+print("PRFAIL=" + ",".join("%s:%d:%d" % (pr, c, int(now - pr_last.get(pr, now)))
+                          for pr, c in pr_fail.most_common(3) if c >= 3))
 ' 2>/dev/null)"
   LAST_TICK_AGE="$(printf '%s\n' "$ROLLUP" | grep -m1 '^AGE=' | cut -d= -f2)"
   LAST_TICK_AGE="${LAST_TICK_AGE:--1}"
   # cron fires every 5 minutes; a tick that has not landed in 15 is cron or the runner being dead.
   [ "$LAST_TICK_AGE" -ge 0 ] && [ "$LAST_TICK_AGE" -gt 900 ] && \
     warn "no tick outcome recorded for $(fmt_dur "$LAST_TICK_AGE") — cron may not be firing (expected every 5m)"
-  local prfail; prfail="$(printf '%s\n' "$ROLLUP" | grep -m1 '^PRFAIL=' | cut -d= -f2)"
-  [ -n "$prfail" ] && warn "merge keeps failing on the same PR(s): $prfail (count in the last ${WINDOW_HOURS}h)"
+  # A merge that failed repeatedly and then LANDED is history, not a live problem. The first version
+  # warned on the raw count, so it kept flagging PR #1120 for hours after it merged — and a warning
+  # that outlives its problem teaches the reader to skim the whole NEEDS ATTENTION list. Two guards:
+  # the PR must still be open (checked against the open-PR list already fetched — no extra API call),
+  # and it must still be failing. The merge lane retries every few minutes, so a genuinely stuck PR
+  # re-fails constantly; silence for half an hour means it is no longer stuck. The age guard is also
+  # what carries this under --no-gh, where the open-PR list is unavailable.
+  local prfail entry pr cnt fage rest
+  prfail="$(printf '%s\n' "$ROLLUP" | grep -m1 '^PRFAIL=' | cut -d= -f2)"
+  for entry in ${prfail//,/ }; do
+    [ -n "$entry" ] || continue
+    pr="${entry%%:*}"; rest="${entry#*:}"; cnt="${rest%%:*}"; fage="${rest##*:}"
+    if [ "$GH_OK" = 1 ]; then
+      printf '%s\n' "$GH_PRS" | cut -d"$SEP" -f1 | grep -qx "$pr" || continue
+    fi
+    [ "${fage:-0}" -gt 1800 ] 2>/dev/null && continue
+    warn "merge has failed ${cnt}x on PR #${pr} in the last ${WINDOW_HOURS}h, most recently $(fmt_dur "$fage") ago — the merge queue keeps taking and dropping it"
+  done
 }
 rollup_get() { printf '%s\n' "$ROLLUP" | grep -m1 "^$1=" | cut -d= -f2-; }
 
