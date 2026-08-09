@@ -9,6 +9,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 
 from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
@@ -23,10 +24,11 @@ def _auth_hardening_side_effects():
     """
     with patch(f"{_MAIN}.record_auth_event", return_value=True), \
          patch(f"{_USER}.record_auth_event", return_value=True), \
-         patch(f"{_MAIN}.mark_email_verified", return_value=True), \
-         patch(f"{_MAIN}.get_pin_lockout", return_value=None), \
+         patch(f"{_AUTH}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.mark_email_verified", return_value=True), \
+         patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
          patch(f"{_USER}.get_pin_lockout", return_value=None), \
-         patch(f"{_MAIN}.get_user_public_uid", return_value="pub-uid-1"), \
+         patch(f"{_AUTH}.get_user_public_uid", return_value="pub-uid-1"), \
          patch(f"{_USER}.get_user_public_uid", return_value="pub-uid-1"):
         yield
 
@@ -241,9 +243,9 @@ class TestAuthCheckSession:
 
     def test_valid_session_returns_user_id_and_email(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
-             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_MAIN}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         assert resp.status_code == 200
         detail = resp.json()["detail"]
@@ -261,9 +263,9 @@ class TestAuthCheckSession:
             "posts_approved": 12,
         }
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
-             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_MAIN}.get_user_analytics_profile", return_value=profile), \
-             patch(f"{_MAIN}.is_user_admin", return_value=True):
+             patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value=profile), \
+             patch(f"{_AUTH}.is_user_admin", return_value=True):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         detail = resp.json()["detail"]
         assert detail["plan"] == "premium"
@@ -277,9 +279,9 @@ class TestAuthCheckSession:
 
     def test_missing_profile_row_leaves_person_facts_null(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
-             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_MAIN}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         detail = resp.json()["detail"]
         assert detail["plan"] is None

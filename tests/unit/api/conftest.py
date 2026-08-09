@@ -14,20 +14,32 @@ against.
 a nested `patch` wins over this one.
 
 Since #1154 these names are bound in more than one module: the enrolment and step-up handlers live
-in `api/routers/user.py`, the PIN-login ones still in `api/main.py`, and a few are read by both.
+in `api/routers/user.py`, the login ones in `api/routers/auth.py`, and a few are read by both.
 A blanket default has to rebind every module that reads the name — patching only `main` would leave
 the router calling the real function against a dead database. `_default_everywhere` does that, and
 still fails loudly if NO module binds the name (a rename must not silently stop being defaulted).
 """
 
+import pkgutil
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
 
-# Every module an `/api` handler's dependencies can be bound in. Add a slice's module here when the
-# next one lands; a name absent from one of them is simply not patched there.
-_HANDLER_MODULES = ("cqc_lem.api.main", "cqc_lem.api.routers.user")
+
+def _handler_modules() -> list[str]:
+    """Every module an `/api` handler's dependencies can be bound in — DISCOVERED, not listed.
+
+    The list version said "add a slice's module when the next one lands", and the `/api/auth` slice
+    is what proved a reminder is not a mechanism: `has_strong_factor` moved to `routers/auth.py`,
+    the default kept rebinding `main`'s dead copy, and every PIN-login test 500'd on a real database
+    call. Reading the package means the next split inherits this instead of remembering it.
+    """
+    from cqc_lem.api import routers
+
+    return ["cqc_lem.api.main"] + [
+        f"cqc_lem.api.routers.{info.name}" for info in pkgutil.iter_modules(routers.__path__)
+    ]
 
 
 @contextmanager
@@ -35,7 +47,7 @@ def _default_everywhere(name: str, **kwargs):
     """Patch `name` in every handler module that binds it."""
     import importlib
 
-    hosts = [m for m in _HANDLER_MODULES if hasattr(importlib.import_module(m), name)]
+    hosts = [m for m in _handler_modules() if hasattr(importlib.import_module(m), name)]
     assert hosts, f"nothing binds {name!r} any more — this default is patching a dead name"
     with ExitStack() as stack:
         for host in hosts:

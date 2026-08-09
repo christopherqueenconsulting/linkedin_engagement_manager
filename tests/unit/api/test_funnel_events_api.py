@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 _BILL = "cqc_lem.api.routers.billing"
 
 
@@ -18,10 +19,11 @@ def _auth_hardening_side_effects():
     calls these tests never mocked — pin them so each test still exercises the flow it was written
     for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
     """
-    with patch("cqc_lem.api.main.record_auth_event", return_value=True), \
-         patch("cqc_lem.api.main.mark_email_verified", return_value=True), \
-         patch("cqc_lem.api.main.get_pin_lockout", return_value=None), \
-         patch("cqc_lem.api.main.get_user_public_uid", return_value="pub-uid-1"):
+    with patch(f"{_MAIN}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.mark_email_verified", return_value=True), \
+         patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+         patch(f"{_AUTH}.get_user_public_uid", return_value="pub-uid-1"):
         yield
 
 
@@ -58,12 +60,12 @@ class TestSignupFunnel:
     VERIFY = "/api/auth/email/verify"
 
     def test_new_email_starts_the_funnel_with_its_attribution(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None), \
-             patch(f"{_MAIN}.generate_pin", return_value="123456"), \
-             patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.send_pin_email", return_value=(True, False)), \
-             patch(f"{_MAIN}.create_pin_for_email", return_value=True), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.get_user_id", return_value=None), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, False)), \
+             patch(f"{_AUTH}.create_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.INIT, json={"email": "New@Example.com",
                                                 "attribution": ATTRIBUTION})
 
@@ -79,12 +81,12 @@ class TestSignupFunnel:
         """Issue #658: `?ref=<user id>` is what a referral link carries. It has to be declared on
         FunnelAttribution or FastAPI drops it before normalize_attribution ever sees it.
         """
-        with patch(f"{_MAIN}.get_user_id", return_value=None), \
-             patch(f"{_MAIN}.generate_pin", return_value="123456"), \
-             patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.send_pin_email", return_value=(True, False)), \
-             patch(f"{_MAIN}.create_pin_for_email", return_value=True), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.get_user_id", return_value=None), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, False)), \
+             patch(f"{_AUTH}.create_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.INIT, json={
                 "email": "referred@example.com",
                 "attribution": {"utm_source": "referral", "utm_medium": "referral", "ref": "7"}})
@@ -93,37 +95,37 @@ class TestSignupFunnel:
         assert track.call_args.kwargs["attribution"]["ref"] == "7"
 
     def test_known_email_is_a_login_not_a_signup(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=5), \
-             patch(f"{_MAIN}.generate_pin", return_value="123456"), \
-             patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.send_pin_email", return_value=(True, False)), \
-             patch(f"{_MAIN}.create_pin_for_email", return_value=True), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.get_user_id", return_value=5), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, False)), \
+             patch(f"{_AUTH}.create_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.INIT, json={"email": "known@example.com"})
 
         assert resp.status_code == 200
         assert track.call_count == 0
 
     def test_attribution_is_optional(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None), \
-             patch(f"{_MAIN}.generate_pin", return_value="123456"), \
-             patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.send_pin_email", return_value=(True, False)), \
-             patch(f"{_MAIN}.create_pin_for_email", return_value=True), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.get_user_id", return_value=None), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, False)), \
+             patch(f"{_AUTH}.create_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.INIT, json={"email": "bare@example.com"})
 
         assert resp.status_code == 200
         assert track.call_args.kwargs["attribution"] == {}
 
     def test_bypass_signup_completes_and_starts_the_trial(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None), \
-             patch(f"{_MAIN}.generate_pin", return_value="123456"), \
-             patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_MAIN}.add_user_by_email", return_value=99), \
-             patch(f"{_MAIN}.create_session", return_value="tok"), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.get_user_id", return_value=None), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.add_user_by_email", return_value=99), \
+             patch(f"{_AUTH}.create_session", return_value="tok"), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.INIT, json={"email": "bypass@example.com",
                                                 "attribution": ATTRIBUTION})
 
@@ -137,12 +139,12 @@ class TestSignupFunnel:
         assert track.call_args_list[2].kwargs["trial_days"] > 0
 
     def test_verify_completes_the_funnel_for_a_new_user(self, client):
-        with patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.verify_pin_for_email", return_value=True), \
-             patch(f"{_MAIN}.get_user_id", return_value=None), \
-             patch(f"{_MAIN}.add_user_by_email", return_value=12), \
-             patch(f"{_MAIN}.create_session", return_value="tok"), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=None), \
+             patch(f"{_AUTH}.add_user_by_email", return_value=12), \
+             patch(f"{_AUTH}.create_session", return_value="tok"), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.VERIFY, json={"email": "verify@example.com", "pin": "123456",
                                                   "attribution": ATTRIBUTION})
 
@@ -152,11 +154,11 @@ class TestSignupFunnel:
         assert track.call_args_list[1].kwargs["attribution"]["utm_campaign"] == "beta"
 
     def test_verify_emits_nothing_for_a_returning_user(self, client):
-        with patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
-             patch(f"{_MAIN}.verify_pin_for_email", return_value=True), \
-             patch(f"{_MAIN}.get_user_id", return_value=8), \
-             patch(f"{_MAIN}.create_session", return_value="tok"), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+        with patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=8), \
+             patch(f"{_AUTH}.create_session", return_value="tok"), \
+             patch(f"{_AUTH}.track_funnel_event") as track:
             resp = client.post(self.VERIFY, json={"email": "back@example.com", "pin": "123456"})
 
         assert resp.status_code == 200

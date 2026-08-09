@@ -25,9 +25,10 @@ def _auth_hardening_side_effects():
     written for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
     """
     with patch("cqc_lem.api.main.record_auth_event", return_value=True), \
-         patch("cqc_lem.api.main.mark_email_verified", return_value=True), \
-         patch("cqc_lem.api.main.get_pin_lockout", return_value=None), \
-         patch("cqc_lem.api.main.get_user_public_uid", return_value="pub-uid-1"):
+         patch("cqc_lem.api.routers.auth.record_auth_event", return_value=True), \
+         patch("cqc_lem.api.routers.auth.mark_email_verified", return_value=True), \
+         patch("cqc_lem.api.routers.auth.get_pin_lockout", return_value=None), \
+         patch("cqc_lem.api.routers.auth.get_user_public_uid", return_value="pub-uid-1"):
         yield
 
 
@@ -60,15 +61,16 @@ _NON_ADMIN_USER = {"id": 8, "email": "user@example.com", "is_admin": False}
 def _auth(user):
     """Patch targets for the `/api/admin/feedback` routes, which moved to their own router (#1154).
 
-    `is_user_admin` moved with `_require_user_admin` and is read from the ROUTER's globals; the two
-    kernel functions stay in `main`, which the router reaches as a host-module attribute at request
-    time. `/api/auth/session` reports the same flag off `main`'s own binding, so that test patches
-    `main.is_user_admin` and this one does not speak for it.
+    `is_user_admin` moved with `_require_user_admin` and is read from the ROUTER's globals;
+    `get_session_user_id` is the auth kernel, which stays in `main` and is reached as a host-module
+    attribute at request time — so patching it there is correct and must stay that way.
+
+    `/api/auth/session` reports the same admin flag, but off `cqc_lem.api.routers.auth` since #1154,
+    and `TestSessionExposesAdminFlag` patches it there itself. Nothing here speaks for that route.
     """
     return {
         "get_session": patch("cqc_lem.api.main.get_session_user_id", return_value=user["id"]),
         "is_admin": patch("cqc_lem.api.routers.admin.is_user_admin", return_value=user["is_admin"]),
-        "get_email": patch("cqc_lem.api.main.get_user_email", return_value=user["email"]),
     }
 
 
@@ -356,9 +358,9 @@ class TestSessionExposesAdminFlag:
             "posts_approved": 0,
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=7), \
-             patch("cqc_lem.api.main.get_user_email", return_value="admin@x.com"), \
-             patch("cqc_lem.api.main.get_user_analytics_profile", return_value=profile), \
-             patch("cqc_lem.api.main.is_user_admin", return_value=True):
+             patch("cqc_lem.api.routers.auth.get_user_email", return_value="admin@x.com"), \
+             patch("cqc_lem.api.routers.auth.get_user_analytics_profile", return_value=profile), \
+             patch("cqc_lem.api.routers.auth.is_user_admin", return_value=True):
             r = client.get("/api/auth/session", params={"session_token": "tok"})
         assert r.status_code == 200
         assert r.json()["detail"]["is_admin"] is True

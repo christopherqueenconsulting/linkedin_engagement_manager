@@ -11,6 +11,7 @@ from fastapi import HTTPException
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 
 
@@ -211,11 +212,11 @@ class TestRangeHelpers:
 
 class TestAuthInitBypassSessionFailure:
     def test_bypass_session_creation_failure_returns_500(self, client):
-        with patch(f"{_M}.get_user_id", return_value=5), \
-             patch(f"{_M}.generate_pin", return_value="123456"), \
-             patch(f"{_M}.hash_pin", return_value="hashed"), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.create_session", return_value=None):
+        with patch(f"{_AUTH}.get_user_id", return_value=5), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.create_session", return_value=None):
             resp = client.post("/api/auth/email/init", json={"email": "user@example.com"})
         assert resp.status_code == 500
 

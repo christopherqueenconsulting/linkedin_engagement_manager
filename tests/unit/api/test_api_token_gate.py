@@ -25,6 +25,18 @@ def main_mod():
 
 
 @pytest.fixture(scope="module")
+def auth_mod():
+    """The cookie helpers went to the `/api/auth` router with the handlers that issue them (#1154).
+
+    Imported the same way and for the same reason as `main_mod` — and separately, because
+    `_set_session_cookie` reads `SESSION_COOKIE_SAMESITE` out of THIS module's globals now, so
+    patching `main`'s copy would set a value nothing reads.
+    """
+    from cqc_lem.api.routers import auth
+    return auth
+
+
+@pytest.fixture(scope="module")
 def client():
     with patch("cqc_lem.utilities.observability.track_api_call"):
         from fastapi.testclient import TestClient
@@ -226,15 +238,15 @@ class TestSessionCookieAttributes:
         def set_cookie(self, **kwargs) -> None:
             self.kwargs = kwargs
 
-    def _issued(self, main_mod, samesite: str = "lax", secure: bool = True):
+    def _issued(self, auth_mod, samesite: str = "lax", secure: bool = True):
         response = self._Recorder()
-        with patch.object(main_mod, "SESSION_COOKIE_SAMESITE", samesite), \
-             patch.object(main_mod, "SESSION_COOKIE_SECURE", secure):
-            main_mod._set_session_cookie(response, "tok")
+        with patch.object(auth_mod, "SESSION_COOKIE_SAMESITE", samesite), \
+             patch.object(auth_mod, "SESSION_COOKIE_SECURE", secure):
+            auth_mod._set_session_cookie(response, "tok")
         return response.kwargs
 
-    def test_cookie_is_httponly_secure_and_samesite_lax(self, main_mod):
-        kwargs = self._issued(main_mod)
+    def test_cookie_is_httponly_secure_and_samesite_lax(self, auth_mod):
+        kwargs = self._issued(auth_mod)
         assert kwargs["key"] == SESSION_COOKIE_NAME
         assert kwargs["httponly"] is True   # no XSS-readable session token
         assert kwargs["secure"] is True     # prod default
@@ -248,8 +260,8 @@ class TestSessionCookieAttributes:
         ("garbage", "lax"),   # and so does an unusable value — never a 500 on login
     ])
     def test_samesite_never_resolves_to_something_a_browser_would_reject(
-            self, main_mod, configured, expected):
-        assert self._issued(main_mod, samesite=configured)["samesite"] == expected
+            self, auth_mod, configured, expected):
+        assert self._issued(auth_mod, samesite=configured)["samesite"] == expected
 
     def test_the_four_query_param_mutating_routes_are_post_only(self, main_mod):
         """`Lax` still sends the cookie on a top-level GET navigation, so a state-changing route

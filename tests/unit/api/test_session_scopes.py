@@ -20,6 +20,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 
 
@@ -84,15 +85,17 @@ def _account_without_a_strong_factor():
 
 @pytest.fixture(autouse=True)
 def _quiet():
-    """Silence the audit write in BOTH modules that bind it.
+    """Silence the audit write in EVERY module that binds it.
 
     A fixture names no route, so it covers every route in the file — and since #1154 those are
-    served from two modules.
+    served from three modules. The login-only names are patched on the auth router alone, because
+    that is now the only module that binds them.
     """
     with patch(f"{_M}.record_auth_event", return_value=True), \
          patch(f"{_USER}.record_auth_event", return_value=True), \
-         patch(f"{_M}.mark_email_verified", return_value=True), \
-         patch(f"{_M}.clear_auth_limits"):
+         patch(f"{_AUTH}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.mark_email_verified", return_value=True), \
+         patch(f"{_AUTH}.clear_auth_limits"):
         yield
 
 
@@ -294,12 +297,12 @@ class TestExtensionScope:
 
 class TestEnrollmentDeadline:
     def _pin_login(self, client):
-        with patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.create_session", return_value="new-token") as create_session:
+        with patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.create_session", return_value="new-token") as create_session:
             resp = client.post("/api/auth/email/verify",
                                json={"email": _EMAIL, "pin": "123456"})
         return resp, create_session
@@ -331,16 +334,16 @@ class TestEnrollmentDeadline:
     def test_an_account_that_already_enrolled_is_never_held(self, client):
         """It goes down the 2c bootstrap path instead — PIN, then a factor."""
         with _deadline(_PAST), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.count_challenge_attempts", return_value=0), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending"), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.create_session") as create_session:
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.count_challenge_attempts", return_value=0), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending"), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["second_factor_required"] is True
@@ -407,18 +410,18 @@ class TestEnrollmentHold:
     def test_a_held_session_can_still_sign_out(self, client):
         with _deadline(_PAST), _session("enroll"), \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.delete_session") as ds:
+             patch(f"{_AUTH}.delete_session") as ds:
             resp = client.post("/api/auth/logout", json={"session_token": _TOKEN})
         assert resp.status_code == 200
         ds.assert_called_once()
 
     def test_the_session_check_reports_the_hold(self, client):
         with _deadline(_PAST), _session("enroll"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_M}.is_user_admin", return_value=False), \
-             patch(f"{_M}.strong_factor_prompt_due", return_value=True):
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False), \
+             patch(f"{_AUTH}.strong_factor_prompt_due", return_value=True):
             resp = client.get("/api/auth/session", params={"session_token": _TOKEN})
         detail = resp.json()["detail"]
         assert resp.status_code == 200
@@ -492,10 +495,10 @@ class TestEnrollmentHold:
         refused — the app rendering over a wall of 403s.
         """
         with _deadline(_PAST), _session("enroll"), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_M}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             held = client.get("/api/auth/session", params={"session_token": _TOKEN})
         assert held.json()["detail"]["enrollment_required"] is True
 
@@ -503,10 +506,10 @@ class TestEnrollmentHold:
         with _deadline(_PAST), _session("enroll"), \
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", return_value=True), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_M}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             free = client.get("/api/auth/session", params={"session_token": _TOKEN})
         assert free.json()["detail"]["enrollment_required"] is False
 

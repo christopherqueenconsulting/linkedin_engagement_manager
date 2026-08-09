@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 
 
 # ---------------------------------------------------------------------------
@@ -22,9 +23,10 @@ def _auth_hardening_side_effects():
     for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
     """
     with patch(f"{_MAIN}.record_auth_event", return_value=True), \
-         patch(f"{_MAIN}.mark_email_verified", return_value=True), \
-         patch(f"{_MAIN}.get_pin_lockout", return_value=None), \
-         patch(f"{_MAIN}.get_user_public_uid", return_value="pub-uid-1"):
+         patch(f"{_AUTH}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.mark_email_verified", return_value=True), \
+         patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+         patch(f"{_AUTH}.get_user_public_uid", return_value="pub-uid-1"):
         yield
 
 
@@ -60,21 +62,21 @@ class TestAuthEmailInit:
 
     def test_missing_email_whitespace_returns_400(self, client):
         """An email that strips to empty should return 400."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=None), \
-             patch("cqc_lem.api.main.generate_pin", return_value="123456"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="hashed"), \
-             patch("cqc_lem.api.main.send_pin_email", return_value=(True, False)):
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=None), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="123456"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="hashed"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", return_value=(True, False)):
             resp = client.post(self.BASE, json={"email": "   "})
         assert resp.status_code == 400
 
     def test_bypass_mode_existing_user_returns_session_token(self, client):
         """When send_pin_email probe returns bypassed=True and user exists, return session_token."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=42), \
-             patch("cqc_lem.api.main.generate_pin", return_value="123456"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="hashed"), \
-             patch("cqc_lem.api.main.send_pin_email", return_value=(True, True)), \
-             patch("cqc_lem.api.main.add_user_by_email") as mock_add, \
-             patch("cqc_lem.api.main.create_session", return_value="tok_abc123"):
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=42), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="123456"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="hashed"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", return_value=(True, True)), \
+             patch("cqc_lem.api.routers.auth.add_user_by_email") as mock_add, \
+             patch("cqc_lem.api.routers.auth.create_session", return_value="tok_abc123"):
             resp = client.post(self.BASE, json={"email": "user@example.com"})
         assert resp.status_code == 200
         data = resp.json()["detail"]
@@ -85,12 +87,12 @@ class TestAuthEmailInit:
 
     def test_bypass_mode_new_user_creates_user_then_session(self, client):
         """Bypass mode with unknown email: add_user_by_email is called to create user."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=None), \
-             patch("cqc_lem.api.main.generate_pin", return_value="123456"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="hashed"), \
-             patch("cqc_lem.api.main.send_pin_email", return_value=(True, True)), \
-             patch("cqc_lem.api.main.add_user_by_email", return_value=99) as mock_add, \
-             patch("cqc_lem.api.main.create_session", return_value="tok_new_user"):
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=None), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="123456"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="hashed"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", return_value=(True, True)), \
+             patch("cqc_lem.api.routers.auth.add_user_by_email", return_value=99) as mock_add, \
+             patch("cqc_lem.api.routers.auth.create_session", return_value="tok_new_user"):
             resp = client.post(self.BASE, json={"email": "new@example.com"})
         assert resp.status_code == 200
         body = resp.json()["detail"]
@@ -101,44 +103,44 @@ class TestAuthEmailInit:
 
     def test_bypass_mode_user_creation_fails_returns_500(self, client):
         """Bypass mode: if add_user_by_email returns None, endpoint raises 500."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=None), \
-             patch("cqc_lem.api.main.generate_pin", return_value="123456"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="hashed"), \
-             patch("cqc_lem.api.main.send_pin_email", return_value=(True, True)), \
-             patch("cqc_lem.api.main.add_user_by_email", return_value=None):
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=None), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="123456"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="hashed"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", return_value=(True, True)), \
+             patch("cqc_lem.api.routers.auth.add_user_by_email", return_value=None):
             resp = client.post(self.BASE, json={"email": "fail@example.com"})
         assert resp.status_code == 500
 
     def test_normal_flow_pin_sent_returns_200_no_bypass(self, client):
         """Normal flow: create_pin_for_email succeeds and email is sent → 200 with bypass=False."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=7), \
-             patch("cqc_lem.api.main.generate_pin", return_value="654321"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="hashed_val"), \
-             patch("cqc_lem.api.main.send_pin_email", side_effect=[(False, False), (True, False)]), \
-             patch("cqc_lem.api.main.create_pin_for_email", return_value=True):
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=7), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="654321"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="hashed_val"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", side_effect=[(False, False), (True, False)]), \
+             patch("cqc_lem.api.routers.auth.create_pin_for_email", return_value=True):
             resp = client.post(self.BASE, json={"email": "existing@example.com"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["bypass"] is False
 
     def test_email_send_fails_deletes_pin_and_returns_500(self, client):
         """When email send fails, delete_pin_for_email is called and 500 is returned."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=5), \
-             patch("cqc_lem.api.main.generate_pin", return_value="111111"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.send_pin_email", side_effect=[(False, False), (False, False)]), \
-             patch("cqc_lem.api.main.create_pin_for_email", return_value=True), \
-             patch("cqc_lem.api.main.delete_pin_for_email") as mock_del:
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=5), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="111111"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", side_effect=[(False, False), (False, False)]), \
+             patch("cqc_lem.api.routers.auth.create_pin_for_email", return_value=True), \
+             patch("cqc_lem.api.routers.auth.delete_pin_for_email") as mock_del:
             resp = client.post(self.BASE, json={"email": "fail_send@example.com"})
         assert resp.status_code == 500
         mock_del.assert_called_once_with("fail_send@example.com")
 
     def test_create_pin_db_failure_returns_500(self, client):
         """If create_pin_for_email returns False, 500 is returned without calling send."""
-        with patch("cqc_lem.api.main.get_user_id", return_value=3), \
-             patch("cqc_lem.api.main.generate_pin", return_value="000000"), \
-             patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.send_pin_email", return_value=(False, False)), \
-             patch("cqc_lem.api.main.create_pin_for_email", return_value=False):
+        with patch("cqc_lem.api.routers.auth.get_user_id", return_value=3), \
+             patch("cqc_lem.api.routers.auth.generate_pin", return_value="000000"), \
+             patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.send_pin_email", return_value=(False, False)), \
+             patch("cqc_lem.api.routers.auth.create_pin_for_email", return_value=False):
             resp = client.post(self.BASE, json={"email": "dbfail@example.com"})
         assert resp.status_code == 500
 
@@ -151,30 +153,30 @@ class TestAuthEmailVerify:
     BASE = "/api/auth/email/verify"
 
     def test_missing_email_returns_400(self, client):
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=True):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=True):
             resp = client.post(self.BASE, json={"email": "  ", "pin": "123456"})
         assert resp.status_code == 400
 
     def test_missing_pin_returns_400(self, client):
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=True):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=True):
             resp = client.post(self.BASE, json={"email": "user@example.com", "pin": "  "})
         assert resp.status_code == 400
 
     def test_invalid_pin_returns_401(self, client):
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=False):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=False):
             resp = client.post(self.BASE, json={"email": "user@example.com", "pin": "000000"})
         assert resp.status_code == 401
 
     def test_valid_pin_existing_user_returns_session(self, client):
         """Valid PIN for known user: no add_user_by_email call, session_token in response."""
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=True), \
-             patch("cqc_lem.api.main.get_user_id", return_value=10), \
-             patch("cqc_lem.api.main.add_user_by_email") as mock_add, \
-             patch("cqc_lem.api.main.create_session", return_value="sess_existing"):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=True), \
+             patch("cqc_lem.api.routers.auth.get_user_id", return_value=10), \
+             patch("cqc_lem.api.routers.auth.add_user_by_email") as mock_add, \
+             patch("cqc_lem.api.routers.auth.create_session", return_value="sess_existing"):
             resp = client.post(self.BASE, json={"email": "user@example.com", "pin": "123456"})
         assert resp.status_code == 200
         body = resp.json()["detail"]
@@ -184,11 +186,11 @@ class TestAuthEmailVerify:
 
     def test_valid_pin_new_user_creates_user_then_session(self, client):
         """Valid PIN for unknown email: add_user_by_email is called and new session returned."""
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=True), \
-             patch("cqc_lem.api.main.get_user_id", return_value=None), \
-             patch("cqc_lem.api.main.add_user_by_email", return_value=55) as mock_add, \
-             patch("cqc_lem.api.main.create_session", return_value="sess_new"):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=True), \
+             patch("cqc_lem.api.routers.auth.get_user_id", return_value=None), \
+             patch("cqc_lem.api.routers.auth.add_user_by_email", return_value=55) as mock_add, \
+             patch("cqc_lem.api.routers.auth.create_session", return_value="sess_new"):
             resp = client.post(self.BASE, json={"email": "brand_new@example.com", "pin": "654321"})
         assert resp.status_code == 200
         body = resp.json()["detail"]
@@ -197,18 +199,18 @@ class TestAuthEmailVerify:
         mock_add.assert_called_once_with("brand_new@example.com")
 
     def test_user_creation_failure_returns_500(self, client):
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=True), \
-             patch("cqc_lem.api.main.get_user_id", return_value=None), \
-             patch("cqc_lem.api.main.add_user_by_email", return_value=None):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=True), \
+             patch("cqc_lem.api.routers.auth.get_user_id", return_value=None), \
+             patch("cqc_lem.api.routers.auth.add_user_by_email", return_value=None):
             resp = client.post(self.BASE, json={"email": "create_fail@example.com", "pin": "111111"})
         assert resp.status_code == 500
 
     def test_session_creation_failure_returns_500(self, client):
-        with patch("cqc_lem.api.main.hash_pin", return_value="h"), \
-             patch("cqc_lem.api.main.verify_pin_for_email", return_value=True), \
-             patch("cqc_lem.api.main.get_user_id", return_value=10), \
-             patch("cqc_lem.api.main.create_session", return_value=None):
+        with patch("cqc_lem.api.routers.auth.hash_pin", return_value="h"), \
+             patch("cqc_lem.api.routers.auth.verify_pin_for_email", return_value=True), \
+             patch("cqc_lem.api.routers.auth.get_user_id", return_value=10), \
+             patch("cqc_lem.api.routers.auth.create_session", return_value=None):
             resp = client.post(self.BASE, json={"email": "user@example.com", "pin": "123456"})
         assert resp.status_code == 500
 

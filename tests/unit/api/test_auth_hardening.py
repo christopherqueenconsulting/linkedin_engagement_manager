@@ -13,6 +13,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 _COOKIE = "lem_session"
 _UID = 7
@@ -61,13 +62,18 @@ def _quiet_audit():
     """The audit row and the verified stamp are asserted where they matter; everywhere else they
     would just be two unmocked DB calls.
 
-    Silenced in BOTH modules that bind the audit function. A fixture names no route, so it covers
-    every route in the file — and since #1154 those are served from two modules. Patching only
+    Silenced in every module that binds the audit function. A fixture names no route, so it covers
+    every route in the file — and since #1154 those are served from three modules. Patching only
     `main` left the `/api/user` handlers calling the real one, which is a 500, not a no-op.
+
+    `mark_email_verified` is patched on the auth router ALONE, because that is the only module that
+    binds it now: `/api/auth/email/verify` is the one handler that stamps the column, and it left
+    `main` with the rest of its slice.
     """
     with patch(f"{_M}.record_auth_event", return_value=True), \
          patch(f"{_USER}.record_auth_event", return_value=True), \
-         patch(f"{_M}.mark_email_verified", return_value=True):
+         patch(f"{_AUTH}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.mark_email_verified", return_value=True):
         yield
 
 
@@ -89,11 +95,11 @@ class _Blocked:
 
 class TestSessionCookie:
     def test_verify_sets_an_httponly_session_cookie(self, client):
-        with patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.create_session", return_value="tok_secret"):
+        with patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.create_session", return_value="tok_secret"):
             resp = client.post("/api/auth/email/verify",
                                json={"email": "user@example.com", "pin": "123456"})
         assert resp.status_code == 200
@@ -103,11 +109,11 @@ class TestSessionCookie:
         assert "Path=/" in set_cookie
 
     def test_bypass_login_sets_the_cookie_too(self, client):
-        with patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.generate_pin", return_value="123456"), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.create_session", return_value="tok_bypass"):
+        with patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.create_session", return_value="tok_bypass"):
             resp = client.post("/api/auth/email/init", json={"email": "user@example.com"})
         assert resp.status_code == 200
         assert f"{_COOKIE}=tok_bypass" in resp.headers.get("set-cookie", "")
@@ -116,30 +122,30 @@ class TestSessionCookie:
         """No mail provider means no PIN reached the address, so nothing proved control of it.
         email_verified_at records that proof and must stay empty here.
         """
-        with patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.generate_pin", return_value="123456"), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.create_session", return_value="tok_bypass"), \
-             patch(f"{_M}.mark_email_verified") as mev:
+        with patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.generate_pin", return_value="123456"), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.create_session", return_value="tok_bypass"), \
+             patch(f"{_AUTH}.mark_email_verified") as mev:
             resp = client.post("/api/auth/email/init", json={"email": "user@example.com"})
         assert resp.status_code == 200
         mev.assert_not_called()
 
     def test_a_verified_pin_does_stamp_the_email_as_verified(self, client):
-        with patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.create_session", return_value="tok"), \
-             patch(f"{_M}.mark_email_verified") as mev:
+        with patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.create_session", return_value="tok"), \
+             patch(f"{_AUTH}.mark_email_verified") as mev:
             resp = client.post("/api/auth/email/verify",
                                json={"email": "user@example.com", "pin": "123456"})
         assert resp.status_code == 200
         mev.assert_called_once_with(_UID)
 
     def test_logout_clears_the_cookie_and_deletes_the_session(self, client):
-        with patch(f"{_M}.delete_session") as ds, _live_session(token="tok_secret"):
+        with patch(f"{_AUTH}.delete_session") as ds, _live_session(token="tok_secret"):
             resp = client.post("/api/auth/logout", json={"session_token": "tok_secret"})
         assert resp.status_code == 200
         ds.assert_called_once_with("tok_secret")
@@ -152,10 +158,10 @@ class TestCookieResolution:
 
     def test_sentinel_resolves_from_the_cookie(self, client):
         with _live_session(), \
-             patch(f"{_M}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_M}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             resp = client.get("/api/auth/session", params={"session_token": "cookie"},
                               cookies={_COOKIE: "real"})
         assert resp.status_code == 200
@@ -171,19 +177,19 @@ class TestCookieResolution:
 
     def test_an_explicit_token_still_works_without_a_cookie(self, client):
         with _live_session(), \
-             patch(f"{_M}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_M}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             resp = client.get("/api/auth/session", params={"session_token": "real"})
         assert resp.status_code == 200
 
     def test_a_stale_explicit_token_falls_back_to_the_live_cookie(self, client):
         with _live_session(), \
-             patch(f"{_M}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
-             patch(f"{_M}.get_user_analytics_profile", return_value={}), \
-             patch(f"{_M}.is_user_admin", return_value=False):
+             patch(f"{_AUTH}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_AUTH}.get_user_public_uid", return_value="pub-1"), \
+             patch(f"{_AUTH}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_AUTH}.is_user_admin", return_value=False):
             resp = client.get("/api/auth/session", params={"session_token": "expired"},
                               cookies={_COOKIE: "real"})
         assert resp.status_code == 200
@@ -196,7 +202,7 @@ class TestCookieResolution:
         devices" fails to match the caller's own session as the one to keep and revokes it.
         """
         with _live_session(), \
-             patch(f"{_M}.delete_session") as ds:
+             patch(f"{_AUTH}.delete_session") as ds:
             resp = client.post("/api/auth/logout", json={"session_token": "expired"},
                                cookies={_COOKIE: "real"})
         assert resp.status_code == 200
@@ -219,8 +225,8 @@ class TestClientAddress:
     """The per-IP limiter and every ip_hash are only worth the header they are read from."""
 
     def test_cloudflare_header_wins_over_a_spoofed_forwarded_for(self, client):
-        with patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
-             patch(f"{_M}.record_auth_event") as rec:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_AUTH}.record_auth_event") as rec:
             resp = client.post("/api/auth/email/init", json={"email": "user@example.com"},
                                headers={"CF-Connecting-IP": "203.0.113.9",
                                         "X-Forwarded-For": "1.1.1.1, 203.0.113.9"})
@@ -229,8 +235,8 @@ class TestClientAddress:
         assert rec.call_args[1]["ip"] == "203.0.113.9"
 
     def test_forwarded_for_is_still_used_when_there_is_no_cloudflare(self, client):
-        with patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
-             patch(f"{_M}.record_auth_event") as rec:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_AUTH}.record_auth_event") as rec:
             client.post("/api/auth/email/init", json={"email": "user@example.com"},
                         headers={"X-Forwarded-For": "198.51.100.4"})
         assert rec.call_args[1]["ip"] == "198.51.100.4"
@@ -242,8 +248,8 @@ class TestClientAddress:
 
 class TestAuthRateLimiting:
     def test_init_over_the_limit_returns_429_with_retry_after(self, client):
-        with patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
-             patch(f"{_M}.get_user_id", return_value=_UID) as gui:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID) as gui:
             resp = client.post("/api/auth/email/init", json={"email": "user@example.com"})
         assert resp.status_code == 429
         assert resp.headers["Retry-After"] == "900"
@@ -251,30 +257,30 @@ class TestAuthRateLimiting:
         gui.assert_not_called()
 
     def test_verify_over_the_limit_returns_429(self, client):
-        with patch(f"{_M}.check_auth_verify", return_value=_Blocked()), \
-             patch(f"{_M}.verify_pin_for_email") as vp:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Blocked()), \
+             patch(f"{_AUTH}.verify_pin_for_email") as vp:
             resp = client.post("/api/auth/email/verify",
                                json={"email": "user@example.com", "pin": "000000"})
         assert resp.status_code == 429
         vp.assert_not_called()
 
     def test_a_locked_pin_returns_429_not_401(self, client):
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value="2026-08-01T00:15:00"), \
-             patch(f"{_M}.verify_pin_for_email") as vp:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value="2026-08-01T00:15:00"), \
+             patch(f"{_AUTH}.verify_pin_for_email") as vp:
             resp = client.post("/api/auth/email/verify",
                                json={"email": "user@example.com", "pin": "000000"})
         assert resp.status_code == 429
         vp.assert_not_called()
 
     def test_a_successful_login_clears_the_counters(self, client):
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.create_session", return_value="tok"), \
-             patch(f"{_M}.clear_auth_limits") as clear:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.create_session", return_value="tok"), \
+             patch(f"{_AUTH}.clear_auth_limits") as clear:
             resp = client.post("/api/auth/email/verify",
                                json={"email": "user@example.com", "pin": "123456"})
         assert resp.status_code == 200

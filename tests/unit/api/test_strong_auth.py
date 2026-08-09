@@ -14,6 +14,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+_AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 _UID = 11
 _EMAIL = "user@example.com"
@@ -44,18 +45,21 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _quiet():
-    """Silence the audit write in BOTH modules that bind it.
+    """Silence the audit write in EVERY module that binds it.
 
     A fixture names no route, so it covers every route in the file — and since #1154 those are
-    served from two modules.
+    served from three modules. The login-ceremony names below are patched on the auth router alone,
+    because it is now the only module that binds them: the enrolment and step-up halves stayed with
+    the `/api/user` router, which has its own challenge kinds.
     """
     with patch(f"{_M}.record_auth_event", return_value=True), \
          patch(f"{_USER}.record_auth_event", return_value=True), \
-         patch(f"{_M}.mark_email_verified", return_value=True), \
-         patch(f"{_M}.finish_auth_challenge", return_value=True), \
-         patch(f"{_M}.count_challenge_attempts", return_value=0), \
-         patch(f"{_M}.clear_challenge_attempts", return_value=True), \
-         patch(f"{_M}.clear_auth_limits"):
+         patch(f"{_AUTH}.record_auth_event", return_value=True), \
+         patch(f"{_AUTH}.mark_email_verified", return_value=True), \
+         patch(f"{_AUTH}.finish_auth_challenge", return_value=True), \
+         patch(f"{_AUTH}.count_challenge_attempts", return_value=0), \
+         patch(f"{_AUTH}.clear_challenge_attempts", return_value=True), \
+         patch(f"{_AUTH}.clear_auth_limits"):
         yield
 
 
@@ -77,27 +81,27 @@ class _Blocked:
 
 class TestPinDemotion:
     def test_a_pin_still_signs_in_an_account_with_no_strong_factor(self, client):
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.has_strong_factor", return_value=False), \
-             patch(f"{_M}.create_session", return_value=_TOKEN):
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=False), \
+             patch(f"{_AUTH}.create_session", return_value=_TOKEN):
             resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["session_token"] == _TOKEN
 
     def test_a_pin_alone_no_longer_signs_in_an_account_that_enrolled_one(self, client):
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["passkey", "totp"]), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
-             patch(f"{_M}.create_session") as create_session:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["passkey", "totp"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         detail = resp.json()["detail"]
         assert resp.status_code == 200
@@ -110,15 +114,15 @@ class TestPinDemotion:
         """The PIN stops being a key but it is still proof the address was reached — 2b's
         `email_verified_at` has to keep meaning that.
         """
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
-             patch(f"{_M}.mark_email_verified") as verified:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_AUTH}.mark_email_verified") as verified:
             client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         verified.assert_called_once_with(_UID)
 
@@ -126,13 +130,13 @@ class TestPinDemotion:
         """The weakest way in skips the PIN entirely — leaving it ungated would be a hole straight
         through 2c on any deployment with mail unconfigured.
         """
-        with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["passkey"]), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
-             patch(f"{_M}.create_session") as create_session:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["passkey"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
         detail = resp.json()["detail"]
         assert detail["second_factor_required"] is True
@@ -146,15 +150,15 @@ class TestPinDemotion:
 
 class TestSecondFactor:
     def _pending(self, attempts: int = 1):
-        return patch(f"{_M}.claim_auth_challenge_attempt",
+        return patch(f"{_AUTH}.claim_auth_challenge_attempt",
                      return_value={"user_id": _UID, "challenge": None, "attempts": attempts})
 
     def test_a_totp_code_mints_a_fully_verified_session(self, client):
         with self._pending(), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.create_session", return_value=_TOKEN) as create_session:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=True), \
+             patch(f"{_AUTH}.create_session", return_value=_TOKEN) as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 200
@@ -167,11 +171,11 @@ class TestSecondFactor:
         session up, a found sheet of codes would be a stolen LinkedIn session.
         """
         with self._pending(), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_recovery_code", return_value=True), \
-             patch(f"{_M}.count_recovery_codes", return_value=(4, 10)), \
-             patch(f"{_M}.create_session", return_value=_TOKEN) as create_session:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_recovery_code", return_value=True), \
+             patch(f"{_AUTH}.count_recovery_codes", return_value=(4, 10)), \
+             patch(f"{_AUTH}.create_session", return_value=_TOKEN) as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "recovery_code",
                                      "code": "ABCD234XYZ"})
@@ -186,8 +190,8 @@ class TestSecondFactor:
         """The handle is claimed by an UPDATE with `consumed_at IS NULL`, so a spent one finds
         nothing — one bootstrapped login cannot become two sessions.
         """
-        with patch(f"{_M}.claim_auth_challenge_attempt", return_value=None), \
-             patch(f"{_M}.create_session") as create_session:
+        with patch(f"{_AUTH}.claim_auth_challenge_attempt", return_value=None), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 400
@@ -195,10 +199,10 @@ class TestSecondFactor:
 
     def test_a_wrong_code_creates_no_session(self, client):
         with self._pending(), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=False), \
-             patch(f"{_M}.create_session") as create_session:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=False), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "000000"})
         assert resp.status_code == 401
@@ -210,10 +214,10 @@ class TestSecondFactor:
         (not 400) is what tells the SPA to leave the user on the code field.
         """
         with self._pending(attempts=1), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=False), \
-             patch(f"{_M}.finish_auth_challenge") as finished:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=False), \
+             patch(f"{_AUTH}.finish_auth_challenge") as finished:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "000000"})
         assert resp.status_code == 401
@@ -224,10 +228,10 @@ class TestSecondFactor:
         fails open, so it cannot be the thing that stops a 6-digit space being walked.
         """
         with self._pending(attempts=5), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=False), \
-             patch(f"{_M}.create_session") as create_session:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=False), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "000000"})
         assert resp.status_code == 400
@@ -235,11 +239,11 @@ class TestSecondFactor:
 
     def test_a_correct_code_spends_the_handle(self, client):
         with self._pending(), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.create_session", return_value=_TOKEN), \
-             patch(f"{_M}.finish_auth_challenge") as finished:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=True), \
+             patch(f"{_AUTH}.create_session", return_value=_TOKEN), \
+             patch(f"{_AUTH}.finish_auth_challenge") as finished:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 200
@@ -247,9 +251,9 @@ class TestSecondFactor:
 
     def test_an_unknown_method_is_not_a_way_in(self, client):
         with self._pending(), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.create_session") as create_session:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "sms", "code": "1"})
         assert resp.status_code == 401
@@ -258,9 +262,9 @@ class TestSecondFactor:
     def test_the_second_factor_step_is_rate_limited(self, client):
         """A 6-digit TOTP space is walkable without a limiter, exactly like the PIN it replaced."""
         with self._pending(), \
-             patch(f"{_M}.check_auth_verify", return_value=_Blocked()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code") as verify:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Blocked()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code") as verify:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 429
@@ -274,8 +278,8 @@ class TestSecondFactor:
 class TestPasskeyLogin:
     def test_begin_takes_no_email_and_returns_options(self, client):
         with patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.build_authentication_options", return_value=({"rpId": "x"}, "chal")), \
-             patch(f"{_M}.create_auth_challenge", return_value="handle"):
+             patch(f"{_AUTH}.build_authentication_options", return_value=({"rpId": "x"}, "chal")), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="handle"):
             resp = client.post("/api/auth/passkey/login/begin", json={})
         assert resp.status_code == 200
         assert resp.json()["detail"]["handle"] == "handle"
@@ -285,15 +289,15 @@ class TestPasskeyLogin:
         same factor again before they can paste a cookie would be theatre.
         """
         with patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge", return_value={"user_id": None,
+             patch(f"{_AUTH}.consume_auth_challenge", return_value={"user_id": None,
                                                                  "challenge": "chal"}), \
              patch(f"{_M}.credential_id_from_response", return_value="cred"), \
              patch(f"{_M}.get_passkey_by_credential_id",
                    return_value={"id": 5, "user_id": _UID, "public_key": "pk", "sign_count": 3}), \
              patch(f"{_M}.verify_passkey_assertion", return_value=4), \
              patch(f"{_M}.update_factor_counter") as counter, \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.create_session", return_value=_TOKEN) as create_session:
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.create_session", return_value=_TOKEN) as create_session:
             resp = client.post("/api/auth/passkey/login/complete",
                                json={"handle": "h", "credential": {"id": "cred"}})
         assert resp.status_code == 200
@@ -302,13 +306,13 @@ class TestPasskeyLogin:
 
     def test_an_unverifiable_assertion_is_a_401_and_no_session(self, client):
         with patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge", return_value={"user_id": None,
+             patch(f"{_AUTH}.consume_auth_challenge", return_value={"user_id": None,
                                                                  "challenge": "chal"}), \
              patch(f"{_M}.credential_id_from_response", return_value="cred"), \
              patch(f"{_M}.get_passkey_by_credential_id",
                    return_value={"id": 5, "user_id": _UID, "public_key": "pk", "sign_count": 3}), \
              patch(f"{_M}.verify_passkey_assertion", return_value=None), \
-             patch(f"{_M}.create_session") as create_session:
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/passkey/login/complete",
                                json={"handle": "h", "credential": {"id": "cred"}})
         assert resp.status_code == 401
@@ -316,12 +320,12 @@ class TestPasskeyLogin:
 
     def test_an_unknown_credential_signs_nobody_in(self, client):
         with patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.consume_auth_challenge", return_value={"user_id": None,
+             patch(f"{_AUTH}.consume_auth_challenge", return_value={"user_id": None,
                                                                  "challenge": "chal"}), \
              patch(f"{_M}.credential_id_from_response", return_value="cred"), \
              patch(f"{_M}.get_passkey_by_credential_id", return_value=None), \
              patch(f"{_M}.verify_passkey_assertion") as verify, \
-             patch(f"{_M}.create_session") as create_session:
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/passkey/login/complete",
                                json={"handle": "h", "credential": {"id": "cred"}})
         assert resp.status_code == 401
@@ -628,10 +632,15 @@ class TestStepUpVerify:
         """It gets you back INTO the account; it must not by itself unlock the LinkedIn
         credentials, or a stolen recovery sheet is a stolen LinkedIn session.
         """
+        # `create=True`, and that is the assertion. The step-up router does not import
+        # `verify_recovery_code` at all — refusing the method by name is HOW §6.8 is enforced, and
+        # #1154 moved the last binding of it out of `main` and into the LOGIN router. The tripwire
+        # stays pointed at the module serving this route, so the day step-up acquires the import,
+        # this patch binds the global it would read and `verify.assert_not_called()` goes live.
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL), \
              patch(f"{_USER}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.verify_recovery_code", return_value=True) as verify, \
+             patch(f"{_USER}.verify_recovery_code", return_value=True, create=True) as verify, \
              patch(f"{_USER}.record_step_up") as stepped_up:
             resp = client.post("/api/user/step-up/verify",
                                json={"session_token": _TOKEN, "method": "recovery_code",
@@ -783,45 +792,45 @@ class TestFailedWrites:
         """If the handle cannot be stored the login must fail — quietly minting a session instead
         would turn a storage error into a bypass of the second factor.
         """
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.create_auth_challenge", return_value=None), \
-             patch(f"{_M}.create_session") as create_session:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value=None), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         assert resp.status_code == 500
         create_session.assert_not_called()
 
     def test_the_bypass_path_fails_the_same_way(self, client):
-        with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.create_auth_challenge", return_value=None), \
-             patch(f"{_M}.create_session") as create_session:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value=None), \
+             patch(f"{_AUTH}.create_session") as create_session:
             resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
         assert resp.status_code == 500
         create_session.assert_not_called()
 
     def test_a_passkey_login_that_cannot_open_a_challenge_is_a_500(self, client):
         with patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.build_authentication_options", return_value=({}, "chal")), \
-             patch(f"{_M}.create_auth_challenge", return_value=None):
+             patch(f"{_AUTH}.build_authentication_options", return_value=({}, "chal")), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value=None):
             resp = client.post("/api/auth/passkey/login/begin", json={})
         assert resp.status_code == 500
 
     def test_a_second_factor_that_verifies_but_cannot_mint_a_session_is_a_500(self, client):
-        with patch(f"{_M}.consume_auth_challenge",
+        with patch(f"{_AUTH}.consume_auth_challenge",
                    return_value={"user_id": _UID, "challenge": None}), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.create_session", return_value=None):
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=True), \
+             patch(f"{_AUTH}.create_session", return_value=None):
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 500
@@ -865,15 +874,15 @@ class TestTwoStageLoginSeams:
         about to answer correctly — self-inflicted lockout on the one path that has no way around
         it.
         """
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
-             patch(f"{_M}.clear_auth_limits") as cleared:
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_AUTH}.clear_auth_limits") as cleared:
             resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         assert resp.json()["detail"]["second_factor_required"] is True
         cleared.assert_called_once()
@@ -885,13 +894,13 @@ class TestTwoStageLoginSeams:
         clearing them would let an unauthenticated caller reset every limiter in front of the
         second factor once per request.
         """
-        with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["passkey"]), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
-             patch(f"{_M}.clear_auth_limits") as cleared:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["passkey"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_AUTH}.clear_auth_limits") as cleared:
             resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
         assert resp.json()["detail"]["second_factor_required"] is True
         cleared.assert_not_called()
@@ -909,15 +918,15 @@ class TestSecondFactorBudget:
     """
 
     def _pin_login(self, client, spent: int):
-        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_pin_lockout", return_value=None), \
-             patch(f"{_M}.hash_pin", return_value="h"), \
-             patch(f"{_M}.verify_pin_for_email", return_value=True), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.create_auth_challenge", return_value="pending-handle") as challenge, \
-             patch(f"{_M}.count_challenge_attempts", return_value=spent):
+        with patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_pin_lockout", return_value=None), \
+             patch(f"{_AUTH}.hash_pin", return_value="h"), \
+             patch(f"{_AUTH}.verify_pin_for_email", return_value=True), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.create_auth_challenge", return_value="pending-handle") as challenge, \
+             patch(f"{_AUTH}.count_challenge_attempts", return_value=spent):
             resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
         return resp, challenge
 
@@ -944,13 +953,13 @@ class TestSecondFactorBudget:
 
     def test_the_bypass_path_is_bounded_by_the_same_budget(self, client):
         """The branch that needs no proof at all is the one that most needs it."""
-        with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
-             patch(f"{_M}.has_strong_factor", return_value=True), \
-             patch(f"{_M}.available_methods", return_value=["totp"]), \
-             patch(f"{_M}.count_challenge_attempts", return_value=5), \
-             patch(f"{_M}.create_auth_challenge") as challenge:
+        with patch(f"{_AUTH}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_id", return_value=_UID), \
+             patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_AUTH}.has_strong_factor", return_value=True), \
+             patch(f"{_AUTH}.available_methods", return_value=["totp"]), \
+             patch(f"{_AUTH}.count_challenge_attempts", return_value=5), \
+             patch(f"{_AUTH}.create_auth_challenge") as challenge:
             resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
         assert resp.status_code == 429
         challenge.assert_not_called()
@@ -959,25 +968,25 @@ class TestSecondFactorBudget:
         """A correct code is the proof that clears it — otherwise one earlier typo follows the user
         into their next sign-in.
         """
-        with patch(f"{_M}.claim_auth_challenge_attempt",
+        with patch(f"{_AUTH}.claim_auth_challenge_attempt",
                    return_value={"user_id": _UID, "challenge": None, "attempts": 3}), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=True), \
-             patch(f"{_M}.create_session", return_value=_TOKEN), \
-             patch(f"{_M}.clear_challenge_attempts") as cleared:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=True), \
+             patch(f"{_AUTH}.create_session", return_value=_TOKEN), \
+             patch(f"{_AUTH}.clear_challenge_attempts") as cleared:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 200
         cleared.assert_called_once_with(_UID, "second_factor")
 
     def test_a_wrong_code_does_not_clear_it(self, client):
-        with patch(f"{_M}.claim_auth_challenge_attempt",
+        with patch(f"{_AUTH}.claim_auth_challenge_attempt",
                    return_value={"user_id": _UID, "challenge": None, "attempts": 2}), \
-             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
-             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
-             patch(f"{_M}.verify_totp_code", return_value=False), \
-             patch(f"{_M}.clear_challenge_attempts") as cleared:
+             patch(f"{_AUTH}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_AUTH}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_AUTH}.verify_totp_code", return_value=False), \
+             patch(f"{_AUTH}.clear_challenge_attempts") as cleared:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "000000"})
         assert resp.status_code == 401
@@ -986,8 +995,8 @@ class TestSecondFactorBudget:
     def test_the_public_passkey_begin_is_rate_limited(self, client):
         """Unauthenticated, and it writes a challenge row per call."""
         with patch(f"{_M}.webauthn_relying_party"), \
-             patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
-             patch(f"{_M}.create_auth_challenge") as challenge:
+             patch(f"{_AUTH}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_AUTH}.create_auth_challenge") as challenge:
             resp = client.post("/api/auth/passkey/login/begin", json={})
         assert resp.status_code == 429
         challenge.assert_not_called()
