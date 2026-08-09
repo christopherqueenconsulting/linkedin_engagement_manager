@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.139.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.138.0...v0.139.0) (2026-08-09)
+
+
+### Features
+
+* **agent-pipeline:** add a read-only live status report for running agents ([#1238](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1238)) ([c1ee179](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c1ee179211631c0ac4565ad52486e76cea3c9cb0))
+* **pipeline:** give the agent its own GitHub App identity, not the owner's ([#1253](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1253)) ([0f91383](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0f913832454c1eaffc14ad1a78ee33eacb14f3d5))
+
+
+### Bug Fixes
+
+* **ci:** .ruff-baseline was 2 too high — one counter, and a guard on it ([#1232](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1232)) ([352c137](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/352c1378944ae1dd829ca78c0407c75a07346393))
+* **engagement:** scope reaction-state warning to cards with reaction affordances (closes [#874](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/874)) ([#1244](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1244)) ([f88d609](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f88d609e1ed53521d25a3e1c78c6fe4b4b74a2ec))
+* **feed:** count card markers for zero-walk tripwire (closes [#1081](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1081)) ([#1245](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1245)) ([055695c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/055695c0ce496c5f02d62b05a602c20eb669520d))
+* **groups:** bound the group commenting walk instead of letting the soft time limit cut it down (closes [#1198](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1198)) ([#1236](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1236)) ([451bb83](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/451bb83932c3c7ff8ee199e156e5ae2e441b1504))
+* **pipeline:** backfill TICK_LANE/TICK_MODEL after dispatch_lane() runs (closes [#1229](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1229)) ([#1242](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1242)) ([57bb16d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/57bb16df503f143df087b6d901accac503ba036d))
+* **pipeline:** bootstrap agent:tier:* labels so Ollama tier overrides can route (closes [#1228](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1228)) ([#1240](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1240)) ([4887793](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4887793329df69e308471c254e54a545bdd7a32c))
+* **pipeline:** installer never pauses a live box, syncs docs, guards box edits ([#1248](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1248)) ([252aec6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/252aec62f503dc5e7146f9e347f55cb2d8ffe181))
+* **pipeline:** park a stuck merge instead of retrying it forever ([#1247](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1247)) ([d63a824](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d63a82489a12623b55cb963b92dd51cac3e0f1ef))
+* **pipeline:** set CLAUDE_CODE_MAX_CONTEXT_TOKENS per Ollama tier (closes [#1230](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1230)) ([#1243](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1243)) ([81475cc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/81475cc4906352a38815dd2dcc89bead4f5cdf6f))
+* **scraper:** correct four pre-existing defects in helper.py (closes [#1101](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1101)) ([#1249](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1249)) ([8e2c614](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8e2c61471ecef688b56678257051a7984a45a5d2))
+
+
+### Documentation
+
+* **litellm:** correct the [#925](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/925) claim — re-point detection exists, deletion is a different path ([#1234](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1234)) ([e4db268](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e4db2688b572e5482b776e89f571863ea2098785))
+* **models:** adopt deepseek-v4-flash:preview on the record — and correct how the bare tag moved (closes [#1201](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1201)) ([#1239](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1239)) ([71eabf3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/71eabf3fd8beee983ec0619f299462f1c7ddfd2a))
+* **pipeline:** correct which trust checks a PR lane actually runs ([#1235](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1235)) ([911cc54](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/911cc54f09d2fd65165b1e8c8f279d67494f950e))
+
 ## [0.138.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.137.2...v0.138.0) (2026-08-09)
 
 
