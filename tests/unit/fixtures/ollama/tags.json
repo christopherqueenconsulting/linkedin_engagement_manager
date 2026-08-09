@@ -1,20 +1,20 @@
 {
   "models": [
     {
-      "name": "deepseek-v4-flash",
-      "model": "deepseek-v4-flash",
-      "modified_at": "2026-04-24T00:00:00Z",
-      "size": 140000000000,
+      "name": "deepseek-v4-flash:0731",
+      "model": "deepseek-v4-flash:0731",
+      "modified_at": "2026-07-31T08:00:00-07:00",
+      "size": 166878536440,
       "details": {
         "family": "",
         "parameter_size": ""
       }
     },
     {
-      "name": "deepseek-v4-flash:0731",
-      "model": "deepseek-v4-flash:0731",
-      "modified_at": "2026-07-31T08:00:00-07:00",
-      "size": 166878536440,
+      "name": "deepseek-v4-flash:preview",
+      "model": "deepseek-v4-flash:preview",
+      "modified_at": "2026-04-24T00:00:00Z",
+      "size": 140000000000,
       "details": {
         "family": "",
         "parameter_size": ""
@@ -83,7 +83,7 @@
     {
       "name": "kimi-k2.6",
       "model": "kimi-k2.6",
-      "modified_at": "2026-03-31T00:00:00Z",
+      "modified_at": "2026-04-20T00:00:00Z",
       "size": 595148192736,
       "details": {
         "family": "",

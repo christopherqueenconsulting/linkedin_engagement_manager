@@ -53,8 +53,12 @@ def _ollama_deployments() -> list:
 
 class TestRoster:
     def test_deepseek_v4_flash_serves_both_the_medium_and_complex_tiers(self):
-        assert "deepseek-v4-flash" in _ollama_models("lem-medium")
-        assert "deepseek-v4-flash" in _ollama_models("lem-complex")
+        # `:preview`, not the bare tag: ollama deleted `deepseek-v4-flash` on 2026-08-09 and
+        # republished the same 140GB build under `:preview`. Asserting the EXACT served id is the
+        # point — a bare-tag substring check would have gone on passing while both tiers pointed
+        # at a model the catalog no longer has.
+        assert "deepseek-v4-flash:preview" in _ollama_models("lem-medium")
+        assert "deepseek-v4-flash:preview" in _ollama_models("lem-complex")
 
     def test_gemma4_serves_the_medium_tier(self):
         assert "gemma4:31b" in _ollama_models("lem-medium")
@@ -137,12 +141,20 @@ class TestWeeklyModelCheck:
         """
         assert mhc.plan_family_upgrades(DEPLOYMENTS, SNAPSHOT["models"]) == []
 
-    def test_the_new_names_are_recognized_as_ollama_deployments(self):
+    def test_every_deployment_serving_a_catalog_tag_is_recognized_as_ollama(self):
         """The cron only probes deployments whose api_base points at Ollama Cloud — a new entry
         that missed the api_base line would never be checked for retirement at all.
+
+        DERIVED from the committed catalog, not a hand-listed pair of names. The enumerated version
+        listed `deepseek-v4-flash` and `gemma4:31b`; when ollama renamed the former to `:preview`
+        the filter silently matched only gemma4 and the assertion went on passing while checking
+        one deployment instead of three. `is_ollama` comes from api_base, so asserting it against
+        api_base would be circular — the catalog is the independent source that makes this bite.
         """
-        new = [d for d in DEPLOYMENTS if d["bare"] in ("deepseek-v4-flash", "gemma4:31b")]
-        assert new and all(d["is_ollama"] for d in new)
+        serving = [d for d in DEPLOYMENTS if d["bare"] in SNAPSHOT["models"]]
+        assert len(serving) >= 3, f"expected the Ollama roster, got {[d['bare'] for d in serving]}"
+        missing = [d["bare"] for d in serving if not d["is_ollama"]]
+        assert not missing, f"catalog tags configured without an Ollama api_base: {missing}"
 
     def test_a_retirement_announcement_can_reach_the_new_names(self):
         """scan_retirements keys configured deployments by their bare id and matches the
