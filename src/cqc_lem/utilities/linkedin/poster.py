@@ -360,10 +360,11 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
 
     # Don't post a partial/placeholder carousel — require a real image for every slide.
     if missing > 0 or not media_urns:
-        # ERROR: the post does not publish and the caller flags it 'error' for a manual fix. That
-        # is a failure the user experiences, not a degraded path we recovered from.
-        log_error("Carousel not posted — slide(s) without a real image",
-                  user_id=user_id, missing_slides=missing)
+        # Stays INFO: the ONLY caller already logs this lost post at ERROR, flags it 'error' and
+        # writes the durable FAILURE row, so raising the level here would file a second record for
+        # one failure — the #1038 wrapper hazard. This line is the diagnostic detail (which slides),
+        # not the verdict.
+        log_info(f"Carousel for user {user_id}: {missing} slide(s) without a real image — not posting (flag error).")
         return None
 
     media_objects = [ShareMedia(status="READY", media=urn).model_dump() for urn in media_urns]
