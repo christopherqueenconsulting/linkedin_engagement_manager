@@ -32,15 +32,23 @@ RUN_LANE_SOURCE = RUN_LANE_SH.read_text(encoding="utf-8")
 
 
 def _dispatch_block() -> str:
-    """Return dispatch.sh plus the backfill snippet from run_lane.sh."""
-    return DISPATCH_SH.read_text(encoding="utf-8") + textwrap.dedent("""
-        _backfill_tick_routing() {
-          TICK_LANE="${LANE:-}"
-          TICK_MODEL="${AGENT_TIER:-${AGENT_MODEL:-}}"
-          TICK_ROUTE_REASON="${ROUTE_REASON:-}"
-          export TICK_LANE TICK_MODEL TICK_ROUTE_REASON
-        }
-    """)
+    """Return dispatch.sh plus the backfill snippet lifted verbatim from run_lane.sh.
+
+    The snippet is sliced out of the real script rather than restated here: a copy would keep
+    passing after run_lane.sh changed, which is the drift this test exists to catch.
+    """
+    match = re.search(
+        r'dispatch_lane "\$hint"\n(.*?)\n  if \[ "\$\{DRY_RUN:-0\}" = "1" \]',
+        RUN_LANE_SOURCE,
+        re.S,
+    )
+    assert match, "TICK_* backfill block not found between dispatch_lane() and the DRY_RUN branch"
+    return (
+        DISPATCH_SH.read_text(encoding="utf-8")
+        + "\n_backfill_tick_routing() {\n"
+        + match.group(1)
+        + "\n}\n"
+    )
 
 
 def _run_dispatch(tmp_path: Path, body: str, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -126,8 +134,9 @@ def test_backfill_matches_dispatch_lane(
     if expected_lane == "ollama":
         assert model.startswith("lem-agent-tier"), model
     else:
-        # Claude lane with no hint: model is empty (default), tier is empty.
-        assert model == "", model
+        # Claude lane with no agent:model:* hint runs the CLI default — recorded by name, so an
+        # empty `model` in the file always means "no lane ran", never "the default model ran".
+        assert model == "default", model
 
 
 def test_backfill_carries_claude_model_hint(tmp_path):
@@ -229,9 +238,89 @@ def test_backfill_runs_before_agent_or_dry_run_return():
 def test_tick_sh_exports_tick_routing_vars():
     """tick.sh must still declare and export the variables the EXIT trap reads."""
     source = TICK_SH.read_text(encoding="utf-8")
-    for var in ("TICK_LANE", "TICK_MODEL", "TICK_ROUTE_REASON"):
+    for var in ("TICK_LANE", "TICK_MODEL", "TICK_ROUTE_REASON", "TICK_AGENT_RC"):
         assert f"{var}=\"" in source or f"{var}=" in source
     export_line = re.search(
         r"export TICK_OUTCOME TICK_REASON.*TICK_ROUTE_REASON", source, re.M
     )
     assert export_line
+    assert "TICK_AGENT_RC" in export_line.group(0) or re.search(
+        r"export .*TICK_AGENT_RC", source
+    )
+
+
+# --- the agent's exit status is what makes the lane answerable ----------------
+
+
+def test_tick_outcome_payload_carries_agent_rc():
+    """The row must carry the agent's exit status, defaulting to -1 when no agent ran."""
+    source = TICK_SH.read_text(encoding="utf-8")
+    assert '"agent_rc":' in source, "tick-outcomes rows need an agent_rc field"
+    assert re.search(r'"agent_rc":\s*int\(os\.environ\.get\("TICK_AGENT_RC","-1"\) or -1\)', source)
+    # tick_outcome must NOT be flipped on a failed agent run: status.sh keys its stall detector on
+    # "dispatched" and its per-PR failure counter on "failed".
+    run_block = re.search(r"run_lane\(\) \{.*^\}", RUN_LANE_SOURCE, re.S | re.M).group(0)
+    assert "TICK_OUTCOME" not in run_block
+
+
+def _install_lane_fixture(tmp_path: Path, claude_rc: int) -> dict:
+    """Build a self-contained $BASE (lib/ + a fake `claude`) so run_lane() can be run for real."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    for sh in (RUN_LANE_SH.parent).glob("*.sh"):
+        (lib / sh.name).write_text(sh.read_text(encoding="utf-8"), encoding="utf-8")
+    binf = tmp_path / "bin"
+    binf.mkdir()
+    claude = binf / "claude"
+    claude.write_text(f'#!/bin/sh\necho "fake agent run"\nexit {claude_rc}\n', encoding="utf-8")
+    claude.chmod(0o755)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: /nowhere\n", encoding="utf-8")
+    return {"base": str(tmp_path), "bin": str(binf), "wt": str(wt)}
+
+
+@pytest.mark.parametrize("claude_rc", [0, 1, 124])
+def test_run_lane_records_the_agent_exit_status(tmp_path, claude_rc):
+    """TICK_AGENT_RC carries the real exit status — a timeout (124) is not a success."""
+    fx = _install_lane_fixture(tmp_path, claude_rc)
+    script = textwrap.dedent(f"""
+        set -uo pipefail
+        BASE="{fx['base']}"
+        LOGDIR="$BASE/logs"; mkdir -p "$LOGDIR"
+        LOG=/dev/null
+        . "$BASE/lib/run_lane.sh"
+        log() {{ :; }}
+        posthog_capture() {{ :; }}
+        record_lane_outcome() {{ :; }}
+        apply_lane_labels() {{ :; }}
+        _emit() {{ :; }}
+        TICK_AGENT_RC="-1"
+        run_lane "{fx['wt']}" "prompt" ""
+        printf 'rc=%s lane=%s model=%s\\n' "$TICK_AGENT_RC" "$TICK_LANE" "$TICK_MODEL"
+    """)
+    env = {
+        "PATH": fx["bin"] + ":/usr/bin:/bin",
+        "HOME": fx["base"],
+        "MODE": "fix",
+        "PR": "1242",
+        "SLOT": "1",
+        "WORKER_ID": "1",
+        "DRY_RUN": "0",
+        "CLAUDE_AVAIL": "0",
+        "OLLAMA_AVAIL": "1",
+        "CLAUDE_PCT": "80",
+        "OLLAMA_PCT": "20",
+        "DEGRADED": "0",
+        "CLAUDE_TIMEOUT": "30s",
+    }
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    assert f"rc={claude_rc} lane=claude model=default" in out.stdout, out.stdout + out.stderr
+
+
+def test_run_lane_exports_agent_rc_after_the_run():
+    """The assignment must sit after the agent's rc is captured, and be exported for the trap."""
+    run_block = re.search(r"run_lane\(\) \{.*^\}", RUN_LANE_SOURCE, re.S | re.M).group(0)
+    assert "TICK_AGENT_RC" in run_block, "run_lane must record the agent exit status"
+    assert run_block.index("TICK_AGENT_RC") > run_block.rindex("rc=$?")
+    assert re.search(r"export TICK_AGENT_RC", run_block)
