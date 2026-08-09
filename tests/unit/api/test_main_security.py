@@ -80,7 +80,7 @@ class TestAvatarTrainingUpload:
 
     def test_not_a_zip_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=5):
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=5):
             resp = client.post(
                 self.BASE,
                 data={"session_token": "tok", "trigger_word": "myface"},
@@ -92,7 +92,7 @@ class TestAvatarTrainingUpload:
     def test_zip_too_large_returns_413(self, client):
         big = b"x" * (51 * 1024 * 1024)  # 51 MB > 50 MB limit
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=5):
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=5):
             resp = client.post(
                 self.BASE,
                 data={"session_token": "tok", "trigger_word": "myface"},
@@ -105,10 +105,10 @@ class TestAvatarTrainingUpload:
         # start_avatar_training is imported inside the endpoint function body,
         # so patch it at the source module rather than cqc_lem.api.main.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=5), \
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=5), \
              patch("cqc_lem.utilities.avatar.replicate_avatar.start_avatar_training", return_value="train_xyz"), \
-             patch("cqc_lem.api.main.deduct_avatar_credit"), \
-             patch("cqc_lem.api.main.insert_avatar_training", return_value=99):
+             patch("cqc_lem.api.routers.avatar.deduct_avatar_credit"), \
+             patch("cqc_lem.api.routers.avatar.insert_avatar_training", return_value=99):
             resp = client.post(
                 self.BASE,
                 data={"session_token": "tok", "trigger_word": "myface"},
@@ -120,7 +120,7 @@ class TestAvatarTrainingUpload:
     def test_no_credits_returns_402(self, client):
         zip_bytes = _make_zip()
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=0):
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=0):
             resp = client.post(
                 self.BASE,
                 data={"session_token": "tok", "trigger_word": "myface"},

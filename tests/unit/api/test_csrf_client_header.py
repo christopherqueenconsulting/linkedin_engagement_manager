@@ -37,6 +37,10 @@ from starlette.datastructures import Headers
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+# The avatar handlers moved to their own router (#1154), so the db functions they call are
+# read from THAT module's globals now. `get_session_user_id` still patches on `_M`: the
+# handlers reach it as an attribute of the host module at request time.
+_AV = "cqc_lem.api.routers.avatar"
 _UID = 77
 _COOKIE = "browser-cookie"
 _HEADER = {"X-LEM-Client": "spa"}
@@ -283,7 +287,7 @@ class TestTheMultipartWrites:
     def test_an_avatar_training_upload_without_the_header_is_refused(
             self, client: Any, cookie_session: None) -> None:
         """The most expensive of the two: it spends an avatar credit and starts a training run."""
-        with patch(f"{_M}.get_avatar_credit_balance") as balance:
+        with patch(f"{_AV}.get_avatar_credit_balance") as balance:
             resp = client.post("/api/avatar/training",
                                data={"session_token": "cookie", "trigger_word": "TOK"},
                                files={"photos": ("p.zip", b"not-a-zip", "application/zip")},

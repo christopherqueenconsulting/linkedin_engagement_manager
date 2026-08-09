@@ -21,3 +21,16 @@ class ResponseModel(BaseModel):
 
     status_code: int
     detail: Any
+
+
+# The OpenAPI `responses=` block shared by ~35 routes. Data, no dependencies, so it lives here for
+# the same reason `ResponseModel` does: a router module cannot import a NAME out of `main` without
+# a cycle. `main` re-exports it.
+error_responses = {
+    400: {"description": "Bad Request"},
+    401: {"description": "Unauthorized"},
+    403: {"description": "Forbidden"},
+    404: {"description": "Not Found"},
+    405: {"description": "Method Not Allowed"},
+    422: {"description": "Unprocessable Entity"}
+}
