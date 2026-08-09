@@ -58,6 +58,26 @@ Mapped in `.litellm/config.yaml` as `lem-agent-*` aliases (reusing `OLLAMA_CLOUD
 | `lem-agent-tier2-alt` | `minimax-m3` | premium parallel / vision-capable alternate (opt-in via `agent:tier:2-alt`) |
 | `lem-agent-tier3` | `nemotron-3-super` | reviewer / reasoning lane (used for `MODE=selfreview`) or opt-in via `agent:tier:3` |
 
+### Context windows
+
+The `claude` CLI does not recognize the `lem-agent-tierN` aliases, so without a hint it auto-compacts against an assumed 200k window. `lib/dispatch.sh` exports `CLAUDE_CODE_MAX_CONTEXT_TOKENS` per tier so auto-compact manages the real model limit instead.
+
+| Alias | Cloud model | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Source / note |
+|---|---|---:|---|
+| `lem-agent-tier1` | `glm-5.2` | 1,048,576 | Zhipu/GLM docs, NVIDIA NIM, Unsloth (1M context) |
+| `lem-agent-tier2` | `kimi-k2.7-code` | 262,144 | Moonshot AI Kimi docs (256K context) |
+| `lem-agent-tier2-alt` | `minimax-m3` | 524,288 | MiniMax guarantees at least 512K; some endpoints up to 1M |
+| `lem-agent-tier3` | `nemotron-3-super` | 262,144 | Model card up to 1M; common deployment default 256K |
+
+These are the conservative, documented values as of 2026-08-09. Override per tier in `config.env` if your Ollama Cloud deployment caps a model differently:
+
+```bash
+TIER1_CONTEXT_TOKENS=1048576
+TIER2_CONTEXT_TOKENS=262144
+TIER2_ALT_CONTEXT_TOKENS=524288
+TIER3_CONTEXT_TOKENS=262144
+```
+
 Ids are the **bare** `ollama.com/api/tags` names, like every other Ollama deployment in that file.
 These four carried a `:cloud` tag until #844. Probed 2026-08-01: `glm-5.2:cloud` answers **200** and
 serves the same model as bare `glm-5.2` (`glm-5.2:bogus` 404s, so tags *are* validated — `:cloud`

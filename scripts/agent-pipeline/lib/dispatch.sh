@@ -75,6 +75,27 @@ _pick_ollama_tier() {
   esac
 }
 
+# ── context-window mapping for Ollama lane ──────────────────────────────────
+# The `claude` CLI does not recognize LiteLLM aliases (lem-agent-tierN), so without
+# a hint it auto-compacts against an assumed 200k window. The underlying Ollama Cloud
+# models have larger real windows; this mapping lets us export
+# CLAUDE_CODE_MAX_CONTEXT_TOKENS per tier so auto-compact manages the real limit.
+# Values are sourced from the models' public docs / model cards as of 2026-08-09.
+# Each is overridable via config.env so a deployment-specific cap can be honoured.
+#   glm-5.2         -> 1,048,576 (1M)   — Zhipu/GLM docs, NVIDIA NIM, Unsloth
+#   kimi-k2.7-code  ->   262,144 (256K) — Moonshot AI Kimi docs
+#   minimax-m3      ->   524,288 (512K) — MiniMax guarantees at least 512K (up to 1M)
+#   nemotron-3-super ->  262,144 (256K) — model card says up to 1M; default deployments 256K
+_ollama_tier_context_tokens() {
+  case "${1:-}" in
+    lem-agent-tier1)     echo "${TIER1_CONTEXT_TOKENS:-1048576}" ;;
+    lem-agent-tier2)     echo "${TIER2_CONTEXT_TOKENS:-262144}" ;;
+    lem-agent-tier2-alt) echo "${TIER2_ALT_CONTEXT_TOKENS:-524288}" ;;
+    lem-agent-tier3)     echo "${TIER3_CONTEXT_TOKENS:-262144}" ;;
+    *)                   echo "${DEFAULT_CONTEXT_TOKENS:-262144}" ;;
+  esac
+}
+
 # ── per-run dispatch (inside run_claude) ─────────────────────────────────────
 # $1 = claude_model_hint (sonnet|haiku|opus|"" from model_for_issue). Exports LANE etc.
 dispatch_lane() {
@@ -112,6 +133,13 @@ dispatch_lane() {
   fi
 
   export LANE AGENT_MODEL AGENT_TIER ROUTE_REASON FALLBACK_FROM FALLBACK_TO
+
+  # Tell the Claude CLI the real context window for the LiteLLM alias it does not
+  # recognize, so auto-compact works against the model's limit instead of 200k.
+  if [ "$LANE" = "ollama" ]; then
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS="$(_ollama_tier_context_tokens "$AGENT_TIER")"
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  fi
 
   local provider="$LANE"
   [ "$LANE" = "ollama" ] && provider="ollama-cloud"

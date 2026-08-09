@@ -58,6 +58,20 @@ def _pick_ollama_tier(labels: str, mode: str = "start", default_tier: str = "lem
     return out.stdout.strip()
 
 
+def _ollama_tier_context_tokens(tier: str, overrides: dict[str, str] | None = None) -> str:
+    """Extract _ollama_tier_context_tokens from dispatch.sh and run it for `tier`."""
+    source = DISPATCH_SH.read_text(encoding="utf-8")
+    match = re.search(r"\n_ollama_tier_context_tokens\(\) \{.*?\n\}\n", source, re.S)
+    assert match, "_ollama_tier_context_tokens not found in dispatch.sh"
+    func = match.group(0)
+    env = "".join(f'{k}="{v}"\n' for k, v in (overrides or {}).items())
+    out = _bash(f'''
+        {env}{func}
+        _ollama_tier_context_tokens "{tier}"
+    ''')
+    return out.stdout.strip()
+
+
 def _ensure_ai_labels_creates(existing: list[str], tmp_path: Path) -> list[str]:
     """Run ensure_ai_labels() against a stub `gh` and return the labels it tried to create."""
     bin_dir = tmp_path / "bin"
@@ -142,3 +156,30 @@ class TestTierRouting:
 
     def test_extra_labels_do_not_confuse_matching(self):
         assert _pick_ollama_tier("priority:high agent:tier:1 agent:ready") == "lem-agent-tier1"
+
+
+class TestTierContextWindow:
+    def test_tier_context_windows_match_documented_defaults(self):
+        expected = {
+            "lem-agent-tier1": "1048576",
+            "lem-agent-tier2": "262144",
+            "lem-agent-tier2-alt": "524288",
+            "lem-agent-tier3": "262144",
+        }
+        for tier, window in expected.items():
+            assert _ollama_tier_context_tokens(tier) == window, f"{tier} default context window mismatch"
+
+    def test_tier_context_windows_are_overridable(self):
+        overrides = {
+            "TIER1_CONTEXT_TOKENS": "999999",
+            "TIER2_CONTEXT_TOKENS": "111111",
+            "TIER2_ALT_CONTEXT_TOKENS": "222222",
+            "TIER3_CONTEXT_TOKENS": "333333",
+        }
+        assert _ollama_tier_context_tokens("lem-agent-tier1", overrides) == "999999"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", overrides) == "111111"
+        assert _ollama_tier_context_tokens("lem-agent-tier2-alt", overrides) == "222222"
+        assert _ollama_tier_context_tokens("lem-agent-tier3", overrides) == "333333"
+
+    def test_unknown_tier_falls_back_to_safe_default(self):
+        assert _ollama_tier_context_tokens("lem-agent-tier9") == "262144"
