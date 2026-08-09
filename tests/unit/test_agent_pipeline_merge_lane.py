@@ -36,15 +36,19 @@ HARNESS = """
 set -uo pipefail
 BASE="__BASE__"
 SLUG="o/n"; OWNER="o"; NAME="n"
+ASSIGNEE="owner-login"
 DRY_RUN="${DRY_RUN:-0}"
-TICK_OUTCOME="dispatched"; TICK_REASON=""
+TICK_OUTCOME="dispatched"; TICK_REASON=""; TICK_PR=""
 mkdir -p "$BASE/state"
 : > "$BASE/calls"
 log() { echo "LOG: $*"; }
 sleep() { printf 'sleep %s\\n' "$*" >> "$BASE/calls"; }
+# Defined ABOVE the block in tick.sh (line ~440), so the park path can call it.
+issue_for_pr() { echo "${FAKE_ISSUE:-}"; }
 gh() {
   printf 'gh %s\\n' "$*" >> "$BASE/calls"
   case "$*" in
+    "run list"*)                       echo "${FAKE_RUN_URL:-}" ;;
     *"--json url"*)                    echo "https://example.test/pr/$2" ;;
     *"--json headRefOid"*)             echo "$FAKE_SHA" ;;
     *"--json state,autoMergeRequest"*) echo "$FAKE_PR_STATE" ;;
@@ -56,6 +60,9 @@ FAKE_PR_STATE="${FAKE_PR_STATE:-OPEN|0}"
 FAKE_QUEUE="${FAKE_QUEUE:-}"
 __BLOCK__
 """
+
+# Anything that changes GitHub state. A read is not a mutation — DRY_RUN may read.
+_MUTATIONS = ("gh pr merge", "gh pr comment", "gh pr edit", "gh pr ready", "gh issue edit")
 
 
 def _run(tmp_path: Path, body: str, **env: str) -> subprocess.CompletedProcess:
@@ -78,6 +85,18 @@ def _calls(tmp_path: Path) -> list[str]:
 
 def _comments(tmp_path: Path) -> list[str]:
     return [c for c in _calls(tmp_path) if c.startswith("gh pr comment")]
+
+
+def _park_comments(tmp_path: Path) -> list[str]:
+    return [c for c in _comments(tmp_path) if "Human decision needed" in c]
+
+
+def _merging_comments(tmp_path: Path) -> list[str]:
+    return [c for c in _comments(tmp_path) if c.endswith("--body merging.")]
+
+
+def _mutations(tmp_path: Path) -> list[str]:
+    return [c for c in _calls(tmp_path) if c.startswith(_MUTATIONS)]
 
 
 # --- classify_merge_state: the pure core -------------------------------------------------------
@@ -203,13 +222,16 @@ def test_merge_pr_reports_a_live_queue_entry_distinctly(tmp_path):
     assert not (tmp_path / "state" / "mergestall-1067.count").exists()
 
 
-def test_a_queue_that_keeps_taking_and_dropping_the_pr_is_reported_stuck(tmp_path):
+def test_a_queue_that_keeps_taking_and_dropping_the_pr_is_parked(tmp_path):
     """The #1067 timeline: 154 enqueues, 153 evictions, a live entry at every read.
 
     Each tick asked for the merge, GitHub created an entry, a merge_group check failed ~3 min
     later and the entry was dropped — so a state read 20s after the request saw AWAITING_CHECKS
     every single time. "There is an entry right now" must therefore NOT be the whole answer, or
     the lane calls 47h of deadlock healthy.
+
+    Detecting it is not enough (#1120 burned 45 requests against a budget of 12 because the
+    diagnosis changed no state): a spent budget must PARK the PR and stop re-enqueueing it.
     """
     out = _run(
         tmp_path,
@@ -219,11 +241,38 @@ def test_a_queue_that_keeps_taking_and_dropping_the_pr_is_reported_stuck(tmp_pat
         FAKE_QUEUE="AWAITING_CHECKS",
         MERGE_QUEUE_STUCK_TICKS="4",
     )
-    assert "STUCK IN THE MERGE QUEUE" in out.stdout
-    assert "4 merge requests at head" in out.stdout
-    assert "failed/merge_queue_stuck" in out.stdout
-    # …and it stays one comment, not one per tick.
-    assert len(_comments(tmp_path)) == 1
+    assert "PARKING PR #1067" in out.stdout
+    assert "queue took and dropped this head 4 times" in out.stdout
+    assert "dispatched/merge_parked" in out.stdout
+    # The point of the park: the 5th tick does NOT ask the queue again.
+    assert len([c for c in _calls(tmp_path) if c.startswith("gh pr merge --auto")]) == 4
+    # …and it stays one "merging" comment plus exactly one Decision Comment, not one per tick.
+    assert len(_merging_comments(tmp_path)) == 1
+    assert len(_park_comments(tmp_path)) == 1
+
+
+def test_the_park_drafts_the_pr_before_disabling_auto_merge(tmp_path):
+    """Draft first: a draft can hold neither auto-merge nor a queue entry.
+
+    A concurrent slot re-arming mid-park then fails closed instead of silently undoing it.
+    """
+    _run(
+        tmp_path,
+        'merge_pr 1067 "merging." || true',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="UNMERGEABLE",
+        FAKE_ISSUE="1200",
+    )
+    calls = _calls(tmp_path)
+    draft = next(i for i, c in enumerate(calls) if c.startswith("gh pr ready 1067") and "--undo" in c)
+    disable = next(i for i, c in enumerate(calls) if "--disable-auto" in c)
+    assert draft < disable
+    labels = next(c for c in calls if c.startswith("gh pr edit 1067") and "--add-label" in c)
+    for expected in ("--add-label needs-human", "--add-label agent:blocked",
+                     "--add-label agent:merge-parked", "--remove-label agent:working"):
+        assert expected in labels
+    # The issue is mirrored so it stops reading as in-flight work.
+    assert any(c.startswith("gh issue edit 1200") for c in calls)
 
 
 def test_a_healthy_queue_wait_is_never_called_stuck(tmp_path):
@@ -254,8 +303,9 @@ def test_a_new_push_gives_the_queue_a_fresh_budget(tmp_path):
         FAKE_QUEUE="AWAITING_CHECKS",
         MERGE_QUEUE_STUCK_TICKS="3",
     )
-    assert "STUCK IN THE MERGE QUEUE" in out.stdout          # the 3rd request at the old head
-    assert out.stdout.strip().endswith("dispatched/")        # …the push cleared the diagnosis
+    assert "PARKING PR #1067" in out.stdout                  # the 3rd request at the old head
+    assert "request 1/3 at this head" in out.stdout          # …the push earned a fresh budget
+    assert out.stdout.strip().endswith("dispatched/")
     assert (tmp_path / "state" / "mergeattempt-1067").read_text().split() == ["beef5678", "1"]
 
 
@@ -268,9 +318,36 @@ def test_an_unmergeable_entry_is_not_progress(tmp_path):
         FAKE_QUEUE="UNMERGEABLE",
     )
     assert "rc=1" in out.stdout
-    assert "failed/merge_queue_unmergeable" in out.stdout
-    assert "a merge_group check is failing" in out.stdout
-    assert _comments(tmp_path) == []  # never claim "merging" over a failing merge-group check
+    assert "dispatched/merge_parked" in out.stdout
+    assert "PARKING PR #1067 (merge-queue entry UNMERGEABLE" in out.stdout
+    assert _merging_comments(tmp_path) == []  # never claim "merging" over a failing merge_group
+    assert len(_park_comments(tmp_path)) == 1
+
+
+def test_the_park_comment_carries_the_failing_merge_group_run(tmp_path):
+    """The owner's first question is "which check?" — answer it in the Decision Comment."""
+    out = _run(
+        tmp_path,
+        'merge_pr 1067 "merging." || true',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="UNMERGEABLE",
+        FAKE_RUN_URL="https://example.test/run/9",
+    )
+    assert "https://example.test/run/9" in "\n".join(_calls(tmp_path))
+    assert out.returncode == 0
+
+
+def test_an_unreadable_merge_group_run_still_parks(tmp_path):
+    """The link is best-effort; an unreadable Actions list must never block the park."""
+    _run(
+        tmp_path,
+        'merge_pr 1067 "merging." || true',
+        FAKE_PR_STATE="OPEN|1",
+        FAKE_QUEUE="UNMERGEABLE",
+        FAKE_RUN_URL="",
+    )
+    assert len(_park_comments(tmp_path)) == 1
+    assert "not readable" in "\n".join(_calls(tmp_path))
 
 
 def test_the_merge_request_is_always_repo_scoped(tmp_path):
@@ -305,7 +382,11 @@ def test_merge_pr_treats_exit_zero_without_a_queue_entry_as_a_stall(tmp_path):
 
 
 def test_a_stalled_pr_never_accumulates_comments(tmp_path):
-    """561 identical comments is the bug; ten stalled ticks must produce zero."""
+    """561 identical "merging" comments is the bug; ten stalled ticks must produce zero.
+
+    The stall recovery gets its own budget: cycles 1 and 2 clear the dangling state and re-ask,
+    the third exhaustion parks — one Decision Comment, never a stream of them.
+    """
     out = _run(
         tmp_path,
         'for _ in 1 2 3 4 5 6 7 8 9 10; do merge_pr 1067 "merging." || true; done',
@@ -313,7 +394,22 @@ def test_a_stalled_pr_never_accumulates_comments(tmp_path):
         MERGE_STALE_TICKS="3",
     )
     assert out.returncode == 0
-    assert _comments(tmp_path) == []
+    assert _merging_comments(tmp_path) == []
+    assert len(_park_comments(tmp_path)) == 1
+    assert "after 3 disable-auto recovery cycles" in out.stdout
+
+
+def test_the_stall_recovery_gets_its_cycles_before_parking(tmp_path):
+    """One recovery cycle is the automated fix that unwedged #1067 — don't park ahead of it."""
+    out = _run(
+        tmp_path,
+        'for _ in 1 2 3 4; do merge_pr 1067 "merging." || true; done',
+        FAKE_PR_STATE="OPEN|0",
+        MERGE_STALE_TICKS="3",
+        MERGE_STALL_CYCLES_MAX="2",
+    )
+    assert "recovery cycle 1/2" in out.stdout
+    assert "PARKING" not in out.stdout
 
 
 def test_stale_queue_entry_is_cleared_and_re_enqueued_within_n_ticks(tmp_path):
@@ -357,10 +453,28 @@ def test_merge_pr_leaves_a_closed_pr_alone(tmp_path):
     assert _comments(tmp_path) == []
 
 
-def test_merge_pr_is_inert_in_dry_run(tmp_path):
+def test_merge_pr_mutates_nothing_in_dry_run(tmp_path):
+    """A dry tick READS the head (the budget check needs it) but changes nothing on GitHub."""
     out = _run(tmp_path, 'merge_pr 1067 "merging."; echo "rc=$?"', DRY_RUN="1")
     assert "rc=0" in out.stdout
-    assert _calls(tmp_path) == []
+    assert _mutations(tmp_path) == []
+    assert _calls(tmp_path) == ["gh pr view 1067 --repo o/n --json headRefOid --jq .headRefOid"]
+
+
+def test_dry_run_decides_the_park_but_never_performs_it(tmp_path):
+    """The budget check sits above the DRY_RUN return, so a dry tick proves the park path."""
+    out = _run(
+        tmp_path,
+        """
+        printf 'cafe1234 9\\n' > "$BASE/state/mergeattempt-1067"
+        merge_pr 1067 "merging."; echo "rc=$?"
+        """,
+        DRY_RUN="1",
+        MERGE_QUEUE_STUCK_TICKS="4",
+    )
+    assert "rc=1" in out.stdout
+    assert "would park PR #1067" in out.stdout
+    assert _mutations(tmp_path) == []
 
 
 def test_merge_pr_does_not_poll_forever_when_state_never_resolves(tmp_path):
@@ -393,3 +507,22 @@ def test_no_merge_site_pairs_the_exit_code_with_a_comment():
 
 def test_all_three_merge_lanes_call_merge_pr():
     assert len(re.findall(r"^\s*merge_pr \"\$", SOURCE, re.M)) == 3
+
+
+def test_no_merge_call_site_ends_the_tick_unconditionally():
+    """Head-of-line: a PR that made no merge progress must yield to the next candidate.
+
+    The old `merge_pr …` + unconditional `exit 0` burned 45 of 62 ticks in one 6h window
+    re-polling ONE wedged PR while green PRs and 34 ready issues waited.
+    """
+    assert not re.search(r"^\s*merge_pr \"\$[^\n]*\n\s*exit 0", SOURCE, re.M)
+    assert len(re.findall(r"^\s*merge_pr \"\$[^\n]*&& exit 0", SOURCE, re.M)) == 3
+
+
+def test_the_park_label_is_bootstrapped():
+    """A label that does not exist fails the whole `gh pr edit` — the #1228 trap.
+
+    That would silently undo the park (labels unchanged, PR left draft and unlabelled).
+    """
+    labels_sh = TICK_SH.parent / "lib" / "labels.sh"
+    assert "agent:merge-parked" in labels_sh.read_text(encoding="utf-8")

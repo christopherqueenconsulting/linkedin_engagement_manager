@@ -1638,10 +1638,14 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=hold — waiting."
           continue ;;
         merge)
-          phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; exit 0; }
+          # Same two rules as the other merge sites: a held/parked PR yields to the next
+          # candidate rather than spending the tick, and the merge takes the branch claim.
+          phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; continue; }
+          claim_branch "$BRANCH" || { log "PR #$PR claimed by another slot — trying next."; continue; }
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=merge — merging with warning."
-          merge_pr "$PR" "⚠️ Merging with CI green but WITHOUT a review — Copilot never delivered and REVIEW_FALLBACK=merge."
-          exit 0 ;;
+          merge_pr "$PR" "⚠️ Merging with CI green but WITHOUT a review — Copilot never delivered and REVIEW_FALLBACK=merge." && exit 0
+          log "PR #$PR made no merge progress — scanning the next in-flight PR this same tick."
+          continue ;;
       esac
       # REVIEW_FALLBACK=claude falls through to the adversarial review below.
     fi
