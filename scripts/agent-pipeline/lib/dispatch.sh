@@ -75,6 +75,68 @@ _pick_ollama_tier() {
   esac
 }
 
+# ── context-window mapping for Ollama lane ──────────────────────────────────
+# The `claude` CLI does not recognize LiteLLM aliases (lem-agent-tierN), so without
+# a hint it auto-compacts against an assumed 200k window. The underlying Ollama Cloud
+# models have larger real windows; this mapping lets us export
+# CLAUDE_CODE_MAX_CONTEXT_TOKENS per tier so auto-compact manages the real limit.
+# Values are sourced from the models' public docs / model cards as of 2026-08-09.
+# Each is overridable via config.env so a deployment-specific cap can be honoured.
+#   glm-5.2         -> 1,048,576 (1M)   — Zhipu/GLM docs, NVIDIA NIM, Unsloth
+#   kimi-k2.7-code  ->   262,144 (256K) — Moonshot AI Kimi docs
+#   minimax-m3      ->   524,288 (512K) — MiniMax guarantees at least 512K (up to 1M)
+#   nemotron-3-super ->  262,144 (256K) — model card says up to 1M; default deployments 256K
+#
+# What is exported is NOT the tier's own window but the SMALLEST window in the tier's LiteLLM
+# fallback chain. `.litellm/config.yaml` router_settings.fallbacks degrades every agent tier
+# through lem-agent-tier3 (256K), and a fallback replays the SAME prompt: a context grown to
+# tier1's 1M can never be rescued — tier2/tier3 reject it outright, so the ladder that exists to
+# save a hard run becomes guaranteed to fail exactly when it is needed. The 200k assumption this
+# fix replaces was accidentally safe that way; the replacement has to be deliberately safe.
+# Raise OLLAMA_CONTEXT_FLOOR_TOKENS in config.env only alongside the fallback chain in
+# config.yaml. An explicit per-tier TIER*_CONTEXT_TOKENS is the operator stating what their own
+# deployment serves, so it wins over the floor.
+_ollama_tier_context_tokens() {
+  local override own floor
+  case "${1:-}" in
+    lem-agent-tier1)     override="${TIER1_CONTEXT_TOKENS:-}";     own=1048576 ;;
+    lem-agent-tier2)     override="${TIER2_CONTEXT_TOKENS:-}";     own=262144  ;;
+    lem-agent-tier2-alt) override="${TIER2_ALT_CONTEXT_TOKENS:-}"; own=524288  ;;
+    lem-agent-tier3)     override="${TIER3_CONTEXT_TOKENS:-}";     own=262144  ;;
+    *)                   override="${DEFAULT_CONTEXT_TOKENS:-}";   own=262144  ;;
+  esac
+  # An override is operator input and is exported straight into the CLI's environment, so it gets
+  # the same validation as the floor below: non-numeric or zero falls through to the mapped value
+  # rather than handing `claude` a window it cannot parse (or a 0 that compacts every turn).
+  case "$override" in ''|*[!0-9]*) override="" ;; esac
+  if [ -n "$override" ] && [ "$override" -eq 0 ]; then override=""; fi
+  if [ -n "$override" ]; then echo "$override"; return; fi
+  floor="${OLLAMA_CONTEXT_FLOOR_TOKENS:-262144}"
+  case "$floor" in ''|*[!0-9]*) floor="" ;; esac   # a junk floor must not silently win
+  if [ -n "$floor" ] && [ "$own" -gt "$floor" ]; then own="$floor"; fi
+  echo "$own"
+}
+
+# Set — or CLEAR — CLAUDE_CODE_MAX_CONTEXT_TOKENS for the lane about to run. $1=lane $2=tier.
+#
+# Clearing matters because the export outlives the dispatch that made it: the variable is set on
+# the tick's own shell, so any later claude-lane dispatch in the same process would inherit an
+# Ollama tier's window and silently cap a model whose real window is far larger (Opus at 262144).
+# run_lane.sh unsets ANTHROPIC_* on the claude lane for exactly this reason; this is the same
+# hazard for the variable this file introduces. Only a value WE exported is cleared, so an
+# operator's own global setting survives a claude-lane run untouched.
+_LANE_CONTEXT_EXPORTED=""
+_export_lane_context_window() {
+  if [ "${1:-}" = "ollama" ]; then
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS="$(_ollama_tier_context_tokens "${2:-}")"
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    _LANE_CONTEXT_EXPORTED=1
+  elif [ -n "$_LANE_CONTEXT_EXPORTED" ]; then
+    unset CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    _LANE_CONTEXT_EXPORTED=""
+  fi
+}
+
 # ── per-run dispatch (inside run_claude) ─────────────────────────────────────
 # $1 = claude_model_hint (sonnet|haiku|opus|"" from model_for_issue). Exports LANE etc.
 dispatch_lane() {
@@ -112,6 +174,10 @@ dispatch_lane() {
   fi
 
   export LANE AGENT_MODEL AGENT_TIER ROUTE_REASON FALLBACK_FROM FALLBACK_TO
+
+  # Tell the Claude CLI the real context window for the LiteLLM alias it does not
+  # recognize, so auto-compact works against the model's limit instead of 200k.
+  _export_lane_context_window "$LANE" "$AGENT_TIER"
 
   local provider="$LANE"
   [ "$LANE" = "ollama" ] && provider="ollama-cloud"

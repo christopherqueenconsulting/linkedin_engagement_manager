@@ -58,6 +58,44 @@ Mapped in `.litellm/config.yaml` as `lem-agent-*` aliases (reusing `OLLAMA_CLOUD
 | `lem-agent-tier2-alt` | `minimax-m3` | premium parallel / vision-capable alternate (opt-in via `agent:tier:2-alt`) |
 | `lem-agent-tier3` | `nemotron-3-super` | reviewer / reasoning lane (used for `MODE=selfreview`) or opt-in via `agent:tier:3` |
 
+### Context windows
+
+The `claude` CLI does not recognize the `lem-agent-tierN` aliases, so without a hint it auto-compacts against an assumed 200k window. `lib/dispatch.sh` exports `CLAUDE_CODE_MAX_CONTEXT_TOKENS` per tier so auto-compact manages the real model limit instead.
+
+| Alias | Cloud model | Model's own window | Exported | Source / note |
+|---|---|---:|---:|---|
+| `lem-agent-tier1` | `glm-5.2` | 1,048,576 | 262,144 | Zhipu/GLM docs, NVIDIA NIM, Unsloth (1M context) |
+| `lem-agent-tier2` | `kimi-k2.7-code` | 262,144 | 262,144 | Moonshot AI Kimi docs (256K context) |
+| `lem-agent-tier2-alt` | `minimax-m3` | 524,288 | 262,144 | MiniMax guarantees at least 512K; some endpoints up to 1M |
+| `lem-agent-tier3` | `nemotron-3-super` | 262,144 | 262,144 | Model card up to 1M; common deployment default 256K |
+
+**Why the exported number is not the model's own window.** `.litellm/config.yaml`
+`router_settings.fallbacks` degrades every agent tier through `lem-agent-tier3`
+(tier1 → tier2 → tier3, tier2 → tier3, tier2-alt → tier3), and a fallback replays the *same*
+prompt. A context grown to tier1's 1M can therefore never be rescued — tier2 and tier3 reject it
+outright, so the ladder that exists to save a hard run is guaranteed to fail exactly when it is
+needed. tier1 is also the tier that times out most, i.e. the one that actually uses its fallbacks.
+The old 200k assumption was accidentally safe that way; the replacement is deliberately safe, so
+what ships is the **smallest window in the tier's fallback chain** — `OLLAMA_CONTEXT_FLOOR_TOKENS`,
+default 262,144. Raise it only alongside the fallback chain in `config.yaml`.
+
+Override in `config.env`. A per-tier override is the operator stating what their own Ollama Cloud
+deployment actually serves, so it wins over the floor:
+
+```bash
+OLLAMA_CONTEXT_FLOOR_TOKENS=262144   # smallest window any fallback target serves
+TIER1_CONTEXT_TOKENS=1048576         # per-tier override — bypasses the floor
+TIER2_CONTEXT_TOKENS=262144
+TIER2_ALT_CONTEXT_TOKENS=524288
+TIER3_CONTEXT_TOKENS=262144
+```
+
+An override must be a positive integer — anything else (a `256k`, a `0`) is ignored in favour of the
+mapped value rather than exported into the CLI's environment. The variable is set on the tick's own
+shell, so it is also **cleared** before a claude-lane run: a leaked Ollama window would silently cap
+a model whose real one is far larger, the same hazard `run_lane.sh` unsets `ANTHROPIC_*` for. Only a
+value the dispatcher exported is cleared, so a global operator setting survives.
+
 Ids are the **bare** `ollama.com/api/tags` names, like every other Ollama deployment in that file.
 These four carried a `:cloud` tag until #844. Probed 2026-08-01: `glm-5.2:cloud` answers **200** and
 serves the same model as bare `glm-5.2` (`glm-5.2:bogus` 404s, so tags *are* validated — `:cloud`

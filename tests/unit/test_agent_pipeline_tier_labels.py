@@ -16,8 +16,10 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-LABELS_SH = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "lib" / "labels.sh"
-DISPATCH_SH = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "lib" / "dispatch.sh"
+_ROOT = Path(__file__).resolve().parents[2]
+LABELS_SH = _ROOT / "scripts" / "agent-pipeline" / "lib" / "labels.sh"
+DISPATCH_SH = _ROOT / "scripts" / "agent-pipeline" / "lib" / "dispatch.sh"
+LITELLM_CONFIG = _ROOT / ".litellm" / "config.yaml"
 
 
 def _bash(script: str) -> subprocess.CompletedProcess:
@@ -56,6 +58,80 @@ def _pick_ollama_tier(labels: str, mode: str = "start", default_tier: str = "lem
         _pick_ollama_tier
     ''')
     return out.stdout.strip()
+
+
+def _extract_shell_func(name: str) -> str:
+    """Return the text of shell function `name` as defined in dispatch.sh."""
+    source = DISPATCH_SH.read_text(encoding="utf-8")
+    # `\n}` may be the last thing in the file (no trailing newline), so end-of-string closes too.
+    match = re.search(rf"\n{name}\(\) \{{.*?\n\}}(?:\n|\Z)", source, re.S)
+    assert match, f"{name} not found in dispatch.sh"
+    return match.group(0)
+
+
+def _lane_context_export(lanes: list[tuple[str, str]], preset: str | None = None) -> str:
+    """Run _export_lane_context_window over `lanes` (lane, tier) in ONE shell.
+
+    Returns the surviving CLAUDE_CODE_MAX_CONTEXT_TOKENS, or the literal `<unset>` when the
+    variable is gone — the distinction the leak guard turns on, which an empty string would hide.
+    """
+    funcs = _extract_shell_func("_ollama_tier_context_tokens") + _extract_shell_func(
+        "_export_lane_context_window"
+    )
+    pre = f'export CLAUDE_CODE_MAX_CONTEXT_TOKENS="{preset}"\n' if preset is not None else ""
+    calls = "".join(f'_export_lane_context_window "{lane}" "{tier}"\n' for lane, tier in lanes)
+    out = _bash(f'''
+        {pre}_LANE_CONTEXT_EXPORTED=""
+        {funcs}
+        {calls}
+        echo "${{CLAUDE_CODE_MAX_CONTEXT_TOKENS-<unset>}}"
+    ''')
+    return out.stdout.strip()
+
+
+def _ollama_tier_context_tokens(tier: str, overrides: dict[str, str] | None = None) -> str:
+    """Extract _ollama_tier_context_tokens from dispatch.sh and run it for `tier`."""
+    func = _extract_shell_func("_ollama_tier_context_tokens")
+    env = "".join(f'{k}="{v}"\n' for k, v in (overrides or {}).items())
+    out = _bash(f'''
+        {env}{func}
+        _ollama_tier_context_tokens "{tier}"
+    ''')
+    return out.stdout.strip()
+
+
+def _agent_fallback_chains() -> dict[str, list[str]]:
+    """Return the `lem-agent-*` entries of `router_settings.fallbacks` in .litellm/config.yaml.
+
+    Hand-parsed rather than loaded with PyYAML because the unit lane installs only the `test`
+    dependency group, which carries no YAML parser; the block is a fixed two-level list of
+    `- <alias>:` followed by its indented fallback targets.
+    """
+    chains: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    in_block = False
+    block_indent = 0
+    for raw in LITELLM_CONFIG.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if not in_block:
+            if stripped == "fallbacks:":
+                in_block = True
+                block_indent = indent
+            continue
+        if indent <= block_indent:
+            break
+        alias = re.fullmatch(r"-\s*([\w.:-]+):", stripped)
+        if alias:
+            current = []
+            chains[alias.group(1)] = current
+            continue
+        target = re.fullmatch(r"-\s*([\w.:-]+)", stripped)
+        if target and current is not None:
+            current.append(target.group(1))
+    return {alias: targets for alias, targets in chains.items() if alias.startswith("lem-agent-")}
 
 
 def _ensure_ai_labels_creates(existing: list[str], tmp_path: Path) -> list[str]:
@@ -142,3 +218,88 @@ class TestTierRouting:
 
     def test_extra_labels_do_not_confuse_matching(self):
         assert _pick_ollama_tier("priority:high agent:tier:1 agent:ready") == "lem-agent-tier1"
+
+
+class TestTierContextWindow:
+    def test_tier_context_windows_match_documented_defaults(self):
+        # Every default is clamped to the fallback floor: what ships is the smallest window in the
+        # tier's LiteLLM fallback chain, not the tier's own (see test_default_never_exceeds_*).
+        expected = {
+            "lem-agent-tier1": "262144",
+            "lem-agent-tier2": "262144",
+            "lem-agent-tier2-alt": "262144",
+            "lem-agent-tier3": "262144",
+        }
+        for tier, window in expected.items():
+            assert _ollama_tier_context_tokens(tier) == window, f"{tier} default context window mismatch"
+
+    def test_raising_the_floor_exposes_the_models_own_window(self):
+        """The floor is the only thing holding tier1/tier2-alt down — the real windows are mapped."""
+        high = {"OLLAMA_CONTEXT_FLOOR_TOKENS": "1048576"}
+        assert _ollama_tier_context_tokens("lem-agent-tier1", high) == "1048576"
+        assert _ollama_tier_context_tokens("lem-agent-tier2-alt", high) == "524288"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", high) == "262144"
+
+    def test_junk_floor_does_not_win(self):
+        """A malformed floor must fall back to the model window, never to an empty/garbage export."""
+        assert _ollama_tier_context_tokens("lem-agent-tier1", {"OLLAMA_CONTEXT_FLOOR_TOKENS": "lots"}) == "1048576"
+
+    def test_default_never_exceeds_any_litellm_fallback_target(self):
+        """A fallback replays the SAME prompt, so a tier may never be told more than its chain serves.
+
+        Guards the regression this clamp exists for: raising a tier's window without raising every
+        target it degrades into turns the fallback ladder into a guaranteed context-length failure.
+        """
+        chains = _agent_fallback_chains()
+        assert chains, "no lem-agent-* fallbacks found in .litellm/config.yaml"
+        for alias, targets in chains.items():
+            # An empty chain would make this test vacuous, which is how a parser that silently
+            # stopped matching the config would slip through.
+            assert targets, f"{alias} parsed with no fallback targets"
+            own = int(_ollama_tier_context_tokens(alias))
+            for target in targets:
+                assert own <= int(_ollama_tier_context_tokens(target)), (
+                    f"{alias} exports {own} but falls back to {target}, which cannot accept it"
+                )
+
+    def test_tier_context_windows_are_overridable(self):
+        overrides = {
+            "TIER1_CONTEXT_TOKENS": "999999",
+            "TIER2_CONTEXT_TOKENS": "111111",
+            "TIER2_ALT_CONTEXT_TOKENS": "222222",
+            "TIER3_CONTEXT_TOKENS": "333333",
+        }
+        assert _ollama_tier_context_tokens("lem-agent-tier1", overrides) == "999999"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", overrides) == "111111"
+        assert _ollama_tier_context_tokens("lem-agent-tier2-alt", overrides) == "222222"
+        assert _ollama_tier_context_tokens("lem-agent-tier3", overrides) == "333333"
+
+    def test_unknown_tier_falls_back_to_safe_default(self):
+        assert _ollama_tier_context_tokens("lem-agent-tier9") == "262144"
+
+    def test_junk_override_does_not_reach_the_cli(self):
+        """An override is exported verbatim into the CLI env, so garbage must fall through."""
+        assert _ollama_tier_context_tokens("lem-agent-tier2", {"TIER2_CONTEXT_TOKENS": "256k"}) == "262144"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", {"TIER2_CONTEXT_TOKENS": "0"}) == "262144"
+        assert _ollama_tier_context_tokens("lem-agent-tier2", {"TIER2_CONTEXT_TOKENS": "-1"}) == "262144"
+
+
+class TestLaneContextExport:
+    """The variable is set on the tick's shell, so clearing it is as load-bearing as setting it."""
+
+    def test_ollama_lane_exports_the_clamped_window(self):
+        assert _lane_context_export([("ollama", "lem-agent-tier1")]) == "262144"
+
+    def test_claude_lane_after_an_ollama_dispatch_does_not_inherit_the_tier_window(self):
+        # Two dispatches in one process: a leaked 262144 would cap a 1M Claude model instead.
+        assert _lane_context_export([("ollama", "lem-agent-tier1"), ("claude", "")]) == "<unset>"
+
+    def test_an_operator_set_window_survives_a_claude_lane_dispatch(self):
+        """Only a value this file exported is cleared — a global operator setting is not ours."""
+        assert _lane_context_export([("claude", "")], preset="500000") == "500000"
+
+    def test_dispatch_lane_is_wired_to_the_export_helper(self):
+        """The helper only guards anything if dispatch_lane actually routes through it."""
+        body = _extract_shell_func("dispatch_lane")
+        assert '_export_lane_context_window "$LANE" "$AGENT_TIER"' in body
+        assert "_LANE_CONTEXT_EXPORTED=\"\"" in DISPATCH_SH.read_text(encoding="utf-8")
