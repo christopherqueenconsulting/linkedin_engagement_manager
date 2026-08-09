@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
+_BILL = "cqc_lem.api.routers.billing"
 
 
 @pytest.fixture(autouse=True)
@@ -170,9 +171,9 @@ class TestBillingFunnel:
              patch("cqc_lem.utilities.stripe_util.get_subscription_tier_from_price",
                    return_value="starter"), \
              patch("cqc_lem.utilities.stripe_util.stripe_status_to_db", return_value="active"), \
-             patch(f"{_MAIN}.update_subscription_from_stripe"), \
-             patch(f"{_MAIN}.get_user_by_stripe_customer_id", return_value={"id": 4}), \
-             patch(f"{_MAIN}.track_funnel_event") as track:
+             patch(f"{_BILL}.update_subscription_from_stripe"), \
+             patch(f"{_BILL}.get_user_by_stripe_customer_id", return_value={"id": 4}), \
+             patch(f"{_BILL}.track_funnel_event") as track:
             resp = client.post(self.BASE, content=b"{}",
                                headers={"Stripe-Signature": "sig",
                                         "Content-Type": "application/json"})
@@ -207,8 +208,8 @@ class TestBillingFunnel:
         event = {"type": "customer.subscription.deleted",
                  "data": {"object": {"customer": "cus_c", "id": "sub_3"}}}
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch(f"{_MAIN}.update_subscription_from_stripe"), \
-             patch(f"{_MAIN}.get_user_by_stripe_customer_id",
+             patch(f"{_BILL}.update_subscription_from_stripe"), \
+             patch(f"{_BILL}.get_user_by_stripe_customer_id",
                    side_effect=RuntimeError("db down")), \
              patch(f"{_MAIN}.track_funnel_event") as track:
             resp = client.post(self.BASE, content=b"{}",

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
+_BILL = "cqc_lem.api.routers.billing"
 _ENV = "cqc_lem.utilities.env_constants"
 
 
@@ -82,14 +83,14 @@ class TestTrialExtendEndpoint:
 
 class TestEarlyAdopterCheckoutExtras:
     def test_no_grant_means_no_trial_and_no_discount(self):
-        from cqc_lem.api.main import _early_adopter_checkout_extras
-        with patch(f"{_MAIN}.get_early_adopter_grant", return_value=None):
+        from cqc_lem.api.routers.billing import _early_adopter_checkout_extras
+        with patch(f"{_BILL}.get_early_adopter_grant", return_value=None):
             assert _early_adopter_checkout_extras(7) == (None, None)
 
     def test_remaining_days_are_rounded_up_and_coupon_applied(self):
-        from cqc_lem.api.main import _early_adopter_checkout_extras
+        from cqc_lem.api.routers.billing import _early_adopter_checkout_extras
         grant = {"trial_ends_at": datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=40, hours=6)}
-        with patch(f"{_MAIN}.get_early_adopter_grant", return_value=grant), \
+        with patch(f"{_BILL}.get_early_adopter_grant", return_value=grant), \
              patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"):
             days, discounts = _early_adopter_checkout_extras(7)
         assert days == 41  # 40d6h rounds up so a partial day isn't forfeited
@@ -97,30 +98,30 @@ class TestEarlyAdopterCheckoutExtras:
 
     def test_lookup_failure_degrades_to_a_normal_checkout(self):
         """A perk lookup must never stop a user from paying us."""
-        from cqc_lem.api.main import _early_adopter_checkout_extras
-        with patch(f"{_MAIN}.get_early_adopter_grant", side_effect=RuntimeError("db down")), \
-             patch(f"{_MAIN}.log_warning") as warned:
+        from cqc_lem.api.routers.billing import _early_adopter_checkout_extras
+        with patch(f"{_BILL}.get_early_adopter_grant", side_effect=RuntimeError("db down")), \
+             patch(f"{_BILL}.log_warning") as warned:
             assert _early_adopter_checkout_extras(7) == (None, None)
         assert warned.called
 
     def test_expired_grant_sends_no_trial_days(self):
-        from cqc_lem.api.main import _early_adopter_checkout_extras
+        from cqc_lem.api.routers.billing import _early_adopter_checkout_extras
         grant = {"trial_ends_at": datetime.now(timezone.utc) - timedelta(days=3)}
-        with patch(f"{_MAIN}.get_early_adopter_grant", return_value=grant), \
+        with patch(f"{_BILL}.get_early_adopter_grant", return_value=grant), \
              patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", ""):
             assert _early_adopter_checkout_extras(7) == (None, None)
 
     def test_expired_grant_does_not_apply_the_coupon_either(self):
         """The coupon is part of the unfinished trial — a lapsed grant must not discount forever."""
-        from cqc_lem.api.main import _early_adopter_checkout_extras
+        from cqc_lem.api.routers.billing import _early_adopter_checkout_extras
         grant = {"trial_ends_at": datetime.now(timezone.utc) - timedelta(days=90)}
-        with patch(f"{_MAIN}.get_early_adopter_grant", return_value=grant), \
+        with patch(f"{_BILL}.get_early_adopter_grant", return_value=grant), \
              patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"):
             assert _early_adopter_checkout_extras(7) == (None, None)
 
     def test_grant_with_no_end_date_carries_nothing(self):
-        from cqc_lem.api.main import _early_adopter_checkout_extras
-        with patch(f"{_MAIN}.get_early_adopter_grant", return_value={"trial_ends_at": None}), \
+        from cqc_lem.api.routers.billing import _early_adopter_checkout_extras
+        with patch(f"{_BILL}.get_early_adopter_grant", return_value={"trial_ends_at": None}), \
              patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"):
             assert _early_adopter_checkout_extras(7) == (None, None)
 
@@ -132,10 +133,10 @@ class TestCheckoutSessionMirrorsGrant:
 
     def test_grant_holder_conversion_forwards_trial_and_coupon(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
-             patch(f"{_MAIN}.get_user_subscription_info",
+             patch(f"{_BILL}.get_user_subscription_info",
                    return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": None,
                                  "subscription_status": "trial"}), \
-             patch(f"{_MAIN}._early_adopter_checkout_extras",
+             patch(f"{_BILL}._early_adopter_checkout_extras",
                    return_value=(41, [{"coupon": "EARLYBIRD"}])), \
              patch("cqc_lem.utilities.stripe_util.create_checkout_session",
                    return_value="https://checkout.stripe.com/x") as create:
@@ -146,10 +147,10 @@ class TestCheckoutSessionMirrorsGrant:
 
     def test_standard_user_conversion_is_unchanged(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
-             patch(f"{_MAIN}.get_user_subscription_info",
+             patch(f"{_BILL}.get_user_subscription_info",
                    return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": None,
                                  "subscription_status": "trial"}), \
-             patch(f"{_MAIN}.get_early_adopter_grant", return_value=None), \
+             patch(f"{_BILL}.get_early_adopter_grant", return_value=None), \
              patch("cqc_lem.utilities.stripe_util.create_checkout_session",
                    return_value="https://checkout.stripe.com/x") as create:
             resp = client.post(self.BASE, json=self.PAYLOAD)
