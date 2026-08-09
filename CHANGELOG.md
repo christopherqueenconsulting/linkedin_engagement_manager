@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.138.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.137.2...v0.138.0) (2026-08-09)
+
+
+### Features
+
+* **pipeline:** busy window gets its own cap, a timezone and a day filter ([#1222](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1222)) ([b9705ea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9705ead64ca5662d567b747033fbd71f8f25794))
+
+
+### Bug Fixes
+
+* **logging:** correct the levels the myprint shim hid in run_content_plan + app/engagement ([#1184](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1184)) ([#1208](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1208)) ([26b750b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/26b750b19b79501ef733a4d7ab182256288cd4eb))
+* **pipeline:** refuse to dispatch an agent outside its own worktree ([#1223](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1223)) ([907658c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/907658c0d58f510accb65e7aab08c0437b388b60))
+* **pipeline:** stop branching from a stale main, and reclaim worktrees ([#1225](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1225)) ([2bab107](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2bab107c465d10b89ae045f362ac1c85adc1d8b1))
+* **pipeline:** the worktree sweeper found 3 of 255, and read merged work as unsaved ([#1226](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1226)) ([e8c60a8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e8c60a8cbd26448a8ed77267ecb44dacbe2e509b))
+
+
+### Documentation
+
+* forbid model: in agent definitions, and correct the isolation claim ([#1227](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1227)) ([879405b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/879405b6f0319ad7359434aa7fd604582dac7f0e))
+
 ## [0.137.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.137.1...v0.137.2) (2026-08-09)
 
 
