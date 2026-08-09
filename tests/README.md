@@ -351,6 +351,12 @@ before every run**:
 Unlike §1, the parallel column moves by the whole cost: `--dist loadfile` had nothing longer left to
 hide it behind.
 
+**CI is the number that counts, and it is not the same box.** Unlike §1 this local rig did not
+reproduce the runner to within 1% — the `Integration Tests` job measured **60.9s and 60.6s** on the
+two `main` runs either side of this change, against 51.3s here. On the runner it went **60.9s →
+33.4s**, same `311 passed, 1 skipped`. The saving is the same ~27s either way; only the baseline
+differs, so take a before *and* an after on whichever box you use and never compare across two.
+
 Instrumenting `raise_or_lock` across the whole lane found **two** real acquires, both from that one
 file on that one key, and none anywhere else — so this was the only collision, and after the patch
 the lane takes no celery-once lock at all. The shape to watch for is two tests in **one file**,
