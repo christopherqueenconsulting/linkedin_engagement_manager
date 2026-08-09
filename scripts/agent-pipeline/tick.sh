@@ -752,6 +752,7 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
 # MERGE_QUEUE_STUCK_TICKS times is reported as stuck however the entry looks right now.
 MERGE_STALE_TICKS="${MERGE_STALE_TICKS:-3}"     # consecutive stalled ticks before forcing a re-enqueue
 MERGE_QUEUE_STUCK_TICKS="${MERGE_QUEUE_STUCK_TICKS:-12}"  # merge requests one head may burn (~1h at 5-min ticks)
+MERGE_STALL_CYCLES_MAX="${MERGE_STALL_CYCLES_MAX:-2}"  # disable-auto recovery cycles one head gets before parking
 MERGE_VERIFY_TRIES="${MERGE_VERIFY_TRIES:-5}"   # state reads after asking for the merge
 MERGE_VERIFY_SLEEP="${MERGE_VERIFY_SLEEP:-5}"   # seconds between them
 
@@ -806,16 +807,119 @@ merge_comment_once() {  # $1=pr $2=head sha $3=body -> 0 when it commented, 1 wh
   return 0
 }
 
+# Stall-recovery cycles: how many times the disable-auto + re-enqueue recovery has fired for this
+# PR. One recovery is the automated fix that worked for #1067; a SECOND exhaustion at the same
+# head means the recovery does not work here, and repeating it forever is the #1120 pattern.
+# HEAD-SCOPED, exactly like the queue budget: a push is new code and earns a fresh recovery
+# allowance. A lifetime counter would park a PR on its FIRST stall after a fix landed, which is
+# the opposite of what "the recovery does not work HERE" means. An old plain-integer record from
+# before this change has no sha, so it reads as 0 — a stale file can only be lenient, never park.
+merge_stall_cycle_count() {  # $1=pr $2=head sha -> recovery cycles already spent at this head
+  local rec sha n
+  rec="$(cat "$BASE/state/mergestallcycle-$1.count" 2>/dev/null)"
+  sha="${rec%% *}"; n="${rec##* }"
+  [ -n "$sha" ] && [ "$sha" = "$2" ] || { echo 0; return 0; }
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  echo "$n"
+}
+merge_stall_cycle_bump()  { printf '%s %s\n' "$2" "$(( $(merge_stall_cycle_count "$1" "$2") + 1 ))" > "$BASE/state/mergestallcycle-$1.count"; }
+merge_stall_cycle_clear() { rm -f "$BASE/state/mergestallcycle-$1.count"; }
+
+# Best-effort link to the failing merge_group run: the queue builds on a temporary
+# gh-readonly-queue/main/pr-<PR>-* branch, so recent merge_group runs carrying "pr-<PR>-" in their
+# head branch are this PR's queue builds. Unreadable -> empty, and the comment says where to look.
+failing_merge_group_run() {  # $1=pr -> URL or ""
+  gh run list --repo "$SLUG" --event merge_group --limit 15 \
+    --json url,conclusion,headBranch \
+    --jq "[.[] | select(.headBranch | contains(\"pr-$1-\")) | select(.conclusion==\"failure\")] | (first // {}) | .url // empty" \
+    2>/dev/null
+}
+
+# One park comment per head, on its OWN key file — mergecomment-<pr>.sha already holds this head's
+# "merging" comment key, so sharing it would silently swallow the Decision Comment.
+merge_park_once() {  # $1=pr $2=head sha $3=body
+  local P="$1" sha="$2" body="$3" f="$BASE/state/mergepark-$1.sha"
+  [ "$(cat "$f" 2>/dev/null)" = "$sha" ] && return 1
+  printf '%s\n' "$sha" > "$f"
+  [ "$DRY_RUN" = "1" ] || gh pr comment "$P" --repo "$SLUG" --body "$body" >/dev/null 2>&1
+  return 0
+}
+
+# PARK a PR the merge queue keeps refusing. Detection without a state change was the #1120 failure
+# (45 requests) and #1067 before it (154): the PR stayed agent:working, so every next tick re-fed
+# it to the queue and the lane starved everything behind it. Parking makes the detected state REAL:
+#   draft FIRST (a draft cannot hold auto-merge or a queue entry, so a concurrently-running tick
+#   that re-arms fails closed instead of undoing the park), then disable auto-merge, then the
+#   labels, then ONE Decision Comment per head with the failing merge_group run when readable.
+# The owner's reply routes through the normal answer lane (route_owner_answer), which un-drafts,
+# clears the merge budgets, and hands the PR to the revise lane.
+park_merge_stuck() {  # $1=pr $2=head sha $3=one-line reason for the log/comment
+  local P="$1" SHA="$2" reason="$3" ISS runlink asked
+  asked="$(merge_attempt_count "$P" "$SHA")"
+  log "MERGE: PARKING PR #$P ($reason) — drafting, disabling auto-merge, labeling needs-human. The owner's answer (or a new head after a fix) un-parks it."
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would park PR #$P ($reason)."; return 0; fi
+  gh pr ready "$P" --repo "$SLUG" --undo >/dev/null 2>&1
+  gh pr merge "$P" --repo "$SLUG" --disable-auto >/dev/null 2>&1
+  gh pr edit "$P" --repo "$SLUG" \
+    --add-label "needs-human" --add-label "agent:blocked" --add-label "agent:merge-parked" \
+    --remove-label "agent:working" >/dev/null 2>&1
+  gh pr edit "$P" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+  ISS="$(issue_for_pr "$P")"
+  # Mirror the FULL hold, not just needs-human: route_owner_answer un-parks by adding agent:working
+  # and removing needs-human + agent:blocked, so an issue left reading agent:working while its PR is
+  # parked makes the two threads disagree about whether this work is in flight.
+  [ -n "$ISS" ] && gh issue edit "$ISS" --repo "$SLUG" \
+    --add-label "needs-human" --add-label "agent:blocked" \
+    --remove-label "agent:working" >/dev/null 2>&1
+  runlink="$(failing_merge_group_run "$P")"
+  merge_park_once "$P" "$SHA" "🛑 **Human decision needed** — the merge queue keeps rejecting this PR.
+
+The queue has taken and dropped head \`${SHA:0:8}\` **$asked** times ($reason). A \`merge_group\` check is failing, so re-enqueueing cannot help — the lane has PARKED this PR (draft + auto-merge disabled) instead of burning more attempts.
+
+Failing merge_group run: ${runlink:-not readable — check the merge_group runs on the Actions tab}
+
+### 1. How should we proceed?
+- **A. Re-enqueue this head as-is** — I fixed the failing merge_group check.
+- **B. Rebase onto latest main and re-run the gate** — a queue failure at one head usually means main moved underneath it.  ✅ *recommended*
+- **C. Close this PR** — I'll handle it manually.
+
+**My recommendation: \`1B\`.** A merge_group failure at a head that main has moved past clears on a rebase far more often than it clears on a retry.
+
+Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation. (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+  # `escalated`, not `dispatched` — the vocabulary the other human handoffs already use
+  # (depfix/docfix/phasefix/fix_exhausted). A park that reported itself as a dispatch would show up
+  # in the tick_outcome dashboards as productive work, which is exactly the "why nobody noticed"
+  # half of #1082 and #1120.
+  TICK_OUTCOME="escalated"; TICK_REASON="merge_parked"; TICK_PR="$P"
+}
+
 merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely queued
   local P="$1" BODY="$2" SHA PST QST CLS tries stall asked
-  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would merge PR #$P."; return 0; fi
   SHA="$(gh pr view "$P" --repo "$SLUG" --json headRefOid --jq .headRefOid 2>/dev/null)"
   # An unreadable head still needs a stable comment key, or "once per attempt" becomes "every tick".
   [ -z "$SHA" ] && SHA="unknown"
 
+  # BUDGET BEFORE ENQUEUE. The old order re-armed auto-merge first and checked the budget after,
+  # so a head past its budget was re-fed to the queue anyway — exceeding MERGE_QUEUE_STUCK_TICKS
+  # never actually stopped the re-enqueue (#1120 reached 45 requests against a budget of 12).
+  # This check sits ABOVE the DRY_RUN return (the SHA fetch is a read; park_merge_stuck is
+  # DRY_RUN-guarded itself) so a dry tick against a synthetic budget file proves the park path.
+  if [ "$(merge_attempt_count "$P" "$SHA")" -ge "$MERGE_QUEUE_STUCK_TICKS" ]; then
+    park_merge_stuck "$P" "$SHA" "queue budget spent: $(merge_attempt_count "$P" "$SHA") requests at this head"
+    return 1
+  fi
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would merge PR #$P."; return 0; fi
+
   stall="$(merge_stall_count "$P")"
   if [ "$stall" -ge "$MERGE_STALE_TICKS" ]; then
-    log "MERGE: PR #$P — stalled for $stall consecutive tick(s) with no live merge-queue entry; clearing the dangling auto-merge/queue state (--disable-auto) before re-enqueueing."
+    # The recovery gets a budget of its own: cycle 1 is the automated fix that worked for #1067;
+    # a repeat exhaustion at the same head means the recovery does not work HERE — park, don't loop.
+    merge_stall_cycle_bump "$P" "$SHA"
+    if [ "$(merge_stall_cycle_count "$P" "$SHA")" -gt "$MERGE_STALL_CYCLES_MAX" ]; then
+      park_merge_stuck "$P" "$SHA" "auto-merge keeps arming without a queue entry after $(merge_stall_cycle_count "$P" "$SHA") disable-auto recovery cycles"
+      return 1
+    fi
+    log "MERGE: PR #$P — stalled for $stall consecutive tick(s) with no live merge-queue entry; clearing the dangling auto-merge/queue state (--disable-auto) before re-enqueueing (recovery cycle $(merge_stall_cycle_count "$P" "$SHA")/$MERGE_STALL_CYCLES_MAX)."
     gh pr merge "$P" --repo "$SLUG" --disable-auto >/dev/null 2>&1
     merge_stall_clear "$P"
   fi
@@ -842,7 +946,8 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
 
   case "$CLS" in
     merged)
-      merge_stall_clear "$P"; merge_attempt_clear "$P"
+      merge_stall_clear "$P"; merge_attempt_clear "$P"; merge_stall_cycle_clear "$P"
+      rm -f "$BASE/state/mergepark-$P.sha"
       log "MERGE: PR #$P is MERGED."
       merge_comment_once "$P" "$SHA" "$BODY"
       return 0 ;;
@@ -850,21 +955,21 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
       merge_stall_clear "$P"
       # An entry that is live NOW proves this request was taken; it does NOT prove the queue is
       # making progress. #1067 was re-enqueued and evicted 154 times at this exact cadence, and
-      # every single read looked like this line. Spending the budget is the tell.
+      # every single read looked like this line. Spending the budget is the tell — and spending
+      # it now PARKS the PR instead of logging and retrying next tick (the #1120 gap).
       if [ "$asked" -ge "$MERGE_QUEUE_STUCK_TICKS" ]; then
-        log "MERGE: PR #$P is STUCK IN THE MERGE QUEUE — $asked merge requests at head ${SHA:0:8} and still not merged (entry: ${QST:-unknown}). The queue keeps taking it and dropping it: read the merge_group check runs, this will not clear itself."
-        TICK_OUTCOME="failed"; TICK_REASON="merge_queue_stuck"
-        merge_comment_once "$P" "$SHA" "$BODY"
+        park_merge_stuck "$P" "$SHA" "queue took and dropped this head $asked times (entry: ${QST:-unknown})"
         return 1
       fi
       log "MERGE: PR #$P is WAITING IN THE MERGE QUEUE (entry: ${QST:-unknown}, request $asked/$MERGE_QUEUE_STUCK_TICKS at this head) — the queue owns it now, no further action this tick."
       merge_comment_once "$P" "$SHA" "$BODY"
       return 0 ;;
     unmergeable)
-      # GitHub has already judged this head: the merge-group run failed. Re-requesting cannot help.
+      # GitHub has already judged this head: the merge-group run failed. Re-requesting cannot
+      # help, so this parks IMMEDIATELY — the code always said "the lane will not re-request its
+      # way out of this", and now the state changes to match the words.
       merge_stall_clear "$P"
-      log "MERGE: PR #$P — its merge-queue entry is UNMERGEABLE (request $asked at head ${SHA:0:8}): a merge_group check is failing, so GitHub will evict it. Fix the failing check; the lane will not re-request its way out of this."
-      TICK_OUTCOME="failed"; TICK_REASON="merge_queue_unmergeable"
+      park_merge_stuck "$P" "$SHA" "merge-queue entry UNMERGEABLE at request $asked — a merge_group check failed"
       return 1 ;;
     armed)
       # Auto-merge is set but nothing is queued yet. Normal for a few seconds — and also exactly
@@ -874,7 +979,8 @@ merge_pr() {  # $1=pr $2=comment body -> 0 when the merge landed or is genuinely
       merge_comment_once "$P" "$SHA" "$BODY"
       return 0 ;;
     closed)
-      merge_stall_clear "$P"; merge_attempt_clear "$P"
+      merge_stall_clear "$P"; merge_attempt_clear "$P"; merge_stall_cycle_clear "$P"
+      rm -f "$BASE/state/mergepark-$P.sha"
       log "MERGE: PR #$P is CLOSED without merging — not re-requesting."
       TICK_OUTCOME="skipped"; TICK_REASON="merge_pr_closed"
       return 1 ;;
@@ -1255,11 +1361,22 @@ route_owner_answer() {  # route_owner_answer pr|issue <number>
   if [ -n "$TPR" ]; then
     log "$KLBL #$NUM — owner answered Decision Comment ($VERDICT: '$ANS') — routing PR #$TPR to revise."
     if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would label PR #$TPR agent:revise${TISS:+ and issue #$TISS agent:working}."; else
+      # UN-DRAFT FIRST. Escalations (fix-exhausted, merge-park) convert the PR to a draft, and a
+      # draft can neither enter the merge queue nor hold auto-merge — #1236 sat "CLEAN with 21
+      # green checks" for hours because an earlier answer pass removed the labels but never ran
+      # `gh pr ready`, and nothing else ever does. Order matters (ready before labels): the
+      # moment labels flip the pipeline may act on the PR, and it must act on a READY one.
+      gh pr ready "$TPR" --repo "$SLUG" >/dev/null 2>&1
       gh pr edit "$TPR" --repo "$SLUG" --add-label agent:revise \
-        --remove-label needs-human --remove-label agent:blocked >/dev/null 2>&1
+        --remove-label needs-human --remove-label agent:blocked \
+        --remove-label agent:merge-parked >/dev/null 2>&1
       # Mirror onto the issue so it stops reading as parked while the PR is being revised.
       [ -n "$TISS" ] && gh issue edit "$TISS" --repo "$SLUG" --add-label agent:working \
         --remove-label needs-human --remove-label agent:blocked >/dev/null 2>&1
+      # The owner's answer is the statement "the world changed — try again": the merge budgets
+      # start fresh, or a merge-parked PR would re-park on its very next merge attempt.
+      merge_attempt_clear "$TPR"; merge_stall_clear "$TPR"; merge_stall_cycle_clear "$TPR"
+      rm -f "$BASE/state/mergepark-$TPR.sha"
     fi
   else
     # An issue still parked AFTER its PR merged must not go back on the queue — that redoes shipped
@@ -1323,13 +1440,21 @@ for MPR in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
   [ -z "$MBEST" ] && continue
   if [ "$(epoch "$MBEST")" -lt "$(epoch "$MHD")" ] \
      && [ "$(( $(date +%s) - $(epoch "$MHD") ))" -lt "${REVIEW_GRACE_SECONDS:-1200}" ]; then continue; fi
-  # Last gate before any merge: closing an issue must not drop a declared later phase.
-  phase_guard_ok "$MPR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$MPR"; exit 0; }
+  # Last gate before any merge: closing an issue must not drop a declared later phase. A guard
+  # park is a state change for THIS PR only — scan the next candidate instead of spending the
+  # whole tick on it (head-of-line: one held PR must never starve the green PRs behind it).
+  phase_guard_ok "$MPR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$MPR"; continue; }
+  # The merge lanes were the only PR-mutating lanes taking NO branch claim, so a concurrent slot
+  # (or, later, the v2 daemon mid-park) could re-arm auto-merge under them. Claimed = skip.
+  claim_branch "$MBR" || { log "fast path: PR #$MPR claimed by another slot — trying next."; continue; }
   log "MERGE-READY FAST PATH: PR #$MPR fully passes the gate — merging ahead of revise/fix work."
   TICK_OUTCOME="dispatched"; TICK_REASON="mode_merge_fastpath"; TICK_MODE="merge"; TICK_PR="$MPR"
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would fast-path merge #$MPR."; exit 0; fi
-  merge_pr "$MPR" "✅ CI green, review satisfied & all threads resolved — merging (fast path)."
-  exit 0
+  # rc=0: merged or genuinely queued — the queue owns it, this tick's work is done. rc=1: parked/
+  # closed/not-taken — NO progress is possible on this PR, so keep scanning instead of the old
+  # unconditional `exit 0` that burned 45 ticks in 6h re-polling #1120 while green PRs waited.
+  merge_pr "$MPR" "✅ CI green, review satisfied & all threads resolved — merging (fast path)." && exit 0
+  log "fast path: PR #$MPR made no merge progress — scanning the next candidate this same tick."
 done
 
 # ---- PHASEFIX LANE: the merge gate held a PR that closes a multi-phase issue with the remainder
@@ -1530,10 +1655,14 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=hold — waiting."
           continue ;;
         merge)
-          phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; exit 0; }
+          # Same two rules as the other merge sites: a held/parked PR yields to the next
+          # candidate rather than spending the tick, and the merge takes the branch claim.
+          phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; continue; }
+          claim_branch "$BRANCH" || { log "PR #$PR claimed by another slot — trying next."; continue; }
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=merge — merging with warning."
-          merge_pr "$PR" "⚠️ Merging with CI green but WITHOUT a review — Copilot never delivered and REVIEW_FALLBACK=merge."
-          exit 0 ;;
+          merge_pr "$PR" "⚠️ Merging with CI green but WITHOUT a review — Copilot never delivered and REVIEW_FALLBACK=merge." && exit 0
+          log "PR #$PR made no merge progress — scanning the next in-flight PR this same tick."
+          continue ;;
       esac
       # REVIEW_FALLBACK=claude falls through to the adversarial review below.
     fi
@@ -1554,12 +1683,14 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   fi
 
   # 5) Green + fresh review (Copilot or Claude marker) + all threads resolved -> merge.
-  # Same last gate as the fast path: never close an issue that still declares a declared later phase.
-  phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"; exit 0; }
+  # Same last gate as the fast path: never close an issue that still declares a declared later
+  # phase — and same head-of-line rule: a held or unmergeable PR yields to the next one.
+  phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"; continue; }
+  claim_branch "$BRANCH" || { log "PR #$PR claimed by another slot — trying next."; continue; }
   log "PR #$PR — merge gate satisfied. Requesting merge."
   TICK_OUTCOME="dispatched"; TICK_REASON="mode_merge"; TICK_MODE="merge"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
-  merge_pr "$PR" "✅ CI green, review satisfied & all threads resolved — merging."
-  exit 0
+  merge_pr "$PR" "✅ CI green, review satisfied & all threads resolved — merging." && exit 0
+  log "PR #$PR made no merge progress — scanning the next in-flight PR this same tick."
 done
 
 # ---- START NEXT ISSUE — gated on WIP so concurrency never outruns merge throughput: only start

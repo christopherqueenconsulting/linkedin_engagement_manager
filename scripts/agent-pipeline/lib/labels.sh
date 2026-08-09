@@ -72,6 +72,9 @@ AI_LABELS=(
   "agent:tier:2"
   "agent:tier:2-alt"
   "agent:tier:3"
+  # Applied by park_merge_stuck() when the merge queue keeps rejecting a head — same #1228
+  # trap: a missing label fails the WHOLE `gh pr edit`, which would undo the park's labeling.
+  "agent:merge-parked"
 )
 
 # Create any missing ai:* labels in the repo. Safe to run every tick (skips existing). One gh call
@@ -86,11 +89,15 @@ ensure_ai_labels() {
   existing=$'\n'"$existing"$'\n'
   for l in "${AI_LABELS[@]}"; do
     case "$existing" in *$'\n'"$l"$'\n'*) continue ;; esac
-    # Purple family (#7c5cff) for lane/tier labels, slate (#6b7280) for routed:* reasons.
-    local color="7c5cff"
-    case "$l" in ai:routed:*) color="6b7280" ;; esac
+    # Purple family (#7c5cff) for lane/tier labels, slate (#6b7280) for routed:* reasons,
+    # red (#d93f0b) for the merge-park hold.
+    local color="7c5cff" desc="AI lane/model tag (agent pipeline)"
+    case "$l" in
+      ai:routed:*) color="6b7280" ;;
+      agent:merge-parked) color="d93f0b"; desc="Merge queue kept rejecting this PR; parked pending a human decision" ;;
+    esac
     gh label create --repo "$SLUG" "$l" --color "$color" \
-      --description "AI lane/model tag (agent pipeline)" >/dev/null 2>&1 || true
+      --description "$desc" >/dev/null 2>&1 || true
   done
 }
 
