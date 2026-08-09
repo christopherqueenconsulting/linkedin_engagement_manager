@@ -204,10 +204,29 @@ tests could not have:
   `+9 skills` overflow chip.
 
 The company is not always on the role: when the roles are the `li`s, the grouping names the company
-once above them. `_company_from_ancestors` reads it from the container's leading lines, and a
-leading run that already contains a date range stops the walk — that run belongs to the previous
-role, not to a company header. A header without a total-duration line (a bare "Experience" heading)
-is never a company.
+once above them. `_company_from_ancestors` reads it from the container's leading lines. A header
+without a total-duration line (a bare "Experience" heading) is never a company.
+
+**Which group a role belongs to is decided POSITIONALLY, against the last date line (#1096).** The
+2026-08-07 re-probe found the flat shape — 8 `main li` siblings, `main div[role='list'] li` = 0, the
+company header a run of divs *beside* the `<ul>` rather than one of the `li`s — and 7 of the 8
+entities came back with `company_name: ""`, because the walk stopped at the first dated leading run
+(role #2's leading run is role #1, which is dated). `_company_for_leading` splits the leading lines
+on their date lines instead and reads the runs between:
+
+- a company header in the run **after the last date line** starts a NEW group — company B's roles
+  must never inherit company A, which is the failure #970 exists to kill;
+- **no** header since the last role means this role is that role's sibling, so the group's own
+  header still applies. Requiring that run to be empty would blank every role whose predecessor
+  carries a description — i.e. the live page itself;
+- nothing header-shaped anywhere leaves the company blank. A blank is honest; a guessed company is
+  the confidently-wrong row.
+
+The residual risk is a multi-role company header rendered with no total-duration line: it would read
+as "no header" and its roles would inherit the company above. LinkedIn always renders the total for
+a grouped company, and a role that names its own company on a subtitle line never reaches this walk
+at all. `--profile-experiences` reports `experiences_without_company` so the next drift is visible
+in the JSON.
 
 ## The degree badge is a leaf node's TEXT, never a class
 

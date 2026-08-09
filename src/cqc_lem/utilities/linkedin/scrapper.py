@@ -810,13 +810,69 @@ def _company_header(lines: List[str]) -> str:
     return _company_from_subtitle(lines[0])
 
 
+def _date_free_runs(lines: List[str]) -> List[List[str]]:
+    """`lines` split on its date lines — one run per gap, in page order, empty runs kept.
+
+    A date line is the one reliable role boundary, so the runs between them are exactly the places a
+    company header can sit. The last run is always the text since the most recent role began.
+    """
+    runs: List[List[str]] = [[]]
+    for line in lines:
+        if _is_date_line(line):
+            runs.append([])
+        else:
+            runs[-1].append(line)
+    return runs
+
+
+def _header_in_run(run: List[str]) -> str:
+    """The company named by a header ANYWHERE inside one date-free run — the LAST one wins.
+
+    `_company_header` reads a run that STARTS at the header, but a run cut out of a page starts
+    wherever the previous role ended, so every suffix is tried. Scanning from the bottom returns the
+    header nearest the role below it, which is the one that groups it.
+    """
+    for start in range(len(run) - 1, -1, -1):
+        company = _company_header(run[start:])
+        if company:
+            return company
+    return ""
+
+
+def _company_for_leading(leading: List[str]) -> str:
+    """The company that groups the role whose own lines begin right after `leading`.
+
+    The rule is positional, because on the flat live shape (#1096) every role is a bare `li` sibling
+    and the only thing distinguishing "still company A" from "company B starts here" is WHERE the
+    header sits relative to the last date line:
+
+    - A header in the run AFTER the last date line starts a NEW group — company B's roles must never
+      inherit company A, which is the failure #970 exists to kill.
+    - No header since the last role means this role is that role's sibling, so the group's own header
+      (the last one above it) still applies. Requiring that run to be EMPTY — the shape #1096 was
+      reproduced from — would blank every role whose predecessor carries a description, which is the
+      live page itself.
+    - Nothing header-shaped anywhere leaves the company blank. A blank is the safe answer.
+    """
+    runs = _date_free_runs(leading)
+    company = _header_in_run(runs[-1])
+    if company:
+        return company
+    for run in reversed(runs[:-1]):
+        company = _header_in_run(run)
+        if company:
+            return company
+    return ""
+
+
 def _company_from_ancestors(node: PageElement, lines: List[str]) -> str:
     """The company a role belongs to when the role's OWN lines never name it.
 
     The grouped shape puts the company once, above its roles. When the ladder selects the ROLE nodes
     (on the live page they are the `li`s), that name is only in an ancestor's leading lines — the
-    text above this role's first line. A leading run that already contains a date range belongs to a
-    previous role, not to a company header, so the walk stops rather than guessing.
+    text above this role's first line. The nearest ancestor holding a header wins; one that holds
+    none is climbed past, because on the live page the roles' shared `<ul>` carries no company at all
+    and the header is a sibling of that list.
     """
     if not lines:
         return ""
@@ -828,15 +884,9 @@ def _company_from_ancestors(node: PageElement, lines: List[str]) -> str:
         ancestor_lines = visible_lines(ancestor)
         if first not in ancestor_lines:
             continue
-        leading = ancestor_lines[:ancestor_lines.index(first)]
-        if _has_date_range(leading):
-            break
-        for candidate in reversed(leading):
-            if _is_qualifier_line(candidate) or candidate.lower() in _SECTION_TITLE_LINES:
-                continue
-            company = _company_from_subtitle(candidate)
-            if company:
-                return company
+        company = _company_for_leading(ancestor_lines[:ancestor_lines.index(first)])
+        if company:
+            return company
     return ""
 
 

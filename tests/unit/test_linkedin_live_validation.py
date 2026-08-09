@@ -2279,6 +2279,55 @@ class TestProfileExperiencesProbe:
         driver.get.assert_not_called()
         assert reading["state"] == llv.STATE_UNKNOWN
 
+    def test_company_attribution_is_counted_and_named(self):
+        """#1096 shipped as a clean run: 8 entities parsed, 7 companyless, and the JSON was silent.
+
+        The count and the titles behind it are what make the next drift diagnosable.
+        """
+        driver = MagicMock()
+        driver.page_source = (
+            "<html><body><main><ul>"
+            "<li><div>Consultant</div><div>Jan 2015 - Dec 2016 · 2 yrs</div></li>"
+            "<li><div>Advisor</div><div>Jan 2017 - Dec 2018 · 2 yrs</div></li>"
+            "</ul></main></body></html>")
+        driver.current_url = "https://www.linkedin.com/in/someone/details/experience/"
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        assert reading["experiences_without_company"] == 2
+        assert reading["companyless_titles"] == ["Consultant", "Advisor"]
+        assert "empty company_name" in reading["verdict"]
+
+    def test_a_fully_attributed_page_says_so(self):
+        driver = self._page(["Senior Engineer", "Acme Corp · Full-time",
+                             "Jan 2020 - Present · 5 yrs 2 mos"])
+
+        reading = llv.probe_profile_experiences(driver, "https://www.linkedin.com/in/someone",
+                                                sleep=lambda s: None)
+
+        assert reading["experiences_without_company"] == 0
+        assert "all 1 carry a company_name" in reading["verdict"]
+
+    def test_roles_parsed_with_no_company_at_all_grade_drift(self):
+        """The roles are there and the grouping above them is not being read.
+
+        That is drift, not a profile that lists no experience.
+        """
+        state = llv.profile_experiences_state(
+            {"experiences": [{"company_name": "", "positions": [{"title": "Advisor"}]}],
+             "page_dated_lines": 2})
+
+        assert state == llv.STATE_DRIFT
+
+    def test_one_unresolvable_company_beside_attributed_ones_is_not_drift(self):
+        """A blank is the honest answer for an entry nothing groups; filing it weekly is noise."""
+        state = llv.profile_experiences_state(
+            {"experiences": [{"company_name": "Acme Corp"}, {"company_name": ""}],
+             "page_dated_lines": 2})
+
+        assert state == llv.STATE_OK
+
     def test_profile_experiences_alone_is_enough_to_probe(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
