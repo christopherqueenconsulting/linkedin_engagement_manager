@@ -904,6 +904,47 @@ class TestTrackCommentOutcome:
         assert mock_ph.capture.call_args[1]["properties"]["status"] is None
 
 
+class TestTrackSelectorEvidence:
+    """Issue #1117: the DOM sample a re-grounding needs, at a level prod actually keeps."""
+
+    def test_emits_the_sample(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_selector_evidence
+            track_selector_evidence("comment_sort_control",
+                                    [{"tag": "button", "text": "Most relevant"}],
+                                    user_id=4, post_url="https://post")
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "sdui_selector_evidence" and kwargs["distinct_id"] == "4"
+        props = kwargs["properties"]
+        assert props["surface"] == "comment_sort_control" and props["candidate_count"] == 1
+        assert props["candidates"][0]["text"] == "Most relevant"
+        assert props["post_url"] == "https://post"
+
+    def test_an_empty_sample_is_still_emitted(self):
+        # A scan that described nothing is the reading that says the capture is blind — suppressing
+        # it is how a rotated surface reads as un-drifted.
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_selector_evidence
+            track_selector_evidence("comment_sort_control", None)
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["candidates"] == [] and props["candidate_count"] == 0
+        assert mock_ph.capture.call_args[1]["distinct_id"] == "system"
+
+    def test_the_sample_is_capped(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import (
+                _SELECTOR_EVIDENCE_MAX_CANDIDATES,
+                track_selector_evidence,
+            )
+            track_selector_evidence("comment_sort_control",
+                                    [{"tag": "div", "i": i} for i in range(40)])
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["candidate_count"] == _SELECTOR_EVIDENCE_MAX_CANDIDATES
+
+
 class TestTrackGoldenHourReport:
     """Issue #622: one event per reply sweep and per second wave, so the #401 amplifier's silence
     is a query instead of a log grep.

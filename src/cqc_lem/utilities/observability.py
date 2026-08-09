@@ -986,6 +986,38 @@ def track_comment_outcome(
     )
 
 
+# A DOM sample is evidence, not a metric: enough rows to recognise a shape, capped so one rotated
+# surface cannot post a page's worth of markup per reading.
+_SELECTOR_EVIDENCE_MAX_CANDIDATES = 8
+
+
+def track_selector_evidence(surface: str, candidates: Optional[list] = None,
+                            user_id: Optional[int] = None, **extra) -> None:
+    """Emit ONE bounded DOM sample for a Selenium locator chain that resolved nothing (issue #1117).
+
+    Re-grounding a rotated LinkedIn surface needs the page's own shape, and a log line cannot carry
+    it to anyone: prod runs `LOG_LEVEL=INFO` with `POSTHOG_LOG_LEVEL=WARNING`, so a DEBUG capture is
+    dropped before it leaves the worker, and raising the level to be seen would file a grouped
+    `$exception` for a page we are only trying to read. An event is the level-independent product,
+    and it is queryable next to the reading the miss starved (`comment_outcome`).
+
+    An EMPTY `candidates` list is still emitted: "the scan found nothing describable" is the reading
+    that says the capture itself is blind, and suppressing it is how a surface looks un-drifted.
+    """
+    candidates = list(candidates or [])[:_SELECTOR_EVIDENCE_MAX_CANDIDATES]
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="sdui_selector_evidence",
+        properties={
+            "surface": surface,
+            "user_id": user_id,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+            **extra,
+        },
+    )
+
+
 def track_suppression_check(user_id: Optional[int], verdict: Optional[dict] = None,
                             paused: bool = False, **extra) -> None:
     """Emit one daily suppression-tripwire reading (issue #629). Every check is emitted, not just
