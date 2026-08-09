@@ -341,3 +341,37 @@ and a comment explains why, rather than cycling forever on whatever keeps killin
 | (repo) `docker-compose.yml` | LiteLLM gunicorn `--num_workers` + `deploy.resources` limits |
 | (repo) `docker-compose.prod.yml` | LiteLLM `127.0.0.1:4000:4000` loopback publish + CPU/mem limits |
 | `/opt/lem/.litellm/config.yaml`, `/opt/lem/docker-compose*.yml` | same edits applied to prod (additive; must also land via PR→release or the next release reverts them) |
+## Subagents and the lane: never pin a model
+
+An agent definition (`.claude/agents/*.md`) must NOT carry a `model:` key, and no call site should
+request one. This is a correctness rule, not a style preference.
+
+**Why.** The Ollama lane is the *same* `claude` CLI with `ANTHROPIC_BASE_URL` pointed at LiteLLM and
+`--model lem-agent-tierN`. LiteLLM serves the `lem-*` aliases only — there is no `opus`, `sonnet` or
+`haiku` in `.litellm/config.yaml`. A subagent **inherits the parent's base URL**, and frontmatter
+`model:` **overrides** the CLI `--model`. So a pinned Anthropic model name under that lane is a
+request to LiteLLM for something it does not serve.
+
+**Measured**, spawning a subagent with `model: opus` from a session running `--model lem-agent-tier2`:
+
+```
+SUBAGENT=pinned RC=0 ELAPSED_SECONDS=7
+> Agent terminated early due to an API error: API Error: 400
+  {'error': 'anthropic_messages: Invalid model name passed in model=claude-opus-5'}
+```
+
+Four things at once: the frontmatter won, the base URL was inherited, LiteLLM answered **400 in 7
+seconds** (not a hang, no fallback), and **the parent process still exited rc=0**. A control
+subagent with no `model:` key inherited the tier and ran normally.
+
+**Why rc=0 is the real hazard.** `lib/run_lane.sh` branches on the exit code alone. A 400'd subagent
+therefore records the lane healthy, emits `ai_call_completed` and `issue_completed`, and applies the
+`ai:*` labels — a run whose work never happened, indistinguishable from one that shipped. That is
+the same failure shape this document already records twice: silence looking identical to done.
+
+**What to pin instead.** Tools, and `--effort`. Effort is safe on both lanes because LiteLLM is
+configured with `drop_params: true`, so it discards a parameter it does not understand rather than
+refusing the request.
+
+The top-level path is already safe: `run_lane.sh` discards the Claude model hint when the lane is
+`ollama`. The subagent path is the only exposure, and it is closed by this rule rather than by code.

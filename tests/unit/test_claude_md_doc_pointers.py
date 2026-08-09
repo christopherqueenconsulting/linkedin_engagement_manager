@@ -15,8 +15,11 @@ pytestmark = pytest.mark.unit
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CLAUDE_MD = _ROOT / "CLAUDE.md"
 
-# Matches `docs/foo.md` and `docs/model-benchmarks/README.md`, inside backticks or bare prose.
-_DOC_REF = re.compile(r"docs/[A-Za-z0-9._/-]+\.md")
+# Matches `docs/foo.md`, `docs/model-benchmarks/README.md`, and a docs/ directory that is NOT at the
+# repo root — `scripts/agent-pipeline/docs/agent-pipeline-routing.md`. Without the optional prefix
+# this captured only the `docs/...` tail of such a path and then resolved it against the root, so a
+# correct pointer to a real file failed as "missing".
+_DOC_REF = re.compile(r"(?:[A-Za-z0-9._-]+/)*docs/[A-Za-z0-9._/-]+\.md")
 
 
 def _referenced_docs() -> set[str]:

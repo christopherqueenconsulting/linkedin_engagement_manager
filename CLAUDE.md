@@ -341,12 +341,16 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
   shared archive volume, a loop-guarded one-shot reload on import failure, and `/api/app-info`
   polling that prompts rather than reloads.
 ## Git Safety & Multi-Agent Concurrency Rules
-- **Every agent gets its OWN worktree — always.** Spawn with `isolation: "worktree"`; the
-  `.claude/agents/*.md` definitions declare it too, but pass it explicitly rather than trusting the
-  frontmatter. Agents launched into the shared checkout WILL clobber each other: three once did, and
-  one switched the branch under the others inside a minute. `tick.sh` enforces the same rule for the
-  pipeline in `lib/run_lane.sh` — note `cd ""` SUCCEEDS in bash, so an empty worktree path silently
-  runs the agent in the shared tree rather than failing.
+- **Every agent gets its OWN worktree — always.** `isolation: "worktree"` on the Agent call;
+  `.claude/agents/*.md` frontmatter also carries it (measured). Agents sharing a checkout WILL
+  clobber each other — three once did, one switching the branch under the others inside a minute.
+  `lib/run_lane.sh` enforces it for the pipeline: `cd ""` SUCCEEDS in bash, so an empty worktree
+  path silently runs the agent in the shared tree instead of failing.
+- **NEVER put `model:` in an agent definition.** It overrides the CLI `--model`, and a subagent
+  inherits the parent's `ANTHROPIC_BASE_URL` — so on the Ollama lane (~47% of pipeline dispatches,
+  LiteLLM serves only `lem-*`) a pinned `opus` 400s in 7s **while the parent exits rc=0**, which
+  `run_lane` records as a healthy run. Pin tools and `--effort`, never the model:
+  `scripts/agent-pipeline/docs/agent-pipeline-routing.md`.
 - **One venv, many worktrees:** the editable-install `.pth` is mutable and the last `poetry install`
   anywhere wins, so `poetry run python -c "import cqc_lem…"` may read a DIFFERENT worktree. Use
   `PYTHONPATH=src` for standalone scripts and print `__file__` to prove which tree you loaded.
