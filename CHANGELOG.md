@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.137.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.137.0...v0.137.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **ci:** the CodeQL PR gate was passing vacuously on every pull request ([#1173](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1173)) ([3c9b2d7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3c9b2d74786e5900ca49035cbf07e8e2641bc0f7))
+* **logging:** correct the levels the myprint shim was hiding ([#1184](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1184)) ([#1186](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1186)) ([1c06e40](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1c06e40931f15265ee2c8bfed0a1d438f743e747))
+
+
+### Performance Improvements
+
+* **ci:** run the integration lane in parallel, one database per worker ([#1187](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1187)) ([82231ff](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/82231ff051f3b5ed9c383977c5a1754fb93a395e)), closes [#1185](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1185)
+
+
+### Documentation
+
+* trim CLAUDE.md back to a map (closes [#1150](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1150)) ([#1180](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1180)) ([f98e53e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f98e53ecd88e79058ca9c24ca37ae224be4d4170))
+
 ## [0.137.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.136.1...v0.137.0) (2026-08-08)
 
 
