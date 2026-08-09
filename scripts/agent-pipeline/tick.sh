@@ -43,8 +43,16 @@ REQUIRED_CHECKS_JQ='select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Te
 # Owner-tunable knobs (edit $BASE/config.env; missing file = these defaults).
 #   MAX_AGENTS         hard ceiling on concurrent Claude runs (slots), whatever the backlog
 #   SCALE_PER_ISSUES   +1 slot per this many agent:ready issues (1 + N/SCALE, capped)
-#   BUSY_HOURS_UTC     e.g. "13-23": during these UTC hours force 1 slot so pipeline agents
-#                      don't compete with the owner's interactive Claude usage on other projects
+#   BUSY_HOURS         e.g. "10-17": during these hours the cap drops to BUSY_MAX_AGENTS so
+#                      pipeline agents don't compete with the owner's interactive Claude usage
+#   BUSY_TZ            IANA zone the BUSY_HOURS are expressed in, e.g. "America/New_York".
+#                      Empty = UTC. Use a ZONE, not a fixed UTC offset: a hard-coded UTC range
+#                      silently slides by an hour at each DST change, so a window set in summer
+#                      covers the wrong hours all winter.
+#   BUSY_DAYS          e.g. "1-5" for Mon-Fri (date +%u: 1=Mon .. 7=Sun). Empty = every day.
+#   BUSY_MAX_AGENTS    slots allowed during the busy window (default 1 = the old behaviour)
+#   BUSY_HOURS_UTC     DEPRECATED alias for BUSY_HOURS with BUSY_TZ=UTC. Honoured so an
+#                      un-migrated config.env keeps its guard instead of silently losing it.
 #   USAGE_PAUSE_MINUTES how long to self-pause when a run hits a usage/rate limit
 #   PHASE_GUARD        1 (default) = hold a merge that would close an issue with a declared,
 #                      untracked later phase; 0 = off (see "Phase guard" below)
@@ -56,6 +64,10 @@ REQUIRED_CHECKS_JQ='select(.n=="Unit Tests (Python 3.12)" or .n=="Integration Te
 MAX_AGENTS="${MAX_AGENTS:-3}"
 SCALE_PER_ISSUES="${SCALE_PER_ISSUES:-10}"
 BUSY_HOURS_UTC="${BUSY_HOURS_UTC:-}"
+BUSY_HOURS="${BUSY_HOURS:-$BUSY_HOURS_UTC}"   # new name; falls back to the deprecated one
+BUSY_TZ="${BUSY_TZ:-UTC}"                     # so a bare BUSY_HOURS_UTC keeps meaning UTC
+BUSY_DAYS="${BUSY_DAYS:-}"
+BUSY_MAX_AGENTS="${BUSY_MAX_AGENTS:-1}"
 USAGE_PAUSE_MINUTES="${USAGE_PAUSE_MINUTES:-60}"
 
 export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
@@ -124,11 +136,25 @@ READY_COUNT="$(gh issue list --repo "$SLUG" --state open --limit 100 --label "ag
                  --json number --jq 'length' 2>/dev/null || echo 0)"
 CAP=$(( 1 + READY_COUNT / SCALE_PER_ISSUES ))
 [ "$CAP" -gt "$MAX_AGENTS" ] && CAP="$MAX_AGENTS"
-if [ -n "$BUSY_HOURS_UTC" ]; then
-  H=$((10#$(date -u +%H))); B_START="${BUSY_HOURS_UTC%-*}"; B_END="${BUSY_HOURS_UTC#*-}"
+if [ -n "$BUSY_HOURS" ]; then
+  # Read the clock in BUSY_TZ, not UTC. `date` resolves the zone's DST rules for us, so a window
+  # written as local wall-clock hours stays on those hours year-round instead of sliding by one.
+  H=$((10#$(TZ="$BUSY_TZ" date +%H))); DOW=$(TZ="$BUSY_TZ" date +%u)
+  B_START="${BUSY_HOURS%-*}"; B_END="${BUSY_HOURS#*-}"
+  IN_HOURS=0
   if { [ "$B_START" -le "$B_END" ] && [ "$H" -ge "$B_START" ] && [ "$H" -lt "$B_END" ]; } \
      || { [ "$B_START" -gt "$B_END" ] && { [ "$H" -ge "$B_START" ] || [ "$H" -lt "$B_END" ]; }; }; then
-    CAP=1
+    IN_HOURS=1
+  fi
+  # Day filter, e.g. "1-5" for Mon-Fri. Empty means every day, which is the pre-2026-08 behaviour.
+  IN_DAYS=1
+  if [ -n "$BUSY_DAYS" ]; then
+    D_START="${BUSY_DAYS%-*}"; D_END="${BUSY_DAYS#*-}"
+    { [ "$DOW" -ge "$D_START" ] && [ "$DOW" -le "$D_END" ]; } || IN_DAYS=0
+  fi
+  if [ "$IN_HOURS" = 1 ] && [ "$IN_DAYS" = 1 ]; then
+    [ "$CAP" -gt "$BUSY_MAX_AGENTS" ] && CAP="$BUSY_MAX_AGENTS"
+    log "busy window (${BUSY_HOURS} ${BUSY_TZ}${BUSY_DAYS:+, days $BUSY_DAYS}) — cap $CAP"
   fi
 fi
 # Degraded mode (both lanes <=50% capacity, set by capacity_preflight): force low concurrency so
