@@ -54,7 +54,7 @@ Mapped in `.litellm/config.yaml` as `lem-agent-*` aliases (reusing `OLLAMA_CLOUD
 | Alias | Cloud model | Use |
 |---|---|---|
 | `lem-agent-tier1` | `glm-5.2` | hardest long-horizon / architecture / multi-step (opt-in via `agent:tier:1` — slow thinking model, intermittently times out) |
-| `lem-agent-tier2` | `kimi-k2.7-code` | **default** coding lane: patches, tests, multi-file edits |
+| `lem-agent-tier2` | `kimi-k2.7-code` | **default** coding lane: patches, tests, multi-file edits (`agent:tier:2` pins it, e.g. to hold a review off tier3) |
 | `lem-agent-tier2-alt` | `minimax-m3` | premium parallel / vision-capable alternate (opt-in via `agent:tier:2-alt`) |
 | `lem-agent-tier3` | `nemotron-3-super` | reviewer / reasoning lane (used for `MODE=selfreview`) or opt-in via `agent:tier:3` |
 
@@ -135,8 +135,11 @@ ai:routed:parallel | fallback | escalated | degraded
 ```
 
 Applied add-only to the issue (or PR when no issue) after each run. To force an Ollama tier on an
-issue, add `agent:tier:1` / `agent:tier:2-alt` / `agent:tier:3` (tier2 is the default; tier1 is
-opt-in only). To force a Claude model, the existing `agent:model:sonnet|haiku|opus` labels work.
+issue, add `agent:tier:1` / `agent:tier:2` / `agent:tier:2-alt` / `agent:tier:3` (tier2 is the
+default, and `agent:tier:2` PINS it — the label still wins over the `MODE=selfreview|review` tier3
+default; tier1 is opt-in only). To force a Claude model, the existing `agent:model:sonnet|haiku|opus`
+labels work. The whole `agent:tier:*` family is bootstrapped by `ensure_ai_labels()` — a label that
+does not exist makes `gh issue edit --add-label` fail the ENTIRE edit silently (#1228).
 
 ## Perplexity research MCP server
 

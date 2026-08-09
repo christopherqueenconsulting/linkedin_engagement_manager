@@ -10,6 +10,10 @@
 #                                    ai:ollama-cloud:<modelslug>
 #   ai:routed:parallel | ai:routed:fallback | ai:routed:escalated | ai:routed:degraded
 # Model slugs: glm-5.2, kimi-k2.7-code, minimax-m3, nemotron-3-super; claude: sonnet|haiku|opus.
+#
+# Owner-applied tier pins are also bootstrapped here because a missing label makes
+# `gh issue edit --add-label agent:tier:N` fail the whole edit silently (#1228).
+#   agent:tier:1 | agent:tier:2 | agent:tier:2-alt | agent:tier:3
 BASE="${BASE:-/home/lem/agent-pipeline}"
 SLUG="${SLUG:-christopherqueenconsulting/linkedin_engagement_manager}"
 
@@ -62,6 +66,12 @@ AI_LABELS=(
   "ai:routed:fallback"
   "ai:routed:escalated"
   "ai:routed:degraded"
+  # Owner-applied Ollama tier pins (#1228). These must exist before `gh issue edit` can
+  # apply them, otherwise the edit fails silently and the override never routes.
+  "agent:tier:1"
+  "agent:tier:2"
+  "agent:tier:2-alt"
+  "agent:tier:3"
 )
 
 # Create any missing ai:* labels in the repo. Safe to run every tick (skips existing). One gh call
@@ -69,8 +79,13 @@ AI_LABELS=(
 ensure_ai_labels() {
   local existing missing
   existing="$(gh label list --repo "$SLUG" --limit 200 --json name --jq '.[].name' 2>/dev/null || true)"
+  # Match WHOLE lines, not substrings: `agent:tier:2` is a prefix of `agent:tier:2-alt` (same for
+  # ai:ollama-cloud:tier2), so a substring test reports the shorter name as already present the
+  # moment the longer one exists — and it is then never created. That is exactly the silent
+  # missing-label trap #1228 is about, so the guard must not reintroduce it.
+  existing=$'\n'"$existing"$'\n'
   for l in "${AI_LABELS[@]}"; do
-    case "$existing" in *"$l"*) continue ;; esac
+    case "$existing" in *$'\n'"$l"$'\n'*) continue ;; esac
     # Purple family (#7c5cff) for lane/tier labels, slate (#6b7280) for routed:* reasons.
     local color="7c5cff"
     case "$l" in ai:routed:*) color="6b7280" ;; esac
