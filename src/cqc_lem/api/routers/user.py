@@ -385,8 +385,8 @@ _LEN_BUYER_STAGE = 32     # engagement_preferences.default_buyer_stage VARCHAR(3
 _VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")  # engagement_preferences.default_video_quality
 _LEN_LM_KEYWORD = 128     # lead_magnet_settings.keyword VARCHAR(128)
 _LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
-# _LEN_DM_TEMPLATE belongs to this block and lives in api/models.py: the /api/user router and this
-# module both read it in a pydantic class body, which binds at import time.
+# _LEN_DM_TEMPLATE belongs to this block and lives in api/models.py: this module and `main` both
+# read it in a pydantic class body, which binds at import time.
 _LEN_TARGET_PROFILE_URL = 512  # engagement_targets.profile_url VARCHAR(512)
 _LEN_TARGET_NAME = 255         # engagement_targets.name VARCHAR(255)
 _LEN_STORY_TITLE = 255         # story_bank.title VARCHAR(255)
@@ -3332,5 +3332,6 @@ def update_company_page_endpoint(request: LinkedInCompanyPageRequest) -> Respons
     if not update_company_linked_in_url_for_user(user_id, url):
         raise HTTPException(status_code=500, detail="Could not save company page")
     return ResponseModel(status_code=200, detail="Company page saved" if url else "Company page cleared")
+
 
 from cqc_lem.api import main as _main  # noqa: E402  — last; see the module docstring

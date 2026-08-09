@@ -60,8 +60,13 @@ def client():
 def _quiet_audit():
     """The audit row and the verified stamp are asserted where they matter; everywhere else they
     would just be two unmocked DB calls.
+
+    Silenced in BOTH modules that bind the audit function. A fixture names no route, so it covers
+    every route in the file — and since #1154 those are served from two modules. Patching only
+    `main` left the `/api/user` handlers calling the real one, which is a 500, not a no-op.
     """
     with patch(f"{_M}.record_auth_event", return_value=True), \
+         patch(f"{_USER}.record_auth_event", return_value=True), \
          patch(f"{_M}.mark_email_verified", return_value=True):
         yield
 

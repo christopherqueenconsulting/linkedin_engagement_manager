@@ -95,7 +95,8 @@ def cookie_session() -> Iterator[None]:
     with patch(f"{_M}._db_resolve_session",
                side_effect=lambda t: {"user_id": _UID, "scope": "full"} if t == _COOKIE else None), \
          patch(f"{_M}.user_owns_posts", return_value=True), \
-         patch(f"{_M}.record_auth_event", return_value=True):
+         patch(f"{_M}.record_auth_event", return_value=True), \
+         patch(f"{_USER}.record_auth_event", return_value=True):
         yield
 
 

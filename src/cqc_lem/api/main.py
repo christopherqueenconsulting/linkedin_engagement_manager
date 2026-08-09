@@ -1183,11 +1183,14 @@ class SecondFactorVerifyRequest(BaseModel):
     code: str
 
 
-
-
 class TrialExtendRequest(BaseModel):
     """Claim the early-adopter extended trial (issue #499)."""
     session_token: str
+
+
+# Input length limits — kept in lockstep with the DB column widths (see migrations) so an over-long
+# value returns a clean 422 here instead of a MySQL 1406 that silently rolls back the whole upsert.
+# The rest of this block went to the /api/user router with the models that read it.
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
 _LEN_DM_RECIPIENT_NAME = 255  # scheduled_dms.recipient_name VARCHAR(255)
 _LEN_CONNECT_NOTE = 300       # LinkedIn caps a connection-request note at 300 chars

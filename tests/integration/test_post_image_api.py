@@ -81,10 +81,17 @@ class _PostStore:
 @pytest.fixture
 def store(tmp_path):
     s = _PostStore()
+    # `get_session_user_id` stays on `main` — the router reaches the kernel as a host-module
+    # attribute at request time. Everything else here is read from the ROUTER's own globals by the
+    # `/api/user/post/image/*` handlers, and a fixture names no route, so both modules are covered
+    # where `main` still binds the name too.
     with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
          patch("cqc_lem.api.main.get_user_email", return_value="user@example.com"), \
+         patch("cqc_lem.api.routers.user.get_user_email", return_value="user@example.com"), \
          patch("cqc_lem.api.main.record_auth_event", return_value=True), \
+         patch("cqc_lem.api.routers.user.record_auth_event", return_value=True), \
          patch("cqc_lem.api.main.get_post_user_id", side_effect=s.owner), \
+         patch("cqc_lem.api.routers.user.get_post_user_id", side_effect=s.owner), \
          patch("cqc_lem.api.routers.user.get_post_status", side_effect=s.status), \
          patch("cqc_lem.api.routers.user.get_post_content", side_effect=s.content), \
          patch("cqc_lem.api.routers.user.get_post_image_url", side_effect=s.image_url), \

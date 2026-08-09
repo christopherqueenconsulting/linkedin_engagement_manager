@@ -22,9 +22,12 @@ def _auth_hardening_side_effects():
     for. The hardening itself has its own suite (tests/unit/api/test_auth_hardening.py).
     """
     with patch(f"{_MAIN}.record_auth_event", return_value=True), \
+         patch(f"{_USER}.record_auth_event", return_value=True), \
          patch(f"{_MAIN}.mark_email_verified", return_value=True), \
          patch(f"{_MAIN}.get_pin_lockout", return_value=None), \
-         patch(f"{_MAIN}.get_user_public_uid", return_value="pub-uid-1"):
+         patch(f"{_USER}.get_pin_lockout", return_value=None), \
+         patch(f"{_MAIN}.get_user_public_uid", return_value="pub-uid-1"), \
+         patch(f"{_USER}.get_user_public_uid", return_value="pub-uid-1"):
         yield
 
 

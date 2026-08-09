@@ -44,7 +44,13 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _quiet():
+    """Silence the audit write in BOTH modules that bind it.
+
+    A fixture names no route, so it covers every route in the file — and since #1154 those are
+    served from two modules.
+    """
     with patch(f"{_M}.record_auth_event", return_value=True), \
+         patch(f"{_USER}.record_auth_event", return_value=True), \
          patch(f"{_M}.mark_email_verified", return_value=True), \
          patch(f"{_M}.finish_auth_challenge", return_value=True), \
          patch(f"{_M}.count_challenge_attempts", return_value=0), \
