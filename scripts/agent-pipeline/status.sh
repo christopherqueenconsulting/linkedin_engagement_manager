@@ -49,7 +49,10 @@ DO_DISK=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --hours) WINDOW_HOURS="${2:-6}"; shift 2 ;;
+    # Validated, not defaulted: `--hours` as the last argument leaves $# at 1, and `shift 2` then
+    # fails WITHOUT consuming anything, so the loop re-reads the same $1 forever — a silent hang.
+    --hours) case "${2:-}" in ''|*[!0-9]*) echo "--hours needs a whole number of hours (try --help)" >&2; exit 2 ;; esac
+             WINDOW_HOURS="$2"; shift 2 ;;
     --watch) WATCH=1; case "${2:-}" in ''|-*) shift ;; *) WATCH_SECS="$2"; shift 2 ;; esac ;;
     --json)  JSON=1; shift ;;
     --brief) BRIEF=1; shift ;;
@@ -130,6 +133,7 @@ LITELLM_URL="${CFG_OLLAMA_LITELLM_URL:-http://127.0.0.1:4000}"; [ -z "$LITELLM_U
 USAGE_COOLDOWN="${CFG_CLAUDE_USAGE_COOLDOWN:-7200}"; [ -z "$USAGE_COOLDOWN" ] && USAGE_COOLDOWN=7200
 C_FAIL_WINDOW="${CFG_CLAUDE_FAIL_WINDOW:-1800}"; [ -z "$C_FAIL_WINDOW" ] && C_FAIL_WINDOW=1800
 O_FAIL_WINDOW="${CFG_OLLAMA_FAIL_WINDOW:-1800}"; [ -z "$O_FAIL_WINDOW" ] && O_FAIL_WINDOW=1800
+ALIAS_TTL="${CFG_OLLAMA_ALIAS_TTL:-3600}"; [ -z "$ALIAS_TTL" ] && ALIAS_TTL=3600
 STALE_CLAIM_MINUTES="${CFG_STALE_CLAIM_MINUTES:-120}"; [ -z "$STALE_CLAIM_MINUTES" ] && STALE_CLAIM_MINUTES=120
 
 # Read one variable out of a running process's environment.
@@ -359,24 +363,32 @@ collect_slots() {
 }
 
 # Replicates tick.sh's cap arithmetic (1 + ready/SCALE, ceilinged by MAX_AGENTS, then by the busy
-# window). Kept in step by hand: if tick.sh's formula changes, this line has to change with it.
-CAP=1; BUSY_WINDOW="no"
+# window, then by DEGRADED). Kept in step by hand: if tick.sh's formula changes, this changes too.
+# Runs AFTER collect_lanes, because the degraded clause reads the lane percentages.
+CAP=1; BUSY_WINDOW="no"; DEGRADED_CAP="no"
 compute_cap() {
   local ready="${1:-0}" h dow bs be ind inh
   CAP=$(( 1 + ready / CFG_SCALE_PER_ISSUES ))
   [ "$CAP" -gt "$CFG_MAX_AGENTS" ] && CAP="$CFG_MAX_AGENTS"
-  [ -n "$BUSY_HOURS" ] || return 0
-  h=$((10#$(TZ="$BUSY_TZ" date +%H))); dow=$(TZ="$BUSY_TZ" date +%u)
-  bs="${BUSY_HOURS%-*}"; be="${BUSY_HOURS#*-}"; inh=0
-  if { [ "$bs" -le "$be" ] && [ "$h" -ge "$bs" ] && [ "$h" -lt "$be" ]; } \
-     || { [ "$bs" -gt "$be" ] && { [ "$h" -ge "$bs" ] || [ "$h" -lt "$be" ]; }; }; then inh=1; fi
-  ind=1
-  if [ -n "$BUSY_DAYS" ]; then
-    [ "$dow" -ge "${BUSY_DAYS%-*}" ] && [ "$dow" -le "${BUSY_DAYS#*-}" ] || ind=0
+  if [ -n "$BUSY_HOURS" ]; then
+    h=$((10#$(TZ="$BUSY_TZ" date +%H))); dow=$(TZ="$BUSY_TZ" date +%u)
+    bs="${BUSY_HOURS%-*}"; be="${BUSY_HOURS#*-}"; inh=0
+    if { [ "$bs" -le "$be" ] && [ "$h" -ge "$bs" ] && [ "$h" -lt "$be" ]; } \
+       || { [ "$bs" -gt "$be" ] && { [ "$h" -ge "$bs" ] || [ "$h" -lt "$be" ]; }; }; then inh=1; fi
+    ind=1
+    if [ -n "$BUSY_DAYS" ]; then
+      [ "$dow" -ge "${BUSY_DAYS%-*}" ] && [ "$dow" -le "${BUSY_DAYS#*-}" ] || ind=0
+    fi
+    if [ "$inh" = 1 ] && [ "$ind" = 1 ]; then
+      BUSY_WINDOW="yes"
+      [ "$CAP" -gt "$BUSY_MAX_AGENTS" ] && CAP="$BUSY_MAX_AGENTS"
+    fi
   fi
-  if [ "$inh" = 1 ] && [ "$ind" = 1 ]; then
-    BUSY_WINDOW="yes"
-    [ "$CAP" -gt "$BUSY_MAX_AGENTS" ] && CAP="$BUSY_MAX_AGENTS"
+  # DEGRADED is tick.sh's LAST word on the cap: neither lane above the threshold forces CAP=1 (and
+  # holds new starts). Leaving it out reported "0/4" at exactly the moment only one slot could run,
+  # which is the moment an operator is most likely to be reading this.
+  if [ "$CL_PCT" -le "$THRESH" ] && [ "$OL_PCT" -le "$THRESH" ]; then
+    CAP=1; DEGRADED_CAP="yes"
   fi
 }
 
@@ -384,6 +396,18 @@ compute_cap() {
 # WITHOUT their side effects (no pause-file deletion, no billable probe).
 CL_PCT=0; CL_STATUS="?"; CL_NOTE=""
 OL_PCT=0; OL_STATUS="?"; OL_NOTE=""
+
+# Is the "tier alias is not served" verdict still one the pipeline itself believes? capacity.sh
+# caches it in ollama.state and re-probes once it is older than OLLAMA_ALIAS_TTL, so reading
+# alias_ok without alias_ok_ts reports the lane unavailable — and raises a NEEDS ATTENTION warning
+# — off a verdict that has already expired.
+alias_held() {
+  local ts
+  [ "$(state_get ollama alias_ok)" = "0" ] || return 1
+  ts="$(state_get ollama alias_ok_ts)"; ts="${ts:-0}"
+  [ "$(( NOW - ts ))" -lt "$ALIAS_TTL" ] 2>/dev/null
+}
+
 collect_lanes() {
   local pu ult cf lft rem
 
@@ -419,7 +443,7 @@ collect_lanes() {
   elif ! curl -fsS --max-time 2 "$LITELLM_URL/health/liveliness" >/dev/null 2>&1; then
     OL_PCT=0; OL_STATUS="unavailable"; OL_NOTE="LiteLLM not answering at $LITELLM_URL"
     warn "LiteLLM is not answering on $LITELLM_URL — the ollama lane is dead until it is back"
-  elif [ "$(state_get ollama alias_ok)" = "0" ]; then
+  elif alias_held; then
     # The 2026-07-29 failure: proxy healthy, every run 400ing on an unresolvable tier alias.
     OL_PCT=0; OL_STATUS="unavailable"; OL_NOTE="tier alias not served — $(cat "$STATE_DIR/.litellm_probe_detail" 2>/dev/null | head -c 90)"
     warn "ollama tier alias is NOT being served by LiteLLM (proxy is up but runs would 400)"
@@ -610,7 +634,7 @@ render_text() {
   local paused_txt="running"
   [ -f "$BASE/PAUSED" ] && paused_txt="${C_RED}PAUSED${C_RST}"
   printf '  %-14s %s   %-14s %s\n' "pipeline:" "$paused_txt" "agents live:" \
-    "${C_B}${n_agents}${C_RST}/${CAP}$([ "$BUSY_WINDOW" = yes ] && printf ' %s(busy window)%s' "$C_YEL" "$C_RST")$([ "${#OTHER_ROWS[@]}" -gt 0 ] && printf ' %s(+%d other claude)%s' "$C_DIM" "${#OTHER_ROWS[@]}" "$C_RST")"
+    "${C_B}${n_agents}${C_RST}/${CAP}$([ "$BUSY_WINDOW" = yes ] && printf ' %s(busy window)%s' "$C_YEL" "$C_RST")$([ "$DEGRADED_CAP" = yes ] && printf ' %s(degraded)%s' "$C_RED" "$C_RST")$([ "${#OTHER_ROWS[@]}" -gt 0 ] && printf ' %s(+%d other claude)%s' "$C_DIM" "${#OTHER_ROWS[@]}" "$C_RST")"
   printf '  %-14s %s   %-14s %s\n' "backlog:" "$([ "$GH_OK" = 1 ] && echo "${GH_READY} agent:ready" || echo "${C_DIM}n/a${C_RST}")" \
          "last tick:" "$([ "${LAST_TICK_AGE}" -ge 0 ] 2>/dev/null && fmt_dur "$LAST_TICK_AGE" || echo "?") ago"
   # Printed on EVERY report, not just when zero agents are up: it is the one line that says the
@@ -670,8 +694,9 @@ render_text() {
   [ "$BRIEF" = 1 ] && { render_warnings; return; }
 
   head2 "SLOTS & CAPACITY"
-  printf '  cap %s%s%s of MAX_AGENTS=%s   (1 + ready/%s)%s\n' "$C_B" "$CAP" "$C_RST" "$CFG_MAX_AGENTS" "$CFG_SCALE_PER_ISSUES" \
-    "$([ "$BUSY_WINDOW" = yes ] && printf ' — busy window %s %s%s limits to %s' "$BUSY_HOURS" "$BUSY_TZ" "${BUSY_DAYS:+ days $BUSY_DAYS}" "$BUSY_MAX_AGENTS")"
+  printf '  cap %s%s%s of MAX_AGENTS=%s   (1 + ready/%s)%s%s\n' "$C_B" "$CAP" "$C_RST" "$CFG_MAX_AGENTS" "$CFG_SCALE_PER_ISSUES" \
+    "$([ "$BUSY_WINDOW" = yes ] && printf ' — busy window %s %s%s limits to %s' "$BUSY_HOURS" "$BUSY_TZ" "${BUSY_DAYS:+ days $BUSY_DAYS}" "$BUSY_MAX_AGENTS")" \
+    "$([ "$DEGRADED_CAP" = yes ] && printf ' %s— DEGRADED: both lanes at or below %s%%, forced to 1%s' "$C_RED" "$THRESH" "$C_RST")"
   printf '  locks held:%s   free:%s\n' "${SLOTS_BUSY:- none}" "${SLOTS_FREE:- none}"
   printf '  claude  %3d%% %-12s %s\n' "$CL_PCT" "$CL_STATUS" "$C_DIM${CL_NOTE}$C_RST"
   printf '    %slast success %s · last failure %s%s\n' "$C_DIM" \
@@ -755,6 +780,7 @@ render_json() {
     printf 'cap=%s\n' "$CAP"
     printf 'max_agents=%s\n' "$CFG_MAX_AGENTS"
     printf 'busy_window=%s\n' "$([ "$BUSY_WINDOW" = yes ] && echo true || echo false)"
+    printf 'degraded=%s\n' "$([ "$DEGRADED_CAP" = yes ] && echo true || echo false)"
     printf 'agents_running=%s\n' "${#AGENT_ROWS[@]}"
     printf 'idle_ticks=%s\n' "$IDLE_TICKS"
     printf 'slots_busy=%s\n' "${SLOTS_BUSY# }"
@@ -837,7 +863,7 @@ warnings = [w for w in open(td + "/warn").read().splitlines() if w.strip()]
 print(json.dumps({
     "generated_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
     "pipeline": dict(
-        {k: kv.get(k) for k in ("paused", "cap", "max_agents", "busy_window",
+        {k: kv.get(k) for k in ("paused", "cap", "max_agents", "busy_window", "degraded",
                                 "agents_running", "idle_ticks", "last_tick_age_s",
                                 "last_dispatch_age_s", "last_dispatch_mode")},
         # Always lists: a single busy slot would otherwise type as an int and a pair as a string,
@@ -865,21 +891,25 @@ print(json.dumps({
 run_once() {
   NOW="$(date +%s)"
   AGENT_ROWS=(); OTHER_ROWS=(); WARNINGS=(); IDLE_TICKS=0; SLOTS_BUSY=""; SLOTS_FREE=""
+  BUSY_WINDOW="no"; DEGRADED_CAP="no"   # --watch reuses this shell; a stale yes would never clear
   GH_OK=0; GH_READY=0; GH_WORKING=""; GH_BLOCKED=""; GH_HUMAN=""; GH_PRS=""
   collect_pipeline_state
   collect_agents
   collect_other_claude
   collect_lanes
   collect_gh
-  collect_rollup
   # The cap depends on the ready count. With --no-gh (or gh rate-limited) fall back to the count the
   # last tick recorded, so the cap line stays truthful instead of silently reading as 1.
+  # BEFORE collect_rollup, not after: its stall warning ("ticks run but nothing is dispatched while
+  # N issues sit agent:ready") is gated on the ready count, so running it on a not-yet-filled 0 made
+  # that warning unreachable under --no-gh — the one mode where the operator has least other signal.
   if [ "$GH_OK" != 1 ]; then
     GH_READY="$(tail -n 1 "$OUTCOMES" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.loads(sys.stdin.read() or "{}").get("ready_count", 0))
 except Exception: print(0)' 2>/dev/null)"
     GH_READY="${GH_READY:-0}"
   fi
+  collect_rollup
   compute_cap "${GH_READY:-0}"
   collect_slots
   collect_host
