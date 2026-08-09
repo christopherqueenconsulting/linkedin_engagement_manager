@@ -141,11 +141,22 @@ class TestAutoGenerateContent:
 
 @pytest.mark.integration
 class TestCreateTextPost:
-    def test_create_text_post_calls_ai_helper(self, mock_database_connection, mock_openai_client):
-        """create_text_post should call the AI function matching the selected post type."""
+    def test_create_text_post_calls_ai_helper(self, mock_database_connection):
+        """create_text_post should call the AI function matching the selected post type.
+
+        The two neighbours of the refinement pass are stubbed because they are not this test's
+        subject and they were its only remaining paths to a live LLM — 167s of a 354s lane spent
+        riding out the connect-retry schedule for text it never reads (issue #1188). The voice
+        synthesis re-derives itself through `get_industries_of_profile_from_ai` when uncached, and
+        the hook pass is a second rewrite of what the refinement just returned; it is stubbed as a
+        PASS-THROUGH, so `result` still proves the refinement's output is what comes back rather
+        than proving that the hook pass happened to fail.
+        """
         from cqc_lem.app.run_content_plan import create_text_post
         mock_profile = MagicMock()
         with patch('cqc_lem.app.run_content_plan.get_thought_leadership_post_from_ai', return_value='AI content') as mock_ai, \
+             patch('cqc_lem.app.run_content_plan.get_or_create_profile_synthesis', return_value='A concise voice brief.'), \
+             patch('cqc_lem.app.run_content_plan.optimize_post_hook', side_effect=lambda text, **kw: text), \
              patch('cqc_lem.app.run_content_plan.get_ai_linked_post_refinement', return_value='Refined content'):
             result = create_text_post(user_id=1, stage='awareness', post_type='thought_leadership', user_profile=mock_profile)
             assert mock_ai.called

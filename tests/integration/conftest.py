@@ -1,4 +1,4 @@
-"""Integration-lane isolation: one MySQL database, and one Redis logical DB, per xdist worker.
+"""Integration-lane isolation: one MySQL database, one Redis logical DB, and no live LLM.
 
 The DB-touching tests in this lane key their state on a per-file email constant and clear it either
 side of the test (`DELETE FROM users WHERE email=%s`, add, then delete again). That is enough while
@@ -24,6 +24,9 @@ across too, so seed data a migration wrote (`early_adopter_slots`' P0/P1 cohorts
 
 Serial runs are untouched. Without `PYTEST_XDIST_WORKER` this yields immediately and the suite talks
 to the configured database exactly as it did before.
+
+The other thing this file owns is `_no_live_llm_calls` (issue #1188) — the guard that turns an
+unmocked LLM call from a slow test into a LOUD one. The reasoning is in that fixture's docstring.
 """
 
 import os
@@ -34,6 +37,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import mysql.connector
 import pytest
+from openai import OpenAI
 
 from cqc_lem.platform.db import connection as db_connection
 
@@ -151,6 +155,47 @@ def _redis_url_for_worker(url: str, worker: str) -> str:
     digits = "".join(character for character in worker if character.isdigit())
     index = (int(digits) if digits else 0) % _REDIS_LOGICAL_DATABASES
     return urlunsplit(urlsplit(url)._replace(path=f"/{index}"))
+
+
+@pytest.fixture(autouse=True)
+def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Refuses, loudly, any LLM request a test in this lane did not mock (issue #1188).
+
+    Four tests here were 311s of a 354s lane while doing no work at all: each fell through to a
+    real request, and with no LiteLLM proxy on the runner every one of them paid the PRODUCTION
+    connect-retry ride-out (#986, ~24s) for a response the test never asserted on. That is a
+    *slow* failure, which is the kind nobody reads — the lane got faster and the tests stayed
+    wrong. The fix is to make it a failure at all.
+
+    `OpenAI.post` is the seam, not the three endpoint methods the unit lane's #480 guard patches:
+    every endpoint the SDK exposes (chat, embeddings, images, speech) funnels through it, so a new
+    call shape inherits the guard, and it catches the raw `openai.OpenAI()` fallback in
+    `ai_helper._pick_reaction` as well as the shared `AttributedOpenAI` singleton. Setting it on
+    the base class covers the subclass too, because `AttributedOpenAI.post` reaches it via `super()`
+    — and the retry loop there passes a refusal straight through, since only a real
+    `httpx.ConnectError` is retryable.
+
+    Refusing with pytest's own `Failed` (a BaseException) rather than the `APIConnectionError` the
+    unit-lane guard raises is the deliberate part, and it is what makes this LOUD rather than
+    merely fast: LEM's LLM helpers are full of `except Exception` fallbacks — that is exactly how
+    an unmocked call sits here for months looking like a passing test — and `Failed` is not
+    catchable by any of them. Every `except BaseException` in `src/` re-raises, so there is nowhere
+    for a refusal to be quietly absorbed.
+
+    A test that CONSTRUCTS a client and never calls it is untouched — the guard is on the request,
+    not the constructor. A test that wants a failing call still gets one by mocking the failure it
+    means to assert on, which is a clearer test than borrowing this one.
+    """
+    def _refuse(self: OpenAI, *args: Any, **kwargs: Any) -> Any:
+        path = args[0] if args else kwargs.get("path", "<unknown>")
+        pytest.fail(
+            f"An integration test made a live LLM request to {path!r}. Mock it: patch the "
+            f"`client` the module under test imported (the `mock_openai_client` fixture is the "
+            f"house shape), or patch the helper that wraps it. See issue #1188."
+        )  # The traceback is kept: which helper reached the network is the whole question here.
+
+    monkeypatch.setattr(OpenAI, "post", _refuse)
+    yield
 
 
 @pytest.fixture(scope="session", autouse=True)
