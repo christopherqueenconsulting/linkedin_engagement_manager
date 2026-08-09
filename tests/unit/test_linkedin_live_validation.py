@@ -220,6 +220,18 @@ class TestProbeComposer:
         report = llv.probe_composer(driver, sleep=lambda s: None)
         assert report["state"] == llv.STATE_DRIFT
 
+    def test_a_missing_share_box_does_not_warn(self, monkeypatch):
+        """The probe already grades a missing share box as drift/unknown. Logging that miss as a
+        warning escalates to a RecurringWarning in error tracking for expected best-effort drift.
+        """
+        calls = []
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
+                            lambda *a, **k: calls.append(k) or None)
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        llv.probe_composer(driver, sleep=lambda s: None)
+        assert any(k.get("warn_on_miss") is False for k in calls), calls
+
 
 @pytest.mark.unit
 class TestGroupShareBoxChainCopy:

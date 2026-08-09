@@ -420,7 +420,8 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
     sleep(5)
     # Same locator chain auto_post_to_group uses for the share box — one composer, one map.
     share_box_locators, chain_source = _share_box_chains()
-    opened = click_first(driver, wait, share_box_locators, "Composer share box", required=False)
+    opened = click_first(driver, wait, share_box_locators, "Composer share box",
+                         required=False, warn_on_miss=False)
     if opened is None:
         # A share box that did not resolve is only DRIFT if the feed itself rendered — otherwise
         # this run was signed out or redirected and grounds nothing.
