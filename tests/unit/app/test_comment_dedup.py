@@ -1,5 +1,6 @@
-"""Unit tests for the persistent at-most-once feed-comment dedup guard in comment_on_feed_inline
-and the URL-based comment_on_post task.
+"""Unit tests for the persistent at-most-once feed-comment dedup guard.
+
+Covers `comment_on_feed_inline` and the URL-based `comment_on_post` task.
 """
 
 from contextlib import ExitStack
@@ -28,16 +29,18 @@ def _box(text):
 
 
 def _messages(mock, needle):
-    """Log messages recorded on a patched logger call that mention `needle`. Matched on the bare
-    word 'hash' rather than either message's own phrasing, so the #1064 guard still fires if the
-    warning comes back worded the way it was before ('unstable content-hash key').
+    """Return log messages recorded on a patched logger call that mention `needle`.
+
+    Matched on the bare word 'hash' rather than either message's own phrasing, so the #1064 guard
+    still fires if the warning comes back worded the way it was before ('unstable content-hash key').
     """
     return [c.args[0] for c in mock.call_args_list if c.args and needle in c.args[0]]
 
 
 def _card_for(box):
-    """A card mock that remembers which post text it was resolved from, so a test can answer the
-    URN scan per post rather than once for the whole run.
+    """Return a card mock that remembers which post text it was resolved from.
+
+    This lets a test answer the URN scan per post rather than once for the whole run.
     """
     card = MagicMock()
     card.box_text = box.text
@@ -51,17 +54,18 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
               author="Jane Author", is_me=False, react_returns=True, post_returns=True,
               prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None,
               urn_by_text=None, is_group_feed=False, click_first_return=_UNSET,
-              post_composer_return=_UNSET):
-    """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
-    the key mocks so assertions can inspect calls.
+              post_composer_return=_UNSET, deadline_ts=None, roster_posted=None):
+    """Drive `comment_on_feed_inline` with all the SDUI/DB collaborators mocked.
 
-    `find_elements` overrides the driver's element lookup wholesale, so a test can answer the post-
-    text selector and the zero-walk cross-check selector differently (issue #1013).
-    `urn_by_text` maps a post's text to the URN its card carries, so one scan can mix cards that
-    resolve a URN with cards that fall back to the content hash.
-    `is_group_feed` exercises the group-feed composer-probe path (issue #1084).
+    Returns a dict of the key mocks so assertions can inspect calls. `find_elements` overrides the
+    driver's element lookup wholesale, so a test can answer the post-text selector and the zero-walk
+    cross-check selector differently (issue #1013). `urn_by_text` maps a post's text to the URN its
+    card carries, so one scan can mix cards that resolve a URN with cards that fall back to the
+    content hash. `is_group_feed` exercises the group-feed composer-probe path (issue #1084).
     `click_first_return` / `post_composer_return` control the probe's two resolution steps; both
     default to a truthy mock so the probe succeeds unless the caller overrides one to None.
+    `deadline_ts` and `roster_posted` reproduce the two ways the feed loop never reads the page at
+    all — the run was already out of time, or the roster pass spent the whole budget (issue #1081).
     """
     from cqc_lem.app.engagement import feed as ra
 
@@ -99,7 +103,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         post_composer_return = None if post_composer_return is _UNSET else post_composer_return
 
     with ExitStack() as es:
-        p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
+        def p(name, **kw):
+            return es.enter_context(patch(f"{_FEED}.{name}", **kw))
         # Reactions ship OFF by default while #816 is open; these tests exercise the reaction
         # path itself, so they opt in explicitly rather than depending on the shipped default.
         p("INLINE_REACTIONS_ENABLED", new=True)
@@ -145,8 +150,13 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("click_first", new=click_first_mock)
         ppc = MagicMock(return_value=post_composer_return)
         p("_post_composer_for_card", new=ppc)
+        if roster_posted is not None:
+            p("comment_on_roster_posts",
+              return_value={"posted": roster_posted, "targets_visited": 1, "examined": roster_posted,
+                            "off_topic_skipped": 0, "key_sources": {}, "commented_key_sources": {}})
+            p("navigate_to_feed")
         posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts,
-                                           is_group_feed=is_group_feed)
+                                           is_group_feed=is_group_feed, deadline_ts=deadline_ts)
 
     return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
             "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen,
@@ -250,7 +260,8 @@ class TestFeedDedup:
         driver = MagicMock()
         driver.find_elements.return_value = [_box("A post whose comment submit will fail here.")]
         with ExitStack() as es:
-            p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
+            def p(name, **kw):
+                return es.enter_context(patch(f"{_FEED}.{name}", **kw))
             p("get_engagement_preferences", return_value={"max_comments_per_day": 20})
             p("get_recent_engagers", return_value=set())
             p("get_recent_comment_texts", return_value=[])
@@ -313,13 +324,15 @@ class TestFeedReactions:
 class TestAuthorIsMe:
     def test_matches_own_name_case_insensitively(self):
         from cqc_lem.app.engagement.feed import _author_is_me
-        prof = MagicMock(); prof.full_name = "Chris Queen"
+        prof = MagicMock()
+        prof.full_name = "Chris Queen"
         assert _author_is_me("chris queen", prof) is True
         assert _author_is_me("Someone Else", prof) is False
 
     def test_blank_profile_name_is_not_me(self):
         from cqc_lem.app.engagement.feed import _author_is_me
-        prof = MagicMock(); prof.full_name = ""
+        prof = MagicMock()
+        prof.full_name = ""
         assert _author_is_me("Anybody", prof) is False
 
 
@@ -409,8 +422,10 @@ class TestFeedFunnelAndFallback:
 
 
 class TestGroupFeedComposerProbe:
-    """Issue #1084: on group feeds, the composer is resolved BEFORE the lem-medium generation is
-    spent. A miss must cost zero LLM calls and be countable on the feed_scan funnel.
+    """Group-feed composer probe (issue #1084).
+
+    On group feeds, the composer is resolved BEFORE the lem-medium generation is spent. A miss must
+    cost zero LLM calls and be countable on the feed_scan funnel.
     """
 
     def test_group_feed_composer_miss_skips_without_generation(self):
@@ -455,50 +470,121 @@ class TestGroupFeedComposerProbe:
 
 
 class TestFeedZeroWalkTripwire:
-    """#1013: zero post-text nodes across a whole scan is indistinguishable from an empty feed in
-    every funnel number — which is how #964 and #1009 stayed invisible for weeks. The scan asks the
-    page through a per-post control the text-node chain does not use.
+    """Zero-walk tripwire (issues #1013 / #1081).
+
+    Zero post MARKERS across a whole scan is indistinguishable from an empty feed in every funnel
+    number — which is how #964 and #1009 stayed invisible for weeks. The scan asks the page through
+    a per-post control the card-marker chain does not use, and only the answer that means "the page
+    has cards this walk cannot see" warns: `no_text` (image/video cards) and `not_walked` (the loop
+    never read the feed) are ordinary days and stay DEBUG (#1081).
     """
 
     def test_a_walk_that_saw_cards_is_ok(self):
         r = _run_feed([_box("A feed post with plenty of content to comment on.")])
         assert r["funnel"]["feed_walk"] == "ok"
         assert r["funnel"]["textboxes_seen"] == 1
+        assert r["funnel"]["cards_seen"] == 1
 
     def test_zero_textboxes_on_an_empty_feed_is_empty_not_drift(self):
         r = _run_feed([])
         assert r["funnel"]["textboxes_seen"] == 0
+        assert r["funnel"]["cards_seen"] == 0
         assert r["funnel"]["feed_walk"] == "empty"
 
-    def test_zero_textboxes_while_the_page_renders_posts_is_drift(self):
-        from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_POST_TEXT_SEL
+    def test_the_walks_crosscheck_anchor_is_not_one_it_counts(self):
+        """The cross-check must be INDEPENDENT of every marker the walk counts (#1013/#1081).
+
+        `_FEED_CARD_MARKER_SEL` includes the "Hide post by" control, so grading the walk against
+        that same control asks one selector both questions — it could only ever answer 'empty', and
+        `drift` would be unreachable in a real browser.
+        """
+        from cqc_lem.app.engagement.feed import _FEED_WALK_CROSSCHECK_SEL, _POST_MARKER_SELECTORS
+
+        for marker in _POST_MARKER_SELECTORS:
+            for anchor in marker.split(","):
+                assert anchor.strip() not in _FEED_WALK_CROSSCHECK_SEL
+        for anchor in _FEED_WALK_CROSSCHECK_SEL.split(","):
+            assert anchor.strip() not in ", ".join(_POST_MARKER_SELECTORS)
+
+    def test_zero_markers_while_the_page_renders_posts_is_drift(self):
+        from cqc_lem.app.engagement.feed import _FEED_WALK_CROSSCHECK_SEL
+
+        def _find(by, selector):
+            if selector == _FEED_WALK_CROSSCHECK_SEL:
+                return [MagicMock()] * 8        # the page rendered eight posts
+            return []                           # ...and the walk matched no marker at all
+
+        r = _run_feed([], find_elements=_find)
+        assert r["funnel"]["cards_seen"] == 0
+        assert r["funnel"]["feed_walk"] == "drift"
+
+    def test_image_only_posts_read_as_no_text_not_drift(self):
+        """Image/video-only cards must not read as drift (issue #1081).
+
+        A card with a "Hide post by" control but no text node is still a card — and carries nothing
+        to comment on. That is `no_text` at DEBUG, never a selector-drift warning.
+        """
+        from cqc_lem.app.engagement.feed import _FEED_CARD_MARKER_SEL, _FEED_POST_TEXT_SEL
 
         def _find(by, selector):
             if selector == _FEED_POST_TEXT_SEL:
-                return []                       # the walk is blind
-            if selector == _FEED_CARD_CROSSCHECK_SEL:
-                return [MagicMock()] * 8        # but the page rendered eight posts
+                return []                       # no text nodes on these posts
+            if selector == _FEED_CARD_MARKER_SEL:
+                return [MagicMock()] * 4        # markers include the "Hide post by" controls
             return []
 
-        r = _run_feed([], find_elements=_find)
-        assert r["funnel"]["feed_walk"] == "drift"
+        with patch(f"{_ZW}.log_warning") as warn:
+            r = _run_feed([], find_elements=_find)
+        assert r["funnel"]["textboxes_seen"] == 0
+        assert r["funnel"]["cards_seen"] == 4
+        assert r["funnel"]["feed_walk"] == "no_text"
+        warn.assert_not_called()
+
+    def test_a_walk_that_never_ran_is_not_walked(self):
+        """A loop that never read the feed claims nothing about the page (issue #1081).
+
+        The run is already past its deadline, so the walk breaks before its first read. Both
+        counters stay at zero while the page still renders cards — grading that as drift is a
+        selector-drift warning for a run that never looked.
+        """
+        def _find(by, selector):
+            return [MagicMock()] * 8            # the page has cards the walk never asked about
+
+        with patch(f"{_ZW}.log_warning") as warn:
+            r = _run_feed([], find_elements=_find, deadline_ts=1.0)
+        assert r["funnel"]["cards_seen"] == 0
+        assert r["funnel"]["feed_walk"] == "not_walked"
+        warn.assert_not_called()
+
+    def test_a_roster_pass_that_spent_the_budget_is_not_walked(self):
+        """Same branch, the likelier live cause: the roster pass used the whole run's budget."""
+        def _find(by, selector):
+            return [MagicMock()] * 8
+
+        with patch(f"{_ZW}.log_warning") as warn:
+            r = _run_feed([], find_elements=_find, max_posts=2, roster_posted=2)
+        assert r["funnel"]["feed_walk"] == "not_walked"
+        assert r["funnel"]["roster_commented"] == 2
+        warn.assert_not_called()
 
     def test_only_drift_warns(self):
-        """The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a
-        grouped $exception, so an empty feed or an unreadable cross-check must stay DEBUG.
+        """Only drift warns at WARNING level.
+
+        The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a grouped
+        $exception, so an empty feed or an unreadable cross-check must stay DEBUG.
         """
         from cqc_lem.app.engagement.feed import _report_zero_walk
         driver = MagicMock()
 
         driver.find_elements.return_value = [MagicMock()] * 3
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
-            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "drift"
+            assert _report_zero_walk(driver, "sel", "Feed card walk") == "drift"
         warn.assert_called_once()
         debug.assert_not_called()
 
         driver.find_elements.return_value = []
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
-            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "empty"
+            assert _report_zero_walk(driver, "sel", "Feed card walk") == "empty"
         warn.assert_not_called()
         debug.assert_called_once()
 
@@ -506,6 +592,6 @@ class TestFeedZeroWalkTripwire:
         from selenium.common.exceptions import WebDriverException
         driver.find_elements.side_effect = WebDriverException("session gone")
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
-            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "unknown"
+            assert _report_zero_walk(driver, "sel", "Feed card walk") == "unknown"
         warn.assert_not_called()
         debug.assert_called_once()

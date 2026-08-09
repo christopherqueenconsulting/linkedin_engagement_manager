@@ -31,7 +31,7 @@ code is missing from this table.
 | Surface | Code | Probe flag | In the weekly sweep | Production tripwire |
 |---|---|---|---|---|
 | Home feed "Sort by → Recent" | `_switch_feed_to_recent` | `--feed-sort` | yes | `feed_sort` on the funnel + `feed_scan` (#817) |
-| Feed card walk + reactions | `_card_for_textbox` / `react_to_post_inline` | `--reaction-probe` | yes | `feed_walk` / `textboxes_seen` on the funnel (#1013) |
+| Feed card walk + reactions | `_card_for_textbox` / `react_to_post_inline` | `--reaction-probe` | yes | `feed_walk` / `cards_seen` (and `textboxes_seen`) on the funnel — zero markers is cross-checked against the REACTION control (`_FEED_WALK_CROSSCHECK_SEL`), never against a marker the walk already counts; `no_text` (image/video-only cards) and `not_walked` (budget spent / deadline passed) are DEBUG, only `drift` warns (#1013/#1081) |
 | Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876) |
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
 | Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | no name vs the page's `/in/` links; no badge vs the page's own degree LINE (#1021) |
