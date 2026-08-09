@@ -1,0 +1,11 @@
+[Unit]
+Description=LEM agent-pipeline v2 watchdog (every 15 min)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=lem-agentd-watchdog.service
+
+[Install]
+WantedBy=timers.target
