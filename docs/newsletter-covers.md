@@ -14,7 +14,7 @@ deliberately not symmetric.
 | `src/cqc_lem/utilities/newsletter_cover.py` | ONE place a cover is validated, stored, and generated |
 | `src/cqc_lem/utilities/linkedin/article_editor.py` | `attach_article_cover` — the publish-time upload into LinkedIn's hidden file input |
 | `src/cqc_lem/app/run_scheduler.py` | `generate_newsletter_cover` task + the `cover_image_auto` queue hook |
-| `src/cqc_lem/app/run_automation.py` | `_approved_cover_path` — the ONE gate deciding a cover may reach LinkedIn |
+| `src/cqc_lem/app/engagement/newsletter.py` | `_approved_cover_path` — the ONE gate deciding a cover may reach LinkedIn |
 | `src/cqc_lem/ui/.../review/NewsletterQueue.tsx` | Per-edition upload / generate / approve / remove |
 | `src/cqc_lem/ui/.../account/NewsletterCard.tsx` | The account-settings opt-in (`cover_image_auto`) |
 

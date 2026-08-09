@@ -163,7 +163,7 @@ class TestTutorialDescription:
 
 class TestNewsletterEditionBody:
     def test_an_owned_link_in_an_edited_edition_is_tagged_per_edition(self):
-        from cqc_lem.app.run_automation import _tagged_edition_body
+        from cqc_lem.app.engagement.newsletter import _tagged_edition_body
         with _Patched(_owned()):
             out = _tagged_edition_body("More at https://lem.test/guide", edition_id=4)
         assert "utm_source=newsletter" in out
@@ -171,7 +171,7 @@ class TestNewsletterEditionBody:
 
     def test_a_link_free_edition_is_returned_byte_identical(self):
         # The generator is told not to put links in an edition at all, so this is the mainline case.
-        from cqc_lem.app.run_automation import _tagged_edition_body
+        from cqc_lem.app.engagement.newsletter import _tagged_edition_body
         body = "PLAIN TEXT EDITION\n\nNo links here, by design."
         with _Patched(_owned()):
             assert _tagged_edition_body(body, edition_id=4) == body

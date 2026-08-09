@@ -59,7 +59,7 @@ spelled at a call site: a breakdown by campaign is only readable if every post w
 | Link carried into the first comment | `content_alignment.first_comment_link_text` | `post-<id>` (`utm_content=first-comment`) |
 | Brand account's seeded goal URL | `brand_account.brand_preference_overrides` | `brand-profile` |
 | YouTube tutorial description | `video_tutorials.description_with_cta` | `tutorial-<flow key>` |
-| Newsletter edition body | `run_automation._tagged_edition_body` | `newsletter-<edition id>` |
+| Newsletter edition body | `engagement.newsletter._tagged_edition_body` | `newsletter-<edition id>` |
 
 **A LinkedIn newsletter EDITION carries no outbound links by design** — the generator prompt forbids
 them, because an off-platform link suppresses an article's reach. So on the mainline path the edition

@@ -172,7 +172,7 @@ class TestGeneratedCoverGate:
         assert edition["cover_image_status"] == "pending_review"
 
         # Nothing may publish it while it is pending.
-        from cqc_lem.app.run_automation import _approved_cover_path
+        from cqc_lem.app.engagement.newsletter import _approved_cover_path
         assert _approved_cover_path(store.row) is None
 
         resp = client.post("/api/user/newsletter-draft/cover/decision", json={

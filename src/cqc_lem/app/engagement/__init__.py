@@ -7,4 +7,4 @@ The import below is load-bearing for the same reason as the one in `cqc_lem/app/
 `autodiscover_tasks` never finds these, so importing the module IS the registration. Removing it as
 an "unused import" would leave the worker rejecting every invite message as unknown.
 """
-from . import invites  # noqa: F401
+from . import invites, newsletter  # noqa: F401
