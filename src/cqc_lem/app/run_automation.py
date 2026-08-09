@@ -63,10 +63,11 @@ from cqc_lem.app.engagement.invites import (  # noqa: E402  (after the local imp
     send_roster_connect_invite,
 )
 
-# The newsletter rail moved to `app.engagement.newsletter` (#1154). Nothing in THIS file calls these
-# — they are re-exported only because `run_scheduler` imports `auto_publish_edition` and
-# `track_newsletter_subscribers` from here by name, and because the tests that drive the third one
-# reach it the same way. Each task pins `name='cqc_lem.app.run_automation.<fn>'`.
+# The newsletter rail moved to `app.engagement.newsletter` (#1154). Nothing in THIS file calls these.
+# `run_scheduler` imports `auto_publish_edition` and `track_newsletter_subscribers` from here by
+# name, so those two are load-bearing; `auto_publish_newsletter_edition` is re-exported with them so
+# the rail keeps ONE import path rather than two that differ for no reason a reader can see. Each
+# task pins `name='cqc_lem.app.run_automation.<fn>'`, so the module path is all that changed.
 #
 # The seven PRIVATE helpers that moved with them (`_fill_edition_description`,
 # `_fill_and_publish_article`, `_approved_cover_path`, `_tagged_edition_body`,
