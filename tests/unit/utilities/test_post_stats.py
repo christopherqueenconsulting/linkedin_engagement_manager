@@ -349,7 +349,8 @@ class TestBuildEngagementTrend:
 class TestScrapeStatsTask:
     def test_records_each_post(self):
         from unittest.mock import MagicMock, patch
-        _RA = "cqc_lem.app.run_automation"
+        # The stats sweep moved to `app.engagement.posting` (#1154).
+        _RA = "cqc_lem.app.engagement.posting"
         with patch(f"{_RA}.time.sleep"), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9, 10]), \
              patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
@@ -358,7 +359,7 @@ class TestScrapeStatsTask:
              patch(f"{_RA}._post_social_counts", return_value={"reactions": 12, "comments": 3}), \
              patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
-            from cqc_lem.app.run_automation import auto_scrape_post_stats
+            from cqc_lem.app.engagement.posting import auto_scrape_post_stats
             result = auto_scrape_post_stats.run(user_id=1)
         assert rec.call_count == 2 and "Scraped stats for 2" in result
 

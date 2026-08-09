@@ -9,6 +9,11 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+# The snapshot and its task moved to `app.engagement.posting` (#1154) — that is the module whose
+# globals they read. `_RA` survives for ONE thing: the daily dispatcher does a lazy
+# `from cqc_lem.app.engagement.posting import capture_follower_stats` INSIDE the beat, so the binding it
+# reads is `run_automation`'s re-export and patching it anywhere else would rebind nothing.
+_POST = "cqc_lem.app.engagement.posting"
 _RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
 
@@ -32,9 +37,9 @@ def _driver(texts):
 
 class TestCaptureAudienceSnapshot:
     def test_reads_every_signal(self):
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         driver = _driver([_PROFILE_TEXT, _ANALYTICS_TEXT])
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert counts == {"follower_count": 4312, "connection_count": 500,
                           "profile_views": 48, "search_appearances": 12}
@@ -42,39 +47,39 @@ class TestCaptureAudienceSnapshot:
 
     def test_missing_anchor_is_none_never_zero(self):
         # A DOM change must record "not measured", not a zero that reads as a lost audience.
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         driver = _driver(["Christopher Queen\nFounder", "", ""])
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert set(counts.values()) == {None}
 
     def test_no_profile_url_skips_the_profile_load(self):
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         driver = _driver([_ANALYTICS_TEXT])
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, None)
         assert counts["follower_count"] is None and counts["profile_views"] == 48
         assert len(driver.get.call_args_list) == 1
 
     def test_search_appearances_page_only_opened_when_needed(self):
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         # Analytics page yielded views but no appearances → second analytics page is opened.
         driver = _driver([_PROFILE_TEXT, "48\nProfile views", "31\nSearch appearances"])
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert counts["search_appearances"] == 31
         assert len(driver.get.call_args_list) == 3
 
     def test_navigation_failure_does_not_raise(self):
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         driver = MagicMock()
         driver.get.side_effect = Exception("auth wall")
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert set(counts.values()) == {None}
 
     def test_falls_back_to_body_when_main_is_absent(self):
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         driver = MagicMock()
         body = MagicMock()
         body.text = _PROFILE_TEXT
@@ -85,14 +90,14 @@ class TestCaptureAudienceSnapshot:
             return body
 
         driver.find_element.side_effect = _find
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert counts["follower_count"] == 4312
 
     def test_falls_back_to_body_when_main_is_empty(self):
         # A half-hydrated <main> reads blank; that is as unread as a missing one, so the body
         # fallback must still run instead of recording an all-NULL snapshot.
-        from cqc_lem.app.run_automation import capture_audience_snapshot
+        from cqc_lem.app.engagement.posting import capture_audience_snapshot
         driver = MagicMock()
 
         def _find(_by, tag):
@@ -101,69 +106,69 @@ class TestCaptureAudienceSnapshot:
             return el
 
         driver.find_element.side_effect = _find
-        with patch(f"{_RA}.time.sleep"):
+        with patch(f"{_POST}.time.sleep"):
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert counts["follower_count"] == 4312 and counts["connection_count"] == 500
 
 
 class TestCaptureFollowerStatsTask:
     def _patches(self, counts, profile_url="https://www.linkedin.com/in/me/"):
-        return (patch(f"{_RA}.get_current_profile",
+        return (patch(f"{_POST}.get_current_profile",
                       return_value=(MagicMock(), MagicMock(), "e@x.com", MagicMock())),
-                patch(f"{_RA}.get_linkedin_profile_url_by_user_id", return_value=profile_url),
-                patch(f"{_RA}.capture_audience_snapshot", return_value=counts),
-                patch(f"{_RA}.quit_gracefully"))
+                patch(f"{_POST}.get_linkedin_profile_url_by_user_id", return_value=profile_url),
+                patch(f"{_POST}.capture_audience_snapshot", return_value=counts),
+                patch(f"{_POST}.quit_gracefully"))
 
     def test_records_and_tracks_the_snapshot(self):
-        from cqc_lem.app.run_automation import capture_follower_stats
+        from cqc_lem.app.engagement.posting import capture_follower_stats
         counts = {"follower_count": 4312, "connection_count": 500,
                   "profile_views": 48, "search_appearances": 12}
         p1, p2, p3, p4 = self._patches(counts)
         with p1, p2, p3, p4, \
-             patch(f"{_RA}.record_follower_stat", return_value=True) as rec, \
-             patch(f"{_RA}.track_audience_snapshot") as track:
+             patch(f"{_POST}.record_follower_stat", return_value=True) as rec, \
+             patch(f"{_POST}.track_audience_snapshot") as track:
             result = capture_follower_stats.run(user_id=1)
         assert rec.call_args.kwargs == counts
         assert track.call_args.kwargs["follower_count"] == 4312
         assert "4312" in result
 
     def test_unreadable_snapshot_writes_nothing(self):
-        from cqc_lem.app.run_automation import capture_follower_stats
+        from cqc_lem.app.engagement.posting import capture_follower_stats
         counts = dict.fromkeys(
             ("follower_count", "connection_count", "profile_views", "search_appearances"))
         p1, p2, p3, p4 = self._patches(counts)
         with p1, p2, p3, p4, \
-             patch(f"{_RA}.record_follower_stat", return_value=False), \
-             patch(f"{_RA}.track_audience_snapshot") as track:
+             patch(f"{_POST}.record_follower_stat", return_value=False), \
+             patch(f"{_POST}.track_audience_snapshot") as track:
             result = capture_follower_stats.run(user_id=1)
         assert result == "No audience signals readable"
         track.assert_not_called()
 
     def test_falls_back_to_the_scraped_profile_url(self):
-        from cqc_lem.app.run_automation import capture_follower_stats
+        from cqc_lem.app.engagement.posting import capture_follower_stats
         profile = MagicMock()
         profile.profile_url = "https://www.linkedin.com/in/scraped/"
-        with patch(f"{_RA}.get_current_profile",
+        with patch(f"{_POST}.get_current_profile",
                    return_value=(MagicMock(), MagicMock(), "e", profile)), \
-             patch(f"{_RA}.get_linkedin_profile_url_by_user_id", return_value=None), \
-             patch(f"{_RA}.capture_audience_snapshot", return_value={}) as snap, \
-             patch(f"{_RA}.record_follower_stat", return_value=True), \
-             patch(f"{_RA}.track_audience_snapshot"), patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_POST}.get_linkedin_profile_url_by_user_id", return_value=None), \
+             patch(f"{_POST}.capture_audience_snapshot", return_value={}) as snap, \
+             patch(f"{_POST}.record_follower_stat", return_value=True), \
+             patch(f"{_POST}.track_audience_snapshot"), patch(f"{_POST}.quit_gracefully"):
             capture_follower_stats.run(user_id=1)
         assert snap.call_args.args[1] == "https://www.linkedin.com/in/scraped/"
 
     def test_login_failure_returns_without_raising(self):
-        from cqc_lem.app.run_automation import capture_follower_stats
-        with patch(f"{_RA}.get_current_profile", side_effect=Exception("429")):
+        from cqc_lem.app.engagement.posting import capture_follower_stats
+        with patch(f"{_POST}.get_current_profile", side_effect=Exception("429")):
             assert "Failed" in capture_follower_stats.run(user_id=1)
 
     def test_capture_error_still_quits_the_driver(self):
-        from cqc_lem.app.run_automation import capture_follower_stats
-        with patch(f"{_RA}.get_current_profile",
+        from cqc_lem.app.engagement.posting import capture_follower_stats
+        with patch(f"{_POST}.get_current_profile",
                    return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.get_linkedin_profile_url_by_user_id", return_value="u"), \
-             patch(f"{_RA}.capture_audience_snapshot", side_effect=Exception("boom")), \
-             patch(f"{_RA}.quit_gracefully") as quit_:
+             patch(f"{_POST}.get_linkedin_profile_url_by_user_id", return_value="u"), \
+             patch(f"{_POST}.capture_audience_snapshot", side_effect=Exception("boom")), \
+             patch(f"{_POST}.quit_gracefully") as quit_:
             result = capture_follower_stats.run(user_id=1)
         assert "error" in result.lower()
         quit_.assert_called_once()

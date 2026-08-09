@@ -8,9 +8,9 @@ pytestmark = pytest.mark.unit
 
 
 def _fn():
-    # Lazy import: importing run_automation at module scope instantiates the OpenAI client at
+    # Lazy import: importing the app package at module scope instantiates the OpenAI client at
     # collection time, which fails in CI (no OPENAI_API_KEY). Match the codebase's in-test pattern.
-    from cqc_lem.app.run_automation import _post_permalink_from_card
+    from cqc_lem.utilities.linkedin.cards import _post_permalink_from_card
     return _post_permalink_from_card
 
 

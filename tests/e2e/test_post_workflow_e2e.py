@@ -214,12 +214,13 @@ class TestPostToLinkedinSuccessPath:
         mock_reply_task = MagicMock()
         mock_reply_task.apply_async = MagicMock()
 
-        # Patch share_on_linkedin at the run_automation import site and also
-        # at the poster module level to cover both call paths.
-        with patch("cqc_lem.app.run_automation.share_on_linkedin", return_value=fake_urn), \
+        # Patch share_on_linkedin at the `engagement.posting` import site (#1154 — that is the
+        # module `post_to_linkedin` reads) and also at the poster module level, to cover both
+        # call paths.
+        with patch("cqc_lem.app.engagement.posting.share_on_linkedin", return_value=fake_urn), \
              patch("cqc_lem.utilities.linkedin.poster.share_on_linkedin", return_value=fake_urn), \
-             patch("cqc_lem.app.run_automation.automate_reply_commenting", mock_reply_task):
-            from cqc_lem.app.run_automation import post_to_linkedin
+             patch("cqc_lem.app.engagement.posting.automate_reply_commenting", mock_reply_task):
+            from cqc_lem.app.engagement.posting import post_to_linkedin
             result = post_to_linkedin.run(user_id=user_id, post_id=post_id)
 
         assert "successfully" in result.lower(), f"Expected success, got: {result}"
@@ -256,8 +257,8 @@ class TestPostToLinkedinSuccessPath:
         post_id = workflow_state["post_id"]
         user_id = workflow_state["user_id"]
 
-        with patch("cqc_lem.app.run_automation.share_on_linkedin") as mock_share:
-            from cqc_lem.app.run_automation import post_to_linkedin
+        with patch("cqc_lem.app.engagement.posting.share_on_linkedin") as mock_share:
+            from cqc_lem.app.engagement.posting import post_to_linkedin
             result = post_to_linkedin.run(user_id=user_id, post_id=post_id)
 
         assert "already posted" in result.lower()

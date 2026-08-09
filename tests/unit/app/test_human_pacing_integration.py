@@ -98,7 +98,7 @@ class TestBeatDispatchJitter:
 
 class TestGoldenHourSweepJitter:
     def test_sweeps_are_jittered_but_never_reordered(self, pacing_on):
-        from cqc_lem.app.run_automation import (
+        from cqc_lem.app.engagement.posting import (
             _GOLDEN_HOUR_MAX_SWEEPS,
             _GOLDEN_HOUR_MINUTES,
             _golden_hour_sweep_countdowns,
@@ -113,13 +113,13 @@ class TestGoldenHourSweepJitter:
 
     def test_a_misconfigured_jitter_cannot_push_a_sweep_past_the_next_one(self, pacing_on,
                                                                           monkeypatch):
-        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns
+        from cqc_lem.app.engagement.posting import _golden_hour_sweep_countdowns
         monkeypatch.setenv("PACING_RESPONSIVE_JITTER_MAX_SECONDS", "100000")
         cds = _golden_hour_sweep_countdowns(3)
         assert cds == sorted(cds) and len(set(cds)) == 3
 
     def test_the_publish_time_no_longer_predicts_the_sweep_minute(self, pacing_on):
-        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns
+        from cqc_lem.app.engagement.posting import _golden_hour_sweep_countdowns
         runs = {tuple(_golden_hour_sweep_countdowns(3)) for _ in range(30)}
         assert len(runs) > 1  # landing on 20:00/40:00/60:00 after every publish is a signature
 

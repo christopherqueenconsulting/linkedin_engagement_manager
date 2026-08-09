@@ -659,7 +659,7 @@ class TestMain:
             llv.main([])
 
     def test_feed_sort_alone_is_enough_to_probe(self, monkeypatch):
-        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
         monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "sort control OK"})
@@ -686,7 +686,7 @@ class TestAppreciationSourcesProbe:
         assert "1 inside the 30-day window" in verdict
 
     def test_appreciation_sources_alone_is_enough_to_probe(self, monkeypatch):
-        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
         monkeypatch.setattr(llv, "probe_appreciation_sources",
@@ -1896,7 +1896,7 @@ class TestGroupFeedComposerProbe:
         assert reading["state"] == llv.STATE_OK
 
     def test_group_feed_composer_alone_is_enough_to_probe(self, monkeypatch):
-        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
         monkeypatch.setattr(llv, "probe_group_feed_composer",
@@ -2017,14 +2017,14 @@ class TestCommentOutcomeProbe:
         def _load_comment_thread(_d):
             pass
 
-        monkeypatch.setattr("cqc_lem.app.run_automation._load_comment_thread", _load_comment_thread)
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_items", lambda d: items)
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_sort_label", lambda d, w: "")
-        monkeypatch.setattr("cqc_lem.app.run_automation._find_our_comment", lambda it, s, t: it[0][1])
-        monkeypatch.setattr("cqc_lem.app.run_automation._thread_replies", lambda d, o, it: [])
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_like_count", lambda d, c: 0)
-        monkeypatch.setattr("cqc_lem.app.run_automation._post_author_href", lambda d: "")
-        monkeypatch.setattr("cqc_lem.app.run_automation._diagnose_sort_control_miss",
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._load_comment_thread", _load_comment_thread)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._comment_items", lambda d: items)
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_sort_label", lambda d, w: "")
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._find_our_comment", lambda it, s, t: it[0][1])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._thread_replies", lambda d, o, it: [])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_like_count", lambda d, c: 0)
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._post_author_href", lambda d: "")
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._diagnose_sort_control_miss",
                             lambda d: [{"tag": "button", "text": "Most relevant"}])
 
         report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
@@ -2037,15 +2037,15 @@ class TestCommentOutcomeProbe:
     def test_probe_omits_candidates_when_sort_control_resolves(self, monkeypatch):
         items = [self._item("Latency is the tell here", "https://www.linkedin.com/in/me/")]
 
-        monkeypatch.setattr("cqc_lem.app.run_automation._load_comment_thread", lambda d: None)
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_items", lambda d: items)
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_sort_label",
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._load_comment_thread", lambda d: None)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._comment_items", lambda d: items)
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_sort_label",
                             lambda d, w: "most relevant")
-        monkeypatch.setattr("cqc_lem.app.run_automation._find_our_comment", lambda it, s, t: it[0][1])
-        monkeypatch.setattr("cqc_lem.app.run_automation._thread_replies", lambda d, o, it: [])
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_like_count", lambda d, c: 0)
-        monkeypatch.setattr("cqc_lem.app.run_automation._post_author_href", lambda d: "")
-        monkeypatch.setattr("cqc_lem.app.run_automation._diagnose_sort_control_miss",
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._find_our_comment", lambda it, s, t: it[0][1])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._thread_replies", lambda d, o, it: [])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_like_count", lambda d, c: 0)
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._post_author_href", lambda d: "")
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._diagnose_sort_control_miss",
                             lambda d: [{"tag": "button"}])  # would not be called
 
         report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
@@ -2055,10 +2055,10 @@ class TestCommentOutcomeProbe:
         assert report["state"] == llv.STATE_OK
 
     def test_probe_omits_candidates_when_thread_never_rendered(self, monkeypatch):
-        monkeypatch.setattr("cqc_lem.app.run_automation._load_comment_thread", lambda d: None)
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_items", lambda d: [])
-        monkeypatch.setattr("cqc_lem.app.run_automation._comment_sort_label", lambda d, w: "")
-        monkeypatch.setattr("cqc_lem.app.run_automation._diagnose_sort_control_miss",
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._load_comment_thread", lambda d: None)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._comment_items", lambda d: [])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_sort_label", lambda d, w: "")
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._diagnose_sort_control_miss",
                             lambda d: [{"tag": "button"}])  # would not be called
 
         report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
@@ -2134,7 +2134,7 @@ class TestPermalinkCommentProbe:
         assert "posts nothing" in reading["verdict"]
 
     def test_permalink_comment_alone_is_enough_to_probe(self, monkeypatch):
-        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
         monkeypatch.setattr(llv, "probe_permalink_comment",
@@ -2276,7 +2276,7 @@ class TestProfileExperiencesProbe:
         assert reading["state"] == llv.STATE_UNKNOWN
 
     def test_profile_experiences_alone_is_enough_to_probe(self, monkeypatch):
-        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
         monkeypatch.setattr(llv, "probe_profile_experiences",

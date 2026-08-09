@@ -6,18 +6,18 @@ from unittest.mock import patch
 import pytest
 
 BASE_PATCHES = [
-    ("cqc_lem.app.run_automation.get_post_status", {"return_value": "approved"}),
+    ("cqc_lem.app.engagement.posting.get_post_status", {"return_value": "approved"}),
     # Issue #1074: the publish task refuses a native-publish draft before anything else.
-    ("cqc_lem.app.run_automation.get_post_manual_publish", {"return_value": False}),
-    ("cqc_lem.app.run_automation.get_user_password_pair_by_id", {"return_value": ("u@example.com", "pw")}),
-    ("cqc_lem.app.run_automation.get_post_content", {"return_value": "Post text"}),
-    ("cqc_lem.app.run_automation.insert_new_log", {}),
-    ("cqc_lem.app.run_automation.update_db_post_status", {}),
-    ("cqc_lem.app.run_automation.get_engagement_preferences", {"return_value": {"reply_check_mode": "event"}}),
-    ("cqc_lem.app.run_automation.sweep_reply_comments", {}),
+    ("cqc_lem.app.engagement.posting.get_post_manual_publish", {"return_value": False}),
+    ("cqc_lem.app.engagement.posting.get_user_password_pair_by_id", {"return_value": ("u@example.com", "pw")}),
+    ("cqc_lem.app.engagement.posting.get_post_content", {"return_value": "Post text"}),
+    ("cqc_lem.app.engagement.posting.insert_new_log", {}),
+    ("cqc_lem.app.engagement.posting.update_db_post_status", {}),
+    ("cqc_lem.app.engagement.posting.get_engagement_preferences", {"return_value": {"reply_check_mode": "event"}}),
+    ("cqc_lem.app.engagement.posting.sweep_reply_comments", {}),
     # post_to_linkedin dispatches the seed first comment itself once the post is live (#392).
-    ("cqc_lem.app.run_automation.auto_seed_comment_on_post", {}),
-    ("cqc_lem.app.run_automation.auto_second_wave_comment", {}),
+    ("cqc_lem.app.engagement.posting.auto_seed_comment_on_post", {}),
+    ("cqc_lem.app.engagement.posting.auto_second_wave_comment", {}),
 ]
 
 
@@ -25,20 +25,20 @@ BASE_PATCHES = [
 class TestPostToLinkedinDocument:
 
     def test_document_post_calls_share_document_on_linkedin(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         slides = ["/assets/images/carousel/40/slide_01.png", "/assets/images/carousel/40/slide_02.png"]
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.DOCUMENT))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=slides))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.get_post_type", return_value=PostType.DOCUMENT))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.get_carousel_slides", return_value=slides))
             mock_document = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_document_on_linkedin", return_value="urn:li:share:40")
+                patch("cqc_lem.app.engagement.posting.share_document_on_linkedin", return_value="urn:li:share:40")
             )
-            mock_carousel = stack.enter_context(patch("cqc_lem.app.run_automation.share_carousel_on_linkedin"))
-            mock_share = stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin"))
+            mock_carousel = stack.enter_context(patch("cqc_lem.app.engagement.posting.share_carousel_on_linkedin"))
+            mock_share = stack.enter_context(patch("cqc_lem.app.engagement.posting.share_on_linkedin"))
 
             post_to_linkedin.run(1, 40)
 
@@ -47,7 +47,7 @@ class TestPostToLinkedinDocument:
             mock_share.assert_not_called()
 
     def test_document_post_without_slides_is_flagged_error(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
@@ -55,10 +55,10 @@ class TestPostToLinkedinDocument:
                 if target.endswith("update_db_post_status"):
                     continue
                 stack.enter_context(patch(target, **kwargs))
-            mock_status = stack.enter_context(patch("cqc_lem.app.run_automation.update_db_post_status"))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.DOCUMENT))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=[]))
-            mock_document = stack.enter_context(patch("cqc_lem.app.run_automation.share_document_on_linkedin"))
+            mock_status = stack.enter_context(patch("cqc_lem.app.engagement.posting.update_db_post_status"))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.get_post_type", return_value=PostType.DOCUMENT))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.get_carousel_slides", return_value=[]))
+            mock_document = stack.enter_context(patch("cqc_lem.app.engagement.posting.share_document_on_linkedin"))
 
             result = post_to_linkedin.run(1, 41)
 
@@ -69,7 +69,7 @@ class TestPostToLinkedinDocument:
 
     def test_document_publish_failure_does_not_blame_the_slide_images(self):
         """A None URN from a deck that HAD slides may be creds/API — don't send ops after images."""
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
@@ -77,11 +77,11 @@ class TestPostToLinkedinDocument:
                 if target.endswith(("update_db_post_status", "insert_new_log")):
                     continue
                 stack.enter_context(patch(target, **kwargs))
-            mock_status = stack.enter_context(patch("cqc_lem.app.run_automation.update_db_post_status"))
-            mock_log = stack.enter_context(patch("cqc_lem.app.run_automation.insert_new_log"))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.DOCUMENT))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=["/s1.png"]))
-            stack.enter_context(patch("cqc_lem.app.run_automation.share_document_on_linkedin", return_value=None))
+            mock_status = stack.enter_context(patch("cqc_lem.app.engagement.posting.update_db_post_status"))
+            mock_log = stack.enter_context(patch("cqc_lem.app.engagement.posting.insert_new_log"))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.get_post_type", return_value=PostType.DOCUMENT))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.get_carousel_slides", return_value=["/s1.png"]))
+            stack.enter_context(patch("cqc_lem.app.engagement.posting.share_document_on_linkedin", return_value=None))
 
             result = post_to_linkedin.run(1, 42)
 

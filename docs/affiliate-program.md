@@ -226,7 +226,7 @@ never wrote.
 - **Signup** — `api/main.py::_start_affiliate_membership` attributes the referral, then enrols.
   Best-effort throughout: the program is a perk and may never fail a signup.
 - **Activation** — `utilities/onboarding.py::_convert_referral`, on the one-shot ACTIVATED transition.
-- **Publish gate** — `app/run_automation.py::_affiliate_disclosure_gate`.
+- **Publish gate** — `app/engagement/posting.py::_affiliate_disclosure_gate`.
 - **SPA** — `components/AffiliateNotice.tsx` (the enrollment notice, shown until acknowledged) and
   `pages/account/AffiliateCard.tsx` under Settings → Billing.
 

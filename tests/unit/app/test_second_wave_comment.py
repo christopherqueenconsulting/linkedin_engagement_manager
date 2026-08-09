@@ -8,11 +8,12 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_POST = "cqc_lem.app.engagement.posting"
 _FEED = "cqc_lem.app.engagement.feed"
-# `auto_second_wave_comment` and `auto_seed_comment_on_post` moved to
-# `app.engagement.feed` (#1154). `post_to_linkedin`, which dispatches them, did NOT —
-# and it reads run_automation's re-export, so TestSecondWaveDispatch keeps patching `_RA`.
+# `auto_second_wave_comment` and `auto_seed_comment_on_post` moved to `app.engagement.feed`
+# (#1154) and `post_to_linkedin`, which dispatches them, moved to `app.engagement.posting`.
+# The two live in different modules but the dispatch is a WIRE edge: `post_to_linkedin` reads
+# `posting`'s own binding of the imported task, so TestSecondWaveDispatch patches `_POST`.
 _AI = "cqc_lem.utilities.ai.ai_helper"
 
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"
@@ -233,20 +234,20 @@ class TestSecondWaveDispatch:
         but only for one hop: the task re-arms itself the rest of the way to its 6-8h offset, so the
         broker never holds a message past its visibility timeout (which would redeliver it).
         """
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_post_content", return_value="body"), \
-             patch(f"{_RA}.get_post_status", return_value="approved"), \
-             patch(f"{_RA}.get_post_manual_publish", return_value=False), \
-             patch(f"{_RA}.get_user_password_pair_by_id", return_value=("u@example.com", "pw")), \
-             patch(f"{_RA}.get_post_type", return_value=ra.PostType.TEXT), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"reply_check_mode": "off"}), \
-             patch(f"{_RA}.split_link_for_first_comment", return_value=("body", [])), \
-             patch(f"{_RA}.share_on_linkedin", return_value="urn:li:share:1"), \
-             patch(f"{_RA}.update_db_post_status"), \
-             patch(f"{_RA}.insert_new_log"), \
-             patch(f"{_RA}.auto_seed_comment_on_post"), \
-             patch(f"{_RA}.auto_second_wave_comment") as second, \
-             patch(f"{_RA}.get_post_video_url", return_value=None):
+        from cqc_lem.app.engagement import posting as ra
+        with patch(f"{_POST}.get_post_content", return_value="body"), \
+             patch(f"{_POST}.get_post_status", return_value="approved"), \
+             patch(f"{_POST}.get_post_manual_publish", return_value=False), \
+             patch(f"{_POST}.get_user_password_pair_by_id", return_value=("u@example.com", "pw")), \
+             patch(f"{_POST}.get_post_type", return_value=ra.PostType.TEXT), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={"reply_check_mode": "off"}), \
+             patch(f"{_POST}.split_link_for_first_comment", return_value=("body", [])), \
+             patch(f"{_POST}.share_on_linkedin", return_value="urn:li:share:1"), \
+             patch(f"{_POST}.update_db_post_status"), \
+             patch(f"{_POST}.insert_new_log"), \
+             patch(f"{_POST}.auto_seed_comment_on_post"), \
+             patch(f"{_POST}.auto_second_wave_comment") as second, \
+             patch(f"{_POST}.get_post_video_url", return_value=None):
             ra.post_to_linkedin.run(user_id=1, post_id=9)
         from cqc_lem.utilities import golden_hour as g
         countdown = second.apply_async.call_args.kwargs["countdown"]
@@ -254,21 +255,21 @@ class TestSecondWaveDispatch:
         assert second.apply_async.call_args.kwargs["kwargs"] == {"user_id": 1, "post_id": 9}
 
     def test_kill_switch_stops_the_dispatch(self, monkeypatch):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting as ra
         monkeypatch.setenv("SECOND_WAVE_COMMENT_ENABLED", "false")
-        with patch(f"{_RA}.get_post_content", return_value="body"), \
-             patch(f"{_RA}.get_post_status", return_value="approved"), \
-             patch(f"{_RA}.get_post_manual_publish", return_value=False), \
-             patch(f"{_RA}.get_user_password_pair_by_id", return_value=("u@example.com", "pw")), \
-             patch(f"{_RA}.get_post_type", return_value=ra.PostType.TEXT), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"reply_check_mode": "off"}), \
-             patch(f"{_RA}.split_link_for_first_comment", return_value=("body", [])), \
-             patch(f"{_RA}.share_on_linkedin", return_value="urn:li:share:1"), \
-             patch(f"{_RA}.update_db_post_status"), \
-             patch(f"{_RA}.insert_new_log"), \
-             patch(f"{_RA}.auto_seed_comment_on_post"), \
-             patch(f"{_RA}.auto_second_wave_comment") as second, \
-             patch(f"{_RA}.get_post_video_url", return_value=None):
+        with patch(f"{_POST}.get_post_content", return_value="body"), \
+             patch(f"{_POST}.get_post_status", return_value="approved"), \
+             patch(f"{_POST}.get_post_manual_publish", return_value=False), \
+             patch(f"{_POST}.get_user_password_pair_by_id", return_value=("u@example.com", "pw")), \
+             patch(f"{_POST}.get_post_type", return_value=ra.PostType.TEXT), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={"reply_check_mode": "off"}), \
+             patch(f"{_POST}.split_link_for_first_comment", return_value=("body", [])), \
+             patch(f"{_POST}.share_on_linkedin", return_value="urn:li:share:1"), \
+             patch(f"{_POST}.update_db_post_status"), \
+             patch(f"{_POST}.insert_new_log"), \
+             patch(f"{_POST}.auto_seed_comment_on_post"), \
+             patch(f"{_POST}.auto_second_wave_comment") as second, \
+             patch(f"{_POST}.get_post_video_url", return_value=None):
             ra.post_to_linkedin.run(user_id=1, post_id=9)
         second.apply_async.assert_not_called()
 

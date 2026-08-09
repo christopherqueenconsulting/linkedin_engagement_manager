@@ -10,23 +10,25 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-RA = "cqc_lem.app.run_automation"
+# The follow-up sweep moved to `app.engagement.posting` (#1154) — that is the module whose globals
+# the worker, the reconcile walk and the activity scrape read, so it is where they are patched.
+POST = "cqc_lem.app.engagement.posting"
 # The composer/comment DOM helpers moved down to `utilities/linkedin/composer.py` (#1154)
 # and took their imports with them, so a collaborator THEY read has to be patched there —
-# patching it on `run_automation` rebinds a name they never look at.
+# patching it on either app module rebinds a name they never look at.
 COMPOSER = "cqc_lem.utilities.linkedin.composer"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
     # The worker's scroll/pacing loops call time.sleep; skip the real waits in unit tests.
-    with patch(f"{RA}.time.sleep", lambda *a, **k: None):
+    with patch(f"{POST}.time.sleep", lambda *a, **k: None):
         yield
 
 
 def _fn(name):
     import importlib
-    return getattr(importlib.import_module(RA), name)
+    return getattr(importlib.import_module(POST), name)
 
 
 class TestPostUrlFromKey:
@@ -83,38 +85,38 @@ from contextlib import ExitStack
 
 
 def _p(es, name, **kw):
-    return es.enter_context(patch(f"{RA}.{name}", **kw))
+    return es.enter_context(patch(f"{POST}.{name}", **kw))
 
 
 class TestReactToCommentInline:
     def test_likes_when_button_present(self):
-        from cqc_lem.app.run_automation import _react_to_comment_inline
+        from cqc_lem.app.engagement.posting import _react_to_comment_inline
         btn = MagicMock(); btn.get_attribute.return_value = None; btn.size = {"width": 20, "height": 20}
         comment = MagicMock(); comment.find_elements.return_value = [btn]
         driver = MagicMock()
-        with patch(f"{RA}.ActionChains") as AC:
+        with patch(f"{POST}.ActionChains") as AC:
             AC.return_value.move_to_element.return_value.pause.return_value.click.return_value.perform.return_value = None
             AC.return_value.move_to_element.return_value.pause.return_value.perform.return_value = None
             assert _react_to_comment_inline(driver, MagicMock(), comment, user_id=1) is True
 
     def test_skips_when_already_reacted(self):
-        from cqc_lem.app.run_automation import _react_to_comment_inline
+        from cqc_lem.app.engagement.posting import _react_to_comment_inline
         btn = MagicMock(); btn.get_attribute.return_value = "true"  # aria-pressed
         comment = MagicMock(); comment.find_elements.return_value = [btn]
-        with patch(f"{RA}.ActionChains"):
+        with patch(f"{POST}.ActionChains"):
             assert _react_to_comment_inline(MagicMock(), MagicMock(), comment, user_id=1) is False
 
     def test_returns_false_and_logs_when_no_button(self):
-        from cqc_lem.app.run_automation import _react_to_comment_inline
+        from cqc_lem.app.engagement.posting import _react_to_comment_inline
         comment = MagicMock(); comment.find_elements.return_value = []
-        with patch(f"{RA}.ActionChains"), patch(f"{RA}.log_warning") as lw:
+        with patch(f"{POST}.ActionChains"), patch(f"{POST}.log_warning") as lw:
             assert _react_to_comment_inline(MagicMock(), MagicMock(), comment, user_id=1) is False
         assert lw.called
 
 
 class TestReplyUnderComment:
     def test_types_into_this_comments_composer_and_submits(self):
-        from cqc_lem.app.run_automation import _reply_under_comment_inline
+        from cqc_lem.utilities.linkedin.composer import _reply_under_comment_inline
         rbtn = MagicMock()
         comment = MagicMock(); comment.find_elements.return_value = [rbtn]
         composer = MagicMock()
@@ -129,7 +131,7 @@ class TestReplyUnderComment:
         assert rc.call_args.args[1] is comment  # resolution is anchored to THIS comment
 
     def test_returns_false_when_no_reply_button(self):
-        from cqc_lem.app.run_automation import _reply_under_comment_inline
+        from cqc_lem.utilities.linkedin.composer import _reply_under_comment_inline
         comment = MagicMock(); comment.find_elements.return_value = []
         driver = MagicMock()
         with patch(f"{COMPOSER}.ActionChains"), patch(f"{COMPOSER}.log_warning"):
@@ -139,7 +141,7 @@ class TestReplyUnderComment:
         # Issue #886: the sweep and the lead-signal delivery both treat the return value as a
         # boolean skip — a miss must never raise, and must never warn (an unopened reply box is an
         # expected no-op; a repeated log_warning re-escalates as a defect).
-        from cqc_lem.app.run_automation import _reply_under_comment_inline
+        from cqc_lem.utilities.linkedin.composer import _reply_under_comment_inline
         comment = MagicMock(); comment.find_elements.return_value = [MagicMock()]
         driver = MagicMock()
         with patch(f"{COMPOSER}.ActionChains"), patch(f"{COMPOSER}.log_warning") as lw, \
@@ -150,17 +152,17 @@ class TestReplyUnderComment:
 
 class TestCommentContainerHelpers:
     def test_header_author_passthrough(self):
-        from cqc_lem.app.run_automation import _comment_header_author
+        from cqc_lem.utilities.linkedin.composer import _comment_header_author
         driver = MagicMock(); driver.execute_script.return_value = "https://www.linkedin.com/in/jane/"
         assert _comment_header_author(driver, MagicMock()) == "https://www.linkedin.com/in/jane/"
 
     def test_header_author_empty_on_error(self):
-        from cqc_lem.app.run_automation import _comment_header_author
+        from cqc_lem.utilities.linkedin.composer import _comment_header_author
         driver = MagicMock(); driver.execute_script.side_effect = RuntimeError("x")
         assert _comment_header_author(driver, MagicMock()) == ""
 
     def test_container_passthrough(self):
-        from cqc_lem.app.run_automation import _comment_container
+        from cqc_lem.utilities.linkedin.composer import _comment_container
         node = MagicMock()
         driver = MagicMock(); driver.execute_script.return_value = node
         assert _comment_container(driver, MagicMock()) is node
@@ -180,7 +182,7 @@ def _worker_env(es, reply_text="Thanks! How do you test drift?", followup_state=
     driver = MagicMock()
     driver.current_url = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
     def find_elements(by, sel):
-        from cqc_lem.app.run_automation import _COMMENTLIST_TEXTBOX
+        from cqc_lem.utilities.linkedin.composer import _COMMENTLIST_TEXTBOX
         if sel == _COMMENTLIST_TEXTBOX:
             return [our_tb, reply_tb]
         return []  # scroll sentinel + expand buttons
@@ -208,7 +210,7 @@ def _worker_env(es, reply_text="Thanks! How do you test drift?", followup_state=
 
 class TestFollowupWorker:
     def test_reacts_and_replies_to_a_question_reply(self):
-        from cqc_lem.app.run_automation import _followup_on_post_comment_replies
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
         with ExitStack() as es:
             driver, prof, rec = _worker_env(es)
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1,
@@ -217,7 +219,7 @@ class TestFollowupWorker:
         assert r == {"reacted": 1, "replied": 1, "leads": 0}
 
     def test_reacts_only_when_reply_is_not_a_question(self):
-        from cqc_lem.app.run_automation import _followup_on_post_comment_replies
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
         with ExitStack() as es:
             driver, prof, rec = _worker_env(es, reply_text="Nice, totally agree.")
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1, "u", "feedurn://urn:li:activity:1",
@@ -225,7 +227,7 @@ class TestFollowupWorker:
         assert r["replied"] == 0 and r["reacted"] == 1
 
     def test_dedup_skips_already_handled(self):
-        from cqc_lem.app.run_automation import _followup_on_post_comment_replies
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
         with ExitStack() as es:
             driver, prof, rec = _worker_env(es, followup_state={"reacted": 1, "replied": 1})
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1, "u", "feedurn://urn:li:activity:1",
@@ -233,7 +235,7 @@ class TestFollowupWorker:
         assert r == {"reacted": 0, "replied": 0, "leads": 0}
 
     def test_reply_cap_blocks_reply_but_not_react(self):
-        from cqc_lem.app.run_automation import _followup_on_post_comment_replies
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
         with ExitStack() as es:
             driver, prof, rec = _worker_env(es)
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1, "u", "feedurn://urn:li:activity:1",
@@ -241,9 +243,9 @@ class TestFollowupWorker:
         assert r["reacted"] == 1 and r["replied"] == 0
 
     def test_no_slug_returns_early(self):
-        from cqc_lem.app.run_automation import _followup_on_post_comment_replies
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
         prof = MagicMock(); prof.profile_url = "https://www.linkedin.com/"
-        with patch(f"{RA}.log_warning"):
+        with patch(f"{POST}.log_warning"):
             r = _followup_on_post_comment_replies(MagicMock(), MagicMock(), 1, "u", "k", prof, "v", {}, 5)
         assert r == {"reacted": 0, "replied": 0, "leads": 0}
 
@@ -257,18 +259,18 @@ class TestOrchestration:
         _p(es, "quit_gracefully")
 
     def test_single_post_no_urn(self):
-        from cqc_lem.app.run_automation import _run_single_post_followup
+        from cqc_lem.app.engagement.posting import _run_single_post_followup
         assert "No activity URN" in _run_single_post_followup(1, "https://linkedin.com/feed/x")
 
     def test_single_post_lock_held(self):
-        from cqc_lem.app.run_automation import _run_single_post_followup
+        from cqc_lem.app.engagement.posting import _run_single_post_followup
         with ExitStack() as es:
             _p(es, "acquire_run_lock", return_value=None)
             out = _run_single_post_followup(1, "https://www.linkedin.com/feed/update/urn:li:activity:9/")
         assert "another follow-up run" in out.lower()
 
     def test_single_post_runs_worker(self):
-        from cqc_lem.app.run_automation import _run_single_post_followup
+        from cqc_lem.app.engagement.posting import _run_single_post_followup
         with ExitStack() as es:
             _p(es, "acquire_run_lock", return_value="tok")
             rel = _p(es, "release_run_lock")
@@ -279,13 +281,13 @@ class TestOrchestration:
         rel.assert_called()
 
     def test_sweep_no_posts(self):
-        from cqc_lem.app.run_automation import _run_comment_followups_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_followups_sweep
         with ExitStack() as es:
             _p(es, "get_recent_navigable_commented_posts", return_value=[])
             assert "No recent navigable" in _run_comment_followups_sweep(1)
 
     def test_sweep_runs_worker_over_posts(self):
-        from cqc_lem.app.run_automation import _run_comment_followups_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_followups_sweep
         with ExitStack() as es:
             _p(es, "get_recent_navigable_commented_posts",
                return_value=[{"post_key": "feedurn://urn:li:activity:1"},
@@ -300,21 +302,21 @@ class TestOrchestration:
         rel.assert_called()
 
     def test_sweep_lock_held(self):
-        from cqc_lem.app.run_automation import _run_comment_followups_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_followups_sweep
         with ExitStack() as es:
             _p(es, "get_recent_navigable_commented_posts", return_value=[{"post_key": "feedurn://urn:li:activity:1"}])
             _p(es, "acquire_run_lock", return_value=None)
             assert "in progress" in _run_comment_followups_sweep(1).lower()
 
     def test_reconcile_no_stale(self):
-        from cqc_lem.app.run_automation import _run_reconcile_comment_urns
+        from cqc_lem.app.engagement.posting import _run_reconcile_comment_urns
         with ExitStack() as es:
             _p(es, "get_recent_commented_rows_with_text",
                return_value=[{"post_key": "feedurn://urn:li:activity:1", "comment_text": "x"}])
             assert "No stale" in _run_reconcile_comment_urns(1)
 
     def test_reconcile_upgrades_stale_key(self):
-        from cqc_lem.app.run_automation import _run_reconcile_comment_urns
+        from cqc_lem.app.engagement.posting import _run_reconcile_comment_urns
         with ExitStack() as es:
             _p(es, "get_recent_commented_rows_with_text",
                return_value=[{"post_key": "feedpost://h", "comment_text": "my comment"}])
@@ -354,18 +356,18 @@ class TestGuestReplyGenerator:
 
 class TestScrapeActivityUrns:
     def test_maps_normalized_text_to_post_url(self):
-        from cqc_lem.app.run_automation import _scrape_activity_comment_urns
+        from cqc_lem.app.engagement.posting import _scrape_activity_comment_urns
         box = MagicMock(); box.text = "My earlier comment here"
         driver = MagicMock(); driver.find_elements.return_value = [box]
         prof = MagicMock(); prof.profile_url = "https://www.linkedin.com/in/me/"
-        with patch(f"{RA}._card_for_textbox", return_value=MagicMock()), \
-             patch(f"{RA}._post_permalink_from_card",
+        with patch(f"{POST}._card_for_textbox", return_value=MagicMock()), \
+             patch(f"{POST}._post_permalink_from_card",
                    return_value="https://www.linkedin.com/feed/update/urn:li:activity:7/"):
             m = _scrape_activity_comment_urns(driver, MagicMock(), prof)
         assert "https://www.linkedin.com/feed/update/urn:li:activity:7/" in m.values()
 
     def test_empty_when_no_profile_path(self):
-        from cqc_lem.app.run_automation import _scrape_activity_comment_urns
+        from cqc_lem.app.engagement.posting import _scrape_activity_comment_urns
         prof = MagicMock(); prof.profile_url = "https://www.linkedin.com/"
         assert _scrape_activity_comment_urns(MagicMock(), MagicMock(), prof) == {}
 

@@ -12,6 +12,10 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The own-post reply rail moved to `app.engagement.posting` (#1154); the lead RESPONDER
+# (`_send_lead_response`, `_reply_to_person_on_post`) stayed with the DM cluster, so both
+# spellings are live here and each test uses the one its own code reads.
+_POST = "cqc_lem.app.engagement.posting"
 # Flagging moved down to `utilities/lead_scoring.py` (#1154) — beside `profile_slug`, of which
 # `run_automation._profile_slug` was a byte-identical copy. It took its DB / classifier / LLM
 # imports with it, so those are the bindings it reads.
@@ -27,6 +31,12 @@ def _no_sleep():
 def _fn(name):
     import importlib
     return getattr(importlib.import_module(_RA), name)
+
+
+def _post(name):
+    """Same, for the half that moved to `app.engagement.posting`."""
+    import importlib
+    return getattr(importlib.import_module(_POST), name)
 
 
 def _ls(name):
@@ -338,19 +348,19 @@ class TestReadPathWiring:
         profile = MagicMock()
         profile.profile_url = "https://www.linkedin.com/in/me/"
         profile.full_name = "Me Myself"
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/post/7"), \
-             patch(f"{_RA}.get_post_content", return_value="my post"), \
-             patch(f"{_RA}.click_first", return_value=None), \
-             patch(f"{_RA}._comment_items_from_thread", return_value=[comment]), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
-             patch(f"{_RA}.upsert_engager"), \
-             patch(f"{_RA}._flag_lead_signal", return_value=1) as flag, \
-             patch(f"{_RA}.generate_thread_reply", return_value=None), \
-             patch(f"{_RA}.insert_new_log"):
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/post/7"), \
+             patch(f"{_POST}.get_post_content", return_value="my post"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[comment]), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager"), \
+             patch(f"{_POST}._flag_lead_signal", return_value=1) as flag, \
+             patch(f"{_POST}.generate_thread_reply", return_value=None), \
+             patch(f"{_POST}.insert_new_log"):
             driver = MagicMock()
             driver.current_url = "https://x/post/7"
-            _fn("_reply_to_comments_on_open_post")(driver, MagicMock(), 1, 7, profile, "synth")
+            _post("_reply_to_comments_on_open_post")(driver, MagicMock(), 1, 7, profile, "synth")
         flag.assert_called_once()
         assert flag.call_args.args[1] == "Do you offer this for agencies?"
         assert flag.call_args.kwargs["person_name"] == "Jane Doe"

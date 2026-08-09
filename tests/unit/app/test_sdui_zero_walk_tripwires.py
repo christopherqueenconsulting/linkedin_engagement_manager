@@ -23,6 +23,9 @@ from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 
 _RA = "cqc_lem.app.run_automation"
+# The post-stats sweep moved to `app.engagement.posting` (#1154); the profile-viewer
+# branch below still runs in `run_automation`, so both spellings are live in this file.
+_POST = "cqc_lem.app.engagement.posting"
 # The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
 # is the module whose globals the invite code reads.
 _INV = "cqc_lem.app.engagement.invites"
@@ -397,22 +400,22 @@ class TestCompanyInviteZeroWalk:
 
 class TestPostStatsZeroWalk:
     def _run(self, counts, page_text):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting as ra
         driver = MagicMock()
         main = MagicMock()
         main.text = page_text
         driver.find_element.return_value = main
-        with patch(f"{_RA}.time.sleep"), \
-             patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9]), \
-             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
-             patch(f"{_RA}.get_current_profile",
+        with patch(f"{_POST}.time.sleep"), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_POST}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_POST}.get_current_profile",
                    return_value=(driver, MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
-             patch(f"{_RA}._post_social_counts", return_value=dict(counts)), \
-             patch(f"{_RA}._post_analytics_counts", return_value={}), \
-             patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
-             patch(f"{_RA}.track_post_outcome"), \
-             patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_POST}._post_social_counts", return_value=dict(counts)), \
+             patch(f"{_POST}._post_analytics_counts", return_value={}), \
+             patch(f"{_POST}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_POST}.track_post_outcome"), \
+             patch(f"{_POST}.record_post_stats") as rec, patch(f"{_POST}.quit_gracefully"):
             result = ra.auto_scrape_post_stats.run(user_id=1)
         return result, rec
 
@@ -444,12 +447,12 @@ class TestPostStatsZeroWalk:
 
         Both read as `empty` — the fail-safe direction for a tripwire that files defects.
         """
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting as ra
         assert ra._rendered_count_signals("Like\nComment\nRepost\nSend") == 0
         assert ra._rendered_count_signals("Impressions\n\nsome prose\n412") == 0
 
     def test_the_cross_check_reads_labels_the_parser_does_not_map(self):
         """A cross-check limited to the parser's own vocabulary could never see a label rename."""
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting as ra
         assert ra._rendered_count_signals("Members reached\n1,204") == 1
         assert ra._rendered_count_signals("Views\n88") == 1

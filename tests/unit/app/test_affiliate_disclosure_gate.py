@@ -13,7 +13,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+# `post_to_linkedin` and the gate it calls moved to `app.engagement.posting` (#1154);
+# every collaborator below is read from THAT module's globals.
+_POST = "cqc_lem.app.engagement.posting"
 _AFF = "cqc_lem.utilities.marketing.affiliate"
 _ATTR = "cqc_lem.utilities.marketing.attribution"
 
@@ -40,7 +42,7 @@ def _post_patches(stack, content, prefs=None):
         "auto_seed_comment_on_post": {},
         "auto_second_wave_comment": {},
     }
-    mocks = {name: stack.enter_context(patch(f"{_RA}.{name}", **kw)) for name, kw in targets.items()}
+    mocks = {name: stack.enter_context(patch(f"{_POST}.{name}", **kw)) for name, kw in targets.items()}
     stack.enter_context(patch(f"{_ATTR}.PUBLIC_BASE_URL", "https://app.lem.test"))
     stack.enter_context(patch(f"{_ATTR}.BRAND_SIGNUP_URL", "https://app.lem.test/signup"))
     stack.enter_context(patch(f"{_ATTR}.MARKETING_OWNED_DOMAINS", ""))
@@ -51,7 +53,7 @@ def _post_patches(stack, content, prefs=None):
 
 class TestAffiliateDisclosureGate:
     def test_undisclosed_affiliate_post_is_blocked_and_flagged(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostStatus
         with ExitStack() as stack:
             m = _post_patches(stack, f"This tool changed my week. {REF_LINK}")
@@ -64,7 +66,7 @@ class TestAffiliateDisclosureGate:
         assert "disclosure" in m["insert_new_log"].call_args.kwargs["message"].lower()
 
     def test_disclosed_affiliate_post_publishes(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, f"This tool changed my week. {REF_LINK}\n\n{DISCLOSURE}",
                               prefs={"link_in_first_comment": False})
@@ -76,7 +78,7 @@ class TestAffiliateDisclosureGate:
         would let every affiliate post through by having its link carried — so the carried link is
         graded too.
         """
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, f"This tool changed my week.\n\nHere: {REF_LINK}",
                               prefs={"link_in_first_comment": True})
@@ -85,7 +87,7 @@ class TestAffiliateDisclosureGate:
         assert "missing_ftc_disclosure" in result
 
     def test_a_normal_post_is_never_gated(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, "Three lessons from the rebuild.")
             post_to_linkedin.run(1, 10)
@@ -93,7 +95,7 @@ class TestAffiliateDisclosureGate:
         m["update_db_post_status"].assert_called_once()   # POSTED, not ERROR
 
     def test_a_deployment_with_no_disclosure_configured_cannot_publish_affiliate_content(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, f"Use my link: {REF_LINK}",
                               prefs={"link_in_first_comment": False})
@@ -106,7 +108,7 @@ class TestAffiliateDisclosureGate:
         """Issue #770: 'generated' and 'published' are different numbers — a promo post the author
         never approved is one and not the other, and that gap is the read on the program.
         """
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             _post_patches(stack, f"This tool changed my week. {REF_LINK}\n\n{DISCLOSURE}",
                           prefs={"link_in_first_comment": False})
@@ -117,7 +119,7 @@ class TestAffiliateDisclosureGate:
         assert track.call_args[1]["post_id"] == 10
 
     def test_an_ordinary_published_post_is_not_counted_as_affiliate(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             _post_patches(stack, "Three lessons from the rebuild.")
             track = stack.enter_context(
@@ -127,7 +129,7 @@ class TestAffiliateDisclosureGate:
 
     def test_a_broken_gate_publishes_rather_than_blocking_every_post(self):
         """This is a compliance check on a rare shape of post, not a new way for posting to break."""
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, "Three lessons from the rebuild.")
             stack.enter_context(patch(f"{_AFF}.disclosure_report", side_effect=RuntimeError("boom")))

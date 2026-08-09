@@ -183,9 +183,9 @@ public, harder-to-retract artifact than a single feed post.
 
 | Concern | Module | Doc |
 |---|---|---|
-| Post publish + pre/post-publish dispatch | `app/run_scheduler.py` (`auto_check_scheduled_posts`), `app/run_automation.py` (`post_to_linkedin`) | — |
+| Post publish + pre/post-publish dispatch | `app/run_scheduler.py` (`auto_check_scheduled_posts`), `app/engagement/posting.py` (`post_to_linkedin`) | — |
 | Cadence / posting-days invariants | `utilities/ai/content_framework.py` (`POST_DAY_TYPES`) | `docs/content-scheduling.md` |
-| Golden-hour presence, second wave, reply sweeps | `utilities/golden_hour.py`, `app/run_automation.py` | `docs/engagement-automation.md` (golden-hour + second-wave sections) |
+| Golden-hour presence, second wave, reply sweeps | `utilities/golden_hour.py`, `app/engagement/posting.py` (sweeps), `app/engagement/feed.py` (second wave) | `docs/engagement-automation.md` (golden-hour + second-wave sections) |
 | Comment outcome tracking + hold | `utilities/comment_outcomes.py`, `app/run_scheduler.py` (`auto_weekly_comment_quality`) | `docs/engagement-automation.md` (#628 section) |
 | Newsletter drafting/cadence/publish | `utilities/newsletter.py`, `app/run_scheduler.py` (`_topup_newsletter_drafts_for_user`, `auto_publish_scheduled_editions`) | — |
 | Newsletter cover gate | `utilities/newsletter_cover.py`, `_approved_cover_path` in `app/engagement/newsletter.py` | `docs/newsletter-covers.md` |
