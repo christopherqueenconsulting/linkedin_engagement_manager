@@ -523,10 +523,16 @@ class TestSurfacesDoNotDrift:
         handful mounted at the root), and assert the source is non-trivial first — a guard that
         silently compares against an empty set is worse than no guard.
         """
-        from cqc_lem.api.main import _SCOPE_SURFACES, _scope_path, app, router
+        from cqc_lem.api.main import _SCOPE_SURFACES, _scope_path, _walk_routes, app
 
+        # `_walk_routes`, not `router.routes + app.routes`. The concatenation only works while
+        # every route hangs off ONE router: FastAPI >=0.139 represents an included router as a
+        # single `_IncludedRouter` node with no `.path`, so the moment `/api` is split into
+        # per-area routers (#1154) those routes drop out of `known` and this guard starts
+        # reporting real surface paths as "routes that do not exist". Both forms yield the same
+        # 159 keys today, which is why the swap happens here, while the guard is green.
         known = {_scope_path(r.path)
-                 for r in list(router.routes) + list(app.routes)
+                 for r in _walk_routes(app.routes)
                  if getattr(r, "path", None)}
         assert len(known) > 100, "route table not populated — this guard would be vacuous"
         for scope, surface in _SCOPE_SURFACES.items():
@@ -556,10 +562,10 @@ class TestSurfacesDoNotDrift:
         is what says so: the entry the extension POSTs to must stay POST-only, or the surface has to
         be widened deliberately.
         """
-        from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path, app, router
+        from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path, _walk_routes, app
 
         served: dict = {}
-        for r in list(router.routes) + list(app.routes):
+        for r in _walk_routes(app.routes):
             key = _scope_path(getattr(r, "path", None))
             if key in _EXTENSION_SESSION_SURFACE:
                 served.setdefault(key, set()).update(getattr(r, "methods", None) or set())
