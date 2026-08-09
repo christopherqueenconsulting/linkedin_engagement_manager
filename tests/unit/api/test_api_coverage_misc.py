@@ -11,6 +11,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+# The avatar handlers moved to their own router (#1154), so the db functions they call are
+# read from THAT module's globals now. `get_session_user_id` still patches on `_M`: the
+# handlers reach it as an attribute of the host module at request time.
+_AV = "cqc_lem.api.routers.avatar"
 
 
 @pytest.fixture(scope="module")
@@ -778,15 +782,15 @@ class TestLeadMagnetAndPassword:
 class TestAvatarEndpoints:
     def test_get_avatar_credits(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_credit_balance", return_value=3), \
-             patch(f"{_M}.get_active_avatar", return_value={"id": 1}):
+             patch(f"{_AV}.get_avatar_credit_balance", return_value=3), \
+             patch(f"{_AV}.get_active_avatar", return_value={"id": 1}):
             resp = client.get(f"/api/avatar/credits?session_token={_TOK}")
         detail = resp.json()["detail"]
         assert detail["balance"] == 3 and detail["active_avatar"] == {"id": 1}
 
     def test_avatar_checkout_success(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_subscription_info",
+             patch(f"{_AV}.get_user_subscription_info",
                    return_value={"stripe_customer_id": "cus_1"}), \
              patch("cqc_lem.utilities.stripe_util.create_avatar_credits_checkout",
                    return_value="https://stripe/checkout") as cc:
@@ -802,7 +806,7 @@ class TestAvatarEndpoints:
 
     def test_avatar_checkout_no_customer_400(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_subscription_info", return_value=None):
+             patch(f"{_AV}.get_user_subscription_info", return_value=None):
             resp = client.post("/api/avatar/credits/checkout", json={
                 "session_token": _TOK, "package": "single",
                 "success_url": "https://x/ok", "cancel_url": "https://x/no"})
@@ -811,7 +815,7 @@ class TestAvatarEndpoints:
     def test_list_avatar_trainings(self, client):
         trainings = [{"id": 1, "training_id": "t1", "status": "succeeded"}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings):
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings):
             resp = client.get(f"/api/avatar/trainings?session_token={_TOK}")
         assert resp.json()["detail"] == trainings
 
@@ -820,7 +824,7 @@ class TestAvatarEndpoints:
                       "model_ref": "owner/m:v1", "sample_paths": [{"label": "headshot",
                                                                    "path": "images/a/h.webp"}]}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings):
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings):
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         assert resp.json()["detail"]["status"] == "succeeded"
 
@@ -828,11 +832,11 @@ class TestAvatarEndpoints:
         trainings = [{"id": 5, "training_id": "t5", "status": "processing", "model_ref": None,
                       "sample_paths": []}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings), \
              patch("cqc_lem.utilities.avatar.replicate_avatar.poll_training_status",
                    return_value=("succeeded", "owner/model:v1")), \
-             patch(f"{_M}.update_avatar_training_status"), \
-             patch(f"{_M}.claim_avatar_sample_render", return_value=True) as claim, \
+             patch(f"{_AV}.update_avatar_training_status"), \
+             patch(f"{_AV}.claim_avatar_sample_render", return_value=True) as claim, \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         assert resp.status_code == 200
@@ -844,8 +848,8 @@ class TestAvatarEndpoints:
         trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
                       "model_ref": "owner/m:v1", "sample_paths": []}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
-             patch(f"{_M}.claim_avatar_sample_render", return_value=False), \
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_AV}.claim_avatar_sample_render", return_value=False), \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         assert resp.status_code == 200
@@ -855,9 +859,9 @@ class TestAvatarEndpoints:
         trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
                       "model_ref": "owner/m:v1", "sample_paths": []}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
-             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
-             patch(f"{_M}.release_avatar_sample_render") as released, \
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_AV}.claim_avatar_sample_render", return_value=True), \
+             patch(f"{_AV}.release_avatar_sample_render") as released, \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async",
                    side_effect=RuntimeError("broker down")):
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
@@ -869,7 +873,7 @@ class TestAvatarEndpoints:
                       "model_ref": "owner/m:v1",
                       "sample_paths": [{"label": "headshot", "path": "images/a/h.webp"}]}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings), \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
             client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         queued.assert_not_called()
@@ -878,12 +882,12 @@ class TestAvatarEndpoints:
         trainings = [{"id": 5, "training_id": "t5", "status": "processing",
                       "model_ref": None}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_AV}.get_avatar_trainings", return_value=trainings), \
              patch("cqc_lem.utilities.avatar.replicate_avatar.poll_training_status",
                    return_value=("succeeded", "owner/model:v1")), \
-             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
+             patch(f"{_AV}.claim_avatar_sample_render", return_value=True), \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async"), \
-             patch(f"{_M}.update_avatar_training_status") as upd:
+             patch(f"{_AV}.update_avatar_training_status") as upd:
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         detail = resp.json()["detail"]
         assert detail["status"] == "succeeded" and detail["model_ref"] == "owner/model:v1"
@@ -891,7 +895,7 @@ class TestAvatarEndpoints:
 
     def test_sync_training_status_404_unknown_id(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=[]):
+             patch(f"{_AV}.get_avatar_trainings", return_value=[]):
             resp = client.get(f"/api/avatar/training/99/status?session_token={_TOK}")
         assert resp.status_code == 404
 
@@ -899,8 +903,8 @@ class TestAvatarEndpoints:
         avatar = {"id": 5, "training_id": "t5", "status": "succeeded",
                   "approval_status": "approved"}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_training", return_value=avatar), \
-             patch(f"{_M}.set_active_avatar", return_value=True) as act:
+             patch(f"{_AV}.get_avatar_training", return_value=avatar), \
+             patch(f"{_AV}.set_active_avatar", return_value=True) as act:
             resp = client.put("/api/avatar/training/5/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 200
@@ -911,8 +915,8 @@ class TestAvatarEndpoints:
         avatar = {"id": 5, "training_id": "t5", "status": "succeeded",
                   "approval_status": "pending"}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_training", return_value=avatar), \
-             patch(f"{_M}.set_active_avatar") as act:
+             patch(f"{_AV}.get_avatar_training", return_value=avatar), \
+             patch(f"{_AV}.set_active_avatar") as act:
             resp = client.put("/api/avatar/training/5/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 400
@@ -922,14 +926,14 @@ class TestAvatarEndpoints:
         avatar = {"id": 5, "training_id": "t5", "status": "processing",
                   "approval_status": "pending"}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_training", return_value=avatar):
+             patch(f"{_AV}.get_avatar_training", return_value=avatar):
             resp = client.put("/api/avatar/training/5/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 400
 
     def test_activate_avatar_404(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_training", return_value=None):
+             patch(f"{_AV}.get_avatar_training", return_value=None):
             resp = client.put("/api/avatar/training/99/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 404

@@ -28,8 +28,8 @@ def _client():
 class TestAvatarCreditsEndpoint:
     def test_get_credits_returns_balance_and_active_avatar(self):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=3), \
-             patch("cqc_lem.api.main.get_active_avatar", return_value=None):
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=3), \
+             patch("cqc_lem.api.routers.avatar.get_active_avatar", return_value=None):
             r = _client().get("/api/avatar/credits", params={"session_token": SESSION})
 
         assert r.status_code == 200
@@ -49,8 +49,8 @@ class TestAvatarCreditsEndpoint:
             "trigger_word": "LEMAVTR42", "status": "succeeded",
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=2), \
-             patch("cqc_lem.api.main.get_active_avatar", return_value=active):
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=2), \
+             patch("cqc_lem.api.routers.avatar.get_active_avatar", return_value=active):
             r = _client().get("/api/avatar/credits", params={"session_token": SESSION})
 
         assert r.status_code == 200
@@ -62,7 +62,7 @@ class TestAvatarCreditCheckoutEndpoint:
     def test_returns_checkout_url_for_valid_package(self):
         subscription = {"stripe_customer_id": "cus_test123"}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=subscription), \
+             patch("cqc_lem.api.routers.avatar.get_user_subscription_info", return_value=subscription), \
              patch(
                  "cqc_lem.utilities.stripe_util.create_avatar_credits_checkout",
                  return_value="https://checkout.stripe.com/pay/test",
@@ -80,7 +80,7 @@ class TestAvatarCreditCheckoutEndpoint:
     def test_returns_400_for_unknown_package(self):
         subscription = {"stripe_customer_id": "cus_test123"}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=subscription):
+             patch("cqc_lem.api.routers.avatar.get_user_subscription_info", return_value=subscription):
             r = _client().post("/api/avatar/credits/checkout", json={
                 "session_token": SESSION,
                 "package": "notapackage",
@@ -106,7 +106,7 @@ class TestAvatarCreditCheckoutEndpoint:
 class TestAvatarTrainingEndpoint:
     def test_returns_402_when_no_credits(self):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=0):
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=0):
             r = _client().post(
                 "/api/avatar/training",
                 data={"session_token": SESSION, "trigger_word": "LEMAVTR42"},
@@ -129,13 +129,13 @@ class TestAvatarTrainingEndpoint:
     def test_returns_200_and_deducts_credit_when_training_starts(self):
         mock_training_id = "train-success-001"
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_credit_balance", return_value=2), \
+             patch("cqc_lem.api.routers.avatar.get_avatar_credit_balance", return_value=2), \
              patch(
                  "cqc_lem.utilities.avatar.replicate_avatar.start_avatar_training",
                  return_value=mock_training_id,
              ), \
-             patch("cqc_lem.api.main.deduct_avatar_credit", return_value=True) as mock_deduct, \
-             patch("cqc_lem.api.main.insert_avatar_training", return_value=5):
+             patch("cqc_lem.api.routers.avatar.deduct_avatar_credit", return_value=True) as mock_deduct, \
+             patch("cqc_lem.api.routers.avatar.insert_avatar_training", return_value=5):
             r = _client().post(
                 "/api/avatar/training",
                 data={"session_token": SESSION, "trigger_word": "LEMAVTR42"},
@@ -151,7 +151,7 @@ class TestAvatarTrainingEndpoint:
 class TestListAvatarTrainings:
     def test_returns_empty_list_when_no_trainings(self):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_trainings", return_value=[]):
+             patch("cqc_lem.api.routers.avatar.get_avatar_trainings", return_value=[]):
             r = _client().get("/api/avatar/trainings", params={"session_token": SESSION})
 
         assert r.status_code == 200
@@ -167,7 +167,7 @@ class TestListAvatarTrainings:
             }
         ]
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_trainings", return_value=trainings):
+             patch("cqc_lem.api.routers.avatar.get_avatar_trainings", return_value=trainings):
             r = _client().get("/api/avatar/trainings", params={"session_token": SESSION})
 
         assert r.status_code == 200
@@ -184,7 +184,7 @@ class TestActivateAvatar:
             "is_active": False, "created_at": None, "updated_at": None,
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_training", return_value=avatar):
+             patch("cqc_lem.api.routers.avatar.get_avatar_training", return_value=avatar):
             r = _client().put("/api/avatar/training/1/activate", json={"session_token": SESSION})
 
         assert r.status_code == 400
@@ -196,8 +196,8 @@ class TestActivateAvatar:
             "is_active": False, "created_at": None, "updated_at": None,
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_training", return_value=avatar), \
-             patch("cqc_lem.api.main.set_active_avatar", return_value=True):
+             patch("cqc_lem.api.routers.avatar.get_avatar_training", return_value=avatar), \
+             patch("cqc_lem.api.routers.avatar.set_active_avatar", return_value=True):
             r = _client().put("/api/avatar/training/2/activate", json={"session_token": SESSION})
 
         assert r.status_code == 200
