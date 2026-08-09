@@ -267,25 +267,51 @@ merge. That was this lane: 353.7s of pytest inside a 438s job. Issue #1185 took 
 
 ### 1. Most of it was sleeping, not testing
 
-Four tests were spending **311s of the 354s**. None of them was doing work. Each falls through to an
-LLM call the test did not mock, and there is no LiteLLM proxy on the runner — so each unmocked call
-paid the production connect-retry schedule, which deliberately rides out ~24s of refused connections
-so a proxy restart cannot lose a generation (issue #986). The lane sets
-`LLM_CONNECT_RETRY_ATTEMPTS: 1`, which the client documents as the way to turn that wait off. There
-is nothing to ride out on a runner that never had a proxy, and the retry schedule itself is covered
-in the unit lane, which sets the env var per test.
+Four tests were spending **311s of the 354s**, and none of them was doing work. Each fell through to
+an LLM call the test never mocked, and there is no LiteLLM proxy on the runner — so every one paid
+the production connect-retry schedule, which deliberately rides out ~24s of refused connections so a
+proxy restart cannot lose a generation (issue #986).
 
-Measured on an 8-core box against a dead LiteLLM port, which reproduces CI's numbers to within 1%:
+Issue #1185 made that cheap by setting `LLM_CONNECT_RETRY_ATTEMPTS: 1` for the lane. **Issue #1188
+made the calls stop**, which is a different thing: the three that were real are mocked
+(`get_or_create_profile_synthesis` + `optimize_post_hook` in `test_content_plan`, the shared client
+singleton in `test_carousel_creation`, which reaches the model a second time through
+`carousel_creator.derive_image_query`), and the fourth turned out never to have made an LLM call at
+all — its 30s is `celery_once` taking a real Redis lock for an unpatched `apply_async`.
 
-| Configuration | pytest |
-|---|---|
-| Serial, as CI ran it | 367.7s |
-| Serial, `LLM_CONNECT_RETRY_ATTEMPTS=1` | 102.0s |
-| `-n 4 --dist loadfile`, retry off | 49.9s |
-| …the same, with `--cov` (what CI runs) | 53.1s |
+Measured on an 8-core box against a dead LiteLLM port, which reproduces CI's numbers to within 1%
+(fresh Redis before each run — a leaked `celery_once` lock survives into the next one and moves the
+number by 30s):
 
-**When you add a test here, mock the LLM.** A test that leaves a real call in place is now cheap
-enough not to notice, which is exactly how the 311s accumulated in the first place.
+| Configuration | Before #1188 | After |
+|---|---|---|
+| `-n 4 --dist loadfile --cov`, `LLM_CONNECT_RETRY_ATTEMPTS=1` — what CI runs | 53.0s | 50.6s |
+| …the same with the retry env var removed | 185.1s | 45.7s |
+| Serial, `LLM_CONNECT_RETRY_ATTEMPTS=1` | 72.7s | 58.7s |
+
+The parallel wall clock barely moves because `--dist loadfile` was already hiding the cost behind
+the longest file; the work removed shows up in the serial column and in the row where the retry
+env var is gone. That row is also the answer to "is the env var still load-bearing" — it was worth
+132s, and it is now worth nothing. It stays only as a backstop for fixture setup, which runs outside
+the function-scoped guard below.
+
+### 1b. An unmocked LLM call FAILS this lane (`_no_live_llm_calls`)
+
+`tests/integration/conftest.py` patches `OpenAI.post` — the one method every endpoint (chat,
+embeddings, images, speech) funnels through, on the base class, so `AttributedOpenAI` and the raw
+`openai.OpenAI()` fallback in `ai_helper` are both covered — to refuse with `pytest.fail`.
+
+It refuses with pytest's `Failed`, a **BaseException**, rather than the `APIConnectionError` the
+unit lane's guard raises. LEM's LLM helpers are full of `except Exception` fallbacks, which is
+exactly how an unmocked call sits in this lane for months looking like a passing test: the call
+fails, the production fallback branch runs, the test goes green, and the only symptom is a slow
+job. `Failed` is not catchable by any of them, so the test fails where the call is made and the
+traceback names the helper that reached the network.
+
+**When you add a test here, mock the LLM** — patch the `client` the module under test imported
+(`mock_openai_client` is the house fixture) or the helper that wraps it. A test that legitimately
+constructs a client and never calls it is untouched; a test that wants a *failing* call should mock
+the failure it means to assert on rather than borrow this guard's.
 
 ### 2. Each worker owns a database (`tests/integration/conftest.py`)
 

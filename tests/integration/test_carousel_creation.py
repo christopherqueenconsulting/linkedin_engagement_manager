@@ -2,6 +2,12 @@
 
 Uses mock AI calls and temp directories but validates the whole pipeline:
 generate_carousel_content → create_carousel_slide_images → update_db_post_carousel_slides
+
+"Mock AI calls" has to mean the shared `client` singleton, not just `ai_helper._call_llm`: the
+slide-render half reaches the model through its OWN lazily-imported handle in
+`carousel_creator.derive_image_query`, once per content slide. That was the miss behind issue
+#1188 — two live requests per test, each riding out the production connect-retry schedule (#986)
+for a search query the stubbed Pexels lookup then throws away, and 113s of a 354s lane.
 """
 
 import json
@@ -32,12 +38,14 @@ _EDUCATIONAL_PAYLOAD = {
 @pytest.mark.integration
 class TestCarouselCreationPipeline:
 
-    def test_create_carousel_content_returns_post_text(self, mock_database_connection, tmp_path):
+    def test_create_carousel_content_returns_post_text(self, mock_database_connection, tmp_path,
+                                                       mock_openai_client):
         """create_carousel_content should return the AI-generated post_text string."""
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         profile = LinkedInProfile(full_name="Test", job_title="CEO", company_name="ACME")
 
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_make_ai_response(_EDUCATIONAL_PAYLOAD)), \
+             patch("cqc_lem.utilities.ai.client.client", mock_openai_client), \
              patch("cqc_lem.utilities.db.get_user_password_pair_by_id",
                    return_value=("test@example.com", "pass")), \
              patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair",
@@ -53,7 +61,8 @@ class TestCarouselCreationPipeline:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_create_carousel_content_updates_db_slides(self, mock_database_connection, tmp_path):
+    def test_create_carousel_content_updates_db_slides(self, mock_database_connection, tmp_path,
+                                                       mock_openai_client):
         """create_carousel_content should call update_db_post_carousel_slides with slide URLs."""
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         profile = LinkedInProfile(full_name="Test", job_title="CEO", company_name="ACME")
@@ -65,6 +74,7 @@ class TestCarouselCreationPipeline:
             return True
 
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_make_ai_response(_EDUCATIONAL_PAYLOAD)), \
+             patch("cqc_lem.utilities.ai.client.client", mock_openai_client), \
              patch("cqc_lem.utilities.db.get_user_password_pair_by_id",
                    return_value=("test@example.com", "pass")), \
              patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair",
