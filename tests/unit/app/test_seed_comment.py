@@ -6,13 +6,13 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_FEED = "cqc_lem.app.engagement.feed"
 _AI = "cqc_lem.utilities.ai.ai_helper"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_FEED}.time.sleep"):
         yield
 
 
@@ -21,8 +21,8 @@ def _no_db_reads():
     """Neutral defaults for the seed task's DB lookups (dupe guard + held-back link) so tests that
     aren't about them don't need a live MySQL. Individual tests patch over these.
     """
-    with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
-         patch(f"{_RA}.get_post_first_comment_link", return_value=None):
+    with patch(f"{_FEED}.has_user_commented_on_post_url", return_value=False), \
+         patch(f"{_FEED}.get_post_first_comment_link", return_value=None):
         yield
 
 
@@ -43,15 +43,15 @@ _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/
 class TestAutoSeedCommentOnPost:
     def test_posts_via_api(self):
         """Seed comment goes through the socialActions API (no Selenium), logs, and returns the urn."""
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
-             patch(f"{_RA}.get_post_content", return_value="my post"), \
-             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_seed_comment", return_value="Behind the scenes: … thoughts?"), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)") as api, \
-             patch(f"{_RA}.insert_new_log") as log:
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_FEED}.get_post_content", return_value="my post"), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_FEED}.generate_seed_comment", return_value="Behind the scenes: … thoughts?"), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)") as api, \
+             patch(f"{_FEED}.insert_new_log") as log:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         api.assert_called_once()
         assert api.call_args.args[1] == "urn:li:ugcPost:7479519458164695040"  # derived object urn
@@ -63,17 +63,17 @@ class TestAutoSeedCommentOnPost:
         """Regression: seed comment must be grounded in the canonical post body from the posts
         table, not the POST log message (which historically held a status string).
         """
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
-             patch(f"{_RA}.get_post_content", return_value="The REAL post body") as gpc, \
-             patch(f"{_RA}.get_post_message_from_log_for_user",
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_FEED}.get_post_content", return_value="The REAL post body") as gpc, \
+             patch(f"{_FEED}.get_post_message_from_log_for_user",
                    return_value="Successfully created post using /posts API endpoint.") as glog, \
-             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_seed_comment", return_value="… thoughts?") as gsc, \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)"), \
-             patch(f"{_RA}.insert_new_log"):
+             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_FEED}.generate_seed_comment", return_value="… thoughts?") as gsc, \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)"), \
+             patch(f"{_FEED}.insert_new_log"):
             auto_seed_comment_on_post.run(user_id=1, post_id=13)
         gpc.assert_called_once_with(13)
         glog.assert_not_called()  # canonical body available → never fall back to the log
@@ -83,43 +83,43 @@ class TestAutoSeedCommentOnPost:
         """The API seed path must never open a browser / call get_current_profile — that is what
         exposed seeding to the 429 rate limit.
         """
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
-             patch(f"{_RA}.get_post_content", return_value="body"), \
-             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_seed_comment", return_value="seed"), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)"), \
-             patch(f"{_RA}.insert_new_log"), \
-             patch(f"{_RA}.get_current_profile") as gcp:
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_FEED}.get_post_content", return_value="body"), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_FEED}.generate_seed_comment", return_value="seed"), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)"), \
+             patch(f"{_FEED}.insert_new_log"), \
+             patch(f"{_FEED}.get_current_profile") as gcp:
             auto_seed_comment_on_post.run(user_id=1, post_id=9)
         gcp.assert_not_called()
 
     def test_bails_without_post_url(self):
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=None), \
-             patch(f"{_RA}.get_post_content", return_value="x"), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=None), \
+             patch(f"{_FEED}.get_post_content", return_value="x"), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         assert "No post URL" in result
         api.assert_not_called()
 
     def test_bails_when_urn_underivable(self):
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://example.com/no-urn"), \
-             patch(f"{_RA}.get_post_content", return_value="body"), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value="https://example.com/no-urn"), \
+             patch(f"{_FEED}.get_post_content", return_value="body"), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         assert "object URN" in result
         api.assert_not_called()
 
     def test_bails_without_post_content(self):
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
-             patch(f"{_RA}.get_post_content", return_value=None), \
-             patch(f"{_RA}.get_post_message_from_log_for_user", return_value=None), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_FEED}.get_post_content", return_value=None), \
+             patch(f"{_FEED}.get_post_message_from_log_for_user", return_value=None), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         assert "No post content" in result
         api.assert_not_called()

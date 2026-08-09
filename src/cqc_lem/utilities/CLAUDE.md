@@ -43,7 +43,7 @@ into a GitHub issue. Defaults: 3 occurrences in 24h.
 Two things follow for anyone writing a call site here:
 
 1. **Do not warn on an expected no-op.** It will file a defect for working behaviour. The pattern to
-   copy is `run_automation.react_to_post_inline`: it used to return `False` both for "already
+   copy is `app.engagement.feed.react_to_post_inline`: it used to return `False` both for "already
    reacted" (benign) and for genuine failure, so the caller logged a working skip as
    `Could not leave a reaction on post`. It now returns `None` for the no-op — still falsy, so
    truthiness callers are unaffected — and only real failures warn.

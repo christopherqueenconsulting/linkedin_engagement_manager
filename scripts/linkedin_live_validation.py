@@ -131,34 +131,34 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
 # it is an argparse error, and an issue whose repro line does not run is an issue nobody reproduces.
 SURFACES = (
     {"key": "feed_sort", "surface": "Home feed 'Sort by → Recent' control",
-     "code": "run_automation._switch_feed_to_recent", "flag": "--feed-sort", "sweep": True},
+     "code": "engagement.feed._switch_feed_to_recent", "flag": "--feed-sort", "sweep": True},
     {"key": "feed_reactions", "surface": "Feed card walk + reaction controls",
-     "code": "run_automation._card_for_textbox / react_to_post_inline",
+     "code": "linkedin.cards._card_for_textbox / engagement.feed.react_to_post_inline",
      "flag": "--reaction-probe", "sweep": True},
     {"key": "composer", "surface": "Feed share-box composer",
-     "code": "run_automation.auto_post_to_group (share box) / _post_composer_for_card",
+     "code": "engagement.feed.auto_post_to_group (share box) / _post_composer_for_card",
      "flag": "--probe-composer", "sweep": True},
     {"key": "profile_views", "surface": "Profile-views analytics viewer list",
      "code": "run_automation._PROFILE_VIEWER_ROWS_JS", "flag": "--profile-views", "sweep": True},
     {"key": "profile_scrape", "surface": "Profile header scrape (name / headline / degree badge)",
-     "code": "scrapper.parse_profile_header + run_automation._profile_is_first_degree",
+     "code": "scrapper.parse_profile_header + engagement.invites._profile_is_first_degree",
      "flag": "--profile-scrape", "arg": "<profile-url>", "sweep": True},
     {"key": "profile_experiences", "surface": "Profile experience rows (/details/experience/)",
      "code": "scrapper.parse_profile_experiences", "flag": "--profile-experiences",
      "arg": "<profile-url>", "sweep": True},
     {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
-     "code": "run_automation._open_connect_invite_dialog", "flag": "--connect-dialog",
+     "code": "engagement.invites._open_connect_invite_dialog", "flag": "--connect-dialog",
      "arg": "<profile-url>", "sweep": False},
     {"key": "catchup_cards", "surface": "Catch-up moment cards",
      "code": "run_automation._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
     {"key": "group_composer", "surface": "Group share box / post editor",
-     "code": "run_automation.auto_post_to_group", "flag": "--group-composer",
+     "code": "engagement.feed.auto_post_to_group", "flag": "--group-composer",
      "arg": "<group-id>", "sweep": False},
     {"key": "group_membership", "surface": "Groups directory + a group page's membership controls",
-     "code": "run_automation._enumerate_joined_groups / auto_comment_in_groups",
+     "code": "engagement.feed._enumerate_joined_groups / auto_comment_in_groups",
      "flag": "--group-membership", "sweep": True},
     {"key": "group_feed_composer", "surface": "Group feed post card → Comment → inline composer",
-     "code": "run_automation._post_composer_for_card / _single_post_scope / auto_comment_in_groups",
+     "code": "engagement.feed._post_composer_for_card / _single_post_scope / auto_comment_in_groups",
      "flag": "--group-feed-composer", "sweep": True},
     {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
      "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
@@ -166,10 +166,10 @@ SURFACES = (
     {"key": "sent_invites", "surface": "Invitation manager → Sent (withdraw controls)",
      "code": "stale_invites.read_pending_invites", "flag": "--sent-invites", "sweep": True},
     {"key": "roster_follow", "surface": "Roster target's activity page Follow control",
-     "code": "run_automation._resolve_follow_control", "flag": "--roster-follow",
+     "code": "engagement.feed._resolve_follow_control", "flag": "--roster-follow",
      "arg": "<profile-url>", "sweep": False},
     {"key": "roster_connect", "surface": "Roster target's activity page connection state",
-     "code": "run_automation._resolve_connect_state", "flag": "--roster-connect",
+     "code": "engagement.feed._resolve_connect_state", "flag": "--roster-connect",
      "arg": "<profile-url>", "sweep": False},
     {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
      "code": "run_automation._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
@@ -190,7 +190,7 @@ SURFACES = (
      "code": "message_thread.open_message_thread", "flag": "--dm-thread-url",
      "arg": "<profile-url>", "sweep": False},
     {"key": "permalink_comment", "surface": "Post permalink card → Comment → composer",
-     "code": "run_automation._permalink_post_card / _post_composer_for_card",
+     "code": "engagement.feed._permalink_post_card / _post_composer_for_card",
      "flag": "--permalink-comment", "arg": "<post-url>", "sweep": False},
 )
 
@@ -400,7 +400,7 @@ def _share_box_chains() -> tuple:
     `run_automation._GROUP_SHARE_BOX_LOCATORS` grounds a chain nothing ships.
     """
     try:
-        from cqc_lem.app.run_automation import _GROUP_SHARE_BOX_LOCATORS
+        from cqc_lem.app.engagement.feed import _GROUP_SHARE_BOX_LOCATORS
         return list(_GROUP_SHARE_BOX_LOCATORS), "image"
     except Exception:
         return _CARRIED_GROUP_SHARE_BOX_LOCATORS, "script"
@@ -626,8 +626,8 @@ SORT_CANDIDATE_SELECTOR = ("main button, main a[href], main select, main [role='
 def feed_sort_chains() -> tuple:
     """(trigger locators, 'Recent' option locators, where they came from)."""
     try:
-        from cqc_lem.app.run_automation import (_FEED_RECENT_OPTION_LOCATORS,
-                                                _FEED_SORT_LOCATORS)
+        from cqc_lem.app.engagement.feed import (_FEED_RECENT_OPTION_LOCATORS,
+                                                 _FEED_SORT_LOCATORS)
     except ImportError:
         return list(FALLBACK_SORT_LOCATORS), list(FALLBACK_RECENT_OPTION_LOCATORS), "script"
     return list(_FEED_SORT_LOCATORS), list(_FEED_RECENT_OPTION_LOCATORS), "image"
@@ -1350,9 +1350,10 @@ def probe_permalink_comment(driver, post_url: str,
     make the composer mount, describes it, then presses Escape. Nothing is typed and nothing is
     submitted, so no comment is left. It never touches the reaction controls — `--reaction-probe`
     covers those."""
-    from cqc_lem.app.run_automation import (_FEED_POST_TEXT_SEL, _COMMENT_ACTION_LOCATORS, _URN_RE,
-                                            _card_for_textbox, _feed_post_urn_from_card,
-                                            _permalink_post_card, _post_composer_for_card)
+    from cqc_lem.app.engagement.feed import (_COMMENT_ACTION_LOCATORS, _permalink_post_card,
+                                             _post_composer_for_card)
+    from cqc_lem.utilities.linkedin.cards import (_FEED_POST_TEXT_SEL, _URN_RE, _card_for_textbox,
+                                                  _feed_post_urn_from_card)
     from cqc_lem.utilities.selenium_util import click_first, find_first
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
@@ -1455,8 +1456,9 @@ def probe_roster_follow(driver, profile_url: str,
     STRICTLY read-only — it resolves the control and describes it. Nothing is clicked, so no account
     is followed by running this. That is the point: the clicker must not ship before a live run has
     shown that this resolver finds the right button on the real page."""
-    from cqc_lem.app.run_automation import (_FEED_POST_TEXT_SEL, _activity_page_owner_name,
-                                            _resolve_follow_control, _roster_activity_url)
+    from cqc_lem.app.engagement.feed import (_activity_page_owner_name, _resolve_follow_control,
+                                             _roster_activity_url)
+    from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
 
     url = _roster_activity_url(profile_url)
     driver.get(url)
@@ -2264,8 +2266,8 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
     feed) because the editor and Post button do not exist until it is open, then closes it with
     Escape. **Nothing is typed and the Post button is never clicked**, so no group post can result
     from running this."""
-    from cqc_lem.app.run_automation import (_GROUP_EDITOR_LOCATORS, _GROUP_POST_BUTTON_LOCATORS,
-                                            _GROUP_SHARE_BOX_LOCATORS)
+    from cqc_lem.app.engagement.feed import (_GROUP_EDITOR_LOCATORS, _GROUP_POST_BUTTON_LOCATORS,
+                                             _GROUP_SHARE_BOX_LOCATORS)
     from cqc_lem.utilities.selenium_util import click_first, find_first
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
@@ -2607,7 +2609,7 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
     STRICTLY read-only: it navigates and reads. No control is clicked, so nothing is joined, left or
     posted, and no stored membership is changed."""
     if enumerate_groups is None:
-        from cqc_lem.app.run_automation import _enumerate_joined_groups as enumerate_groups
+        from cqc_lem.app.engagement.feed import _enumerate_joined_groups as enumerate_groups
     # An unreadable DB list is not an empty one: it makes `stored_not_live` empty, which is the exact
     # shape of "nothing is stale". Say which happened.
     enabled_ids_readable = True
@@ -2650,7 +2652,7 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
                                 "directory" if live_ids else "none")
     group_page = {"group_id": target}
     if target:
-        from cqc_lem.app.run_automation import _GROUP_SHARE_BOX_LOCATORS
+        from cqc_lem.app.engagement.feed import _GROUP_SHARE_BOX_LOCATORS
         from cqc_lem.utilities.selenium_util import find_first
         from selenium.webdriver.support.ui import WebDriverWait
 
@@ -2753,16 +2755,15 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
 
-    from cqc_lem.app.run_automation import (
+    from cqc_lem.app.engagement.feed import (
         _COMMENT_ACTION_LOCATORS,
         _FEED_CARD_CROSSCHECK_SEL,
-        _FEED_POST_TEXT_SEL,
-        _card_for_textbox,
         _is_post_comment_box,
         _post_composer_for_card,
         _single_post_scope,
-        _visible_composers,
     )
+    from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL, _card_for_textbox
+    from cqc_lem.utilities.linkedin.composer import _visible_composers
     from cqc_lem.utilities.selenium_util import click_first, find_first
 
     wait = WebDriverWait(driver, 10)
@@ -3123,8 +3124,8 @@ def probe_roster_connect(driver, profile_url: str,
     STRICTLY read-only, and unlike the follow rung there is no clicker here at all: the invite goes
     out through the existing `invite_to_connect_now` rail on the profile page. This grounds the
     READING that decides whether a target is still waiting for one."""
-    from cqc_lem.app.run_automation import (_activity_page_owner_name, _resolve_connect_state,
-                                            _roster_activity_url)
+    from cqc_lem.app.engagement.feed import (_activity_page_owner_name, _resolve_connect_state,
+                                             _roster_activity_url)
 
     url = _roster_activity_url(profile_url)
     driver.get(url)

@@ -20,7 +20,7 @@ class TestFeedScoreEnvOverrides:
                 "exclude_authors": [], "exclude_keywords": [], "exclude_topics": []}
 
     def test_defaults_when_env_unset(self, monkeypatch):
-        from cqc_lem.app.run_automation import _score_feed_post
+        from cqc_lem.app.engagement.feed import _score_feed_post
         for var in ("FEED_SCORE_W_RECENCY", "FEED_SCORE_W_RELEVANCE",
                     "FEED_SCORE_W_RECIPROCITY", "FEED_SCORE_W_ACTIVITY"):
             monkeypatch.delenv(var, raising=False)
@@ -29,7 +29,7 @@ class TestFeedScoreEnvOverrides:
         assert _score_feed_post(meta, self._prefs()) == pytest.approx(0.8, abs=1e-6)
 
     def test_weight_override_changes_ranking(self, monkeypatch):
-        from cqc_lem.app.run_automation import _score_feed_post
+        from cqc_lem.app.engagement.feed import _score_feed_post
         monkeypatch.setenv("FEED_SCORE_W_RECENCY", "0")
         monkeypatch.setenv("FEED_SCORE_W_RELEVANCE", "0")
         monkeypatch.setenv("FEED_SCORE_W_ACTIVITY", "0")
@@ -39,14 +39,14 @@ class TestFeedScoreEnvOverrides:
         assert _score_feed_post(meta, self._prefs(), engagers=set()) == pytest.approx(0.0)
 
     def test_invalid_env_falls_back_to_default(self, monkeypatch):
-        from cqc_lem.app.run_automation import _score_feed_post
+        from cqc_lem.app.engagement.feed import _score_feed_post
         meta = {"author": "A", "age_minutes": 0, "comments": 5, "relevant": True}
         baseline = _score_feed_post(meta, self._prefs())
         monkeypatch.setenv("FEED_SCORE_W_RECENCY", "not-a-number")
         assert _score_feed_post(meta, self._prefs()) == pytest.approx(baseline)
 
     def test_halflife_override_steepens_decay(self, monkeypatch):
-        from cqc_lem.app.run_automation import _recency_score
+        from cqc_lem.app.engagement.feed import _recency_score
         monkeypatch.delenv("FEED_RECENCY_HALFLIFE_MIN", raising=False)
         default_60 = _recency_score(60)
         monkeypatch.setenv("FEED_RECENCY_HALFLIFE_MIN", "10")

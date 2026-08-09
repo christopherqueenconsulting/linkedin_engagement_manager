@@ -13,7 +13,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MOD = "cqc_lem.app.run_automation"
+# `_engage_card` and `react_to_post_inline` moved to `app.engagement.feed` (#1154).
+_MOD = "cqc_lem.app.engagement.feed"
 
 
 class TestInlineReactionKillSwitch:
@@ -23,8 +24,8 @@ class TestInlineReactionKillSwitch:
         """
         with patch(f"{_MOD}.INLINE_REACTIONS_ENABLED", False), \
              patch(f"{_MOD}.react_to_post_inline") as react:
-            from cqc_lem.app import run_automation
-            assert run_automation.INLINE_REACTIONS_ENABLED is False
+            from cqc_lem.app.engagement import feed
+            assert feed.INLINE_REACTIONS_ENABLED is False
             react.assert_not_called()
 
     def test_standing_down_is_debug_not_a_warning(self):
@@ -33,8 +34,8 @@ class TestInlineReactionKillSwitch:
         """
         import inspect
 
-        from cqc_lem.app import run_automation
-        src = inspect.getsource(run_automation._engage_card)
+        from cqc_lem.app.engagement import feed
+        src = inspect.getsource(feed._engage_card)
         assert "if not INLINE_REACTIONS_ENABLED:" in src
         gate = src.split("if not INLINE_REACTIONS_ENABLED:", 1)[1].split("elif", 1)[0]
         assert "log_debug" in gate, "the stand-down must be DEBUG"
@@ -54,15 +55,15 @@ class TestInlineReactionKillSwitch:
         """
         import inspect
 
-        from cqc_lem.app import run_automation
-        assert "INLINE_REACTIONS_ENABLED" in inspect.getsource(run_automation._engage_card)
+        from cqc_lem.app.engagement import feed
+        assert "INLINE_REACTIONS_ENABLED" in inspect.getsource(feed._engage_card)
 
     def test_commenting_is_not_gated_on_the_switch(self):
         """Reactions were always non-fatal to commenting; turning them off must not change that."""
         import inspect
 
-        from cqc_lem.app import run_automation
-        src = inspect.getsource(run_automation._engage_card)
+        from cqc_lem.app.engagement import feed
+        src = inspect.getsource(feed._engage_card)
         gate_idx = src.index("if not INLINE_REACTIONS_ENABLED:")
         post_idx = src.index("post_comment_inline")
         assert post_idx > gate_idx, "sanity: the comment call follows the reaction gate"

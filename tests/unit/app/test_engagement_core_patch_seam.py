@@ -147,15 +147,22 @@ def _patched_symbols(text: str, spellings: list[str]) -> set[str]:
 
 
 def _names_called(text: str) -> set[str]:
-    """Every identifier the file CALLS.
+    """Every identifier the file CALLS, directly or as the receiver of a method call.
 
     Deliberately narrower than "mentions", and that asymmetry is the whole design. A patch TARGET is
     a mention, not a call — `patch(f"{RA}.login_to_linkedin")` writes the name followed by a quote,
     never by `(` — so requiring a call is what separates "this file exercises the moved module" from
     "this file happens to name one of its functions while stubbing it out". Mentions were tried first
     and produced six false positives on this tree.
+
+    The RECEIVER form is here because of the feed slice (#1154 step 3): a Celery task is driven as
+    `auto_post_to_group.run(...)`, never `auto_post_to_group(...)`, so a file that exercises a moved
+    module ENTIRELY through its tasks matched nothing and the guard went quietly blind on it —
+    `test_groups.py` was exactly that shape, and re-breaking one of its patches stayed green. A
+    receiver is still a use of the name, which is all condition 2 asks.
     """
-    return set(re.findall(r"\b(\w+)\s*\(", text))
+    return (set(re.findall(r"\b(\w+)\s*\(", text))
+            | set(re.findall(r"\b(\w+)\s*\.\s*\w+\s*\(", text)))
 
 
 def _names_used(text: str) -> set[str]:

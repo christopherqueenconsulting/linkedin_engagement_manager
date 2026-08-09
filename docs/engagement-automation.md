@@ -1,8 +1,13 @@
 # Engagement automation internals
 
-Full design detail for the `app/run_automation.py` subsystems that CLAUDE.md's "Engagement
-automation" section only names. This doc is the load-bearing detail; CLAUDE.md keeps the
-one-line invariant + pointer.
+Full design detail for the engagement subsystems that CLAUDE.md's "Engagement automation"
+section only names. This doc is the load-bearing detail; CLAUDE.md keeps the one-line invariant +
+pointer.
+
+The code lives in `app/run_automation.py` and, since #1154, in `app/engagement/` — the feed walk,
+the group composer and the roster tail are `app/engagement/feed.py`, the connect rail
+`invites.py`, the newsletter rail `newsletter.py`. Every task there still answers to its ORIGINAL
+wire name (`cqc_lem.app.run_automation.<fn>`), so nothing about routing or the beat changed.
 
 ## Feed commenting on the SDUI feed (`comment_on_feed_inline`, issues #622 / #817)
 

@@ -6,14 +6,14 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_FEED = "cqc_lem.app.engagement.feed"
 _RS = "cqc_lem.app.run_scheduler"
 _DB = "cqc_lem.utilities.db"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_FEED}.time.sleep"):
         yield
 
 
@@ -208,14 +208,14 @@ class TestGroupPostDraftDB:
 class TestDraftGroupPost:
     def test_writes_the_draft_for_that_group_without_a_browser(self):
         """Issue #932: the text is written days ahead off the CACHED profile — no Chrome session."""
-        from cqc_lem.app.run_automation import auto_draft_group_post
-        with patch(f"{_RA}.get_open_group_post_draft", return_value=None), \
-             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_group_post", return_value="A useful insight.") as gen, \
-             patch(f"{_RA}.create_group_post_draft", return_value=11) as create, \
-             patch(f"{_RA}.get_current_profile") as gcp:
+        from cqc_lem.app.engagement.feed import auto_draft_group_post
+        with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_FEED}.generate_group_post", return_value="A useful insight.") as gen, \
+             patch(f"{_FEED}.create_group_post_draft", return_value=11) as create, \
+             patch(f"{_FEED}.get_current_profile") as gcp:
             result = auto_draft_group_post.run(user_id=1, group_id="g1", group_name="AI Leaders")
         assert result == "Drafted group post 11"
         gcp.assert_not_called()
@@ -224,34 +224,34 @@ class TestDraftGroupPost:
 
     def test_an_unpublished_draft_is_never_replaced(self):
         """The waiting draft may already carry the user's edits — a second generation would bin them."""
-        from cqc_lem.app.run_automation import auto_draft_group_post
-        with patch(f"{_RA}.get_open_group_post_draft", return_value={"id": 3}), \
-             patch(f"{_RA}.generate_group_post") as gen, \
-             patch(f"{_RA}.create_group_post_draft") as create:
+        from cqc_lem.app.engagement.feed import auto_draft_group_post
+        with patch(f"{_FEED}.get_open_group_post_draft", return_value={"id": 3}), \
+             patch(f"{_FEED}.generate_group_post") as gen, \
+             patch(f"{_FEED}.create_group_post_draft") as create:
             result = auto_draft_group_post.run(user_id=1, group_id="g1")
         assert "already awaiting review" in result
         gen.assert_not_called()
         create.assert_not_called()
 
     def test_no_cached_profile_skips_quietly(self):
-        from cqc_lem.app.run_automation import auto_draft_group_post
-        with patch(f"{_RA}.get_open_group_post_draft", return_value=None), \
-             patch(f"{_RA}.load_profile_for_user", return_value=None), \
-             patch(f"{_RA}.generate_group_post") as gen, \
-             patch(f"{_RA}.log_warning") as warned:
+        from cqc_lem.app.engagement.feed import auto_draft_group_post
+        with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=None), \
+             patch(f"{_FEED}.generate_group_post") as gen, \
+             patch(f"{_FEED}.log_warning") as warned:
             result = auto_draft_group_post.run(user_id=1, group_id="g1")
         assert result == "No cached profile to draft from"
         gen.assert_not_called()
         warned.assert_not_called()
 
     def test_empty_generation_stores_nothing(self):
-        from cqc_lem.app.run_automation import auto_draft_group_post
-        with patch(f"{_RA}.get_open_group_post_draft", return_value=None), \
-             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_group_post", return_value="   "), \
-             patch(f"{_RA}.create_group_post_draft") as create:
+        from cqc_lem.app.engagement.feed import auto_draft_group_post
+        with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_FEED}.generate_group_post", return_value="   "), \
+             patch(f"{_FEED}.create_group_post_draft") as create:
             result = auto_draft_group_post.run(user_id=1, group_id="g1")
         assert result == "No group post generated"
         create.assert_not_called()
@@ -259,29 +259,29 @@ class TestDraftGroupPost:
 
 class TestSyncUserGroups:
     def test_upserts_enumerated(self):
-        from cqc_lem.app.run_automation import auto_sync_user_groups
-        with patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._enumerate_joined_groups", return_value=[("1", "A"), ("2", "B")]), \
-             patch(f"{_RA}.upsert_user_group") as up, patch(f"{_RA}.quit_gracefully"):
+        from cqc_lem.app.engagement.feed import auto_sync_user_groups
+        with patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}._enumerate_joined_groups", return_value=[("1", "A"), ("2", "B")]), \
+             patch(f"{_FEED}.upsert_user_group") as up, patch(f"{_FEED}.quit_gracefully"):
             result = auto_sync_user_groups.run(user_id=1)
         assert up.call_count == 2 and "Synced 2" in result
 
 
 class TestCommentInGroups:
     def test_comments_each_enabled_group(self):
-        from cqc_lem.app.run_automation import auto_comment_in_groups
-        with patch(f"{_RA}.get_enabled_group_ids", return_value=["1", "2"]), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_recent_engagers", return_value=set()), \
-             patch(f"{_RA}.comment_on_feed_inline", return_value=1) as cfi, patch(f"{_RA}.quit_gracefully"):
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=1) as cfi, patch(f"{_FEED}.quit_gracefully"):
             result = auto_comment_in_groups.run(user_id=1)
         assert cfi.call_count == 2 and "across 2 group" in result
 
     def test_no_enabled_groups(self):
-        from cqc_lem.app.run_automation import auto_comment_in_groups
-        with patch(f"{_RA}.get_enabled_group_ids", return_value=[]), \
-             patch(f"{_RA}.get_current_profile") as gp:
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=[]), \
+             patch(f"{_FEED}.get_current_profile") as gp:
             result = auto_comment_in_groups.run(user_id=1)
         assert "No enabled groups" in result
         gp.assert_not_called()
@@ -293,17 +293,17 @@ class TestCommentInGroups:
         """
         from selenium.common import InvalidSessionIdException
 
-        from cqc_lem.app.run_automation import auto_comment_in_groups
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
         driver = MagicMock()
         driver.get.side_effect = [None, InvalidSessionIdException("Unable to find session with ID: abc")]
-        with patch(f"{_RA}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
-             patch(f"{_RA}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_recent_engagers", return_value=set()), \
-             patch(f"{_RA}.comment_on_feed_inline", return_value=2) as cfi, \
-             patch(f"{_RA}.log_info") as info, \
-             patch(f"{_RA}.log_error") as err, \
-             patch(f"{_RA}.quit_gracefully") as quit_driver:
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_FEED}.log_info") as info, \
+             patch(f"{_FEED}.log_error") as err, \
+             patch(f"{_FEED}.quit_gracefully") as quit_driver:
             result = auto_comment_in_groups.run(user_id=1)
         assert result == "Commented 2 time(s) before the browser session ended"
         assert cfi.call_count == 1  # the second group is unreachable on a dead session
@@ -312,14 +312,14 @@ class TestCommentInGroups:
 
     def test_a_real_failure_mid_run_still_raises(self):
         """Only a LOST SESSION is absorbed — anything else stays a crash, and a defect."""
-        from cqc_lem.app.run_automation import auto_comment_in_groups
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
         driver = MagicMock()
-        with patch(f"{_RA}.get_enabled_group_ids", return_value=["1"]), \
-             patch(f"{_RA}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_recent_engagers", return_value=set()), \
-             patch(f"{_RA}.comment_on_feed_inline", side_effect=RuntimeError("boom")), \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1"]), \
+             patch(f"{_FEED}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()), \
+             patch(f"{_FEED}.comment_on_feed_inline", side_effect=RuntimeError("boom")), \
+             patch(f"{_FEED}.quit_gracefully"):
             with pytest.raises(RuntimeError):
                 auto_comment_in_groups.run(user_id=1)
 
@@ -330,26 +330,26 @@ _READY_DRAFT = {"id": 11, "user_id": 1, "group_id": "123", "group_name": "AI Lea
 
 class TestPostToGroup:
     def _driver_patches(self):
-        return patch(f"{_RA}.get_current_profile",
+        return patch(f"{_FEED}.get_current_profile",
                      return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
 
     def _driver_patches_with(self, driver):
-        return patch(f"{_RA}.get_current_profile",
+        return patch(f"{_FEED}.get_current_profile",
                      return_value=(driver, MagicMock(), "e", MagicMock()))
 
     def test_publishes_the_reviewed_draft_and_stamps_rotation(self):
         """Issue #932: the published text is the draft the user could read and revise — nothing is
         generated here. Only a post that actually shipped moves the rotation on.
         """
-        from cqc_lem.app.run_automation import auto_post_to_group
+        from cqc_lem.app.engagement.feed import auto_post_to_group
         with self._driver_patches(), \
-             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_RA}.generate_group_post") as gen, \
-             patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=MagicMock()) as box, \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.update_group_post_draft") as upd, \
-             patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.generate_group_post") as gen, \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", return_value=MagicMock()) as box, \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
                                             draft_id=11)
         assert result == "Posted to group"
@@ -369,12 +369,12 @@ class TestPostToGroup:
         """A draft that was skipped, belongs to someone else, or is simply gone means NO post —
         falling back to a fresh generation would ship the un-previewed post #932 removed.
         """
-        from cqc_lem.app.run_automation import auto_post_to_group
-        with patch(f"{_RA}.get_group_post_draft", return_value=draft), \
-             patch(f"{_RA}.get_current_profile") as gcp, \
-             patch(f"{_RA}.generate_group_post") as gen, \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.record_group_post_run") as run:
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
+             patch(f"{_FEED}.get_current_profile") as gcp, \
+             patch(f"{_FEED}.generate_group_post") as gen, \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.record_group_post_run") as run:
             result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
         assert result == "No group post draft to publish"
         gcp.assert_not_called()
@@ -384,9 +384,9 @@ class TestPostToGroup:
 
     def test_a_dispatch_carrying_no_draft_id_publishes_nothing(self):
         """The pre-#932 call shape (no draft) must not resurrect the un-previewed publish path."""
-        from cqc_lem.app.run_automation import auto_post_to_group
-        with patch(f"{_RA}.get_group_post_draft") as get_draft, \
-             patch(f"{_RA}.get_current_profile") as gcp:
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with patch(f"{_FEED}.get_group_post_draft") as get_draft, \
+             patch(f"{_FEED}.get_current_profile") as gcp:
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
         assert result == "No group post draft to publish"
         get_draft.assert_not_called()
@@ -402,16 +402,16 @@ class TestPostToGroup:
         as TRIED so it moves to the back of the queue — but `last_posted_at` stays untouched. The
         draft was written for THAT group, so it dies with the group's turn (#932).
         """
-        from cqc_lem.app.run_automation import auto_post_to_group
+        from cqc_lem.app.engagement.feed import auto_post_to_group
         clicks = {"share_box": [None], "editor": [MagicMock()],
                   "post_button": [MagicMock(), None]}[miss]
         with self._driver_patches(), \
-             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_RA}.click_first", side_effect=clicks), \
-             patch(f"{_RA}.find_first", return_value=None if miss == "editor" else MagicMock()), \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.update_group_post_draft") as upd, \
-             patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", side_effect=clicks), \
+             patch(f"{_FEED}.find_first", return_value=None if miss == "editor" else MagicMock()), \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
                                             draft_id=11)
         assert result == expected
@@ -425,19 +425,19 @@ class TestPostToGroup:
         When the page plainly renders "Start a post" but the control lookup misses, we are looking
         at selector drift rather than an admin-only group.
         """
-        from cqc_lem.app.run_automation import auto_post_to_group
+        from cqc_lem.app.engagement.feed import auto_post_to_group
         driver = MagicMock()
         body = MagicMock()
         body.text = "Some group header\nStart a post\nRecommended for you"
         driver.find_element.return_value = body
         with self._driver_patches_with(driver), \
-             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_RA}.click_first", return_value=None), \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.update_group_post_draft") as upd, \
-             patch(f"{_RA}.record_group_post_run") as run, \
-             patch(f"{_RA}.log_warning") as warn, \
-             patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=None), \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, \
+             patch(f"{_FEED}.log_warning") as warn, \
+             patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
                                             draft_id=11)
         assert result == "Group share box control drifted"
@@ -449,19 +449,19 @@ class TestPostToGroup:
 
     def test_share_box_absent_without_signal_is_not_drift(self):
         """If the page text has no share-box signal at all, the group is simply unpostable."""
-        from cqc_lem.app.run_automation import auto_post_to_group
+        from cqc_lem.app.engagement.feed import auto_post_to_group
         driver = MagicMock()
         body = MagicMock()
         body.text = "Some group header\nRecommended for you"
         driver.find_element.return_value = body
         with self._driver_patches_with(driver), \
-             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_RA}.click_first", return_value=None), \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.update_group_post_draft") as upd, \
-             patch(f"{_RA}.record_group_post_run") as run, \
-             patch(f"{_RA}.log_warning") as warn, \
-             patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=None), \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, \
+             patch(f"{_FEED}.log_warning") as warn, \
+             patch(f"{_FEED}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
                                             draft_id=11)
         assert result == "Group share box not found"
@@ -474,12 +474,12 @@ class TestPostToGroup:
         """A dead session is transient and not the group's fault — it keeps its turn, and the draft
         stays open so next week's run publishes the text the user already approved.
         """
-        from cqc_lem.app.run_automation import auto_post_to_group
-        with patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
-             patch(f"{_RA}.get_current_profile", side_effect=Exception("no session")), \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.update_group_post_draft") as upd, \
-             patch(f"{_RA}.record_group_post_run") as run:
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.get_current_profile", side_effect=Exception("no session")), \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run:
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
                                             draft_id=11)
         assert "Failed" in result

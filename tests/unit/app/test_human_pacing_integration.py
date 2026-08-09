@@ -15,6 +15,9 @@ _RA = "cqc_lem.app.run_automation"
 # The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
 # is the module whose globals the invite code reads.
 _INV = "cqc_lem.app.engagement.invites"
+# Same for the feed / groups / roster engine (#1154): `comment_on_feed_inline` and
+# `_engage_card` read `feed`'s globals, the DM and scheduler lanes below still read `_RA`.
+_FEED = "cqc_lem.app.engagement.feed"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -126,10 +129,10 @@ class TestPacedBudgetsAtTheLanes:
         """The cap says 20 and nothing has been spent, but today's DRAW is 0 (rest day) — the run
         must stop, which the raw-cap check could never do.
         """
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.count_comments_today", return_value=0), \
-             patch(f"{_RA}.remaining_actions", return_value=0) as remaining, \
-             patch(f"{_RA}.get_recent_engagers", return_value=set()):
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.count_comments_today", return_value=0), \
+             patch(f"{_FEED}.remaining_actions", return_value=0) as remaining, \
+             patch(f"{_FEED}.get_recent_engagers", return_value=set()):
             posted = ra.comment_on_feed_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1,
                                                prefs={"max_comments_per_day": 20})
         assert posted == 0
@@ -205,32 +208,32 @@ class TestPacedBudgetsAtTheLanes:
 
 class TestGovernorAccounting:
     def test_a_landed_comment_is_reported_to_the_governor(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         from cqc_lem.utilities.human_pacing import ACTION_COMMENT
-        with patch(f"{_RA}.claim_post_for_comment", return_value=True), \
-             patch(f"{_RA}.select_blueprint", return_value={"format": "expander"}), \
-             patch(f"{_RA}.generate_ai_response", return_value="A real comment."), \
-             patch(f"{_RA}._author_is_me", return_value=False), \
-             patch(f"{_RA}.react_to_post_inline", return_value=True), \
-             patch(f"{_RA}.mark_post_reacted"), \
-             patch(f"{_RA}.post_comment_inline", return_value=True), \
-             patch(f"{_RA}.mark_post_commented"), \
-             patch(f"{_RA}.insert_new_log"), \
-             patch(f"{_RA}.pace_read", return_value=0.0), \
-             patch(f"{_RA}.time.sleep"), \
-             patch(f"{_RA}.record_action") as recorded:
+        with patch(f"{_FEED}.claim_post_for_comment", return_value=True), \
+             patch(f"{_FEED}.select_blueprint", return_value={"format": "expander"}), \
+             patch(f"{_FEED}.generate_ai_response", return_value="A real comment."), \
+             patch(f"{_FEED}._author_is_me", return_value=False), \
+             patch(f"{_FEED}.react_to_post_inline", return_value=True), \
+             patch(f"{_FEED}.mark_post_reacted"), \
+             patch(f"{_FEED}.post_comment_inline", return_value=True), \
+             patch(f"{_FEED}.mark_post_commented"), \
+             patch(f"{_FEED}.insert_new_log"), \
+             patch(f"{_FEED}.pace_read", return_value=0.0), \
+             patch(f"{_FEED}.time.sleep"), \
+             patch(f"{_FEED}.record_action") as recorded:
             ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
                                  "feedurn://x", "a post body", "Jane", {}, "synth", [], [])
         assert ok is True
         recorded.assert_called_once_with(1, ACTION_COMMENT)
 
     def test_a_skipped_comment_is_not_reported(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.claim_post_for_comment", return_value=True), \
-             patch(f"{_RA}.select_blueprint", return_value={"format": "expander"}), \
-             patch(f"{_RA}.generate_ai_response", return_value=None), \
-             patch(f"{_RA}.release_post_claim"), \
-             patch(f"{_RA}.record_action") as recorded:
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.claim_post_for_comment", return_value=True), \
+             patch(f"{_FEED}.select_blueprint", return_value={"format": "expander"}), \
+             patch(f"{_FEED}.generate_ai_response", return_value=None), \
+             patch(f"{_FEED}.release_post_claim"), \
+             patch(f"{_FEED}.record_action") as recorded:
             ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
                                  "feedurn://x", "a post body", "Jane", {}, "synth", [], [])
         assert ok is False

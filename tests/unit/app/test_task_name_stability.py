@@ -36,6 +36,16 @@ FROZEN_TASK_NAMES = frozenset({
     "cqc_lem.app.run_automation.auto_publish_newsletter_edition",
     "cqc_lem.app.run_automation.auto_publish_edition",
     "cqc_lem.app.run_automation.track_newsletter_subscribers",
+    # feed / groups / roster -> app.engagement.feed (#1154 step 3)
+    "cqc_lem.app.run_automation.comment_on_post",
+    "cqc_lem.app.run_automation.consolidate_duplicate_comments_for_user",
+    "cqc_lem.app.run_automation.auto_seed_comment_on_post",
+    "cqc_lem.app.run_automation.auto_second_wave_comment",
+    "cqc_lem.app.run_automation.auto_sync_user_groups",
+    "cqc_lem.app.run_automation.auto_comment_in_groups",
+    "cqc_lem.app.run_automation.auto_draft_group_post",
+    "cqc_lem.app.run_automation.auto_post_to_group",
+    "cqc_lem.app.run_automation.automate_commenting",
 })
 
 

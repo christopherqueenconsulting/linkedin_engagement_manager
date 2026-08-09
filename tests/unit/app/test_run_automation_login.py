@@ -15,6 +15,11 @@ pytestmark = pytest.mark.unit
 _MOD = "cqc_lem.app.run_automation"
 _PATCH_GET_PROFILE = f"{_MOD}.get_current_profile"
 _PATCH_LOG_ERROR = f"{_MOD}.log_error"
+# `automate_commenting` moved to `app.engagement.feed` (#1154); the three other tasks
+# exercised in this file did not, so both spellings are live here.
+_FEED = "cqc_lem.app.engagement.feed"
+_FEED_GET_PROFILE = f"{_FEED}.get_current_profile"
+_FEED_LOG_ERROR = f"{_FEED}.log_error"
 
 
 def _linkedin_challenge_error() -> RuntimeError:
@@ -32,9 +37,9 @@ def _timeout_error() -> TimeoutException:
 class TestAutomateCommentingLoginError:
     def test_returns_error_string_on_runtime_error(self):
         """automate_commenting returns a failure string (not raise) when login challenge occurs."""
-        with patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import automate_commenting
+        with patch(_FEED_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
+             patch(_FEED_LOG_ERROR) as mock_log:
+            from cqc_lem.app.engagement.feed import automate_commenting
 
             result = automate_commenting.run(user_id=1)
 
@@ -43,9 +48,9 @@ class TestAutomateCommentingLoginError:
 
     def test_returns_error_string_on_timeout_exception(self):
         """automate_commenting returns a failure string when username field is not found."""
-        with patch(_PATCH_GET_PROFILE, side_effect=_timeout_error()), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import automate_commenting
+        with patch(_FEED_GET_PROFILE, side_effect=_timeout_error()), \
+             patch(_FEED_LOG_ERROR) as mock_log:
+            from cqc_lem.app.engagement.feed import automate_commenting
 
             result = automate_commenting.run(user_id=1)
 
@@ -54,10 +59,10 @@ class TestAutomateCommentingLoginError:
 
     def test_does_not_call_quit_gracefully_on_profile_failure(self):
         """When get_current_profile raises, the already-closed driver is not quit again."""
-        with patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
-             patch(_PATCH_LOG_ERROR), \
-             patch(f"{_MOD}.quit_gracefully") as mock_quit:
-            from cqc_lem.app.run_automation import automate_commenting
+        with patch(_FEED_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
+             patch(_FEED_LOG_ERROR), \
+             patch(f"{_FEED}.quit_gracefully") as mock_quit:
+            from cqc_lem.app.engagement.feed import automate_commenting
 
             automate_commenting.run(user_id=1)
 

@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MOD = "cqc_lem.app.run_automation"
+_FEED = "cqc_lem.app.engagement.feed"
 
 _FEED_URL = "https://www.linkedin.com/feed/"
 
@@ -29,9 +29,9 @@ def _control(label: str) -> MagicMock:
 
 class TestSwitchFeedToRecent:
     def test_reports_missing_when_sort_control_absent(self):
-        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING, _switch_feed_to_recent
         driver = _driver()
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+        with patch(f"{_FEED}.find_first", return_value=None) as find_first:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_MISSING
         assert find_first.call_count == 1
@@ -45,10 +45,10 @@ class TestSwitchFeedToRecent:
         surface is rejected BEFORE the lookup, so there is no miss to warn about, and none of the
         wall clock a lookup costs on a surface that never had the control.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/groups/12345/"
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+        with patch(f"{_FEED}.find_first", return_value=None) as find_first:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_NOT_APPLICABLE
         find_first.assert_not_called()
@@ -60,12 +60,12 @@ class TestSwitchFeedToRecent:
         feed. `find_first`'s own warning cannot tell rot from a feed that never rendered, so #1108
         hands the miss to the zero-walk grader: same lookup, one warning, only when posts are there.
         """
-        from cqc_lem.app.run_automation import (FEED_SORT_MISSING, _FEED_CARD_CROSSCHECK_SEL,
+        from cqc_lem.app.engagement.feed import (FEED_SORT_MISSING, _FEED_CARD_CROSSCHECK_SEL,
                                                 _switch_feed_to_recent)
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/"
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first, \
-             patch(f"{_MOD}._report_zero_walk") as report:
+        with patch(f"{_FEED}.find_first", return_value=None) as find_first, \
+             patch(f"{_FEED}._report_zero_walk") as report:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_MISSING
         find_first.assert_called_once()
@@ -82,10 +82,10 @@ class TestSwitchFeedToRecent:
 
         Warning on all three files a defect for a feed that simply was not there.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING, _switch_feed_to_recent
         driver = _driver()
         driver.find_elements.return_value = []
-        with patch(f"{_MOD}.find_first", return_value=None), \
+        with patch(f"{_FEED}.find_first", return_value=None), \
              patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_MISSING
@@ -97,10 +97,10 @@ class TestSwitchFeedToRecent:
         The state stays MISSING either way, so #817's "never read an unsorted scan as recency
         sorted" is untouched — the cross-check moves the LOG LEVEL, never the reported sort.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING, _switch_feed_to_recent
         driver = _driver()
         driver.find_elements.return_value = [MagicMock(), MagicMock()]
-        with patch(f"{_MOD}.find_first", return_value=None), \
+        with patch(f"{_FEED}.find_first", return_value=None), \
              patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as log_warning:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_MISSING
@@ -108,9 +108,9 @@ class TestSwitchFeedToRecent:
 
     def test_a_resolved_control_never_pays_for_the_cross_check(self):
         """The grader is the MISS path only — a working feed must not spend a DOM query per run."""
-        from cqc_lem.app.run_automation import _switch_feed_to_recent
-        with patch(f"{_MOD}.find_first", return_value=_control("Sort by: Recent")), \
-             patch(f"{_MOD}._report_zero_walk") as report:
+        from cqc_lem.app.engagement.feed import _switch_feed_to_recent
+        with patch(f"{_FEED}.find_first", return_value=_control("Sort by: Recent")), \
+             patch(f"{_FEED}._report_zero_walk") as report:
             _switch_feed_to_recent(_driver(), MagicMock())
         report.assert_not_called()
 
@@ -119,34 +119,34 @@ class TestSwitchFeedToRecent:
         The URL read must not raise out of `_is_home_feed` either, or the outer handler logs
         `Feed recent-sort failed` at WARNING and files the defect by the other door.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
 
         class _DeadSession:
             @property
             def current_url(self):
                 raise RuntimeError("invalid session id")
 
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first, \
-             patch(f"{_MOD}.log_warning") as log_warning:
+        with patch(f"{_FEED}.find_first", return_value=None) as find_first, \
+             patch(f"{_FEED}.log_warning") as log_warning:
             state = _switch_feed_to_recent(_DeadSession(), MagicMock())
         assert state == FEED_SORT_NOT_APPLICABLE
         find_first.assert_not_called()
         log_warning.assert_not_called()
 
     def test_skips_when_already_sorted_by_recent(self):
-        from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_RECENT, _switch_feed_to_recent
         driver = _driver()
-        with patch(f"{_MOD}.find_first", return_value=_control("Sort by: Recent")):
+        with patch(f"{_FEED}.find_first", return_value=_control("Sort by: Recent")):
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_RECENT
         driver.execute_script.assert_not_called()
 
     def test_clicks_sort_then_recent_option_and_verifies(self):
-        from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_RECENT, _switch_feed_to_recent
         driver = _driver()
         btn, opt, after = _control("Sort by: Top"), _control("Recent"), _control("Sort by: Recent")
-        with patch(f"{_MOD}.find_first", side_effect=[btn, opt, after]), \
-             patch(f"{_MOD}.time.sleep"):
+        with patch(f"{_FEED}.find_first", side_effect=[btn, opt, after]), \
+             patch(f"{_FEED}.time.sleep"):
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_RECENT
         clicked = [c.args[1] for c in driver.execute_script.call_args_list]
@@ -156,27 +156,27 @@ class TestSwitchFeedToRecent:
         """The control re-renders unreadable after the click: 'we could not tell' must not be
         recorded as 'recent', or #622's effect gets measured against runs that never sorted.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_UNKNOWN, _switch_feed_to_recent
-        with patch(f"{_MOD}.find_first",
+        from cqc_lem.app.engagement.feed import FEED_SORT_UNKNOWN, _switch_feed_to_recent
+        with patch(f"{_FEED}.find_first",
                    side_effect=[_control("Sort by: Top"), _control("Recent"), None]), \
-             patch(f"{_MOD}.time.sleep"):
+             patch(f"{_FEED}.time.sleep"):
             state = _switch_feed_to_recent(_driver(), MagicMock())
         assert state == FEED_SORT_UNKNOWN
 
     def test_reports_top_when_recent_option_missing(self):
-        from cqc_lem.app.run_automation import FEED_SORT_TOP, _switch_feed_to_recent
-        with patch(f"{_MOD}.find_first", side_effect=[_control("Sort by: Top"), None]), \
-             patch(f"{_MOD}.time.sleep"):
+        from cqc_lem.app.engagement.feed import FEED_SORT_TOP, _switch_feed_to_recent
+        with patch(f"{_FEED}.find_first", side_effect=[_control("Sort by: Top"), None]), \
+             patch(f"{_FEED}.time.sleep"):
             state = _switch_feed_to_recent(_driver(), MagicMock())
         assert state == FEED_SORT_TOP
 
     def test_reads_sort_state_from_aria_label_when_button_text_is_empty(self):
-        from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_RECENT, _switch_feed_to_recent
         control = MagicMock()
         control.text = ""
         control.get_attribute.return_value = "Sort by dropdown, currently RECENT"
         driver = _driver()
-        with patch(f"{_MOD}.find_first", return_value=control):
+        with patch(f"{_FEED}.find_first", return_value=control):
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_RECENT
         driver.execute_script.assert_not_called()
@@ -186,28 +186,28 @@ class TestSwitchFeedToRecent:
         feed is still on Top. Reading that as sorted would skip the flip AND record the run as
         recency-sorted — both halves of the lie #817 exists to stop, in one label.
         """
-        from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_RECENT, _switch_feed_to_recent
         ambiguous = MagicMock()
         ambiguous.text = ""
         ambiguous.get_attribute.return_value = "Sort by, currently Top, options Top and Recent"
         opt = _control("Recent")
         driver = _driver()
-        with patch(f"{_MOD}.find_first",
+        with patch(f"{_FEED}.find_first",
                    side_effect=[ambiguous, opt, _control("Sort by: Recent")]), \
-             patch(f"{_MOD}.time.sleep"):
+             patch(f"{_FEED}.time.sleep"):
             state = _switch_feed_to_recent(driver, MagicMock())
         # The flip actually ran instead of being short-circuited by the ambiguous label.
         assert [c.args[1] for c in driver.execute_script.call_args_list] == [ambiguous, opt]
         assert state == FEED_SORT_RECENT
 
     def test_an_ambiguous_label_after_the_flip_reads_unknown_not_recent(self):
-        from cqc_lem.app.run_automation import FEED_SORT_UNKNOWN, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_UNKNOWN, _switch_feed_to_recent
         both = MagicMock()
         both.text = "Top Recent"
         both.get_attribute.return_value = ""
-        with patch(f"{_MOD}.find_first",
+        with patch(f"{_FEED}.find_first",
                    side_effect=[_control("Sort by: Top"), _control("Recent"), both]), \
-             patch(f"{_MOD}.time.sleep"):
+             patch(f"{_FEED}.time.sleep"):
             state = _switch_feed_to_recent(_driver(), MagicMock())
         assert state == FEED_SORT_UNKNOWN
 
@@ -215,29 +215,29 @@ class TestSwitchFeedToRecent:
         """A group feed reuses the commenting engine but never had a home-feed sort control, so a
         miss there is working behaviour — warning on it would file a defect for it (#817).
         """
-        from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
         driver = _driver("https://www.linkedin.com/groups/12345/")
-        with patch(f"{_MOD}.find_first") as find_first, \
-             patch(f"{_MOD}.log_warning") as log_warning:
+        with patch(f"{_FEED}.find_first") as find_first, \
+             patch(f"{_FEED}.log_warning") as log_warning:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_NOT_APPLICABLE
         find_first.assert_not_called()
         log_warning.assert_not_called()
 
     def test_fails_fast_instead_of_burning_the_retry_budget(self):
-        from cqc_lem.app.run_automation import _switch_feed_to_recent
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+        from cqc_lem.app.engagement.feed import _switch_feed_to_recent
+        with patch(f"{_FEED}.find_first", return_value=None) as find_first:
             _switch_feed_to_recent(_driver(), MagicMock())
         assert find_first.call_args.kwargs["max_try"] == 1
 
     def test_selector_miss_warns_and_does_not_raise(self):
-        from cqc_lem.app.run_automation import FEED_SORT_UNKNOWN, _switch_feed_to_recent
+        from cqc_lem.app.engagement.feed import FEED_SORT_UNKNOWN, _switch_feed_to_recent
         driver = _driver()
         driver.execute_script.side_effect = RuntimeError("element not interactable")
-        with patch(f"{_MOD}.find_first", return_value=_control("Sort by: Top")), \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.log_warning") as log_warning, \
-             patch(f"{_MOD}.log_error") as log_error:
+        with patch(f"{_FEED}.find_first", return_value=_control("Sort by: Top")), \
+             patch(f"{_FEED}.time.sleep"), \
+             patch(f"{_FEED}.log_warning") as log_warning, \
+             patch(f"{_FEED}.log_error") as log_error:
             state = _switch_feed_to_recent(driver, MagicMock())
         assert state == FEED_SORT_UNKNOWN
         assert log_warning.called
@@ -246,14 +246,14 @@ class TestSwitchFeedToRecent:
 
 class TestFeedSortLocators:
     def test_locator_chain_is_ordered_and_never_keys_on_class_names(self):
-        from cqc_lem.app.run_automation import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS
         assert len(_FEED_SORT_LOCATORS) >= 4
         for _by, value in _FEED_SORT_LOCATORS + _FEED_RECENT_OPTION_LOCATORS:
             assert "@class" not in value and "contains(@id" not in value
 
     def test_every_label_comparison_is_case_folded(self):
         """LinkedIn renders 'Recent', not 'recent'; a case-sensitive literal silently never fires."""
-        from cqc_lem.app.run_automation import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS
         for _by, value in _FEED_SORT_LOCATORS + _FEED_RECENT_OPTION_LOCATORS:
             assert "translate(" in value
 
@@ -264,12 +264,12 @@ class TestFeedSortLocators:
     # shipped just as dead.
 
     def test_no_trigger_route_requires_a_button_tag(self):
-        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_SORT_LOCATORS
         for _by, selector in _FEED_SORT_LOCATORS:
             assert "//button[" not in selector, selector
 
     def test_every_trigger_route_admits_a_non_button_affordance(self):
-        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_SORT_LOCATORS
         for _by, selector in _FEED_SORT_LOCATORS:
             assert any(token in selector for token in
                        ("@role=", "@aria-haspopup", "self::a", "//main//a")), selector
@@ -280,7 +280,7 @@ class TestFeedSortLocators:
         A card that merely CONTAINS the word 'recent' is somebody's post — the #1013 wrong-entity
         hazard, one `contains` away.
         """
-        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_SORT_LOCATORS
         bare = [s for _b, s in _FEED_SORT_LOCATORS
                 if "'recent'" in s and "'sort'" not in s and "sortby=" not in s]
         assert bare, "the chain lost its 'the label IS the sort' route"
@@ -295,14 +295,14 @@ class TestFeedSortLocators:
         shared in a post, and clicking that walks the session off the page the scan is about to
         read — #1012's wrong-entity hazard, addressed by URL instead of by label.
         """
-        from cqc_lem.app.run_automation import _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_SORT_LOCATORS
         href_routes = [s for _b, s in _FEED_SORT_LOCATORS if "sortby=" in s]
         assert href_routes
         for selector in href_routes:
             assert "'/feed'" in selector, selector
 
     def test_the_option_chain_admits_links_and_radio_rows(self):
-        from cqc_lem.app.run_automation import _FEED_RECENT_OPTION_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_RECENT_OPTION_LOCATORS
         joined = " ".join(s for _b, s in _FEED_RECENT_OPTION_LOCATORS)
         assert "self::a" in joined and "@role='radio'" in joined
 
@@ -311,7 +311,7 @@ class TestFeedSortLocators:
 
         A rotated anchor answers zero to both questions (#1013).
         """
-        from cqc_lem.app.run_automation import _FEED_CARD_CROSSCHECK_SEL, _FEED_SORT_LOCATORS
+        from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_SORT_LOCATORS
         assert "hide post by" not in " ".join(s for _b, s in _FEED_SORT_LOCATORS).lower()
         assert "sort" not in _FEED_CARD_CROSSCHECK_SEL.lower()
 
@@ -327,7 +327,7 @@ class TestIsHomeFeed:
         ("", False),
     ])
     def test_only_the_home_feed_has_a_sort_control(self, url, expected):
-        from cqc_lem.app.run_automation import _is_home_feed
+        from cqc_lem.app.engagement.feed import _is_home_feed
         driver = MagicMock()
         driver.current_url = url
         assert _is_home_feed(driver) is expected
@@ -340,13 +340,13 @@ class TestScanRecordsTheSortItRanAgainst:
 
     @staticmethod
     def _scan(sort_state):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
 
         driver = _driver()
         driver.find_elements.return_value = []          # empty feed — straight to the funnel write
         funnel_holder, scans = {}, []
         with ExitStack() as es:
-            p = lambda name, **kw: es.enter_context(patch(f"{_MOD}.{name}", **kw))
+            p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
             p("get_engagement_preferences", return_value={"max_comments_per_day": 20})
             p("get_recent_engagers", return_value=set())
             p("get_recent_comment_texts", return_value=[])
@@ -362,13 +362,13 @@ class TestScanRecordsTheSortItRanAgainst:
         return funnel_holder, scans
 
     def test_a_miss_lands_on_the_funnel_and_the_event(self):
-        from cqc_lem.app.run_automation import FEED_SORT_MISSING
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING
         funnel, scans = self._scan(FEED_SORT_MISSING)
         assert funnel["feed_sort"] == FEED_SORT_MISSING
         assert scans == [(7, funnel)]
 
     def test_a_sorted_scan_is_recorded_as_sorted(self):
-        from cqc_lem.app.run_automation import FEED_SORT_RECENT
+        from cqc_lem.app.engagement.feed import FEED_SORT_RECENT
         funnel, scans = self._scan(FEED_SORT_RECENT)
         assert funnel["feed_sort"] == FEED_SORT_RECENT
         assert scans[0][1]["feed_sort"] == FEED_SORT_RECENT
@@ -376,32 +376,32 @@ class TestScanRecordsTheSortItRanAgainst:
 
 class TestNavigateToFeed:
     def test_navigates_then_delegates_sort(self):
-        from cqc_lem.app.run_automation import navigate_to_feed
+        from cqc_lem.app.engagement.feed import navigate_to_feed
         driver = _driver("https://www.linkedin.com/in/someone/")
-        with patch(f"{_MOD}.wait_for_ajax"), \
-             patch(f"{_MOD}._switch_feed_to_recent") as switch:
+        with patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}._switch_feed_to_recent") as switch:
             navigate_to_feed(driver, MagicMock())
         driver.get.assert_called_once_with(_FEED_URL)
         assert switch.called
 
     def test_skips_navigation_when_already_on_feed(self):
-        from cqc_lem.app.run_automation import navigate_to_feed
+        from cqc_lem.app.engagement.feed import navigate_to_feed
         driver = _driver()
-        with patch(f"{_MOD}.wait_for_ajax"), \
-             patch(f"{_MOD}._switch_feed_to_recent") as switch:
+        with patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}._switch_feed_to_recent") as switch:
             navigate_to_feed(driver, MagicMock())
         driver.get.assert_not_called()
         assert switch.called
 
     def test_sort_failure_does_not_page_as_error(self):
-        from cqc_lem.app.run_automation import navigate_to_feed
+        from cqc_lem.app.engagement.feed import navigate_to_feed
         driver = _driver()
         driver.execute_script.side_effect = RuntimeError("stale sort control")
-        with patch(f"{_MOD}.wait_for_ajax"), \
-             patch(f"{_MOD}.find_first", return_value=_control("Sort by: Top")), \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.log_error") as log_error, \
-             patch(f"{_MOD}.log_warning") as log_warning:
+        with patch(f"{_FEED}.wait_for_ajax"), \
+             patch(f"{_FEED}.find_first", return_value=_control("Sort by: Top")), \
+             patch(f"{_FEED}.time.sleep"), \
+             patch(f"{_FEED}.log_error") as log_error, \
+             patch(f"{_FEED}.log_warning") as log_warning:
             navigate_to_feed(driver, MagicMock())
         log_error.assert_not_called()
         assert log_warning.called

@@ -9,6 +9,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+_FEED = "cqc_lem.app.engagement.feed"
+# `auto_second_wave_comment` and `auto_seed_comment_on_post` moved to
+# `app.engagement.feed` (#1154). `post_to_linkedin`, which dispatches them, did NOT —
+# and it reads run_automation's re-export, so TestSecondWaveDispatch keeps patching `_RA`.
 _AI = "cqc_lem.utilities.ai.ai_helper"
 
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"
@@ -23,28 +27,28 @@ def _second_wave_on(monkeypatch):
 @pytest.fixture
 def _happy_path():
     """Every collaborator of the task stubbed for the success case; individual tests patch over."""
-    with patch(f"{_RA}.is_automation_paused", return_value=False), \
-         patch(f"{_RA}.get_post_age_minutes", return_value=9 * 60), \
-         patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
-         patch(f"{_RA}.count_user_comments_on_post_url", return_value=1), \
-         patch(f"{_RA}.get_post_content", return_value="the real post body"), \
-         patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
-         patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-         patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-         patch(f"{_RA}.get_story_bank_entries", return_value=[]), \
-         patch(f"{_RA}.get_recent_comment_texts", return_value=[]), \
-         patch(f"{_RA}.record_story_bank_use") as story_use, \
-         patch(f"{_RA}.record_action") as action, \
-         patch(f"{_RA}._record_golden_hour_report") as report, \
-         patch(f"{_RA}.insert_new_log") as log:
+    with patch(f"{_FEED}.is_automation_paused", return_value=False), \
+         patch(f"{_FEED}.get_post_age_minutes", return_value=9 * 60), \
+         patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=_URL), \
+         patch(f"{_FEED}.count_user_comments_on_post_url", return_value=1), \
+         patch(f"{_FEED}.get_post_content", return_value="the real post body"), \
+         patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+         patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+         patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+         patch(f"{_FEED}.get_story_bank_entries", return_value=[]), \
+         patch(f"{_FEED}.get_recent_comment_texts", return_value=[]), \
+         patch(f"{_FEED}.record_story_bank_use") as story_use, \
+         patch(f"{_FEED}.record_action") as action, \
+         patch(f"{_FEED}._record_golden_hour_report") as report, \
+         patch(f"{_FEED}.insert_new_log") as log:
         yield {"story_use": story_use, "action": action, "report": report, "log": log}
 
 
 class TestSecondWaveComment:
     def test_posts_via_api_and_reports(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.generate_second_wave_comment", return_value="The number behind it: 40%."), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)") as api:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.generate_second_wave_comment", return_value="The number behind it: 40%."), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert api.call_args.args[1] == "urn:li:ugcPost:7479519458164695040"
         assert api.call_args.args[2] == "The number behind it: 40%."
@@ -55,29 +59,29 @@ class TestSecondWaveComment:
 
     def test_no_selenium_session_is_ever_opened(self, _happy_path):
         """Like the seed comment, the second wave is API-only — that is what makes it 429-immune."""
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.generate_second_wave_comment", return_value="insight"), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)"), \
-             patch(f"{_RA}.get_current_profile") as gcp:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.generate_second_wave_comment", return_value="insight"), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)"), \
+             patch(f"{_FEED}.get_current_profile") as gcp:
             auto_second_wave_comment.run(user_id=1, post_id=9)
         gcp.assert_not_called()
 
     def test_self_comment_cap_blocks_a_third_comment(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.count_user_comments_on_post_url", return_value=2), \
-             patch(f"{_RA}.generate_second_wave_comment") as gen, \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.count_user_comments_on_post_url", return_value=2), \
+             patch(f"{_FEED}.generate_second_wave_comment") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "cap reached" in result
         gen.assert_not_called()   # no LLM spend once the post is full
         api.assert_not_called()
 
     def test_cap_is_env_tunable(self, _happy_path, monkeypatch):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
         monkeypatch.setenv("SELF_COMMENT_MAX_PER_POST", "3")
-        with patch(f"{_RA}.count_user_comments_on_post_url", return_value=2), \
-             patch(f"{_RA}.generate_second_wave_comment", return_value="insight"), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,3)") as api:
+        with patch(f"{_FEED}.count_user_comments_on_post_url", return_value=2), \
+             patch(f"{_FEED}.generate_second_wave_comment", return_value="insight"), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,3)") as api:
             auto_second_wave_comment.run(user_id=1, post_id=9)
         api.assert_called_once()
 
@@ -85,10 +89,10 @@ class TestSecondWaveComment:
         """generate_second_wave_comment returns None when no draft clears the quality contract —
         an empty second wave beats a filler one.
         """
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.generate_second_wave_comment", return_value=None), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api, \
-             patch(f"{_RA}.log_warning") as warn:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.generate_second_wave_comment", return_value=None), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api, \
+             patch(f"{_FEED}.log_warning") as warn:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         api.assert_not_called()
         _happy_path["log"].assert_not_called()
@@ -100,11 +104,11 @@ class TestSecondWaveComment:
         """The second wave is discretionary amplification, so the #629 suppression pause stops it —
         unlike the seed comment, which is part of publishing.
         """
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.is_automation_paused", return_value=True), \
-             patch(f"{_RA}.automation_pause_reason", return_value="suppression:user:1"), \
-             patch(f"{_RA}.generate_second_wave_comment") as gen, \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.is_automation_paused", return_value=True), \
+             patch(f"{_FEED}.automation_pause_reason", return_value="suppression:user:1"), \
+             patch(f"{_FEED}.generate_second_wave_comment") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "suppression" in result
         gen.assert_not_called()
@@ -116,9 +120,9 @@ class TestSecondWaveComment:
         """
         from cqc_lem.app import run_automation as ra
         from cqc_lem.utilities import golden_hour as g
-        with patch(f"{_RA}.get_post_age_minutes", return_value=30.0), \
-             patch(f"{_RA}.generate_second_wave_comment") as gen, \
-             patch(f"{_RA}.comment_on_linkedin_post") as api, \
+        with patch(f"{_FEED}.get_post_age_minutes", return_value=30.0), \
+             patch(f"{_FEED}.generate_second_wave_comment") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api, \
              patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
             result = ra.auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "re-armed" in result
@@ -132,8 +136,8 @@ class TestSecondWaveComment:
         meantime must not silently cancel the amplification.
         """
         from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_post_age_minutes", return_value=30.0), \
-             patch(f"{_RA}.is_automation_paused", return_value=True), \
+        with patch(f"{_FEED}.get_post_age_minutes", return_value=30.0), \
+             patch(f"{_FEED}.is_automation_paused", return_value=True), \
              patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
             result = ra.auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "re-armed" in result
@@ -141,55 +145,55 @@ class TestSecondWaveComment:
 
     def test_an_unknown_publish_time_acts_rather_than_hopping_forever(self, _happy_path):
         from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.get_post_age_minutes", return_value=None), \
-             patch(f"{_RA}.generate_second_wave_comment", return_value="insight"), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)") as api, \
+        with patch(f"{_FEED}.get_post_age_minutes", return_value=None), \
+             patch(f"{_FEED}.generate_second_wave_comment", return_value="insight"), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)") as api, \
              patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
             ra.auto_second_wave_comment.run(user_id=1, post_id=9)
         api.assert_called_once()
         rearm.assert_not_called()
 
     def test_kill_switch(self, _happy_path, monkeypatch):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
         monkeypatch.setenv("SECOND_WAVE_COMMENT_ENABLED", "false")
-        with patch(f"{_RA}.comment_on_linkedin_post") as api:
+        with patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "disabled" in result
         api.assert_not_called()
 
     def test_bails_without_a_post_url(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=None), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=None), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "No post URL" in result
         api.assert_not_called()
 
     def test_bails_when_urn_underivable(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://example.com/x"), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.get_post_url_from_log_for_user", return_value="https://example.com/x"), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "object URN" in result
         api.assert_not_called()
 
     def test_bails_without_post_content(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.get_post_content", return_value=None), \
-             patch(f"{_RA}.get_post_message_from_log_for_user", return_value=None), \
-             patch(f"{_RA}.comment_on_linkedin_post") as api:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.get_post_content", return_value=None), \
+             patch(f"{_FEED}.get_post_message_from_log_for_user", return_value=None), \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "No post content" in result
         api.assert_not_called()
 
     def test_records_the_story_entry_it_used(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
         entry = {"id": 4, "kind": "number", "title": "cut build time",
                  "body": "we cut CI from 22 to 8 minutes", "active": True}
-        with patch(f"{_RA}.get_post_content", return_value="what our CI pipeline taught us"), \
-             patch(f"{_RA}.get_story_bank_entries", return_value=[entry]), \
-             patch(f"{_RA}.generate_second_wave_comment", return_value="insight") as gen, \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)"):
+        with patch(f"{_FEED}.get_post_content", return_value="what our CI pipeline taught us"), \
+             patch(f"{_FEED}.get_story_bank_entries", return_value=[entry]), \
+             patch(f"{_FEED}.generate_second_wave_comment", return_value="insight") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)"):
             auto_second_wave_comment.run(user_id=1, post_id=9)
         # The bank entry rides into the prompt as the ONLY permitted personal specifics...
         assert "22 to 8 minutes" in gen.call_args.kwargs["story_directive"]
@@ -197,27 +201,27 @@ class TestSecondWaveComment:
         _happy_path["story_use"].assert_called_once_with(1, 4)
 
     def test_empty_bank_uses_the_no_fabrication_fallback(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.get_story_bank_entries", return_value=[]), \
-             patch(f"{_RA}.generate_second_wave_comment", return_value="insight") as gen, \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)"):
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.get_story_bank_entries", return_value=[]), \
+             patch(f"{_FEED}.generate_second_wave_comment", return_value="insight") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)"):
             auto_second_wave_comment.run(user_id=1, post_id=9)
         directive = gen.call_args.kwargs["story_directive"]
         assert directive and "invent" in directive.lower()
         _happy_path["story_use"].assert_not_called()
 
     def test_a_failed_api_post_is_not_logged_as_a_comment(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.generate_second_wave_comment", return_value="insight"), \
-             patch(f"{_RA}.comment_on_linkedin_post", return_value=None):
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.generate_second_wave_comment", return_value="insight"), \
+             patch(f"{_FEED}.comment_on_linkedin_post", return_value=None):
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "failed to post" in result
         _happy_path["log"].assert_not_called()   # never claim a comment the API rejected
 
     def test_errors_are_swallowed_into_a_result_string(self, _happy_path):
-        from cqc_lem.app.run_automation import auto_second_wave_comment
-        with patch(f"{_RA}.load_profile_for_user", side_effect=RuntimeError("boom")), \
-             patch(f"{_RA}.log_error") as err:
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+        with patch(f"{_FEED}.load_profile_for_user", side_effect=RuntimeError("boom")), \
+             patch(f"{_FEED}.log_error") as err:
             result = auto_second_wave_comment.run(user_id=1, post_id=9)
         assert "error" in result.lower()
         err.assert_called_once()
