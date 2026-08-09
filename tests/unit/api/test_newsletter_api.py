@@ -37,7 +37,8 @@ _USER = 5
 class TestNewsletterSettings:
     def test_get_returns_settings(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.routers.user.get_newsletter_settings", return_value={"enabled": True, "cadence": "weekly"}):
+             patch("cqc_lem.api.routers.user.get_newsletter_settings",
+                   return_value={"enabled": True, "cadence": "weekly"}):
             resp = client.get(f"/api/user/newsletter-settings?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["cadence"] == "weekly"

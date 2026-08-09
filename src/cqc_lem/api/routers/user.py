@@ -1,7 +1,8 @@
-"""`/api/user/*` — the account itself: settings, engagement preferences, strong-auth enrolment,
-newsletter and post authoring, groups, affiliate, analytics. Split from `main.py` (#1154).
+"""`/api/user/*` — the account itself, split from `main.py` (#1154).
 
-The biggest of the four slices at 79 routes, and the mechanic is the one #1178 established.
+Settings, engagement preferences, strong-auth enrolment, newsletter and post authoring, groups,
+affiliate and analytics: the biggest of the four slices at 79 routes. The mechanic is the one #1178
+established.
 
 The auth kernel stays in `main` and is reached as `_main.get_session_user_id` — an ATTRIBUTE
 resolved at REQUEST time, which is what keeps the ~596 patches aimed at `cqc_lem.api.main` binding

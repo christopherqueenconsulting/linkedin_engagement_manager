@@ -24,6 +24,7 @@ the host module, resolved at request time, so patching it on `main` is CORRECT a
 import ast
 import pathlib
 import pkgutil
+import re
 
 import pytest
 
@@ -33,6 +34,10 @@ pytestmark = pytest.mark.unit
 REACHED_THROUGH_THE_HOST_MODULE = {"get_session_user_id"}
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
+
+# Any `/api/...` URL literal. Used only to ask whether a test names its OWN route, which decides
+# whether the enclosing class's URL is relevant to it.
+_API_ROUTE = re.compile(r'["\']/api/')
 
 
 def _module_globals(path: pathlib.Path) -> set[str]:
@@ -103,7 +108,14 @@ def _tests_touching(prefix: str):
                                     "\n".join(lines[child.lineno - 1:child.end_lineno]))
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     body = "\n".join(lines[child.lineno - 1:child.end_lineno])
-                    if prefix in body or prefix in cls_text:
+                    # The class text is a FALLBACK, not an addition. A test that names its own URL
+                    # has already said which router it drives, and the class around it routinely
+                    # holds siblings driving a different one — `TestCookieResolution` calls
+                    # `/api/auth/session` next to a sibling calling `/api/user/sessions/revoke`.
+                    # Reading both together reported 14 correct `main` patches as mistakes when the
+                    # `/api/user` slice landed; re-pointing them would have broken every one.
+                    own = _API_ROUTE.search(body)
+                    if prefix in body if own else prefix in cls_text:
                         yield path, cls, child.name, body
 
         yield from walk(tree)
