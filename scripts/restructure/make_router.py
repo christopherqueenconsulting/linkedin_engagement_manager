@@ -40,6 +40,19 @@ KERNEL_SEEDS = {
 }
 
 
+def _under(path: str, prefix: str) -> bool:
+    """Is `path` inside `/prefix` — as a PATH SEGMENT, not a string prefix?
+
+    `startswith(f"/{prefix}")` looks right and is wrong: with prefix `user` it also matches
+    `/user_id/`, a different live route. Sweeping that into `api/routers/user.py` under an
+    `APIRouter(prefix="/api/user")` would silently re-spell it `/api/user/user_id/` and 404 the real
+    one. Caught on the 79-route `user` slice, where the analysis reported 80.
+
+    The trap waits for any prefix that is another route's proper prefix, so match on the boundary.
+    """
+    return path == f"/{prefix}" or path.startswith(f"/{prefix}/")
+
+
 def _name(node: ast.AST) -> str | None:
     name = getattr(node, "name", None)
     if name is None and isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -128,7 +141,7 @@ class Analysis:
                 if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
                         and isinstance(dec.func.value, ast.Name) and dec.func.value.id == "router"
                         and dec.args and isinstance(dec.args[0], ast.Constant)
-                        and str(dec.args[0].value).startswith(f"/{prefix}")):
+                        and _under(str(dec.args[0].value), prefix)):
                     found.append(node.name)
         return found
 
