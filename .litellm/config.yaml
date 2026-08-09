@@ -70,16 +70,21 @@ model_list:
   # scored `:0731` 100% on this tier. Declined; see docs/model-benchmarks/README.md. Newer tag ≠
   # better model is the whole point of the harness.
   #
-  # This id stays UNVERSIONED, which means it follows the catalog's moving tag — including onto
-  # the build above if ollama re-points it. That is a real exposure, not a free default:
-  # scripts/model_health_check.py diffs tag NAMES, so a re-point files no evaluation issue and
-  # this tier would change model unbenchmarked (detection tracked on #925). Kept unversioned
-  # because this is the build measured at 90% today and a pin has upkeep of its own (every scan,
-  # retirement-map and shadow-pricing path keys on the exact id string) — but a pin is the trade
-  # being declined here, not a no-op.
+  # This id WAS unversioned, and the #925 exposure that choice documented has now fired — but not
+  # in the direction predicted. ollama did not re-point the bare tag onto a different build: on
+  # 2026-08-09 it DELETED `deepseek-v4-flash` and republished the SAME artifact as
+  # `deepseek-v4-flash:preview` — identical in the catalog (140GB, modified 2026-04-24) where
+  # `:0731` differs (167GB). The tier was therefore pointing at a model that no longer exists,
+  # which is worse than the drift that was being guarded against: latency-based routing keeps
+  # picking a fast-failing deployment, which is exactly how the retired ministral-3:8b kept
+  # winning lem-simple.
+  #
+  # Repointed to `:preview`, which PRESERVES the build benchmarked at 90% — a rename, not an
+  # unbenchmarked model change. What caught it was the roster test asserting every configured id
+  # is in the committed catalog; #925 stays open because a silent RE-POINT still files nothing.
   - model_name: lem-medium
     litellm_params:
-      model: openai/deepseek-v4-flash
+      model: openai/deepseek-v4-flash:preview
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 4
@@ -140,12 +145,13 @@ model_list:
   # group — see the note at the top of this file); the long-form quality reading, and any adoption
   # of the HIGH usage-level minimax-m3 / glm-5.2 as the quality option, is a
   # scripts/benchmark_models.py decision on #842, not a config-time one.
-  # Unversioned on the same terms as the lem-medium deployment above — the `:0731` build did not
-  # beat this one here either (80% contract vs 90%, #921), and the same moving-tag exposure (#925)
-  # applies to this deployment too.
+  # Repointed to `:preview` on the same terms as the lem-medium deployment above, and for the same
+  # reason — ollama deleted the bare tag on 2026-08-09 and republished this build under it. The
+  # `:0731` build did not beat this one here either (80% contract vs 90%, #921), so `:preview`
+  # remains the measured choice.
   - model_name: lem-complex
     litellm_params:
-      model: openai/deepseek-v4-flash
+      model: openai/deepseek-v4-flash:preview
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 3
