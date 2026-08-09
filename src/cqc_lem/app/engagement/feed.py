@@ -46,6 +46,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Callable, NamedTuple, Optional, Tuple
 
+from celery.exceptions import SoftTimeLimitExceeded
 from selenium.common import (
     StaleElementReferenceException,
     WebDriverException,
@@ -2790,16 +2791,51 @@ def auto_sync_user_groups(self, user_id: int):
         quit_gracefully(driver)
 
 
+# A group walk is bounded by the SAME clock as every other task — celeryconfig's soft time limit —
+# and it is the walk most likely to reach it: one Chrome session, N group feeds, each an LLM-priced
+# scored comment pass. Reaching the limit is the worst way to stop, because it lands mid-comment and
+# nothing downstream of it runs. So the walk carries its OWN deadline, derived from that limit and
+# checked between groups, and passed INTO the feed engine so a single slow group cannot spend the
+# whole budget. The reserve is what the in-flight group and `quit_gracefully` get to finish in.
+GROUP_WALK_RESERVE_SECONDS = 10 * 60
+# A limit configured tighter than the reserve must still leave a walk something to spend, or the
+# deadline check would refuse the first group and the task would never comment at all.
+GROUP_WALK_MIN_BUDGET_SECONDS = 5 * 60
+
+
+def _group_walk_deadline(task, started_ts: float) -> Optional[float]:
+    """Wall-clock instant a group walk must stop by to beat its Celery soft time limit.
+
+    Reads the limit off the task's own request first (a caller may override it per dispatch) and
+    falls back to the app config; celery orders that tuple `(hard, soft)`.
+
+    Returns:
+        None when nothing bounds the task at all — the walk then runs unbounded, as it always did.
+    """
+    limits = getattr(task.request, "timelimit", None) or (None, None)
+    soft = limits[1] if len(limits) == 2 else None
+    if soft is None:
+        soft = shared_task.conf.task_soft_time_limit
+    if not soft:
+        return None
+    return started_ts + max(float(soft) - GROUP_WALK_RESERVE_SECONDS, GROUP_WALK_MIN_BUDGET_SECONDS)
+
+
 @shared_task.task(name='cqc_lem.app.run_automation.auto_comment_in_groups',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_engage')
 def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     """Comment (value-add, scored) on posts in each of the user's ENABLED groups. Reuses the feed
     commenting engine pointed at each group's feed. Shares the per-day comment cap.
+
+    Bounded by `_group_walk_deadline`: a run that is out of time stops between groups and keeps
+    what it already posted, rather than being cut down mid-comment by the soft time limit.
     """
+    started_ts = time.time()
     enabled = get_enabled_group_ids(user_id)
     if not enabled:
         return "No enabled groups"
+    deadline_ts = _group_walk_deadline(self, started_ts)
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Commenting")
     except Exception as e:
@@ -2808,14 +2844,24 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     prefs = get_engagement_preferences(user_id)
     engagers = get_recent_engagers(user_id)
     total = 0
+    walked = 0
     try:
         for gid in enabled:
+            if deadline_ts is not None and time.time() >= deadline_ts:
+                # WARNING, not DEBUG: the groups after this one got nothing this run. Once is the
+                # walk being longer than its budget; repeatedly is a defect (too many groups, or a
+                # group feed that stalls), and the escalation contract is what says so.
+                log_warning(f"Group commenting ran out of time after {walked} of {len(enabled)} "
+                            f"group(s) — remaining groups skipped this run", user_id=user_id,
+                            action_type="comment", task_name="auto_comment_in_groups")
+                return f"Commented {total} time(s) across {walked} group(s) before running out of time"
             try:
                 driver.get(f"https://www.linkedin.com/groups/{gid}/")
                 time.sleep(random.uniform(4, 7))
                 total += comment_on_feed_inline(driver, wait, my_profile, user_id,
-                                                max_posts=max_per_group, prefs=prefs, engagers=engagers,
-                                                is_group_feed=True)
+                                                max_posts=max_per_group, deadline_ts=deadline_ts,
+                                                prefs=prefs, engagers=engagers, is_group_feed=True)
+                walked += 1
             except Exception as e:
                 if not is_session_lost(e):
                     raise
@@ -2829,6 +2875,16 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
                          "commenting", user_id=user_id, task_name="auto_comment_in_groups")
                 return f"Commented {total} time(s) before the browser session ended"
         return f"Commented {total} time(s) across {len(enabled)} group(s)"
+    except SoftTimeLimitExceeded:
+        # The deadline above is the intended stop; this is the backstop for a run whose reserve was
+        # not enough (issue #1198). It arrives here rather than in the loop's own handler because
+        # `is_session_lost` is False for it, so that handler re-raises. Keeping the comments that
+        # already landed and letting `finally` quit Chrome is the whole point of the SOFT limit —
+        # crashing the task instead only files a grouped $exception for a run we deliberately capped.
+        log_warning(f"Group commenting hit the Celery soft time limit after {walked} of "
+                    f"{len(enabled)} group(s)", user_id=user_id, action_type="comment",
+                    task_name="auto_comment_in_groups")
+        return f"Commented {total} time(s) before the task time limit"
     finally:
         quit_gracefully(driver)
 
