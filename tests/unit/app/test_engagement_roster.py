@@ -11,6 +11,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 
 
 @pytest.fixture(autouse=True)
@@ -1117,10 +1120,10 @@ class TestSendRosterConnectInvite:
 
     def _send(self, result=None, raises=None):
         from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.invite_to_connect_now",
+        with patch(f"{_INV}.invite_to_connect_now",
                    side_effect=raises, return_value=result) as rail, \
-             patch(f"{_RA}.set_target_connect_status") as st, \
-             patch(f"{_RA}.log_warning"):
+             patch(f"{_INV}.set_target_connect_status") as st, \
+             patch(f"{_INV}.log_warning"):
             out = ra.send_roster_connect_invite(1, self._URL, "note")
         return out, st, rail
 

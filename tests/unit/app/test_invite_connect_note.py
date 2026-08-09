@@ -19,7 +19,9 @@ from selenium.common.exceptions import TimeoutException
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 
 _NOTE_XPATH = '//button[contains(@aria-label,"Add a note")]'
 _TEXTAREA_XPATH = '//textarea[@id="custom-message"]'
@@ -68,24 +70,24 @@ class _Result:
 
 
 def _invite(found: set[str], message: str = None, box: MagicMock = None, refined: str = "short note"):
-    from cqc_lem.app import run_automation as ra
+    from cqc_lem.app.engagement import invites as ra
     click = _clicker(found, box)
-    with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
-         patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
-         patch(f"{_RA}.login_to_linkedin"), \
-         patch(f"{_RA}._profile_is_first_degree", return_value=False), \
-         patch(f"{_RA}._open_connect_invite_dialog", return_value=True), \
-         patch(f"{_RA}.click_element_wait_retry", click), \
-         patch(f"{_RA}.find_first", _finder(found)) as find_first, \
-         patch(f"{_RA}.click_first", _first_clicker(found)) as click_first, \
-         patch(f"{_RA}.get_ai_message_refinement", return_value=refined) as refine, \
-         patch(f"{_RA}.time.sleep"), \
-         patch(f"{_RA}.log_error") as log_error, \
-         patch(f"{_RA}.log_warning") as log_warning, \
-         patch(f"{_RA}.log_debug") as log_debug, \
-         patch(f"{_RA}.insert_new_log") as insert_log, \
-         patch(f"{_RA}.record_action") as record_action, \
-         patch(f"{_RA}.quit_gracefully"):
+    with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+         patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+         patch(f"{_INV}.login_to_linkedin"), \
+         patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+         patch(f"{_INV}._open_connect_invite_dialog", return_value=True), \
+         patch(f"{_INV}.click_element_wait_retry", click), \
+         patch(f"{_INV}.find_first", _finder(found)) as find_first, \
+         patch(f"{_INV}.click_first", _first_clicker(found)) as click_first, \
+         patch(f"{_INV}.get_ai_message_refinement", return_value=refined) as refine, \
+         patch(f"{_INV}.time.sleep"), \
+         patch(f"{_INV}.log_error") as log_error, \
+         patch(f"{_INV}.log_warning") as log_warning, \
+         patch(f"{_INV}.log_debug") as log_debug, \
+         patch(f"{_INV}.insert_new_log") as insert_log, \
+         patch(f"{_INV}.record_action") as record_action, \
+         patch(f"{_INV}.quit_gracefully"):
         sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane", message)
     return _Result(sent=sent, reason=reason, click=click, find_first=find_first,
                    click_first=click_first, insert_log=insert_log, log_error=log_error,

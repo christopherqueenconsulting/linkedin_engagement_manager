@@ -14,7 +14,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 
 _PROFILE_URL = "https://www.linkedin.com/in/jane-doe-123/"
 _CUSTOM_INVITE_URL = "https://www.linkedin.com/preload/custom-invite/?vanityName=jane-doe-123"
@@ -69,22 +71,22 @@ class _Routes:
 
 
 def _invite(routes: _Routes, message: str = None):
-    from cqc_lem.app import run_automation as ra
+    from cqc_lem.app.engagement import invites as ra
     driver = MagicMock()
     driver.current_url = "about:blank"
-    with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
-         patch(f"{_RA}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
-         patch(f"{_RA}.login_to_linkedin"), \
-         patch(f"{_RA}._profile_is_first_degree", return_value=False), \
-         patch(f"{_RA}.find_first", routes.find_first), \
-         patch(f"{_RA}.click_first", routes.click_first), \
-         patch(f"{_RA}.click_element_wait_retry", routes.click_element_wait_retry), \
-         patch(f"{_RA}.time.sleep"), \
-         patch(f"{_RA}.log_error") as log_error, \
-         patch(f"{_RA}.log_warning") as log_warning, \
-         patch(f"{_RA}.insert_new_log") as insert_log, \
-         patch(f"{_RA}.record_action"), \
-         patch(f"{_RA}.quit_gracefully"):
+    with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+         patch(f"{_INV}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
+         patch(f"{_INV}.login_to_linkedin"), \
+         patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+         patch(f"{_INV}.find_first", routes.find_first), \
+         patch(f"{_INV}.click_first", routes.click_first), \
+         patch(f"{_INV}.click_element_wait_retry", routes.click_element_wait_retry), \
+         patch(f"{_INV}.time.sleep"), \
+         patch(f"{_INV}.log_error") as log_error, \
+         patch(f"{_INV}.log_warning") as log_warning, \
+         patch(f"{_INV}.insert_new_log") as insert_log, \
+         patch(f"{_INV}.record_action"), \
+         patch(f"{_INV}.quit_gracefully"):
         sent, reason = ra.invite_to_connect_now(1, _PROFILE_URL, message)
     return sent, reason, driver, insert_log, log_error, log_warning
 
@@ -153,15 +155,15 @@ class TestNoRouteOpensTheDialog:
 
 class TestSluglessProfileUrl:
     def test_a_url_without_a_slug_skips_straight_to_the_profile_route(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
         routes = _Routes()
         driver = MagicMock()
         driver.current_url = "about:blank"
-        with patch(f"{_RA}.find_first", routes.find_first), \
-             patch(f"{_RA}.click_first", routes.click_first), \
-             patch(f"{_RA}.log_warning") as log_warning, \
-             patch(f"{_RA}.log_debug"):
+        with patch(f"{_INV}.find_first", routes.find_first), \
+             patch(f"{_INV}.click_first", routes.click_first), \
+             patch(f"{_INV}.log_warning") as log_warning, \
+             patch(f"{_INV}.log_debug"):
             opened = ra._open_connect_invite_dialog(driver, MagicMock(), 1,
                                                     "https://www.linkedin.com/company/acme/")
 

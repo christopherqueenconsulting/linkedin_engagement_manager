@@ -16,6 +16,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -65,25 +68,25 @@ class TestFirstDegreeIsNeverInvited:
         assert insert.call_count == 1
 
     def test_the_send_path_aborts_on_a_first_degree_profile(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         from cqc_lem.utilities.db import ALREADY_CONNECTED_MESSAGE
         badge = MagicMock()
         badge.text = "1st"
         driver = MagicMock()
         driver.find_elements.return_value = [badge]
-        with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
-             patch(f"{_RA}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
-             patch(f"{_RA}.login_to_linkedin"), \
-             patch(f"{_RA}.click_element_wait_retry") as click, \
-             patch(f"{_RA}.insert_new_log") as log, \
-             patch(f"{_RA}.quit_gracefully"):
+        with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e@x", "pw")), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(driver, MagicMock())), \
+             patch(f"{_INV}.login_to_linkedin"), \
+             patch(f"{_INV}.click_element_wait_retry") as click, \
+             patch(f"{_INV}.insert_new_log") as log, \
+             patch(f"{_INV}.quit_gracefully"):
             sent, reason = ra.invite_to_connect_now(1, "https://x/in/jane")
         assert sent is False and reason == ALREADY_CONNECTED_MESSAGE
         click.assert_not_called()  # never hunts for a Connect button that cannot exist
         log.assert_called_once()
 
     def test_an_unreadable_badge_does_not_block_the_invite(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         driver = MagicMock()
         driver.find_elements.side_effect = Exception("stale element")
         assert ra._profile_is_first_degree(driver) is False
@@ -114,14 +117,14 @@ class TestIcpFloorAtFileTime:
 
 class TestFailureReasonIsRecorded:
     def test_a_failed_send_stores_why(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         from cqc_lem.utilities.db import ConnectionRequestStatus
         req = {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane",
                "message": "hi", "status": "approved"}
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=req), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", return_value=(False, "Already connected")), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now", return_value=(False, "Already connected")), \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             ra.send_connection_request(3)
         upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,

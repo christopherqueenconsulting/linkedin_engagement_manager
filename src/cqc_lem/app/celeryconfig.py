@@ -204,6 +204,10 @@ task_routes = {
     'cqc_lem.app.run_automation.send_private_dm': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.automate_profile_viewer_engagement': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.engage_with_profile_viewer': {'queue': 'se_outreach'},
+    # These keys are WIRE NAMES, not module paths. `invite_to_connect`, `clean_stale_invites` and
+    # `automate_invites_to_company_page_for_user` live in `app.engagement.invites` since #1154 and
+    # pin `name=` back to this spelling, so the keys below stay correct and must not be "corrected"
+    # to the new module. `tests/unit/app/test_task_name_stability.py` is what holds that.
     'cqc_lem.app.run_automation.invite_to_connect': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.process_user_followups': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.automate_invites_to_company_page_for_user': {'queue': 'se_outreach'},

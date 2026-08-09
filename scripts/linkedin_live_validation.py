@@ -1946,9 +1946,14 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
     STRICTLY read-only — it never clicks Send, never clicks an Invite control, and never opens the
     More menu. That is the whole point: this surface's last drift sent ~20 connection requests to
     strangers, so the probe that grounds it must be incapable of sending one."""
-    from cqc_lem.app.run_automation import (_CONNECT_BARE_SEND_LOCATORS, _CONNECT_DIALOG_LOCATORS,
-                                            _CONNECT_INVITE_URL, _CONNECT_NOTE_BUTTON_LOCATORS,
-                                            _PROFILE_MORE_MENU_LOCATORS, _profile_slug)
+    # The connect rail moved to `app.engagement.invites` (#1154). The probe deliberately imports the
+    # SHIPPED locators rather than restating them, so it reports drift in what production actually
+    # uses; importing them from the old module would have made it grade a copy.
+    from cqc_lem.app.engagement.invites import (_CONNECT_BARE_SEND_LOCATORS,
+                                                _CONNECT_DIALOG_LOCATORS, _CONNECT_INVITE_URL,
+                                                _CONNECT_NOTE_BUTTON_LOCATORS,
+                                                _PROFILE_MORE_MENU_LOCATORS)
+    from cqc_lem.utilities.lead_scoring import profile_slug as _profile_slug
     from cqc_lem.utilities.selenium_util import find_first
     from selenium.webdriver.support.ui import WebDriverWait
 
@@ -2089,7 +2094,7 @@ def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
     `degree_anchors` is the point: class anchors are gone from the SDUI profile, so this hands back
     the leaf nodes that DO carry the badge today. #1021's chain was written from that reading, and
     the next rotation gets re-grounded from it the same way."""
-    from cqc_lem.app.run_automation import _PROFILE_DEGREE_LOCATORS
+    from cqc_lem.app.engagement.invites import _PROFILE_DEGREE_LOCATORS
     from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
     from bs4 import BeautifulSoup
 

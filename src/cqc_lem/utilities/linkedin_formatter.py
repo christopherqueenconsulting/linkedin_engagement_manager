@@ -63,6 +63,21 @@ def normalize_public_text(text: str) -> str:
     return text
 
 
+def strip_non_bmp(text: str) -> str:
+    """`normalize_public_text` plus the one thing ChromeDriver cannot type: non-BMP characters.
+
+    Two separate problems that always travel together on a Selenium path. The normalize pass keeps
+    AI typography (em dashes, smart quotes) out of public text; the second drops anything above
+    U+FFFF, because `send_keys` raises `WebDriverException` on it — which is most emoji — and takes
+    the whole composer down with it.
+
+    Lives here rather than in a task module because both Selenium composers and the invite path need
+    it, and `linkedin_formatter` is the leaf both can import without a cycle.
+    """
+    text = normalize_public_text(text or "")
+    return "".join(c for c in text if ord(c) <= 0xFFFF)
+
+
 # Drop-in directive for AI system prompts so models avoid the fancy punctuation in the first place
 # (normalize_public_text is the safety net; this is the prevention).
 PLAIN_PUNCTUATION_DIRECTIVE = (

@@ -12,6 +12,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The connect rail moved to its own module (#1154); patches for it must bind THERE, because that
+# is the module whose globals the invite code reads.
+_INV = "cqc_lem.app.engagement.invites"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -234,19 +237,19 @@ class TestGovernorAccounting:
         recorded.assert_not_called()
 
     def test_a_sent_invite_is_reported_and_a_failed_one_is_not(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import invites as ra
         from cqc_lem.utilities.human_pacing import ACTION_INVITE
         for sent in (True, False):
             connect = MagicMock() if sent else MagicMock(side_effect=Exception("no button"))
-            with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("e", "p")), \
-                 patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
-                 patch(f"{_RA}.login_to_linkedin"), \
-                 patch(f"{_RA}._profile_is_first_degree", return_value=False), \
-                 patch(f"{_RA}.click_element_wait_retry", connect), \
-                 patch(f"{_RA}.log_error"), \
-                 patch(f"{_RA}.insert_new_log"), \
-                 patch(f"{_RA}.quit_gracefully"), \
-                 patch(f"{_RA}.record_action") as recorded:
+            with patch(f"{_INV}.get_user_password_pair_by_id", return_value=("e", "p")), \
+                 patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+                 patch(f"{_INV}.login_to_linkedin"), \
+                 patch(f"{_INV}._profile_is_first_degree", return_value=False), \
+                 patch(f"{_INV}.click_element_wait_retry", connect), \
+                 patch(f"{_INV}.log_error"), \
+                 patch(f"{_INV}.insert_new_log"), \
+                 patch(f"{_INV}.quit_gracefully"), \
+                 patch(f"{_INV}.record_action") as recorded:
                 invite_sent, _reason = ra.invite_to_connect_now(1, "https://x/in/jane")
             assert invite_sent is sent
             if sent:
