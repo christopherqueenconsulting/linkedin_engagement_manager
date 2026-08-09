@@ -233,13 +233,13 @@ class TestBillingCreateCheckoutSession:
 
     def test_no_stripe_customer_id_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value={"stripe_customer_id": None}):
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value={"stripe_customer_id": None}):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 400
 
     def test_no_subscription_info_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=None):
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=None):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 400
 
@@ -251,7 +251,7 @@ class TestBillingCreateCheckoutSession:
             "subscription_status": "active",
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=sub_info), \
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=sub_info), \
              patch("cqc_lem.utilities.stripe_util.upgrade_subscription", return_value=True) as mock_upgrade, \
              patch("cqc_lem.utilities.stripe_util.create_checkout_session") as mock_checkout:
             resp = client.post(self.BASE, json=self.PAYLOAD)
@@ -269,7 +269,7 @@ class TestBillingCreateCheckoutSession:
             "subscription_status": "trial",
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=2), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=sub_info), \
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=sub_info), \
              patch("cqc_lem.utilities.stripe_util.upgrade_subscription", return_value=True):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 200
@@ -283,7 +283,7 @@ class TestBillingCreateCheckoutSession:
             "subscription_status": None,
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=3), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=sub_info), \
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=sub_info), \
              patch("cqc_lem.utilities.stripe_util.create_checkout_session",
                    return_value="https://checkout.stripe.com/pay/abc") as mock_checkout:
             resp = client.post(self.BASE, json=self.PAYLOAD)
@@ -306,7 +306,7 @@ class TestBillingCreateCheckoutSession:
             "subscription_status": None,
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=4), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=sub_info), \
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=sub_info), \
              patch("cqc_lem.utilities.stripe_util.create_checkout_session", return_value=None):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 500
@@ -319,7 +319,7 @@ class TestBillingCreateCheckoutSession:
             "subscription_status": "active",
         }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=5), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value=sub_info), \
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value=sub_info), \
              patch("cqc_lem.utilities.stripe_util.upgrade_subscription", return_value=False), \
              patch("cqc_lem.utilities.stripe_util.create_checkout_session",
                    return_value="https://checkout.stripe.com/pay/fallback"):
@@ -343,13 +343,13 @@ class TestBillingCreatePortalSession:
 
     def test_no_stripe_customer_id_returns_400(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info", return_value={"stripe_customer_id": None}):
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info", return_value={"stripe_customer_id": None}):
             resp = client.post(self.BASE, json=self.PAYLOAD)
         assert resp.status_code == 400
 
     def test_success_returns_portal_url(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info",
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info",
                    return_value={"stripe_customer_id": "cus_portal"}), \
              patch("cqc_lem.utilities.stripe_util.create_portal_session",
                    return_value="https://billing.stripe.com/session/portal_abc") as mock_portal:
@@ -360,7 +360,7 @@ class TestBillingCreatePortalSession:
 
     def test_portal_session_returns_none_raises_500(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=1), \
-             patch("cqc_lem.api.main.get_user_subscription_info",
+             patch("cqc_lem.api.routers.billing.get_user_subscription_info",
                    return_value={"stripe_customer_id": "cus_portal"}), \
              patch("cqc_lem.utilities.stripe_util.create_portal_session", return_value=None):
             resp = client.post(self.BASE, json=self.PAYLOAD)
@@ -384,7 +384,7 @@ class TestBillingWebhook:
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
              patch("cqc_lem.utilities.stripe_util.get_subscription_tier_from_price", return_value="starter"), \
              patch("cqc_lem.utilities.stripe_util.stripe_status_to_db", return_value="active"), \
-             patch("cqc_lem.api.main.update_subscription_from_stripe") as mock_update:
+             patch("cqc_lem.api.routers.billing.update_subscription_from_stripe") as mock_update:
             resp = client.post(
                 self.BASE, content=payload,
                 headers={"Stripe-Signature": sig, "Content-Type": "application/json"},

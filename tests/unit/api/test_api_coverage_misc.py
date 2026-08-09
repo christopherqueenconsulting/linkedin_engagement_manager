@@ -11,6 +11,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _M = "cqc_lem.api.main"
+# The billing handlers moved to their own router (#1154), so the Stripe/ledger functions they
+# call are read from THAT module's globals now. `get_session_user_id` stays on main -- the
+# handlers reach it as a host-module attribute at request time.
+_BILL = "cqc_lem.api.routers.billing"
 # The avatar handlers moved to their own router (#1154), so the db functions they call are
 # read from THAT module's globals now. `get_session_user_id` still patches on `_M`: the
 # handlers reach it as an attribute of the host module at request time.
@@ -1130,7 +1134,7 @@ class TestStripeCreditWebhooks:
              patch("cqc_lem.utilities.stripe_util.fetch_subscription",
                    return_value=sub) as fetch, \
              patch("cqc_lem.utilities.stripe_util.get_subscription_tier_from_price", return_value="pro"), \
-             patch(f"{_M}.update_subscription_from_stripe") as upd:
+             patch(f"{_BILL}.update_subscription_from_stripe") as upd:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         fetch.assert_called_once_with("sub_1")
@@ -1142,9 +1146,9 @@ class TestStripeCreditWebhooks:
             "id": "cs_1", "customer": "cus_1", "payment_status": "paid",
             "metadata": {"type": "avatar_credits", "credits": "5", "package": "pack5"}})
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch(f"{_M}.get_avatar_credit_ledger_entry_by_session", return_value=None), \
-             patch(f"{_M}.get_user_by_stripe_customer_id", return_value={"id": _UID}), \
-             patch(f"{_M}.add_avatar_credits") as add:
+             patch(f"{_BILL}.get_avatar_credit_ledger_entry_by_session", return_value=None), \
+             patch(f"{_BILL}.get_user_by_stripe_customer_id", return_value={"id": _UID}), \
+             patch(f"{_BILL}.add_avatar_credits") as add:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         add.assert_called_once_with(_UID, 5, "purchase_pack5", "cs_1")
@@ -1154,9 +1158,9 @@ class TestStripeCreditWebhooks:
             "id": "cs_1", "customer": "cus_1", "payment_status": "paid",
             "metadata": {"type": "avatar_credits", "credits": "5"}})
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch(f"{_M}.get_avatar_credit_ledger_entry_by_session",
+             patch(f"{_BILL}.get_avatar_credit_ledger_entry_by_session",
                    return_value={"id": 1, "delta": 5}), \
-             patch(f"{_M}.add_avatar_credits") as add:
+             patch(f"{_BILL}.add_avatar_credits") as add:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         add.assert_not_called()
@@ -1166,7 +1170,7 @@ class TestStripeCreditWebhooks:
             "id": "cs_1", "customer": "cus_1", "payment_status": "unpaid",
             "metadata": {"type": "avatar_credits", "credits": "5"}})
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch(f"{_M}.add_avatar_credits") as add:
+             patch(f"{_BILL}.add_avatar_credits") as add:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         add.assert_not_called()
@@ -1176,9 +1180,9 @@ class TestStripeCreditWebhooks:
             "id": "cs_2", "customer": "cus_1", "payment_status": "paid",
             "metadata": {"type": "video_credits", "credits": "10", "package": "large"}})
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch(f"{_M}.get_video_credit_ledger_entry_by_session", return_value=None), \
-             patch(f"{_M}.get_user_by_stripe_customer_id", return_value={"id": _UID}), \
-             patch(f"{_M}.add_video_credits") as add:
+             patch(f"{_BILL}.get_video_credit_ledger_entry_by_session", return_value=None), \
+             patch(f"{_BILL}.get_user_by_stripe_customer_id", return_value={"id": _UID}), \
+             patch(f"{_BILL}.add_video_credits") as add:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         add.assert_called_once_with(_UID, 10, "purchase_large", "cs_2")
@@ -1191,10 +1195,10 @@ class TestStripeCreditWebhooks:
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
              patch("cqc_lem.utilities.stripe_util.get_checkout_session_by_payment_intent",
                    return_value=session), \
-             patch(f"{_M}.get_avatar_credit_ledger_entry_by_session",
+             patch(f"{_BILL}.get_avatar_credit_ledger_entry_by_session",
                    return_value={"id": 1, "user_id": _UID, "delta": 5}), \
-             patch(f"{_M}.get_user_by_stripe_customer_id", return_value={"id": _UID}), \
-             patch(f"{_M}.add_avatar_credits") as add:
+             patch(f"{_BILL}.get_user_by_stripe_customer_id", return_value={"id": _UID}), \
+             patch(f"{_BILL}.add_avatar_credits") as add:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         assert add.call_args[0] == (_UID, -5, "refund_cs_1")
@@ -1204,8 +1208,8 @@ class TestStripeCreditWebhooks:
             "payment_intent": "pi_1", "customer": "cus_1",
             "amount": 1000, "amount_refunded": 400})
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch(f"{_M}.add_avatar_credits") as add_a, \
-             patch(f"{_M}.add_video_credits") as add_v:
+             patch(f"{_BILL}.add_avatar_credits") as add_a, \
+             patch(f"{_BILL}.add_video_credits") as add_v:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         add_a.assert_not_called()
@@ -1219,7 +1223,7 @@ class TestStripeCreditWebhooks:
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
              patch("cqc_lem.utilities.stripe_util.get_checkout_session_by_payment_intent",
                    return_value=session), \
-             patch(f"{_M}.add_avatar_credits") as add:
+             patch(f"{_BILL}.add_avatar_credits") as add:
             resp = client.post(self.BASE, content=b"{}", headers=self.HDRS)
         assert resp.status_code == 200
         add.assert_not_called()

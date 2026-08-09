@@ -17,6 +17,7 @@ from mysql.connector import errorcode
 pytestmark = pytest.mark.integration
 
 _MAIN = "cqc_lem.api.main"
+_BILL = "cqc_lem.api.routers.billing"
 _ENV = "cqc_lem.utilities.env_constants"
 
 STARTED = datetime(2026, 7, 1, 12, 0, 0)
@@ -219,7 +220,7 @@ def test_conversion_mirrors_the_remaining_trial_into_stripe(client):
     with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda: _Conn(store)), \
             patch(f"{_MAIN}.get_session_user_id", return_value=1), \
             patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"), \
-            patch(f"{_MAIN}.get_user_subscription_info",
+            patch(f"{_BILL}.get_user_subscription_info",
                   return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": None,
                                 "subscription_status": "trial"}), \
             patch("cqc_lem.utilities.stripe_util.create_checkout_session",

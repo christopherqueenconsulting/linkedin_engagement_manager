@@ -110,9 +110,9 @@ class TestWebhookFulfillment:
             "metadata": {"type": "video_credits", "package": "medium", "credits": "15"},
         }}}
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch("cqc_lem.api.main.get_video_credit_ledger_entry_by_session", return_value=None), \
-             patch("cqc_lem.api.main.get_user_by_stripe_customer_id", return_value={"id": 7}), \
-             patch("cqc_lem.api.main.add_video_credits") as add:
+             patch("cqc_lem.api.routers.billing.get_video_credit_ledger_entry_by_session", return_value=None), \
+             patch("cqc_lem.api.routers.billing.get_user_by_stripe_customer_id", return_value={"id": 7}), \
+             patch("cqc_lem.api.routers.billing.add_video_credits") as add:
             resp = client.post("/api/billing/webhook", content=b"{}",
                                headers={"Stripe-Signature": "sig", "Content-Type": "application/json"})
         assert resp.status_code == 200
@@ -125,8 +125,8 @@ class TestWebhookFulfillment:
             "metadata": {"type": "video_credits", "package": "small", "credits": "5"},
         }}}
         with patch("cqc_lem.utilities.stripe_util.validate_webhook", return_value=event), \
-             patch("cqc_lem.api.main.get_video_credit_ledger_entry_by_session", return_value={"id": 1}), \
-             patch("cqc_lem.api.main.add_video_credits") as add:
+             patch("cqc_lem.api.routers.billing.get_video_credit_ledger_entry_by_session", return_value={"id": 1}), \
+             patch("cqc_lem.api.routers.billing.add_video_credits") as add:
             resp = client.post("/api/billing/webhook", content=b"{}",
                                headers={"Stripe-Signature": "sig", "Content-Type": "application/json"})
         assert resp.status_code == 200

@@ -64,6 +64,21 @@ def _routers() -> list[tuple[str, str, set[str]]]:
     return out
 
 
+def _main_aliases(path: pathlib.Path) -> list[str]:
+    """`{_M}`-style f-string spellings of `cqc_lem.api.main` bound in this file.
+
+    Returned as the braced form so the caller can match the literal text of an f-string patch
+    target. Assuming ONE alias name is what made this check blind to half the suite.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out = []
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                and node.value.value == "cqc_lem.api.main"):
+            out += ["{" + t.id + "}" for t in node.targets if isinstance(t, ast.Name)]
+    return out
+
+
 def _tests_touching(prefix: str):
     """Test functions whose body mentions this router's prefix — i.e. exercise its routes."""
     for path in sorted((_REPO / "tests").rglob("test_*.py")):
@@ -73,16 +88,22 @@ def _tests_touching(prefix: str):
         lines = source.splitlines()
         tree = ast.parse(source)
 
-        def walk(node, cls=None):
+        def walk(node, cls=None, cls_text=""):
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, ast.ClassDef):
                     # `yield from`, not a bare call: `walk` is a generator, so calling it here
                     # builds one and throws it away — and since every test in this suite lives in a
                     # class, that made this whole check pass while reading nothing.
-                    yield from walk(child, child.name)
+                    #
+                    # The class TEXT is carried down for a second reason: the URL under test is
+                    # routinely a class attribute (`BASE = "/api/billing/..."`) that the test body
+                    # only ever refers to as `self.BASE`. Matching on the function body alone missed
+                    # three inert patches in `test_main_billing.py` that CI then caught.
+                    yield from walk(child, child.name,
+                                    "\n".join(lines[child.lineno - 1:child.end_lineno]))
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     body = "\n".join(lines[child.lineno - 1:child.end_lineno])
-                    if prefix in body:
+                    if prefix in body or prefix in cls_text:
                         yield path, cls, child.name, body
 
         yield from walk(tree)
@@ -97,11 +118,15 @@ class TestNoTestPatchesAMovedSymbolOnMain:
         offenders = []
         for name, prefix, owned in _routers():
             for path, cls, test, body in _tests_touching(prefix):
-                # Both spellings a patch target is written in here: the module alias most files
-                # define (`_M = "cqc_lem.api.main"`) and the literal.
+                # Every spelling a patch target is written in, NOT just the common one. Files pick
+                # their own alias — `_M`, `_MAIN`, `_MOD` — and a check that only knew `{_M}` was
+                # blind to `test_early_adopter_trial.py`'s `{_MAIN}`, which CI then caught. So the
+                # alias is resolved from the file's OWN assignments rather than assumed.
+                spellings = [f"{alias}." for alias in _main_aliases(path)]
+                spellings.append("cqc_lem.api.main.")
                 wrong = sorted(
                     symbol for symbol in owned
-                    if "{_M}." + symbol in body or "cqc_lem.api.main." + symbol in body
+                    if any(spelling + symbol in body for spelling in spellings)
                 )
                 if wrong:
                     rel = path.relative_to(_REPO)

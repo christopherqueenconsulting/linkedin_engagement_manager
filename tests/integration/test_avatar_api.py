@@ -221,9 +221,9 @@ class TestStripeWebhookAvatarCredits:
                     },
                 }
             },
-        }), patch("cqc_lem.api.main.get_user_by_stripe_customer_id", return_value=user_row), \
-             patch("cqc_lem.api.main.get_avatar_credit_ledger_entry_by_session", return_value=None), \
-             patch("cqc_lem.api.main.add_avatar_credits", return_value=True) as mock_add:
+        }), patch("cqc_lem.api.routers.billing.get_user_by_stripe_customer_id", return_value=user_row), \
+             patch("cqc_lem.api.routers.billing.get_avatar_credit_ledger_entry_by_session", return_value=None), \
+             patch("cqc_lem.api.routers.billing.add_avatar_credits", return_value=True) as mock_add:
             r = _client().post(
                 "/api/billing/webhook",
                 content=b'{}',
