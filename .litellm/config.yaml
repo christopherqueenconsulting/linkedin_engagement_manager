@@ -80,8 +80,15 @@ model_list:
   # winning lem-simple.
   #
   # Repointed to `:preview`, which PRESERVES the build benchmarked at 90% — a rename, not an
-  # unbenchmarked model change. What caught it was the roster test asserting every configured id
-  # is in the committed catalog; #925 stays open because a silent RE-POINT still files nothing.
+  # unbenchmarked model change.
+  #
+  # The loop worked, and it is worth naming which part did what, because the two halves are
+  # separate: a silent RE-POINT is caught by plan_repoints (#925, closed — it diffs build size and
+  # modified_at under an unchanged tag), but plan_repoints skips a tag missing from either side, so
+  # a DELETION is not its job. The deletion was caught by the catalog diff that opened this PR, and
+  # then by the roster test asserting every configured id is in the committed catalog. The refresh
+  # deliberately does NOT repoint the config for you — it removes the tag and lets CI fail loudly,
+  # which is why this PR arrived red rather than silently changing which model serves two tiers.
   - model_name: lem-medium
     litellm_params:
       model: openai/deepseek-v4-flash:preview
