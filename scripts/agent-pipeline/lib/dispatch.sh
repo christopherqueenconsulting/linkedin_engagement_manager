@@ -52,10 +52,13 @@ capacity_preflight() {
 }
 
 # ── tier selection for the Ollama lane ──────────────────────────────────────
-# Issue labels can force a tier: agent:tier:1 | agent:tier:2-alt | agent:tier:3.
+# Issue labels can force a tier: agent:tier:1 | agent:tier:2 | agent:tier:2-alt | agent:tier:3.
 # Otherwise MODE drives it: review/reasoning -> tier3 (nemotron), everything else -> default tier2.
 # tier1 (glm-5.2:cloud) is opt-in only — it is a slow thinking model and intermittently times out,
 # so it is reserved for issues the owner explicitly flags as hardest long-horizon work.
+# agent:tier:2 is a real PIN, not a synonym for "no label": it holds tier2 against the MODE default
+# (a labelled review would otherwise run tier3) and against a changed OLLAMA_DEFAULT_TIER. A label
+# the owner can apply but that never changes the tier is the #1228 failure in a new costume.
 _pick_ollama_tier() {
   local labels="${ISSUE_LABELS:-}"
   if [ -n "$labels" ]; then
@@ -63,6 +66,7 @@ _pick_ollama_tier() {
       *" agent:tier:1 "*)     echo "lem-agent-tier1"     ; return ;;
       *" agent:tier:3 "*)     echo "lem-agent-tier3"     ; return ;;
       *" agent:tier:2-alt "*) echo "lem-agent-tier2-alt" ; return ;;
+      *" agent:tier:2 "*)     echo "lem-agent-tier2"     ; return ;;
     esac
   fi
   case "${MODE:-}" in

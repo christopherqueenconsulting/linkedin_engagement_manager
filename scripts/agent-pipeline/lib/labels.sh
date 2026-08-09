@@ -79,8 +79,13 @@ AI_LABELS=(
 ensure_ai_labels() {
   local existing missing
   existing="$(gh label list --repo "$SLUG" --limit 200 --json name --jq '.[].name' 2>/dev/null || true)"
+  # Match WHOLE lines, not substrings: `agent:tier:2` is a prefix of `agent:tier:2-alt` (same for
+  # ai:ollama-cloud:tier2), so a substring test reports the shorter name as already present the
+  # moment the longer one exists — and it is then never created. That is exactly the silent
+  # missing-label trap #1228 is about, so the guard must not reintroduce it.
+  existing=$'\n'"$existing"$'\n'
   for l in "${AI_LABELS[@]}"; do
-    case "$existing" in *"$l"*) continue ;; esac
+    case "$existing" in *$'\n'"$l"$'\n'*) continue ;; esac
     # Purple family (#7c5cff) for lane/tier labels, slate (#6b7280) for routed:* reasons.
     local color="7c5cff"
     case "$l" in ai:routed:*) color="6b7280" ;; esac
