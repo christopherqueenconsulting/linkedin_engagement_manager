@@ -103,7 +103,20 @@ _TICK_LOG="$LOG"
 EXECUTION_ID="tick-$$-$(date +%s)"
 export BASE _TICK_LOG EXECUTION_ID REPO SLUG
 # shellcheck disable=SC1091
-for _l in posthog labels capacity dispatch run_lane; do . "$BASE/lib/$_l.sh" 2>/dev/null || true; done
+for _l in posthog labels capacity dispatch run_lane gh_app_token; do . "$BASE/lib/$_l.sh" 2>/dev/null || true; done
+
+# IDENTITY: prefer the GitHub App over the owner's PAT (USE_GH_APP=1 in config.env). The PAT acts
+# as the OWNER, which makes an owner-approval gate on outside contributions impossible to build
+# (GitHub forbids self-approval, so every agent PR would be permanently red) AND pointless (a
+# prompt-injected run could approve an attacker's PR as the owner). The app can author and merge
+# but can never approve. Falls back to the PAT on any failure — a missing key or a GitHub blip
+# must degrade the pipeline's IDENTITY, never its ability to run.
+if command -v gh_app_export_token >/dev/null 2>&1 && gh_app_export_token; then
+  :  # GH_TOKEN is now the app's installation token (~1h life, auto-refreshed)
+elif [ "${USE_GH_APP:-0}" = "1" ]; then
+  log "GH APP: USE_GH_APP=1 but no installation token could be minted — falling back to AGENT_GH_TOKEN. Check $BASE/secrets/github-app.pem and GH_APP_ID."
+fi
+
 ensure_ai_labels 2>/dev/null || true   # idempotent bootstrap of the ai:* labels (first tick only)
 capacity_preflight 2>/dev/null || true  # sets CLAUDE_PCT/OLLAMA_PCT/CLAUDE_AVAIL/OLLAMA_AVAIL/DEGRADED
 
@@ -293,6 +306,15 @@ assert_agent_token_scoped() {
   # A `workflow`-scoped token lets the agent edit .github/workflows/ — i.e. edit its own gates.
   # Warns by default so configuring the PAT is not a prerequisite for the pipeline running at all;
   # set AGENT_REQUIRE_SCOPED_TOKEN=1 in config.env once the PAT is in place to make it fail closed.
+  #
+  # A GitHub App installation token has no OAuth scopes at all — its authority is the app's
+  # declared permission set, verified at registration (contents/issues/pull_requests write,
+  # metadata read, NO workflows). `gh api user` also 403s for an installation token, so the probe
+  # below would read "no scopes" for the right reason but by accident; short-circuit so the log
+  # says what is actually true rather than leaving a silent pass.
+  if [ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ]; then
+    return 0
+  fi
   local scopes; scopes="$(agent_token_scopes)"
   case ",${scopes// /}," in
     *,workflow,*)
