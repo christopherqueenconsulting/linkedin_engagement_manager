@@ -17,11 +17,11 @@ class TestPostAgeMinutes:
         ("2w •", 20160), ("10mo •", 432000), ("1h", 60),
     ])
     def test_parses_relative_age(self, token, expected):
-        from cqc_lem.app.run_automation import _post_age_minutes
+        from cqc_lem.app.engagement.feed import _post_age_minutes
         assert _post_age_minutes(self._driver(token), MagicMock()) == expected
 
     def test_none_when_no_timestamp(self):
-        from cqc_lem.app.run_automation import _post_age_minutes
+        from cqc_lem.app.engagement.feed import _post_age_minutes
         assert _post_age_minutes(self._driver(None), MagicMock()) is None
 
 

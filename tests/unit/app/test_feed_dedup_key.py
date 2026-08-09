@@ -17,15 +17,14 @@ pytestmark = pytest.mark.unit
 
 
 def _fns():
-    # Lazy import: importing run_automation at module scope instantiates the OpenAI client at
+    # Lazy import: importing the feed module at module scope instantiates the OpenAI client at
     # collection time, which fails in CI (no OPENAI_API_KEY).
-    from cqc_lem.app.run_automation import (
+    from cqc_lem.app.engagement.feed import (
         _feed_content_fingerprints,
         _feed_post_key,
-        _feed_post_urn_from_card,
-        _normalize_post_text,
         _stable_feed_post_key,
     )
+    from cqc_lem.utilities.linkedin.cards import _feed_post_urn_from_card, _normalize_post_text
     return (_normalize_post_text, _feed_post_key, _feed_post_urn_from_card,
             _stable_feed_post_key, _feed_content_fingerprints)
 
@@ -130,7 +129,7 @@ class TestUrnExtraction:
 
 class TestFeedPostIdentity:
     def _identity(self):
-        from cqc_lem.app.run_automation import _feed_post_identity
+        from cqc_lem.app.engagement.feed import _feed_post_identity
         return _feed_post_identity
 
     def test_permalink_source(self):

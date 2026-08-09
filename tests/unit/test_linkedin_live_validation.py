@@ -230,24 +230,24 @@ class TestGroupShareBoxChainCopy:
     at all.
     """
 
-    def test_carried_chain_is_identical_to_the_one_run_automation_uses(self):
-        from cqc_lem.app import run_automation as ra
+    def test_carried_chain_is_identical_to_the_one_the_run_uses(self):
+        from cqc_lem.app.engagement import feed
 
-        assert llv._CARRIED_GROUP_SHARE_BOX_LOCATORS == ra._GROUP_SHARE_BOX_LOCATORS
+        assert llv._CARRIED_GROUP_SHARE_BOX_LOCATORS == feed._GROUP_SHARE_BOX_LOCATORS
 
     def test_the_running_image_wins_when_it_has_a_chain(self):
         locators, source = llv._share_box_chains()
         assert source == "image"
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed
 
-        assert locators == ra._GROUP_SHARE_BOX_LOCATORS
+        assert locators == feed._GROUP_SHARE_BOX_LOCATORS
 
     def test_falls_back_to_the_carried_copy_on_an_image_that_predates_1107(self, monkeypatch):
         import builtins
         real_import = builtins.__import__
 
         def _no_chain(name, *a, **k):
-            if name == "cqc_lem.app.run_automation":
+            if name == "cqc_lem.app.engagement.feed":
                 raise ImportError("cannot import name '_GROUP_SHARE_BOX_LOCATORS'")
             return real_import(name, *a, **k)
 
@@ -549,30 +549,31 @@ class TestFeedSortChainCopy:
     and a copy that drifts grounds a chain nothing ships, which is worse than not probing at all.
     """
 
-    def test_carried_chain_is_identical_to_the_one_run_automation_uses(self):
-        from cqc_lem.app import run_automation as ra
+    def test_carried_chain_is_identical_to_the_one_the_run_uses(self):
+        from cqc_lem.app.engagement import feed
 
-        assert llv.FALLBACK_SORT_LOCATORS == ra._FEED_SORT_LOCATORS
-        assert llv.FALLBACK_RECENT_OPTION_LOCATORS == ra._FEED_RECENT_OPTION_LOCATORS
+        assert llv.FALLBACK_SORT_LOCATORS == feed._FEED_SORT_LOCATORS
+        assert llv.FALLBACK_RECENT_OPTION_LOCATORS == feed._FEED_RECENT_OPTION_LOCATORS
 
     def test_sort_states_match_the_ones_the_run_records(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed
 
-        assert (llv.SORT_RECENT, llv.SORT_TOP) == (ra.FEED_SORT_RECENT, ra.FEED_SORT_TOP)
-        assert (llv.SORT_MISSING, llv.SORT_UNKNOWN) == (ra.FEED_SORT_MISSING, ra.FEED_SORT_UNKNOWN)
+        assert (llv.SORT_RECENT, llv.SORT_TOP) == (feed.FEED_SORT_RECENT, feed.FEED_SORT_TOP)
+        assert (llv.SORT_MISSING, llv.SORT_UNKNOWN) == (feed.FEED_SORT_MISSING,
+                                                        feed.FEED_SORT_UNKNOWN)
 
     def test_the_running_image_wins_when_it_has_a_chain(self):
         sort, option, source = llv.feed_sort_chains()
         assert source == "image"
-        from cqc_lem.app import run_automation as ra
-        assert sort == ra._FEED_SORT_LOCATORS and option == ra._FEED_RECENT_OPTION_LOCATORS
+        from cqc_lem.app.engagement import feed
+        assert sort == feed._FEED_SORT_LOCATORS and option == feed._FEED_RECENT_OPTION_LOCATORS
 
     def test_falls_back_to_the_carried_copy_on_an_image_that_predates_817(self, monkeypatch):
         import builtins
         real_import = builtins.__import__
 
         def _no_chain(name, *a, **k):
-            if name == "cqc_lem.app.run_automation":
+            if name == "cqc_lem.app.engagement.feed":
                 raise ImportError("cannot import name '_FEED_SORT_LOCATORS'")
             return real_import(name, *a, **k)
 
@@ -1658,15 +1659,18 @@ def _patch_composer_chain(monkeypatch, *, card=None, composer=None, in_card=(), 
     `_single_post_scope` found — the #916 question the probe exists to answer.
     """
     card = card if card is not None else _composer_card()
-    monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: card)
-    monkeypatch.setattr("cqc_lem.app.run_automation._post_composer_for_card",
+    # Each name is patched where the probe IMPORTS it from (#1154): the composer walk moved to
+    # `app.engagement.feed`, `_card_for_textbox` lives in `linkedin.cards` and `_visible_composers`
+    # in `linkedin.composer`. Patching the old spelling would bind a name nothing reads.
+    monkeypatch.setattr("cqc_lem.utilities.linkedin.cards._card_for_textbox", lambda d, b: card)
+    monkeypatch.setattr("cqc_lem.app.engagement.feed._post_composer_for_card",
                         lambda d, c, user_id=None: composer)
-    monkeypatch.setattr("cqc_lem.app.run_automation._single_post_scope",
+    monkeypatch.setattr("cqc_lem.app.engagement.feed._single_post_scope",
                         lambda d, c: scope if scope is not None else c)
-    monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+    monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._visible_composers",
                         lambda root: [(box, {"y": 0}) for box in
                                       (in_card if root is card else [])])
-    monkeypatch.setattr("cqc_lem.app.run_automation._is_post_comment_box",
+    monkeypatch.setattr("cqc_lem.app.engagement.feed._is_post_comment_box",
                         lambda box: True)
     monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
                         lambda *a, **k: MagicMock())
@@ -1818,7 +1822,7 @@ class TestGroupFeedComposerProbe:
         driver = _composer_feed_driver()
         card = _patch_composer_chain(monkeypatch, composer=None)
         mounted = [MagicMock()]
-        monkeypatch.setattr("cqc_lem.app.run_automation._visible_composers",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._visible_composers",
                             lambda root: [] if root is card else
                             [(box, {"y": 0}) for box in mounted])
 
@@ -1869,7 +1873,7 @@ class TestGroupFeedComposerProbe:
     def test_a_card_the_page_renders_that_the_walk_misses_is_drift(self, monkeypatch):
         driver = _composer_feed_driver(text_nodes=4, markers=4)
         _patch_composer_chain(monkeypatch)
-        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: None)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.cards._card_for_textbox", lambda d, b: None)
 
         reading = llv._walk_feed_composers(driver, "group", "https://www.linkedin.com/groups/42/",
                                            sleep=lambda *_: None)
@@ -2100,12 +2104,12 @@ class TestPermalinkCommentProbe:
         driver.current_url = self._URL
         card, composer = MagicMock(), MagicMock()
         composer.get_attribute.return_value = "textbox"
-        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: card)
-        monkeypatch.setattr("cqc_lem.app.run_automation._feed_post_urn_from_card",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.cards._card_for_textbox", lambda d, b: card)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.cards._feed_post_urn_from_card",
                             lambda c, driver=None: self._URN)
-        monkeypatch.setattr("cqc_lem.app.run_automation._permalink_post_card",
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._permalink_post_card",
                             lambda d, url, user_id=None: card)
-        monkeypatch.setattr("cqc_lem.app.run_automation._post_composer_for_card",
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._post_composer_for_card",
                             lambda d, c, user_id=None: composer)
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", lambda *a, **k: MagicMock())
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: MagicMock())
@@ -2119,8 +2123,8 @@ class TestPermalinkCommentProbe:
     def test_probe_says_so_when_no_card_carries_a_comment_action(self, monkeypatch):
         driver = MagicMock()
         driver.find_elements.return_value = [MagicMock()]
-        monkeypatch.setattr("cqc_lem.app.run_automation._card_for_textbox", lambda d, b: None)
-        monkeypatch.setattr("cqc_lem.app.run_automation._permalink_post_card",
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.cards._card_for_textbox", lambda d, b: None)
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._permalink_post_card",
                             lambda d, url, user_id=None: None)
         monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
 

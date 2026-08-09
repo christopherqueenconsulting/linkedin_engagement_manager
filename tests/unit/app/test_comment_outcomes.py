@@ -14,6 +14,9 @@ from selenium.webdriver.common.by import By
 pytestmark = pytest.mark.unit
 
 RA = "cqc_lem.app.run_automation"
+# `automate_commenting` moved to `app.engagement.feed` (#1154); every other symbol this
+# file drives (the sort control, the outcome read, the sweep) stayed put.
+FEED = "cqc_lem.app.engagement.feed"
 RS = "cqc_lem.app.run_scheduler"
 
 
@@ -30,6 +33,11 @@ def _fn(name):
 
 def _p(es, name, **kw):
     return es.enter_context(patch(f"{RA}.{name}", **kw))
+
+
+def _pf(es, name, **kw):
+    """`_p` for the feed module — the commenting hold gate lives in `automate_commenting`."""
+    return es.enter_context(patch(f"{FEED}.{name}", **kw))
 
 
 def _sort_chain() -> list:
@@ -594,27 +602,27 @@ class TestSweepOrchestration:
 
 class TestCommentingHoldGate:
     def test_held_user_never_opens_a_browser(self):
-        from cqc_lem.app.run_automation import automate_commenting
+        from cqc_lem.app.engagement.feed import automate_commenting
         with ExitStack() as es:
-            _p(es, "is_commenting_held", return_value=True)
-            _p(es, "commenting_hold_reason", return_value="80% demoted")
-            _p(es, "log_warning")
-            lock = _p(es, "acquire_run_lock")
-            gcp = _p(es, "get_current_profile")
+            _pf(es, "is_commenting_held", return_value=True)
+            _pf(es, "commenting_hold_reason", return_value="80% demoted")
+            _pf(es, "log_warning")
+            lock = _pf(es, "acquire_run_lock")
+            gcp = _pf(es, "get_current_profile")
             result = automate_commenting.run(user_id=1)
         assert "held" in result and "80% demoted" in result
         assert not lock.called and not gcp.called
 
     def test_unheld_user_proceeds(self):
-        from cqc_lem.app.run_automation import automate_commenting
+        from cqc_lem.app.engagement.feed import automate_commenting
         with ExitStack() as es:
-            _p(es, "is_commenting_held", return_value=False)
-            _p(es, "acquire_run_lock", return_value="tok")
-            _p(es, "release_run_lock")
-            _p(es, "get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
-            _p(es, "navigate_to_feed")
-            _p(es, "comment_on_feed_inline", return_value=2)
-            _p(es, "quit_gracefully")
+            _pf(es, "is_commenting_held", return_value=False)
+            _pf(es, "acquire_run_lock", return_value="tok")
+            _pf(es, "release_run_lock")
+            _pf(es, "get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
+            _pf(es, "navigate_to_feed")
+            _pf(es, "comment_on_feed_inline", return_value=2)
+            _pf(es, "quit_gracefully")
             result = automate_commenting.run(user_id=1)
         assert "Commented on 2 posts" in result
 

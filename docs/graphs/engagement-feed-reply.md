@@ -156,12 +156,13 @@ flowchart TD
 
 ## Environment — owning docs/modules
 
-- `src/cqc_lem/app/run_automation.py` — `_score_feed_post`, `_switch_feed_to_recent`,
-  `comment_on_feed_inline`, `_engage_card`, `post_comment_inline`, `_post_composer_for_card`,
-  `comment_on_roster_posts`, `comment_on_post`, `_permalink_post_card`,
-  `automate_reply_commenting`, `sweep_reply_comments`, `_reply_to_comments_on_open_post`,
-  `auto_seed_comment_on_post`, `auto_second_wave_comment`, `_record_golden_hour_report`,
-  `sweep_comment_outcomes`, `_run_comment_outcomes_sweep`.
+- `src/cqc_lem/app/engagement/feed.py` (moved out of `run_automation.py` in #1154) —
+  `_score_feed_post`, `_switch_feed_to_recent`, `comment_on_feed_inline`, `_engage_card`,
+  `post_comment_inline`, `_post_composer_for_card`, `comment_on_roster_posts`, `comment_on_post`,
+  `_permalink_post_card`, `auto_seed_comment_on_post`, `auto_second_wave_comment`.
+- `src/cqc_lem/app/run_automation.py` — `automate_reply_commenting`, `sweep_reply_comments`,
+  `_reply_to_comments_on_open_post`, `sweep_comment_outcomes`, `_run_comment_outcomes_sweep`.
+- `src/cqc_lem/utilities/golden_hour.py` — `_record_golden_hour_report`.
 - `src/cqc_lem/app/run_scheduler.py` — `auto_daily_engagement`, `dispatch_golden_hour_engagement`,
   `dispatch_comment_outcome_sweeps`, `auto_weekly_comment_quality`, `auto_suppression_tripwire`,
   and the beat schedule wiring (`my_celery.py`) that sequences 08:00 outcome sweep → 08:45 Monday

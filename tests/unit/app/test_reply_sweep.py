@@ -7,6 +7,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The feed funnel store moved with the feed engine to `app.engagement.feed` (#1154);
+# the reply sweep this file is mostly about did not.
+_FEED = "cqc_lem.app.engagement.feed"
 # The reporting pair moved down to `utilities/golden_hour.py` (#1154) and took the post-age read
 # and the PostHog ship with it, so those collaborators resolve THERE now. The sweep TASK stayed,
 # so its own view of `_record_golden_hour_report` is still patched on `run_automation`.
@@ -550,8 +553,8 @@ class TestFeedFunnelStorage:
     def test_set_and_get_round_trip(self):
         import json
         redis = MagicMock()
-        with patch(f"{_RA}._redis_client", return_value=redis):
-            from cqc_lem.app.run_automation import get_feed_funnel, set_feed_funnel
+        with patch(f"{_FEED}._redis_client", return_value=redis):
+            from cqc_lem.app.engagement.feed import get_feed_funnel, set_feed_funnel
             set_feed_funnel(1, {"examined": 5, "commented": 2})
             stored = redis.set.call_args
             assert stored.args[0] == "linkedin:feed_funnel:1"
@@ -562,24 +565,24 @@ class TestFeedFunnelStorage:
 
     def test_get_returns_none_when_absent(self):
         redis = MagicMock(); redis.get.return_value = None
-        with patch(f"{_RA}._redis_client", return_value=redis):
-            from cqc_lem.app.run_automation import get_feed_funnel
+        with patch(f"{_FEED}._redis_client", return_value=redis):
+            from cqc_lem.app.engagement.feed import get_feed_funnel
             assert get_feed_funnel(1) is None
 
     def test_no_redis_is_safe(self):
-        with patch(f"{_RA}._redis_client", return_value=None):
-            from cqc_lem.app.run_automation import get_feed_funnel, set_feed_funnel
+        with patch(f"{_FEED}._redis_client", return_value=None):
+            from cqc_lem.app.engagement.feed import get_feed_funnel, set_feed_funnel
             set_feed_funnel(1, {"x": 1})     # must not raise
             assert get_feed_funnel(1) is None
 
     def test_set_swallows_redis_error(self):
         redis = MagicMock(); redis.set.side_effect = RuntimeError("down")
-        with patch(f"{_RA}._redis_client", return_value=redis), patch(f"{_RA}.log_warning"):
-            from cqc_lem.app.run_automation import set_feed_funnel
+        with patch(f"{_FEED}._redis_client", return_value=redis), patch(f"{_FEED}.log_warning"):
+            from cqc_lem.app.engagement.feed import set_feed_funnel
             set_feed_funnel(1, {"x": 1})     # must not raise
 
     def test_get_handles_bad_json(self):
         redis = MagicMock(); redis.get.return_value = b"not json"
-        with patch(f"{_RA}._redis_client", return_value=redis):
-            from cqc_lem.app.run_automation import get_feed_funnel
+        with patch(f"{_FEED}._redis_client", return_value=redis):
+            from cqc_lem.app.engagement.feed import get_feed_funnel
             assert get_feed_funnel(1) is None

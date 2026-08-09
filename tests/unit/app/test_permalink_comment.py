@@ -16,6 +16,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# `comment_on_post` and the permalink card walk moved to `app.engagement.feed` (#1154);
+# `check_commented` / `_thread_carries_our_comment` did not. Both aliases are live in this
+# file, and each test patches the module whose globals the code under test reads.
+_FEED = "cqc_lem.app.engagement.feed"
 
 _PERMALINK = "https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/"
 _WANTED_URN = "urn:li:activity:7000000000000000001"
@@ -24,7 +28,7 @@ _OTHER_URN = "urn:li:activity:7000000000000000002"
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_RA}.time.sleep"), patch(f"{_FEED}.time.sleep"):
         yield
 
 
@@ -38,52 +42,52 @@ class TestPermalinkPostCard:
     """A permalink page is not a one-post page — LinkedIn stacks recommendations beneath the post."""
 
     def test_picks_the_card_carrying_the_permalinks_urn(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = _driver_with_boxes(3)
         cards = [MagicMock(name="rec"), MagicMock(name="target"), MagicMock(name="rec2")]
         urns = {id(cards[0]): _OTHER_URN, id(cards[1]): _WANTED_URN, id(cards[2]): _OTHER_URN}
-        with patch(f"{_RA}._card_for_textbox", side_effect=lambda d, b: cards.pop(0) if cards else None), \
-             patch(f"{_RA}._feed_post_urn_from_card", side_effect=lambda c, driver=None: urns[id(c)]):
+        with patch(f"{_FEED}._card_for_textbox", side_effect=lambda d, b: cards.pop(0) if cards else None), \
+             patch(f"{_FEED}._feed_post_urn_from_card", side_effect=lambda c, driver=None: urns[id(c)]):
             chosen = ra._permalink_post_card(driver, _PERMALINK, user_id=1)
         assert urns[id(chosen)] == _WANTED_URN
 
     def test_no_commentable_card_returns_none(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = _driver_with_boxes(2)
-        with patch(f"{_RA}._card_for_textbox", return_value=None):
+        with patch(f"{_FEED}._card_for_textbox", return_value=None):
             assert ra._permalink_post_card(driver, _PERMALINK, user_id=1) is None
 
     def test_top_card_belonging_to_another_post_is_refused(self):
         # Commenting on a "More posts for you" recommendation is worse than not commenting.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = _driver_with_boxes(1)
-        with patch(f"{_RA}._card_for_textbox", side_effect=lambda d, b: MagicMock()), \
-             patch(f"{_RA}._feed_post_urn_from_card", return_value=_OTHER_URN):
+        with patch(f"{_FEED}._card_for_textbox", side_effect=lambda d, b: MagicMock()), \
+             patch(f"{_FEED}._feed_post_urn_from_card", return_value=_OTHER_URN):
             assert ra._permalink_post_card(driver, _PERMALINK, user_id=1) is None
 
     def test_falls_back_to_top_card_when_no_urn_is_readable(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = _driver_with_boxes(2)
         top = MagicMock(name="top")
         cards = [top, MagicMock(name="second")]
-        with patch(f"{_RA}._card_for_textbox", side_effect=lambda d, b: cards.pop(0)), \
-             patch(f"{_RA}._feed_post_urn_from_card", return_value=None):
+        with patch(f"{_FEED}._card_for_textbox", side_effect=lambda d, b: cards.pop(0)), \
+             patch(f"{_FEED}._feed_post_urn_from_card", return_value=None):
             assert ra._permalink_post_card(driver, _PERMALINK, user_id=1) is top
 
     def test_url_without_a_urn_uses_the_top_card(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = _driver_with_boxes(1)
         top = MagicMock(name="top")
         urn_scan = MagicMock()
-        with patch(f"{_RA}._card_for_textbox", return_value=top), \
-             patch(f"{_RA}._feed_post_urn_from_card", urn_scan):
+        with patch(f"{_FEED}._card_for_textbox", return_value=top), \
+             patch(f"{_FEED}._feed_post_urn_from_card", urn_scan):
             assert ra._permalink_post_card(driver, "https://www.linkedin.com/posts/foo", user_id=1) is top
         urn_scan.assert_not_called()  # nothing to match against, so no URN scan is paid for
 
     def test_stale_box_is_skipped_not_fatal(self):
         from selenium.common import StaleElementReferenceException
 
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = _driver_with_boxes(2)
         good = MagicMock(name="good")
         outcomes = [StaleElementReferenceException("gone"), good]
@@ -94,14 +98,14 @@ class TestPermalinkPostCard:
                 raise nxt
             return nxt
 
-        with patch(f"{_RA}._card_for_textbox", side_effect=_card), \
-             patch(f"{_RA}._feed_post_urn_from_card", return_value=None):
+        with patch(f"{_FEED}._card_for_textbox", side_effect=_card), \
+             patch(f"{_FEED}._feed_post_urn_from_card", return_value=None):
             assert ra._permalink_post_card(driver, _PERMALINK, user_id=1) is good
 
 
 class TestPostTextFromCard:
     def test_reads_only_the_post_body_nodes(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         card = MagicMock()
         first, second = MagicMock(), MagicMock()
         first.text = "The post body."
@@ -110,7 +114,7 @@ class TestPostTextFromCard:
         assert ra._post_text_from_card(card) == "The post body."
 
     def test_unreadable_card_is_empty_not_fatal(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         card = MagicMock()
         card.find_elements.side_effect = Exception("boom")
         assert ra._post_text_from_card(card) == ""
@@ -119,7 +123,7 @@ class TestPostTextFromCard:
 def _run_comment_on_post(*, card=MagicMock, post_returns=True, react_returns=True,
                          reactions_enabled=True, already_commented=False, claim=True):
     """Drive comment_on_post with every DB/Selenium collaborator mocked. Returns (result, mocks)."""
-    from cqc_lem.app import run_automation as ra
+    from cqc_lem.app.engagement import feed as ra
 
     resolved_card = MagicMock(name="card") if card is MagicMock else card
     calls = []
@@ -127,7 +131,7 @@ def _run_comment_on_post(*, card=MagicMock, post_returns=True, react_returns=Tru
     mocks = {}
 
     with ExitStack() as es:
-        p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+        p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
         p("INLINE_REACTIONS_ENABLED", new=reactions_enabled)
         p("has_user_commented_on_post_url", return_value=False)
         p("has_commented_post", return_value=already_commented)
@@ -174,11 +178,11 @@ class TestCommentOnPost:
         m["mark"].assert_not_called()          # never recorded as a comment we left
         m["release"].assert_called_once()      # a later run may retry
         assert _log_results(m["log"]) == [LogResultType.FAILURE]
-        from cqc_lem.app.run_automation import COMMENT_NOT_POSTED_MESSAGE
+        from cqc_lem.app.engagement.feed import COMMENT_NOT_POSTED_MESSAGE
         assert COMMENT_NOT_POSTED_MESSAGE in result
 
     def test_no_commentable_card_never_opens_a_composer(self):
-        from cqc_lem.app.run_automation import NO_COMMENTABLE_CARD_MESSAGE
+        from cqc_lem.app.engagement.feed import NO_COMMENTABLE_CARD_MESSAGE
         from cqc_lem.utilities.db import LogResultType
         result, m = _run_comment_on_post(card=None)
         assert result == NO_COMMENTABLE_CARD_MESSAGE
@@ -235,14 +239,21 @@ class TestNoPreSduiAnchorsRemain:
         # failure #966 exists to end, so a LOCATOR using one again is a regression. Prose that
         # merely names them (this file's own docstrings, the history in run_automation's) is fine —
         # the check is for a class-keyed selector, which is what `@class` marks.
+        #
+        # BOTH modules are scanned. The feed engine that owns most of these locators moved to
+        # `app.engagement.feed` in #1154, so a run_automation-only scan would have kept passing
+        # while going blind to the file the regression would actually land in.
         from pathlib import Path
 
+        import cqc_lem.app.engagement.feed as feed
         import cqc_lem.app.run_automation as ra
         dead = ("comments-comment-texteditor", "comments-comment-box__submit-button",
                 "comments-comment-list__container")
-        offenders = [line.strip() for line in Path(ra.__file__).read_text(encoding="utf-8").splitlines()
+        offenders = [f"{Path(mod.__file__).name}: {line.strip()}"
+                     for mod in (ra, feed)
+                     for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
                      if ("@class" in line or "class=" in line) and any(d in line for d in dead)]
-        assert offenders == [], f"pre-SDUI class-keyed locator(s) back in run_automation.py: {offenders}"
+        assert offenders == [], f"pre-SDUI class-keyed locator(s) are back: {offenders}"
 
 
 class TestThreadCarriesOurComment:

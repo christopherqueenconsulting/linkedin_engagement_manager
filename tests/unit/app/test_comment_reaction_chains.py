@@ -20,19 +20,19 @@ pytestmark = pytest.mark.unit
 
 class TestCommentActionChain:
     def test_is_an_ordered_chain_not_a_single_anchor(self):
-        from cqc_lem.app.run_automation import _COMMENT_ACTION_LOCATORS
+        from cqc_lem.app.engagement.feed import _COMMENT_ACTION_LOCATORS
         assert len(_COMMENT_ACTION_LOCATORS) >= 3, "one locator is a silent single point of failure"
 
     def test_keeps_the_aria_label_route_first(self):
         """It matched zero live, but LinkedIn rotates anchors back. Ordered most-stable-first, and
         an entry that costs nothing when absent is worth keeping ahead of the text route.
         """
-        from cqc_lem.app.run_automation import _COMMENT_ACTION_LOCATORS
+        from cqc_lem.app.engagement.feed import _COMMENT_ACTION_LOCATORS
         assert "aria-label='Comment'" in _COMMENT_ACTION_LOCATORS[0][1]
 
     def test_carries_a_text_route(self):
         """The only route that resolves on the current SDUI."""
-        from cqc_lem.app.run_automation import _COMMENT_ACTION_LOCATORS
+        from cqc_lem.app.engagement.feed import _COMMENT_ACTION_LOCATORS
         assert any("'comment'" in sel for _by, sel in _COMMENT_ACTION_LOCATORS)
 
     def test_xpath_entries_stay_card_scoped(self):
@@ -42,7 +42,7 @@ class TestCommentActionChain:
         """
         from selenium.webdriver.common.by import By
 
-        from cqc_lem.app.run_automation import (
+        from cqc_lem.app.engagement.feed import (
             _COMMENT_ACTION_LOCATORS,
             _REACTION_OPENER_LOCATORS,
             _REACTION_TRIGGER_LOCATORS,
@@ -86,13 +86,13 @@ class TestCommentActionPredicate:
 
 class TestReactionChains:
     def test_trigger_chain_leads_with_the_anchor_that_actually_resolves(self):
-        from cqc_lem.app.run_automation import _REACTION_TRIGGER_LOCATORS
+        from cqc_lem.app.engagement.feed import _REACTION_TRIGGER_LOCATORS
         assert "Reaction button state" in _REACTION_TRIGGER_LOCATORS[0][1]
         assert len(_REACTION_TRIGGER_LOCATORS) >= 4
 
     def test_trigger_chain_matches_like_exactly_never_a_count(self):
         """'2 likes' must not be mistaken for the Like toggle."""
-        from cqc_lem.app.run_automation import _REACTION_TRIGGER_LOCATORS
+        from cqc_lem.app.engagement.feed import _REACTION_TRIGGER_LOCATORS
         like = [s for _b, s in _REACTION_TRIGGER_LOCATORS if "'like'" in s]
         assert like, "expected a text route to the Like toggle"
         assert all("contains(" not in s for s in like)
@@ -103,13 +103,13 @@ class TestReactionChains:
         """
         from selenium.webdriver.common.by import By
 
-        from cqc_lem.app.run_automation import _reaction_option_locators
+        from cqc_lem.app.engagement.feed import _reaction_option_locators
         for by, sel in _reaction_option_locators("Celebrate"):
             if by == By.XPATH:
                 assert sel.startswith("//"), f"fly-out lookup must be document-scoped: {sel}"
 
     def test_option_locators_are_case_insensitive_beyond_the_exact_match(self):
-        from cqc_lem.app.run_automation import _reaction_option_locators
+        from cqc_lem.app.engagement.feed import _reaction_option_locators
         chain = _reaction_option_locators("Celebrate")
         assert "aria-label='Celebrate'" in chain[0][1]          # exact, confirmed live
         assert any("translate(" in sel for _by, sel in chain)   # case-folded fallbacks
@@ -118,7 +118,7 @@ class TestReactionChains:
                                           "Funny"])
     def test_every_live_reaction_builds_a_chain(self, reaction):
         """These six are the exact aria-labels captured from the open fly-out."""
-        from cqc_lem.app.run_automation import _reaction_option_locators
+        from cqc_lem.app.engagement.feed import _reaction_option_locators
         chain = _reaction_option_locators(reaction)
         assert len(chain) >= 3
         assert f"aria-label='{reaction}'" in chain[0][1]

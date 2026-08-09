@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_FEED = "cqc_lem.app.engagement.feed"
 # The zero-walk grading moved to its own module (#1021) so scrapper/company_page_inviter can
 # share it; the logger it calls lives there now.
 _ZW = "cqc_lem.utilities.linkedin.zero_walk"
@@ -17,7 +17,7 @@ _ZW = "cqc_lem.utilities.linkedin.zero_walk"
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"):
+    with patch(f"{_FEED}.time.sleep"):
         yield
 
 
@@ -63,7 +63,7 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     `click_first_return` / `post_composer_return` control the probe's two resolution steps; both
     default to a truthy mock so the probe succeeds unless the caller overrides one to None.
     """
-    from cqc_lem.app import run_automation as ra
+    from cqc_lem.app.engagement import feed as ra
 
     driver = MagicMock()
     if find_elements is not None:
@@ -99,7 +99,7 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         post_composer_return = None if post_composer_return is _UNSET else post_composer_return
 
     with ExitStack() as es:
-        p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+        p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
         # Reactions ship OFF by default while #816 is open; these tests exercise the reaction
         # path itself, so they opt in explicitly rather than depending on the shipped default.
         p("INLINE_REACTIONS_ENABLED", new=True)
@@ -246,11 +246,11 @@ class TestFeedDedup:
         r["post_inline"].assert_not_called()
 
     def test_failed_post_releases_claim(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import feed as ra
         driver = MagicMock()
         driver.find_elements.return_value = [_box("A post whose comment submit will fail here.")]
         with ExitStack() as es:
-            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p = lambda name, **kw: es.enter_context(patch(f"{_FEED}.{name}", **kw))
             p("get_engagement_preferences", return_value={"max_comments_per_day": 20})
             p("get_recent_engagers", return_value=set())
             p("get_recent_comment_texts", return_value=[])
@@ -278,7 +278,7 @@ class TestFeedDedup:
             p("mark_post_reacted")
             p("react_to_post_inline", return_value=True)
             p("log_warning")
-            release = es.enter_context(patch(f"{_RA}.release_post_claim"))
+            release = es.enter_context(patch(f"{_FEED}.release_post_claim"))
             p("insert_new_log")
             p("pace_read", return_value=0.0)
             posted = ra.comment_on_feed_inline(driver, MagicMock(), MagicMock(), user_id=1, max_posts=1)
@@ -312,24 +312,24 @@ class TestFeedReactions:
 
 class TestAuthorIsMe:
     def test_matches_own_name_case_insensitively(self):
-        from cqc_lem.app.run_automation import _author_is_me
+        from cqc_lem.app.engagement.feed import _author_is_me
         prof = MagicMock(); prof.full_name = "Chris Queen"
         assert _author_is_me("chris queen", prof) is True
         assert _author_is_me("Someone Else", prof) is False
 
     def test_blank_profile_name_is_not_me(self):
-        from cqc_lem.app.run_automation import _author_is_me
+        from cqc_lem.app.engagement.feed import _author_is_me
         prof = MagicMock(); prof.full_name = ""
         assert _author_is_me("Anybody", prof) is False
 
 
 class TestCommentOnPostTaskIdempotency:
     def test_skips_when_already_claimed(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
-             patch(f"{_RA}.has_commented_post", return_value=False), \
-             patch(f"{_RA}.claim_post_for_comment", return_value=False) as claim, \
-             patch(f"{_RA}.get_driver_wait_pair") as gdw:
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.has_user_commented_on_post_url", return_value=False), \
+             patch(f"{_FEED}.has_commented_post", return_value=False), \
+             patch(f"{_FEED}.claim_post_for_comment", return_value=False) as claim, \
+             patch(f"{_FEED}.get_driver_wait_pair") as gdw:
             result = ra.comment_on_post.run(user_id=1, post_link="https://x/feed/update/1/",
                                             comment_text="hi")
         assert "already claimed" in result
@@ -337,11 +337,11 @@ class TestCommentOnPostTaskIdempotency:
         gdw.assert_not_called()  # never opens a browser when it loses the claim
 
     def test_skips_when_already_commented(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
-             patch(f"{_RA}.has_commented_post", return_value=True), \
-             patch(f"{_RA}.claim_post_for_comment") as claim, \
-             patch(f"{_RA}.get_driver_wait_pair") as gdw:
+        from cqc_lem.app.engagement import feed as ra
+        with patch(f"{_FEED}.has_user_commented_on_post_url", return_value=False), \
+             patch(f"{_FEED}.has_commented_post", return_value=True), \
+             patch(f"{_FEED}.claim_post_for_comment") as claim, \
+             patch(f"{_FEED}.get_driver_wait_pair") as gdw:
             result = ra.comment_on_post.run(user_id=1, post_link="https://x/feed/update/1/",
                                             comment_text="hi")
         assert "already commented" in result
@@ -471,7 +471,7 @@ class TestFeedZeroWalkTripwire:
         assert r["funnel"]["feed_walk"] == "empty"
 
     def test_zero_textboxes_while_the_page_renders_posts_is_drift(self):
-        from cqc_lem.app.run_automation import _FEED_CARD_CROSSCHECK_SEL, _FEED_POST_TEXT_SEL
+        from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_POST_TEXT_SEL
 
         def _find(by, selector):
             if selector == _FEED_POST_TEXT_SEL:
@@ -487,7 +487,7 @@ class TestFeedZeroWalkTripwire:
         """The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a
         grouped $exception, so an empty feed or an unreadable cross-check must stay DEBUG.
         """
-        from cqc_lem.app.run_automation import _report_zero_walk
+        from cqc_lem.app.engagement.feed import _report_zero_walk
         driver = MagicMock()
 
         driver.find_elements.return_value = [MagicMock()] * 3

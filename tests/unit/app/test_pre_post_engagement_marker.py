@@ -6,7 +6,10 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MOD = "cqc_lem.app.run_automation"
+# `automate_commenting` moved to `app.engagement.feed` (#1154) — and with it the
+# `globals()[current_function_name].apply_async` self-requeue asserted below, which stays correct
+# only because the task and its module moved together.
+_MOD = "cqc_lem.app.engagement.feed"
 
 
 @pytest.fixture
@@ -23,7 +26,7 @@ def commenting_env():
 class TestPrePostEngagementMarker:
     def test_records_run_when_dispatched_for_a_post(self, commenting_env):
         _, record = commenting_env
-        from cqc_lem.app.run_automation import automate_commenting
+        from cqc_lem.app.engagement.feed import automate_commenting
 
         automate_commenting.run(user_id=7, post_id=42)
 
@@ -32,7 +35,7 @@ class TestPrePostEngagementMarker:
     def test_no_marker_for_the_daily_golden_hour_run(self, commenting_env):
         """The daily/golden-hour run has no post to attribute to — it must not write a marker."""
         _, record = commenting_env
-        from cqc_lem.app.run_automation import automate_commenting
+        from cqc_lem.app.engagement.feed import automate_commenting
 
         automate_commenting.run(user_id=7)
 
@@ -42,7 +45,7 @@ class TestPrePostEngagementMarker:
         """The window is walked by a self-requeueing loop, so post_id must survive each hop or
         only the first pass would be recorded.
         """
-        from cqc_lem.app.run_automation import automate_commenting
+        from cqc_lem.app.engagement.feed import automate_commenting
 
         with patch.object(automate_commenting, "apply_async") as requeue:
             automate_commenting.run(user_id=7, loop_for_duration=900, post_id=42)
@@ -55,7 +58,7 @@ class TestPrePostEngagementMarker:
 
     def test_marker_not_written_when_another_run_holds_the_lock(self, commenting_env):
         _, record = commenting_env
-        from cqc_lem.app.run_automation import automate_commenting
+        from cqc_lem.app.engagement.feed import automate_commenting
 
         with patch(f"{_MOD}.acquire_run_lock", return_value=None):
             result = automate_commenting.run(user_id=7, post_id=42)

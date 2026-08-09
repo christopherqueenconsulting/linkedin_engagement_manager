@@ -21,7 +21,8 @@ proceed as if it were success.
 The same rule reads backwards for a walk that finds nothing: **zero items is not "nothing to do"
 until the page agrees.** Cross-check against an anchor the walk does not itself depend on
 (`report_zero_walk` / `zero_walk_verdict` in `utilities/linkedin/zero_walk.py` — the ONE grader,
-re-exported from `run_automation` under the `_`-prefixed names its call sites already used),
+re-exported from `run_automation` AND `app/engagement/feed.py` under the `_`-prefixed names their
+call sites already used; each aliases the upstream original so neither imports the other),
 because a rotated selector
 answers zero to both questions. `drift` there warns — once is a warning, repeatedly is a defect, and
 repeated selector rot is exactly the defect that should file itself. An empty page and an unreadable

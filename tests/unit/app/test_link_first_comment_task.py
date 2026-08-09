@@ -10,6 +10,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# `auto_seed_comment_on_post` moved to `app.engagement.feed` (#1154); `post_to_linkedin`,
+# which every other test here drives, did not.
+_FEED = "cqc_lem.app.engagement.feed"
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"
 _BODY_WITH_LINK = "Three lessons from the rebuild.\n\nFull breakdown: https://example.com/rebuild"
 
@@ -132,17 +135,17 @@ class TestSeedCommentDeliversTheLink:
     def _seed(self, stack, held_link, seed_text="What surprised you most?", already_commented=False):
         from unittest.mock import MagicMock
 
-        from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        stack.enter_context(patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL))
-        stack.enter_context(patch(f"{_RA}.has_user_commented_on_post_url", return_value=already_commented))
-        stack.enter_context(patch(f"{_RA}.get_post_content", return_value="Three lessons."))
-        stack.enter_context(patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()))
-        stack.enter_context(patch(f"{_RA}.get_engagement_preferences", return_value={}))
-        stack.enter_context(patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"))
-        stack.enter_context(patch(f"{_RA}.generate_seed_comment", return_value=seed_text))
-        stack.enter_context(patch(f"{_RA}.get_post_first_comment_link", return_value=held_link))
-        stack.enter_context(patch(f"{_RA}.insert_new_log"))
-        api = stack.enter_context(patch(f"{_RA}.comment_on_linkedin_post",
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+        stack.enter_context(patch(f"{_FEED}.get_post_url_from_log_for_user", return_value=_URL))
+        stack.enter_context(patch(f"{_FEED}.has_user_commented_on_post_url", return_value=already_commented))
+        stack.enter_context(patch(f"{_FEED}.get_post_content", return_value="Three lessons."))
+        stack.enter_context(patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()))
+        stack.enter_context(patch(f"{_FEED}.get_engagement_preferences", return_value={}))
+        stack.enter_context(patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"))
+        stack.enter_context(patch(f"{_FEED}.generate_seed_comment", return_value=seed_text))
+        stack.enter_context(patch(f"{_FEED}.get_post_first_comment_link", return_value=held_link))
+        stack.enter_context(patch(f"{_FEED}.insert_new_log"))
+        api = stack.enter_context(patch(f"{_FEED}.comment_on_linkedin_post",
                                         return_value="urn:li:comment:(x,1)"))
         result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         return api, result

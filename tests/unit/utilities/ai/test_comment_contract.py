@@ -322,22 +322,25 @@ class TestGenerationGate:
 
 
 class TestEngageCardWiring:
-    """The run-level half: history in, landed comments back out, claim released on a skip."""
+    """The run-level half: history in, landed comments back out, claim released on a skip.
+
+    `_engage_card` moved to `app.engagement.feed` (#1154); the permalink path below did not.
+    """
 
     def _engage(self, comment_text, recent):
-        from cqc_lem.app import run_automation as ra
-        with patch("cqc_lem.app.run_automation.claim_post_for_comment", return_value=True), \
-             patch("cqc_lem.app.run_automation.generate_ai_response",
+        from cqc_lem.app.engagement import feed as ra
+        with patch("cqc_lem.app.engagement.feed.claim_post_for_comment", return_value=True), \
+             patch("cqc_lem.app.engagement.feed.generate_ai_response",
                    return_value=comment_text) as gen, \
-             patch("cqc_lem.app.run_automation.release_post_claim") as release, \
-             patch("cqc_lem.app.run_automation.post_comment_inline", return_value=True), \
-             patch("cqc_lem.app.run_automation.react_to_post_inline", return_value=True), \
-             patch("cqc_lem.app.run_automation.mark_post_commented"), \
-             patch("cqc_lem.app.run_automation.mark_post_reacted"), \
-             patch("cqc_lem.app.run_automation.insert_new_log"), \
-             patch("cqc_lem.app.run_automation._author_is_me", return_value=False), \
-             patch("cqc_lem.app.run_automation.pace_read", return_value=0.0), \
-             patch("cqc_lem.app.run_automation.time.sleep"):
+             patch("cqc_lem.app.engagement.feed.release_post_claim") as release, \
+             patch("cqc_lem.app.engagement.feed.post_comment_inline", return_value=True), \
+             patch("cqc_lem.app.engagement.feed.react_to_post_inline", return_value=True), \
+             patch("cqc_lem.app.engagement.feed.mark_post_commented"), \
+             patch("cqc_lem.app.engagement.feed.mark_post_reacted"), \
+             patch("cqc_lem.app.engagement.feed.insert_new_log"), \
+             patch("cqc_lem.app.engagement.feed._author_is_me", return_value=False), \
+             patch("cqc_lem.app.engagement.feed.pace_read", return_value=0.0), \
+             patch("cqc_lem.app.engagement.feed.time.sleep"):
             ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
                                  "feedurn://x", _POST, "Jane", {}, "synthesis", [], recent)
         return ok, gen, release
