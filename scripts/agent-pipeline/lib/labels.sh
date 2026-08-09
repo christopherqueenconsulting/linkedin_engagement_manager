@@ -10,6 +10,10 @@
 #                                    ai:ollama-cloud:<modelslug>
 #   ai:routed:parallel | ai:routed:fallback | ai:routed:escalated | ai:routed:degraded
 # Model slugs: glm-5.2, kimi-k2.7-code, minimax-m3, nemotron-3-super; claude: sonnet|haiku|opus.
+#
+# Owner-applied tier pins are also bootstrapped here because a missing label makes
+# `gh issue edit --add-label agent:tier:N` fail the whole edit silently (#1228).
+#   agent:tier:1 | agent:tier:2 | agent:tier:2-alt | agent:tier:3
 BASE="${BASE:-/home/lem/agent-pipeline}"
 SLUG="${SLUG:-christopherqueenconsulting/linkedin_engagement_manager}"
 
@@ -62,6 +66,12 @@ AI_LABELS=(
   "ai:routed:fallback"
   "ai:routed:escalated"
   "ai:routed:degraded"
+  # Owner-applied Ollama tier pins (#1228). These must exist before `gh issue edit` can
+  # apply them, otherwise the edit fails silently and the override never routes.
+  "agent:tier:1"
+  "agent:tier:2"
+  "agent:tier:2-alt"
+  "agent:tier:3"
 )
 
 # Create any missing ai:* labels in the repo. Safe to run every tick (skips existing). One gh call
