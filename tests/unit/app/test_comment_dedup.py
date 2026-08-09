@@ -455,26 +455,28 @@ class TestGroupFeedComposerProbe:
 
 
 class TestFeedZeroWalkTripwire:
-    """#1013: zero post-text nodes across a whole scan is indistinguishable from an empty feed in
-    every funnel number — which is how #964 and #1009 stayed invisible for weeks. The scan asks the
-    page through a per-post control the text-node chain does not use.
+    """#1013/#1081: zero post MARKERS across a whole scan is indistinguishable from an empty feed
+    in every funnel number — which is how #964 and #1009 stayed invisible for weeks. The scan asks
+    the page through a per-post control the card-marker chain does not use.
     """
 
     def test_a_walk_that_saw_cards_is_ok(self):
         r = _run_feed([_box("A feed post with plenty of content to comment on.")])
         assert r["funnel"]["feed_walk"] == "ok"
         assert r["funnel"]["textboxes_seen"] == 1
+        assert r["funnel"]["cards_seen"] == 1
 
     def test_zero_textboxes_on_an_empty_feed_is_empty_not_drift(self):
         r = _run_feed([])
         assert r["funnel"]["textboxes_seen"] == 0
+        assert r["funnel"]["cards_seen"] == 0
         assert r["funnel"]["feed_walk"] == "empty"
 
     def test_zero_textboxes_while_the_page_renders_posts_is_drift(self):
-        from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_POST_TEXT_SEL
+        from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_CARD_MARKER_SEL
 
         def _find(by, selector):
-            if selector == _FEED_POST_TEXT_SEL:
+            if selector == _FEED_CARD_MARKER_SEL:
                 return []                       # the walk is blind
             if selector == _FEED_CARD_CROSSCHECK_SEL:
                 return [MagicMock()] * 8        # but the page rendered eight posts
@@ -482,6 +484,26 @@ class TestFeedZeroWalkTripwire:
 
         r = _run_feed([], find_elements=_find)
         assert r["funnel"]["feed_walk"] == "drift"
+
+    def test_image_only_posts_do_not_read_as_drift(self):
+        """#1081: a card with a "Hide post by" control but no text node is still a card. The tripwire
+        must not fire a selector-drift warning for a feed of image/video-only posts.
+        """
+        from cqc_lem.app.engagement.feed import _FEED_CARD_CROSSCHECK_SEL, _FEED_CARD_MARKER_SEL, _FEED_POST_TEXT_SEL
+
+        def _find(by, selector):
+            if selector == _FEED_POST_TEXT_SEL:
+                return []                       # no text nodes on these posts
+            if selector == _FEED_CARD_MARKER_SEL:
+                return [MagicMock()] * 4        # markers include the "Hide post by" controls
+            if selector == _FEED_CARD_CROSSCHECK_SEL:
+                return [MagicMock()] * 4        # page independently confirms cards
+            return []
+
+        r = _run_feed([], find_elements=_find)
+        assert r["funnel"]["textboxes_seen"] == 0
+        assert r["funnel"]["cards_seen"] == 4
+        assert r["funnel"]["feed_walk"] == "ok"
 
     def test_only_drift_warns(self):
         """The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a
@@ -492,13 +514,13 @@ class TestFeedZeroWalkTripwire:
 
         driver.find_elements.return_value = [MagicMock()] * 3
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
-            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "drift"
+            assert _report_zero_walk(driver, "sel", "Feed card walk") == "drift"
         warn.assert_called_once()
         debug.assert_not_called()
 
         driver.find_elements.return_value = []
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
-            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "empty"
+            assert _report_zero_walk(driver, "sel", "Feed card walk") == "empty"
         warn.assert_not_called()
         debug.assert_called_once()
 
@@ -506,6 +528,6 @@ class TestFeedZeroWalkTripwire:
         from selenium.common.exceptions import WebDriverException
         driver.find_elements.side_effect = WebDriverException("session gone")
         with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
-            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "unknown"
+            assert _report_zero_walk(driver, "sel", "Feed card walk") == "unknown"
         warn.assert_not_called()
         debug.assert_called_once()

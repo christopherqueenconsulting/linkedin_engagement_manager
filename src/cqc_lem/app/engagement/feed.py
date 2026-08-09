@@ -401,6 +401,7 @@ _POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by
 # The grading itself lives in utilities/linkedin/zero_walk.py, because scrapper and
 # company_page_inviter need it too and both are imported BY this module. Re-exported under the
 # names this module already used so every call site (and its tests) keeps one spelling.
+_FEED_CARD_MARKER_SEL = ", ".join(_POST_MARKER_SELECTORS)
 _FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
 
 
@@ -2240,9 +2241,13 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # existing include-miss fallback only triggers on posts that first passed the hard gates.
     soft_seen: set = set()
     hard_relaxed = False
-    # The most post-text nodes any scroll pass saw. Zero across a whole scan is the "the walk is
-    # blind" case the zero-walk tripwire below cross-checks against the page (issue #1013) — every
-    # other funnel number is downstream of this one, so a zero here makes them all meaningless.
+    # The most post MARKERS any scroll pass saw (text node OR the card's own "Hide post by"
+    # control). An image-only post has no text node but still carries that control, so counting only
+    # text nodes treated a feed of image/video posts as selector drift (#1081). Zero across a whole
+    # scan is the "the walk is blind" case the zero-walk tripwire below cross-checks against the page
+    # (#1013) — every other funnel number is downstream of this one, so a zero here makes them all
+    # meaningless.
+    cards_seen = 0
     textboxes_seen = 0
     _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
                          + (prefs.get("include_topics") or [])) if f]
@@ -2254,6 +2259,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         candidates = []
         boxes = driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
         textboxes_seen = max(textboxes_seen, len(boxes))
+        cards_seen = max(cards_seen, len(driver.find_elements(By.CSS_SELECTOR, _FEED_CARD_MARKER_SEL)))
         for box in boxes:
             try:
                 content = (box.text or "").strip()
@@ -2380,11 +2386,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         posted_key_sources[source] = posted_key_sources.get(source, 0) + count
     feed_commented = posted - roster_stats["posted"]
     off_topic_total = off_topic_skipped + roster_stats["off_topic_skipped"]
-    # Zero post-text nodes across the whole scan is indistinguishable from an empty feed in every
+    # Zero post MARKERS across the whole scan is indistinguishable from an empty feed in every
     # funnel number below — which is exactly how #964 and #1009 stayed invisible for weeks. Ask the
-    # page, through a per-post control the text-node chain does not use (issue #1013).
-    feed_walk = ("ok" if textboxes_seen else
-                 _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed post-text walk",
+    # page, through a per-post control the card-marker chain does not use (issue #1013).
+    feed_walk = ("ok" if cards_seen else
+                 _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed card walk",
                                    user_id=user_id, action_type="comment",
                                    task_name="comment_on_feed_inline"))
     funnel = {
@@ -2417,10 +2423,12 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # Which feed ordering the recency-dominant scoring matrix actually ranked (#817). Anything
         # other than FEED_SORT_RECENT means the candidate pool was LinkedIn's algorithmic one.
         "feed_sort": feed_sort,
-        # How many post-text nodes the walk ever saw, and what a zero meant when cross-checked
-        # against the page (issue #1013): ok / empty / drift / unknown. `feed_walk='drift'` says the
-        # feed had cards this scan could not see — every zero below it is a lie, not a quiet day.
+        # How many post-text nodes the walk ever saw, how many card markers (text or "Hide post by")
+        # were visible, and what a zero meant when cross-checked against the page (issue #1013):
+        # ok / empty / drift / unknown. `feed_walk='drift'` says the feed had cards this scan could
+        # not see — every zero below it is a lie, not a quiet day.
         "textboxes_seen": textboxes_seen,
+        "cards_seen": cards_seen,
         "feed_walk": feed_walk,
         "at": datetime.now().isoformat(),
     }
