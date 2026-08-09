@@ -9,7 +9,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+# `post_to_linkedin` moved to `app.engagement.posting` (#1154) — that is the module whose
+# globals it reads, so every collaborator below is patched there.
+_POST = "cqc_lem.app.engagement.posting"
 # `auto_seed_comment_on_post` moved to `app.engagement.feed` (#1154); `post_to_linkedin`,
 # which every other test here drives, did not.
 _FEED = "cqc_lem.app.engagement.feed"
@@ -34,16 +36,16 @@ def _post_patches(stack, content, prefs=None, share_urn="urn:li:ugcPost:1"):
         "auto_seed_comment_on_post": {},
         "auto_second_wave_comment": {},
     }
-    return {name: stack.enter_context(patch(f"{_RA}.{name}", **kw)) for name, kw in targets.items()}
+    return {name: stack.enter_context(patch(f"{_POST}.{name}", **kw)) for name, kw in targets.items()}
 
 
 class TestPostToLinkedinHoldsLinkBack:
     def test_publishes_link_free_body_and_stashes_the_link(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, _BODY_WITH_LINK)
-            content_upd = stack.enter_context(patch(f"{_RA}.update_db_post_content"))
-            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            content_upd = stack.enter_context(patch(f"{_POST}.update_db_post_content"))
+            link_upd = stack.enter_context(patch(f"{_POST}.update_db_post_first_comment_link"))
             post_to_linkedin.run(1, 10)
 
         published = m["share_on_linkedin"].call_args[0][1]
@@ -56,21 +58,21 @@ class TestPostToLinkedinHoldsLinkBack:
         assert m["insert_new_log"].call_args.kwargs["message"] == published
 
     def test_pref_off_publishes_the_link_inline(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, _BODY_WITH_LINK, prefs={"link_in_first_comment": False})
-            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            link_upd = stack.enter_context(patch(f"{_POST}.update_db_post_first_comment_link"))
             post_to_linkedin.run(1, 10)
 
         assert "https://example.com/rebuild" in m["share_on_linkedin"].call_args[0][1]
         link_upd.assert_not_called()
 
     def test_link_free_post_touches_nothing(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, "No links in this one.")
-            content_upd = stack.enter_context(patch(f"{_RA}.update_db_post_content"))
-            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            content_upd = stack.enter_context(patch(f"{_POST}.update_db_post_content"))
+            link_upd = stack.enter_context(patch(f"{_POST}.update_db_post_first_comment_link"))
             post_to_linkedin.run(1, 10)
 
         assert m["share_on_linkedin"].call_args[0][1] == "No links in this one."
@@ -81,11 +83,11 @@ class TestPostToLinkedinHoldsLinkBack:
         """The seed task is dispatched HERE (not by the scheduler) because it needs the published
         post's URL — and it is what delivers the held-back link.
         """
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, _BODY_WITH_LINK)
-            stack.enter_context(patch(f"{_RA}.update_db_post_content"))
-            stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            stack.enter_context(patch(f"{_POST}.update_db_post_content"))
+            stack.enter_context(patch(f"{_POST}.update_db_post_first_comment_link"))
             post_to_linkedin.run(1, 10)
 
         m["auto_seed_comment_on_post"].apply_async.assert_called_once()
@@ -94,7 +96,7 @@ class TestPostToLinkedinHoldsLinkBack:
         assert kwargs["countdown"] > 0
 
     def test_no_seed_dispatch_when_publishing_failed(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             m = _post_patches(stack, "No links in this one.", share_urn=None)
             post_to_linkedin.run(1, 10)
@@ -104,11 +106,11 @@ class TestPostToLinkedinHoldsLinkBack:
         """The split is in-memory until the share succeeds — a failed publish must not strand the
         post in the link-held-back state, or a retry would publish a body whose link is gone.
         """
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         with ExitStack() as stack:
             _post_patches(stack, _BODY_WITH_LINK, share_urn=None)
-            content_upd = stack.enter_context(patch(f"{_RA}.update_db_post_content"))
-            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            content_upd = stack.enter_context(patch(f"{_POST}.update_db_post_content"))
+            link_upd = stack.enter_context(patch(f"{_POST}.update_db_post_first_comment_link"))
             post_to_linkedin.run(1, 10)
 
         content_upd.assert_not_called()
@@ -116,15 +118,15 @@ class TestPostToLinkedinHoldsLinkBack:
 
     def test_failed_carousel_leaves_the_stored_post_intact(self):
         """Same for the carousel early-return path (no usable slide images)."""
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
         with ExitStack() as stack:
             m = _post_patches(stack, _BODY_WITH_LINK)
             m["get_post_type"].return_value = PostType.CAROUSEL
-            stack.enter_context(patch(f"{_RA}.get_carousel_slides", return_value=[]))
-            stack.enter_context(patch(f"{_RA}.log_error"))
-            content_upd = stack.enter_context(patch(f"{_RA}.update_db_post_content"))
-            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            stack.enter_context(patch(f"{_POST}.get_carousel_slides", return_value=[]))
+            stack.enter_context(patch(f"{_POST}.log_error"))
+            content_upd = stack.enter_context(patch(f"{_POST}.update_db_post_content"))
+            link_upd = stack.enter_context(patch(f"{_POST}.update_db_post_first_comment_link"))
             post_to_linkedin.run(1, 10)
 
         content_upd.assert_not_called()

@@ -2,10 +2,10 @@
 
 Since #1154 the two reply paths live in DIFFERENT modules: `_reply_under_comment_inline`, the
 composer resolution they share, and the thread walk all moved down to
-`utilities/linkedin/composer.py`, while `_reply_to_comment_inline` stayed in `run_automation`.
-A collaborator therefore has to be patched on the module that READS it — patching
-`run_automation._comment_container` for code that now lives in composer.py rebinds a name
-nothing looks at, and the test would pass having tested nothing.
+`utilities/linkedin/composer.py`, while `_reply_to_comment_inline` went with the reply sweep to
+`app/engagement/posting.py`. A collaborator therefore has to be patched on the module that READS
+it — patching `composer._comment_container` for code that now lives in posting.py (or the reverse)
+rebinds a name nothing looks at, and the test would pass having tested nothing.
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,13 +14,13 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
+_POST = "cqc_lem.app.engagement.posting"
 _CMP = "cqc_lem.utilities.linkedin.composer"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"), patch(f"{_CMP}.time.sleep"):
+    with patch(f"{_POST}.time.sleep"), patch(f"{_CMP}.time.sleep"):
         yield
 
 
@@ -168,13 +168,13 @@ class TestInSameComment:
 
 class TestReplyInline:
     def test_types_into_this_comments_composer_not_the_main_comment_box(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting
         main = _box(100)                                    # first in document order
         mine = _box(1030, text="")                          # this comment's own reply box
         comment = _comment(900, composers=[mine])
         driver = _driver(main, mine); driver.execute_script.return_value = True
-        with patch(f"{_RA}.click_first", return_value=MagicMock()):
-            ok = ra._reply_to_comment_inline(driver, _wait(), comment,
+        with patch(f"{_POST}.click_first", return_value=MagicMock()):
+            ok = posting._reply_to_comment_inline(driver, _wait(), comment,
                                              "Thanks - what made that work for you?", user_id=1)
         assert ok is True
         mine.send_keys.assert_called_once()
@@ -182,34 +182,34 @@ class TestReplyInline:
         main.click.assert_not_called()
 
     def test_comment_without_a_reachable_composer_skips_instead_of_borrowing_one(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting
         main = _box(100)
         driver = _driver(main)
-        with patch(f"{_RA}.click_first", return_value=MagicMock()):
-            ok = ra._reply_to_comment_inline(driver, _wait(), _comment(900), "some reply", user_id=1)
+        with patch(f"{_POST}.click_first", return_value=MagicMock()):
+            ok = posting._reply_to_comment_inline(driver, _wait(), _comment(900), "some reply", user_id=1)
         assert ok is False
         main.send_keys.assert_not_called()
 
     def test_posts_reply_and_confirms_via_cleared_composer(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting
         composer = MagicMock(); composer.text = ""          # composer cleared after a real post
         driver = MagicMock(); driver.execute_script.return_value = True  # submit button clicked
-        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}._reply_composer_for_comment", return_value=composer):
-            ok = ra._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
+        with patch(f"{_POST}.click_first", return_value=MagicMock()), \
+             patch(f"{_POST}._reply_composer_for_comment", return_value=composer):
+            ok = posting._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
                                              "hello this is my reply text", user_id=1)
         assert ok is True
         composer.send_keys.assert_called()  # typed the reply
 
     def test_returns_false_when_composer_still_full(self):
         # Submit failed: composer keeps the text and it's not in the list → NOT a false positive.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting
         composer = MagicMock(); composer.text = "hello this is my reply text still here"
         # composer-centering scrollIntoView (#815); then: no submit button; text not in list
         driver = MagicMock(); driver.execute_script.side_effect = [None, False, False]
-        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}._reply_composer_for_comment", return_value=composer):
-            ok = ra._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
+        with patch(f"{_POST}.click_first", return_value=MagicMock()), \
+             patch(f"{_POST}._reply_composer_for_comment", return_value=composer):
+            ok = posting._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
                                              "hello this is my reply text", user_id=1)
         assert ok is False
         # Pin the sequence: a shift would exhaust the side_effect list and make _composer_submitted
@@ -217,28 +217,28 @@ class TestReplyInline:
         assert driver.execute_script.call_count == 3
 
     def test_returns_false_when_no_reply_button(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.click_first", return_value=None), \
-             patch(f"{_RA}._reply_composer_for_comment") as rc:
-            ok = ra._reply_to_comment_inline(MagicMock(), MagicMock(), MagicMock(), "x", user_id=1)
+        from cqc_lem.app.engagement import posting
+        with patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._reply_composer_for_comment") as rc:
+            ok = posting._reply_to_comment_inline(MagicMock(), MagicMock(), MagicMock(), "x", user_id=1)
         assert ok is False
         rc.assert_not_called()
 
     def test_returns_false_when_no_composer(self):
-        from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}._reply_composer_for_comment", return_value=None):
-            ok = ra._reply_to_comment_inline(MagicMock(), MagicMock(), MagicMock(), "x", user_id=1)
+        from cqc_lem.app.engagement import posting
+        with patch(f"{_POST}.click_first", return_value=MagicMock()), \
+             patch(f"{_POST}._reply_composer_for_comment", return_value=None):
+            ok = posting._reply_to_comment_inline(MagicMock(), MagicMock(), MagicMock(), "x", user_id=1)
         assert ok is False
 
     def test_composer_lookup_is_anchored_to_the_comment(self):
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting
         composer = MagicMock(); composer.text = ""
         comment = MagicMock()
         driver = MagicMock(); driver.execute_script.return_value = True
-        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}._reply_composer_for_comment", return_value=composer) as rc:
-            ra._reply_to_comment_inline(driver, MagicMock(), comment, "a reply worth posting", user_id=1)
+        with patch(f"{_POST}.click_first", return_value=MagicMock()), \
+             patch(f"{_POST}._reply_composer_for_comment", return_value=composer) as rc:
+            posting._reply_to_comment_inline(driver, MagicMock(), comment, "a reply worth posting", user_id=1)
         assert rc.call_args.args[1] is comment
 
 
@@ -298,19 +298,19 @@ class TestReplyUnderCommentComposerPick:
         # reintroduce a second, softer pick on one of the two paths. Since #1154 the two paths sit in
         # different modules, so "the same helper" has to be asserted in both senses: the two module
         # bindings are the SAME object, and the same mock stands in for both of them.
-        from cqc_lem.app import run_automation as ra
+        from cqc_lem.app.engagement import posting
         from cqc_lem.utilities.linkedin import composer as mod
-        assert ra._reply_composer_for_comment is mod._reply_composer_for_comment
+        assert posting._reply_composer_for_comment is mod._reply_composer_for_comment
         composer = MagicMock(); composer.text = ""
         under_comment, inline_comment = MagicMock(), MagicMock()
         under_comment.find_elements.return_value = [MagicMock(name="reply_btn")]
         driver = MagicMock(); driver.execute_script.return_value = True
         rc = MagicMock(return_value=composer)
-        with patch(f"{_CMP}.ActionChains"), patch(f"{_RA}.click_first", return_value=MagicMock()), \
+        with patch(f"{_CMP}.ActionChains"), patch(f"{_POST}.click_first", return_value=MagicMock()), \
              patch(f"{_CMP}._reply_composer_for_comment", rc), \
-             patch(f"{_RA}._reply_composer_for_comment", rc):
+             patch(f"{_POST}._reply_composer_for_comment", rc):
             assert mod._reply_under_comment_inline(driver, _wait(), under_comment, "reply one", user_id=1) is True
-            assert ra._reply_to_comment_inline(driver, _wait(), inline_comment, "reply two", user_id=1) is True
+            assert posting._reply_to_comment_inline(driver, _wait(), inline_comment, "reply two", user_id=1) is True
         assert [c.args[1] for c in rc.call_args_list] == [under_comment, inline_comment]
 
     def test_empty_reply_text_is_never_typed(self):

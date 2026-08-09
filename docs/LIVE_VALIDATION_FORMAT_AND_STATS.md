@@ -46,7 +46,8 @@ only:
 with `_create_document_post_legacy` (assets upload + `ugcPost` `shareMediaCategory=DOCUMENT`) as the
 fallback for a token whose app is not provisioned for the versioned API. Routing is wired end to end:
 `PostType.DOCUMENT` (`db.py:186`, migration `V20260723234736`), the content-plan balancer
-(`run_content_plan.py:65`), and the publish switch (`run_automation.py:5172`).
+(`run_content_plan.py:65`), and the publish switch (`post_to_linkedin`, moved to
+`app/engagement/posting.py` in #1154).
 
 **Why there is no SDUI anchor map for document upload.** LEM never opens the composer to publish a
 document, so no anchors exist to drift — the failure modes are HTTP ones (`426` retired version, `403`
@@ -73,7 +74,7 @@ Details and the captured anchors: §5 and §3. Tracked as **#644** (closed).
 | **saves** | ❌ not rendered | ✅ Engagement breakdown | `post_stats.saves` (migration `V20260723211520`) |
 
 Three properties of that page, all from the 2026-07-23 owner grab and already encoded in
-`run_automation.py`:
+`app/engagement/posting.py` (they moved out of `run_automation.py` in #1154):
 
 - **The URN differs from the permalink's.** The logged permalink carries a `share`/`ugcPost` URN;
   analytics keys off the **activity** URN LinkedIn redirects to. `_post_analytics_counts` therefore
@@ -325,8 +326,9 @@ names the dialog step honestly if it fails.
 - [Recent Marketing API Changes — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/recent-changes)
   — `202506` added the `q=entity` finder; `202605` changed `metricType` from object to string.
 - In-repo: `utilities/linkedin/article_editor.py` (the §6 ladder + the two-screen rule),
-  `utilities/linkedin/poster.py` (document API path), `app/run_automation.py`
-  (`_post_social_counts`, `_stacked_counts`, `_post_analytics_counts`, `auto_scrape_post_stats`),
+  `utilities/linkedin/poster.py` (document API path), `app/engagement/posting.py`
+  (`_post_analytics_counts`, `auto_scrape_post_stats`), `utilities/linkedin/cards.py`
+  (`_post_social_counts`, `_stacked_counts`),
   `utilities/db.py` (`record_post_stats`, `get_latest_post_stats`, `PostType`),
   `api/main.py` (`linkedin_auth_init` — the granted scope list), and
   `scripts/linkedin_post_stats_api_probe.py` (the §2a probe).

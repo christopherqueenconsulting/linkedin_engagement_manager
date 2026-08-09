@@ -157,7 +157,7 @@ class TestDraftOccasionPost:
 
 class TestPostToLinkedInRefusesManualPublish:
     def _run(self, manual: bool):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         targets = {
@@ -177,7 +177,7 @@ class TestPostToLinkedInRefusesManualPublish:
             "auto_second_wave_comment": {},
         }
         with ExitStack() as stack:
-            mocks = {name: stack.enter_context(patch(f"cqc_lem.app.run_automation.{name}", **kw))
+            mocks = {name: stack.enter_context(patch(f"cqc_lem.app.engagement.posting.{name}", **kw))
                      for name, kw in targets.items()}
             result = post_to_linkedin.run(1, 5)
         return result, mocks

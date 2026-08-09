@@ -26,7 +26,9 @@ pytestmark = pytest.mark.integration
 _M = "cqc_lem.api.main"
 _USER = "cqc_lem.api.routers.user"
 _LIMITER = "cqc_lem.utilities.profile_refresh"
-_AUTOMATION = "cqc_lem.app.run_automation"
+# `update_stale_profile` moved to `app.engagement.posting` (#1154) — that is the module whose
+# globals the task reads, so its collaborators are patched there.
+_AUTOMATION = "cqc_lem.app.engagement.posting"
 _TOK = "session-token"
 _EMAIL = "profile-refresh-1076@example.test"
 
@@ -166,7 +168,7 @@ def user_with_profile():
 class TestTheTaskRoundTrip:
     def test_a_forced_refresh_persists_the_new_voice_brief(self, user_with_profile):
         uid, profile = user_with_profile
-        from cqc_lem.app.run_automation import update_stale_profile
+        from cqc_lem.app.engagement.posting import update_stale_profile
 
         fresh = "- Applied AI engineer\n- Speaks to LLM, RAG and agent systems"
         with patch(f"{_AUTOMATION}.get_current_profile",
@@ -188,7 +190,7 @@ class TestTheTaskRoundTrip:
         profile JSON.
         """
         uid, _profile = user_with_profile
-        from cqc_lem.app.run_automation import update_stale_profile
+        from cqc_lem.app.engagement.posting import update_stale_profile
 
         with patch(f"{_AUTOMATION}.get_current_profile", side_effect=RuntimeError("429")), \
              patch(f"{_AUTOMATION}.quit_gracefully"):

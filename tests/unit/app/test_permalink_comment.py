@@ -240,18 +240,21 @@ class TestNoPreSduiAnchorsRemain:
         # merely names them (this file's own docstrings, the history in run_automation's) is fine —
         # the check is for a class-keyed selector, which is what `@class` marks.
         #
-        # BOTH modules are scanned. The feed engine that owns most of these locators moved to
-        # `app.engagement.feed` in #1154, so a run_automation-only scan would have kept passing
-        # while going blind to the file the regression would actually land in.
+        # EVERY engagement module is scanned, by glob rather than by name. The feed engine that
+        # owns most of these locators moved to `app.engagement.feed` in #1154 and the comment-thread
+        # walk to `app.engagement.posting`, so a run_automation-only scan would have kept passing
+        # while going blind to the file the regression would actually land in — and a scan that
+        # names its modules one by one goes blind again on the next slice.
         from pathlib import Path
 
-        import cqc_lem.app.engagement.feed as feed
-        import cqc_lem.app.run_automation as ra
+        sources = [Path("src/cqc_lem/app/run_automation.py"),
+                   *sorted(Path("src/cqc_lem/app/engagement").glob("*.py"))]
+        assert len(sources) > 2, f"the scan lost its input: {sources}"
         dead = ("comments-comment-texteditor", "comments-comment-box__submit-button",
                 "comments-comment-list__container")
-        offenders = [f"{Path(mod.__file__).name}: {line.strip()}"
-                     for mod in (ra, feed)
-                     for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
+        offenders = [f"{src.name}: {line.strip()}"
+                     for src in sources
+                     for line in src.read_text(encoding="utf-8").splitlines()
                      if ("@class" in line or "class=" in line) and any(d in line for d in dead)]
         assert offenders == [], f"pre-SDUI class-keyed locator(s) are back: {offenders}"
 

@@ -12,11 +12,11 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_RA = "cqc_lem.app.run_automation"
-# `auto_seed_comment_on_post` moved to `app.engagement.feed` (#1154), so ITS collaborators
-# are patched there; `post_to_linkedin` stayed, so its dispatch seams stay on `_RA`. The
-# task object itself is patched on `_RA` because that is the binding `post_to_linkedin`
-# reads (a re-export).
+# The two halves of this handoff now live in two modules (#1154): `post_to_linkedin` in
+# `app.engagement.posting`, `auto_seed_comment_on_post` in `app.engagement.feed`. Each is patched
+# on the module whose globals the code READS — including the seed TASK object, which
+# `post_to_linkedin` reads from `posting`'s own import of it.
+_POST = "cqc_lem.app.engagement.posting"
 _FEED = "cqc_lem.app.engagement.feed"
 
 _BODY = ("Three lessons from the rebuild.\n\n"
@@ -122,7 +122,7 @@ def _run_publish_and_seed(store):
     handoff happens through the persisted columns exactly as it does in the worker.
     """
     from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
-    from cqc_lem.app.run_automation import post_to_linkedin
+    from cqc_lem.app.engagement.posting import post_to_linkedin
 
     seed_task = MagicMock()
     seed_task.apply_async.side_effect = lambda kwargs=None, **kw: auto_seed_comment_on_post.run(**kwargs)
@@ -138,10 +138,10 @@ def _run_publish_and_seed(store):
 
     with ExitStack() as stack:
         stack.enter_context(patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)))
-        stack.enter_context(patch(f"{_RA}.share_on_linkedin", side_effect=_share))
+        stack.enter_context(patch(f"{_POST}.share_on_linkedin", side_effect=_share))
         stack.enter_context(patch(f"{_FEED}.comment_on_linkedin_post", side_effect=_comment))
-        stack.enter_context(patch(f"{_RA}.auto_seed_comment_on_post", seed_task))
-        stack.enter_context(patch(f"{_RA}.sweep_reply_comments"))
+        stack.enter_context(patch(f"{_POST}.auto_seed_comment_on_post", seed_task))
+        stack.enter_context(patch(f"{_POST}.sweep_reply_comments"))
         stack.enter_context(patch("cqc_lem.utilities.utils.purge_post_assets"))
         stack.enter_context(patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()))
         stack.enter_context(patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"))

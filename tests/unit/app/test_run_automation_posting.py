@@ -1,23 +1,29 @@
-"""Unit tests for post_to_linkedin task — post-type branching."""
+"""Unit tests for post_to_linkedin task — post-type branching.
+
+The task moved to `app.engagement.posting` (#1154); every collaborator below is
+patched on THAT module because that is whose globals `post_to_linkedin` reads.
+"""
 
 from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
 
+_POST = "cqc_lem.app.engagement.posting"
+
 BASE_PATCHES = [
-    ("cqc_lem.app.run_automation.get_post_status", {"return_value": "approved"}),
+    (f"{_POST}.get_post_status", {"return_value": "approved"}),
     # Issue #1074: the publish task refuses a native-publish draft before anything else.
-    ("cqc_lem.app.run_automation.get_post_manual_publish", {"return_value": False}),
-    ("cqc_lem.app.run_automation.get_user_password_pair_by_id", {"return_value": ("u@example.com", "pw")}),
-    ("cqc_lem.app.run_automation.get_post_content", {"return_value": "Post text"}),
-    ("cqc_lem.app.run_automation.insert_new_log", {}),
-    ("cqc_lem.app.run_automation.update_db_post_status", {}),
-    ("cqc_lem.app.run_automation.get_engagement_preferences", {"return_value": {"reply_check_mode": "event"}}),
-    ("cqc_lem.app.run_automation.sweep_reply_comments", {}),
+    (f"{_POST}.get_post_manual_publish", {"return_value": False}),
+    (f"{_POST}.get_user_password_pair_by_id", {"return_value": ("u@example.com", "pw")}),
+    (f"{_POST}.get_post_content", {"return_value": "Post text"}),
+    (f"{_POST}.insert_new_log", {}),
+    (f"{_POST}.update_db_post_status", {}),
+    (f"{_POST}.get_engagement_preferences", {"return_value": {"reply_check_mode": "event"}}),
+    (f"{_POST}.sweep_reply_comments", {}),
     # post_to_linkedin dispatches the seed first comment itself once the post is live (#392).
-    ("cqc_lem.app.run_automation.auto_seed_comment_on_post", {}),
-    ("cqc_lem.app.run_automation.auto_second_wave_comment", {}),
+    (f"{_POST}.auto_seed_comment_on_post", {}),
+    (f"{_POST}.auto_second_wave_comment", {}),
 ]
 
 
@@ -25,19 +31,19 @@ BASE_PATCHES = [
 class TestPostToLinkedinTypeBranching:
 
     def test_text_post_calls_share_on_linkedin(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.TEXT))
             stack.enter_context(patch("cqc_lem.utilities.db.get_post_image_url", return_value=None))
             mock_share = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1")
+                patch(f"{_POST}.share_on_linkedin", return_value="urn:li:ugcPost:1")
             )
             mock_carousel = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_carousel_on_linkedin")
+                patch(f"{_POST}.share_carousel_on_linkedin")
             )
 
             post_to_linkedin.run(1, 10)
@@ -47,17 +53,17 @@ class TestPostToLinkedinTypeBranching:
             mock_carousel.assert_not_called()
 
     def test_text_post_attaches_its_generated_image(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.TEXT))
             stack.enter_context(patch("cqc_lem.utilities.db.get_post_image_url",
                                       return_value="https://api.example.com/api/assets?file_name=images/posts/10/a.png"))
             mock_share = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1")
+                patch(f"{_POST}.share_on_linkedin", return_value="urn:li:ugcPost:1")
             )
 
             post_to_linkedin.run(1, 10)
@@ -70,18 +76,18 @@ class TestPostToLinkedinTypeBranching:
         thread replies read it back to ground the AI. Storing a status string made the model
         write comments about the /posts API instead of the post's subject.
         """
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import LogActionType, LogResultType, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
-                if target == "cqc_lem.app.run_automation.insert_new_log":
+                if target == f"{_POST}.insert_new_log":
                     continue
                 stack.enter_context(patch(target, **kwargs))
-            mock_log = stack.enter_context(patch("cqc_lem.app.run_automation.insert_new_log"))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
-            stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1"))
-            stack.enter_context(patch("cqc_lem.app.run_automation.share_carousel_on_linkedin"))
+            mock_log = stack.enter_context(patch(f"{_POST}.insert_new_log"))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch(f"{_POST}.share_on_linkedin", return_value="urn:li:ugcPost:1"))
+            stack.enter_context(patch(f"{_POST}.share_carousel_on_linkedin"))
 
             post_to_linkedin.run(1, 10)
 
@@ -92,21 +98,21 @@ class TestPostToLinkedinTypeBranching:
             assert post_logs[0].kwargs["message"] == "Post text"
 
     def test_video_post_calls_share_on_linkedin_with_url(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.VIDEO))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.VIDEO))
             stack.enter_context(
-                patch("cqc_lem.app.run_automation.get_post_video_url", return_value="https://cdn.example.com/v.mp4")
+                patch(f"{_POST}.get_post_video_url", return_value="https://cdn.example.com/v.mp4")
             )
             mock_share = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:2")
+                patch(f"{_POST}.share_on_linkedin", return_value="urn:li:ugcPost:2")
             )
             mock_carousel = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_carousel_on_linkedin")
+                patch(f"{_POST}.share_carousel_on_linkedin")
             )
 
             post_to_linkedin.run(1, 20)
@@ -115,20 +121,20 @@ class TestPostToLinkedinTypeBranching:
             mock_carousel.assert_not_called()
 
     def test_carousel_post_calls_share_carousel_on_linkedin(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         slides = ["Slide one", "Slide two"]
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.CAROUSEL))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=slides))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.CAROUSEL))
+            stack.enter_context(patch(f"{_POST}.get_carousel_slides", return_value=slides))
             mock_carousel = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_carousel_on_linkedin", return_value="urn:li:ugcPost:3")
+                patch(f"{_POST}.share_carousel_on_linkedin", return_value="urn:li:ugcPost:3")
             )
             mock_share = stack.enter_context(
-                patch("cqc_lem.app.run_automation.share_on_linkedin")
+                patch(f"{_POST}.share_on_linkedin")
             )
 
             post_to_linkedin.run(1, 30)
@@ -137,7 +143,7 @@ class TestPostToLinkedinTypeBranching:
             mock_share.assert_not_called()
 
     def test_event_mode_schedules_golden_hour_amplifier_sweeps(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         with ExitStack() as stack:
@@ -145,9 +151,9 @@ class TestPostToLinkedinTypeBranching:
                 if target.endswith("sweep_reply_comments"):
                     continue
                 stack.enter_context(patch(target, **kwargs))
-            mock_sweep = stack.enter_context(patch("cqc_lem.app.run_automation.sweep_reply_comments"))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
-            stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1"))
+            mock_sweep = stack.enter_context(patch(f"{_POST}.sweep_reply_comments"))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch(f"{_POST}.share_on_linkedin", return_value="urn:li:ugcPost:1"))
 
             post_to_linkedin.run(1, 10)
 
@@ -163,7 +169,7 @@ class TestPostToLinkedinTypeBranching:
                 assert c.kwargs["kwargs"]["user_id"] == 1
 
     def test_scheduled_and_off_modes_schedule_no_per_post_sweep(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostType
 
         for mode in ("scheduled", "off"):
@@ -172,22 +178,22 @@ class TestPostToLinkedinTypeBranching:
                     if target.endswith("get_engagement_preferences") or target.endswith("sweep_reply_comments"):
                         continue
                     stack.enter_context(patch(target, **kwargs))
-                stack.enter_context(patch("cqc_lem.app.run_automation.get_engagement_preferences",
+                stack.enter_context(patch(f"{_POST}.get_engagement_preferences",
                                           return_value={"reply_check_mode": mode}))
-                mock_sweep = stack.enter_context(patch("cqc_lem.app.run_automation.sweep_reply_comments"))
-                stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
-                stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1"))
+                mock_sweep = stack.enter_context(patch(f"{_POST}.sweep_reply_comments"))
+                stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.TEXT))
+                stack.enter_context(patch(f"{_POST}.share_on_linkedin", return_value="urn:li:ugcPost:1"))
 
                 post_to_linkedin.run(1, 10)
 
                 mock_sweep.apply_async.assert_not_called()
 
     def test_skips_already_posted(self):
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
 
-        with patch("cqc_lem.app.run_automation.get_post_status", return_value="posted"), \
-             patch("cqc_lem.app.run_automation.share_on_linkedin") as mock_share, \
-             patch("cqc_lem.app.run_automation.share_carousel_on_linkedin") as mock_carousel:
+        with patch(f"{_POST}.get_post_status", return_value="posted"), \
+             patch(f"{_POST}.share_on_linkedin") as mock_share, \
+             patch(f"{_POST}.share_carousel_on_linkedin") as mock_carousel:
 
             result = post_to_linkedin.run(1, 99)
 
@@ -199,18 +205,18 @@ class TestPostToLinkedinTypeBranching:
         """Prod incident: a carousel with no real slide images must be flagged 'error'
         (not posted with placeholder images).
         """
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.CAROUSEL))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides",
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.CAROUSEL))
+            stack.enter_context(patch(f"{_POST}.get_carousel_slides",
                                       return_value=["title a", "title b"]))
-            stack.enter_context(patch("cqc_lem.app.run_automation.share_carousel_on_linkedin", return_value=None))
-            stack.enter_context(patch("cqc_lem.app.run_automation.log_error"))
-            mock_status = stack.enter_context(patch("cqc_lem.app.run_automation.update_db_post_status"))
+            stack.enter_context(patch(f"{_POST}.share_carousel_on_linkedin", return_value=None))
+            stack.enter_context(patch(f"{_POST}.log_error"))
+            mock_status = stack.enter_context(patch(f"{_POST}.update_db_post_status"))
 
             result = post_to_linkedin.run(1, 10)
 
@@ -221,17 +227,17 @@ class TestPostToLinkedinTypeBranching:
 
     def test_carousel_with_no_slides_flags_error(self):
         """Empty slides → don't even call the poster; flag 'error'."""
-        from cqc_lem.app.run_automation import post_to_linkedin
+        from cqc_lem.app.engagement.posting import post_to_linkedin
         from cqc_lem.utilities.db import PostStatus, PostType
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.CAROUSEL))
-            stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=[]))
-            stack.enter_context(patch("cqc_lem.app.run_automation.log_error"))
-            mock_carousel = stack.enter_context(patch("cqc_lem.app.run_automation.share_carousel_on_linkedin"))
-            mock_status = stack.enter_context(patch("cqc_lem.app.run_automation.update_db_post_status"))
+            stack.enter_context(patch(f"{_POST}.get_post_type", return_value=PostType.CAROUSEL))
+            stack.enter_context(patch(f"{_POST}.get_carousel_slides", return_value=[]))
+            stack.enter_context(patch(f"{_POST}.log_error"))
+            mock_carousel = stack.enter_context(patch(f"{_POST}.share_carousel_on_linkedin"))
+            mock_status = stack.enter_context(patch(f"{_POST}.update_db_post_status"))
 
             post_to_linkedin.run(1, 10)
 

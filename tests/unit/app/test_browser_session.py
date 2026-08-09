@@ -16,10 +16,15 @@ pytestmark = pytest.mark.unit
 
 # `browser_session` / `get_current_profile` moved down to `utilities/linkedin/session.py` (#1154),
 # so THAT is the module whose bindings the context manager reads — patching them on
-# `run_automation` would rebind a name nothing looks at. The leak guard below still reads
-# run_automation, because the TASKS that acquire a session did not move.
+# `run_automation` would rebind a name nothing looks at.
 _SESSION = "cqc_lem.utilities.linkedin.session"
-_SRC = pathlib.Path("src/cqc_lem/app/run_automation.py")
+# The leak guard reads EVERY module that can open a Chrome session. Scanning `run_automation` alone
+# was correct until the clusters started leaving it (#1154): each move quietly shrank the guard's
+# input, and a guard that reads fewer files each release is one that stops looking. The pool is
+# shared across all of them, so the guard has to be too — a new module under `app/engagement/`
+# is picked up by the glob rather than by someone remembering.
+_SRCS = [pathlib.Path("src/cqc_lem/app/run_automation.py"),
+         *sorted(pathlib.Path("src/cqc_lem/app/engagement").glob("*.py"))]
 
 
 class TestBrowserSession:
@@ -97,19 +102,20 @@ class TestNoTaskLeaksAChromeSlot:
 
     @staticmethod
     def _acquiring_functions():
-        tree = ast.parse(_SRC.read_text())
         out = []
-        for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if fn.name in ("get_current_profile", "browser_session"):
-                continue
-            acquires = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
-                        and isinstance(n.func, ast.Name) and n.func.id == "get_current_profile"]
-            uses_cm = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
-                       and isinstance(n.func, ast.Name) and n.func.id == "browser_session"]
-            if acquires or uses_cm:
-                out.append((fn, bool(acquires), bool(uses_cm)))
+        for src in _SRCS:
+            tree = ast.parse(src.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if fn.name in ("get_current_profile", "browser_session"):
+                    continue
+                acquires = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                            and isinstance(n.func, ast.Name) and n.func.id == "get_current_profile"]
+                uses_cm = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                           and isinstance(n.func, ast.Name) and n.func.id == "browser_session"]
+                if acquires or uses_cm:
+                    out.append((fn, bool(acquires), bool(uses_cm)))
         return out
 
     def test_there_are_acquisition_sites_to_check(self):

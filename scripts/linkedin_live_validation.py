@@ -116,7 +116,8 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
 
 
 # ─────────────────────── surface inventory / probe coverage matrix (#1013) ───────────────────
-# Every Selenium touchpoint in run_automation.py + utilities/linkedin/*, and the probe flag that
+# Every Selenium touchpoint in run_automation.py + app/engagement/* + utilities/linkedin/*, and
+# the probe flag that
 # grounds it. This is the machine-readable half of docs/sdui-probe-coverage.md — `--surfaces`
 # prints it, a unit test asserts every `flag` is a real CLI argument and every `sweep` entry runs
 # in the sweep, and another asserts the doc names every surface. A touchpoint with no probe row is
@@ -178,13 +179,14 @@ SURFACES = (
      "code": "article_editor.find_article_editor_elements", "flag": "--article-editor-url",
      "arg": "<editor-url>", "sweep": True},
     {"key": "post_stats", "surface": "Own post detail + analytics counts",
-     "code": "run_automation._post_social_counts", "flag": "--post-url", "arg": "<post-url>",
+     "code": "engagement.posting.auto_scrape_post_stats / cards._post_social_counts",
+     "flag": "--post-url", "arg": "<post-url>",
      "sweep": False},
     {"key": "document_render", "surface": "Published post media render (document vs image)",
-     "code": "run_automation (media anchors)", "flag": "--post-url", "arg": "<post-url>",
+     "code": "engagement.posting (media anchors)", "flag": "--post-url", "arg": "<post-url>",
      "sweep": False},
     {"key": "comment_outcome", "surface": "Comment thread + sort (demotion read)",
-     "code": "run_automation._comment_items / _switch_comment_sort",
+     "code": "engagement.posting._switch_comment_sort / composer._comment_items",
      "flag": "--comment-outcome-url", "arg": "<post-url>", "sweep": False},
     {"key": "message_thread", "surface": "Message-thread resolution ladder",
      "code": "message_thread.open_message_thread", "flag": "--dm-thread-url",
@@ -304,7 +306,7 @@ def find_document_affordance(labels: Optional[list[Optional[str]]]) -> Optional[
 def _social_counts(container) -> dict:
     # Imported lazily: the probe must exercise the SAME parser the scraper ships (#387), but
     # importing the Celery module at load time would drag the whole task graph into the tests.
-    from cqc_lem.app.run_automation import _post_social_counts
+    from cqc_lem.utilities.linkedin.cards import _post_social_counts
     return _post_social_counts(container)
 
 
@@ -505,10 +507,11 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
 
     Read-only: it navigates, scrolls, expands and flips the sort control. It posts nothing.
     """
-    from cqc_lem.app.run_automation import (_comment_items, _comment_like_count, _comment_sort_label,
-                                            _find_our_comment, _load_comment_thread,
-                                            _post_author_href, _switch_comment_sort,
-                                            _thread_replies, _SORT_MOST_RECENT)
+    from cqc_lem.app.engagement.posting import (_comment_like_count, _comment_sort_label,
+                                                _find_our_comment, _load_comment_thread,
+                                                _post_author_href, _switch_comment_sort,
+                                                _thread_replies, _SORT_MOST_RECENT)
+    from cqc_lem.utilities.linkedin.composer import _comment_items
     from selenium.webdriver.support.ui import WebDriverWait
 
     wait = WebDriverWait(driver, 10)
@@ -544,7 +547,7 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
     # Capture candidate elements whenever the thread rendered but the sort control did not, so a
     # manual run can paste the actual DOM evidence back into the issue.
     if not reading["sort_control_found"] and items:
-        from cqc_lem.app.run_automation import _diagnose_sort_control_miss
+        from cqc_lem.app.engagement.posting import _diagnose_sort_control_miss
         reading["sort_control_candidates"] = _diagnose_sort_control_miss(driver)
     return graded(reading, comment_outcome_state(reading), comment_outcome_verdict(reading))
 
@@ -1072,7 +1075,7 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
     # button. Uses the SHIPPED constant when the running image has it, so the probe can never drift
     # from the code it is grounding (and says which it used).
     try:
-        from cqc_lem.app.run_automation import _FEED_POST_TEXT_SEL as prod_sel
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL as prod_sel
         out["text_sel_source"] = "image"
     except Exception:
         prod_sel = ("[data-testid='expandable-text-box'], "
@@ -1084,7 +1087,9 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
     # the probe's author last pasted — this probe reported cards_found: 0 against a build that had
     # already fixed the walk, because the copy still carried the old aria-label-only JS.
     try:
-        from cqc_lem.app.run_automation import _card_for_textbox as prod_card_for_textbox
+        from cqc_lem.utilities.linkedin.cards import (
+            _card_for_textbox as prod_card_for_textbox,
+        )
         out["card_walk_source"] = "image"
     except Exception:
         prod_card_for_textbox = None
@@ -3569,7 +3574,9 @@ def main(argv: Optional[list] = None) -> int:
                      "--permalink-comment and/or "
                      "--probe-composer")
 
-    from cqc_lem.app.run_automation import get_current_profile
+    # `get_current_profile` moved down to `utilities/linkedin/session.py` in #1154; importing it
+    # from the module it LIVES in also keeps the probe off the Celery task graph entirely.
+    from cqc_lem.utilities.linkedin.session import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
 
     driver, _wait, _email, profile = get_current_profile(user_id=args.user_id,
@@ -3585,11 +3592,13 @@ def main(argv: Optional[list] = None) -> int:
             report["document_render"] = probe_document_render(driver, args.post_url)
             report["post_stats"] = probe_post_stats(driver, args.post_url)
         if args.comment_outcome_url:
-            from cqc_lem.app.run_automation import _profile_slug
+            # `run_automation._profile_slug` was deleted in #1154 as a byte-identical copy of
+            # the one below; this import raised ImportError on every real run until then.
+            from cqc_lem.utilities.lead_scoring import profile_slug
             # The reader compares slugs EXACTLY, so accept either form here: a full profile URL or
             # a bare slug typed on the command line.
             raw = args.our_slug or str(getattr(profile, "profile_url", "") or "")
-            slug = _profile_slug(raw) or raw.strip().strip("/").lower()
+            slug = profile_slug(raw) or raw.strip().strip("/").lower()
             report["comment_outcome"] = probe_comment_outcome(driver, args.comment_outcome_url,
                                                               slug, args.comment_text)
         if args.dm_thread_url:

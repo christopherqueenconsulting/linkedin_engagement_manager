@@ -15,11 +15,16 @@ pytestmark = pytest.mark.unit
 _MOD = "cqc_lem.app.run_automation"
 _PATCH_GET_PROFILE = f"{_MOD}.get_current_profile"
 _PATCH_LOG_ERROR = f"{_MOD}.log_error"
-# `automate_commenting` moved to `app.engagement.feed` (#1154); the three other tasks
-# exercised in this file did not, so both spellings are live here.
+# This file drives FIVE tasks that no longer share a module (#1154), so three spellings are live
+# here and each class uses the one its own task reads: `automate_commenting` from
+# `app.engagement.feed`, `automate_reply_commenting` + `update_stale_profile` from
+# `app.engagement.posting`, and the two profile-viewer tasks still from `run_automation`.
 _FEED = "cqc_lem.app.engagement.feed"
 _FEED_GET_PROFILE = f"{_FEED}.get_current_profile"
 _FEED_LOG_ERROR = f"{_FEED}.log_error"
+_POST = "cqc_lem.app.engagement.posting"
+_POST_GET_PROFILE = f"{_POST}.get_current_profile"
+_POST_LOG_ERROR = f"{_POST}.log_error"
 
 
 def _linkedin_challenge_error() -> RuntimeError:
@@ -76,9 +81,9 @@ class TestAutomateCommentingLoginError:
 class TestAutomateReplyCommentingLoginError:
     def test_returns_error_string_on_runtime_error(self):
         """automate_reply_commenting returns a failure string when login challenge occurs."""
-        with patch(_PATCH_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import automate_reply_commenting
+        with patch(_POST_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
+             patch(_POST_LOG_ERROR) as mock_log:
+            from cqc_lem.app.engagement.posting import automate_reply_commenting
 
             result = automate_reply_commenting.run(user_id=1, post_id=42)
 
@@ -87,9 +92,9 @@ class TestAutomateReplyCommentingLoginError:
 
     def test_returns_error_string_on_timeout_exception(self):
         """automate_reply_commenting returns a failure string when username field times out."""
-        with patch(_PATCH_GET_PROFILE, side_effect=_timeout_error()), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import automate_reply_commenting
+        with patch(_POST_GET_PROFILE, side_effect=_timeout_error()), \
+             patch(_POST_LOG_ERROR) as mock_log:
+            from cqc_lem.app.engagement.posting import automate_reply_commenting
 
             result = automate_reply_commenting.run(user_id=1, post_id=42)
 
@@ -143,9 +148,9 @@ class TestAutomateProfileViewerEngagementLoginError:
 class TestUpdateStaleProfileLoginError:
     def test_returns_error_string_on_login_challenge(self):
         """update_stale_profile returns error string instead of raising when login fails."""
-        with patch(_PATCH_GET_PROFILE, side_effect=RuntimeError("Unsolvable LinkedIn challenge")), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import update_stale_profile
+        with patch(_POST_GET_PROFILE, side_effect=RuntimeError("Unsolvable LinkedIn challenge")), \
+             patch(_POST_LOG_ERROR) as mock_log:
+            from cqc_lem.app.engagement.posting import update_stale_profile
 
             result = update_stale_profile.run(user_id=1)
 
@@ -155,9 +160,9 @@ class TestUpdateStaleProfileLoginError:
     def test_returns_error_string_on_timeout(self):
         """update_stale_profile returns error string on TimeoutException."""
         from selenium.common.exceptions import TimeoutException
-        with patch(_PATCH_GET_PROFILE, side_effect=TimeoutException("Finding Username Field")), \
-             patch(_PATCH_LOG_ERROR) as mock_log:
-            from cqc_lem.app.run_automation import update_stale_profile
+        with patch(_POST_GET_PROFILE, side_effect=TimeoutException("Finding Username Field")), \
+             patch(_POST_LOG_ERROR) as mock_log:
+            from cqc_lem.app.engagement.posting import update_stale_profile
 
             result = update_stale_profile.run(user_id=1)
 
@@ -167,10 +172,10 @@ class TestUpdateStaleProfileLoginError:
     def test_quits_driver_on_success(self):
         """update_stale_profile calls quit_gracefully when get_current_profile succeeds."""
         mock_driver = MagicMock()
-        with patch(_PATCH_GET_PROFILE, return_value=(mock_driver, MagicMock(), "u@e.com", MagicMock())), \
-             patch(f"{_MOD}.synthesize_profile", return_value=""), \
-             patch(f"{_MOD}.quit_gracefully") as mock_quit:
-            from cqc_lem.app.run_automation import update_stale_profile
+        with patch(_POST_GET_PROFILE, return_value=(mock_driver, MagicMock(), "u@e.com", MagicMock())), \
+             patch(f"{_POST}.synthesize_profile", return_value=""), \
+             patch(f"{_POST}.quit_gracefully") as mock_quit:
+            from cqc_lem.app.engagement.posting import update_stale_profile
 
             result = update_stale_profile.run(user_id=1)
 
@@ -179,11 +184,11 @@ class TestUpdateStaleProfileLoginError:
 
     def test_the_daily_sweep_still_honours_the_profile_cache(self):
         """No `force_refresh` means the beat behaves exactly as it did before issue #1076."""
-        with patch(_PATCH_GET_PROFILE,
+        with patch(_POST_GET_PROFILE,
                    return_value=(MagicMock(), MagicMock(), "u@e.com", MagicMock())) as get_profile, \
-             patch(f"{_MOD}.synthesize_profile", return_value=""), \
-             patch(f"{_MOD}.quit_gracefully"):
-            from cqc_lem.app.run_automation import update_stale_profile
+             patch(f"{_POST}.synthesize_profile", return_value=""), \
+             patch(f"{_POST}.quit_gracefully"):
+            from cqc_lem.app.engagement.posting import update_stale_profile
 
             update_stale_profile.run(user_id=1)
 
@@ -194,12 +199,12 @@ class TestUpdateStaleProfileLoginError:
 
         A profile cached this morning must NOT be read back when the user edited it a minute ago.
         """
-        with patch(_PATCH_GET_PROFILE,
+        with patch(_POST_GET_PROFILE,
                    return_value=(MagicMock(), MagicMock(), "u@e.com", MagicMock())) as get_profile, \
-             patch(f"{_MOD}.synthesize_profile", return_value="voice brief"), \
-             patch(f"{_MOD}.set_profile_synthesis", return_value=True) as set_synth, \
-             patch(f"{_MOD}.quit_gracefully"):
-            from cqc_lem.app.run_automation import update_stale_profile
+             patch(f"{_POST}.synthesize_profile", return_value="voice brief"), \
+             patch(f"{_POST}.set_profile_synthesis", return_value=True) as set_synth, \
+             patch(f"{_POST}.quit_gracefully"):
+            from cqc_lem.app.engagement.posting import update_stale_profile
 
             result = update_stale_profile.run(user_id=1, force_refresh=True)
 

@@ -2,7 +2,8 @@
 
 ## What this graph does
 
-The feed-and-reply half of `src/cqc_lem/app/run_automation.py` (the DM/outreach half is a sibling
+The feed-and-reply half of the engagement tree — `app/engagement/feed.py` and
+`app/engagement/posting.py` since #1154 (the DM/outreach half is a sibling
 graph, not covered here). It is LEM's autonomous commenting engine: it decides which posts to
 comment on (own curated roster first, then the SDUI home feed, recency-dominant scoring), writes
 and posts the comment through Selenium, seeds and amplifies the user's own posts in their first
@@ -160,8 +161,9 @@ flowchart TD
   `_score_feed_post`, `_switch_feed_to_recent`, `comment_on_feed_inline`, `_engage_card`,
   `post_comment_inline`, `_post_composer_for_card`, `comment_on_roster_posts`, `comment_on_post`,
   `_permalink_post_card`, `auto_seed_comment_on_post`, `auto_second_wave_comment`.
-- `src/cqc_lem/app/run_automation.py` — `automate_reply_commenting`, `sweep_reply_comments`,
-  `_reply_to_comments_on_open_post`, `sweep_comment_outcomes`, `_run_comment_outcomes_sweep`.
+- `src/cqc_lem/app/engagement/posting.py` (moved out of `run_automation.py` in #1154) —
+  `automate_reply_commenting`, `sweep_reply_comments`, `_reply_to_comments_on_open_post`,
+  `sweep_comment_outcomes`, `_run_comment_outcomes_sweep`, `post_to_linkedin`.
 - `src/cqc_lem/utilities/golden_hour.py` — `_record_golden_hour_report`.
 - `src/cqc_lem/app/run_scheduler.py` — `auto_daily_engagement`, `dispatch_golden_hour_engagement`,
   `dispatch_comment_outcome_sweeps`, `auto_weekly_comment_quality`, `auto_suppression_tripwire`,

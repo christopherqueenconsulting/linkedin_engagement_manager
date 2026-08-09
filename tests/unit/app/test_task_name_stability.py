@@ -46,6 +46,17 @@ FROZEN_TASK_NAMES = frozenset({
     "cqc_lem.app.run_automation.auto_draft_group_post",
     "cqc_lem.app.run_automation.auto_post_to_group",
     "cqc_lem.app.run_automation.automate_commenting",
+    # posting + the post-publish sweeps -> app.engagement.posting (#1154 step 4)
+    "cqc_lem.app.run_automation.post_to_linkedin",
+    "cqc_lem.app.run_automation.update_stale_profile",
+    "cqc_lem.app.run_automation.auto_scrape_post_stats",
+    "cqc_lem.app.run_automation.capture_follower_stats",
+    "cqc_lem.app.run_automation.sweep_reply_comments",
+    "cqc_lem.app.run_automation.sweep_comment_followups",
+    "cqc_lem.app.run_automation.process_comment_followups_for_url",
+    "cqc_lem.app.run_automation.reconcile_recent_comment_urns",
+    "cqc_lem.app.run_automation.sweep_comment_outcomes",
+    "cqc_lem.app.run_automation.automate_reply_commenting",
 })
 
 

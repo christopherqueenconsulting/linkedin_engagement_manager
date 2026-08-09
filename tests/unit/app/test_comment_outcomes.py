@@ -13,26 +13,27 @@ from selenium.webdriver.common.by import By
 
 pytestmark = pytest.mark.unit
 
-RA = "cqc_lem.app.run_automation"
-# `automate_commenting` moved to `app.engagement.feed` (#1154); every other symbol this
-# file drives (the sort control, the outcome read, the sweep) stayed put.
+# The comment-outcome sweep, the sort control and the outcome read moved to
+# `app.engagement.posting` (#1154) — that is the module whose globals they read, so it is where
+# they are patched. `automate_commenting` (the commenting hold gate) moved to `app.engagement.feed`.
+POST = "cqc_lem.app.engagement.posting"
 FEED = "cqc_lem.app.engagement.feed"
 RS = "cqc_lem.app.run_scheduler"
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{RA}.time.sleep", lambda *a, **k: None):
+    with patch(f"{POST}.time.sleep", lambda *a, **k: None):
         yield
 
 
 def _fn(name):
     import importlib
-    return getattr(importlib.import_module(RA), name)
+    return getattr(importlib.import_module(POST), name)
 
 
 def _p(es, name, **kw):
-    return es.enter_context(patch(f"{RA}.{name}", **kw))
+    return es.enter_context(patch(f"{POST}.{name}", **kw))
 
 
 def _pf(es, name, **kw):
@@ -75,20 +76,20 @@ class TestCommentSortLabel:
         return b
 
     def test_reads_most_relevant(self):
-        with patch(f"{RA}.find_first", return_value=self._btn(text="Most relevant")):
+        with patch(f"{POST}.find_first", return_value=self._btn(text="Most relevant")):
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock()) == "most relevant"
 
     def test_reads_most_recent_from_aria_label(self):
         btn = self._btn(aria="Sort comments by, Most recent is currently selected")
-        with patch(f"{RA}.find_first", return_value=btn):
+        with patch(f"{POST}.find_first", return_value=btn):
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock()) == "most recent"
 
     def test_missing_control_is_empty_not_a_guess(self):
-        with patch(f"{RA}.find_first", return_value=None):
+        with patch(f"{POST}.find_first", return_value=None):
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock()) == ""
 
     def test_unrecognized_label_is_empty(self):
-        with patch(f"{RA}.find_first", return_value=self._btn(text="Sort by")):
+        with patch(f"{POST}.find_first", return_value=self._btn(text="Sort by")):
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock()) == ""
 
 
@@ -124,7 +125,7 @@ class TestFindCommentSortControl:
 
     def test_total_miss_defers_to_find_first_for_the_selector_miss_warning(self):
         driver = self._driver([])
-        with patch(f"{RA}.find_first", return_value=None) as ff:
+        with patch(f"{POST}.find_first", return_value=None) as ff:
             assert _fn("_find_comment_sort_control")(driver, MagicMock()) is None
         assert ff.call_count == 1
         assert ff.call_args.kwargs["warn_on_miss"] is True
@@ -133,13 +134,13 @@ class TestFindCommentSortControl:
         # A page that rendered no comment thread renders no sort control either — the miss is that
         # page, not selector rot (#1063).
         driver = self._driver([])
-        with patch(f"{RA}.find_first", return_value=None) as ff:
+        with patch(f"{POST}.find_first", return_value=None) as ff:
             assert _fn("_find_comment_sort_control")(driver, MagicMock(),
                                                      warn_on_miss=False) is None
         assert ff.call_args.kwargs["warn_on_miss"] is False
 
     def test_the_label_reader_passes_the_cross_check_through(self):
-        with patch(f"{RA}._find_comment_sort_control", return_value=None) as fc:
+        with patch(f"{POST}._find_comment_sort_control", return_value=None) as fc:
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock(), warn_on_miss=False) == ""
         assert fc.call_args.kwargs["warn_on_miss"] is False
 
@@ -198,21 +199,21 @@ class TestDiagnoseSortControlMiss:
 
 class TestSwitchCommentSort:
     def test_true_only_when_the_control_confirms_the_new_sort(self):
-        with patch(f"{RA}.find_first", side_effect=[MagicMock(), MagicMock()]), \
-             patch(f"{RA}._comment_sort_label", return_value="most recent"):
+        with patch(f"{POST}.find_first", side_effect=[MagicMock(), MagicMock()]), \
+             patch(f"{POST}._comment_sort_label", return_value="most recent"):
             assert _fn("_switch_comment_sort")(MagicMock(), MagicMock()) is True
 
     def test_false_when_the_sort_did_not_actually_change(self):
-        with patch(f"{RA}.find_first", side_effect=[MagicMock(), MagicMock()]), \
-             patch(f"{RA}._comment_sort_label", return_value="most relevant"):
+        with patch(f"{POST}.find_first", side_effect=[MagicMock(), MagicMock()]), \
+             patch(f"{POST}._comment_sort_label", return_value="most relevant"):
             assert _fn("_switch_comment_sort")(MagicMock(), MagicMock()) is False
 
     def test_false_when_no_control(self):
-        with patch(f"{RA}.find_first", return_value=None):
+        with patch(f"{POST}.find_first", return_value=None):
             assert _fn("_switch_comment_sort")(MagicMock(), MagicMock()) is False
 
     def test_false_when_the_menu_option_is_missing(self):
-        with patch(f"{RA}.find_first", side_effect=[MagicMock(), None]):
+        with patch(f"{POST}.find_first", side_effect=[MagicMock(), None]):
             assert _fn("_switch_comment_sort")(MagicMock(), MagicMock()) is False
 
 
@@ -503,7 +504,7 @@ class TestSweepOrchestration:
         return profile
 
     def test_no_targets_short_circuits_before_a_browser(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         with ExitStack() as es:
             _p(es, "get_comment_outcome_targets", return_value=[])
             gcp = _p(es, "get_current_profile")
@@ -511,7 +512,7 @@ class TestSweepOrchestration:
         assert not gcp.called
 
     def test_records_and_tracks_each_outcome(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         targets = [{"log_id": 11, "post_url": "feedurn://urn:li:activity:1", "message": "a"},
                    {"log_id": 12, "post_url": "feedurn://urn:li:activity:2", "message": "b"}]
         with ExitStack() as es:
@@ -533,7 +534,7 @@ class TestSweepOrchestration:
         assert rec.call_args_list[1].kwargs["skip_reason"] == "comment-not-found"
 
     def test_unnavigable_key_is_skipped_without_a_row(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         with ExitStack() as es:
             self._driver_patches(es)
             _p(es, "get_comment_outcome_targets",
@@ -544,7 +545,7 @@ class TestSweepOrchestration:
         assert not read.called and not rec.called
 
     def test_one_failing_post_does_not_abort_the_sweep(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         targets = [{"log_id": 1, "post_url": "feedurn://urn:li:activity:1", "message": "a"},
                    {"log_id": 2, "post_url": "feedurn://urn:li:activity:2", "message": "b"}]
         with ExitStack() as es:
@@ -562,7 +563,7 @@ class TestSweepOrchestration:
         assert rec.call_count == 1 and "checked 1" in result
 
     def test_lock_contention_skips(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         with ExitStack() as es:
             _p(es, "get_comment_outcome_targets",
                return_value=[{"log_id": 1, "post_url": "feedurn://urn:li:activity:1", "message": "a"}])
@@ -572,7 +573,7 @@ class TestSweepOrchestration:
         assert not gcp.called
 
     def test_rate_limited_session_skips_cleanly(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with ExitStack() as es:
             _p(es, "get_comment_outcome_targets",
@@ -585,7 +586,7 @@ class TestSweepOrchestration:
         assert rel.called
 
     def test_missing_profile_slug_aborts_before_reading(self):
-        from cqc_lem.app.run_automation import _run_comment_outcomes_sweep
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         profile = MagicMock(); profile.profile_url = "https://www.linkedin.com/"
         with ExitStack() as es:
             _p(es, "get_comment_outcome_targets",

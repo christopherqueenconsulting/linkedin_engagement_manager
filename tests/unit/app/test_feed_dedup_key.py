@@ -209,7 +209,7 @@ class TestTruncationProofFallbackKey:
                feed_post_key("Jane", "Short and complete post!")
 
     def test_norm_prefix_cuts_on_a_word_boundary(self):
-        from cqc_lem.app.run_automation import _norm_prefix
+        from cqc_lem.utilities.linkedin.cards import _norm_prefix
         assert _norm_prefix("alpha beta gamma delta", 12) == "alpha beta"
         assert _norm_prefix("alpha beta", 50) == "alpha beta"
         assert _norm_prefix("supercalifragilistic", 5) == "super"  # no boundary to cut on

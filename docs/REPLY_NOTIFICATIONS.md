@@ -64,5 +64,7 @@ alongside). Healthy = a steady share of `comment_accepted`; broken = mail volume
 
 - `src/cqc_lem/utilities/linkedin/notification_email.py` — address + comment-vs-reaction classifier.
 - `src/cqc_lem/api/main.py` — `linkedin_comment_notification_inbound` (+ debounce).
-- `src/cqc_lem/app/run_automation.py` — `sweep_reply_comments`, `post_to_linkedin` mode branch.
+- `src/cqc_lem/app/engagement/posting.py` — `sweep_reply_comments`, `post_to_linkedin` mode
+  branch (moved out of `run_automation.py` in #1154; both still answer to their
+  `cqc_lem.app.run_automation.<fn>` wire names).
 - `src/cqc_lem/utilities/linkedin/verification_pin.py` — the PIN inbound flow this mirrors.

@@ -35,7 +35,8 @@ This is precisely `upload_document()` → `_create_document_post_versioned()` in
 `src/cqc_lem/utilities/linkedin/poster.py`, with `_create_document_post_legacy()` (assets +
 `ugcPost` `shareMediaCategory=DOCUMENT`) as a fallback for tokens not provisioned for the
 versioned API. `PostType.DOCUMENT` is wired through the scheduler (`run_scheduler.py` — documents
-reuse the carousel slide pipeline, bundled into one PDF) and `run_automation.py:2942`.
+reuse the carousel slide pipeline, bundled into one PDF) and `post_to_linkedin`
+(`app/engagement/posting.py` since #1154).
 
 > **Note on conflicting third-party blog claims.** Several 2026 SEO blogs assert "the API does not
 > support document uploads." That is **wrong** as of `li-lms-2026-07`: the official Posts API table
