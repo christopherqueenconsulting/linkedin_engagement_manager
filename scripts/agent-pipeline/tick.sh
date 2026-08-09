@@ -344,9 +344,18 @@ label_actor_trusted() {
   #
   # This is deliberately narrow, and it is not the hole the allowlist exists to close. These two
   # labels grant nothing: they say "this EXISTING pull request has failing CI", not "build this".
-  # `author_trusted` and `pr_is_upstream` are still enforced by `pr_admissible`, so the work still
-  # only ever lands on a trusted author's branch inside this repo. The labels that DO grant
-  # privilege — `agent:ready`, `release:now` — stay human-only.
+  # `pr_is_upstream` still gates the work onto a branch inside this repo, and the labels that DO
+  # grant privilege — `agent:ready`, `release:now` — stay human-only.
+  #
+  # Note what is NOT in that list: `pr_admissible` is `pr_is_upstream` + `label_actor_trusted`, and
+  # `author_trusted` is deliberately absent from every PR lane (it runs once, on the ISSUE lane).
+  # That is not an oversight to tidy up later — it is load-bearing. Dependabot PRs carry
+  # `author_association: CONTRIBUTOR`, which is not in TRUSTED_ASSOCIATIONS (OWNER MEMBER
+  # COLLABORATOR), so adding `author_trusted` here to make the gate look symmetrical would refuse
+  # every Dependabot PR and put the depfix lane straight back into the dead-on-arrival state the
+  # paragraph above describes. The control that matters on a PR lane is `pr_is_upstream`: getting a
+  # branch into this repo at all already requires write access, which is a stronger statement than
+  # any association string.
   case " $label " in
     " agent:depfix "|" agent:docfix ")
       case " $AGENT_CI_LABEL_ACTORS " in
