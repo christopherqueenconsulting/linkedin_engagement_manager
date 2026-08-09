@@ -86,8 +86,9 @@ compose/local/database/migrations/  Flyway migrations
   what a docstring is for. Ruff enforces **Google-convention docstrings** (`D`) alongside `E`/`F`/`I`/
   `T201` in the **Docstring & Lint Gate**; tests are exempt from the *missing*-docstring rules. The
   tree does not meet the standard yet, so the gate is a **ratchet**: it fails a PR that raises the
-  count in `.ruff-baseline`, not one that inherits it, and every sweep lowers the baseline. It is
-  NOT yet a required check — that flips when the baseline reaches 0. Never restate the signature
+  count in `.ruff-baseline`. Read it with **`scripts/ruff_count.sh`** only — `ruff … | wc -l` is 2
+  high (summary lines) and ratcheting on that leaves exactly that much silent slack. NOT yet
+  required — that flips at 0. Never restate the signature
   (`Returns: The user id.` under `-> int` is noise) and never invent behaviour to satisfy the
   linter. A regression routes to the `agent:docfix` lane, not to a human. Standard + examples:
   **`docs/docstring-standard.md`**.
