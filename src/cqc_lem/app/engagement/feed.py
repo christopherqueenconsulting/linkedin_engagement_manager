@@ -837,6 +837,56 @@ _REACTION_OPENER_LOCATORS = [
 ]
 
 
+# What the probe below accepts as evidence of a reaction control. It is the trigger chain plus the
+# opener's LABEL-based routes only: the opener's trailing `.//button[@aria-haspopup]` matches any
+# popup control the card happens to ship — the "…" control menu, a comment sort dropdown — so it
+# names a different entity than the reaction (the #1012 rail hazard) and would make the probe
+# answer True on nearly every card, silently re-opening issue #874.
+_REACTION_AFFORDANCE_LOCATORS = _REACTION_TRIGGER_LOCATORS + [
+    (by, sel) for by, sel in _REACTION_OPENER_LOCATORS if "aria-haspopup" not in sel
+]
+
+
+def _card_has_reaction_affordance(card, user_id: int = None) -> bool:
+    """True when the card renders any reaction control at all.
+
+    LinkedIn surfaces post text without reaction affordances on some cards (e.g., followed
+    hashtags, promoted modules, third-party embeds). The #899 live run found 9 post-text nodes but
+    only 8 reaction triggers, so at least one normal card type is commentable but not reactable.
+    A selector miss on those cards is working behaviour and must stay DEBUG; only cards that DO
+    carry reactions should warn when the state button can't be read.
+    """
+    try:
+        for by, sel in _REACTION_AFFORDANCE_LOCATORS:
+            for el in card.find_elements(by, sel):
+                try:
+                    if el.is_displayed():
+                        return True
+                except StaleElementReferenceException:
+                    # Element detached while probing; keep scanning the card.
+                    continue
+        for el in card.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
+            try:
+                if not el.is_displayed():
+                    continue
+                label = (el.get_attribute("aria-label") or "").lower()
+                text = (el.text or "").lower()
+                testid = (el.get_attribute("data-testid") or "").lower()
+                if any(token in label or token in text or token in testid for token in (
+                    "reaction", "react", "like", "celebrate", "support", "love", "insightful", "funny"
+                )):
+                    return True
+            except StaleElementReferenceException:
+                # Element detached while probing; keep scanning the card.
+                continue
+    except WebDriverException as e:
+        # The card itself became unreachable (e.g., removed from DOM); treat as no affordance.
+        # Logging at DEBUG because this is a best-effort probe, not the main action.
+        log_debug("Could not probe card for reaction affordance", user_id=user_id,
+                  action_type="comment", exc=e)
+    return False
+
+
 def _reaction_option_locators(reaction: str) -> list:
     """Ordered routes to ONE reaction inside the open fly-out.
 
@@ -876,9 +926,17 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     (the toggle no longer reads 'no reaction').
     """
     try:
+        has_reaction_affordance = _card_has_reaction_affordance(card, user_id=user_id)
+        if not has_reaction_affordance:
+            # The #899 live run found 9 post-text nodes and 8 reaction triggers — some commentable
+            # cards carry no reaction affordance at all. Skipping them silently is working behaviour;
+            # warning on every such card would escalate to ERROR and file a defect (issue #874).
+            log_debug("Card has no reaction affordance — skipping inline reaction", user_id=user_id,
+                      action_type="comment")
+            return False
         state = find_first(driver, wait, _REACTION_TRIGGER_LOCATORS,
                            "Reaction state", parent_element=card, required=False, visible_only=True,
-                           user_id=user_id)
+                           warn_on_miss=has_reaction_affordance, user_id=user_id)
         if state is not None and "no reaction" not in (state.get_attribute("aria-label") or "").lower():
             return None  # already reacted on this post — a no-op, not a failure
 
