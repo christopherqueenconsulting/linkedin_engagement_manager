@@ -53,12 +53,29 @@ def _ollama_deployments() -> list:
 
 class TestRoster:
     def test_deepseek_v4_flash_serves_both_the_medium_and_complex_tiers(self):
-        # `:preview`, not the bare tag: ollama deleted `deepseek-v4-flash` on 2026-08-09 and
-        # republished the same 140GB build under `:preview`. Asserting the EXACT served id is the
-        # point — a bare-tag substring check would have gone on passing while both tiers pointed
-        # at a model the catalog no longer has.
+        # `:preview`, not the bare tag: on 2026-08-09 `deepseek-v4-flash` left the catalog and its
+        # 140GB build — the one measured at 90% (#921) — was published under `:preview`, while the
+        # bare name was re-pointed onto the rejected `:0731` build. Asserting the EXACT served id is
+        # the point — a bare-tag substring check would have gone on passing through both moves.
         assert "deepseek-v4-flash:preview" in _ollama_models("lem-medium")
         assert "deepseek-v4-flash:preview" in _ollama_models("lem-complex")
+
+    def test_no_serving_tier_carries_a_deepseek_build_the_benchmark_rejected(self):
+        """Guard the #921 decline — the only assertion that would notice `:0731` being adopted.
+
+        It was benchmarked against the build above on all three tiers and declined: 80% contract vs
+        90% on lem-complex and lem-medium, 40% vs 50% on lem-simple. It is still in the catalog, so
+        every other assertion in this file passes on it.
+
+        The bare `deepseek-v4-flash` is the same finding wearing a different hat: on 2026-08-09 that
+        name was re-pointed onto the `:0731` build (ollama.com's tags page gives it and
+        `:0731-cloud` the same digest) and dropped from the catalog. So "use the bare catalog id"
+        — note 0 in the config — now resolves to a rejected build here, which is why both spellings
+        are named. Adopting either is a benchmark decision; update this test with it.
+        """
+        for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
+            assert "deepseek-v4-flash" not in _ollama_models(group)
+            assert "deepseek-v4-flash:0731" not in _ollama_models(group)
 
     def test_gemma4_serves_the_medium_tier(self):
         assert "gemma4:31b" in _ollama_models("lem-medium")
