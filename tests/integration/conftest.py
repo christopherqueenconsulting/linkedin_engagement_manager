@@ -25,18 +25,22 @@ across too, so seed data a migration wrote (`early_adopter_slots`' P0/P1 cohorts
 Serial runs are untouched. Without `PYTEST_XDIST_WORKER` this yields immediately and the suite talks
 to the configured database exactly as it did before.
 
-The other thing this file owns is `_no_live_llm_calls` (issue #1188) — the guard that turns an
-unmocked LLM call from a slow test into a LOUD one. The reasoning is in that fixture's docstring.
+The other two things this file owns are the lane's guards, and they exist for the same reason: an
+integration test that reaches real infrastructure nobody mocked does not fail, it *waits*, and a
+slow test is the kind of wrong nobody reads. `_no_live_llm_calls` (issue #1188) covers the LLM,
+`_no_contended_once_lock` (issue #1197) the celery-once Redis lock. The reasoning is in each
+fixture's docstring.
 """
 
 import os
 import re
 from collections.abc import Iterator
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import mysql.connector
 import pytest
+from celery_once.backends import redis as celery_once_redis
 from openai import OpenAI
 
 from cqc_lem.platform.db import connection as db_connection
@@ -195,6 +199,55 @@ def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         )  # The traceback is kept: which helper reached the network is the whole question here.
 
     monkeypatch.setattr(OpenAI, "post", _refuse)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_contended_once_lock(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Refuses, immediately, a celery-once lock this lane would otherwise BLOCK on (issue #1197).
+
+    `QueueOnce.apply_async` takes its dedup lock on the producer side, and LEM configures that lock
+    `blocking=True, blocking_timeout=30` (`my_celery.py`). A worker releasing it is what normally
+    makes that harmless — but no worker runs in this lane, so an unmocked `apply_async` leaves a
+    lock behind that nothing will ever clear. The next dispatch of the same task with the same
+    `once['keys']` then sleeps the full thirty seconds, gets `AlreadyQueued`, and — because every
+    LEM task sets `graceful: True` — is silently dropped. The test passes. It just took 30s and
+    queued nothing.
+
+    That is exactly the shape `_no_live_llm_calls` exists for one layer up: real infrastructure a
+    test never mocked, which manifests as *slowness* rather than as a failure. It cost this lane 30
+    of its 45 seconds, and it gets worse as the suite grows, because the collision only needs two
+    tests anywhere in one worker to agree on a task and its key.
+
+    The guard fires on the CONTENDED acquire, not on the first one. A single uncontended lock costs
+    ~3ms and breaks nothing, so refusing it would be a rule people delete; blocking on a lock in a
+    lane with no consumer is never anything but a bug. Asking Redis whether the key is already there
+    is what makes the refusal immediate instead of arriving 30 seconds later, and it needs no
+    timing threshold, so there is nothing here to go flaky on a loaded runner.
+
+    Locally the same message covers the other way this bites — a lock LEAKED by a previous run
+    survives into the next one, which silently moves any before/after measurement by 30s.
+    """
+    original: Callable[..., Any] = celery_once_redis.Redis.raise_or_lock
+
+    def _guarded(self: Any, key: str, timeout: Any) -> Any:
+        try:
+            held = bool(self.redis.exists(key))
+        except Exception:  # noqa: BLE001 - an unreachable Redis is the original call's problem
+            held = False
+        if held:
+            pytest.fail(
+                f"An integration test blocked on the celery-once lock {key!r}, which was already "
+                f"held. Nothing in this lane runs the task that would release it, so this waits "
+                f"the full 30s blocking_timeout and then drops the dispatch gracefully — 30 "
+                f"seconds that assert nothing. Patch the dispatch the test does not care about "
+                f"(`patch('<module the caller imported it into>.<task>')`). If you are running "
+                f"locally, a lock leaked by an EARLIER run looks identical: flush the test Redis "
+                f"and re-run. See issue #1197."
+            )
+        return original(self, key, timeout=timeout)
+
+    monkeypatch.setattr(celery_once_redis.Redis, "raise_or_lock", _guarded)
     yield
 
 

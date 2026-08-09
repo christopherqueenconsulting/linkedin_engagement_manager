@@ -277,7 +277,8 @@ made the calls stop**, which is a different thing: the three that were real are 
 (`get_or_create_profile_synthesis` + `optimize_post_hook` in `test_content_plan`, the shared client
 singleton in `test_carousel_creation`, which reaches the model a second time through
 `carousel_creator.derive_image_query`), and the fourth turned out never to have made an LLM call at
-all — its 30s is `celery_once` taking a real Redis lock for an unpatched `apply_async`.
+all — its 30s is `celery_once` taking a real Redis lock for an unpatched `apply_async`, which is
+§1c below (issue #1197).
 
 Measured on an 8-core box against a dead LiteLLM port, which reproduces CI's numbers to within 1%
 (fresh Redis before each run — a leaked `celery_once` lock survives into the next one and moves the
@@ -312,6 +313,54 @@ traceback names the helper that reached the network.
 (`mock_openai_client` is the house fixture) or the helper that wraps it. A test that legitimately
 constructs a client and never calls it is untouched; a test that wants a *failing* call should mock
 the failure it means to assert on rather than borrow this guard's.
+
+### 1c. A contended celery-once lock FAILS this lane (`_no_contended_once_lock`)
+
+The fourth test in §1 never called a model. `QueueOnce.apply_async` takes its dedup lock on the
+**producer** side, and LEM configures that lock `blocking=True, blocking_timeout=30`
+(`my_celery.py`). In production a worker picks the message up and releases it. Nothing in this lane
+does, so the lock outlives the test that took it — and both tests in `test_link_first_comment.py`
+publish post 10, i.e. the same `(user_id, post_id)` key for `auto_second_wave_comment`. The second
+one slept the full thirty seconds (297 × `time.sleep(0.1)` inside `redis/lock.py`), got
+`AlreadyQueued`, and — every LEM task sets `graceful: True` — dropped the dispatch silently. A green
+test that took 30s and queued nothing.
+
+Issue #1197 patched that dispatch (neither test asserts anything about the second wave) and added
+the guard: `tests/integration/conftest.py` wraps `celery_once.backends.redis.Redis.raise_or_lock`
+and `pytest.fail`s when the key is **already held**.
+
+It fires on the contended acquire, not on the first one. A single uncontended lock costs ~3ms and
+breaks nothing, so refusing that would be a rule people delete; blocking on a lock in a lane with no
+consumer is never anything but a bug. Asking Redis whether the key is there is what makes the
+refusal *immediate* rather than thirty seconds late, and it leaves no timing threshold to go flaky
+on a loaded runner. The traceback names the `apply_async` call site, which is the whole question.
+
+**When you add a test here, patch the task dispatch you are not asserting on** — `patch("<the
+module whose globals the caller reads>.<task>")`, the same seam the sibling dispatches in that file
+already use.
+
+Measured on an 8-core box, dedicated MySQL + Redis, dead LiteLLM port, empty `.env`, **fresh Redis
+before every run**:
+
+| Configuration | Before #1197 | After |
+|---|---|---|
+| `-n 4 --dist loadfile --cov`, `LLM_CONNECT_RETRY_ATTEMPTS=1` — what CI runs | 51.3s | **25.6s** |
+| Serial, `LLM_CONNECT_RETRY_ATTEMPTS=1` | 56.9s | **26.7s** |
+| `tests/integration/test_link_first_comment.py` alone | 31.1s | **1.0s** |
+
+Unlike §1, the parallel column moves by the whole cost: `--dist loadfile` had nothing longer left to
+hide it behind.
+
+Instrumenting `raise_or_lock` across the whole lane found **two** real acquires, both from that one
+file on that one key, and none anywhere else — so this was the only collision, and after the patch
+the lane takes no celery-once lock at all. The shape to watch for is two tests in **one file**,
+because `--dist loadfile` guarantees they share a worker; two files cannot collide today, since §2
+gives each worker its own Redis logical database and the lock follows it there (verified: gw1's lock
+landed in db1, not db0).
+
+**The leak is the measurement trap.** A lock nothing released survives into the *next* run and moves
+the number by 30s, so before/after timings taken against the same Redis are noise. Since #1197 that
+shows up as this guard failing on the first dispatch instead — flush the test Redis and re-run.
 
 ### 2. Each worker owns a database (`tests/integration/conftest.py`)
 
