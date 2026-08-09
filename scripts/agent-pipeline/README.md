@@ -38,10 +38,24 @@ CI-pending and merge-waiting ticks are cheap `gh` reads — no Claude call.
 |---|---|
 | Go live | `rm /home/lem/agent-pipeline/PAUSED` |
 | Pause | `touch /home/lem/agent-pipeline/PAUSED` |
+| **Live status** | `/home/lem/agent-pipeline/status.sh` (add `--watch` for a refreshing dashboard) |
 | Watch | `tail -f /home/lem/agent-pipeline/logs/tick-*.log` |
 | Dry-run | `DRY_RUN=1 /home/lem/agent-pipeline/tick.sh` |
 | One tick now | `/home/lem/agent-pipeline/tick.sh` |
 | Kill switch | `touch PAUSED` + `crontab -e` (remove the tick line) |
+
+## Live status (`status.sh`)
+Answers "how many agents are running, on what, and is anything wrong?" in one screen: the live
+`claude -p` processes with their slot / mode / issue / branch / lane and **what each one is doing
+this minute** (read from its own transcript), slot occupancy from the flocks, lane capacity, the
+backlog, open PRs, a rollup of recent tick outcomes, and a `NEEDS ATTENTION` list (stranded
+`agent:working` claims, a lane paused on a usage limit, a PR the merge queue keeps dropping, an
+agent about to hit its 45m timeout). It also lists **every other `claude` process on the box** —
+an interactive or remote-control session works no issue, but draws on the same Max subscription as
+the claude lane, so it belongs in any count of what is running (and in any usage-limit post-mortem).
+
+It is **read-only**: it never dispatches, never spends a probe call, and never mutates lane state —
+so it is safe to leave running in `--watch`. `--json` emits the same data for monitoring.
 
 ## Safety net
 Every PR must pass **Unit Tests, Integration Tests, GitGuardian** (branch protection) plus Copilot
