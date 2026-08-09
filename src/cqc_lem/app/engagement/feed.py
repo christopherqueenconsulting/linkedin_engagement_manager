@@ -273,13 +273,17 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     """
     # Check the database logs / claim ledger to make sure user hasn't already commented here.
     if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
-        log_info("User has already commented on this post. Skipping...")
+        # DEBUG on both guards below: the claim ledger exists BECAUSE this task is re-dispatched
+        # for a post we may already hold, so tripping either one is the ledger working.
+        log_debug("User has already commented on this post. Skipping...", user_id=user_id,
+                  action_type="comment", task_name="comment_on_post")
         return "User has already commented on this post. Skipping..."
 
     # Atomically claim before doing any work — a concurrent worker with the same post_link loses
     # here and backs off (belt-and-suspenders alongside QueueOnce's user_id+post_link key).
     if not claim_post_for_comment(user_id, post_link):
-        log_info("Another task already claimed this post. Skipping...")
+        log_debug("Another task already claimed this post. Skipping...", user_id=user_id,
+                  action_type="comment", task_name="comment_on_post")
         return "Another task already claimed this post. Skipping..."
 
     driver, wait = get_driver_wait_pair(session_name='Post Comment', user_id=user_id)
@@ -333,7 +337,11 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
             release_post_claim(user_id, post_link)
             insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.FAILURE,
                            post_url=post_link, message=comment_text)
-            log_info("Comment did not land on this post", user_id=user_id, post_id=post_link,
+            # WARNING: post_comment_inline only logs when it RAISED — the silent-False paths (no
+            # composer for this card, submit never verified) are DEBUG inside it, so this is the
+            # one place the OUTCOME is known. Once is SDUI noise, repeatedly is drift, which is the
+            # same call get_my_profile's scrape-returned-nothing line makes.
+            log_warning("Comment did not land on this post", user_id=user_id, post_id=post_link,
                      action_type="comment")
             return " | ".join(filter(None, [method_result, COMMENT_NOT_POSTED_MESSAGE]))
 
@@ -2999,7 +3007,9 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     lock_name = f"automate_commenting:{user_id}"
     lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
     if lock_token is None:
-        log_info(f"Another commenting run is in progress for user {user_id} — skipping this cycle.")
+        # DEBUG: the comment above says the lock exists BECAUSE three triggers can overlap —
+        # losing the race is the single-flight guard working, not a degraded run.
+        log_debug(f"Another commenting run is in progress for user {user_id} — skipping this cycle.")
         return "Skipped: another commenting run already in progress for this user."
 
     if post_id:
@@ -3042,12 +3052,14 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
             # myprint(f"{current_function_name} parameters: {kwargs}")
 
             if new_loop_for_duration < 0:
-                log_info(f"Loop duration reached. Stopping {current_function_name} task...")
+                # DEBUG on both branches: the re-queue loop's own bookkeeping, and the duration
+                # running out IS its exit condition.
+                log_debug(f"Loop duration reached. Stopping {current_function_name} task...")
             else:
                 # Change the value of the loop_for_duration parameter
                 kwargs['loop_for_duration'] = new_loop_for_duration
                 # Add our function call back to the task queue
-                log_info(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
+                log_debug(f"Adding {current_function_name} back to queue for {future_forward} seconds in the future...")
                 # Remove 'self' from kwargs if it exists
                 if 'self' in kwargs:
                     del kwargs['self']
