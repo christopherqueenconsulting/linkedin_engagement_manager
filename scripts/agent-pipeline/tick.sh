@@ -129,10 +129,19 @@ fi
 # a DRY_RUN from a checkout) must degrade to the OLD behavior — unbudgeted but working — never to
 # "command not found" inside a lane. Count 0 = budgets never trip; charge is a no-op.
 if ! command -v ledger_count >/dev/null 2>&1; then
+  # LOUD, not silent: this fallback removes every run budget, which is the failure mode the ledger
+  # exists to prevent. A box running unbudgeted for days because lib/ledger.sh never synced must be
+  # readable in the tick log, not inferred from a runaway spend.
+  log "LEDGER: lib/ledger.sh not loaded — running UNBUDGETED this tick (no lane budget can trip). Sync $BASE/lib/."
   ledger_count() { echo 0; }
   ledger_charge() { echo 1; }
   ledger_reset() { :; }
 fi
+
+# DRY_RUN is read-only on the ledger too. The per-lane `if [ "$DRY_RUN" != "1" ]` guards sit on the
+# CHARGE sites only; the resets in the merge loop have none, so a dry tick would clear a live meter
+# and let a genuinely exhausted lane dispatch again on the next real tick.
+if [ "$DRY_RUN" = "1" ]; then ledger_reset() { :; }; fi
 
 ensure_ai_labels 2>/dev/null || true   # idempotent bootstrap of the ai:* labels (first tick only)
 capacity_preflight 2>/dev/null || true  # sets CLAUDE_PCT/OLLAMA_PCT/CLAUDE_AVAIL/OLLAMA_AVAIL/DEGRADED
@@ -1587,21 +1596,27 @@ park_lane_exhausted() {  # $1=pr $2=branch $3=mode $4=count $5=lane label to rem
     --remove-label "$lane_label" >/dev/null 2>&1
   gh pr ready --undo "$P" --repo "$SLUG" >/dev/null 2>&1
   gh pr edit "$P" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+  # Mirror the FULL fix-exhausted contract onto the issue — needs-human alone leaves agent:working
+  # on it, so the issue keeps reading as in-flight (and counting against the WIP gate) while its PR
+  # is parked.
   ISS="$(issue_for_pr "$P")"
-  [ -n "$ISS" ] && gh issue edit "$ISS" --repo "$SLUG" --add-label needs-human >/dev/null 2>&1
+  [ -n "$ISS" ] && gh issue edit "$ISS" --repo "$SLUG" --add-label needs-human --add-label agent:blocked \
+    --add-assignee "$ASSIGNEE" --remove-label agent:working >/dev/null 2>&1
   if [ ! -f "$marker" ]; then
     : > "$marker"
-    gh pr comment "$P" --repo "$SLUG" --body "🛑 **Human decision needed** — the \`$mode\` lane spent its budget ($n runs) on this PR without getting it through.
+    # Options are numbered `1A/1B/1C`, NOT bare letters: answer_verdict() only accepts `ok` or a
+    # <number><letter> token, so a reply of plain "B" is not an answer and the PR would stay parked
+    # forever — with the budget that only route_owner_answer resets still spent.
+    gh pr comment "$P" --repo "$SLUG" --body "## 🧑‍⚖️ Human decision needed — reply with option letters
+Held (\`needs-human\`, risk: the \`$mode\` lane spent its budget of $n runs on this PR without getting it through). Each run either failed, timed out, or didn't move the gate, so re-running it would burn the same tokens for the same result — the PR is parked (draft, lane label off).
+Reply one letter per question — e.g. \`1A\` — or \`ok\` for all recommendations. Your answer resets the budget.
 
-Each run either failed, timed out, or didn't move the gate. Re-running the same lane would burn the same tokens for the same result, so the PR is parked (draft, lane label off).
+### 1. How should we proceed?
+- **A. Re-run the \`$mode\` lane** — I've addressed the blocker in the thread above; try again as-is.
+- **B. I'll push the needed change myself** — pick the PR back up afterwards  ✅ *recommended*
+- **C. Close this PR** — the approach is wrong, not just stuck.
 
-1. How should we proceed?
-   - **A)** I've addressed the blocker in the thread above — run the \`$mode\` lane again.
-   - **B)** I'll push the needed change myself; pick the PR back up afterwards ✅ *recommended*.
-   - **C)** Close this PR.
-
-My recommendation: B.
-Reply with the letter (e.g. \`B\`) or \`ok\` for the recommendation — your answer resets the budget." >/dev/null 2>&1
+**My recommendation: \`1B\`.** $n automated runs failing the same way is usually a blocker the lane can't see, so the cheapest unblock is a human push before the next run." >/dev/null 2>&1
   fi
 }
 
@@ -1691,8 +1706,12 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   # The lane budgets count CONSECUTIVE failures, not lifetime runs: a stage that has PASSED is
   # proof the lane's last run worked, so its meter restarts. Without this, two SUCCESSFUL
   # selfreviews over a long PR's life would exhaust the budget and park a healthy PR.
-  # (selfreview resets at its marker check below — the fresh marker is its proof of success.)
-  [ "${FAILED:-0}" -eq 0 ] && ledger_reset pr "$PR" fix
+  # (selfreview resets at the marker check in step 4 — the fresh marker is its proof of success.)
+  # The fix meter resets on GREEN, never on merely "not failing": the tick right after a fix run
+  # pushes sees every required check QUEUED, so FAILED is 0 while nothing has passed yet. Resetting
+  # there refills the meter between every attempt — MAX_FIX_ATTEMPTS becomes unreachable and the
+  # escalate-to-human contract silently disappears for any fix run that manages to push at all.
+  [ "${FAILED:-0}" -eq 0 ] && [ "${PENDING:-0}" -eq 0 ] && ledger_reset pr "$PR" fix
   [ "${UNRESOLVED:-0}" -eq 0 ] && ledger_reset pr "$PR" review
 
   # 1) CI failing -> fix (or escalate after too many tries)
@@ -1764,6 +1783,13 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
       REVIEW_OK=1
     fi
   fi
+  # A fresh adversarial marker is the selfreview lane's proof of success, so the meter restarts
+  # HERE. It cannot restart inside the `REVIEW_OK != 1` branch below: best_review_at() includes the
+  # marker and applies the same grace rule, so a fresh marker always implies REVIEW_OK=1 — a reset
+  # down there is unreachable and the budget silently becomes lifetime-only, parking a healthy PR
+  # on its third legitimate review.
+  MARKER_FRESH=0
+  claude_marker_fresh_p "$PR" "$HEAD_DATE" && { MARKER_FRESH=1; ledger_reset pr "$PR" selfreview; }
   if [ "$REVIEW_OK" != "1" ]; then
     if copilot_wanted "$PR"; then
       # This PR merits the budgeted Copilot pass: request once, wait up to the timeout, then fall
@@ -1791,9 +1817,8 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
     fi
     # Default reviewer: Claude adversarial review (fresh context; finds AND fixes; posts the
     # marker comment the gate accepts). One run per stale/missing review.
-    if claude_marker_fresh_p "$PR" "$HEAD_DATE"; then
+    if [ "$MARKER_FRESH" = "1" ]; then   # already reset above; reuses that answer, no second API call
       log "PR #$PR — green, fresh Claude adversarial marker already present."
-      ledger_reset pr "$PR" selfreview   # the marker proves the last selfreview worked
     else
       if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
       # Previously unbounded — a selfreview that kept dying (or kept refusing to post its marker)
