@@ -71,6 +71,7 @@ instead of silently evaluating to `False` inside a Celery task.
 | `feed-fallback-when-empty-default` | `FEED_FALLBACK_WHEN_EMPTY_DEFAULT` | `true` | engagement | Fleet default for `feed_fallback_when_empty` for users with no SAVED engagement row. A saved per-user setting always wins. |
 | `cost-routing-enabled` | `COST_ROUTING_ENABLED` | `false` | cost | App side of cost-aware down-routing (`cost_routing.py`) — written into the published routing policy. System-scoped. |
 | `posthog-surveys-enabled` | `POSTHOG_SURVEYS_ENABLED` | `false` | growth | Gates the headless PostHog survey renderer (issue #653, `docs/surveys.md`). Keep OFF until the SPA bundle carries a `VITE_POSTHOG_KEY` and the surveys are launched. |
+| `newsletter-editor-enabled` | `NEWSLETTER_EDITOR_ENABLED` | `false` | content | Final mechanical LLM edit pass on newsletter drafts (capitalization, grammar, punctuation, formatting) before slop-lint review. Adds one `lem-medium` call per draft. |
 
 ## Provisioning
 

@@ -44,6 +44,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     humanize_title as _humanize_title,
     intention_directive as _intention_directive,
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
+    mechanical_edit_text as _mechanical_edit_text,
     select_focus_topic as _select_focus_topic,
     style_directive as _style_directive,
     voice_reference as _voice_reference,
@@ -61,6 +62,7 @@ from cqc_lem.utilities.ai.video_models import (
 )
 from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
+from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, flag_enabled
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import (
@@ -70,7 +72,13 @@ from cqc_lem.utilities.linkedin_formatter import (
     normalize_public_text,
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
-from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
+from cqc_lem.utilities.observability import (
+    FEATURE_COMMENT,
+    FEATURE_NEWSLETTER,
+    current_llm_attribution,
+    llm_pipeline,
+    llm_step,
+)
 from cqc_lem.utilities.profile_skills_window import profile_skills_directive as _profile_skills_directive
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 
@@ -934,14 +942,25 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                 "subject": _default_subject or title[:500], "body": body,
                 "opening_line": _opening_line(body), **shape}
 
+    # Mechanical editor pass (issue #1079): capitalization, grammar, punctuation, formatting only.
+    # Run AFTER humanization (so it polishes the de-slopped voice) and BEFORE the slop lint
+    # (so the lint grades the final text). Gated by the `newsletter-editor-enabled` flag and
+    # attributed to the same newsletter pipeline so the extra per-draft LLM call is visible in cost.
+    edition = _edition()
+    if not edition:
+        return None
+    user_id, _ = current_llm_attribution()
+    if flag_enabled(NEWSLETTER_EDITOR, user_id=user_id):
+        edition["body"] = _mechanical_edit_text(
+            edition["body"], content_type="newsletter",
+            profile_synthesis=profile_synthesis, enabled=True,
+        ) or edition["body"]
+
     # Deterministic slop lint over the finished BODY (issue #625 / D1), with the same bounded
     # regeneration the other surfaces get. The WHOLE edition is regenerated, not just its body —
     # title, subject, and opening_line are derived from it and would go stale otherwise. An edition
     # that still trips the lint is returned anyway (a newsletter is drafted for human review before
     # it publishes) with the patterns named in the log.
-    edition = _edition()
-    if not edition:
-        return None
     for _ in range(max(0, _slop.slop_max_attempts() - 1)):
         report = _slop.lint_report(edition["body"], "newsletter")
         if report["passes"]:
@@ -950,6 +969,11 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         if not retry:
             break
         edition = retry
+        if flag_enabled(NEWSLETTER_EDITOR, user_id=user_id):
+            edition["body"] = _mechanical_edit_text(
+                edition["body"], content_type="newsletter",
+                profile_synthesis=profile_synthesis, enabled=True,
+            ) or edition["body"]
     final = _slop.lint_report(edition["body"], "newsletter")
     if not final["passes"]:
         log_warning("Newsletter edition still trips the AI-slop lint; keeping it for review: "

@@ -348,3 +348,70 @@ class TestPlannerEmitsBlueprints:
         assert "inbox-worthy title + subtitle" in system
         assert "reply-driving question" in system
         assert "blog alignment has something concrete to track" in system
+
+
+class TestNewsletterMechanicalEdit:
+    """Issue #1079: the final mechanical editor pass is opt-in via the newsletter-editor flag,
+    runs after humanization and before the slop lint, and fails open.
+    """
+
+    def _profile(self):
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        return prof
+
+    def test_mechanical_edit_skipped_when_flag_disabled(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        edition_json = json.dumps({"title": "T", "subtitle": "S", "body": "raw body."})
+        with patch(f"{_AI}._call_llm", return_value=_resp(edition_json)) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=False) as flag:
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None
+        assert edition["body"] == "raw body."
+        flag.assert_called_with(ai_helper.NEWSLETTER_EDITOR, user_id=None)
+        # Exactly one LLM call: the initial draft generation.
+        assert call.call_count == 1
+
+    def test_mechanical_edit_runs_when_flag_enabled(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        edition_json = json.dumps({"title": "T", "subtitle": "S", "body": "raw body."})
+        edited = "Raw body."
+        with patch(f"{_AI}._call_llm", side_effect=[_resp(edition_json), _resp(edited)]) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=True):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None
+        assert edition["body"] == edited
+        # Two LLM calls: draft generation + mechanical edit.
+        assert call.call_count == 2
+        assert call.call_args.kwargs.get("model") == "lem-medium"
+
+    def test_mechanical_edit_runs_before_slop_lint(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        edition_json = json.dumps({"title": "T", "subtitle": "S", "body": "raw body."})
+        edited = "Edited body."
+        seen = []
+        with patch(f"{_AI}._call_llm", side_effect=[_resp(edition_json), _resp(edited)]) as call, \
+             patch(f"{_AI}.flag_enabled", return_value=True), \
+             patch(f"{_AI}._slop.lint_report") as lint:
+            ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        # The mechanical-edit call is the second _call_llm invocation.
+        assert call.call_count == 2
+        mechanical_body = call.call_args_list[1].kwargs["messages"][1]["content"]
+        seen.append(mechanical_body)
+        # The slop lint was called at least once with the edited body.
+        lint.assert_called()
+        linted_body = lint.call_args[0][0]
+        assert linted_body == edited
+
+    def test_mechanical_edit_fails_open_and_uses_original_body(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        edition_json = json.dumps({"title": "T", "subtitle": "S", "body": "raw body."})
+        with patch(f"{_AI}._call_llm", side_effect=[_resp(edition_json), Exception("boom")]), \
+             patch(f"{_AI}.flag_enabled", return_value=True):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None
+        assert edition["body"] == "raw body."

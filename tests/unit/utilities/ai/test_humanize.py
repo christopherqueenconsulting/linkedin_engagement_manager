@@ -188,6 +188,67 @@ class TestHumanizeText:
         assert "leverage" in system and "tapestry" in system
 
 
+class TestMechanicalEditText:
+    def test_disabled_returns_content_unchanged(self):
+        original = "hook line.\n\nsection one\n\na paragraph."
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm") as m:
+            assert ca.mechanical_edit_text(original, "newsletter", enabled=False) == original
+            m.assert_not_called()
+
+    def test_empty_input_is_returned_unchanged(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm") as m:
+            assert ca.mechanical_edit_text("", "newsletter", enabled=True) == ""
+            assert ca.mechanical_edit_text("   ", "newsletter", enabled=True) == "   "
+            m.assert_not_called()
+
+    def test_rewrite_applies_capitalization_and_keeps_structure(self):
+        original = "hook line.\n\nsection one\n\na developed paragraph with a real example."
+        rewrite = "Hook line.\n\nSection One\n\nA developed paragraph with a real example."
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(rewrite)):
+            out = ca.mechanical_edit_text(original, "newsletter", enabled=True)
+        assert out == rewrite
+        assert "\n\n" in out
+
+    def test_fails_open_on_llm_error(self):
+        original = "A draft that must survive a proxy outage."
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=RuntimeError("proxy down")):
+            assert ca.mechanical_edit_text(original, "newsletter", enabled=True) == original
+
+    def test_fails_open_on_empty_or_truncated_rewrite(self):
+        original = "This is a longer draft that should not be replaced by a fragment."
+        for reply in ("", "   ", "too short"):
+            with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(reply)):
+                assert ca.mechanical_edit_text(original, "newsletter", enabled=True) == original
+
+    def test_prompt_forbids_rewriting_voice_and_structure(self):
+        captured = {}
+
+        def _fake(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            return _llm_reply("Edited.")
+
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=_fake):
+            ca.mechanical_edit_text("Draft.", "newsletter",
+                                    profile_synthesis="Ran a 12-person agency.", enabled=True)
+        system = captured["messages"][0]["content"]
+        assert "MECHANICAL-ONLY" in system
+        assert "NEVER rewrite" in system
+        assert "NEVER restructure" in system
+        assert "Ran a 12-person agency" in system
+
+    def test_uses_lem_medium_tier(self):
+        captured = {}
+
+        def _fake(**kwargs):
+            captured["model"] = kwargs.get("model")
+            return _llm_reply("Edited.")
+
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=_fake):
+            ca.mechanical_edit_text("Draft.", "newsletter", enabled=True)
+        assert captured["model"] == "lem-medium"
+
+
 class TestFindTitleSlopWords:
     def test_detects_hype_and_tier1_words(self):
         hits = ca.find_title_slop_words(
