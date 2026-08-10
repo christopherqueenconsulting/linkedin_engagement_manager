@@ -121,12 +121,12 @@ def checks_for(slug: str, pr: int, *, timeout: int = 30) -> ChecksState:
 
 def pr_facts(slug: str, pr: int, *, timeout: int = 30) -> dict[str, Any]:
     """The PR fields the state machine reads, in one call."""
+    fields = (
+        "number,state,isDraft,mergeStateStatus,headRefName,headRefOid,labels,author,"
+        "headRepositoryOwner,updatedAt,mergedAt"
+    )
     return gh_json(
-        [
-            "pr", "view", str(pr), "--repo", slug, "--json",
-            "number,state,isDraft,mergeStateStatus,headRefName,headRefOid,labels,author,"
-            "headRepositoryOwner,updatedAt,mergedAt",
-        ],
+        ["pr", "view", str(pr), "--repo", slug, "--json", fields],
         timeout=timeout,
     ) or {}
 
@@ -138,11 +138,13 @@ def merge_queue_state(slug: str, pr: int, *, timeout: int = 30) -> str:
     v1's #1082 incident was precisely an unreadable queue state being read as a healthy one.
     """
     owner, _, name = slug.partition("/")
+    query = (
+        "query=query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){"
+        "pullRequest(number:$p){mergeQueueEntry{state}}}}"
+    )
     out = run_gh(
         [
-            "api", "graphql", "-f",
-            "query=query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){"
-            "pullRequest(number:$p){mergeQueueEntry{state}}}}",
+            "api", "graphql", "-f", query,
             "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={pr}",
             "--jq", ".data.repository.pullRequest.mergeQueueEntry.state // \"\"",
         ],
