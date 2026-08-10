@@ -35,9 +35,15 @@ runs:
         virtualenvs-in-project: true
         installer-parallel: true
 
-    - name: Cache Poetry virtual environment
+    # Restore and save are split so we can choose NOT to save. Actions caches are scoped to the ref
+    # that wrote them (plus the default branch as a fallback), so an entry written from
+    # refs/pull/<n>/merge is readable by that one PR and nothing else. This action ran on ~7 jobs
+    # per PR and saved on all of them: 17 live entries x ~352 MB, ~6 GB of the repo's 10 GB budget,
+    # write-only. Over the limit GitHub evicts least-recently-used — and the entry it evicted was
+    # main's, the one every branch CAN read. That is why the step still cost 19-29s on a "cache hit".
+    - name: Restore Poetry virtual environment
       id: cache-venv
-      uses: actions/cache@v5
+      uses: actions/cache/restore@v5
       with:
         path: ${{ inputs.working-directory }}/.venv
         key: venv-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles(format('{0}/poetry.lock', inputs.working-directory)) }}-${{ inputs.install-args }}
@@ -48,4 +54,26 @@ runs:
     - name: Install dependencies
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: poetry install ${{ inputs.install-args }} --no-interaction
+      run: |
+        # An EXACT key hit means both the lockfile and the install-args match, so the restored
+        # .venv already IS what `poetry install` would produce and the install was pure overhead.
+        # It is probed before being trusted: .venv/bin/python symlinks into the setup-python
+        # install, which a runner-image bump can leave dangling. A failed probe falls through to a
+        # real install rather than failing the job. A restore-keys (partial) hit is NOT an exact
+        # hit and always reinstalls -- that is the path Dependabot's lockfile bumps take.
+        if [ "${{ steps.cache-venv.outputs.cache-hit }}" = "true" ] \
+           && poetry run python -c "import sys" >/dev/null 2>&1; then
+          echo "Restored venv matches poetry.lock and ${{ inputs.install-args }} — skipping install"
+        else
+          poetry install ${{ inputs.install-args }} --no-interaction
+        fi
+
+    # Save only from refs every branch can read back: main, and the merge queue's own refs.
+    - name: Save Poetry virtual environment
+      if: >-
+        steps.cache-venv.outputs.cache-hit != 'true' &&
+        (github.ref == 'refs/heads/main' || github.event_name == 'merge_group')
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ inputs.working-directory }}/.venv
+        key: venv-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles(format('{0}/poetry.lock', inputs.working-directory)) }}-${{ inputs.install-args }}

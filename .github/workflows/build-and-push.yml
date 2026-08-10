@@ -63,8 +63,13 @@ jobs:
           # be read back out of the image history. Absent = the upload step skips itself.
           secrets: |
             posthog_cli_token=${{ secrets.POSTHOG_CLI_TOKEN }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry, not type=gha. This job only runs on `release: published`, so github.ref is
+          # refs/tags/vX.Y.Z — and Actions caches are ref-scoped, meaning every blob written here
+          # was scoped to a tag the NEXT release can never match. mode=max wrote ~90 of them per
+          # release: unreadable forever, and competing for the same 10 GB the PR lanes' venv caches
+          # live in. A registry cache costs no Actions quota and actually persists across tags.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
   deploy:
     name: Deploy to Hostinger VPS
