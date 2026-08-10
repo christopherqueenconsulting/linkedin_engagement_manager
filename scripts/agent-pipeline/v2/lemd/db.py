@@ -543,3 +543,19 @@ def counts_by_state(conn: sqlite3.Connection) -> dict[str, int]:
         r["state"]: r["n"]
         for r in conn.execute("SELECT state, COUNT(*) AS n FROM items GROUP BY state").fetchall()
     }
+
+
+def set_run_lane(conn: sqlite3.Connection, run_id: int, *, lane: str | None,
+                 model: str | None, route_reason: str | None) -> None:
+    """Attach the lane a run actually used to its row.
+
+    Separate from `start_run` because the answer does not exist yet when the row is opened: the
+    daemon spawns the action, and the action's own routing decides the lane. Every column is
+    written with COALESCE semantics inverted — a NULL report never overwrites a value already
+    there, so a partial meta file cannot erase a good attribution.
+    """
+    conn.execute(
+        "UPDATE runs SET lane=COALESCE(?, lane), model=COALESCE(?, model), "
+        "route_reason=COALESCE(?, route_reason) WHERE id=?",
+        (lane, model, route_reason, run_id),
+    )

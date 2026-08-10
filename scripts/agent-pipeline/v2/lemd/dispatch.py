@@ -164,6 +164,11 @@ class Supervisor:
             # if both fire the daemon's is the one that reaps the whole group, and a race between
             # two kill paths at the same instant produces confusing half-dead states.
             "CLAUDE_TIMEOUT": f"{max(1, timeout_s // 60) + 1}m",
+            # Where the child reports the lane it actually chose. The run row is opened here, but
+            # routing happens inside run_lane.sh — so without a channel back, `runs.lane` /
+            # `model` / `route_reason` stay NULL for ever, and they did on all 59 rows written on
+            # cutover day.
+            "LEMD_RUN_META": f"{log_path}.meta",
         })
         try:
             handle = log_path.open("a")
@@ -233,11 +238,36 @@ class Supervisor:
                 continue
             self.children.remove(child)
             if child.run_id is not None:
+                self._record_lane(child)
                 db.finish_run(self.conn, child.run_id, rc)
             LOG.info("%s finished rc=%s in %.0fs%s", child.label, rc, now - child.started,
                      " (killed on deadline)" if child.killed else "")
             done.append((child, rc))
         return done
+
+    def _record_lane(self, child: Child) -> None:
+        """Fold the child's reported lane into its run row.
+
+        Best-effort by construction: a child that died before writing leaves the columns NULL,
+        which is exactly the state before this existed. Attribution telemetry must never be able to
+        fail a reap — losing a lane label costs a data point, losing a reap leaks a slot.
+        """
+        meta = Path(f"{child.log_path}.meta")
+        try:
+            fields = dict(
+                line.split("=", 1)
+                for line in meta.read_text().splitlines() if "=" in line
+            )
+        except OSError:
+            return
+        finally:
+            meta.unlink(missing_ok=True)
+        db.set_run_lane(
+            self.conn, child.run_id,
+            lane=fields.get("lane") or None,
+            model=fields.get("model") or None,
+            route_reason=fields.get("route_reason") or None,
+        )
 
     def _reap_adopted(self, now: float) -> None:
         """Close run rows whose process is gone but which this daemon never spawned.
