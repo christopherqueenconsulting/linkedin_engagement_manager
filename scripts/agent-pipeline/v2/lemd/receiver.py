@@ -46,6 +46,22 @@ from . import db
 
 LOG = logging.getLogger("lemd.receiver")
 
+#: Longest caller-controlled fragment a single log line will carry.
+LOG_VALUE_MAX = 200
+
+
+def loggable(value: Any) -> str:
+    """Flatten a caller-controlled value into something safe to put in a log line.
+
+    Everything on a webhook request is attacker-chosen — headers, payload fields, the request line
+    itself — so a raw value containing a newline lets a caller forge whole log entries and rewrite
+    the audit trail this process exists to produce. Line breaks are removed (never escaped: a
+    reader should not have to un-escape an audit line) and the value is truncated, so a megabyte of
+    junk in one header cannot bury the surrounding records.
+    """
+    text = str(value).replace("\r\n", "").replace("\n", "").replace("\r", "")
+    return text if len(text) <= LOG_VALUE_MAX else text[:LOG_VALUE_MAX] + "...(truncated)"
+
 #: Only these events are recorded. Anything else GitHub sends is acknowledged and dropped, so
 #: widening the app's subscription list cannot silently fill the queue with rows nothing reads.
 SUBSCRIBED = frozenset(
@@ -146,7 +162,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """Route access logging through our logger instead of stderr."""
-        LOG.info("%s - %s", self.address_string(), fmt % args)
+        LOG.info("%s - %s", self.address_string(), loggable(fmt % args))
 
     def _reply(self, code: int, body: str = "") -> None:
         """Send a short plain-text response."""
@@ -225,7 +241,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("payload is not an object")
         except ValueError as exc:
-            LOG.warning("rejected delivery %r: unparseable payload (%r)", delivery, exc)
+            LOG.warning(
+                "rejected delivery %s: unparseable payload (%s)", loggable(delivery), loggable(exc)
+            )
             self._reply(400, "bad json")
             return
 
@@ -252,11 +270,18 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error as exc:
             # 500 (not 202) so GitHub retries and the delivery is not lost. This is the branch that
             # makes "202 means committed" true.
-            LOG.error("delivery %r NOT stored: %r", delivery, exc)
+            LOG.error("delivery %s NOT stored: %s", loggable(delivery), loggable(exc))
             self._reply(500, "storage failed")
             return
 
-        LOG.info("stored %r/%r delivery=%r number=%s new=%s", event, action, delivery, number, fresh)
+        LOG.info(
+            "stored %s/%s delivery=%s number=%s new=%s",
+            loggable(event),
+            loggable(action),
+            loggable(delivery),
+            loggable(number),
+            fresh,
+        )
         self._reply(202, "queued" if fresh else "duplicate")
 
 

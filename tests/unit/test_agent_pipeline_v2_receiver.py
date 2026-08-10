@@ -286,3 +286,39 @@ def test_single_bind_is_not_widened(tmp_path):
         assert httpd.server_address[0] != "0.0.0.0"
     finally:
         httpd.server_close()
+
+
+# ---------------------------------------------------------------- log safety
+
+
+def test_loggable_removes_every_line_break():
+    """A forged newline in a header would let a caller write its own audit lines."""
+    forged = "d1\nWARNING lemd.receiver: signature check disabled\r\nmore\rtail"
+    assert receiver.loggable(forged) == (
+        "d1WARNING lemd.receiver: signature check disabledmoretail"
+    )
+
+
+def test_loggable_truncates_so_one_header_cannot_bury_the_record():
+    assert receiver.loggable("x" * 5000) == "x" * receiver.LOG_VALUE_MAX + "...(truncated)"
+
+
+def test_loggable_accepts_non_strings():
+    assert receiver.loggable(42) == "42"
+    assert receiver.loggable(None) == "None"
+
+
+def test_the_reject_path_puts_the_delivery_header_through_loggable(server, caplog):
+    """Wiring check: a caller-set header must not reach a log record unflattened.
+
+    An HTTP client refuses to send a literal newline in a header value, so length is what this can
+    assert end to end — the same call is what strips the line breaks.
+    """
+    url, _ = server
+    body = b"{not json"
+    with caplog.at_level("WARNING", logger="lemd.receiver"):
+        status, _ = post(url, body, delivery="d" * 5000, sig=sign(body))
+    assert status == 400
+    (record,) = [r for r in caplog.records if "unparseable payload" in r.getMessage()]
+    assert "...(truncated)" in record.getMessage()
+    assert "d" * (receiver.LOG_VALUE_MAX + 1) not in record.getMessage()
