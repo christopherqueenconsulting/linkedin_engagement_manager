@@ -50,13 +50,34 @@ jobs:
           queries: security-and-quality
           # Deliberately NOT scoped to src/cqc_lem the way codeql.yml and the PR-gate config are:
           # this is the broad sweep, and it is the only analysis that covers scripts/ and the rest
-          # of the tree. The single exclusion is vendored code — `.agents/skills` is pulled from
-          # upstream repos and pinned by content hash in skills-lock.json, so we cannot fix its
-          # findings, and leaving them in blocked an unrelated PR (#1145) on three py/empty-except
-          # alerts in code nobody here wrote. A lockfile bump is the moment to review that code.
+          # of the tree — scripts/ stays in scope for exactly that reason. Three exclusions:
+          #
+          # `.agents/skills` is vendored code, pulled from upstream repos and pinned by content
+          # hash in skills-lock.json, so we cannot fix its findings, and leaving them in blocked an
+          # unrelated PR (#1145) on three py/empty-except alerts in code nobody here wrote. A
+          # lockfile bump is the moment to review that code.
+          #
+          # `tests` is 125,708 LOC against src/'s 89,884 — more than half of every python analysis,
+          # spent on code that never ships. `Analyze (python)` sets the floor for the required
+          # CodeQL PR Gate, which polls until EVERY category has uploaded and so can never finish
+          # sooner than the slowest one. codeql.yml and .github/codeql/codeql-config.yml already
+          # exclude tests; this makes the three configs agree.
+          # tests/unit/test_no_orphaned_module_globals.py stays as the local pre-flight for the one
+          # finding class this gives up — py/unused-global-variable in a test file, which is what
+          # evicted #1168 and #1171 from the merge queue.
+          #
+          # `src/cqc_lem/aws/diagram` is a generated, MINIFIED vendor bundle — app.8e9fe77f.js is
+          # 2.34 MB on a single 571,880-character line, 12x the largest hand-written file in the
+          # repo, plus a 3 MB source map. It is the bulk of what the javascript-typescript
+          # extractor was chewing on (102s), it is referenced by nothing, and it sits in the aws/
+          # tree that is an UNSUPPORTED deploy path (#973). No alert in a minified bundle is
+          # actionable. Scoped to the diagram assets rather than to src/cqc_lem/aws so the CDK
+          # Python there stays analysed.
           config: |
             paths-ignore:
               - .agents/skills
+              - tests
+              - src/cqc_lem/aws/diagram
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
