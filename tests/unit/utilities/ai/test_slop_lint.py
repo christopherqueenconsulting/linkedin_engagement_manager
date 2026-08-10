@@ -35,7 +35,7 @@ def _clean_env(monkeypatch):
                  "SLOP_LINT_DM_ENABLED", "SLOP_LINT_NEWSLETTER_ENABLED", "SLOP_LINT_LEXICON_MAX",
                  "SLOP_LINT_EM_DASH_PER_SENTENCE", "SLOP_LINT_BURSTINESS_MIN",
                  "SLOP_LINT_EMOJI_BULLET_MAX", "SLOP_LINT_MAX_ATTEMPTS", "SLOP_LINT_EXTRA_WORDS",
-                 "SLOP_LINT_ALLOW_WORDS", "SLOP_LINT_EXTRA_PHRASES"):
+                 "SLOP_LINT_ALLOW_WORDS", "SLOP_LINT_EXTRA_PHRASES", "SLOP_LINT_BLOG_ALIGNMENT_MIN"):
         monkeypatch.delenv(name, raising=False)
     for check in sl.DEFAULT_SEVERITIES:
         monkeypatch.delenv(f"SLOP_LINT_SEVERITY_{check.upper()}", raising=False)
@@ -357,6 +357,62 @@ class TestReportShape:
         monkeypatch.setenv("SLOP_LINT_EM_DASH_PER_SENTENCE", "")
         assert sl.burstiness_min() == sl.BURSTINESS_MIN_DEFAULT
         assert sl.em_dash_per_sentence_max() == sl.EM_DASH_PER_SENTENCE_DEFAULT
+
+
+class TestBlogAlignment:
+    def test_faithful_newsletter_summary_passes(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.10")
+        blog = ("We rebuilt the billing importer from the audit log after a Friday deploy took down "
+                "checkout for forty minutes. The real fix was a noon-Friday rule.")
+        body = ("The Friday billing deploy that took down checkout for forty minutes taught us one "
+                "rule: no pricing change ships after noon on a Friday. We rebuilt the importer from "
+                "the audit log, one row at a time. Boring, and it has held since.")
+        assert not _fired(body, sl.CHECK_BLOG_ALIGNMENT, content_type="newsletter",
+                          blog_content=blog)
+
+    def test_generic_drift_fires(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.10")
+        blog = "We rebuilt the billing importer from the audit log after a Friday deploy failed."
+        body = ("In today's fast-paced world, leaders must embrace digital transformation. AI, "
+                "automation, and cloud-first thinking unlock value across every industry. Agree?")
+        assert _fired(body, sl.CHECK_BLOG_ALIGNMENT, content_type="newsletter", blog_content=blog)
+
+    def test_no_blog_content_skips_the_check(self):
+        body = "Some generic advice about leadership and growth."
+        report = sl.lint_report(body, "newsletter")
+        assert sl.CHECK_BLOG_ALIGNMENT not in {v["check"] for v in report["violations"]}
+
+    def test_non_newsletter_surface_skips_the_check(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.10")
+        blog = "Specific facts about billing importers."
+        body = "Generic leadership advice with no overlap."
+        report = sl.lint_report(body, "post", blog_content=blog)
+        assert sl.CHECK_BLOG_ALIGNMENT not in {v["check"] for v in report["violations"]}
+
+    def test_warn_by_default(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.10")
+        blog = "Specific facts about billing importers."
+        body = ("Generic leadership advice with no overlap between the source material and the "
+                "finished edition body.")
+        report = sl.lint_report(body, "newsletter", blog_content=blog)
+        assert report["passes"] is True
+        assert any(v["check"] == sl.CHECK_BLOG_ALIGNMENT for v in report["warnings"])
+
+    def test_can_be_promoted_to_hard(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.10")
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_BLOG_ALIGNMENT", "hard")
+        blog = "Specific facts about billing importers."
+        body = ("Generic leadership advice with no overlap between the source material and the "
+                "finished edition body.")
+        assert sl.lint_report(body, "newsletter", blog_content=blog)["passes"] is False
+
+    def test_short_blog_content_skips_the_check(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.10")
+        blog = "billing importer"  # fewer than five meaningful tokens
+        body = ("Generic leadership advice with no overlap between the source material and the "
+                "finished edition body.")
+        report = sl.lint_report(body, "newsletter", blog_content=blog)
+        assert sl.CHECK_BLOG_ALIGNMENT not in {v["check"] for v in report["violations"]}
 
 
 class TestGoldenSet:

@@ -29,6 +29,8 @@ from cqc_lem.utilities.ai.content_alignment import AI_TELL_WORDS
 from cqc_lem.utilities.ai.content_framework import (
     NEWSLETTER_BANNED_SCAFFOLDS,
     POST_BANNED_SCAFFOLDS,
+    content_tokens,
+    text_similarity,
 )
 from cqc_lem.utilities.linkedin_formatter import contains_engagement_bait
 
@@ -46,6 +48,7 @@ CHECK_RULE_OF_THREE = "rule_of_three"
 CHECK_BURSTINESS = "burstiness"
 CHECK_RHETORICAL_HOOK = "rhetorical_hook"
 CHECK_SCAFFOLD = "canned_scaffold"
+CHECK_BLOG_ALIGNMENT = "blog_alignment"
 
 # Default severities. HARD violations are regenerated and then block; WARN ones are recorded and
 # reported but never hold a draft.
@@ -69,6 +72,7 @@ DEFAULT_SEVERITIES: dict = {
     CHECK_BURSTINESS: SEVERITY_WARN,
     CHECK_RHETORICAL_HOOK: SEVERITY_WARN,
     CHECK_SCAFFOLD: SEVERITY_WARN,
+    CHECK_BLOG_ALIGNMENT: SEVERITY_WARN,
 }
 
 # How many DISTINCT tier-1 tell words a draft may carry before the lexicon check fires. Not zero on
@@ -88,6 +92,11 @@ BURSTINESS_MIN_SENTENCES = 5
 EMOJI_BULLET_MAX_DEFAULT = 2
 # Total drafts one caller may spend on a piece (initial + regenerations).
 MAX_ATTEMPTS_DEFAULT = 2
+
+# Token-overlap floor between a blog-aligned newsletter source and the generated edition body.
+# A faithful repurposing should share a meaningful vocabulary footprint; a drift into generic
+# advice falls below this. Kept WARN by default until calibrated against real blog-aligned editions.
+BLOG_ALIGNMENT_MIN_DEFAULT = 0.15
 
 # Multi-word slop the tier-1 wordbank cannot catch (it is word-level). Kept deliberately tight —
 # every entry here is a phrase a careful human writer would cut anyway.
@@ -244,6 +253,16 @@ def burstiness_min() -> float:
     the opposite of the `*_max` knobs.
     """
     return float(_env_number("SLOP_LINT_BURSTINESS_MIN", BURSTINESS_MIN_DEFAULT, float, low=0.0))
+
+
+def blog_alignment_min() -> float:
+    """Minimum token overlap a blog-aligned newsletter edition must carry vs its source.
+
+    `SLOP_LINT_BLOG_ALIGNMENT_MIN`, re-read on every call. A floor: scores below it fire the check.
+    Range 0.0-1.0.
+    """
+    return float(_env_number("SLOP_LINT_BLOG_ALIGNMENT_MIN", BLOG_ALIGNMENT_MIN_DEFAULT, float,
+                             low=0.0, high=1.0))
 
 
 def emoji_bullet_max() -> int:
@@ -479,6 +498,32 @@ def _check_rhetorical_hook(text: str, sents: list, ctx: dict) -> Optional[dict]:
             "evidence": [_excerpt(first, 120)], "score": 1.0, "threshold": 0.0}
 
 
+def _check_blog_alignment(text: str, sents: list, ctx: dict) -> Optional[dict]:
+    """Newsletter-only check: the generated body must still vocabularly track the blog source.
+
+    Compares meaningful-token overlap between the source material `blog_content` and the finished
+    edition body. A low score means the edition drifted into generic advice and no longer repurposes
+    the author's own writing. Skipped when there is no source (the toggle was off or unresolved) or
+    on any surface other than newsletter.
+    """
+    if ctx.get("content_type") != "newsletter":
+        return None
+    blog = str(ctx.get("blog_content") or "").strip()
+    if not blog:
+        return None
+    # A very short source makes the overlap signal noisy; require at least a handful of meaningful
+    # tokens on both sides before grading.
+    if len(content_tokens(blog)) < 5 or len(content_tokens(text)) < 5:
+        return None
+    score = text_similarity(blog, text)
+    floor = blog_alignment_min()
+    if score >= floor:
+        return None
+    return {"detail": (f"blog-alignment token overlap {score:.2f} is below the {floor:.2f} "
+                       "floor — the edition may have drifted from the source material"),
+            "evidence": [], "score": round(score, 4), "threshold": round(floor, 4)}
+
+
 def find_canned_scaffolds(text: Optional[str]) -> list:
     """The banned scaffold templates present in `text`, in list order, deduped.
 
@@ -517,11 +562,13 @@ _CHECKS: tuple = (
     (CHECK_BURSTINESS, _check_burstiness),
     (CHECK_RHETORICAL_HOOK, _check_rhetorical_hook),
     (CHECK_SCAFFOLD, _check_scaffold),
+    (CHECK_BLOG_ALIGNMENT, _check_blog_alignment),
 )
 
 
 def lint_report(text: Optional[str], content_type: str = "post",
-                exempt_keyword: Optional[str] = None) -> dict:
+                exempt_keyword: Optional[str] = None,
+                blog_content: Optional[str] = None) -> dict:
     """Grade one finished draft against every slop check. Deterministic, no LLM, no I/O — the same
     draft always gets the same verdict.
 
@@ -531,7 +578,8 @@ def lint_report(text: Optional[str], content_type: str = "post",
     in which case the report is empty and passing — this layer fails OPEN, always.
 
     `exempt_keyword` is the user's lead-magnet trigger word: a "Comment YES" CTA is sanctioned, not
-    bait, exactly as `strip_engagement_bait` treats it.
+    bait, exactly as `strip_engagement_bait` treats it. `blog_content` is the newsletter source
+    material for the optional blog-alignment fidelity gate (newsletter-only, skipped when absent).
     """
     empty = {"passes": True, "violations": [], "hard": [], "warnings": [], "reasons": [],
              "checked": False}
@@ -542,7 +590,8 @@ def lint_report(text: Optional[str], content_type: str = "post",
 
     body = str(text)
     sents = sentences(body)
-    ctx = {"exempt_keyword": exempt_keyword, "content_type": content_type}
+    ctx = {"exempt_keyword": exempt_keyword, "content_type": content_type,
+           "blog_content": blog_content}
     violations = []
     for name, fn in _CHECKS:
         severity = check_severity(name)
