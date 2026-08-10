@@ -118,12 +118,14 @@ class TestTheBotIsTrustedForItsOwnWrites:
 
 
 class TestTokenLifetime:
-    def test_the_refresh_skew_outlives_one_agent_run(self):
-        # A token handed to a run that then takes CLAUDE_TIMEOUT to finish must still authenticate
-        # the push at the end of it. Anything less loses the whole run's work at the last step.
+    def test_the_refresh_skew_is_less_than_the_timer_interval(self):
+        # Under secret isolation the runner is a cache CONSUMER, not a minter. The root timer
+        # refreshes the cache every 45 min; the runner's skew only decides whether the cached
+        # token is still worth handing out. The skew must be STRICTLY smaller than the timer
+        # interval, otherwise the runner could reject a token the timer has not yet refreshed.
         skew = int(re.search(r'GH_APP_TOKEN_SKEW="\$\{GH_APP_TOKEN_SKEW:-(\d+)\}"', LIB).group(1))
-        timeout = re.search(r'^CLAUDE_TIMEOUT="(\d+)m"', TICK, re.M).group(1)
-        assert skew >= int(timeout) * 60
+        timer_min = int(re.search(r'OnUnitActiveSec=(\d+)min', (PIPELINE / "systemd" / "lem-gh-token.timer").read_text()).group(1))
+        assert skew < timer_min * 60, "skew must be smaller than the timer interval to avoid false gaps"
 
     def test_a_fresh_cached_token_is_reused(self, tmp_path):
         cache = tmp_path / "tok"
@@ -152,10 +154,14 @@ class TestTokenLifetime:
 
 
 class TestWiring:
-    def test_the_credential_path_sources_its_own_secrets(self):
-        # GH_APP_ID lives in secrets.env; relying on another lib having sourced it first would make
-        # the identity split depend on tick.sh's lib load order.
-        assert '[ -f "$BASE/secrets.env" ] && . "$BASE/secrets.env"' in LIB
+    def test_the_credential_path_does_not_source_secrets_in_the_runner(self):
+        # Under secret isolation the runner never holds the private key and therefore never needs
+        # GH_APP_ID/GH_APP_INSTALLATION_ID from secrets.env. Those secrets are sourced by the root
+        # systemd unit via EnvironmentFile=/etc/lem/github-app.env. The runner lib must NOT read
+        # $BASE/secrets.env itself, because that file is reachable by the agent's uid.
+        assert '[ -f "$BASE/secrets.env" ] && . "$BASE/secrets.env"' not in LIB
+        service = (PIPELINE / "systemd" / "lem-gh-token.service").read_text()
+        assert "EnvironmentFile=/etc/lem/github-app.env" in service
 
     def test_the_scope_probe_short_circuits_under_the_app(self):
         # `gh api user` 403s for an installation token, so the OAuth-scope probe would pass by
