@@ -3917,10 +3917,6 @@ def build_parser() -> "argparse.ArgumentParser":
                              "watchable debug node. Pipeline agents MUST pass this: it is what "
                              "guarantees a probe never takes one of the Chrome slots the "
                              "engagement lanes are sized for.")
-    parser.add_argument("--ignore-breaker", action="store_true",
-                        help="run even though the LinkedIn 429 breaker / automation pause is open. "
-                             "OWNER ONLY, for a breaker stuck open. An autonomous agent must never "
-                             "pass this — an open breaker is a WAIT.")
     parser.add_argument("--reaction-probe", action="store_true",
                         help="capture the feed cards' reaction controls (issue #816). Read-only: "
                              "it never leaves a reaction.")
@@ -4010,9 +4006,12 @@ def main(argv: Optional[list] = None) -> int:
 
     # Decided BEFORE Chrome opens, the same rule `plan_daily_invites` follows — a refusal that has
     # already spent a session is not a refusal.
+    # No override flag exists, deliberately. Agents run with `--dangerously-skip-permissions`, so
+    # a hatch guarded only by "an agent must never pass this" is guarded by nothing. An owner with a
+    # genuinely stuck breaker clears the breaker itself — the state this reads — rather than
+    # teaching the probe to ignore it.
     breaker = breaker_reading()
-    breaker["overridden"] = bool(args.ignore_breaker)
-    refusal = None if args.ignore_breaker else breaker_refusal(breaker)
+    refusal = breaker_refusal(breaker)
     if refusal:
         return emit_refusal(args.user_id, refusal, breaker, guard_ledger())
 

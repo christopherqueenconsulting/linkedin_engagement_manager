@@ -2658,16 +2658,19 @@ class TestMainRefusals:
                                      "reason": "Redis is unavailable"})
         assert llv.main(["--feed-sort"]) == llv.BREAKER_REFUSAL_EXIT_CODE
 
-    def test_the_owner_override_runs_anyway_and_says_so(self, monkeypatch, capsys):
-        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
-                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
-        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
-        monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "ok"})
+    def test_no_flag_can_bypass_an_open_breaker(self, monkeypatch, capsys):
+        """There is no override, and that is the point.
+
+        The probe drives the owner's real LinkedIn session on an account with a 429-lockout
+        history. A hatch that only an instruction keeps agents away from is not a control, because
+        headless lanes launch with `--dangerously-skip-permissions`.
+        """
         monkeypatch.setattr(llv, "breaker_reading",
                             lambda: {"readable": True, "open": True, "wait_seconds": 900,
                                      "reason": "open"})
-        assert llv.main(["--feed-sort", "--ignore-breaker"]) == 0
-        assert self._fenced(capsys)["breaker"]["overridden"] is True
+        with pytest.raises(SystemExit):          # argparse rejects it: the flag does not exist
+            llv.main(["--feed-sort", "--ignore-breaker"])
+        assert llv.main(["--feed-sort"]) == 75    # and the breaker still refuses, as a WAIT
 
     def test_the_guard_is_armed_after_login_and_before_the_first_probe(self, monkeypatch, capsys):
         """The one seam: signing in types the credentials and the emailed PIN.
