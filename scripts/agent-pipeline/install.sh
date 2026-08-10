@@ -52,6 +52,14 @@ files() {
   # --sync refuses a box-edited file instead of overwriting it.
   for f in "$SRC"/lib/*.sh;  do [ -e "$f" ] && echo "lib/$(basename "$f")"; done
   for f in "$SRC"/docs/*.md; do [ -e "$f" ] && echo "docs/$(basename "$f")"; done
+  # v2 daemon, shipped by the SAME installer as v1 on purpose: during migration both runners live
+  # on this box, and two sync mechanisms is how one of them silently goes stale — the exact drift
+  # (an unversioned run_lane.sh, a 900-line status.sh git had never seen) this file was rewritten
+  # to stop.
+  for f in "$SRC"/v2/*.md;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
+  for f in "$SRC"/v2/*.sh;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
+  for f in "$SRC"/v2/lemd/*.py; do [ -e "$f" ] && echo "v2/lemd/$(basename "$f")"; done
+  for f in "$SRC"/v2/systemd/*; do [ -e "$f" ] && echo "v2/systemd/$(basename "$f")"; done
 }
 
 sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
