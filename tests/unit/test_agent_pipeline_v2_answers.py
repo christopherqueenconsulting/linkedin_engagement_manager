@@ -310,3 +310,34 @@ def test_a_fork_pr_is_never_un_parked():
     """The fork refusal outranks admission by hold, as it outranks every other lane."""
     snap = held(upstream=False, answer=answers.Answer("a1", "answer", "1B"))
     assert d(snap).action == observe.ACT_NONE
+
+
+# ---------------------------------------------------------------- and it has to actually run
+
+
+def test_finishing_work_is_dispatched_before_starting_new_work(tmp_path):
+    """An un-park that never reaches a slot has not unblocked anything.
+
+    The backlog is 40+ `agent:ready` issues all stamped with the same, older `ready_since`, so
+    ordering by time alone put every one of them ahead of a PR that had just become dispatchable.
+    The WIP gate does not save it: that counts PRs IN FLIGHT, and a PR queued behind the backlog is
+    not in flight, so the gate reads zero and lets the starts through.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    db.upsert_item(conn, kind="issue", number=100, state=db.STATE_READY, pending_mode="start")
+    conn.execute("UPDATE items SET ready_since=1000 WHERE number=100")
+    db.upsert_item(conn, kind="pr", number=200, state=db.STATE_READY, pending_mode="revise")
+    conn.execute("UPDATE items SET ready_since=9000 WHERE number=200")
+
+    order = [(r["kind"], r["number"]) for r in db.dispatchable(conn)]
+    assert order[0] == ("pr", 200), "the newer revise must outrank the older start"
+
+
+def test_priority_still_orders_within_the_same_lane(tmp_path):
+    """Starts sorting last must not flatten the priority ordering among themselves."""
+    conn = db.connect(tmp_path / "q.db")
+    db.upsert_item(conn, kind="issue", number=1, state=db.STATE_READY, pending_mode="start",
+                   priority=5)
+    db.upsert_item(conn, kind="issue", number=2, state=db.STATE_READY, pending_mode="start",
+                   priority=1)
+    assert [r["number"] for r in db.dispatchable(conn)] == [2, 1]
