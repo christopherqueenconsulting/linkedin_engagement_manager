@@ -165,6 +165,12 @@ SELENIUM_REGISTRATION_SECRET=get_constant_from_env('SELENIUM_REGISTRATION_SECRET
 # capacity_alerts._pool_slots(). Empty string disables the exclusion (single-topology boxes).
 SELENIUM_DEBUG_NODE_HOST=get_constant_from_env('SELENIUM_DEBUG_NODE_HOST', default_value='selenium-node-debug')
 SELENIUM_KEEP_VIDEOS_X_DAYS=int(get_constant_from_env('SELENIUM_KEEP_VIDEOS_X_DAYS', default_value='7'))
+# How long get_docker_driver waits for the Grid to report ready before giving up (issue #1339).
+# This is a per-CALL-SITE stall, not a per-run one: there are 25 call sites of
+# get_driver_wait_pair/get_docker_driver, get_driver_wait_pair retries only SessionNotCreatedException
+# so the TimeoutError propagates on the first attempt, and every one of them pays this in full while
+# the Grid is unreachable. Default 60 preserves the value that was hard-coded before.
+SELENIUM_READY_TIMEOUT = int(get_constant_from_env('SELENIUM_READY_TIMEOUT', default_value='60'))
 SELENIUM_RECORD_VIDEOS=isTrue(get_constant_from_env('SELENIUM_RECORD_VIDEOS', default_value='False'))
 STREAMLIT_EMAIL=get_constant_from_env('STREAMLIT_EMAIL')
 HEADLESS_BROWSER = isTrue(get_constant_from_env('HEADLESS_BROWSER', default_value='True'))

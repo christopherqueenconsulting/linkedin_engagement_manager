@@ -116,6 +116,23 @@ Fewer slots than lanes is the one failure this cutover can produce quietly: the 
 hub is healthy, and time-sensitive tasks simply start queueing on session creation. Check it here,
 not from the logs.
 
+### When the hub is unreachable — `SELENIUM_READY_TIMEOUT`
+
+Every driver goes through `_wait_for_selenium_ready`, which polls `/wd/hub/status` every 2s until
+the hub reports ready and otherwise raises `TimeoutError` at **`SELENIUM_READY_TIMEOUT`** (default
+`60`, the value that used to be hard-coded).
+
+Read that as a **per-call-site** cost, not a per-run one. `get_driver_wait_pair` retries only
+`SessionNotCreatedException` — deliberately, since anything else is not a capacity problem — so this
+`TimeoutError` propagates on the first attempt, and each of the ~25 call sites that wants a browser
+pays the full wait for as long as the hub is down. During a hub restart that is the whole Selenium
+lane sitting in `time.sleep(2)`.
+
+Lower it on a box where restarting the hub is routine; the cost of a low value is only that a hub
+which is slow to come up is declared unready, and the task retries on its next beat. Issue #1339
+tracks the two larger fixes: distinguishing "hub unreachable" from a generic warning, and a
+short-circuit so siblings fail fast once one task has observed the hub down.
+
 The capacity monitor (`auto_capacity_watch`, §5e) reads the same `/status` endpoint, with one
 Grid-only adjustment: it counts the POOL's slots and drops the debug node's
 (`capacity_alerts._pool_slots`, matched on `SELENIUM_DEBUG_NODE_HOST`). Saturation has to be

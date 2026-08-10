@@ -85,6 +85,27 @@ class TestUnreadyGridRaises:
             _real_wait("h", "1", timeout=60)
         assert get.call_count == 3
 
+    def test_the_deadline_defaults_to_SELENIUM_READY_TIMEOUT(self):
+        # The 60s used to be a hard-coded default argument. It is read from the module global at
+        # CALL time now (issue #1339), which is both what lets an operator tune it and what lets
+        # this patch reach it — a default argument would have been bound at import.
+        clock = _Clock()
+        with patch(f"{_MOD}.SELENIUM_READY_TIMEOUT", 6), \
+             patch(f"{_MOD}.requests.get", side_effect=OSError("refused")), \
+             patch(f"{_MOD}.time", SimpleNamespace(time=clock.time, sleep=clock.sleep)), \
+             pytest.raises(TimeoutError, match="after 6s"):
+            _real_wait("selenium-chrome", "4444")
+        assert clock.slept == [2, 2, 2]
+
+    def test_an_explicit_timeout_still_beats_the_configured_default(self):
+        clock = _Clock()
+        with patch(f"{_MOD}.SELENIUM_READY_TIMEOUT", 600), \
+             patch(f"{_MOD}.requests.get", side_effect=OSError("refused")), \
+             patch(f"{_MOD}.time", SimpleNamespace(time=clock.time, sleep=clock.sleep)), \
+             pytest.raises(TimeoutError, match="after 2s"):
+            _real_wait("h", "1", timeout=2)
+        assert clock.slept == [2]
+
     def test_the_message_names_the_endpoint_that_never_answered(self):
         clock = _Clock()
         with patch(f"{_MOD}.requests.get", side_effect=OSError("refused")), \

@@ -42,6 +42,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
+
+# Named explicitly on top of the star import above. The star import leaves ruff unable to prove the
+# binding exists (F405), and the Docstring & Lint Gate is a ratchet — one new F405 fails the PR. The
+# rest of this module's constants predate the baseline; a new one has to come in clean.
+from cqc_lem.utilities.env_constants import SELENIUM_READY_TIMEOUT
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
@@ -147,8 +152,20 @@ def _record_session_wait(seconds: float) -> None:
         pass
 
 
-def _wait_for_selenium_ready(host: str, port: str, timeout: int = 60) -> None:
-    """Poll standalone-chrome readiness endpoint until ready or timeout."""
+def _wait_for_selenium_ready(host: str, port: str, timeout: int = None) -> None:
+    """Poll standalone-chrome readiness endpoint until ready or timeout.
+
+    `timeout` defaults to `SELENIUM_READY_TIMEOUT` (60s, the value that used to be hard-coded here).
+    It is worth tuning down on a box where the Grid restarting is a real event: this is a per-CALL-SITE
+    stall, not a per-run one. `get_driver_wait_pair` retries only `SessionNotCreatedException`, so the
+    `TimeoutError` raised here propagates on the first attempt — and each of the 25 call sites that
+    reach a driver pays the full wait while the Grid is unreachable (issue #1339).
+
+    Resolved at CALL time, not import time, so a test or an operator can change it without
+    re-importing the module.
+    """
+    if timeout is None:
+        timeout = SELENIUM_READY_TIMEOUT
     status_url = f"http://{host}:{port}/wd/hub/status"
     deadline = time.time() + timeout
     while time.time() < deadline:
