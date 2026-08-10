@@ -196,6 +196,85 @@ class TestDiagnoseSortControlMiss:
         driver.execute_script.return_value = [{"tag": "button"}, None, "not-a-dict"]
         assert _fn("_diagnose_sort_control_miss")(driver) == [{"tag": "button"}]
 
+    def test_scan_falls_back_to_the_header_strip_when_no_label_names_a_sort(self):
+        # The keyword pass cannot see a control whose label rotated away from every sort word — the
+        # exact drift the capture exists to describe (#1117), so the JS carries a second pass.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "'keyword'" in js and "'header'" in js
+        assert "compareDocumentPosition" in js
+
+    def test_the_scan_root_is_the_main_column_not_the_comment_list(self):
+        # The locator chain searches the whole document and the control renders ABOVE the list, so
+        # a scan scoped INSIDE the list could never describe the element that went missing.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "const root=document.querySelector('main')||document.body;" in js
+
+    def test_the_first_comment_anchor_is_the_live_grounded_one(self):
+        # Comments are NOT <article> elements on SDUI (composer.py, validated #478) — an invented
+        # anchor leaves `first` null on every real page and the header pass unanchored.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "[data-testid='expandable-text-box']" in js
+        assert "comment-item" not in js and "article" not in js
+        assert "'unanchored'" in js
+
+    def test_both_passes_ignore_container_elements(self):
+        # A container div inherits every descendant's text: matched on it, one 'topic' anywhere in
+        # the thread fills the cap with ancestors, the header pass never runs, and other people's
+        # comment text ships to analytics.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert js.count("length>TEXT_MAX) continue;") == 2
+        assert f"TEXT_MAX={_fn('_SORT_CONTROL_OWN_TEXT_MAX')};" in js
+        # 'desktop'/'topic' must not read as the 'top' sort keyword.
+        assert "|\\btop\\b|" in js
+
+    def test_comment_bodies_cannot_match_the_keyword_pass(self):
+        # Verified against a fake DOM: with the thread's own prose eligible, two comments reading
+        # "assorted sorting" filled the cap and the header pass — the only one that can see a
+        # rotated label — never ran. Inside the list only a LABEL may match.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "el.closest(\"[data-testid*='commentList']\")" in js
+        assert "KW.test(inList?label:label+' '+text.toLowerCase())" in js
+
+    def test_the_cap_is_the_scan_cap_constant(self):
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert f"const CAP={_fn('_SORT_CANDIDATE_SCAN_CAP')};" in js
+        assert "out.length>=8" not in js
+
+
+class TestReportSortControlMiss:
+    def _driver(self, candidates):
+        driver = MagicMock()
+        driver.execute_script.return_value = candidates
+        return driver
+
+    def test_evidence_is_emitted_as_an_event_not_only_a_log(self):
+        # DEBUG never leaves the worker in prod (LOG_LEVEL=INFO, POSTHOG_LOG_LEVEL=WARNING), which
+        # is why #1118's capture produced nothing to iterate from.
+        cands = [{"tag": "button", "text": "Sort by", "reason": "header"}]
+        with ExitStack() as es:
+            track = _p(es, "track_selector_evidence")
+            _p(es, "log_debug")
+            out = _fn("_report_sort_control_miss")(self._driver(cands), 7, "https://post")
+        assert out == cands
+        assert track.call_args.args[0] == "comment_sort_control"
+        assert track.call_args.args[1] == cands
+        assert track.call_args.kwargs["post_url"] == "https://post"
+        assert track.call_args.kwargs["user_id"] == 7
+
+    def test_an_empty_scan_is_still_reported(self):
+        # "The scan found nothing describable" is the reading that says the capture itself is blind.
+        with ExitStack() as es:
+            track = _p(es, "track_selector_evidence")
+            _p(es, "log_debug")
+            _fn("_report_sort_control_miss")(self._driver([]), 7, "https://post")
+        assert track.call_args.args[1] == []
+
+    def test_a_telemetry_failure_never_costs_the_outcome_read(self):
+        with ExitStack() as es:
+            _p(es, "track_selector_evidence", side_effect=RuntimeError("posthog down"))
+            _p(es, "log_debug")
+            assert _fn("_report_sort_control_miss")(self._driver([{"tag": "button"}]), 7, "u") == []
+
 
 class TestSwitchCommentSort:
     def test_true_only_when_the_control_confirms_the_new_sort(self):
@@ -457,21 +536,52 @@ class TestReadCommentOutcome:
             label = _fn("_comment_sort_label")
         assert label.call_args.kwargs["warn_on_miss"] is True
 
-    def test_rendered_thread_with_unreadable_sort_logs_candidates(self):
+    def test_rendered_thread_with_unreadable_sort_reports_candidates(self):
         # A rendered thread where the sort control exists but is not readable is #818's starvation
-        # signal: we should capture candidate descriptors at DEBUG for the next iteration.
+        # signal: capture candidate descriptors for the next iteration.
         our_tb = MagicMock(); our_tb.text = "Latency is the tell here"
         items = [(our_tb, MagicMock(), "https://www.linkedin.com/in/me/")]
         with ExitStack() as es:
             driver = _outcome_env(es, items, sort_label="", switched=False)
             _p(es, "_thread_replies", return_value=[])
-            _p(es, "_diagnose_sort_control_miss",
-               return_value=[{"tag": "button", "text": "Sort by"}])
-            log_debug = _p(es, "log_debug")
+            report = _p(es, "_report_sort_control_miss")
             _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
                                           "Latency is the tell here")
-        assert log_debug.called
-        assert log_debug.call_args.kwargs["candidates"] == [{"tag": "button", "text": "Sort by"}]
+        assert report.call_args.args[1:] == (1, "https://post")
+
+    def test_evidence_is_captured_even_when_our_comment_was_not_found(self):
+        # Whether OUR comment is on the page says nothing about whether the page rendered a sort
+        # control, and the skip returns early — gating the capture on it threw away most of the
+        # readings that had evidence (#1117).
+        theirs = [(MagicMock(), MagicMock(), "https://www.linkedin.com/in/glenda/")]
+        theirs[0][0].text = "someone else"
+        with ExitStack() as es:
+            driver = _outcome_env(es, theirs, sort_label="", switched=False)
+            _p(es, "log_info")
+            report = _p(es, "_report_sort_control_miss")
+            out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
+        assert out["skip_reason"] == "comment-not-found"
+        assert report.called
+
+    def test_a_post_that_rendered_nothing_captures_no_evidence(self):
+        # No thread means no control was expected — the same reason that miss does not warn (#1063).
+        with ExitStack() as es:
+            driver = _outcome_env(es, [], sort_label="", switched=False)
+            _p(es, "log_info")
+            report = _p(es, "_report_sort_control_miss")
+            _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me", "ours")
+        assert not report.called
+
+    def test_a_readable_sort_captures_no_evidence(self):
+        our_tb = MagicMock(); our_tb.text = "Latency is the tell here"
+        items = [(our_tb, MagicMock(), "https://www.linkedin.com/in/me/")]
+        with ExitStack() as es:
+            driver = _outcome_env(es, items)
+            _p(es, "_thread_replies", return_value=[])
+            report = _p(es, "_report_sort_control_miss")
+            _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
+                                          "Latency is the tell here")
+        assert not report.called
 
     def test_unknown_sort_leaves_visibility_null_even_when_found(self):
         our_tb = MagicMock(); our_tb.text = "Latency is the tell here"

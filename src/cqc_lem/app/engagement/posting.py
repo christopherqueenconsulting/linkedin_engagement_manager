@@ -175,6 +175,7 @@ from cqc_lem.utilities.observability import (
     track_audience_snapshot,
     track_comment_outcome,
     track_post_outcome,
+    track_selector_evidence,
 )
 from cqc_lem.utilities.selenium_util import (
     click_first,
@@ -1328,27 +1329,73 @@ _SORT_CANDIDATE_SCAN_CAP = 8
 
 # When the sort control cannot be read on a page that DID render comments, capture the
 # sort-control-like candidates so the next locator iteration has fresh evidence. The scan is
-# bounded: it looks only at interactive-ish elements near the comment list and keeps the first
-# `_SORT_CANDIDATE_SCAN_CAP` hits. Purely read-only / DEBUG — it never changes the outcome.
+# bounded: interactive-ish elements in the main column, first `_SORT_CANDIDATE_SCAN_CAP` hits.
+# Purely read-only — it never changes the outcome.
+#
+# The root is the MAIN COLUMN, not the comment list: `_COMMENT_SORT_LOCATORS` search the whole
+# document and the control renders ABOVE the list, so a scan scoped inside the list would be
+# structurally unable to describe the very element that went missing.
+#
+# TWO passes, because a keyword pass alone cannot see the drift it exists to describe (#1117): the
+# first matches anything whose label still names a sort, and when that finds NOTHING — the shape a
+# rotated label produces, and the one that left #818 with no evidence for a month — the second
+# describes the short-labeled interactive controls rendered ABOVE the first comment, which is where
+# the control lives whatever it now calls itself. `reason` says which pass produced a row, and
+# 'unanchored' marks a header pass that could not find the comment list to measure "above" against,
+# so a reader can tell a near-miss from a shot in the dark.
+#
+# BOTH passes ignore an element whose OWN rendered text is long: a container div inherits every
+# descendant's text, so matching on it describes the page rather than a control — it would fill the
+# whole cap with ancestors (any thread containing 'topic' or 'assorted' matches the keywords), leave
+# the header pass permanently unreached, and ship other people's comment text to analytics.
+_SORT_CONTROL_OWN_TEXT_MAX = 40
 _SORT_CONTROL_DIAGNOSTIC_JS = (
-    "const root=document.querySelector(\"[data-testid*='commentList']\")||document.body;"
-    "const out=[];"
-    "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
+    "const root=document.querySelector('main')||document.body;"
+    # The live-grounded comment anchor (utilities/linkedin/composer.py, validated #478). Comments
+    # are NOT <article> elements on SDUI, so guessing one here would leave `first` null on every
+    # real page and the header pass unanchored.
+    "const first=document.querySelector("
+    "\"[data-testid*='commentList'] [data-testid='expandable-text-box']\")"
+    "||document.querySelector(\"[data-testid*='commentList']\");"
+    f"const CAP={_SORT_CANDIDATE_SCAN_CAP};const TEXT_MAX={_SORT_CONTROL_OWN_TEXT_MAX};"
+    "const out=[];const seen=new Set();"
+    "const own=el=>(el.innerText||'').replace(/\\s+/g,' ').trim();"
+    "const push=(el,reason)=>{"
+    "  if(out.length>=CAP||seen.has(el)) return;"
+    "  seen.add(el);"
     "  const aria=(el.getAttribute('aria-label')||'');"
-    "  const text=(el.innerText||'');"
-    "  const blob=(aria+' '+text+' '+(el.getAttribute('data-testid')||'')+' '+(el.getAttribute('class')||'')).toLowerCase();"
-    "  if(/sort|most relevant|most recent|top|newest/.test(blob)){"
-    "    out.push({"
-    "      tag:el.tagName.toLowerCase(),"
-    "      data_testid:el.getAttribute('data-testid')||'',"
-    "      aria_label:aria.slice(0,120),"
-    "      role:el.getAttribute('role')||'',"
-    "      text:text.replace(/\\s+/g,' ').trim().slice(0,80),"
-    "      has_popup:el.getAttribute('aria-haspopup')||'',"
-    "      classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' ')"
-    "    });"
+    "  out.push({"
+    "    tag:el.tagName.toLowerCase(),"
+    "    data_testid:el.getAttribute('data-testid')||'',"
+    "    aria_label:aria.slice(0,120),"
+    "    role:el.getAttribute('role')||'',"
+    "    text:own(el).slice(0,80),"
+    "    has_popup:el.getAttribute('aria-haspopup')||'',"
+    "    classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' '),"
+    "    reason:reason"
+    "  });"
+    "};"
+    "const KW=/sort|most relevant|most recent|\\btop\\b|\\bnewest\\b/;"
+    "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
+    "  const text=own(el);"
+    "  if(text.length>TEXT_MAX) continue;"
+    "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
+    "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
+    # Inside the thread, only a LABEL may match: a comment body is prose, and one 'sort of agree'
+    # would fill the cap with comment text and starve the header pass — the only pass that can see
+    # a control whose label rotated away from every keyword.
+    "  const inList=el.closest&&el.closest(\"[data-testid*='commentList']\");"
+    "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
+    "  if(out.length>=CAP) break;"
+    "}"
+    "if(!out.length){"
+    "  for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup]')){"
+    "    if(first){const pos=first.compareDocumentPosition(el);"
+    "      if(!(pos&Node.DOCUMENT_POSITION_PRECEDING)||(pos&Node.DOCUMENT_POSITION_CONTAINS)) continue;}"
+    "    if(own(el).length>TEXT_MAX) continue;"
+    "    push(el,first?'header':'unanchored');"
+    "    if(out.length>=CAP) break;"
     "  }"
-    "  if(out.length>=8) break;"
     "}"
     "return out;")
 
@@ -1369,16 +1416,44 @@ def _sort_from_element(el) -> str:
 
 
 def _diagnose_sort_control_miss(driver) -> list[dict]:
-    """Candidate elements near the comment list that look sort-control-ish, for DEBUG evidence.
+    """Candidate elements in the post's main column that look sort-control-ish, as shippable evidence.
 
     Called only when a rendered thread yields no readable sort control. The scan is bounded and
-    read-only; it returns structured descriptors (tag, data-testid, aria-label, role, text) so the
-    next locator iteration can be written against production evidence rather than guesses.
+    read-only; it returns structured descriptors (tag, data-testid, aria-label, role, text, and the
+    `reason` the pass matched) so the next locator iteration can be written against production
+    evidence rather than guesses. `_report_sort_control_miss` is what ships them.
     """
     try:
         result = driver.execute_script(_SORT_CONTROL_DIAGNOSTIC_JS)
         return [dict(r) for r in (result or []) if isinstance(r, dict)]
     except Exception:
+        return []
+
+
+def _report_sort_control_miss(driver, user_id: int, post_url: str) -> list[dict]:
+    """Ship the captured DOM evidence for an unreadable comment sort control, and return it.
+
+    The DEBUG line #1118 added never left the worker: prod runs `LOG_LEVEL=INFO` with
+    `POSTHOG_LOG_LEVEL=WARNING`, so the evidence #818 was told to iterate from was dropped at the
+    handler and 20 unreadable readings in the following week produced none of it. An analytics event
+    is the product that survives both filters, and it is the honest level for this: the miss already
+    warns once via `find_first`, and re-stating it at WARNING would file a second grouped defect for
+    the same fault. `post_url` rides along because re-grounding needs a thread to run the
+    `--comment-outcome-url` probe against, and the sweep is the only thing that knows one.
+
+    Never raises: evidence collection must not cost the outcome reading it rode in on.
+    """
+    try:
+        candidates = _diagnose_sort_control_miss(driver)
+        log_debug("Comment sort control unreadable on rendered thread",
+                  user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes",
+                  post_url=post_url, candidates=candidates)
+        track_selector_evidence("comment_sort_control", candidates, user_id=user_id,
+                                post_url=post_url, task_name="sweep_comment_outcomes")
+        return candidates
+    except Exception as e:
+        log_debug(f"Could not capture sort-control evidence: {e}", user_id=user_id,
+                  action_type="scrape", task_name="sweep_comment_outcomes")
         return []
 
 
@@ -1559,6 +1634,13 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         visible = False if ours is not None else None
 
     outcome["visible_most_relevant"] = visible
+    # A rendered thread with an unreadable sort control is the #818 starvation signal — captured
+    # HERE, before the skip below returns, because whether we found OUR comment says nothing about
+    # whether the page rendered a sort control, and gating the evidence on it threw away most of the
+    # readings that had any (#1117).
+    if items and not sort_label:
+        _report_sort_control_miss(driver, user_id, post_url)
+
     if ours is None:
         outcome["status"] = "skipped"
         outcome["skip_reason"] = "post-unavailable" if not items else "comment-not-found"
@@ -1567,15 +1649,6 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         log_debug(f"Comment outcome skipped ({outcome['skip_reason']}) on {post_url}",
                   user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes")
         return outcome
-
-    # A rendered thread with an unreadable sort control is the #818 starvation signal: capture
-    # candidate elements at DEBUG so the next locator iteration has fresh evidence.
-    if not sort_label:
-        candidates = _diagnose_sort_control_miss(driver)
-        if candidates:
-            log_debug("Comment sort control unreadable on rendered thread",
-                      user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes",
-                      post_url=post_url, candidates=candidates)
 
     replies = _thread_replies(driver, ours, items)
     author_href = _post_author_href(driver)
