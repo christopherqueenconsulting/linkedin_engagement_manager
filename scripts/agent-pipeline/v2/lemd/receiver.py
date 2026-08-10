@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -35,9 +36,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+# stdlib logging, NOT cqc_lem.utilities.logger. The repo convention says to use the structured
+# logger, and that convention is right for everything that runs INSIDE the application — but this
+# process runs on the HOST, as its own systemd unit, outside the app's venv and outside its Docker
+# image. Importing cqc_lem here makes the receiver unstartable (ModuleNotFoundError) and would drag
+# the app's dependency tree into the one component that is reachable from the internet.
+# Keep this file stdlib-only.
 
 from . import db
+
+LOG = logging.getLogger("lemd.receiver")
 
 #: Only these events are recorded. Anything else GitHub sends is acknowledged and dropped, so
 #: widening the app's subscription list cannot silently fill the queue with rows nothing reads.
@@ -139,7 +147,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """Route access logging through our logger instead of stderr."""
-        log_info("access", address=self.address_string(), request=fmt % args)
+        LOG.info("%s - %s", self.address_string(), fmt % args)
 
     def _reply(self, code: int, body: str = "") -> None:
         """Send a short plain-text response."""
@@ -168,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
         except Exception as exc:  # noqa: BLE001 - any failure means unhealthy
-            log_error("healthz write failed", exc=exc)
+            LOG.error("healthz write failed: %s", exc)
             self._reply(500, "db write failed")
             return
         self._reply(200, "ok")
@@ -199,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_signature(self.server.secret, body, self.headers.get("X-Hub-Signature-256")):  # type: ignore[attr-defined]
             # No detail in the response and no body in the log: a signature oracle would let a
             # caller probe the secret one guess at a time.
-            log_warning("rejected delivery: bad or missing signature")
+            LOG.warning("rejected delivery: bad or missing signature")
             self._reply(401, "bad signature")
             return
 
@@ -218,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("payload is not an object")
         except ValueError as exc:
-            log_warning("rejected delivery: unparseable payload", delivery=delivery, exc=exc)
+            LOG.warning("rejected delivery %s: unparseable payload (%s)", delivery, exc)
             self._reply(400, "bad json")
             return
 
@@ -245,11 +253,11 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error as exc:
             # 500 (not 202) so GitHub retries and the delivery is not lost. This is the branch that
             # makes "202 means committed" true.
-            log_error("delivery NOT stored", delivery=delivery, exc=exc)
+            LOG.error("delivery %s NOT stored: %s", delivery, exc)
             self._reply(500, "storage failed")
             return
 
-        log_info("stored delivery", event=event, action=action, delivery=delivery, number=number, fresh=fresh)
+        LOG.info("stored %s/%s delivery=%s number=%s new=%s", event, action, delivery, number, fresh)
         self._reply(202, "queued" if fresh else "duplicate")
 
 
@@ -287,7 +295,7 @@ def serve(
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.secret = secret  # type: ignore[attr-defined]
     httpd.db_path = str(db_path)  # type: ignore[attr-defined]
-    log_info("receiver listening", host=host, port=port, db_path=str(db_path))
+    LOG.info("receiver listening on %s:%s db=%s", host, port, db_path)
     return httpd
 
 
@@ -316,7 +324,7 @@ def main() -> None:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        log_info("receiver stopping")
+        LOG.info("receiver stopping")
         httpd.shutdown()
 
 
