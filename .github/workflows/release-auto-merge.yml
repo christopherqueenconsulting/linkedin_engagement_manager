@@ -68,7 +68,19 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           # Space-separated allowlist. Keep this tight: every name here can ship to production
           # without waiting for a release window.
-          TRUSTED_LABELLERS: "gitchrisqueen"
+          #
+          # The bot entry is the IDENTITY SPLIT, not a new privilege. Agents have always been able
+          # to self-apply `release:now` per docs/release-fast-lane.md — they simply did it wearing
+          # the owner's PAT, so the timeline actor read `gitchrisqueen` and this check passed. Once
+          # the pipeline authenticates as its GitHub App the same action reports the bot login, and
+          # without this line every agent-shipped PR silently fell back to the next window while
+          # the warning it emitted said only "not in TRUSTED_LABELLERS". Omitting it does not make
+          # the fast lane safer; it makes it broken in a way that reads as a policy decision.
+          #
+          # What DOES still gate this: the label is only worth anything on a PR that already
+          # merged (`pull_request_target: closed`, merged=true), so it accelerates a release rather
+          # than authorising one.
+          TRUSTED_LABELLERS: "gitchrisqueen cqc-lem-agent-pipeline[bot]"
         run: |
           set -euo pipefail
           # `--slurp` + an external jq, not `--paginate --jq`: gh applies --jq per PAGE, so `| last`
@@ -82,12 +94,17 @@ jobs:
             echo "::warning title=Fast lane refused::could not read who applied release:now on #${PR_NUMBER}; it will ship at the next window."
             exit 1
           fi
-          for trusted in $TRUSTED_LABELLERS; do
-            if [ "$actor" = "$trusted" ]; then
+          # A `case` with the expansion QUOTED, not a `for` over an unquoted list. A bot login ends
+          # in `[bot]`, and an unquoted word containing brackets is subject to pathname expansion —
+          # so the allowlist would depend on what happens to be in the working directory. Inside
+          # `*" $actor "*` the quotes make those characters literal, which is the same form the
+          # runner's own trust walk uses.
+          case " $TRUSTED_LABELLERS " in
+            *" $actor "*)
               echo "release:now applied by '${actor}' — fast lane authorised."
               exit 0
-            fi
-          done
+              ;;
+          esac
           echo "::warning title=Fast lane refused::release:now on #${PR_NUMBER} was applied by '${actor}', who is not in TRUSTED_LABELLERS; it will ship at the next window."
           exit 1
 
