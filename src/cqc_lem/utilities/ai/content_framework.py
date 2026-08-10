@@ -1601,13 +1601,53 @@ def save_worthy_directive(content_type: str = "carousel") -> str:
     )
 
 
+# Canned SCAFFOLD phrasing (issue #1138): an opener, transition or closer that pastes unchanged
+# under any post in any industry once its bracket is filled in. Every entry was sampled from LEM's
+# OWN post system prompts, which handed the writer these exact templates as worked examples — the
+# same provenance rule COMMENT_FILLER_OPENERS follows (sampled tells, never speculative additions).
+# Entries are the STABLE PREFIX before the bracket ("in my experience as a"), so a real job title
+# filled into the template is caught, not just the literal placeholder text.
+#
+# This is the ONE list: `post_writing_directive` names it on the writer side and `slop_lint`'s
+# canned_scaffold check reads it on the checking side, so the two can never drift apart — the same
+# invariant AI_TELL_WORDS carries for the humanization pass.
+POST_BANNED_SCAFFOLDS: tuple = (
+    "in my experience as a",
+    "one of the biggest challenges in",
+    "one of the most challenging moments in my career",
+    "reflecting on my journey as a",
+    "a strategy i've found effective",
+    "this experience taught me that",
+    "one key takeaway i see here is",
+    "one key takeaway for me was",
+    "with recent changes in",
+    "as organizations face",
+    "it's crucial to consider approaches like",
+    "given this development, partnering with an expert in",
+    "how is your organization addressing",
+    "what strategies have you found successful in navigating",
+    "what strategies have you found effective for",
+    "what experiences have shaped your professional growth",
+    "i'd love to hear how others in",
+    "i'd love to hear your thoughts",
+    "share your experiences below",
+)
+
+
 def post_writing_directive() -> str:
     """Channel-craft rules for SHORT-FORM feed posts, appended to every post prompt. This replaces
     the old one-size-fits-all 'viral post framework' suffix (which forced every post into the same
     ten-word-sentence, ten-hashtag template — the exact sameness the blueprint system exists to
     kill). Structure/hook/CTA come from the assigned blueprint; these are the invariant rules.
     """
+    # `banned_scaffolds` is EXACTLY what the checking side greps — every entry, plus whatever
+    # SLOP_LINT_EXTRA_SCAFFOLDS adds this deploy. Never a slice and never the bare constant: a
+    # phrase the lint flags but the prompt never named is the writer/checker drift this list exists
+    # to make impossible, and both the provenance rule and the ops knob invite adding one. Imported
+    # lazily — slop_lint imports THIS module at load time.
+    from cqc_lem.utilities.ai.slop_lint import banned_scaffolds
     from cqc_lem.utilities.linkedin_formatter import PLAIN_PUNCTUATION_DIRECTIVE
+    scaffolds = ", ".join(f"'{p}'" for p in banned_scaffolds())
     return (
         "\n\nLinkedIn post craft rules (always apply):\n"
         "- The FIRST line is the hook and must land within the first 210 characters — that is all "
@@ -1619,6 +1659,13 @@ def post_writing_directive() -> str:
         "- Plain, conversational language; no jargon, no hype words, no markdown syntax of any kind.\n"
         "- Every claim needs a specific: a number, a named example, or a concrete step — from the "
         "provided source material or genuinely well-established knowledge; NEVER invent statistics.\n"
+        "- NEVER reach for scaffolding: a templated opener, transition or closer that would paste "
+        "unchanged under any post in any industry. Banned as written, in any casing: "
+        f"{scaffolds}. A bracket placeholder ('[Job Title]', '[Industry]') is the same defect once "
+        "a real value fills it in — write the author's actual title, the named project, the real "
+        "number, or the decision they actually made, never a label for where one belongs.\n"
+        "- A closing question must be answerable ONLY from something specific in THIS post. A "
+        "prompt that could close any post on the topic unchanged is not a question, it is filler.\n"
         "- " + cta_policy_directive() + "\n"
         "- No external links in the body.\n"
         "- Hashtags are OFF unless the style requirements above explicitly allow them — posts "

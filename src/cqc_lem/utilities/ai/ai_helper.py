@@ -1898,11 +1898,11 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
 
     prompt = f"""Please create a thought leadership post for me based on my LinkedIn Profile information and the current trends in the {industry} industry.
 
-        Craft the post to appeal to readers who are currently in the {buyer_stage} buyer stage of their journey.
+        Craft the post to appeal to readers who are currently at the {buyer_stage} buyer stage.
         
         # Buyer Stages:
         - Awareness: Introduce key industry challenges and trends that my expertise addresses.
-        - Consideration: Highlight unique solutions, strategies, or frameworks that showcase my approach to common industry problems.
+        - Consideration: Highlight unique solutions, strategies, or frameworks that show my approach to common industry problems.
         - Decision: Provide insight into how my experience and skills make me a strong partner for organizations seeking expertise in relevant industries or skills areas.
         
         Conclude with the call to action assigned below — invite a real reply or point to a resource; NEVER ask the reader for a call, demo, or meeting.
@@ -1958,21 +1958,21 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
            - Reflects forward-thinking or innovative approaches.
            - Incorporates specific, actionable advice when possible.
         
-        4. **Create Engaging Introduction**:  
+        4. **Create Engaging Introduction**:
            Start the post with a hook to capture reader interest, such as:
-           - A bold statement, question, or statistic that underscores the importance of the issue.
+           - A bold statement, question, or statistic that shows why the issue matters now.
            - A relatable scenario in which many readers in the field might find themselves.
-        
-        5. **Expand with Depth and Expertise**:  
-           In the main content, build upon the user’s insight with examples, strategies, or industry-specific approaches. Use phrases like:
-           - “In my experience as a [Job Title]…”
-           - “One of the biggest challenges in [Industry] today is…”
-           - “A strategy I’ve found effective involves…”
-        
-        6. **Close with a Call to Action**:  
-           End with a thought-provoking question or prompt that encourages engagement, such as:
-           - “How is your organization addressing [trend or challenge]?”
-           - “What strategies have you found successful in navigating [relevant issue]?”
+
+        5. **Expand with Depth and Expertise**:
+           In the main content, build upon the user’s insight with examples, strategies, or
+           industry-specific approaches. Ground every sentence in a specific: the named project,
+           the client situation, the real number behind the insight. Never a bracketed
+           placeholder, and never a sentence that would read the same under any post.
+
+        6. **Close with a Call to Action**:
+           End with a question that could only be asked about THIS post — one that names the
+           actual trend, number or decision it just discussed. A prompt that would fit under any
+           post on the topic is filler, not a question.
         
         **Final Reminder**: Focus on clarity, avoid jargon, and write in a tone that is both authoritative and accessible.
         
@@ -2118,7 +2118,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please create a post sharing recent {industry} industry news based on my LinkedIn Profile information provided below. 
-    Tailor the post to readers in the {buyer_stage} buyer stage of their journey and include my own commentary to add perspective.
+    Tailor the post to readers at the {buyer_stage} buyer stage and include my own commentary to add perspective.
             
     # Buyer Stages to Consider:
     - Awareness: Introduce the news topic with broad insights on its relevance to the industry.
@@ -2159,7 +2159,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": """Act like a seasoned industry analyst and content strategist. You specialize in creating timely, relevant posts that share current industry news while showcasing the user's unique insights and expertise. Your goal is to craft a post based on trending topics or news in the user's industry, as inferred from their LinkedIn profile. Tailor the post to align with the buyer’s current stage in their journey—whether they are at the Awareness, Consideration, or Decision stage.
+        "content": """Act like a seasoned industry analyst and content strategist. You specialize in creating timely, relevant posts that share current industry news while showcasing the user's unique insights and expertise. Your goal is to craft a post based on trending topics or news in the user's industry, as inferred from their LinkedIn profile. Tailor the post to the buyer’s current stage — Awareness, Consideration, or Decision.
  
         ### Instructions:
         1. **Analyze the User’s Profile**:  
@@ -2169,14 +2169,20 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
            Identify a recent trend or piece of news in the user’s industry. Ensure the topic is significant, relevant, and likely to catch the attention of readers in the intended buyer stage.
          
         3. **Compose the Post**:
-            - **For Awareness Stage**: Introduce the news in a way that highlights broad industry implications, focusing on why this development matters and its potential impact on the field. Example: “With recent changes in [industry], we’re seeing a shift toward…”
-            - **For Consideration Stage**: Provide context on the topic’s importance and suggest how readers might think strategically about addressing the issue. Example: “As organizations face [issue], it’s crucial to consider approaches like…”
-            - **For Decision Stage**: Focus on the practical impact of this news for decision-makers and highlight the user's expertise or offerings as a valuable resource. Example: “Given this development, partnering with an expert in [user’s specialty] can ensure…”
-         
-        4. **Add User Commentary**:  
-           Write a thoughtful commentary that reflects the user’s experience and perspective. Use phrases like:
-           - “In my experience as a [Job Title]…”
-           - “One key takeaway I see here is…”
+            - **For Awareness Stage**: Introduce the news in a way that highlights broad industry
+              implications, focusing on why this development matters. Name the actual change, not
+              a generic industry label.
+            - **For Consideration Stage**: Provide context on the topic’s importance and suggest
+              how readers might think strategically about addressing the issue, using an approach
+              the user would genuinely recommend.
+            - **For Decision Stage**: Focus on the practical impact of this news for
+              decision-makers, grounded in what the user specifically does — never a placeholder
+              for their specialty, and never an offer of a call or a meeting.
+
+        4. **Add User Commentary**:
+           Write a thoughtful commentary that reflects the user’s experience and perspective: a
+           real reaction tied to their actual title and their own specifics. Never a bracketed
+           placeholder, and never a lead-in phrase that would open a post in any industry.
          
         5. **Close with Engagement**:  
            Encourage readers to engage by asking a relevant question or prompting them to share their own experiences.
@@ -2302,13 +2308,12 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     """Generate a post sharing a personal or professional story, based on the user's profile.
     """
     # Pull from the user's recent milestones, achievements, or challenges
-    # Example content: "Reflecting on my journey as a [job title], I’ve learned that..."
 
     # Use json to output to string
     linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please create a story-based post for me, reflecting on a personal or professional milestone, achievement, or challenge, using the information from my LinkedIn Profile provided below. 
-    Tailor the story to connect with readers in the {stage} buyer stage of their journey. 
+    Tailor the story to connect with readers at the {stage} buyer stage. 
     Do not repeat content that I have already shared in my recent activity. 
     Do your best to relate the story to the current industry trends if possible.
     
@@ -2357,7 +2362,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": """Act like a professional storyteller and content strategist. Your goal is to create a meaningful post that shares a personal or professional story from the user’s career journey, highlighting key milestones, achievements, or challenges. Craft a narrative that resonates with readers, giving them insights into the user’s experiences and growth within their field.
+        "content": """Act like a professional storyteller and content strategist. Your goal is to create a meaningful post that shares a personal or professional story from the user’s career, highlighting key milestones, achievements, or challenges. Craft a narrative that resonates with readers, giving them insights into the user’s experiences and growth within their field.
  
         ### Instructions:
         1. **Analyze the User’s Profile**:  
@@ -2370,19 +2375,19 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
             - **Challenges**: Professional hurdles, difficult projects, or industry shifts the user had to navigate.
          
         3. **Craft the Story**:
-            - Begin with a relatable opening, such as: “Reflecting on my journey as a [job title]…” or “One of the most challenging moments in my career came when…”
+            - Begin inside the moment itself — what happened, what was said, what was at stake —
+              rather than announcing that a story is coming.
             - Describe the situation briefly but vividly, focusing on what the user faced and how they approached it.
             - Include key learnings or insights that readers in the user’s industry might find valuable or inspiring.
-         
-        4. **Add a Personal Touch**:  
-           Include the user’s reflections on how this experience shaped them professionally or personally. Use phrases like:
-           - “This experience taught me that…”
-           - “One key takeaway for me was…”
-         
-        5. **Close with a Call to Engage**:  
-           Encourage readers to reflect on their own journeys by ending with a question or prompt, such as:
-           - “What experiences have shaped your professional growth?”
-           - “I’d love to hear how others in [industry] have handled similar challenges.”
+
+        4. **Add a Personal Touch**:
+           Include the user’s reflections on how this experience shaped them professionally or
+           personally. State the actual lesson in plain language; never a templated lead-in that
+           could front any story.
+
+        5. **Close with a Call to Engage**:
+           End on a question tied to the specific challenge or milestone just described — one
+           that could only follow THIS story, never a generic prompt about growth.
          
         Take a deep breath and work on this problem step-by-step.
 
@@ -2432,7 +2437,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please generate a question or prompt to encourage engagement from my followers based on the information in my LinkedIn Profile below and related it to current industry trends. 
-    Tailor the question to resonate with readers in the {stage} buyer stage of their journey.
+    Tailor the question to land with readers at the {stage} buyer stage.
 
     # Buyer Stages to Consider:
     - Awareness: Ask a thought-provoking question to spark curiosity about industry challenges or trends.
@@ -2492,19 +2497,19 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
        - **Best Practices**: Insights or advice on strategies or approaches in the user’s field.
      
     3. **Craft an Engaging Question or Prompt**:
-        - Formulate a question or prompt that invites followers to share their own experiences or perspectives. Use phrases like:
-          - “As a [job title] in [industry], I’m curious to hear…”
-          - “How are others in [industry] addressing…?”
-          - “What strategies have you found effective for…?”
+        - Formulate a question or prompt that invites followers to share their own experiences
+          or perspectives, built around a specific situation, constraint or number from the
+          user’s own work. Never a bracketed placeholder, and never a question that would fit
+          under any post in the industry unchanged.
         - Ensure the question is open-ended to encourage detailed responses rather than simple yes/no answers.
      
     4. **Make it Relatable**:  
        Use language that resonates with followers in the user’s industry or role. The question should feel authentic, reflecting the user’s voice and curiosity as an industry professional.
      
-    5. **Close with a Call to Action**:  
-       Prompt followers to respond directly by saying, for example:
-       - “I’d love to hear your thoughts!”
-       - “Share your experiences below!”
+    5. **Close with a Call to Action**:
+       Let the question itself carry the invitation to reply. Do NOT append a generic engagement
+       line asking for thoughts, shares or comments — that is the reflex-bait shape LinkedIn
+       demotes in 2026, and the pipeline strips it out.
      
     Take a deep breath and work on this problem step-by-step.
 
@@ -2551,7 +2556,7 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please generate a LinkedIn-friendly summary post for the blog article provided below. 
-    Tailor the post to appeal to readers in the {stage} buyer stage of their journey, using my LinkedIn profile details to make the summary relevant to my role and industry.
+    Tailor the post to appeal to readers at the {stage} buyer stage, using my LinkedIn profile details to make the summary relevant to my role and industry.
 
     """
 
@@ -2673,7 +2678,7 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
     linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please generate a LinkedIn-friendly summary post for the website content provided below. 
-        Tailor the post to appeal to readers in the {stage} buyer stage of their journey, using my LinkedIn profile details to make the summary relevant to my role and industry.
+        Tailor the post to appeal to readers at the {stage} buyer stage, using my LinkedIn profile details to make the summary relevant to my role and industry.
 
                """
 
