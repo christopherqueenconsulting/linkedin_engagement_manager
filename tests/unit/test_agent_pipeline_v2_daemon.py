@@ -90,3 +90,27 @@ def test_events_are_marked_processed_even_when_nothing_matched(tmp_path):
                     number=None, head_sha=None, payload="{}")
     dm.drain_events()
     assert db.unprocessed_events(dm.conn) == []
+
+
+def test_reconcile_ingests_working_issues_not_only_working_prs(tmp_path, monkeypatch):
+    """The hole that lost #1091 and #1140.
+
+    `reconcile` asked for `agent:working` on PRs only, but v1 wrote that label onto the ISSUE as
+    its in-flight claim marker. Such an issue matched no query at all — not `agent:ready`, not the
+    PR-kind working query — so it never entered the queue, and with v1 retired nothing else would
+    ever look at it. The failure is total and silent: no error, no row, no work.
+    """
+    dm = daemon.Daemon(_cfg(tmp_path))
+    asked: list[tuple[str, str]] = []
+
+    def fake_list(slug, label, kind, **kw):
+        asked.append((label, kind))
+        if (label, kind) == ("agent:working", "issue"):
+            return [{"number": 1091, "labels": [{"name": "agent:working"}]}]
+        return []
+
+    monkeypatch.setattr(daemon.github, "list_by_label", fake_list)
+    assert dm.reconcile() == 1
+    assert ("agent:working", "issue") in asked
+    assert ("agent:working", "pr") in asked, "the PR half must not be traded away for the issue half"
+    assert db.get_item(dm.conn, "issue", 1091) is not None

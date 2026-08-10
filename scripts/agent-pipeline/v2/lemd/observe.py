@@ -78,6 +78,12 @@ class Decision:
 #: green PR parked with `needs-human` (but still labelled `agent:working`) was merged on the next tick.
 HOLD_LABELS = frozenset({"needs-human", "agent:blocked"})
 
+#: Issue labels whose decision turns on "has a previous run left anything behind?". Kept next to
+#: `decide` rather than inside `snapshot_issue` so the two cannot drift: a label added to one
+#: branch of the state machine and not to this set silently gets `work_exists=None`, which reads as
+#: "unreadable" and parks the item in a wait state for ever.
+WORK_SENSITIVE_LABELS = frozenset({"agent:ready", "agent:working"})
+
 
 def admissible(snap: Snapshot) -> tuple[bool, str]:
     """Is this item the pipeline's to act on at all?
@@ -150,6 +156,25 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, "start_already_produced_work",
                                 wait_reason="work_in_flight", wake_in=ttl_review)
             return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "issue_ready", mode="start")
+        if "agent:working" in snap.labels:
+            # A claim with nothing behind it. v1 marked the ISSUE `agent:working` for the duration
+            # of a run and removed it at the end, so a run that died mid-flight — or a cutover that
+            # retired the runner underneath it — leaves the label set for ever. Nothing else
+            # releases it: the label is on GitHub, not in the queue, so `startup_recover` never
+            # sees it.
+            #
+            # `work_exists` is the whole test, and it is the same three-valued question the ready
+            # path asks, with the same asymmetry. Unreadable WAITS rather than restarting, because
+            # the cost of guessing wrong here is two agents on one branch.
+            if snap.work_exists is None:
+                return Decision(ACT_NONE, db.STATE_WAIT_CI, "working_claim_state_unreadable",
+                                wait_reason="unreadable", wake_in=600)
+            if snap.work_exists:
+                # The branch or PR exists, so the claim is honest and the PR carries the item from
+                # here. Re-dispatching would fork the work.
+                return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, "working_claim_has_work",
+                                wait_reason="work_in_flight", wake_in=ttl_review)
+            return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "working_claim_stranded", mode="start")
         return Decision(ACT_NONE, db.STATE_PARKED, "issue_not_ready", park_reason="not_ready")
 
     # ---- PR lanes, cheapest-to-unblock first --------------------------------------------------
@@ -266,9 +291,11 @@ def snapshot_issue(slug: str, number: int) -> Snapshot:
         return Snapshot(kind="issue", number=number, readable=False)
     labels = frozenset(github.label_names(facts))
     work = None
-    if "agent:ready" in labels:
+    if labels & WORK_SENSITIVE_LABELS:
         # Only asked when it can change the answer — this is two API calls, and every other issue
-        # decision is reached without them.
+        # decision is reached without them. `agent:working` is in the set because a stranded claim
+        # is told from an honest one by exactly this question, and asking it is what stops the
+        # recovery path forking a branch that already exists.
         work = _work_exists_for_issue(slug, number)
     return Snapshot(
         kind="issue",
