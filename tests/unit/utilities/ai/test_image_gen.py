@@ -98,8 +98,9 @@ class TestVisionGate:
     def test_enforced_surface_regenerates_with_the_issues_appended(self):
         verdicts = [QualityVerdict(acceptable=False, issues=["distorted face"]),
                     QualityVerdict(acceptable=True)]
-        with patch.object(image_gen, "render_image_from_prompt",
-                          side_effect=["/tmp/1.png", "/tmp/2.png"]) as render, \
+        with patch.object(image_gen, "_render_with_backend",
+                          side_effect=[("/tmp/1.png", "gpt-image"),
+                                       ("/tmp/2.png", "gpt-image")]) as render, \
              patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
             path = render_image_gated("base prompt", surface="newsletter")
         assert path == "/tmp/2.png"
@@ -108,8 +109,8 @@ class TestVisionGate:
 
     def test_attempts_are_bounded_and_the_last_render_ships(self):
         bad = QualityVerdict(acceptable=False, issues=["filler"])
-        with patch.object(image_gen, "render_image_from_prompt",
-                          return_value="/tmp/x.png") as render, \
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/x.png", "gpt-image")) as render, \
              patch.object(image_gen, "inspect_render_quality", return_value=bad):
             path = render_image_gated("p", surface="newsletter")
         assert path == "/tmp/x.png"
@@ -118,8 +119,8 @@ class TestVisionGate:
     def test_unenforced_surface_is_advisory_only(self):
         bad = QualityVerdict(acceptable=False, issues=["filler"])
         with patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)), \
-             patch.object(image_gen, "render_image_from_prompt",
-                          return_value="/tmp/x.png") as render, \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/x.png", "gpt-image")) as render, \
              patch.object(image_gen, "inspect_render_quality", return_value=bad):
             assert render_image_gated("p", surface="carousel") == "/tmp/x.png"
         render.assert_called_once()
@@ -143,14 +144,19 @@ class TestAvatarRenderIsGatedToo:
                 focal_concept="the idea", post_id=9)
         return path, lora, record
 
-    def test_rejected_avatar_render_is_retried_with_the_issues(self):
-        path, lora, record = self._render([QualityVerdict(acceptable=False, issues=["plain headshot"]),
+    def test_rejected_avatar_render_is_retried_with_a_positive_directive(self):
+        path, lora, record = self._render([QualityVerdict(acceptable=False,
+                                                          issues=["six fingers on the left hand"]),
                                            QualityVerdict(acceptable=True)])
         assert path == "/tmp/2.png"
         assert lora.call_count == 2
-        assert "plain headshot" in lora.call_args[0][0]
+        # This path is always FLUX, which renders what a prompt NAMES — so the retry states what
+        # the image must SHOW, never the defect it was rejected for (issue #1141).
+        retry = lora.call_args[0][0]
+        assert "hands relaxed and out of frame" in retry
+        assert "fingers" not in retry
         # The trigger word + declared clause must survive the retry prompt.
-        assert lora.call_args[0][0].startswith("TOK, a man in his 40s")
+        assert retry.startswith("TOK, a man in his 40s")
 
     def test_accepted_render_returns_immediately_and_signs_provenance(self):
         path, lora, record = self._render([QualityVerdict(acceptable=True)])

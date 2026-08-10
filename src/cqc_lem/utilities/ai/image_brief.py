@@ -30,17 +30,28 @@ _STYLE_PRESETS: dict[str, str] = {
     "video": (
         "An opening frame for a short professional video: a person or subject posed so subtle "
         "motion can bring the frame alive, with layered foreground and background depth."),
+    # Photography vocabulary, like every other preset: the shared system prompt below bans
+    # "illustration" outright, so a preset asking for one put the two halves of this engine in
+    # direct contradiction (issue #1141). A tutorial thumbnail wants CALM, not a different medium.
     "thumbnail": (
-        "A clean, flat product-tutorial thumbnail illustration. Calm palette, simple shapes, "
-        "one clear subject."),
+        "A bold, high-contrast photograph for a product-tutorial video thumbnail, framed to read "
+        "at player-tile size. One tangible object tied to the tutorial's subject, shot close and "
+        "off-center on a real, textured working surface rather than an empty backdrop."),
 }
 _DEFAULT_PRESET = "post_image"
+
+# The ONE vocabulary ban list, named by the system prompt below AND read by the checking side
+# (`tests/unit/utilities/ai/test_image_preset_drift.py`) — the writer side and the checking side
+# cannot drift, which is exactly how the `thumbnail` preset came to ask for the medium the system
+# prompt forbids (issue #1141).
+DEAD_QUALITY_TAGS = ("photorealistic", "cinematic", "8k", "masterpiece", "ultra-detailed")
+DEAD_STYLE_WORDS = ("illustration", "painting", "render", "CGI", "artstation", "stock photo")
 
 # Encodes the BFL/Replicate/fal prompting research (2026): subject-first ordering, 40-80 word
 # flowing prose, concrete camera/lighting vocabulary instead of generic quality tags, positive
 # phrasing only (FLUX has no negative prompts — naming a thing summons it), and skin texture
 # rules that kill the AI sheen. Written to hold for BOTH FLUX.1 LoRA renders and FLUX.2/gpt-image.
-_SYSTEM_PROMPT = """Act as a professional photographer writing the brief for ONE real photograph
+_SYSTEM_PROMPT_HEAD = """Act as a professional photographer writing the brief for ONE real photograph
 of LinkedIn visual content. You turn written content into a single render-ready prompt.
 
 ### Write the prompt in this order (earlier = more weight)
@@ -56,12 +67,17 @@ of LinkedIn visual content. You turn written content into a single render-ready 
 ### Hard rules
 - ONE flowing natural-language paragraph of 40-80 words. No keyword stacking, no weight
   syntax, no quotation marks inside the prompt.
-- Specificity IS realism. Never lean on generic tags — "photorealistic", "cinematic", "8k",
-  "masterpiece", "ultra-detailed" are dead words; concrete gear, named lighting and tactile
-  texture do that work.
-- Photography vocabulary only. A single word like illustration, painting, render, CGI,
-  artstation or stock photo drags the image away from a photograph.
-- The renderer ignores negation, so never write "no X" or "without X" — and NEVER mention
+"""
+
+_VOCABULARY_RULES = (
+    "- Specificity IS realism. Never lean on generic tags — "
+    + ", ".join(DEAD_QUALITY_TAGS)
+    + " are dead words; concrete gear, named lighting and tactile texture do that work.\n"
+    "- Photography vocabulary only. A single word like "
+    + ", ".join(DEAD_STYLE_WORDS)
+    + " drags the image away from a photograph.\n")
+
+_SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" or "without X" — and NEVER mention
   text, letters, numbers, logos, watermarks, brands, charts, or UI at all: naming them
   summons them, garbled. Describe surfaces positively instead: plain unbranded clothing,
   blank screens, clean unmarked walls.
@@ -80,6 +96,8 @@ of LinkedIn visual content. You turn written content into a single render-ready 
 Respond with ONLY a JSON object:
 {"focal_concept": "<the one idea the image depicts, under 20 words>",
  "prompt": "<the photograph brief, one 40-80 word paragraph>"}"""
+
+_SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + _VOCABULARY_RULES + _SYSTEM_PROMPT_TAIL
 
 # A refusal or meta-answer leaking into a render prompt produces surreal garbage. Anchored to
 # refusal PHRASING on purpose: a bare "language model" entry here rejected every legitimate brief

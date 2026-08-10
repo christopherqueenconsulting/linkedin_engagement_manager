@@ -89,6 +89,43 @@ _ACTIVE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_
                   "approval_status": "approved"}
 
 
+class TestSourceFrameRatio:
+    """The brief and the render must agree on the aspect ratio.
+
+    Issue #1141: the brief composes framing for the ratio it is HANDED, so briefing 1:1 and
+    rendering the premium source frame at 9:16 asked for a square composition and cropped it.
+    """
+
+    def _run(self, quality, model_name):
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value=quality), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value=quality), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
+             patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_ACTIVE_AVATAR), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai",
+                   return_value="scene") as brief, \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/a.png") as gpi, \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
+                   return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video",
+                   return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            _generate_video_src(1, "text", None, post_id=9)
+        assert crv.call_args[1]["model"] == model_name
+        return brief.call_args[1]["ratio"], gpi.call_args[1]["ratio"]
+
+    def test_premium_briefs_and_renders_the_same_vertical_frame(self):
+        briefed, rendered = self._run("premium", "veo3.1_fast")
+        assert briefed == rendered == "9:16"
+
+    def test_standard_briefs_and_renders_the_same_default_frame(self):
+        from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_RATIO
+        briefed, rendered = self._run("standard", "gen4_turbo")
+        assert briefed == rendered == DEFAULT_IMAGE_RATIO
+
+
 class TestAvatarOnStandardTier:
     def test_standard_uses_avatar_frame_when_present(self):
         """Avatar appears on the standard (free) tier too — frame goes through generate_post_image."""
