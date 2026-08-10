@@ -1329,22 +1329,39 @@ _SORT_CANDIDATE_SCAN_CAP = 8
 
 # When the sort control cannot be read on a page that DID render comments, capture the
 # sort-control-like candidates so the next locator iteration has fresh evidence. The scan is
-# bounded: it looks only at interactive-ish elements near the comment list and keeps the first
-# `_SORT_CANDIDATE_SCAN_CAP` hits. Purely read-only — it never changes the outcome.
+# bounded: interactive-ish elements in the main column, first `_SORT_CANDIDATE_SCAN_CAP` hits.
+# Purely read-only — it never changes the outcome.
+#
+# The root is the MAIN COLUMN, not the comment list: `_COMMENT_SORT_LOCATORS` search the whole
+# document and the control renders ABOVE the list, so a scan scoped inside the list would be
+# structurally unable to describe the very element that went missing.
 #
 # TWO passes, because a keyword pass alone cannot see the drift it exists to describe (#1117): the
 # first matches anything whose label still names a sort, and when that finds NOTHING — the shape a
 # rotated label produces, and the one that left #818 with no evidence for a month — the second
-# describes the interactive controls rendered ABOVE the first comment, which is where the control
-# lives whatever it now calls itself. `reason` says which pass produced a row so a reader can tell
-# a near-miss from a shot in the dark.
+# describes the short-labeled interactive controls rendered ABOVE the first comment, which is where
+# the control lives whatever it now calls itself. `reason` says which pass produced a row, and
+# 'unanchored' marks a header pass that could not find the comment list to measure "above" against,
+# so a reader can tell a near-miss from a shot in the dark.
+#
+# BOTH passes ignore an element whose OWN rendered text is long: a container div inherits every
+# descendant's text, so matching on it describes the page rather than a control — it would fill the
+# whole cap with ancestors (any thread containing 'topic' or 'assorted' matches the keywords), leave
+# the header pass permanently unreached, and ship other people's comment text to analytics.
+_SORT_CONTROL_OWN_TEXT_MAX = 40
 _SORT_CONTROL_DIAGNOSTIC_JS = (
-    "const root=document.querySelector(\"[data-testid*='commentList']\")"
-    "||document.querySelector('main')||document.body;"
-    "const first=root.querySelector(\"[data-testid*='comment-item'],[data-testid*='commentItem'],article\");"
+    "const root=document.querySelector('main')||document.body;"
+    # The live-grounded comment anchor (utilities/linkedin/composer.py, validated #478). Comments
+    # are NOT <article> elements on SDUI, so guessing one here would leave `first` null on every
+    # real page and the header pass unanchored.
+    "const first=document.querySelector("
+    "\"[data-testid*='commentList'] [data-testid='expandable-text-box']\")"
+    "||document.querySelector(\"[data-testid*='commentList']\");"
+    f"const CAP={_SORT_CANDIDATE_SCAN_CAP};const TEXT_MAX={_SORT_CONTROL_OWN_TEXT_MAX};"
     "const out=[];const seen=new Set();"
+    "const own=el=>(el.innerText||'').replace(/\\s+/g,' ').trim();"
     "const push=(el,reason)=>{"
-    "  if(out.length>=8||seen.has(el)) return;"
+    "  if(out.length>=CAP||seen.has(el)) return;"
     "  seen.add(el);"
     "  const aria=(el.getAttribute('aria-label')||'');"
     "  out.push({"
@@ -1352,24 +1369,32 @@ _SORT_CONTROL_DIAGNOSTIC_JS = (
     "    data_testid:el.getAttribute('data-testid')||'',"
     "    aria_label:aria.slice(0,120),"
     "    role:el.getAttribute('role')||'',"
-    "    text:(el.innerText||'').replace(/\\s+/g,' ').trim().slice(0,80),"
+    "    text:own(el).slice(0,80),"
     "    has_popup:el.getAttribute('aria-haspopup')||'',"
     "    classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' '),"
     "    reason:reason"
     "  });"
     "};"
+    "const KW=/sort|most relevant|most recent|\\btop\\b|\\bnewest\\b/;"
     "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
-    "  const blob=((el.getAttribute('aria-label')||'')+' '+(el.innerText||'')+' '"
-    "    +(el.getAttribute('data-testid')||'')+' '+(el.getAttribute('class')||'')).toLowerCase();"
-    "  if(/sort|most relevant|most recent|top|newest/.test(blob)) push(el,'keyword');"
-    "  if(out.length>=8) break;"
+    "  const text=own(el);"
+    "  if(text.length>TEXT_MAX) continue;"
+    "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
+    "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
+    # Inside the thread, only a LABEL may match: a comment body is prose, and one 'sort of agree'
+    # would fill the cap with comment text and starve the header pass — the only pass that can see
+    # a control whose label rotated away from every keyword.
+    "  const inList=el.closest&&el.closest(\"[data-testid*='commentList']\");"
+    "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
+    "  if(out.length>=CAP) break;"
     "}"
     "if(!out.length){"
     "  for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup]')){"
-    "    if(first&&!(first.compareDocumentPosition(el)&Node.DOCUMENT_POSITION_PRECEDING)) continue;"
-    "    if((el.innerText||'').trim().length>40) continue;"
-    "    push(el,'header');"
-    "    if(out.length>=8) break;"
+    "    if(first){const pos=first.compareDocumentPosition(el);"
+    "      if(!(pos&Node.DOCUMENT_POSITION_PRECEDING)||(pos&Node.DOCUMENT_POSITION_CONTAINS)) continue;}"
+    "    if(own(el).length>TEXT_MAX) continue;"
+    "    push(el,first?'header':'unanchored');"
+    "    if(out.length>=CAP) break;"
     "  }"
     "}"
     "return out;")
@@ -1391,11 +1416,12 @@ def _sort_from_element(el) -> str:
 
 
 def _diagnose_sort_control_miss(driver) -> list[dict]:
-    """Candidate elements near the comment list that look sort-control-ish, for DEBUG evidence.
+    """Candidate elements in the post's main column that look sort-control-ish, as shippable evidence.
 
     Called only when a rendered thread yields no readable sort control. The scan is bounded and
-    read-only; it returns structured descriptors (tag, data-testid, aria-label, role, text) so the
-    next locator iteration can be written against production evidence rather than guesses.
+    read-only; it returns structured descriptors (tag, data-testid, aria-label, role, text, and the
+    `reason` the pass matched) so the next locator iteration can be written against production
+    evidence rather than guesses. `_report_sort_control_miss` is what ships them.
     """
     try:
         result = driver.execute_script(_SORT_CONTROL_DIAGNOSTIC_JS)

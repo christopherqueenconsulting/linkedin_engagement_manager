@@ -203,6 +203,43 @@ class TestDiagnoseSortControlMiss:
         assert "'keyword'" in js and "'header'" in js
         assert "compareDocumentPosition" in js
 
+    def test_the_scan_root_is_the_main_column_not_the_comment_list(self):
+        # The locator chain searches the whole document and the control renders ABOVE the list, so
+        # a scan scoped INSIDE the list could never describe the element that went missing.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "const root=document.querySelector('main')||document.body;" in js
+
+    def test_the_first_comment_anchor_is_the_live_grounded_one(self):
+        # Comments are NOT <article> elements on SDUI (composer.py, validated #478) — an invented
+        # anchor leaves `first` null on every real page and the header pass unanchored.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "[data-testid='expandable-text-box']" in js
+        assert "comment-item" not in js and "article" not in js
+        assert "'unanchored'" in js
+
+    def test_both_passes_ignore_container_elements(self):
+        # A container div inherits every descendant's text: matched on it, one 'topic' anywhere in
+        # the thread fills the cap with ancestors, the header pass never runs, and other people's
+        # comment text ships to analytics.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert js.count("length>TEXT_MAX) continue;") == 2
+        assert f"TEXT_MAX={_fn('_SORT_CONTROL_OWN_TEXT_MAX')};" in js
+        # 'desktop'/'topic' must not read as the 'top' sort keyword.
+        assert "|\\btop\\b|" in js
+
+    def test_comment_bodies_cannot_match_the_keyword_pass(self):
+        # Verified against a fake DOM: with the thread's own prose eligible, two comments reading
+        # "assorted sorting" filled the cap and the header pass — the only one that can see a
+        # rotated label — never ran. Inside the list only a LABEL may match.
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert "el.closest(\"[data-testid*='commentList']\")" in js
+        assert "KW.test(inList?label:label+' '+text.toLowerCase())" in js
+
+    def test_the_cap_is_the_scan_cap_constant(self):
+        js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
+        assert f"const CAP={_fn('_SORT_CANDIDATE_SCAN_CAP')};" in js
+        assert "out.length>=8" not in js
+
 
 class TestReportSortControlMiss:
     def _driver(self, candidates):
