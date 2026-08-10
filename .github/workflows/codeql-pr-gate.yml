@@ -105,12 +105,18 @@ jobs:
 
           [ -z "$PR_NUMBER" ] && PR_NUMBER="0"
 
+          # --wait-interval 10 (default 30): the gate cannot finish before the LAST of the three
+          # CodeQL categories uploads, so a shorter poll buys back only the quantisation slack
+          # between that upload and the next poll — up to 29s, ~15s on average. Deliberately NOT
+          # paired with a shorter --wait-timeout: 900 is what it is because a smaller value made
+          # this gate time out and fail open on all 24 of its runs (#904).
           args=(
             --repo "${{ github.repository }}"
             --head-ref "$HEAD_REF"
             --head-sha "$HEAD_SHA"
             --base-ref "$BASE_REF"
             --pr-number "$PR_NUMBER"
+            --wait-interval 10
             --fix
           )
           [ -n "$BRANCH" ] && args+=(--branch "$BRANCH")
