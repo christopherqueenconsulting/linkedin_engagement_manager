@@ -42,7 +42,6 @@ from typing import Any
 # image. Importing cqc_lem here makes the receiver unstartable (ModuleNotFoundError) and would drag
 # the app's dependency tree into the one component that is reachable from the internet.
 # Keep this file stdlib-only.
-
 from . import db
 
 LOG = logging.getLogger("lemd.receiver")
