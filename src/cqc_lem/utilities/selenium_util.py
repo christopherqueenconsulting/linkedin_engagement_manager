@@ -42,11 +42,18 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
+# Named explicitly ON TOP of the star import above: these decide which HALF of the Grid a
+# session may run on (`apply_debug_node`) and how long we wait for readiness. The star import
+# leaves ruff unable to prove the binding exists (F405), and the Docstring & Lint Gate is a
+# ratchet — one new F405 fails the PR. Binding them here changes nothing at runtime — same
+# module attribute, so `patch("...selenium_util.SELENIUM_DEBUG_NODE_HOST")` still works.
+from cqc_lem.utilities.env_constants import (  # noqa: F401
+    SELENIUM_DEBUG_NODE_HOST,
+    SELENIUM_HUB_HOST,
+    SELENIUM_HUB_PORT,
+    SELENIUM_READY_TIMEOUT,
+)
 
-# Named explicitly on top of the star import above. The star import leaves ruff unable to prove the
-# binding exists (F405), and the Docstring & Lint Gate is a ratchet — one new F405 fails the PR. The
-# rest of this module's constants predate the baseline; a new one has to come in clean.
-from cqc_lem.utilities.env_constants import SELENIUM_READY_TIMEOUT
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
