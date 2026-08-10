@@ -53,9 +53,18 @@ def skills_changed_since_last_recorded(user_id: int, profile: "LinkedInProfile")
     The FIRST successful scrape for a user has no prior snapshot — that is NOT a change, so it
     returns False after recording the initial snapshot. This avoids opening a spurious re-index
     window for every brand-new account.
+
+    A scrape that yields NO skills is an UNDETECTABLE diff, not an emptied skills list: LinkedIn's
+    skills section is one of the first things a partial render drops. Recording [] would wipe the
+    baseline, and the next real reorder would then read as a first scrape and open no window at
+    all — so an empty read leaves the snapshot untouched (expected no-op → DEBUG).
     """
     from cqc_lem.utilities.db import get_last_recorded_skills, set_last_recorded_skills
     current = _top_skills(profile)
+    if not current:
+        log_debug("Profile-skills window: scrape carried no skills — snapshot left untouched",
+                  user_id=user_id)
+        return False
     previous = get_last_recorded_skills(user_id)
     if current == previous:
         return False
@@ -99,7 +108,11 @@ def get_profile_skills_window(user_id: int) -> Optional[list]:
     """The currently open skill keywords, or None when the window is closed/expired.
 
     Fails open: if Redis is unavailable we report no window rather than block content generation.
+    A missing `user_id` is answered without touching Redis — several generation entry points still
+    have no user in hand, and they run at comment volume.
     """
+    if not user_id:
+        return None
     client = shared_redis_client()
     if client is None:
         return None

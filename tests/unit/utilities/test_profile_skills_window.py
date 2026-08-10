@@ -98,6 +98,20 @@ class TestSkillsChanged:
             assert skills_changed_since_last_recorded(1, profile) is True
             mock_write.assert_called_once_with(1, ["product growth", "ai strategy"])
 
+    def test_empty_scrape_never_wipes_the_snapshot(self):
+        """A skill-less scrape is an unreadable diff, not an emptied skills list.
+
+        Recording [] would make the NEXT real reorder look like a first scrape, which opens no
+        window — the exact signal this feature exists to catch.
+        """
+        profile = _make_profile([])
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills",
+                   return_value=["ai strategy", "product growth"]) as mock_read, \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills") as mock_write:
+            assert skills_changed_since_last_recorded(1, profile) is False
+            mock_write.assert_not_called()
+            mock_read.assert_not_called()
+
     def test_new_skill_counts_as_change(self):
         profile = _make_profile(["AI Strategy", "Product Growth", "Leadership"])
         with patch("cqc_lem.utilities.db.get_last_recorded_skills",
@@ -173,6 +187,13 @@ class TestDirective:
     def test_directive_empty_when_redis_unavailable(self):
         with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=None):
             assert profile_skills_directive(7) == ""
+
+    def test_no_user_id_never_touches_redis(self):
+        """Generation entry points without a user run at comment volume — no key, no lookup."""
+        with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client") as mock_client:
+            assert profile_skills_directive(None) == ""
+            assert get_profile_skills_window(None) is None
+            mock_client.assert_not_called()
 
 
 class TestRedisFailsOpen:

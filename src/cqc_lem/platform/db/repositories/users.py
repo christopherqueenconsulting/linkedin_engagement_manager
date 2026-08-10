@@ -511,6 +511,8 @@ def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
         log_error("Could not set profile synthesis", exc=err, user_id=user_id)
         success = False
     return success
+
+
 def get_last_recorded_skills(user_id: int) -> list:
     """The top-5 profile-skill snapshot from the last scrape (issue #1075), [] when there is none.
 
@@ -537,17 +539,25 @@ def get_last_recorded_skills(user_id: int) -> list:
     except (ValueError, TypeError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
 def set_last_recorded_skills(user_id: int, skills: list) -> bool:
-    """Persist the top-5 skill snapshot as JSON. False when the write failed."""
+    """Persist the top-5 skill snapshot as JSON.
+
+    False when nothing was written — a DB error, or no `profiles` row for this user yet. Callers
+    only write on a detected change, so an UPDATE that matches a row always reports one.
+    """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "UPDATE profiles SET last_recorded_skills = %s WHERE user_id = %s",
                 (json.dumps(skills or []), user_id))
-            return cursor.rowcount >= 0
+            return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error("Could not set last recorded skills", exc=err, user_id=user_id)
         return False
+
+
 def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
     """User IDs whose cached profile synthesis is MISSING or older than `stale_days` — the work list
     for the weekly refresh task. Only rows that actually have a profile (user_id NOT NULL) qualify.

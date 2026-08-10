@@ -82,6 +82,12 @@ class TestSetLastRecordedSkills:
             assert set_last_recorded_skills(7, None) is True
         assert cursor.execute.call_args[0][1][0] == "[]"
 
+    def test_missing_profile_row_returns_false(self):
+        conn, _ = _mock_conn(rowcount=0)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_last_recorded_skills
+            assert set_last_recorded_skills(7, ["x"]) is False
+
     def test_db_error_returns_false(self):
         with patch("cqc_lem.platform.db.connection.get_db_connection",
                    side_effect=mysql.connector.Error("boom")):

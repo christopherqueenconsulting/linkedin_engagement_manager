@@ -1734,8 +1734,6 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
     return ResponseModel(status_code=200, detail="Preferences updated")
 
 
-
-
 @router.get("/linkedin-profile-skills")
 def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel:
     """Return the cached profile's top-5 skills and their overlap with declared focus topics.
@@ -1759,6 +1757,8 @@ def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel:
         "adopted": adopted,
         "focus_topics": prefs.get("focus_topics") or [],
     })
+
+
 @router.get("/engagement-preferences")
 def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     """The saved engagement preferences, plus the read-only context the Settings hub renders.

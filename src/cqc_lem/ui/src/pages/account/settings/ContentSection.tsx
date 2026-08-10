@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Toggle from '../../../components/Toggle'
 import api from '../../../api/client'
@@ -111,6 +112,7 @@ export default function ContentSection() {
 function ProfileSkillsPanel() {
   const { sessionToken } = useAuth()
   const { eng, setEng, save } = useEngagementPrefs()
+  const [pendingSave, setPendingSave] = useState(false)
   const { data, isLoading } = useQuery({
     queryKey: ['linkedin-profile-skills', sessionToken],
     queryFn: () =>
@@ -120,14 +122,24 @@ function ProfileSkillsPanel() {
     enabled: !!sessionToken,
     staleTime: 5 * 60 * 1000,
   })
+  // Save from an effect, NOT from the click handler: `save()` sends whatever `eng` the provider
+  // last rendered, so it has to run on the render that already carries the merged focus topics.
+  useEffect(() => {
+    if (!pendingSave) return
+    setPendingSave(false)
+    void save()
+  }, [pendingSave, save])
   if (!eng || isLoading || !data || data.skills.length === 0) return null
 
-  const unadopted = data.skills.filter((s) => !data.adopted.includes(s))
-  const adopt = async () => {
-    const merged = Array.from(new Set([...(eng.focus_topics || []), ...data.skills]))
-    setEng({ focus_topics: merged })
-    // Defer the save so the mutation sees the updated state.
-    setTimeout(() => save(), 0)
+  // Overlap is judged against the LIVE (possibly unsaved) focus topics, not the server's snapshot —
+  // the skills query is cached for 5 minutes, so reading `data.adopted` would leave the panel
+  // advertising "adopt" for skills the user just adopted.
+  const focus = (eng.focus_topics || []).map((t) => t.trim().toLowerCase())
+  const isAdopted = (skill: string) => focus.includes(skill.trim().toLowerCase())
+  const unadopted = data.skills.filter((s) => !isAdopted(s))
+  const adopt = () => {
+    setEng({ focus_topics: [...(eng.focus_topics || []), ...unadopted] })
+    setPendingSave(true)
   }
 
   return (
@@ -140,7 +152,7 @@ function ProfileSkillsPanel() {
           <span
             key={s}
             className={`inline-block mr-1 mb-1 px-2 py-0.5 rounded-full text-xs ${
-              data.adopted.includes(s) ? 'bg-green-100 text-green-800' : 'bg-white text-blue-800 border border-blue-200'
+              isAdopted(s) ? 'bg-green-100 text-green-800' : 'bg-white text-blue-800 border border-blue-200'
             }`}
           >
             {s}
