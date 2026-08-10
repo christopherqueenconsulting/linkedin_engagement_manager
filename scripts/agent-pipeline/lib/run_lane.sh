@@ -118,19 +118,30 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   fi
   [ -f "$MCP_CONFIG" ] && mcp_arg=(--mcp-config "$MCP_CONFIG")
 
+  # Grant the agent the RUNBOOK's directory, NOT $BASE. $BASE holds config.env, secrets.env and
+  # (before this change) the App private key, while the prompt an agent follows is assembled from
+  # issue text written by strangers — the RUNBOOK's own prompt-injection section says exactly that.
+  #
+  # Be precise about what this buys: `--add-dir` scopes the FILE tools, but
+  # `--dangerously-skip-permissions` leaves the Bash tool able to read anything this uid can read,
+  # and agents run as the same uid as this runner. So this is defense in depth, NOT the control.
+  # The control is custody: the App key is root-owned in /etc/lem and minted into a ~1h token by
+  # lem-gh-token.timer, so the worst an agent can reach is a credential that expires within the
+  # hour and carries authority the pipeline already has — instead of a key that never expires.
+  local runbook_dir; runbook_dir="$(dirname "${RUNBOOK:-$BASE/RUNBOOK.md}")"
   if [ "$LANE" = "ollama" ]; then
     ( cd "$wt" && \
       ANTHROPIC_BASE_URL="$OLLAMA_LITELLM_URL" \
       ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY" \
       ANTHROPIC_API_KEY="$LITELLM_MASTER_KEY" \
       timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
-        --dangerously-skip-permissions --add-dir "$BASE" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
+        --dangerously-skip-permissions --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?
   else
     ( cd "$wt" && \
       unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY 2>/dev/null || true
       timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
-        --dangerously-skip-permissions --add-dir "$BASE" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
+        --dangerously-skip-permissions --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?
   fi
   ms=$(( ($(date +%s) - t0) * 1000 ))

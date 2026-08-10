@@ -1,114 +1,103 @@
 #!/usr/bin/env bash
 # GitHub App installation-token minting — the pipeline's IDENTITY, not just its permissions.
 #
-# Why an app and not the PAT it replaces: the PAT acts as the OWNER. That makes the
-# Contribution Gate (a required check demanding owner approval on outside contributions) both
-# unimplementable and pointless — GitHub forbids approving your own PR, so every agent PR would
-# be permanently red; and a prompt-injected agent run holding the owner's credential could
-# `gh pr review --approve` an attacker's PR *as the owner*, greening the very gate that exists
-# to stop it. With an app, the runner can author and merge but can NEVER approve, because the
-# app is not in the approver allowlist. One bug is then no longer sufficient to reach prod.
+# Why an app and not the PAT it replaces: the PAT acts as the OWNER. That makes an owner-approval
+# gate on outside contributions both unimplementable (GitHub forbids approving your own PR, so
+# every agent PR would sit permanently red) and pointless (a prompt-injected agent run holding the
+# owner's credential could `gh pr review --approve` an attacker's PR AS THE OWNER). With an app the
+# runner can author and merge but can NEVER approve, because the app is not in the approver
+# allowlist.
 #
-# Secondary win: installation tokens expire in ~1h, so a leaked token has an hour of life
-# instead of until someone notices — and app-authored PRs DO trigger workflows (unlike a
-# GITHUB_TOKEN-authored PR, which lands in `action_required` and never runs CI — the trap that
-# made release-please PRs sit unbuilt until the token split of #319).
+# ── KEY CUSTODY (the part that is not obvious) ────────────────────────────────────────────────
+# Agent runs execute as the SAME uid as this runner, with `--dangerously-skip-permissions`. Claude
+# Code's `--add-dir` scopes the FILE tools, but the Bash tool can read anything the uid can read —
+# so file modes on a key owned by that uid protect nothing at all. The threat is explicit in the
+# RUNBOOK's own prompt-injection section: issue text is written by strangers.
+#
+# So the key does not live where the agent's uid can reach it. It is root-owned in /etc/lem, and a
+# root-run systemd timer (lem-gh-token.timer) mints the short-lived installation token INTO
+# $BASE/state/gh-app-token for this runner to consume. The runner never holds the private key.
+#
+# What that buys, precisely: an agent can still steal the CACHED TOKEN — it must be readable to be
+# usable — but that token expires in ~1h and carries exactly the authority the pipeline already
+# has. It cannot steal the key, which is unbounded in time and survives token rotation. Bounding
+# the blast radius from "forever" to "one hour" is the achievable win here; pretending file modes
+# solve it is not.
+#
+# If the key IS readable (dev boxes, or before the timer is installed) this falls back to minting
+# in-process, so the pipeline keeps working while the hardening is rolled out.
 #
 # Implementation notes:
-#   - RS256 is signed with `openssl dgst`, NOT PyJWT. The box's venvs are per-worktree and the
-#     one `poetry install` that ran last wins, so a python dependency here would be a lottery.
-#     openssl is in the base image and stable.
-#   - The minted token is cached in $BASE/state/gh-app-token (0600) with its expiry, and reused
-#     while it still has more life left than one agent run can consume (see GH_APP_TOKEN_SKEW).
-#   - Never logged, never echoed to stdout except by gh_app_token() itself (whose only caller
-#     assigns it), and never written anywhere but the 0600 cache.
+#   - RS256 signed with `openssl dgst`, NOT PyJWT: venvs here are per-worktree and the last
+#     `poetry install` anywhere wins, so a Python dependency in the credential path is a lottery.
+#   - Cached with its expiry and reused until 5 minutes before it lapses, so only the first tick of
+#     each hour pays a mint.
+#   - Never logged, never echoed except by gh_app_token() itself, whose only caller assigns it.
 
 BASE="${BASE:-/home/lem/agent-pipeline}"
-# GH_APP_ID / GH_APP_INSTALLATION_ID live in secrets.env, not config.env — the private key's
-# companions are secrets. Source it here rather than relying on lib/posthog.sh happening to be
-# sourced first: a reorder of tick.sh's lib loop would otherwise leave GH_APP_ID unset and silently
-# drop the pipeline back onto the OWNER's PAT, which is the exact property this file exists to end.
-# shellcheck disable=SC1091
-[ -f "$BASE/secrets.env" ] && . "$BASE/secrets.env" 2>/dev/null
-GH_APP_KEY="${GH_APP_KEY:-$BASE/secrets/github-app.pem}"
+# Preferred (hardened) location first, then the legacy in-BASE path for boxes not yet migrated.
+GH_APP_KEY="${GH_APP_KEY:-/etc/lem/github-app.pem}"
+GH_APP_KEY_LEGACY="${GH_APP_KEY_LEGACY:-$BASE/secrets/github-app.pem}"
 GH_APP_TOKEN_CACHE="${GH_APP_TOKEN_CACHE:-$BASE/state/gh-app-token}"
-# Refresh this many seconds before expiry. An installation token lives 60 min and is handed to a
-# `claude -p` run that may take CLAUDE_TIMEOUT (45m) before it pushes, so the skew has to exceed a
-# whole run: at 300s a tick could hand an agent a credential with five minutes left, and the run
-# would do all its work and then fail to push. 50 min leaves the shortest usable token still
-# outliving the longest run. Cost of the tighter window is one two-call mint per ~10 min of ticks.
-GH_APP_TOKEN_SKEW="${GH_APP_TOKEN_SKEW:-3000}"
+GH_APP_TOKEN_SKEW="${GH_APP_TOKEN_SKEW:-300}"   # refresh this many seconds before expiry
 
 _b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
-# Mint a short-lived JWT proving we hold the app's private key. Ten-minute max life per GitHub;
-# 9 used here, with the iat backdated 60s so a slow clock on this box cannot make it "future".
+# Which key can we actually read? Empty when none — the normal, HARDENED case on the VPS, where
+# only the root timer holds it and this runner is a token consumer.
+_gh_app_key_path() {
+  [ -r "$GH_APP_KEY" ] && { printf '%s' "$GH_APP_KEY"; return 0; }
+  [ -r "$GH_APP_KEY_LEGACY" ] && { printf '%s' "$GH_APP_KEY_LEGACY"; return 0; }
+  printf ''
+}
+
+# Mint a short-lived JWT proving we hold the app's private key. Ten-minute max life per GitHub; 9
+# used here, with iat backdated 60s so a slow clock cannot make the token "future-dated".
 _gh_app_jwt() {
-  local now hdr pl sig
-  [ -r "$GH_APP_KEY" ] || return 1
+  local now hdr pl sig key
+  key="$(_gh_app_key_path)"
+  [ -n "$key" ] || return 1
   [ -n "${GH_APP_ID:-}" ] || return 1
   now="$(date +%s)"
   hdr="$(printf '{"alg":"RS256","typ":"JWT"}' | _b64url)"
   pl="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$GH_APP_ID" | _b64url)"
-  sig="$(printf '%s.%s' "$hdr" "$pl" | openssl dgst -sha256 -sign "$GH_APP_KEY" -binary 2>/dev/null | _b64url)"
+  sig="$(printf '%s.%s' "$hdr" "$pl" | openssl dgst -sha256 -sign "$key" -binary 2>/dev/null | _b64url)"
   [ -n "$sig" ] || return 1
   printf '%s.%s.%s' "$hdr" "$pl" "$sig"
 }
 
-# Resolve the installation id once if the owner did not pin it. Cached into the same state dir so
-# this costs one call ever, not one per mint. The installation is picked BY ACCOUNT, not as `.[0]`:
-# the cache is never invalidated, so a second installation appearing ahead of ours would pin the
-# wrong one permanently. Falls back to the first entry when the account cannot be matched.
+# Resolve the installation id once if the owner did not pin it, cached so this costs one call ever.
 _gh_app_installation_id() {
-  local jwt f id acct
+  local jwt f id
   f="$BASE/state/gh-app-installation-id"
-  acct="${GH_APP_ACCOUNT:-${SLUG:-}}"; acct="${acct%%/*}"
   if [ -z "${GH_APP_INSTALLATION_ID:-}" ] && [ -s "$f" ]; then GH_APP_INSTALLATION_ID="$(cat "$f")"; fi
   [ -n "${GH_APP_INSTALLATION_ID:-}" ] && { printf '%s' "$GH_APP_INSTALLATION_ID"; return 0; }
   jwt="$(_gh_app_jwt)" || return 1
   id="$(curl -sS --max-time 10 -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
-        https://api.github.com/app/installations 2>/dev/null \
-        | jq -r --arg a "$acct" '[.[] | select((.account.login // "") == $a) | .id] | first // (.[0].id // empty)' 2>/dev/null)"
+        https://api.github.com/app/installations 2>/dev/null | jq -r '.[0].id // empty')"
   [ -n "$id" ] || return 1
   printf '%s' "$id" > "$f"
   printf '%s' "$id"
 }
 
-# The bot login this app acts as on GitHub — "<app slug>[bot]", e.g. cqc-lem-agent-pipeline[bot].
-# It is NOT cosmetic: tick.sh's trust boundary matches label appliers and issue authors by login,
-# and every one of those checks was written when the pipeline was `gitchrisqueen`. Resolved from
-# GET /app (the JWT already exists) and cached, because a wrong or missing login here silently
-# deadlocks the lanes rather than failing loudly.
-_gh_app_bot_login() {
-  local jwt f slug
-  f="$BASE/state/gh-app-bot-login"
-  [ -n "${GH_APP_BOT_LOGIN:-}" ] && { printf '%s' "$GH_APP_BOT_LOGIN"; return 0; }
-  if [ -s "$f" ]; then printf '%s' "$(cat "$f")"; return 0; fi
-  jwt="$(_gh_app_jwt)" || return 1
-  slug="$(curl -sS --max-time 10 -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
-          https://api.github.com/app 2>/dev/null | jq -r '.slug // empty')"
-  [ -n "$slug" ] || return 1
-  printf '%s[bot]' "$slug" > "$f"
-  printf '%s[bot]' "$slug"
+# Read the cache, honouring the refresh skew. Prints the token, or nothing.
+_gh_app_cached_token() {
+  local now exp tok
+  [ -s "$GH_APP_TOKEN_CACHE" ] || return 1
+  now="$(date +%s)"
+  exp="$(cut -d' ' -f1 < "$GH_APP_TOKEN_CACHE" 2>/dev/null)"
+  tok="$(cut -d' ' -f2- < "$GH_APP_TOKEN_CACHE" 2>/dev/null)"
+  case "$exp" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$tok" ] || return 1
+  [ "$now" -lt "$(( exp - GH_APP_TOKEN_SKEW ))" ] || return 1
+  printf '%s' "$tok"
 }
 
-# gh_app_token -> prints a usable installation token, or nothing (rc 1) when the app is not
-# configured/reachable. FAILS SOFT ON PURPOSE: every caller falls back to the PAT, so a missing
-# key or a GitHub blip degrades the pipeline's identity, never its ability to run.
-gh_app_token() {
-  local now exp tok jwt inst resp
+# Mint a fresh installation token and write the cache. Requires a readable key, so on a hardened
+# box this is the ROOT timer's path, not the runner's.
+gh_app_mint_token() {
+  local jwt inst resp tok exp now
   now="$(date +%s)"
-
-  # Cache format: "<expiry_epoch> <token>" — one line, 0600.
-  if [ -s "$GH_APP_TOKEN_CACHE" ]; then
-    exp="$(cut -d' ' -f1 < "$GH_APP_TOKEN_CACHE" 2>/dev/null)"
-    tok="$(cut -d' ' -f2- < "$GH_APP_TOKEN_CACHE" 2>/dev/null)"
-    case "$exp" in ''|*[!0-9]*) exp=0 ;; esac
-    if [ -n "$tok" ] && [ "$now" -lt "$(( exp - GH_APP_TOKEN_SKEW ))" ]; then
-      printf '%s' "$tok"; return 0
-    fi
-  fi
-
   jwt="$(_gh_app_jwt)" || return 1
   inst="$(_gh_app_installation_id)" || return 1
   resp="$(curl -sS --max-time 15 -X POST \
@@ -116,26 +105,34 @@ gh_app_token() {
             "https://api.github.com/app/installations/$inst/access_tokens" 2>/dev/null)"
   tok="$(printf '%s' "$resp" | jq -r '.token // empty')"
   [ -n "$tok" ] || return 1
-  # expires_at is ISO-8601; fall back to now+55m if it is unparseable rather than caching forever.
   exp="$(date -d "$(printf '%s' "$resp" | jq -r '.expires_at // empty')" +%s 2>/dev/null || echo 0)"
   [ "${exp:-0}" -gt "$now" ] || exp="$(( now + 3300 ))"
-
   mkdir -p "$(dirname "$GH_APP_TOKEN_CACHE")"
   ( umask 077; printf '%s %s\n' "$exp" "$tok" > "$GH_APP_TOKEN_CACHE.new" )
   mv "$GH_APP_TOKEN_CACHE.new" "$GH_APP_TOKEN_CACHE"
+  # When root mints for the runner, hand ownership over or the consumer cannot read it.
+  [ "$(id -u)" = "0" ] && chown "${LEM_RUNNER_USER:-lem}:${LEM_RUNNER_USER:-lem}" "$GH_APP_TOKEN_CACHE" 2>/dev/null
   printf '%s' "$tok"
 }
 
-# Export GH_TOKEN as the app when possible. Returns 0 when the app identity is in force, 1 when
-# the caller should keep whatever credential it already had.
+# gh_app_token -> prints a usable installation token, or nothing (rc 1).
+# FAILS SOFT ON PURPOSE: callers fall back to the PAT, so a missing key or a GitHub blip degrades
+# the pipeline's identity, never its ability to run.
+gh_app_token() {
+  local tok
+  tok="$(_gh_app_cached_token)" && { printf '%s' "$tok"; return 0; }
+  # No usable cache. On a hardened box the key is unreadable here and the root timer owns
+  # refreshing, so the honest answer is "no token" rather than a mint that cannot succeed.
+  [ -n "$(_gh_app_key_path)" ] || return 1
+  gh_app_mint_token
+}
+
+# Export GH_TOKEN as the app when possible. 0 = app identity in force, 1 = keep the existing one.
 gh_app_export_token() {
-  local tok login
+  local tok
   [ "${USE_GH_APP:-0}" = "1" ] || return 1
   tok="$(gh_app_token)" || return 1
   export GH_TOKEN="$tok"
   export GH_APP_IDENTITY_ACTIVE=1
-  # Best-effort: the token works without it, but the trust boundary needs the login to recognise
-  # the pipeline's own writes. tick.sh warns when this comes back empty.
-  login="$(_gh_app_bot_login)" && export GH_APP_BOT_LOGIN="$login"
   return 0
 }
