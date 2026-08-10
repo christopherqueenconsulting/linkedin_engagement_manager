@@ -698,7 +698,12 @@ def auto_nightly_content_quality(self, days: int = None):
 
     Read-only over content that already shipped: it never edits, holds or re-generates anything, and a
     dimension it cannot measure is recorded as unmeasured rather than as a zero.
+
+    Video posts (#1281) also score the rendered asset itself: render outcome, model tier, duration,
+    aspect ratio and a local file probe result. These are read from `posts.video_url` and the on-disk
+    file; a missing or unreadable asset is recorded, not skipped, so the trend line can catch it.
     """
+    from cqc_lem.platform.db.enums import PostType
     from cqc_lem.utilities.ai.content_framework import COMMENT_HISTORY_LIMIT
     from cqc_lem.utilities.content_quality import (
         SURFACE_COMMENT,
@@ -709,6 +714,7 @@ def auto_nightly_content_quality(self, days: int = None):
         detector_score,
         max_items_per_run,
         score_item,
+        score_video_asset,
         similarity_reports,
         window_days,
     )
@@ -767,6 +773,9 @@ def auto_nightly_content_quality(self, days: int = None):
         detector_budget = detector_daily_max()
         for item in items:
             surface = str(item.get("surface") or "")
+            video = None
+            if surface == SURFACE_POST and item.get("post_type") == PostType.VIDEO.value:
+                video = score_video_asset(video_url=item.get("video_url"))
             detector = None
             if detector_budget > 0 and detector_sampled(surface, item.get("ref_id")):
                 detector = detector_score(item.get("text"))
@@ -778,7 +787,8 @@ def auto_nightly_content_quality(self, days: int = None):
                 similarity=similarity.get((surface, item.get("ref_id"))),
                 engagement_rate=engagement_rate(item.get("reactions"), item.get("comments"),
                                                 item.get("reposts"), item.get("impressions")),
-                impressions=item.get("impressions"), exempt_keyword=keyword, detector=detector)
+                impressions=item.get("impressions"), exempt_keyword=keyword, detector=detector,
+                video=video)
             record_content_quality_score(user_id, score)
             track_content_quality(user_id, score)
             scored += 1

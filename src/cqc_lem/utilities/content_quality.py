@@ -28,9 +28,12 @@ evasion target, no score ever rewrites text, and with no API key configured it i
 
 import hashlib
 import os
+import subprocess
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Optional, Sequence
+from urllib.parse import parse_qs, urlparse
 
+from cqc_lem import assets_dir
 from cqc_lem.utilities.ai import slop_lint
 from cqc_lem.utilities.ai.content_framework import (
     COMMENT_HISTORY_LIMIT,
@@ -53,6 +56,14 @@ MEASURE_NONE = "none"
 ALERT_SLOP_REGRESSION = "slop_regression"
 ALERT_ENGAGEMENT_FLOOR = "engagement_floor"
 ALERT_SIMILARITY_CREEP = "similarity_creep"
+
+# Video asset vocabulary. Keep these constants in ONE place so the scorer, the DB writer, the
+# nightly beat and the weekly rollup all name the same states.
+VIDEO_MODEL_PEXELS = "pexels"
+VIDEO_PROBE_OK = "ok"
+VIDEO_PROBE_MISSING = "missing"
+VIDEO_PROBE_EMPTY = "empty"
+VIDEO_PROBE_UNREADABLE = "unreadable"
 
 # A HARD violation is what actually blocks a post or drops a comment, so it carries most of the
 # weight; WARN checks are advisory (a genuine list of three tools reads like a rule-of-three) and only
@@ -376,12 +387,120 @@ def detector_score(text: Optional[str]) -> Optional[float]:
     return None
 
 
+def resolve_local_video_path(video_url: Optional[str]) -> Optional[str]:
+    """Turn a LEM `/api/assets?file_name=...` URL into an on-disk path under `assets_dir`.
+
+    Only URLs whose query path lives under `videos/` are resolved; anything else (external URL,
+    missing query, path escape) returns None so the probe reports "missing" rather than touching
+    arbitrary files. This is a read-only lookup: the file may or may not exist.
+    """
+    url = str(video_url or "").strip()
+    if not url:
+        return None
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    file_name = (query.get("file_name") or [None])[0]
+    if not file_name:
+        return None
+    # Containment: the stored asset root is `assets_dir`; anything outside it is not ours.
+    local_path = os.path.abspath(os.path.join(assets_dir, file_name))
+    if not local_path.startswith(os.path.abspath(assets_dir) + os.sep):
+        return None
+    if not local_path.lower().startswith(os.path.join(assets_dir, "videos") + os.sep):
+        return None
+    return local_path
+
+
+def probe_video_asset(path: Optional[str]) -> dict:
+    """Probe a local video file for duration and a readable video stream.
+
+    Returns a dict with `duration_seconds`, `asset_probe` and `has_video_stream`. Missing,
+    empty or unreadable files report None for duration and a named probe state rather than
+    raising, because a nightly telemetry pass must not break on one bad file.
+    """
+    result = {"duration_seconds": None, "asset_probe": VIDEO_PROBE_MISSING, "has_video_stream": False}
+    file_path = str(path or "").strip()
+    if not file_path:
+        return result
+    if not os.path.exists(file_path):
+        return result
+    if os.path.getsize(file_path) == 0:
+        result["asset_probe"] = VIDEO_PROBE_EMPTY
+        return result
+    try:
+        output = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-show_entries", "stream=codec_type", "-of", "json", file_path],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        if output.returncode != 0:
+            result["asset_probe"] = VIDEO_PROBE_UNREADABLE
+            return result
+        payload = output.stdout or "{}"
+        import json
+        data = json.loads(payload)
+        streams = data.get("streams") or []
+        result["has_video_stream"] = any(
+            isinstance(s, dict) and s.get("codec_type") == "video" for s in streams)
+        duration = data.get("format", {}).get("duration")
+        if duration is not None:
+            try:
+                result["duration_seconds"] = round(float(duration))
+            except (TypeError, ValueError):
+                pass
+        result["asset_probe"] = VIDEO_PROBE_OK if result["has_video_stream"] else VIDEO_PROBE_UNREADABLE
+    except Exception:
+        result["asset_probe"] = VIDEO_PROBE_UNREADABLE
+    return result
+
+
+def video_model_tier(model: Optional[str], video_url: Optional[str] = None) -> Optional[str]:
+    """Normalize a model identifier to the tier recorded in telemetry.
+
+    Known Runway keys from `video_models.VIDEO_MODELS` are passed through; Pexels stock is
+    named explicitly; an empty/unknown model with no URL is None; an unrecognized model is
+    preserved as-is so it is not silently rewritten.
+    """
+    model = str(model or "").strip()
+    if model:
+        return model
+    url = str(video_url or "").strip()
+    if "videos/pexels" in url:
+        return VIDEO_MODEL_PEXELS
+    if "videos/runwayml" in url:
+        return "runway"
+    return None
+
+
+def score_video_asset(*, video_url: Optional[str], model: Optional[str] = None,
+                      ratio: Optional[str] = None) -> dict:
+    """Score the video-specific dimensions of ONE shipped video post.
+
+    Pure except for the local file probe, which is bounded by a timeout and never raises.
+    `render_ok` is True only when the post has a reachable video asset with a readable video
+    stream; `model_tier`, `duration_seconds`, `aspect_ratio` and `asset_probe` are recorded
+    alongside it so a regression in any one of them can be trended.
+    """
+    path = resolve_local_video_path(video_url)
+    probe = probe_video_asset(path)
+    render_ok = bool(path and os.path.exists(path) and probe["has_video_stream"])
+    aspect = (str(ratio or "").strip()[:16]) or None
+    return {
+        "video_render_ok": render_ok,
+        "video_model_tier": video_model_tier(model, video_url),
+        "video_duration_seconds": probe["duration_seconds"],
+        "video_aspect_ratio": aspect,
+        "video_asset_probe": probe["asset_probe"],
+    }
+
+
 def score_item(*, surface: str, ref_id: Any, text: Optional[str], shipped_on: Any,
                format_key: Optional[str] = None, authenticity: Optional[int] = None,
                similarity: Optional[Mapping[str, Any]] = None,
                engagement_rate: Optional[float] = None, impressions: Optional[int] = None,
                exempt_keyword: Optional[str] = None,
-               detector: Optional[float] = None) -> dict:
+               detector: Optional[float] = None,
+               video: Optional[Mapping[str, Any]] = None) -> dict:
     """Score ONE shipped piece of content. Pure — the lint and the hook grader are both deterministic,
     and every network-backed input (similarity, authenticity, ER, detector) is passed in by the
     caller so this stays unit-testable and always agrees with itself.
@@ -418,6 +537,7 @@ def score_item(*, surface: str, ref_id: Any, text: Optional[str], shipped_on: An
         "impressions": impressions,
         "detector_score": detector,
         "detector_provider": detector_provider() if detector is not None else None,
+        **dict(video or {}),
     }
 
 

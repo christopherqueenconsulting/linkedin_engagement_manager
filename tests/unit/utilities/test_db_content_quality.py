@@ -29,6 +29,7 @@ class TestGetShippedContentForQuality:
     def _batches(self):
         return [
             [{"id": 5, "content": "Post body", "archetype": "build_receipt",
+              "post_type": "text", "video_url": None,
               "authenticity_score": 91, "shipped_on": date(2026, 7, 26), "reactions": 12,
               "comments": 3, "reposts": 1, "impressions": 2200}],
             [{"id": 71, "message": "Comment body", "shipped_on": date(2026, 7, 26)}],
@@ -51,6 +52,8 @@ class TestGetShippedContentForQuality:
             post = get_shipped_content_for_quality(1)[0]
         assert post["ref_id"] == "5" and post["text"] == "Post body"
         assert post["format_key"] == "build_receipt"
+        assert post["post_type"] == "text"
+        assert post["video_url"] is None
         assert post["authenticity_score"] == 91
         assert post["impressions"] == 2200
 
@@ -116,7 +119,10 @@ class TestRecordContentQualityScore:
                  "similarity_measure": "embedding", "authenticity_score": 88, "hook_chars": 92,
                  "hook_within_budget": True, "engagement_rate": 0.021, "impressions": 2200,
                  "detector_score": None, "detector_provider": None,
-                 "slop_checks": ["tada_transition"]}
+                 "slop_checks": ["tada_transition"],
+                 "video_render_ok": True, "video_model_tier": "gen4_turbo",
+                 "video_duration_seconds": 5, "video_aspect_ratio": "9:16",
+                 "video_asset_probe": "ok"}
         score.update(kw)
         return score
 
@@ -135,20 +141,36 @@ class TestRecordContentQualityScore:
         conn, cur = _mock_conn()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             record_content_quality_score(1, self._score())
-        assert cur.execute.call_args[0][1][-1] == '["tada_transition"]'
+        assert cur.execute.call_args[0][1][16] == '["tada_transition"]'
+
+    def test_video_dimensions_are_written_to_their_columns(self):
+        from cqc_lem.utilities.db import record_content_quality_score
+        conn, cur = _mock_conn()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            record_content_quality_score(1, self._score())
+        params = cur.execute.call_args[0][1]
+        assert params[17] == 1
+        assert params[18] == "gen4_turbo"
+        assert params[19] == 5
+        assert params[20] == "9:16"
+        assert params[21] == "ok"
 
     def test_unmeasured_dimensions_are_written_as_null(self):
         from cqc_lem.utilities.db import record_content_quality_score
         conn, cur = _mock_conn()
         score = self._score(slop_hard=None, slop_warn=None, slop_score=None, similarity=None,
                             similarity_measure=None, authenticity_score=None,
-                            hook_within_budget=None, engagement_rate=None, impressions=None)
+                            hook_within_budget=None, engagement_rate=None, impressions=None,
+                            video_render_ok=None, video_model_tier=None,
+                            video_duration_seconds=None, video_aspect_ratio=None,
+                            video_asset_probe=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             record_content_quality_score(1, score)
         params = cur.execute.call_args[0][1]
         # A 0 here would read as "clean" / "no reach" instead of "not scored".
         assert params[4:9] == (None, None, None, None, None)
         assert None in params[9:14]
+        assert params[17:22] == (None, None, None, None, None)
 
     def test_a_false_hook_budget_is_written_as_zero_not_null(self):
         from cqc_lem.utilities.db import record_content_quality_score
@@ -181,13 +203,18 @@ class TestGetContentQualityScores:
         from cqc_lem.utilities.db import get_content_quality_scores
         rows = [{"surface": "post", "ref_id": "5", "shipped_on": date(2026, 7, 26),
                  "slop_score": Decimal("5.000"), "similarity": Decimal("0.4200"),
-                 "engagement_rate": Decimal("0.02100000")}]
+                 "engagement_rate": Decimal("0.02100000"),
+                 "video_render_ok": 1, "video_model_tier": "gen4_turbo",
+                 "video_duration_seconds": 5, "video_aspect_ratio": "9:16",
+                 "video_asset_probe": "ok"}]
         conn, cur = _mock_conn(fetch_all=rows)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             out = get_content_quality_scores(1, days=14)
         assert out[0]["slop_score"] == 5.0
         assert out[0]["similarity"] == 0.42
         assert out[0]["engagement_rate"] == 0.021
+        assert out[0]["video_render_ok"] is True
+        assert out[0]["video_model_tier"] == "gen4_turbo"
         assert cur.execute.call_args[0][1] == (1, 14)
 
     def test_unmeasured_decimals_stay_none(self):
