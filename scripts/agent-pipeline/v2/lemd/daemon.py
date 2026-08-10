@@ -301,11 +301,29 @@ class Daemon:
         """
         if self.cfg.shadow:
             return 0
+        busy = self.sup.v1_slots_busy()
+        if busy:
+            # Only the AGENT pool waits. A v1 tick in flight is running agents, not arming merges,
+            # so holding the gh pool too would stall the cheap lane for up to 45 minutes for no
+            # safety gain — and the merge lane is the one v2 exists to make fast.
+            if self.sup.free("gh") <= 0:
+                return 0
+            LOG.info("%s v1 tick(s) still draining — gh-only dispatch this pass", busy)
         launched = 0
+        wip = db.wip_count(self.conn)
         for row in db.dispatchable(self.conn):
             mode = row["pending_mode"]
             pool = "gh" if mode in ("merge", "park") else "agent"
+            if busy and pool == "agent":
+                continue
             if self.sup.free(pool) <= 0:
+                continue
+            if mode == "start" and wip >= self.cfg.max_agents:
+                # v1's gate, ported deliberately: new work never outruns merge throughput. Without
+                # it a backlog of 35 ready issues becomes 35 open PRs against a queue that merges
+                # one at a time — and every one of them is a rebase candidate the moment main moves.
+                LOG.info("WIP limit: %s PR(s) in flight >= %s — holding new starts",
+                         wip, self.cfg.max_agents)
                 continue
             # A cheap local read that saves a doomed spawn. It is NOT the authoritative check —
             # `agent_run.sh` re-checks and charges inside the branch flock, so this being a moment
@@ -318,6 +336,11 @@ class Daemon:
             if not db.claim_item(self.conn, row["id"]):
                 continue
             child = self._launch(row, mode)
+            if mode == "start" and child is not None:
+                # The item this pass just claimed will become a PR, so it counts against the gate
+                # NOW. Reading `wip` once per pass and never updating it would let a single pass
+                # launch every start the slot pool allows, gate or no gate.
+                wip += 1
             if child is None:
                 # The claim must not outlive a failed spawn: `claimed` holds the branch through the
                 # partial unique index, and only `startup_recover` would ever release it.

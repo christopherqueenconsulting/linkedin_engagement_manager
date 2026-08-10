@@ -22,6 +22,7 @@ and re-dispatched while the original agent is still writing to the branch.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import signal
@@ -76,6 +77,35 @@ class Supervisor:
         self.conn = conn
         self.children: list[Child] = []
         self.actions = Path(cfg.base) / "v2" / "actions"
+
+    # ------------------------------------------------------------------ coexistence
+
+    def v1_slots_busy(self) -> int:
+        """How many v1 ticks are still running.
+
+        Cutover flips a sentinel, but a tick already in flight can run for 45 minutes past it (M10).
+        Its agents are doing real work and its slot lock is held for the duration, so the daemon
+        holds its own dispatch until they drain rather than adding three concurrent agents on top of
+        three that are already running — twice the envelope this box has been measured at.
+
+        Correctness does not depend on this: both runners take the same `br-*` flock per branch, so
+        neither can touch the other's work. This bounds CPU, and it is enforced here rather than by
+        an operator remembering to wait.
+        """
+        busy = 0
+        for lock in sorted((Path(self.cfg.base) / "locks").glob("slot-*.lock")):
+            try:
+                fd = os.open(lock, os.O_RDWR)
+            except OSError:
+                continue
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                busy += 1
+            finally:
+                os.close(fd)
+        return busy
 
     # ------------------------------------------------------------------ capacity
 
