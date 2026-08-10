@@ -290,7 +290,18 @@ def serve(
     conn = db.connect(db_path)
     conn.close()
 
-    host, port = binds[0]
+    # Bind 0.0.0.0 when several addresses are requested. The signature accepted a LIST and then
+    # used binds[0], so `--bind 172.18.0.1:8420 --bind 127.0.0.1:8420` silently listened on only
+    # the first — and loopback is what the watchdog probes for /healthz, so the self-heal ladder
+    # would have reported the receiver dead while it was serving the tunnel perfectly.
+    # Binding all interfaces is safe here BECAUSE ingress is firewalled to the cloudflared
+    # container alone and every request is HMAC-verified; the alternative (a thread per address)
+    # buys nothing this deployment needs.
+    ports = {p for _, p in binds}
+    if len(binds) > 1 and len(ports) == 1:
+        host, port = "0.0.0.0", ports.pop()  # noqa: S104 - see the firewall note above
+    else:
+        host, port = binds[0]
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.secret = secret  # type: ignore[attr-defined]
     httpd.db_path = str(db_path)  # type: ignore[attr-defined]

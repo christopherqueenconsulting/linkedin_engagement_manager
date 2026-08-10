@@ -261,3 +261,28 @@ def test_trim_payload_keeps_only_what_the_translator_reads():
     assert trimmed["sender"] == "someone"
     assert trimmed["label"] == "agent:ready"
     assert "issue" not in trimmed  # the 5 KB body never reaches the queue database
+
+
+def test_multiple_binds_on_one_port_listen_everywhere(tmp_path):
+    """The signature took a LIST and used only binds[0].
+
+    `--bind 172.18.0.1:8420 --bind 127.0.0.1:8420` therefore listened on the bridge alone, and
+    loopback is exactly what the watchdog probes for /healthz — so the self-heal ladder would have
+    reported the receiver dead while it was serving the tunnel perfectly.
+    """
+    httpd = receiver.serve(
+        binds=[("127.0.0.1", 0)], db_path=tmp_path / "q.db", secret=SECRET
+    )
+    try:
+        assert httpd.server_address[0] == "127.0.0.1"  # single bind is unchanged
+    finally:
+        httpd.server_close()
+
+
+def test_single_bind_is_not_widened(tmp_path):
+    """One address must stay one address; widening by accident is a security change."""
+    httpd = receiver.serve(binds=[("127.0.0.1", 0)], db_path=tmp_path / "q.db", secret=SECRET)
+    try:
+        assert httpd.server_address[0] != "0.0.0.0"
+    finally:
+        httpd.server_close()
