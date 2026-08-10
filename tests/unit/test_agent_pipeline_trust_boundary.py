@@ -171,7 +171,8 @@ class TestPrAdmissible:
         gh = '''
             case "$1" in
               pr)  echo "${HEAD_OWNER:-}" ;;
-              api) printf '[[{"event":"labeled","label":{"name":"agent:working"},"actor":{"login":"%s"}}]]\\n' "${ACTOR:-}" ;;
+              api) printf '[[{"event":"labeled","label":{"name":"agent:working"},"actor":{"login":"%s"}}]]\\n' \\
+                     "${ACTOR:-}" ;;
             esac
         '''
         ok = _run(tmp_path, 'pr_admissible 12 "agent:working" && echo YES || echo NO', gh,
@@ -204,7 +205,8 @@ class TestSelectNextIssue:
                 case "$2" in
                   */timeline)
                     a="$(echo "$ACTORS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))")"
-                    printf '[[{{"event":"labeled","label":{{"name":"agent:ready"}},"actor":{{"login":"%s"}}}}]]\\n' "$a" ;;
+                    printf '[[{{"event":"labeled","label":{{"name":"agent:ready"}},"actor":{{"login":"%s"}}}}]]\\n' \\
+                      "$a" ;;
                   *) echo "$ASSOC" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$n',''))" ;;
                 esac ;;
             esac
@@ -275,8 +277,9 @@ class TestEveryLaneIsGated:
 
 
 class TestRunbookFramesUntrustedText:
-    """The agent fetches the issue itself (`gh issue view`), so there is no prompt string to
-    sanitize — the framing has to live in the runbook it reads first.
+    """The framing has to live in the runbook the agent reads first.
+
+    The agent fetches the issue itself (`gh issue view`), so there is no prompt string to sanitize.
     """
 
     RUNBOOK = (Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline"
@@ -425,8 +428,9 @@ class TestTheGatesUseGhCommandsThatExist:
 
 
 class TestPaginationDoesNotBreakLabelProvenance:
-    """`gh api --paginate --jq` applies the filter to each PAGE, so `| last` emits one value PER
-    PAGE. Past 100 timeline events the actor string becomes multi-line, the allowlist comparison
+    """`gh api --paginate --jq` applies the filter to each PAGE, so `| last` emits one value PER PAGE.
+
+    Past 100 timeline events the actor string becomes multi-line, the allowlist comparison
     fails, and the gate refuses — silently, and precisely on the long-lived, heavily-discussed
     threads that matter most. Verified against the live API: `--paginate --jq '... | last'` over a
     multi-page endpoint returned five lines.
@@ -464,8 +468,9 @@ class TestPaginationDoesNotBreakLabelProvenance:
 
 
 class TestEmptyQueueExplainsItself:
-    """"Pipeline idle" and "every candidate was excluded" were the same log line. That is the
-    failure the reaper's own header warns about — silence looking identical to done.
+    """"Pipeline idle" and "every candidate was excluded" were the same log line.
+
+    That is the failure the reaper's own header warns about — silence looking identical to done.
     """
 
     def test_the_diagnostic_exists_and_is_called_on_the_idle_path(self):

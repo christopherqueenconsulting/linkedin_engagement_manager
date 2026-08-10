@@ -215,31 +215,3 @@ def test_merge_budget_is_checked_before_the_enqueue_request():
     """v1's order was inverted: it re-enqueued first and checked the budget after (#1120, 45 requests)."""
     text = (_V2 / "actions" / "merge_enable.sh").read_text()
     assert text.index("MERGE BUDGET") < text.index("--auto --squash")
-
-
-# --------------------------------------------------------------------------- WIP gate
-
-def test_wip_counts_waiting_prs_not_just_running_ones(tmp_path):
-    """Starts stay coupled to merge THROUGHPUT, which is the point of the gate.
-
-    A PR in the merge queue is unfinished work. Counting only `running` items would let the
-    scheduler open a PR for every ready issue the moment the agents finished writing them — 35 open
-    PRs against a queue that merges one at a time, each one a rebase candidate as soon as main moves.
-    """
-    conn = db.connect(tmp_path / "q.db")
-    for n, state in ((1, db.STATE_RUNNING), (2, db.STATE_WAIT_CI), (3, db.STATE_WAIT_QUEUE),
-                     (4, db.STATE_WAIT_REVIEW), (5, db.STATE_CLAIMED)):
-        db.upsert_item(conn, kind="pr", number=n, state=state)
-    # Parked and merged PRs are NOT in flight — the pipeline is not carrying them.
-    db.upsert_item(conn, kind="pr", number=6, state=db.STATE_PARKED)
-    db.upsert_item(conn, kind="pr", number=7, state=db.STATE_MERGED)
-    assert db.wip_count(conn) == 5
-
-
-def test_ready_issues_do_not_count_against_the_wip_gate(tmp_path):
-    """A backlog is a queue, not work in flight — counting it would close the gate forever."""
-    conn = db.connect(tmp_path / "q.db")
-    for n in range(10):
-        db.upsert_item(conn, kind="issue", number=100 + n, state=db.STATE_READY,
-                       pending_mode="start")
-    assert db.wip_count(conn) == 0

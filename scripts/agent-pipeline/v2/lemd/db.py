@@ -509,29 +509,6 @@ def _pid_alive(pid: int, starttime: str | None = None) -> bool:
     return True if starttime is None else current == starttime
 
 
-#: What counts as work already in flight for the WIP gate. The wait states are INCLUDED, and that
-#: is the whole point: a PR sitting in the merge queue is unfinished work, so starts stay coupled to
-#: merge THROUGHPUT rather than to how many agents happen to be idle. Excluding them would let the
-#: scheduler open a PR for every ready issue the moment the agents finished writing them — 35 open
-#: PRs against a queue that merges one at a time.
-WIP_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING, STATE_WAIT_CI, STATE_WAIT_REVIEW,
-                        STATE_WAIT_QUEUE})
-
-
-def wip_count(conn: sqlite3.Connection) -> int:
-    """PRs the pipeline is currently carrying.
-
-    Counts PRs only. An `agent:ready` issue is a queue entry, not work in flight, and counting it
-    would make the gate close against its own backlog and never open.
-    """
-    placeholders = ",".join("?" * len(WIP_STATES))
-    row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM items WHERE kind='pr' AND state IN ({placeholders})",
-        tuple(sorted(WIP_STATES)),
-    ).fetchone()
-    return int(row["n"]) if row else 0
-
-
 def counts_by_state(conn: sqlite3.Connection) -> dict[str, int]:
     """Item counts per state — the status endpoint's headline numbers."""
     return {
