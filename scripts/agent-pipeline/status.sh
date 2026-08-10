@@ -575,16 +575,35 @@ print("PRFAIL=" + ",".join("%s:%d:%d" % (pr, c, int(now - pr_last.get(pr, now)))
   LAST_DISPATCH_AGE="$(printf '%s\n' "$ROLLUP" | grep -m1 '^LASTDISPATCH=' | cut -d= -f2)"
   LAST_DISPATCH_AGE="${LAST_DISPATCH_AGE:--1}"
   LAST_DISPATCH_MODE="$(printf '%s\n' "$ROLLUP" | grep -m1 '^LASTDISPATCHMODE=' | cut -d= -f2)"
+
+  # Under v2 everything above describes a ledger that stopped growing at the cutover. `tick.sh`
+  # now runs only as `--failsafe` and stands down on every fire while the heartbeat is fresh, so
+  # `tick-outcomes.ndjson` is frozen — and its age only increases, which made the two warnings
+  # below louder every day while the pipeline was healthy. The v2 truth is the daemon's own
+  # heartbeat (the loop pulse) and the `runs` table (what actually spawned).
+  if [ "$V2_ACTIVE" = 1 ]; then
+    [ "$V2_HB_AGE" -ge 0 ] 2>/dev/null && LAST_TICK_AGE="$V2_HB_AGE"
+    LAST_DISPATCH_AGE="$V2_DISPATCH_AGE"
+    LAST_DISPATCH_MODE="$V2_DISPATCH_MODE"
+  fi
+
   # cron fires every 5 minutes; a tick that has not landed in 15 is cron or the runner being dead.
-  [ "$LAST_TICK_AGE" -ge 0 ] && [ "$LAST_TICK_AGE" -gt 900 ] && \
+  # Skipped under v2: the heartbeat warnings in collect_v2 are the same question asked of the
+  # component that actually owns dispatch, and firing both says one fault twice.
+  [ "$V2_ACTIVE" != 1 ] && [ "$LAST_TICK_AGE" -ge 0 ] && [ "$LAST_TICK_AGE" -gt 900 ] && \
     warn "no tick outcome recorded for $(fmt_dur "$LAST_TICK_AGE") — cron may not be firing (expected every 5m)"
   # The harder failure: ticks keep firing but never dispatch. Cron looks alive, the log fills up,
   # and no work moves — every tick skipping on all_slots_busy (a wedged slot lock), a WIP gate that
   # never clears, or degraded lanes. Zero agents on its own is NOT that: agents finish and the next
   # tick is up to 5 minutes away, so an instantaneous 0 is the normal state between dispatches.
   # What distinguishes them is whether anything has been dispatched recently WHILE work was waiting.
-  if [ "$LAST_DISPATCH_AGE" -ge 0 ] 2>/dev/null && [ "$LAST_DISPATCH_AGE" -gt 2700 ] && [ "${GH_READY:-0}" -gt 0 ] 2>/dev/null; then
-    warn "ticks are running but nothing has been dispatched for $(fmt_dur "$LAST_DISPATCH_AGE") while $GH_READY issues sit agent:ready — the pipeline is stalled, not idle (check the skip reasons above)"
+  #
+  # A HELD start lane is none of that. `LEMD_HOLD_STARTS=1` means an operator asked for exactly
+  # this — no starts, merge/park/selfreview still draining — and reporting a deliberate throttle as
+  # a fault is how a NEEDS ATTENTION list stops being read. The hold is printed on the dispatcher
+  # line instead, where it belongs.
+  if [ -z "$V2_HOLD" ] && [ "$LAST_DISPATCH_AGE" -ge 0 ] 2>/dev/null && [ "$LAST_DISPATCH_AGE" -gt 2700 ] && [ "${GH_READY:-0}" -gt 0 ] 2>/dev/null; then
+    warn "$([ "$V2_ACTIVE" = 1 ] && printf 'the v2 daemon is alive' || printf 'ticks are running') but nothing has been dispatched for $(fmt_dur "$LAST_DISPATCH_AGE") while $GH_READY issues sit agent:ready — the pipeline is stalled, not idle (check the skip reasons above)"
   fi
   # A merge that failed repeatedly and then LANDED is history, not a live problem. The first version
   # warned on the raw count, so it kept flagging PR #1120 for hours after it merged — and a warning
@@ -635,10 +654,19 @@ collect_pipeline_state() {
 # is a trap that a comment in a Python file cannot close; printing the number that is actually in
 # force can.
 V2_ACTIVE=0; V2_CAP=""; V2_DB=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
+V2_HOLD=""; V2_GH_SLOTS=""; V2_DISPATCH_AGE=-1; V2_DISPATCH_MODE=""; V2_RUNS=""; V2_MODES=""; V2_RCS=""
+V2_POOL_AGENT=-1; V2_POOL_GH=-1
 collect_v2() {
   [ -f "$BASE/V1_RETIRED" ] && V2_ACTIVE=1
   V2_DB="$BASE/v2/state/queue.db"
   V2_CAP="$(grep -m1 '^LEMD_MAX_AGENTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  # The knob that explains a dispatch count of zero on a perfectly healthy daemon. It was absent
+  # here, so an operator reading this report during the 2026-08-10 hold saw "the pipeline is
+  # stalled" — a warning with no cause attached — when the true answer was one line of config.
+  V2_HOLD="$(grep -m1 '^LEMD_HOLD_STARTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  case "$V2_HOLD" in 0|false|no|"") V2_HOLD="" ;; *) V2_HOLD=1 ;; esac
+  V2_GH_SLOTS="$(grep -m1 '^LEMD_GH_SLOTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  [ -n "$V2_GH_SLOTS" ] || V2_GH_SLOTS=2   # the default in v2/lemd/config.py
   # The default lives in v2/lemd/config.py; naming it here as a fallback keeps the report honest
   # when the knob is simply absent rather than printing an empty field.
   [ -n "$V2_CAP" ] || V2_CAP="3 (default)"
@@ -647,8 +675,37 @@ collect_v2() {
   case "$hb" in ''|*[!0-9]*) hb="" ;; esac
   [ -n "$hb" ] && V2_HB_AGE=$(( NOW - hb ))
   if command -v sqlite3 >/dev/null 2>&1 && [ -s "$V2_DB" ]; then
+    # SQL string literals are SINGLE-quoted. The first version of this used `"="` inside a
+    # single-quoted shell word, which SQLite parses as an IDENTIFIER — `no such column: "="` — and
+    # the `2>/dev/null` turned that into an empty string, so the most useful v2 line in the report
+    # was never printed once. Hence the shell double quotes here: they let the SQL keep its own.
     V2_STATES="$(sqlite3 "$V2_DB" \
-      'SELECT group_concat(state || "=" || n, " ") FROM (SELECT state, COUNT(*) n FROM items GROUP BY state)' 2>/dev/null)"
+      "SELECT group_concat(state || '=' || n, '  ') FROM (SELECT state, COUNT(*) n FROM items GROUP BY state)" 2>/dev/null)"
+    # What ACTUALLY ran, from the table the dispatcher writes when it spawns. This is the v2
+    # counterpart to v1's tick-outcomes ledger and the reason the activity block can be truthful.
+    local last; last="$(sqlite3 -separator "$SEP" "$V2_DB" \
+      "SELECT mode, started_at FROM runs ORDER BY started_at DESC LIMIT 1" 2>/dev/null)"
+    if [ -n "$last" ]; then
+      V2_DISPATCH_MODE="${last%%"$SEP"*}"
+      local started="${last##*"$SEP"}"
+      case "$started" in ''|*[!0-9]*) : ;; *) V2_DISPATCH_AGE=$(( NOW - started )) ;; esac
+    fi
+    local since=$(( NOW - WINDOW_HOURS * 3600 ))
+    V2_RUNS="$(sqlite3 "$V2_DB" "SELECT COUNT(*) FROM runs WHERE started_at >= $since" 2>/dev/null)"
+    V2_MODES="$(sqlite3 "$V2_DB" \
+      "SELECT group_concat(mode || ':' || n, '  ') FROM (SELECT mode, COUNT(*) n FROM runs WHERE started_at >= $since GROUP BY mode ORDER BY n DESC)" 2>/dev/null)"
+    # rc is NULL while a run is in flight, which is not an outcome — counting it as one would
+    # report every live agent as a silent success.
+    V2_RCS="$(sqlite3 "$V2_DB" \
+      "SELECT group_concat(label || ':' || n, '  ') FROM (SELECT CASE WHEN ended_at IS NULL THEN 'running' WHEN rc = 0 THEN 'ok' WHEN rc = 124 THEN 'timeout' ELSE 'rc' || rc END label, COUNT(*) n FROM runs WHERE started_at >= $since GROUP BY label ORDER BY n DESC)" 2>/dev/null)"
+    # Pool occupancy — v2's real capacity model. Counted from open runs the same way
+    # `Supervisor.in_pool` does, including runs this process did not spawn.
+    V2_POOL_AGENT="$(sqlite3 "$V2_DB" \
+      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode NOT IN ('merge_enable','park')" 2>/dev/null)"
+    V2_POOL_GH="$(sqlite3 "$V2_DB" \
+      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode IN ('merge_enable','park')" 2>/dev/null)"
+    case "$V2_POOL_AGENT" in ''|*[!0-9]*) V2_POOL_AGENT=-1 ;; esac
+    case "$V2_POOL_GH" in ''|*[!0-9]*) V2_POOL_GH=-1 ;; esac
   fi
   if [ -s "$BASE/state/usage.json" ]; then
     # The path arrives as argv and every quote is single — an earlier version interpolated $BASE
@@ -697,6 +754,10 @@ render_text() {
       "$C_B" "$C_RST" "v2 cap:" "$C_B" "$V2_CAP" "$C_RST" \
       "$([ "$V2_HB_AGE" -ge 0 ] 2>/dev/null && printf '%s ago' "$(fmt_dur "$V2_HB_AGE")" || echo "${C_RED}none${C_RST}")"
     [ -n "$V2_STATES" ] && printf '  %-14s %s\n' "v2 queue:" "$V2_STATES"
+    # A deliberate throttle stated as a fact, not buried as a warning. Without this line the report
+    # says "0 agents, 48 ready" and leaves the reader to guess between a hold, a wedge and a death.
+    [ -n "$V2_HOLD" ] && printf '  %-14s %sstart lane HELD%s by LEMD_HOLD_STARTS=1 — merge/park/selfreview still draining\n' \
+      "starts:" "$C_YEL" "$C_RST"
     printf '  %-14s %s\n' "subscription:" "${V2_USAGE:-${C_YEL}unread — routing on the health estimate${C_RST}}"
   else
     printf '  %-14s v1 cron (v2 daemon not in control)\n' "dispatcher:"
@@ -709,6 +770,10 @@ render_text() {
     # to guess whether the pipeline died.
     if [ -f "$BASE/PAUSED" ]; then
       printf '  %sno agent processes — the pipeline is PAUSED%s\n' "$C_RED" "$C_RST"
+    elif [ -n "$V2_HOLD" ]; then
+      printf '  %sno agent processes — the start lane is HELD (LEMD_HOLD_STARTS=1), not stalled.%s\n' "$C_YEL" "$C_RST"
+      printf '  %sMerge, park and selfreview still run, so in-flight PRs keep draining. Flip it in%s\n' "$C_DIM" "$C_RST"
+      printf '  %s%s/config.env to pick up new issues again.%s\n' "$C_DIM" "$BASE" "$C_RST"
     elif [ "${LAST_DISPATCH_AGE}" -ge 0 ] 2>/dev/null && [ "${LAST_DISPATCH_AGE}" -le 2700 ]; then
       printf '  %sno agent running this second — normal between dispatches. Last one %s ago (%s);%s\n' \
         "$C_DIM" "$(fmt_dur "$LAST_DISPATCH_AGE")" "${LAST_DISPATCH_MODE:-?}" "$C_RST"
@@ -751,6 +816,17 @@ render_text() {
   [ "$BRIEF" = 1 ] && { render_warnings; return; }
 
   head2 "SLOTS & CAPACITY"
+  # Two capacity models, and only one of them is dispatching. v2 has no numbered flock slots and no
+  # busy-window formula: it has two pools sized by LEMD_MAX_AGENTS / LEMD_GH_SLOTS, with occupancy
+  # in the `runs` table. Printing v1's `free: 1 2 3 4 5` under a `v2 cap: 2` header read as five
+  # available slots on a pipeline whose real ceiling was two — so the v1 block is now labelled as
+  # the failsafe path it describes rather than presented as the live one.
+  if [ "$V2_ACTIVE" = 1 ]; then
+    printf '  v2 pools:      agent %s%s%s/%s   gh %s/%s\n' \
+      "$C_B" "$([ "$V2_POOL_AGENT" -ge 0 ] 2>/dev/null && printf '%s' "$V2_POOL_AGENT" || printf '?')" "$C_RST" "$V2_CAP" \
+      "$([ "$V2_POOL_GH" -ge 0 ] 2>/dev/null && printf '%s' "$V2_POOL_GH" || printf '?')" "$V2_GH_SLOTS"
+    printf '  %sv1 failsafe (only dispatches if the heartbeat goes stale):%s\n' "$C_DIM" "$C_RST"
+  fi
   printf '  cap %s%s%s of MAX_AGENTS=%s   (1 + ready/%s)%s%s\n' "$C_B" "$CAP" "$C_RST" "$CFG_MAX_AGENTS" "$CFG_SCALE_PER_ISSUES" \
     "$([ "$BUSY_WINDOW" = yes ] && printf ' — busy window %s %s%s limits to %s' "$BUSY_HOURS" "$BUSY_TZ" "${BUSY_DAYS:+ days $BUSY_DAYS}" "$BUSY_MAX_AGENTS")" \
     "$([ "$DEGRADED_CAP" = yes ] && printf ' %s— DEGRADED: both lanes at or below %s%%, forced to 1%s' "$C_RED" "$THRESH" "$C_RST")"
@@ -792,17 +868,35 @@ render_text() {
     done <<<"$GH_PRS"
   fi
 
-  head2 "LAST ${WINDOW_HOURS}h OF TICKS"
-  printf '  %-14s %s ticks · avg dispatch %ss\n' "volume:" "$(rollup_get TOTAL)" "$(rollup_get AVGDUR)"
-  printf '  %-14s %s\n' "outcomes:" "$(rollup_get OUTCOMES | tr ',' ' ')"
-  printf '  %-14s %s\n' "work done:" "$(rollup_get MODES | tr ',' ' ')"
-  printf '  %-14s %s\n' "top reasons:" "$(rollup_get REASONS | tr ',' ' ')"
+  # Under v2 this reads the `runs` table — what the dispatcher actually spawned — rather than v1's
+  # tick ledger, which stopped growing at the cutover and rendered this block permanently empty.
+  if [ "$V2_ACTIVE" = 1 ]; then
+    head2 "LAST ${WINDOW_HOURS}h OF RUNS (v2)"
+    printf '  %-14s %s run(s) dispatched\n' "volume:" "${V2_RUNS:-0}"
+    printf '  %-14s %s\n' "work done:" "${V2_MODES:-${C_DIM}none${C_RST}}"
+    printf '  %-14s %s\n' "outcomes:" "${V2_RCS:-${C_DIM}none${C_RST}}"
+    [ -n "$V2_HOLD" ] && printf '  %-14s %sstarts held — a zero here is the hold, not a fault%s\n' \
+      "note:" "$C_DIM" "$C_RST"
+  else
+    head2 "LAST ${WINDOW_HOURS}h OF TICKS"
+    printf '  %-14s %s ticks · avg dispatch %ss\n' "volume:" "$(rollup_get TOTAL)" "$(rollup_get AVGDUR)"
+    printf '  %-14s %s\n' "outcomes:" "$(rollup_get OUTCOMES | tr ',' ' ')"
+    printf '  %-14s %s\n' "work done:" "$(rollup_get MODES | tr ',' ' ')"
+    printf '  %-14s %s\n' "top reasons:" "$(rollup_get REASONS | tr ',' ' ')"
+  fi
 
   head2 "RECENT PIPELINE LOG"
+  # v2's loop logs to lemd.log; the tick log only gains `--failsafe ... standing down` lines now, so
+  # under v2 it shows commentary from whenever the last real v1 tick ran — which reads as current.
   local today="$LOGDIR/tick-$(date +%Y%m%d).log"
+  [ "$V2_ACTIVE" = 1 ] && [ -f "$LOGDIR/lemd.log" ] && today="$LOGDIR/lemd.log"
   if [ -f "$today" ]; then
-    grep -iE "REFUSING|FAILED|error|usage/rate limit|stuck|escalat|blocked|held" "$today" 2>/dev/null | tail -6 \
-      | sed "s/^/  $C_DIM/; s/$/$C_RST/"
+    # The per-decision rows are the loop breathing, not news, and they carry words like "blocked"
+    # (a mergeStateStatus) that match every keyword below — so unfiltered, six decision lines about
+    # one healthy PR crowd out the one line that says something broke.
+    grep -v ' INFO lemd decision ' "$today" 2>/dev/null \
+      | grep -iE "REFUSING|FAILED|error|usage/rate limit|stuck|escalat|blocked|held" | tail -6 \
+      | cut -c1-200 | sed "s/^/  $C_DIM/; s/$/$C_RST/"
     printf '  %s(full: tail -f %s)%s\n' "$C_DIM" "$today" "$C_RST"
   else
     printf '  %sno log for today yet: %s%s\n' "$C_DIM" "$today" "$C_RST"
@@ -854,6 +948,14 @@ render_json() {
     printf 'blocked=%s\n' "$(printf '%s' "$GH_BLOCKED" | grep -c .)"
     printf 'needs_human=%s\n' "$(printf '%s' "$GH_HUMAN" | grep -c .)"
     printf 'open_prs=%s\n' "$(printf '%s' "$GH_PRS" | grep -c .)"
+    printf 'v2_active=%s\n' "$([ "$V2_ACTIVE" = 1 ] && echo true || echo false)"
+    printf 'v2_hold_starts=%s\n' "$([ -n "$V2_HOLD" ] && echo true || echo false)"
+    printf 'v2_cap=%s\n' "$V2_CAP"
+    printf 'v2_heartbeat_age_s=%s\n' "$V2_HB_AGE"
+    printf 'v2_queue=%s\n' "$V2_STATES"
+    printf 'v2_pool_agent=%s\n' "$V2_POOL_AGENT"
+    printf 'v2_pool_gh=%s\n' "$V2_POOL_GH"
+    printf 'v2_runs_window=%s\n' "${V2_RUNS:-0}"
     printf 'last_tick_age_s=%s\n' "$LAST_TICK_AGE"
     printf 'last_dispatch_age_s=%s\n' "$LAST_DISPATCH_AGE"
     printf 'last_dispatch_mode=%s\n' "$LAST_DISPATCH_MODE"
@@ -934,6 +1036,13 @@ print(json.dumps({
         "claude": {"pct": kv.get("claude_pct"), "status": kv.get("claude_status"), "note": kv.get("claude_note")},
         "ollama": {"pct": kv.get("ollama_pct"), "status": kv.get("ollama_status"), "note": kv.get("ollama_note")},
     },
+    # Which runner owns dispatch and under what throttle. `hold_starts` is the field that tells a
+    # consumer a dispatch count of zero is a decision rather than a fault.
+    "v2": {"active": kv.get("v2_active"), "hold_starts": kv.get("v2_hold_starts"),
+           "cap": kv.get("v2_cap"), "heartbeat_age_s": kv.get("v2_heartbeat_age_s"),
+           "queue": counter(str(kv.get("v2_queue", "")).replace("  ", ",").replace("=", ":")),
+           "pool_agent": kv.get("v2_pool_agent"), "pool_gh": kv.get("v2_pool_gh"),
+           "runs_in_window": kv.get("v2_runs_window")},
     "backlog": {k: kv.get(k) for k in ("gh_ok", "ready", "working", "blocked", "needs_human", "open_prs")},
     "recent": {"window_hours": kv.get("window_hours"), "ticks": kv.get("ticks"),
                "outcomes": counter(kv.get("outcomes")), "modes": counter(kv.get("modes")),
@@ -951,6 +1060,8 @@ run_once() {
   BUSY_WINDOW="no"; DEGRADED_CAP="no"   # --watch reuses this shell; a stale yes would never clear
   GH_OK=0; GH_READY=0; GH_WORKING=""; GH_BLOCKED=""; GH_HUMAN=""; GH_PRS=""
   V2_ACTIVE=0; V2_CAP=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
+  V2_HOLD=""; V2_GH_SLOTS=""; V2_DISPATCH_AGE=-1; V2_DISPATCH_MODE=""
+  V2_RUNS=""; V2_MODES=""; V2_RCS=""; V2_POOL_AGENT=-1; V2_POOL_GH=-1
   collect_pipeline_state
   collect_v2
   collect_agents

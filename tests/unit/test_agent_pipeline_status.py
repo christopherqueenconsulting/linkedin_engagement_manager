@@ -168,3 +168,134 @@ def test_stall_warning_still_fires_without_github(tmp_path):
         encoding="utf-8",
     )
     assert not any("stalled, not idle" in w for w in _json(base, outcomes=str(outcomes))["warnings"])
+
+
+# ---------------------------------------------------------------- v2 alignment (#1347)
+
+HAS_SQLITE3 = shutil.which("sqlite3") is not None
+
+
+def _v2_base(tmp_path: Path, *, config: str = "", heartbeat_age: int = 5,
+             runs: tuple = (), items: tuple = ()) -> Path:
+    """A scratch $BASE that looks like the box AFTER the v1 -> v2 cutover.
+
+    The defining feature is the one that broke the report: `V1_RETIRED` is set, the daemon is
+    alive, and `tick-outcomes.ndjson` is FROZEN because `tick.sh --failsafe` stands down on every
+    fire while the heartbeat is fresh.
+    """
+    import sqlite3
+
+    base = _base(tmp_path, config=config)
+    (base / "V1_RETIRED").write_text("")
+    (base / "state" / "lemd.heartbeat").write_text(str(int(time.time()) - heartbeat_age))
+    (base / "v2" / "state").mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(base / "v2" / "state" / "queue.db")
+    con.executescript(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, kind TEXT, number INTEGER, state TEXT);"
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY, item_id INTEGER, mode TEXT, "
+        "started_at INTEGER, ended_at INTEGER, rc INTEGER);"
+    )
+    con.executemany("INSERT INTO items (kind, number, state) VALUES (?,?,?)", items)
+    con.executemany(
+        "INSERT INTO runs (mode, started_at, ended_at, rc) VALUES (?,?,?,?)", runs)
+    con.commit()
+    con.close()
+    return base
+
+
+def _frozen_ledger(base: Path, *, age_s: int, ready: int) -> str:
+    """A v1 outcomes file whose last row predates the cutover — exactly what the box has."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_s))
+    path = base / "logs" / "tick-outcomes.ndjson"
+    path.write_text(json.dumps({
+        "tick_outcome": "dispatched", "mode": "start", "reason": "mode_start",
+        "ready_count": ready, "ts": stamp,
+    }) + "\n")
+    return str(path)
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 queue read needs the sqlite3 CLI")
+def test_a_held_start_lane_is_not_reported_as_a_stalled_pipeline(tmp_path):
+    """The report's whole failure mode on 2026-08-10.
+
+    `LEMD_HOLD_STARTS=1` is a deliberate throttle from the cutover: no starts, merge/park/selfreview
+    still draining. status.sh never read the knob, so it announced "the pipeline is stalled, not
+    idle" and "cron may not be firing" on a daemon whose heartbeat was 26 seconds old. Both
+    warnings were false, and the second one got louder every day because it was derived from a
+    ledger that will never grow again.
+    """
+    base = _v2_base(
+        tmp_path, config="LEMD_HOLD_STARTS=1\nLEMD_MAX_AGENTS=2\nMAX_AGENTS=5\n",
+        runs=(("start", int(time.time()) - 36000, int(time.time()) - 35000, 0),),
+    )
+    outcomes = _frozen_ledger(base, age_s=36000, ready=48)
+
+    proc = _run(base, "--no-gh", outcomes=outcomes)
+    assert proc.returncode == 0, proc.stderr
+    assert "stalled, not idle" not in proc.stdout
+    assert "cron may not be firing" not in proc.stdout
+    assert "HELD" in proc.stdout
+    assert "LEMD_HOLD_STARTS" in proc.stdout
+
+    report = _json(base, outcomes=outcomes)
+    assert report["v2"]["hold_starts"] is True
+    assert report["v2"]["active"] is True
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 queue read needs the sqlite3 CLI")
+def test_activity_comes_from_the_runs_table_not_the_frozen_v1_ledger(tmp_path):
+    """`tick-outcomes.ndjson` stopped growing at the cutover; `runs` is what v2 writes.
+
+    Reading the dead file made `last dispatch` an ever-increasing lie and left the activity block
+    permanently empty — on a pipeline that had dispatched minutes earlier.
+    """
+    recent = int(time.time()) - 600
+    base = _v2_base(tmp_path, config="LEMD_MAX_AGENTS=2\n",
+                    runs=(("docfix", recent, recent + 120, 0),))
+    outcomes = _frozen_ledger(base, age_s=36000, ready=3)
+
+    report = _json(base, outcomes=outcomes)
+    assert report["pipeline"]["last_dispatch_mode"] == "docfix"
+    assert 0 <= report["pipeline"]["last_dispatch_age_s"] < 900, "the 10h-old v1 row must not win"
+    assert report["v2"]["runs_in_window"] == 1
+
+    text = _run(base, "--no-gh", outcomes=outcomes).stdout
+    assert "OF RUNS (v2)" in text
+    assert "docfix:1" in text
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 queue read needs the sqlite3 CLI")
+def test_the_v2_queue_state_line_actually_renders(tmp_path):
+    """It never once printed: `"="` inside single quotes is an IDENTIFIER to SQLite.
+
+    The query failed with `no such column: "="` on every run and `2>/dev/null` swallowed it, so the
+    single most useful v2 line in the report silently rendered as nothing.
+    """
+    base = _v2_base(tmp_path, config="LEMD_MAX_AGENTS=2\n",
+                    items=(("issue", 1, "ready"), ("issue", 2, "ready"), ("pr", 3, "parked")))
+    text = _run(base, "--no-gh").stdout
+    assert "v2 queue:" in text
+    assert "ready=2" in text
+    assert "parked=1" in text
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 queue read needs the sqlite3 CLI")
+def test_v2_capacity_is_reported_as_pools_not_v1_slot_locks(tmp_path):
+    """v2 has no numbered flock slots. Printing `free: 1 2 3 4 5` under `v2 cap: 2` read as five."""
+    now = int(time.time())
+    base = _v2_base(tmp_path, config="LEMD_MAX_AGENTS=2\nMAX_AGENTS=5\n",
+                    runs=(("start", now - 60, None, None), ("merge_enable", now - 30, None, None)))
+    text = _run(base, "--no-gh").stdout
+    assert "v2 pools:" in text
+    assert "agent 1/2" in text
+    assert "gh 1/" in text
+    assert "v1 failsafe" in text, "the v1 block must be labelled, not presented as the live one"
+
+
+def test_without_v1_retired_the_v1_stall_warning_still_fires(tmp_path):
+    """The failsafe path must keep working — v1 is still the rollback target."""
+    base = _base(tmp_path, config="MAX_AGENTS=5\n")
+    outcomes = _frozen_ledger(base, age_s=36000, ready=12)
+    proc = _run(base, "--no-gh", outcomes=outcomes)
+    assert "stalled, not idle" in proc.stdout
+    assert "cron may not be firing" in proc.stdout
