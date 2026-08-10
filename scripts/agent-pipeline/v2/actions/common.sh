@@ -34,6 +34,13 @@ AGENT_CI_LABEL_ACTORS="${AGENT_CI_LABEL_ACTORS:-github-actions[bot]}"
 DRY_RUN="${DRY_RUN:-0}"
 export BASE REPO SLUG OWNER WORKROOT LOGDIR RUNBOOK DRY_RUN
 
+# The same PATH v1 exports. `claude` lives in ~/.local/bin, which is on the interactive shell's PATH
+# via .bashrc and on cron's only because tick.sh sets it explicitly — and is on a systemd unit's
+# PATH not at all. The daemon spawns these actions, so without this line every agent run reached
+# `claude` and got rc=127: budget charged, worktree built, and nothing to show for it. A missing
+# interpreter is not a lane failure, but it looks exactly like one in the outcome log.
+export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
 mkdir -p "$LOGDIR" "$BASE/locks" "$BASE/state" "$WORKROOT"
 LOG="${LOG:-$LOGDIR/v2-actions-$(date +%Y%m%d).log}"
 _TICK_LOG="$LOG"
@@ -63,6 +70,24 @@ if command -v gh_app_export_token >/dev/null 2>&1 && gh_app_export_token; then
   :
 elif [ -n "${AGENT_GH_TOKEN:-}" ]; then
   export GH_TOKEN="$AGENT_GH_TOKEN"
+fi
+
+# ...and the allowlist entry that identity requires, exactly as tick.sh derives it. This is NOT a
+# widening of the gate: the runner re-applies `agent:ready` itself in two places — the stale-claim
+# reaper and the lane that requeues an issue after the owner answers its Decision Comment — and
+# MODE=phasefix files follow-up issues carrying it. Under the PAT those writes were the OWNER's and
+# passed; under the App they are the bot's.
+#
+# Omitting it here did not fail safe, it failed SILENTLY DIFFERENT: v1 accepted those issues and v2
+# refused them, so the same item read as workable to one runner and untrusted to the other, and the
+# rollback path would have quietly resurrected work v2 had written off. Measured live on issue
+# #1292 within minutes of cutover. The outsider path this allowlist exists to close — a stranger's
+# issue labelled by a non-allowlisted actor — is unchanged.
+if [ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]; then
+  case " $AGENT_LABEL_TRUSTED_ACTORS " in
+    *" $GH_APP_BOT_LOGIN "*) ;;
+    *) AGENT_LABEL_TRUSTED_ACTORS="$AGENT_LABEL_TRUSTED_ACTORS $GH_APP_BOT_LOGIN" ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------- exit vocabulary

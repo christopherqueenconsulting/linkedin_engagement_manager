@@ -50,9 +50,13 @@ class Snapshot:
     head_sha: str | None = None
     merge_state: str = ""           # GitHub mergeStateStatus
     queue_state: str = ""           # mergeQueueEntry state, "" = no entry
+    auto_merge: bool = False        # auto-merge already armed on this PR
     checks: github.ChecksState | None = None
     review_fresh: bool = False      # a review marker at or after the current head
     unresolved_threads: int = 0
+    #: For an ISSUE: has a previous run already produced a branch or a PR? Three-valued, and the
+    #: third value is the point — `None` means "could not tell", which must never be read as "no".
+    work_exists: bool | None = None
     readable: bool = True           # False when any required read failed
 
 
@@ -129,8 +133,22 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                         park_reason="needs_human", wake_in=ttl_parked)
 
     if snap.kind == "issue":
-        # An issue with agent:ready and no hold is simply work to start.
         if "agent:ready" in snap.labels:
+            # A `start` is only a start when there is nothing to start FROM. If a previous run
+            # already pushed a branch or opened a PR, this issue is in flight — re-dispatching it
+            # spends another 9-12 minute model session redoing work that exists. Measured: #1290
+            # finished rc=0 at 05:43:27 and was re-dispatched at 05:43:34, seven seconds later.
+            #
+            # `None` (unreadable) is treated as "work may exist" and WAITS. That asymmetry is
+            # deliberate: waiting on a false positive costs one TTL, while re-dispatching on a false
+            # negative costs a full model session and risks two agents on one branch. An agent that
+            # pushed a branch and died before opening a PR is work in progress, not a blank slate.
+            if snap.work_exists is None:
+                return Decision(ACT_NONE, db.STATE_WAIT_CI, "start_work_state_unreadable",
+                                wait_reason="unreadable", wake_in=600)
+            if snap.work_exists:
+                return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, "start_already_produced_work",
+                                wait_reason="work_in_flight", wake_in=ttl_review)
             return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "issue_ready", mode="start")
         return Decision(ACT_NONE, db.STATE_PARKED, "issue_not_ready", park_reason="not_ready")
 
@@ -150,6 +168,19 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "dependabot_ci_failure", mode="depfix")
     if "agent:docfix" in snap.labels:
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "lint_gate_failure", mode="docfix")
+
+    if snap.auto_merge:
+        # Already armed. GitHub will enqueue it the moment its gate clears, so there is nothing to
+        # decide and nothing to ask for — this is a WAIT, and saying so is what stops v2 reproducing
+        # the incident it was built to prevent.
+        #
+        # This sits ABOVE the checks branch on purpose. An armed PR reporting BLOCKED is the normal,
+        # healthy state of a PR waiting on required checks; without this, `decide` fell through to
+        # "gate satisfied -> ACT_MERGE" on every pass and burned the per-head merge budget in three
+        # minutes, one pass from parking a perfectly good PR. Measured live on #1295.
+        return Decision(ACT_NONE, db.STATE_WAIT_QUEUE, "auto_merge_armed",
+                        wait_reason="merge_queue", wake_in=ttl_queue,
+                        details={"merge_state": snap.merge_state})
 
     checks = snap.checks
     if checks is None:
@@ -215,6 +246,7 @@ def snapshot_pr(slug: str, number: int, *,
         head_sha=facts.get("headRefOid"),
         merge_state=(facts.get("mergeStateStatus") or "").upper(),
         queue_state=queue,
+        auto_merge=facts.get("autoMergeRequest") is not None,
         checks=checks,
         review_fresh=reviews.fresh,
         unresolved_threads=reviews.unresolved,
@@ -232,10 +264,43 @@ def snapshot_issue(slug: str, number: int) -> Snapshot:
     except github.GitHubUnavailable as exc:
         LOG.warning("issue #%s unreadable: %s", number, exc)
         return Snapshot(kind="issue", number=number, readable=False)
+    labels = frozenset(github.label_names(facts))
+    work = None
+    if "agent:ready" in labels:
+        # Only asked when it can change the answer — this is two API calls, and every other issue
+        # decision is reached without them.
+        work = _work_exists_for_issue(slug, number)
     return Snapshot(
         kind="issue",
         number=number,
-        labels=frozenset(github.label_names(facts)),
+        labels=labels,
         state=(facts.get("state") or "OPEN").upper(),
+        work_exists=work,
         readable=True,
     )
+
+
+def _work_exists_for_issue(slug: str, number: int) -> bool | None:
+    """Has a previous run left anything behind for this issue?
+
+    Two sources, cheapest first, and BOTH from GitHub rather than the local checkout: what decides
+    this is whether the work left the box. A local branch proves only that `git checkout -b` ran,
+    which every attempt does before it does anything useful.
+
+    Returns:
+        True on a linked PR or an existing remote branch, False when both are readable and absent,
+        and None when either read failed — "I could not tell" is not "there is nothing there".
+    """
+    try:
+        linked = github.gh_json(
+            ["issue", "view", str(number), "--repo", slug, "--json",
+             "closedByPullRequestsReferences"]
+        ) or {}
+        if (linked.get("closedByPullRequestsReferences") or []):
+            return True
+    except github.GitHubUnavailable as exc:
+        LOG.warning("issue #%s PR linkage unreadable: %s", number, exc)
+        return None
+    # The branch convention is the second half: an agent that pushed and then died before opening a
+    # PR has no linkage, and is exactly the case that must not be restarted from scratch.
+    return github.branch_exists(slug, f"feature/claude-issue-{number}")

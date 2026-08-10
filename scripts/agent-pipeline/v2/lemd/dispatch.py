@@ -22,6 +22,7 @@ and re-dispatched while the original agent is still writing to the branch.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import signal
@@ -77,11 +78,62 @@ class Supervisor:
         self.children: list[Child] = []
         self.actions = Path(cfg.base) / "v2" / "actions"
 
+    # ------------------------------------------------------------------ coexistence
+
+    def v1_slots_busy(self) -> int:
+        """How many v1 ticks are still running.
+
+        Cutover flips a sentinel, but a tick already in flight can run for 45 minutes past it (M10).
+        Its agents are doing real work and its slot lock is held for the duration, so the daemon
+        holds its own dispatch until they drain rather than adding three concurrent agents on top of
+        three that are already running — twice the envelope this box has been measured at.
+
+        Correctness does not depend on this: both runners take the same `br-*` flock per branch, so
+        neither can touch the other's work. This bounds CPU, and it is enforced here rather than by
+        an operator remembering to wait.
+        """
+        busy = 0
+        for lock in sorted((Path(self.cfg.base) / "locks").glob("slot-*.lock")):
+            try:
+                fd = os.open(lock, os.O_RDWR)
+            except OSError:
+                continue
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                busy += 1
+            finally:
+                os.close(fd)
+        return busy
+
     # ------------------------------------------------------------------ capacity
 
     def in_pool(self, pool: str) -> int:
-        """How many children of one pool are running."""
-        return sum(1 for c in self.children if c.pool == pool)
+        """How many runs of one pool are in flight — including ones this process did not spawn.
+
+        The in-memory child list is NOT sufficient. Children are launched into their own sessions so
+        they outlive a daemon restart (that is deliberate: a restart must not abandon an agent
+        mid-`git push`), but `self.children` is empty after one. The cap was therefore computed as
+        if nothing were running, and every restart granted a fresh full pool on top of the agents
+        still working — measured at 5 runs against a cap of 3 after three restarts in ten minutes.
+
+        The `runs` table is the durable answer, and `_pid_alive` pairs pid with start time so a
+        recycled pid cannot make a dead run count forever.
+        """
+        live = sum(1 for c in self.children if c.pool == pool)
+        adopted = 0
+        for row in self.conn.execute(
+            "SELECT mode, pid, pid_start FROM runs WHERE ended_at IS NULL AND pid IS NOT NULL"
+        ).fetchall():
+            if any(c.proc is not None and c.proc.pid == row["pid"] for c in self.children):
+                continue  # already counted above
+            if not db.pid_alive(int(row["pid"]), row["pid_start"]):
+                continue
+            row_pool = "gh" if row["mode"] in ("merge_enable", "park") else "agent"
+            if row_pool == pool:
+                adopted += 1
+        return live + adopted
 
     def free(self, pool: str) -> int:
         """Slots left in one pool."""
@@ -172,6 +224,7 @@ class Supervisor:
         """
         done: list[tuple[Child, int]] = []
         now = time.time()
+        self._reap_adopted(now)
         for child in list(self.children):
             rc = child.proc.poll()
             if rc is None:
@@ -185,6 +238,27 @@ class Supervisor:
                      " (killed on deadline)" if child.killed else "")
             done.append((child, rc))
         return done
+
+    def _reap_adopted(self, now: float) -> None:
+        """Close run rows whose process is gone but which this daemon never spawned.
+
+        The counterpart to counting them in `in_pool`. `startup_recover` closes dead runs at start,
+        but a run adopted by a LONG-LIVED daemon has no other closer — so an orphan that exited five
+        minutes after a restart would hold its slot until the next restart, and the pool would shrink
+        by one every time the daemon was bounced. Its item is marked dirty so the next observation
+        decides its fate from GitHub, which is the only place the answer actually lives.
+        """
+        mine = {c.proc.pid for c in self.children if c.proc is not None}
+        for row in self.conn.execute(
+            "SELECT id, item_id, pid, pid_start FROM runs WHERE ended_at IS NULL AND pid IS NOT NULL"
+        ).fetchall():
+            if row["pid"] in mine or db.pid_alive(int(row["pid"]), row["pid_start"]):
+                continue
+            LOG.info("adopting and closing orphaned run %s (pid %s is gone)", row["id"], row["pid"])
+            db.finish_run(self.conn, row["id"], -9, now=int(now))
+            if row["item_id"] is not None:
+                db.force_state(self.conn, row["item_id"], db.STATE_READY, dirty=1,
+                               pending_mode=None, wake_at=None, now=int(now))
 
     def _kill(self, child: Child) -> None:
         """Stop an overrunning child and everything it spawned."""

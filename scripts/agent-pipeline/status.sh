@@ -626,6 +626,51 @@ collect_pipeline_state() {
     warn "no crontab entry for $BASE/tick.sh — nothing is driving the pipeline on a schedule"
 }
 
+# ── v2 daemon ────────────────────────────────────────────────────────────────────────────────────
+# Which runner OWNS dispatch, and what the v2 cap EFFECTIVELY is.
+#
+# The effective cap is the point. v2 reads `LEMD_MAX_AGENTS`, v1 reads `MAX_AGENTS`, and the two
+# names mean the same thing to a human at the console — an operator throttling the pipeline on
+# 2026-08-10 reached for `MAX_AGENTS` first and it did nothing, silently. Two knobs with one meaning
+# is a trap that a comment in a Python file cannot close; printing the number that is actually in
+# force can.
+V2_ACTIVE=0; V2_CAP=""; V2_DB=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
+collect_v2() {
+  [ -f "$BASE/V1_RETIRED" ] && V2_ACTIVE=1
+  V2_DB="$BASE/v2/state/queue.db"
+  V2_CAP="$(grep -m1 '^LEMD_MAX_AGENTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  # The default lives in v2/lemd/config.py; naming it here as a fallback keeps the report honest
+  # when the knob is simply absent rather than printing an empty field.
+  [ -n "$V2_CAP" ] || V2_CAP="3 (default)"
+  V2_SHADOW="$(grep -m1 '^LEMD_SHADOW=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  local hb; hb="$(cat "$BASE/state/lemd.heartbeat" 2>/dev/null)"
+  case "$hb" in ''|*[!0-9]*) hb="" ;; esac
+  [ -n "$hb" ] && V2_HB_AGE=$(( NOW - hb ))
+  if command -v sqlite3 >/dev/null 2>&1 && [ -s "$V2_DB" ]; then
+    V2_STATES="$(sqlite3 "$V2_DB" \
+      'SELECT group_concat(state || "=" || n, " ") FROM (SELECT state, COUNT(*) n FROM items GROUP BY state)' 2>/dev/null)"
+  fi
+  if [ -s "$BASE/state/usage.json" ]; then
+    # The path arrives as argv and every quote is single — an earlier version interpolated $BASE
+    # into the source and escaped quotes inside an f-string, which is a SyntaxError, and the `2>/dev/null`
+    # turned that into an empty string that rendered as "unread". A status tool reporting "no
+    # signal" when the signal is present and fine is worse than one that omits the line.
+    V2_USAGE="$(python3 -c '
+import json, sys, time
+d = json.load(open(sys.argv[1]))
+age = int(time.time() - float(d.get("at") or 0))
+print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_pct"), age))
+' "$BASE/state/usage.json" 2>/dev/null)"
+  fi
+
+  if [ "$V2_ACTIVE" = 1 ]; then
+    [ "$V2_HB_AGE" -ge 0 ] 2>/dev/null || warn "V1_RETIRED is set but the v2 daemon has NO heartbeat — the failsafe cron is carrying the pipeline"
+    [ "$V2_HB_AGE" -gt 600 ] 2>/dev/null && warn "v2 heartbeat is ${V2_HB_AGE}s old (>600s) — the failsafe cron has taken over"
+    [ "$V2_SHADOW" = "1" ] && warn "V1_RETIRED is set AND LEMD_SHADOW=1 — v2 owns dispatch and is refusing to act. NOTHING is dispatching."
+    [ -z "$V2_USAGE" ] && warn "no v2 usage reading — lane routing is falling back to the failure-history estimate, which cannot see subscription headroom"
+  fi
+}
+
 # ── renderers ────────────────────────────────────────────────────────────────────────────────────
 render_text() {
   local n_agents="${#AGENT_ROWS[@]}"
@@ -644,6 +689,18 @@ render_text() {
   printf '  %-14s claude %s%d%%%s %-13s ollama %s%d%%%s %s\n' "lanes:" \
     "$([ "$CL_PCT" -gt "$THRESH" ] && echo "$C_GRN" || echo "$C_YEL")" "$CL_PCT" "$C_RST" "($CL_STATUS)" \
     "$([ "$OL_PCT" -gt "$THRESH" ] && echo "$C_GRN" || echo "$C_YEL")" "$OL_PCT" "$C_RST" "($OL_STATUS)"
+
+  # Which runner owns dispatch, and the cap actually in force. Always printed: "who is driving"
+  # is the first question during a migration and the last thing anyone should have to infer.
+  if [ "$V2_ACTIVE" = 1 ]; then
+    printf '  %-14s %sv2 daemon%s (v1 = failsafe)   %-14s %s%s%s   heartbeat: %s\n' "dispatcher:" \
+      "$C_B" "$C_RST" "v2 cap:" "$C_B" "$V2_CAP" "$C_RST" \
+      "$([ "$V2_HB_AGE" -ge 0 ] 2>/dev/null && printf '%s ago' "$(fmt_dur "$V2_HB_AGE")" || echo "${C_RED}none${C_RST}")"
+    [ -n "$V2_STATES" ] && printf '  %-14s %s\n' "v2 queue:" "$V2_STATES"
+    printf '  %-14s %s\n' "subscription:" "${V2_USAGE:-${C_YEL}unread — routing on the health estimate${C_RST}}"
+  else
+    printf '  %-14s v1 cron (v2 daemon not in control)\n' "dispatcher:"
+  fi
 
   head2 "RUNNING AGENTS ($n_agents)"
   if [ "$n_agents" = 0 ]; then
@@ -893,7 +950,9 @@ run_once() {
   AGENT_ROWS=(); OTHER_ROWS=(); WARNINGS=(); IDLE_TICKS=0; SLOTS_BUSY=""; SLOTS_FREE=""
   BUSY_WINDOW="no"; DEGRADED_CAP="no"   # --watch reuses this shell; a stale yes would never clear
   GH_OK=0; GH_READY=0; GH_WORKING=""; GH_BLOCKED=""; GH_HUMAN=""; GH_PRS=""
+  V2_ACTIVE=0; V2_CAP=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
   collect_pipeline_state
+  collect_v2
   collect_agents
   collect_other_claude
   collect_lanes

@@ -89,6 +89,18 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
+# Lane routing needs the capacity preflight to have run: `dispatch_lane` reads CLAUDE_AVAIL /
+# OLLAMA_AVAIL / DEGRADED, which only `capacity_preflight` sets. v1 runs it once per tick, so the
+# dependency was invisible until v2 called `run_lane` without it — under `set -u` the first live
+# dispatch died on an unbound variable AFTER charging the budget. Run it here, in the one action
+# that needs it: the gh actions arm merges and park PRs, and neither picks a model.
+capacity_preflight 2>/dev/null || true
+: "${CLAUDE_AVAIL:=0}" "${OLLAMA_AVAIL:=0}" "${DEGRADED:=0}"
+export CLAUDE_AVAIL OLLAMA_AVAIL DEGRADED
+# 0 is bash-truth for "available", so these defaults mean "assume both lanes work" when the probe
+# itself failed. That is the right direction: the usage-limit pause and the 429 breaker are the real
+# gates, and a failed capacity PROBE must not become a silent refusal to work at all.
+
 WT="$(add_worktree "$BRANCH" "origin/main")" || WT=""
 if [ -z "$WT" ] || [ ! -d "$WT" ]; then
   log "could not prepare a worktree for $BRANCH — refusing to dispatch."
@@ -98,9 +110,32 @@ fi
 # run_lane.sh reads all of these from the environment.
 export MODE ISSUE PR BRANCH WT
 export RISK="${RISK:-none}"
-export SLOT="${SLOT:-v2}" WORKER_ID="${WORKER_ID:-v2}"
+# SLOT is compared with `-ge 2` in dispatch.sh to decide the parallel Ollama lane, so it must be a
+# NUMBER. Setting it to "v2" (readable, and wrong) made every routing decision emit an
+# "integer expression expected" error and fall through to whichever branch bash reached next.
+# 1 is the Claude-primary slot, which is the correct default for a single dispatch; the daemon's
+# own concurrency is bounded by its pools, not by this.
+export SLOT="${SLOT:-1}" WORKER_ID="${WORKER_ID:-v2}"
 export EXECUTION_ID="${EXECUTION_ID:-lemd-$$-$(date +%s)}"
 export CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-45m}"
+
+# ---- lane policy: the MEASURED answer, when there is one -----------------------------------
+# `dispatch_lane` (called inside run_lane) routes on lane HEALTH — a failure-history estimate that
+# can only discover a ceiling by hitting it. `v2/lane_for.py` answers the better question, "how
+# much of the weekly subscription is left", from the meter the daemon refreshes, and applies the
+# per-mode split plus the owner's 50% weekly flip.
+#
+# It is advisory in exactly one direction: when the meter cannot answer it prints no override and
+# the health routing stands, unchanged. That is the only honest default — preferring Claude would
+# spend a window nobody measured, and preferring Ollama is the failure this was written to fix
+# (30 consecutive dispatches routed `reason=fallback` because four rc=127 runs had poisoned the
+# Claude lane's failure counter).
+LEM_LANE_OVERRIDE=""; LEM_LANE_TIER=""; LEM_LANE_MARKER=""; LEM_LANE_REASON="not_consulted"
+if [ -x "$V2_DIR/lane_for.py" ]; then
+  eval "$(BASE="$BASE" "$V2_DIR/lane_for.py" "$MODE" 2>/dev/null)" || true
+fi
+log "lane policy: mode=$MODE arm=${LEM_LANE_REASON} override=${LEM_LANE_OVERRIDE:-none}"
+export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON
 
 case "$MODE" in
   start)     PROMPT="Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." ;;

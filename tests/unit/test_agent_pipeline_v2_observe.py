@@ -205,8 +205,22 @@ def test_revise_outranks_selfreview():
 
 
 def test_ready_issue_dispatches_start():
-    got = d(observe.Snapshot(kind="issue", number=9, labels=frozenset({"agent:ready"})))
+    """A start needs `agent:ready` AND nothing already built for it.
+
+    `work_exists` is three-valued and the third value is why it exists: an issue whose previous run
+    already pushed a branch is in flight, and re-dispatching it spends another 9-12 minute model
+    session redoing work that exists (#1290 was re-dispatched seven seconds after finishing rc=0).
+    Unknown WAITS, because a false negative there costs a whole session and risks two agents on one
+    branch, while a false positive costs one TTL.
+    """
+    ready = observe.Snapshot(kind="issue", number=9, labels=frozenset({"agent:ready"}),
+                             work_exists=False)
+    got = d(ready)
     assert (got.action, got.mode) == (observe.ACT_DISPATCH, "start")
+
+    from dataclasses import replace
+    assert d(replace(ready, work_exists=True)).action == observe.ACT_NONE
+    assert d(replace(ready, work_exists=None)).action == observe.ACT_NONE
 
 
 def test_issue_without_ready_is_not_started():

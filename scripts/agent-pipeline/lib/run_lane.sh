@@ -167,7 +167,21 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     echo "$(( $(date +%s) + ${USAGE_PAUSE_MINUTES:-60} * 60 ))" > "$pause_file"
     log "usage/rate limit on a failed $LANE run — pausing $LANE lane for ${USAGE_PAUSE_MINUTES:-60}m."
   fi
-  record_lane_outcome "$LANE" $([ $rc -eq 0 ] && echo 1 || echo 0) "$ul"
+  # A failure that never REACHED a model is not evidence about the lane's health, and recording it
+  # as one is self-harming: capacity.sh marks a lane constrained after 3 consecutive failures, so
+  # three rc=127s in a row take the Claude subscription out of rotation for 30 minutes and send
+  # every dispatch to Ollama. That happened for real on 2026-08-10 — the v2 daemon had no
+  # `~/.local/bin` on its PATH, four runs exited 127, and the next 30 dispatches all logged
+  # `reason=fallback` while the Claude lane was perfectly healthy and the owner's Ollama quota
+  # burned. The lane gauge must only be fed by runs that actually talked to a model.
+  #
+  # 126/127 are the unambiguous shell answers for "could not execute" — not-executable and
+  # not-found. Anything else (including a timeout, which DID reach the model) still counts.
+  if [ $rc -eq 127 ] || [ $rc -eq 126 ]; then
+    log "$LANE run could not execute (rc=$rc — interpreter missing or not executable). NOT recording a lane failure: this says nothing about $LANE's capacity."
+  else
+    record_lane_outcome "$LANE" $([ $rc -eq 0 ] && echo 1 || echo 0) "$ul"
+  fi
 
   _EMIT_EXTRA="{\"success\":$([ $rc -eq 0 ] && echo true || echo false),\"latency_ms\":$ms,\"retry_count\":0,\"tokens_in\":0,\"tokens_out\":0,\"total_tokens\":0,\"estimated_cost\":0,\"error_type\":\"$([ $rc -ne 0 ] && echo nonzero_exit)\",\"fallback_from\":\"${FALLBACK_FROM}\",\"fallback_to\":\"${FALLBACK_TO}\"}" \
     _emit "$([ $rc -eq 0 ] && echo ai_call_completed || echo ai_call_failed)"

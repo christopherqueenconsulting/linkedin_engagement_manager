@@ -15,6 +15,7 @@ These cover the parts where a mistake is expensive rather than merely wrong. Thr
 
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import sys
@@ -28,6 +29,7 @@ _V2 = _PIPE / "v2"
 sys.path.insert(0, str(_V2))
 
 from lemd import db, dispatch, policy  # noqa: E402
+from lemd.config import load  # noqa: E402
 
 # --------------------------------------------------------------------------- budgets
 
@@ -215,3 +217,206 @@ def test_merge_budget_is_checked_before_the_enqueue_request():
     """v1's order was inverted: it re-enqueued first and checked the budget after (#1120, 45 requests)."""
     text = (_V2 / "actions" / "merge_enable.sh").read_text()
     assert text.index("MERGE BUDGET") < text.index("--auto --squash")
+
+
+# --------------------------------------------------------------------------- WIP gate
+
+def test_wip_counts_waiting_prs_not_just_running_ones(tmp_path):
+    """Starts stay coupled to merge THROUGHPUT, which is the point of the gate.
+
+    A PR in the merge queue is unfinished work. Counting only `running` items would let the
+    scheduler open a PR for every ready issue the moment the agents finished writing them — 35 open
+    PRs against a queue that merges one at a time, each one a rebase candidate as soon as main moves.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    for n, state in ((1, db.STATE_RUNNING), (2, db.STATE_WAIT_CI), (3, db.STATE_WAIT_QUEUE),
+                     (4, db.STATE_WAIT_REVIEW), (5, db.STATE_CLAIMED)):
+        db.upsert_item(conn, kind="pr", number=n, state=state)
+    # Parked and merged PRs are NOT in flight — the pipeline is not carrying them.
+    db.upsert_item(conn, kind="pr", number=6, state=db.STATE_PARKED)
+    db.upsert_item(conn, kind="pr", number=7, state=db.STATE_MERGED)
+    assert db.wip_count(conn) == 5
+
+
+def test_ready_issues_do_not_count_against_the_wip_gate(tmp_path):
+    """A backlog is a queue, not work in flight — counting it would close the gate forever."""
+    conn = db.connect(tmp_path / "q.db")
+    for n in range(10):
+        db.upsert_item(conn, kind="issue", number=100 + n, state=db.STATE_READY,
+                       pending_mode="start")
+    assert db.wip_count(conn) == 0
+
+
+# --------------------------------------------------------------------------- coexistence
+
+def test_a_live_v1_tick_holds_back_the_agent_pool(tmp_path):
+    """Cutover flips a sentinel; a tick already in flight runs for up to 45 minutes past it (M10).
+
+    Correctness does not rest on this — both runners take the same per-branch flock — but adding
+    three concurrent agents on top of three already running is twice the envelope this box has been
+    measured at, and "wait for the slot locks" must be code rather than an operator's memory.
+    """
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    lock = locks / "slot-1.lock"
+    lock.write_text("")
+    conn = db.connect(tmp_path / "q.db")
+    sup = dispatch.Supervisor(_Cfg(tmp_path), conn)
+    assert sup.v1_slots_busy() == 0
+
+    fd = os.open(lock, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert sup.v1_slots_busy() == 1
+    finally:
+        os.close(fd)
+    # Released: the daemon may take the agent pool again without an operator doing anything.
+    assert sup.v1_slots_busy() == 0
+
+
+def test_v2_trusts_the_app_bot_as_a_labeller_exactly_as_v1_does(tmp_path):
+    """v1 and v2 must not disagree about who may mint `agent:ready`.
+
+    The runner re-applies that label itself — the stale-claim reaper, the answered-Decision-Comment
+    requeue, and every phasefix follow-up issue. Under the PAT those writes were the owner's; under
+    the App they are the bot's, and tick.sh adds the bot to the allowlist for exactly that reason.
+
+    v2 omitting it did not fail safe, it failed silently DIFFERENT: the same issue read as workable
+    to v1 and untrusted to v2, so a rollback would quietly resurrect work v2 had written off.
+    Measured live on issue #1292 within minutes of cutover.
+    """
+    tick = (_PIPE / "tick.sh").read_text()
+    common = (_V2 / "actions" / "common.sh").read_text()
+    grant = 'AGENT_LABEL_TRUSTED_ACTORS="$AGENT_LABEL_TRUSTED_ACTORS $GH_APP_BOT_LOGIN"'
+    assert grant in tick
+    assert grant in common
+    # And both must gate it on the identity actually being active, not merely configured.
+    for text in (tick, common):
+        assert '[ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]' in text
+
+
+# --------------------------------------------------------------------------- the #1120 shape
+
+def test_an_already_armed_pr_is_a_wait_not_another_merge_request():
+    """The incident v2 exists to prevent, reproduced by v2 within minutes of cutover.
+
+    An armed PR reporting BLOCKED is the NORMAL state of one waiting on required checks. Without
+    reading `autoMergeRequest`, `decide` fell through to "gate satisfied -> ACT_MERGE" on every
+    pass, spent the whole per-head merge budget in three minutes, and parked a perfectly healthy
+    PR (#1295). GitHub enqueues an armed PR by itself; there is nothing left to ask for.
+    """
+    from lemd import observe
+
+    armed = observe.Snapshot(
+        kind="pr", number=1295, labels=frozenset({"agent:working"}),
+        merge_state="BLOCKED", auto_merge=True, review_fresh=True,
+    )
+    d = observe.decide(armed, ttl_ci=1800, ttl_review=3600, ttl_queue=900, ttl_parked=21600)
+    assert d.action == observe.ACT_NONE
+    assert d.next_state == db.STATE_WAIT_QUEUE
+    assert d.reason == "auto_merge_armed"
+    assert d.wake_in == 900
+
+
+def test_an_unarmed_green_pr_still_asks_for_the_merge():
+    """The guard above must not disable the merge lane it is protecting."""
+    from lemd import github, observe
+
+    green = observe.Snapshot(
+        kind="pr", number=99, labels=frozenset({"agent:working"}), auto_merge=False,
+        review_fresh=True, checks=github.ChecksState(failed=0, pending=0, total=3),
+    )
+    d = observe.decide(green, ttl_ci=1800, ttl_review=3600, ttl_queue=900, ttl_parked=21600)
+    assert d.action == observe.ACT_MERGE
+
+
+def test_the_snapshot_actually_reads_auto_merge_from_github():
+    """A field the state machine branches on must be in the fields the reader requests."""
+    from lemd import github
+
+    src = (_V2 / "lemd" / "github.py").read_text()
+    assert "autoMergeRequest" in src
+    assert hasattr(github, "pr_facts")
+
+
+def test_the_cap_counts_runs_this_daemon_did_not_spawn(tmp_path):
+    """A restart must not grant a fresh full pool on top of the agents still working.
+
+    Children are launched into their own sessions so they OUTLIVE a daemon restart — deliberate, so
+    a restart never abandons an agent mid-`git push`. But the in-memory child list is empty after
+    one, so the cap was computed as if nothing were running. Measured live: 5 concurrent runs
+    against a cap of 3 after three restarts in ten minutes.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    sup = dispatch.Supervisor(_Cfg(tmp_path), conn)
+    item = db.upsert_item(conn, kind="pr", number=500, state=db.STATE_READY)
+    # This process is alive and is not ours — exactly the post-restart shape.
+    db.start_run(conn, item_id=item, mode="fix", pid=os.getpid())
+    assert sup.in_pool("agent") == 1
+    assert sup.free("agent") == 2
+
+
+def test_an_orphaned_run_does_not_hold_its_slot_forever(tmp_path):
+    """The counterpart: a long-lived daemon must be able to close a run it never spawned.
+
+    `startup_recover` closes dead runs at START. An orphan that exits five minutes AFTER a restart
+    has no other closer, so it would hold its slot until the next restart — and the usable pool
+    would shrink by one every time the daemon was bounced.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    sup = dispatch.Supervisor(_Cfg(tmp_path), conn)
+    item = db.upsert_item(conn, kind="pr", number=501, state=db.STATE_RUNNING)
+    # A pid that cannot be alive: pid 0 is never a real process on Linux.
+    db.start_run(conn, item_id=item, mode="fix", pid=0)
+    conn.execute("UPDATE runs SET pid=999999999, pid_start='1' WHERE item_id=?", (item,))
+    assert sup.in_pool("agent") == 0
+    sup.reap()
+    open_runs = conn.execute("SELECT COUNT(*) AS n FROM runs WHERE ended_at IS NULL").fetchone()
+    assert open_runs["n"] == 0
+    # And the item is handed back for a fresh observation rather than guessed at locally.
+    assert db.get_item(conn, "pr", 501)["dirty"] == 1
+
+
+# --------------------------------------------------------------------------- the hold switch
+
+def test_hold_starts_is_a_LANE_hold_not_a_pipeline_stop(tmp_path):
+    """`PAUSED` stops everything; capping agents to 0 starves selfreview.
+
+    selfreview is the merge gate's evidence source, so a cap of 0 wedges the queue behind the very
+    lane you meant to keep running. The switch holds new WORK and leaves the drains open — the
+    operator-facing half of the plan's fleet-burn cap (F4).
+    """
+    (tmp_path / "config.env").write_text(
+        f"LEMD_DB={tmp_path}/queue.db\nLEMD_SHADOW=0\nLEMD_HOLD_STARTS=1\n"
+    )
+    cfg = load(tmp_path)
+    assert cfg.hold_starts is True
+    # And it must not have quietly become a pause.
+    assert cfg.max_agents > 0
+    assert not cfg.is_paused()
+
+
+def test_hold_starts_defaults_off_and_reads_falsey_values_as_off(tmp_path):
+    """An empty or absent value must never latch the hold on."""
+    for raw, expected in (("", False), ("0", False), ("no", False), ("false", False),
+                          ("1", True), ("yes", True)):
+        (tmp_path / "config.env").write_text(
+            f"LEMD_DB={tmp_path}/queue.db\nLEMD_HOLD_STARTS={raw}\n"
+        )
+        assert load(tmp_path).hold_starts is expected, f"LEMD_HOLD_STARTS={raw!r}"
+    (tmp_path / "config.env").write_text(f"LEMD_DB={tmp_path}/queue.db\n")
+    assert load(tmp_path).hold_starts is False
+
+
+def test_the_hold_is_checked_before_the_slot_read():
+    """A full pool would `continue` first and report nothing to an operator who is holding work."""
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    hold = src.index('self.cfg.hold_starts')
+    free = src.index('if self.sup.free(pool) <= 0', hold - 4000)
+    assert hold < free
+
+
+def test_the_hold_only_touches_starts():
+    """merge, park and selfreview must keep draining, or the hold becomes a wedge."""
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    assert 'if mode == "start" and self.cfg.hold_starts:' in src

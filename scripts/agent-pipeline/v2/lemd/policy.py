@@ -30,7 +30,10 @@ LOG = logging.getLogger("lemd.policy")
 #: one. v1 counted commits instead, which made precisely the runs a budget exists to stop repeating
 #: — the ones that die before committing — free.
 MODE_BUDGET: dict[str, int] = {
-    "start": 3,
+    # 2, not 3: a start is the most expensive run there is (9-12 minutes of model session), and the
+    # re-dispatch gate below means a retry now only happens when the first attempt produced NOTHING.
+    # Worst case is therefore one retry, which is what the owner asked for.
+    "start": 2,
     "fix": 4,
     "review": 3,
     "selfreview": 2,
