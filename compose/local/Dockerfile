@@ -44,6 +44,11 @@ ARG VITE_POSTHOG_REPLAY=""
 ENV VITE_POSTHOG_REPLAY=${VITE_POSTHOG_REPLAY}
 ARG VITE_POSTHOG_REPLAY_SAMPLE=""
 ENV VITE_POSTHOG_REPLAY_SAMPLE=${VITE_POSTHOG_REPLAY_SAMPLE}
+# Public canonical host for Open Graph / Twitter cards / sitemap (issue #1298).
+# Not a secret: it only names the hostname, and Vite inlines it into the static
+# index.html shell so crawlers see absolute URLs.
+ARG VITE_PUBLIC_BASE_URL=""
+ENV VITE_PUBLIC_BASE_URL=${VITE_PUBLIC_BASE_URL}
 # Source-map upload for error tracking (issue #648). The INJECTED bundle is what must ship — the
 # chunk ids posthog-cli writes into the JS are how a captured stack finds its map — so this runs
 # here, inside the stage that produces dist/, and not as a separate CI build.
