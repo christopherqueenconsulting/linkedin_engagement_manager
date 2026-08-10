@@ -46,10 +46,16 @@ _V1_DISPATCH = {
     "mode_depfix": "depfix", "mode_docfix": "docfix", "mode_phasefix": "phasefix",
 }
 #: v1 reasons that mean "v1 asked the merge queue to take this PR".
-_V1_MERGE = {"mode_merge", "fastpath"}
+_V1_MERGE = {"mode_merge", "mode_merge_fastpath"}
 #: v1 reasons that mean "v1 REFUSED to act" — the rows property A is tested against.
+#:
+#: `merge_not_taken` / `merge_queue_stuck` / `merge_queue_unmergeable` are the #1120 class: v1
+#: DETECTED the wedge and changed no state, so every following tick re-fed the PR to the queue.
+#: Counting them as refusals is what makes property A meaningful — v2 proposing a merge on one of
+#: those snapshots would be reproducing the incident, not improving on it.
 _V1_REFUSED = {"paused", "both_lanes_exhausted", "all_slots_busy", "merge_not_taken",
-               "merge_queue_stuck", "merge_queue_unmergeable", "trust_refused"}
+               "merge_queue_stuck", "merge_queue_unmergeable", "trust_refused",
+               "degraded_hold_new_start", "phase_guard_parked"}
 
 
 @dataclass
@@ -70,14 +76,17 @@ def snapshot_from_row(row: dict) -> observe.Snapshot | None:
     on what v2 knew — which is the safe direction for property A: a snapshot missing facts makes
     v2 more conservative (unreadable/absent inputs park or wait), never less.
     """
-    number = row.get("pr_number") or row.get("issue_number")
+    # 0 is v1's "absent", not issue zero — `or` handles both that and a missing key.
+    number = row.get("pr_number") or row.get("issue_number") or 0
     try:
         number = int(number)
     except (TypeError, ValueError):
         return None
+    if number <= 0:
+        return None
     kind = "pr" if row.get("pr_number") else "issue"
     labels = set(row.get("labels") or [])
-    if kind == "issue" and row.get("tick_reason") == "mode_start":
+    if kind == "issue" and row.get("reason") == "mode_start":
         labels.add("agent:ready")
     if kind == "pr":
         labels.add("agent:working")
@@ -95,7 +104,7 @@ def snapshot_from_row(row: dict) -> observe.Snapshot | None:
 
 def v1_action(row: dict) -> tuple[str, str]:
     """What v1 did on this tick, as `(action, mode)`."""
-    reason = row.get("tick_reason") or ""
+    reason = row.get("reason") or ""
     if reason in _V1_DISPATCH:
         return observe.ACT_DISPATCH, _V1_DISPATCH[reason]
     if reason in _V1_MERGE:
@@ -138,8 +147,15 @@ def replay(path: str | Path, cfg=None) -> tuple[list[Finding], Counter]:
                                     f"{d2.action}({d2.mode or ''})", d2.reason))
             counts["safety_violations"] += 1
         elif act1 in (observe.ACT_DISPATCH, observe.ACT_MERGE) and d2.action == observe.ACT_NONE:
-            findings.append(Finding("missing", snap.number, f"{act1}({mode1})", "none", d2.reason))
-            counts["missing"] += 1
+            # Distinguish "v2 would not have acted" from "the REPLAY could not tell it enough to
+            # decide". v1's telemetry records what it DID, never the CI facts it read, so a PR row
+            # arrives with no check state and `decide` correctly answers "I don't know" — which is
+            # the fail-closed branch working, not a regression. Counting those as regressions would
+            # bury the handful that are real under a thousand that are not.
+            blind = d2.reason in ("checks_unknown", "github_unreadable")
+            findings.append(Finding("blind" if blind else "missing", snap.number,
+                                    f"{act1}({mode1})", "none", d2.reason))
+            counts["blind" if blind else "missing"] += 1
         elif act1 == observe.ACT_NONE and d2.action in (observe.ACT_DISPATCH, observe.ACT_MERGE):
             # Property B: expected, and exactly what v2 exists to do. Reported, never failed on.
             findings.append(Finding("extra", snap.number, "none",
@@ -155,12 +171,22 @@ def main(argv: list[str]) -> int:
         return 2
     findings, counts = replay(argv[1])
     print(f"replayed {counts['rows']} recorded tick(s)")
-    print(f"  safety violations : {counts['safety_violations']}   <-- must be 0 to cut over")
-    print(f"  v2 acts, v1 idled : {counts['extra']}   (expected — review the list)")
-    print(f"  v1 acted, v2 idles: {counts['missing']}   (explain each before cutover)")
+    print(f"  safety violations   : {counts['safety_violations']}   <-- must be 0 to cut over")
+    print(f"  v2 acts, v1 idled   : {counts['extra']}   (expected — review the list)")
+    print(f"  v1 acted, v2 idles  : {counts['missing']}   (explain each before cutover)")
+    print(f"  snapshot too thin   : {counts['blind']}   (v1 never recorded the CI facts; v2 waits)")
+    by_reason: Counter = Counter(f.detail for f in findings if f.kind == "missing")
+    for reason, n in by_reason.most_common():
+        print(f"    missing/{reason}: {n}")
     for f in findings:
-        if f.kind != "extra":
-            print(f"  [{f.kind}] #{f.number}: v1={f.v1} v2={f.v2} ({f.detail})")
+        if f.kind == "safety":
+            print(f"  [SAFETY] #{f.number}: v1={f.v1} v2={f.v2} ({f.detail})")
+    if counts["blind"] and not counts["missing"]:
+        print("\nNOTE: every disagreement is a THIN SNAPSHOT, not a decision difference. v1's")
+        print("tick-outcome log records what it did, never the check state it read, so replayed PR")
+        print("rows carry no CI facts and `decide` answers 'unreadable -> wait'. That proves the")
+        print("fail-closed branch and property A; property B on PR lanes is not observable from")
+        print("this input and is covered instead by the live shadow window.")
     return 1 if counts["safety_violations"] else 0
 
 
