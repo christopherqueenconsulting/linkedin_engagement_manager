@@ -139,17 +139,12 @@ Use `click_element_wait_retry()` for all click interactions — it handles trans
 Browser capacity is a **fixed pool of Chrome session slots shared by the Celery Selenium lanes**:
 `SE_NODE_MAX_SESSIONS` must always equal the summed `SELENIUM_CONCURRENCY` of those lanes —
 `tests/unit/app/test_selenium_capacity.py` fails the build if they drift. The horizontal path
-(`docker-compose.grid.yml`) carries the same invariant with node count as the cap:
+(`docker-compose.grid.yml`) carries the same invariant with node count as the cap.
+**`selenium-node-debug` is NOT in that sum** — extra capacity, enforced since #1301: it declares
+`lem:debug=true`, pool nodes `false`, and a production session ASKS for `false` (omitting it still
+matches). The probe and the Selenium MCP browser REQUIRE it, so neither takes a lane slot; 2
+sessions, a third refused not queued. Off the pool ≠ safe for the ACCOUNT.
 `docs/SELENIUM_GRID.md`, `docs/scaling-plan.md`.
-
-**`selenium-node-debug` is NOT in that sum** — it is a extra node on top of the pool, and since
-#1301 the separation is enforced rather than nominal: it declares `lem:debug=true`, every pool node
-declares `lem:debug=false`, and a production session asks for `false` (never omits it — an absent
-capability matches the debug node too). So a lane can no longer land there, and the ad-hoc
-sessions — the read-only live probe an agent runs, the Selenium MCP browser, both of which now
-REQUIRE it — can no longer take a lane's slot. It offers `DEBUG_NODE_SESSIONS` (2) sessions, and a
-third is refused in about a second rather than queued for 300s. Off the pool ≠ safe for the
-ACCOUNT: the 429 breaker and the probe's write refusal still apply there.
 
 ## Feature Areas
 
