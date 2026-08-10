@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.142.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.141.0...v0.142.0) (2026-08-10)
+
+
+### Features
+
+* **selenium:** make the Grid readiness wait configurable (closes [#1339](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1339)) ([#1342](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1342)) ([6f6eb9e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6f6eb9ee77e2bdc1f148b81383cf80c038144f6d))
+
+
+### Bug Fixes
+
+* **agents:** align status.sh's activity half with the v2 dispatcher ([#1351](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1351)) ([a5fc070](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a5fc070f1415883e0e60b1b370456997a2b2c7f8))
+* **agents:** align status.sh's activity half with the v2 dispatcher (closes [#1347](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1347)) ([a5fc070](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a5fc070f1415883e0e60b1b370456997a2b2c7f8))
+* **agents:** record what act() did, not only what decide() intended ([#1350](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1350)) ([afee5f2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/afee5f2fc2e4826b70b351dbaa74c18f4c761e82))
+* **agents:** record what act() did, not only what decide() intended (closes [#1348](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1348)) ([afee5f2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/afee5f2fc2e4826b70b351dbaa74c18f4c761e82))
+* **agents:** recover issues stranded in agent:working ([#1349](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1349)) ([df22a87](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/df22a8761bec0df48cfad713f73cad2d9542d679))
+* **agents:** recover issues stranded in agent:working (closes [#1346](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1346)) ([df22a87](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/df22a8761bec0df48cfad713f73cad2d9542d679))
+* **ci:** save caches from main only, not from merge-queue refs ([#1344](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1344)) ([ede9a36](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ede9a363b3d2ad708d79490a48c953fc660bdc88))
+
+
+### Performance Improvements
+
+* **ci:** cache the Playwright browser download in the E2E lane ([#1338](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1338)) ([89bdf58](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/89bdf58d73c0a43ae66a6444c24b2e3d1957fefc))
+* **ci:** poll the CodeQL gate every 10s instead of every 30s ([#1337](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1337)) ([8230f25](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8230f258750cff59158a4b068bd94a297e0a4839))
+* **ci:** run the unit lane on 4 xdist workers ([#1336](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1336)) ([e9ec1eb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e9ec1eb1770480fae3cba6c9b17a51c517b1e4d5))
+* **ci:** shard the unit lane and drop the redundant CodeQL analysis ([#1345](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1345)) ([9777a25](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9777a259976a73cfebf24bae4145474dc10b0eaf))
+* **ci:** stop CodeQL analyzing 125k lines of test code ([#1334](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1334)) ([99c93be](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/99c93be771cb1e62837b4e7a0c27a1ce4971c1a1))
+* **ci:** stop the Actions cache evicting the entry every branch reads ([#1335](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1335)) ([797f88a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/797f88aeb1fc745bb5aacb76b17844b048b835f6))
+* **tests:** stop the unit lane polling a Grid that is not there ([#1333](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1333)) ([01fd6d1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/01fd6d18e57d6d20435a28210260d8576e26eeda))
+
 ## [0.141.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.140.0...v0.141.0) (2026-08-10)
 
 
