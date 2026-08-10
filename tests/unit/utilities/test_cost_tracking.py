@@ -116,13 +116,15 @@ class TestGptImageCost:
             from cqc_lem.utilities.ai.ai_helper import get_flux_image_via_replicate
             path = get_flux_image_via_replicate("a robot",
                                                 ref="black-forest-labs/flux-dev",
-                                                aspect_ratio="1:1")
+                                                aspect_ratio="1:1",
+                                                surface="post_image")
 
         assert path == str(tmp_path / "out.webp")
         args, kwargs = track.call_args
         assert args[0] == "image" and args[1] == "replicate"
         assert args[2] == pytest.approx(0.025)
         assert kwargs["model"] == "black-forest-labs/flux-dev"
+        assert kwargs["meta"]["surface"] == "post_image"
 
 
 class TestLlmRollupAccrual:

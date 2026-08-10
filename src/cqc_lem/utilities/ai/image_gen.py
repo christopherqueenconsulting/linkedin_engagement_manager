@@ -151,7 +151,8 @@ def _save_image_bytes(data: bytes, user_id: Optional[int], extension: str = ".pn
 
 
 def _render_via_gpt_image(prompt: str, *, ratio: str, quality: Optional[str],
-                          user_id: Optional[int], post_id: Optional[int]) -> str:
+                          user_id: Optional[int], post_id: Optional[int],
+                          surface: Optional[str] = None) -> str:
     """One gpt-image render through the proxy. Raises on failure — the caller owns fallback."""
     quality = quality or IMAGE_QUALITY
     size = size_for_ratio(ratio)
@@ -178,9 +179,9 @@ def _render_via_gpt_image(prompt: str, *, ratio: str, quality: Optional[str],
     from cqc_lem.utilities.observability import image_cost_usd, track_media_cost
     track_media_cost("image", "openai", image_cost_usd(1, model=served_model, quality=quality),
                      user_id=user_id, post_id=post_id, qty=1, model=served_model,
-                     meta={"size": size, "quality": quality})
+                     meta={"size": size, "quality": quality, "surface": surface})
     log_info("Generated image via gpt-image", user_id=user_id, post_id=post_id,
-             ai_model=served_model, api_provider="openai")
+             ai_model=served_model, api_provider="openai", surface=surface)
     return path
 
 
@@ -215,17 +216,19 @@ def run_replicate_bounded(ref: str, input_params: dict,
 
 
 def _render_via_flux(prompt: str, *, ratio: str, image_model: str,
-                     user_id: Optional[int]) -> str:
+                     user_id: Optional[int], surface: Optional[str] = None) -> str:
     from cqc_lem.utilities.ai.ai_helper import get_flux_image_via_replicate
     _ = user_id  # cost + logging happen inside the replicate helper, keyed off attribution scope
-    return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio)
+    return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio,
+                                       surface=surface)
 
 
 def _render_with_backend(prompt: str, *, ratio: str = "1:1",
                          quality: Optional[str] = None,
                          user_id: Optional[int] = None,
                          post_id: Optional[int] = None,
-                         image_model: str = DEFAULT_IMAGE_MODEL) -> tuple[str, str]:
+                         image_model: str = DEFAULT_IMAGE_MODEL,
+                         surface: Optional[str] = None) -> tuple[str, str]:
     """One render, plus the backend that actually produced it (``gpt-image`` or ``flux``).
 
     Which backend ran is not answerable from configuration: under the default ``auto`` gpt-image
@@ -242,28 +245,32 @@ def _render_with_backend(prompt: str, *, ratio: str = "1:1",
         try:
             return _render_via_gpt_image(with_no_marks(prompt, "gpt-image"), ratio=ratio,
                                          quality=quality, user_id=user_id,
-                                         post_id=post_id), "gpt-image"
+                                         post_id=post_id, surface=surface), "gpt-image"
         except Exception as e:
             if backend == "gpt-image":
                 raise
             log_warning("gpt-image render failed — falling back to FLUX", exc=e,
-                        user_id=user_id, post_id=post_id, api_provider="openai")
+                        user_id=user_id, post_id=post_id, api_provider="openai", surface=surface)
     return _render_via_flux(with_no_marks(prompt, "flux"), ratio=ratio,
-                            image_model=image_model, user_id=user_id), "flux"
+                            image_model=image_model, user_id=user_id, surface=surface), "flux"
 
 
 def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
                              quality: Optional[str] = None,
                              user_id: Optional[int] = None,
                              post_id: Optional[int] = None,
-                             image_model: str = DEFAULT_IMAGE_MODEL) -> str:
+                             image_model: str = DEFAULT_IMAGE_MODEL,
+                             surface: Optional[str] = None) -> str:
     """Render one image and return its local file path.
 
     Never renders a likeness — callers that may include the author go through
     ``generate_post_image`` so the avatar guardrails stay the single decision point.
+
+    ``surface`` is threaded from the caller for media-cost attribution (issue #1291).
     """
     return _render_with_backend(prompt, ratio=ratio, quality=quality, user_id=user_id,
-                                post_id=post_id, image_model=image_model)[0]
+                                post_id=post_id, image_model=image_model,
+                                surface=surface)[0]
 
 
 _VISION_GATE_PROMPT = """You are grading ONE AI-generated image intended as professional \
@@ -327,11 +334,13 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
     from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
+    from cqc_lem.utilities.observability import track_image_gate_verdict
 
     enforced = surface in IMAGE_QUALITY_GATE_SURFACES
     attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
     current_prompt = prompt
     path: Optional[str] = None
+    last_verdict: Optional[QualityVerdict] = None
 
     for attempt in range(1, attempts + 1):
         # The likeness path talks to Replicate directly, so it never passes through
@@ -339,15 +348,16 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
         marked = with_no_marks(current_prompt, "flux")
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
-            ratio=ratio, fallback_prompt=marked)
+            ratio=ratio, fallback_prompt=marked, surface=surface)
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)
         if not path:
             return None
         verdict = inspect_render_quality(path, focal_concept or prompt[:200])
+        last_verdict = verdict
         if verdict.acceptable or not verdict.checked:
-            return path
+            break
         log_info("Avatar image failed the quality gate", user_id=user_id, post_id=post_id,
                  action_type="image_gate", surface=surface, attempt=attempt,
                  issues="; ".join(verdict.issues))
@@ -355,6 +365,22 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
             break
         # Always FLUX on this path — the likeness renders on Replicate.
         current_prompt = f"{prompt}\n\n{repair_directive(verdict.issues, 'flux', focal_concept)}"
+
+    if last_verdict is not None:
+        if last_verdict.checked:
+            gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
+        else:
+            gate_verdict = "unchecked"
+        track_image_gate_verdict(
+            surface=surface,
+            verdict=gate_verdict,
+            issues=last_verdict.issues,
+            attempt_count=attempt,
+            checked=last_verdict.checked,
+            acceptable=last_verdict.acceptable,
+            user_id=user_id,
+            post_id=post_id,
+        )
     return path
 
 
@@ -370,24 +396,44 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     render kept). After the attempt budget, the last render ships — for covers the human
     review queue is still behind this gate.
     """
+    from cqc_lem.utilities.observability import track_image_gate_verdict
+
     enforced = surface in IMAGE_QUALITY_GATE_SURFACES
     attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
     current_prompt = prompt
     path: Optional[str] = None
+    last_verdict: Optional[QualityVerdict] = None
 
     for attempt in range(1, attempts + 1):
         # The backend that RENDERED, not the one configured: under `auto` a gpt-image failure
         # falls through to FLUX, and the retry has to be phrased for whichever one answered.
         path, used_backend = _render_with_backend(current_prompt, ratio=ratio, quality=quality,
                                                  user_id=user_id, post_id=post_id,
-                                                 image_model=image_model)
+                                                 image_model=image_model, surface=surface)
         verdict = inspect_render_quality(path, focal_concept or prompt[:200])
+        last_verdict = verdict
         if verdict.acceptable or not verdict.checked:
-            return path
+            break
         log_info("Image failed the quality gate",
                  user_id=user_id, post_id=post_id, action_type="image_gate",
                  surface=surface, attempt=attempt, issues="; ".join(verdict.issues))
         if not enforced or attempt == attempts:
             break
         current_prompt = f"{prompt}\n\n{repair_directive(verdict.issues, used_backend, focal_concept)}"
+
+    if last_verdict is not None:
+        if last_verdict.checked:
+            gate_verdict = "accepted" if last_verdict.acceptable else "rejected"
+        else:
+            gate_verdict = "unchecked"
+        track_image_gate_verdict(
+            surface=surface,
+            verdict=gate_verdict,
+            issues=last_verdict.issues,
+            attempt_count=attempt,
+            checked=last_verdict.checked,
+            acceptable=last_verdict.acceptable,
+            user_id=user_id,
+            post_id=post_id,
+        )
     return path

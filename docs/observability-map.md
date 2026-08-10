@@ -69,6 +69,15 @@ posts/comments/editions into `content_quality_scores`: weighted slop (HARD ×3),
 **stored** authenticity (no fresh judge call), hook length, impression-weighted ER. **Unscored is
 never zero** — each dimension has its own sample size. Never pauses (safety is #629).
 
+## Image generation telemetry (issue #1291)
+Every AI still image carries its surface on the `media_cost` event: `meta.surface` is threaded
+from the caller (`post_image` / `carousel` / `newsletter` / `video` / `thumbnail`), so per-surface
+spend and volume are queryable in PostHog. The bounded vision gate emits `image_gate_verdict` for
+**every** gated render: `verdict` is `accepted` / `rejected` / `unchecked` (the fail-open outage
+case, distinguishable from a pass), alongside the surface, issue categories, attempt count, and
+whether the gate actually ran (`checked`). This is the trend line for image quality; it does not
+change the gate's decision or thresholds.
+
 ## Feature flags (issue #651) — `docs/feature-flags.md`
 `utilities/flags.py` is the ONE place; **fail open to env var** (no key, disabled, undefined,
 inconclusive, SDK raises → all return the flag's env var). `only_evaluate_locally=True` → ZERO

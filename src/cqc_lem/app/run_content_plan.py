@@ -987,7 +987,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             else:
                 from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
                 image_path = render_image_from_prompt(image_prompt, ratio=source_frame_ratio,
-                                                      user_id=user_id, post_id=post_id)
+                                                      user_id=user_id, post_id=post_id,
+                                                      surface="video")
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
                                       user_id=user_id, post_id=post_id)
         if not src:

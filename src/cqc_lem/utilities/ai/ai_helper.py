@@ -2856,7 +2856,8 @@ def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfil
 
 
 def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
-                                 aspect_ratio: str = "1:1"):
+                                 aspect_ratio: str = "1:1",
+                                 surface: Optional[str] = None):
     """Render a prompt on a Replicate FLUX model and keep the result under `assets/images/`.
 
     Returns the LOCAL file path, never the Replicate URL — that URL expires, so anything that needs
@@ -2867,6 +2868,8 @@ def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
     ref too, which is why the cost ledger records the model with its `:<digest>` suffix stripped —
     the untrimmed ~100-char value overflows `cost_ledger.model_tier` and lost every avatar render's
     cost row.
+
+    ``surface`` is threaded from the caller for media-cost attribution (issue #1291).
     """
     if "1.1-pro" in ref:
         # flux-1.1-pro uses a different (smaller) input schema than flux-dev.
@@ -2913,17 +2916,22 @@ def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
     # avatar LoRA ref is ~100 chars and cost_ledger.model_tier is VARCHAR(64), so the untrimmed
     # value failed every avatar render's ledger write ("Data too long for column 'model_tier'").
     track_media_cost("image", "replicate", image_cost_usd(1, model=ref), qty=1,
-                     model=ref.split(":", 1)[0], meta={"aspect_ratio": aspect_ratio})
+                     model=ref.split(":", 1)[0],
+                     meta={"aspect_ratio": aspect_ratio, "surface": surface})
 
     return image_file_path
 
 
 def generate_flux1_image_from_prompt(prompt: str, *, ratio: str = DEFAULT_IMAGE_RATIO,
-                                     image_model: str = DEFAULT_IMAGE_MODEL):
+                                     image_model: str = DEFAULT_IMAGE_MODEL,
+                                     surface: Optional[str] = None):
     """Explicit FLUX render — for callers that need a SPECIFIC Replicate model (the admin
     variant tool, the avatar fallback). Everything else goes through image_gen.render_image_*.
+
+    ``surface`` is threaded from the caller for media-cost attribution (issue #1291).
     """
-    return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio)
+    return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio,
+                                       surface=surface)
 
 
 def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE_RATIO,
@@ -2961,7 +2969,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
             prompt, avatar=avatar, user_id=user_id, surface=surface,
             ratio=ratio, focal_concept=focal_concept, post_id=post_id)
     if image_model != DEFAULT_IMAGE_MODEL:
-        return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model)
+        return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model,
+                                                surface=surface)
     return render_image_gated(
         prompt, surface=surface, ratio=ratio, focal_concept=focal_concept,
         user_id=user_id, post_id=post_id, image_model=image_model)

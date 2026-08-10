@@ -1335,6 +1335,45 @@ def track_margin_report(report: dict) -> None:
     )
 
 
+def track_image_gate_verdict(
+    surface: str,
+    verdict: str,
+    issues: list,
+    attempt_count: int,
+    checked: bool,
+    acceptable: bool,
+    user_id: Optional[int] = None,
+    post_id: Optional[int] = None,
+) -> None:
+    """Emit an image gate verdict event for observability at POSTHOG_LOG_LEVEL=WARNING.
+
+    Args:
+        surface: the image surface (post_image, carousel, newsletter, video, thumbnail)
+        verdict: "accepted", "rejected", or "unchecked"
+        issues: list of issue strings from the vision gate
+        attempt_count: number of render attempts made
+        checked: whether the vision gate ran (True) or failed open (False)
+        acceptable: whether the final render was deemed acceptable
+        user_id: optional user ID
+        post_id: optional post ID
+    """
+    # Emit as a custom event; will be visible at POSTHOG_LOG_LEVEL=WARNING or lower
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="image_gate_verdict",
+        properties={
+            "surface": surface,
+            "verdict": verdict,
+            "issues": issues,
+            "attempt_count": attempt_count,
+            "checked": checked,
+            "acceptable": acceptable,
+            "user_id": user_id,
+            "post_id": post_id,
+        },
+    )
+
+
 def track_routing_policy(report: dict) -> None:
     """Emit the weekly cost-aware routing decision (plan §D.1(1)) as one `routing_policy` event, so
     a down-route — and especially an auto-rollback — is queryable next to the cost it was meant to

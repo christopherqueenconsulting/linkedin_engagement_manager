@@ -170,7 +170,9 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
                                          image_model=image_model,
                                          surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
     else:
-        image_path = generate_flux1_image_from_prompt(image_prompt, ratio=img_ratio, image_model=image_model)
+        image_path = generate_flux1_image_from_prompt(image_prompt, ratio=img_ratio,
+                                                       image_model=image_model,
+                                                       surface=AVATAR_SURFACE_POST_IMAGE)
 
     img_ext = os.path.splitext(image_path)[1] or ".webp"
     img_name = f"variant_{idx}_image{img_ext}"
