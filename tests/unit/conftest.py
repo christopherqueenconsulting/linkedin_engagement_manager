@@ -11,6 +11,8 @@ Tests that need a working LLM/Redis/Selenium handle still patch it themselves �
 inside these fixtures and wins.
 """
 
+import hashlib
+import os
 from unittest.mock import patch
 
 import httpx
@@ -18,6 +20,42 @@ import pytest
 from openai import APIConnectionError
 
 _BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
+
+
+def pytest_collection_modifyitems(config, items):
+    """Keep only the shard named by UNIT_SHARD / UNIT_SHARDS, for splitting the lane across jobs.
+
+    The lane is CPU-bound on a 4-vCPU runner, and `-n 4` has no more cores to claim, so the only way
+    left to shorten it is more machines. Two jobs at `-n 4` is eight-way parallelism.
+
+    Sharding is by FILE, not by test, so `--dist loadfile` still means what it means and a file's
+    module-scoped fixtures are still built once. There is no committed durations file to go stale;
+    the bucket is a hash instead.
+
+    That hash is taken over the ROOTDIR-RELATIVE path, from `item.nodeid`, and that detail is the
+    whole reason this is reproducible. Hashing `item.fspath` — the absolute path — makes the split
+    depend on the checkout directory, so a balance measured locally says nothing about what CI will
+    do, and CI itself would re-shuffle if the runner's working directory ever changed. Still a valid
+    partition either way, just an unpredictable one, which defeats the point of being able to
+    measure the balance before shipping it.
+
+    Deliberately not used above UNIT_SHARDS=2: past that, the handful of heavy files
+    (test_connection_seam.py alone is 16s of 98s) dominate a bucket and imbalance runs to +67%,
+    and there is nothing to gain once this lane drops under the CodeQL floor that sets wall clock.
+
+    Unset (the default, and every local run) selects everything.
+    """
+    shards = int(os.getenv("UNIT_SHARDS", "1"))
+    if shards <= 1:
+        return
+    shard = int(os.getenv("UNIT_SHARD", "1"))
+    kept, dropped = [], []
+    for item in items:
+        rel = item.nodeid.split("::", 1)[0]
+        bucket = int(hashlib.sha256(rel.encode()).hexdigest(), 16) % shards + 1
+        (kept if bucket == shard else dropped).append(item)
+    items[:] = kept
+    config.hook.pytest_deselected(items=dropped)
 
 
 def _blocked_llm_call(*args, **kwargs):

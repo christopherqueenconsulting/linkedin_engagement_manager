@@ -118,6 +118,21 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--wait-interval", type=int, default=30, help="Polling interval."
     )
+    parser.add_argument(
+        "--required-categories",
+        default="",
+        # Escape hatch for CHANGING the set of categories the repo produces. Normally the wait
+        # self-calibrates off recent commits (`expected_categories`), which is right while the set
+        # is stable and a trap the moment it shrinks: the calibration takes the LARGEST set among
+        # the newest 3 commits, so a removed category keeps being demanded until three commits have
+        # passed without it. Until then every run waits the full --wait-timeout and then fails
+        # open — a vacuous required gate, which is exactly what #1168/#1171 cost.
+        #
+        # Pinning the expected set here overrides the calibration, so a category can be added or
+        # removed in ONE pull request: this gate checks out the PR's own ref, so the PR that
+        # changes the workflows carries the matching value.
+        help="Comma-separated CodeQL categories to require, overriding self-calibration.",
+    )
     parser.add_argument("--ruff-cmd", default="ruff", help="Ruff executable.")
     return parser.parse_args(argv)
 
@@ -335,6 +350,7 @@ def wait_for_analysis(
     interval: int,
     commit_sha: str = "",
     base_ref: str = "",
+    required_override: Optional[set[str]] = None,
 ) -> bool:
     """Poll until CodeQL has uploaded analysis for ``commit_sha`` on ``ref``.
 
@@ -368,7 +384,12 @@ def wait_for_analysis(
                 log_info("CodeQL analysis available", ref=ref)
                 return True
         else:
-            required = expected_categories(analyses, commit_sha)
+            # An explicit set wins over calibration, so the workflow that changes which categories
+            # exist can say so in the same commit instead of waiting ~3 commits for the calibration
+            # window to clear.
+            required = set(required_override) if required_override else expected_categories(
+                analyses, commit_sha
+            )
             if not required and base_ref:
                 # A PR's first push has no earlier commit on its own ref. The base ref
                 # always has one, and runs the same CodeQL workflows, so it is the right
@@ -906,6 +927,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     client = GitHubClient(token, args.repo)
 
     # Wait for CodeQL results from the existing workflows.
+    required_override = {
+        c.strip() for c in args.required_categories.split(",") if c.strip()
+    }
+    if required_override:
+        log_info(
+            "Requiring an explicit CodeQL category set (calibration bypassed)",
+            categories=sorted(required_override),
+        )
     head_ready = wait_for_analysis(
         client,
         args.head_ref,
@@ -913,6 +942,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.wait_interval,
         commit_sha=args.head_sha,
         base_ref=args.base_ref,
+        required_override=required_override,
     )
     if not head_ready:
         # LOUD, not a quiet warning. This gate silently timed out on all 24 of its runs and reported

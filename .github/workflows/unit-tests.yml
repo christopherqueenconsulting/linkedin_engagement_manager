@@ -19,12 +19,24 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  unit-tests:
-    name: Unit Tests (Python ${{ matrix.python-version }})
+  # Two shards, because a 4-vCPU runner has no more cores for `-n 4` to claim and the lane is
+  # CPU-bound: two jobs at `-n 4` is eight-way parallelism. Selection is by FILE, on a stable hash
+  # of the path (tests/unit/conftest.py::pytest_collection_modifyitems), so `--dist loadfile` still
+  # holds and there is no durations file to go stale — measured within 2% of an even split.
+  #
+  # Deliberately NOT more than two. At 3-4 shards the few heavy files dominate a bucket (+67%
+  # imbalance), and there is nothing to win: past this point the PR's wall clock is set by
+  # `Analyze (python)`, not by this lane.
+  shard:
+    name: Unit shard ${{ matrix.shard }}/2
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.12"]
+        shard: [1, 2]
+    env:
+      UNIT_SHARDS: "2"
+      UNIT_SHARD: ${{ matrix.shard }}
 
     steps:
       - uses: actions/checkout@v7
@@ -32,7 +44,7 @@ jobs:
       - name: Set up Poetry and dependencies
         uses: ./.github/actions/poetry_setup
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
           install-args: --with test
 
       # -n 4 matches the width of a GitHub-hosted runner and is pinned rather than `auto` for the
@@ -42,15 +54,18 @@ jobs:
       # `-q` cancels the `-v` in pyproject's addopts (verbosity is additive) -- 11,728 result lines
       # times a [gwN] prefix is log noise, not signal. --durations=5 also comes from addopts and
       # stays, as the straggler probe: loadfile's floor is the slowest single FILE.
-      - name: Run unit tests
+      # --cov-report=term-missing is deliberately gone: it renders a ~150-row table into a log
+      # nobody reads, and the XML is what Codecov consumes. Each shard uploads its own partial
+      # coverage under the same `unit` flag and Codecov merges them — which is why
+      # codecov.yml's after_n_builds had to rise with the shard count.
+      - name: Run unit tests (shard ${{ matrix.shard }} of 2)
         run: |
           poetry run pytest tests/unit \
             -n 4 --dist loadfile \
             -q --tb=short \
             -m "not slow" \
             --cov=src/cqc_lem \
-            --cov-report=xml \
-            --cov-report=term-missing
+            --cov-report=xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -59,3 +74,27 @@ jobs:
           flags: unit
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # `Unit Tests (Python 3.12)` is a REQUIRED context in branch protection, and a matrix job's name
+  # carries its matrix values — so sharding renamed the job that used to report it. This aggregate
+  # keeps that exact string reporting, which is what makes the split invisible to branch protection
+  # and to the merge queue. Renaming it, or dropping it, silently un-gates the unit lane.
+  #
+  # `if: always()` so a failed shard still produces a verdict rather than leaving the required check
+  # pending forever; the result check below is what turns that verdict red.
+  unit-tests:
+    name: Unit Tests (Python 3.12)
+    runs-on: ubuntu-latest
+    needs: shard
+    if: always()
+    steps:
+      - name: Every shard passed
+        run: |
+          result="${{ needs.shard.result }}"
+          echo "shard matrix result: $result"
+          # `success` is the only acceptable value. A skipped or cancelled matrix must NOT read as a
+          # pass: that is how a lane stops running and nobody notices.
+          [ "$result" = "success" ] || {
+            echo "::error::Unit shards did not all pass (matrix result: $result)."
+            exit 1
+          }

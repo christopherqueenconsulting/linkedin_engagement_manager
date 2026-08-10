@@ -208,10 +208,9 @@ that difference is deliberate:
 | Analysis | Scope | Why |
 |---|---|---|
 | `codeql-analysis.yml` (`CodeQL Security Analysis`) | whole tree minus vendored | The broad sweep — the ONLY one covering `scripts/`, `.litellm/`, and the rest |
-| `codeql.yml` (`Advanced Analysis`) | `src/cqc_lem` | Application code, security-extended queries |
 | `.github/codeql/codeql-config.yml` (PR gate) | `src/cqc_lem` | What the merge gate compares against |
 
-Only the first was ever unscoped, which is why `paths: src/cqc_lem` in the other two never
+Only the first was ever unscoped, which is why `paths: src/cqc_lem` in the other one never
 suppressed the vendored alerts — they were filed by a different analysis. In the two already scoped
 to `src/cqc_lem` the vendored entry is redundant today; it is there so widening `paths` later
 cannot silently pull vendored code back into the gate.

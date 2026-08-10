@@ -113,11 +113,23 @@ jobs:
 
           [ -z "$PR_NUMBER" ] && PR_NUMBER="0"
 
-          # --wait-interval 10 (default 30): the gate cannot finish before the LAST of the three
-          # CodeQL categories uploads, so a shorter poll buys back only the quantisation slack
-          # between that upload and the next poll — up to 29s, ~15s on average. Deliberately NOT
-          # paired with a shorter --wait-timeout: 900 is what it is because a smaller value made
-          # this gate time out and fail open on all 24 of its runs (#904).
+          # --wait-interval 10 (default 30): the gate cannot finish before the LAST category
+          # uploads, so a shorter poll buys back only the quantisation slack between that upload and
+          # the next poll. Deliberately NOT paired with a shorter --wait-timeout: 900 is what it is
+          # because a smaller value made this gate time out and fail open on all 24 of its runs
+          # (#904).
+          #
+          # --required-categories is PINNED rather than self-calibrated. codeql.yml ("CodeQL
+          # Advanced", category /language:python/advanced) was deleted as redundant — its
+          # `security-extended` suite is a documented SUBSET of the `security-and-quality` that
+          # codeql-analysis.yml already runs, over a narrower path set, so it could not find
+          # anything the surviving analysis misses. Without this pin the gate would keep demanding
+          # that dead category for ~3 more commits, because expected_categories() takes the LARGEST
+          # set in its lookback window — waiting the full --wait-timeout and failing OPEN on every
+          # run in between, which is the vacuous-required-gate state that cost #1168 and #1171.
+          #
+          # Keep this list in step with codeql-analysis.yml's matrix. Adding a language means adding
+          # its category here in the SAME pull request.
           args=(
             --repo "${{ github.repository }}"
             --head-ref "$HEAD_REF"
@@ -125,6 +137,7 @@ jobs:
             --base-ref "$BASE_REF"
             --pr-number "$PR_NUMBER"
             --wait-interval 10
+            --required-categories "/language:python,/language:javascript-typescript"
             --fix
           )
           [ -n "$BRANCH" ] && args+=(--branch "$BRANCH")

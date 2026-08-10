@@ -1,9 +1,13 @@
 codecov:
   # Don't block CI if Codecov itself is unreachable
   require_ci_to_pass: false
-  # Wait for all three test-suite uploads before posting a combined status
+  # Number of coverage uploads to wait for before posting a combined status. FOUR: the unit lane is
+  # sharded across two jobs that each upload under the `unit` flag, plus integration, plus e2e.
+  # This MUST track the shard count. Too high and Codecov waits forever for an upload that is never
+  # coming and posts no status at all; too low and it publishes a number computed from a partial
+  # set, which reads as a coverage drop that isn't one.
   notify:
-    after_n_builds: 3
+    after_n_builds: 4
 
 coverage:
   precision: 2

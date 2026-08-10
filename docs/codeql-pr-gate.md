@@ -92,8 +92,9 @@ The fix: the gate is told the SHA its ref resolves to and waits for *that commit
   (`Merge <head> into <base>`), which is what CodeQL records as `commit_sha`. It is **not**
   `pull_request.head.sha` and not the PR's `merge_commit_sha`.
 - "Complete" means every **category** the repo produces (`/language:python`,
-  `/language:python/advanced`, `/language:javascript-typescript` — two workflows, three matrix legs)
-  has landed for our commit. **A partial upload is a partial diff, not a fresh one**: the categories
+  `/language:javascript-typescript` — one workflow, two matrix legs) has landed for our commit.
+  That set is **pinned** via `--required-categories` in the workflow rather than self-calibrated,
+  so it can change in a single PR; see "Changing the category set" below. **A partial upload is a partial diff, not a fresh one**: the categories
   land seconds to a minute apart, and comparing a head with two of them against a base with three
   hides every alert in the missing one — the same false green, one step further in. This is not
   theoretical: on PR #913's own gate run the wait cleared at `07:10:36` with javascript and
@@ -158,7 +159,23 @@ not comparing at all.
 ## Notes
 
 - The gate intentionally does **not** run CodeQL from scratch; it reuses the SARIF uploaded by
-  `.github/workflows/codeql.yml` and `.github/workflows/codeql-analysis.yml`.
+  `.github/workflows/codeql-analysis.yml`.
+
+### Changing the category set
+
+`expected_categories()` calibrates off the largest set among the newest 3 commits, which is right
+while the set is stable and a trap the moment it SHRINKS: a removed category keeps being demanded
+until it ages out, and every run in between waits the full `--wait-timeout` and then fails **open**.
+That is the vacuous-required-gate state behind #1168/#1171.
+
+`--required-categories` overrides the calibration. Because the gate checks out the PR's own ref, the
+PR that adds or removes a CodeQL workflow carries the matching value, and the change is safe in one
+commit. Keep the pinned list in step with `codeql-analysis.yml`'s matrix.
+
+`codeql.yml` (`Advanced Analysis`, `/language:python/advanced`) was removed this way: its
+`security-extended` suite is a documented SUBSET of the `security-and-quality` that
+`codeql-analysis.yml` runs, over a narrower path set, so it could not find anything the surviving
+analysis misses.
 - Fixes are pushed with the commit message `chore(codeql): auto-fix mechanical quality alerts`.
 - The verification step uses `.github/codeql/codeql-config.yml`, which combines
   `security-extended` and `security-and-quality` on `src/cqc_lem` while ignoring `tests` and `dist`.

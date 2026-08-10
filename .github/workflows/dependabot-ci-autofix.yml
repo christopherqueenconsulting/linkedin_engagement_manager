@@ -26,7 +26,6 @@ on:
       - "CodeQL PR Gate"                      # CodeQL PR Quality Gate
       # Not required, but a failure here is still worth an agent's attention
       - "CI / E2E Test w/ Coverage"
-      - "CodeQL Advanced"
     types:
       - completed
 
