@@ -6,8 +6,10 @@ paths ahead of the catch-all, and the absolute-URL substitution that makes a sit
 `Sitemap:` line valid at all.
 """
 
+import importlib
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +29,38 @@ pytestmark = pytest.mark.unit
 
 UI_PUBLIC = Path(__file__).resolve().parents[3] / "src" / "cqc_lem" / "ui" / "public"
 UI_INDEX = Path(__file__).resolve().parents[3] / "src" / "cqc_lem" / "ui" / "index.html"
+
+
+def _reloaded_main_with_dist(dist: Path):
+    """Reload `cqc_lem.api.main` as if `dist` were the built SPA directory.
+
+    Caller must restore the module afterwards (``importlib.reload(main_mod)``).
+    """
+    import cqc_lem.api.main as main_mod
+
+    assets = dist / "assets"
+    real_isdir = os.path.isdir
+    real_join = os.path.join
+
+    def _patched_isdir(p: str) -> bool:
+        sp = str(p)
+        return sp == str(dist) or sp == str(assets) or real_isdir(sp)
+
+    def _patched_join(*parts: str) -> str:
+        result = real_join(*parts)
+        if result.endswith("ui/dist"):
+            return str(dist)
+        if result.endswith("ui/dist/assets"):
+            return str(assets)
+        if result.endswith("ui/dist/index.html"):
+            return str(dist / "index.html")
+        return result
+
+    with patch.object(main_mod.os.path, "isdir", _patched_isdir), patch.object(
+        main_mod.os.path, "join", _patched_join
+    ):
+        importlib.reload(main_mod)
+    return main_mod
 
 
 @pytest.fixture
@@ -171,3 +205,66 @@ class TestShippedSourceFiles:
         relative = shell[start:shell.index('"', start)]
         assert (UI_PUBLIC / relative).is_file(), relative
         assert not os.path.isabs(relative)
+
+
+class TestServeSpa:
+    """The catch-all in api/main is registered only when a dist/ exists at import time.
+
+    In a checkout there is no dist/, so the function is defined inside a conditional block.
+    These tests reload the module with a fake dist in place, then restore it afterwards.
+    """
+
+    def test_fills_the_build_time_base_url_token(self, tmp_path, monkeypatch):
+        """The real SPA catch-all substitutes %VITE_PUBLIC_BASE_URL% from PUBLIC_BASE_URL."""
+        import cqc_lem.api.main as main_mod
+
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "assets").mkdir()
+        (dist / "brand").mkdir()
+        (dist / "brand" / "og.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (dist / "robots.txt").write_text("User-agent: *\nAllow: /\n")
+        (dist / "sitemap.xml").write_text('<?xml version="1.0"?><urlset/>')
+        (dist / "favicon.svg").write_text("<svg/>")
+        (dist / "index.html").write_text(
+            '<meta property="og:image" content="%VITE_PUBLIC_BASE_URL%/brand/og.png">'
+        )
+
+        try:
+            reloaded = _reloaded_main_with_dist(dist)
+            monkeypatch.setenv("PUBLIC_BASE_URL", "https://lem.example.com")
+            client = TestClient(reloaded.app)
+            r = client.get("/")
+            assert r.status_code == 200
+            assert "%VITE_PUBLIC_BASE_URL%" not in r.text
+            assert 'content="https://lem.example.com/brand/og.png"' in r.text
+        finally:
+            # Restore the module to its no-dist checkout state so other tests see the real app.
+            importlib.reload(main_mod)
+
+    def test_falls_back_to_request_origin_when_public_base_url_unset(self, tmp_path, monkeypatch):
+        """Without PUBLIC_BASE_URL the catch-all still emits absolute URLs from the request origin."""
+        import cqc_lem.api.main as main_mod
+
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "assets").mkdir()
+        (dist / "brand").mkdir()
+        (dist / "brand" / "og.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (dist / "robots.txt").write_text("User-agent: *\nAllow: /\n")
+        (dist / "sitemap.xml").write_text('<?xml version="1.0"?><urlset/>')
+        (dist / "favicon.svg").write_text("<svg/>")
+        (dist / "index.html").write_text(
+            '<meta property="og:image" content="%VITE_PUBLIC_BASE_URL%/brand/og.png">'
+        )
+
+        try:
+            reloaded = _reloaded_main_with_dist(dist)
+            monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+            client = TestClient(reloaded.app)
+            r = client.get("/")
+            assert r.status_code == 200
+            assert "%VITE_PUBLIC_BASE_URL%" not in r.text
+            assert 'content="http://testserver/brand/og.png"' in r.text
+        finally:
+            importlib.reload(main_mod)
