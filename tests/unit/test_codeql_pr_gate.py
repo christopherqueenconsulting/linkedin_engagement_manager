@@ -167,6 +167,34 @@ class TestWaitForAnalysis:
         # Calibration is a fixed property of the ref — fetched once, not once per poll.
         assert client.base_calls == 1
 
+    def test_an_explicit_required_set_overrides_calibration(self):
+        """Removing a category is otherwise a ~3-commit fail-open window.
+
+        `expected_categories` takes the LARGEST set among the newest 3 commits, so a category that
+        stops being produced keeps being demanded until it has aged out — every run in between
+        waits the full timeout and fails open. Pinning the set is what lets the PR that deletes a
+        CodeQL workflow say so in the same commit. Here the base still carries python/advanced and
+        head never produces it, which without the override would never satisfy `required`.
+        """
+        base = [_analysis(OLD_SHA, PY), _analysis(OLD_SHA, JS),
+                _analysis(OLD_SHA, PY_ADVANCED)]
+        client = _FakeClient([[_analysis(NEW_SHA, PY), _analysis(NEW_SHA, JS)]], base=base)
+        assert gate.wait_for_analysis(
+            client, "refs/pull/913/merge", timeout=0, interval=0,
+            commit_sha=NEW_SHA, base_ref="refs/heads/main",
+            required_override={PY, JS},
+        ) is True
+        # The override is authoritative, so the base ref is never consulted at all.
+        assert client.base_calls == 0
+
+    def test_an_explicit_required_set_still_waits_for_its_own_categories(self):
+        """The override narrows what is required; it must not accept a partial upload of it."""
+        client = _FakeClient([[_analysis(NEW_SHA, JS)]])
+        assert gate.wait_for_analysis(
+            client, "refs/pull/913/merge", timeout=0, interval=0,
+            commit_sha=NEW_SHA, required_override={PY, JS},
+        ) is False
+
     def test_first_push_partial_upload_times_out_against_the_base_ref(self):
         base = [_analysis(OLD_SHA, PY), _analysis(OLD_SHA, JS),
                 _analysis(OLD_SHA, PY_ADVANCED)]

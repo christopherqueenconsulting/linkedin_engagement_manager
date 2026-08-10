@@ -55,7 +55,6 @@ unit-tests.yml          → runs on every PR/push to main
 integration-coverage.yml → runs on every PR/push to main
 e2e-coverage.yml        → runs on every PR/push to main (informational, not blocking)
 codeql-analysis.yml     → runs on PR/push + weekly schedule
-codeql.yml              → runs on PR/push + weekly schedule
 gitguardian-scan.yml    → runs on every PR/push (skip Dependabot)
 dependabot-auto-merge.yml    → fires on Dependabot PRs, merges on minor/patch after checks
 dependabot-ci-autofix.yml   → fires on CI failure for Dependabot PRs, posts @copilot fix

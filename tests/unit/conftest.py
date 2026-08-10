@@ -11,6 +11,8 @@ Tests that need a working LLM/Redis/Selenium handle still patch it themselves â€
 inside these fixtures and wins.
 """
 
+import hashlib
+import os
 from unittest.mock import patch
 
 import httpx
@@ -18,6 +20,35 @@ import pytest
 from openai import APIConnectionError
 
 _BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
+
+
+def pytest_collection_modifyitems(config, items):
+    """Keep only the shard named by UNIT_SHARD / UNIT_SHARDS, for splitting the lane across jobs.
+
+    The lane is CPU-bound on a 4-vCPU runner, and `-n 4` has no more cores to claim, so the only way
+    left to shorten it is more machines. Two jobs at `-n 4` is eight-way parallelism.
+
+    Sharding is by FILE, not by test, so `--dist loadfile` still means what it means and a file's
+    module-scoped fixtures are still built once. The bucket is a stable hash of the path, which is
+    what makes this need no committed durations file to go stale: measured over the 456 unit files
+    it lands within 2% of an even split at UNIT_SHARDS=2. It is deliberately NOT used above 2 â€”
+    at 3 or 4 the handful of heavy files (test_connection_seam.py alone is 16s of 98s) dominate a
+    bucket and imbalance reaches +67%, and there is nothing to gain anyway once the lane drops
+    under the CodeQL floor that sets the PR's wall clock.
+
+    Unset (the default, and every local run) selects everything.
+    """
+    shards = int(os.getenv("UNIT_SHARDS", "1"))
+    if shards <= 1:
+        return
+    shard = int(os.getenv("UNIT_SHARD", "1"))
+    kept, dropped = [], []
+    for item in items:
+        path = str(item.fspath if hasattr(item, "fspath") else item.path)
+        bucket = int(hashlib.sha256(path.encode()).hexdigest(), 16) % shards + 1
+        (kept if bucket == shard else dropped).append(item)
+    items[:] = kept
+    config.hook.pytest_deselected(items=dropped)
 
 
 def _blocked_llm_call(*args, **kwargs):

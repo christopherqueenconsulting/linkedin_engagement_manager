@@ -56,7 +56,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
-          # Deliberately NOT scoped to src/cqc_lem the way codeql.yml and the PR-gate config are:
+          # Deliberately NOT scoped to src/cqc_lem the way the PR-gate config is:
           # this is the broad sweep, and it is the only analysis that covers scripts/ and the rest
           # of the tree — scripts/ stays in scope for exactly that reason. Three exclusions:
           #
@@ -68,8 +68,8 @@ jobs:
           # `tests` is 125,708 LOC against src/'s 89,884 — more than half of every python analysis,
           # spent on code that never ships. `Analyze (python)` sets the floor for the required
           # CodeQL PR Gate, which polls until EVERY category has uploaded and so can never finish
-          # sooner than the slowest one. codeql.yml and .github/codeql/codeql-config.yml already
-          # exclude tests; this makes the three configs agree.
+          # sooner than the slowest one. .github/codeql/codeql-config.yml already excludes tests;
+          # this keeps the two configs in agreement.
           # tests/unit/test_no_orphaned_module_globals.py stays as the local pre-flight for the one
           # finding class this gives up — py/unused-global-variable in a test file, which is what
           # evicted #1168 and #1171 from the merge queue.
