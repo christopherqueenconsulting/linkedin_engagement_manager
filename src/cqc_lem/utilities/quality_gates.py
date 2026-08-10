@@ -17,6 +17,7 @@ GATE_AUTHENTICITY = "authenticity"
 GATE_SIMILARITY = "similarity"
 GATE_FOCUS = "focus_alignment"
 GATE_MISSING_ASSET = "missing_asset"
+GATE_MALFORMED_ASSET = "malformed_asset"
 GATE_MEETING_CTA = "meeting_cta"
 GATE_FACT_GROUNDING = "fact_grounding"
 GATE_SLOP = "ai_slop"
@@ -27,6 +28,7 @@ GATE_LABELS = {
     GATE_SIMILARITY: "Near-duplicate",
     GATE_FOCUS: "Off your focus topics",
     GATE_MISSING_ASSET: "Missing media",
+    GATE_MALFORMED_ASSET: "Unusable media file",
     GATE_MEETING_CTA: "Meeting-ask CTA",
     GATE_FACT_GROUNDING: "Unverified specifics",
     GATE_SLOP: "AI-slop patterns",
@@ -124,6 +126,23 @@ def missing_asset_finding(post_type: str) -> dict:
         remediation=("Wait for the media backfill to finish, re-generate the post, or switch it to "
                      "a text post."),
         score=None, threshold=None)
+
+
+def malformed_asset_finding(post_type: str, reason: str = "") -> dict:
+    """A video file was downloaded but is empty or unparseable — held so it can't publish broken.
+
+    The `reason` is surfaced to the review UI so a user/dev sees whether the failure was a zero-byte
+    file, a missing codec signature, or an ffprobe parse failure (issue #1280).
+    """
+    kind = "video" if str(post_type).lower() == "video" else "media file"
+    return build_finding(
+        GATE_MALFORMED_ASSET,
+        explanation=(f"This {str(post_type).lower()} post's {kind} failed the probe: "
+                     f"{reason or 'file is empty or unparseable'}."),
+        remediation=("Wait for the media backfill to retry, re-generate the post, or replace the "
+                     "video manually."),
+        score=None, threshold=None,
+        details=[reason] if reason else [])
 
 
 def meeting_cta_finding(phrases: Optional[list] = None) -> dict:

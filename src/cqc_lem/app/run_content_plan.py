@@ -155,6 +155,8 @@ from cqc_lem.utilities.env_constants import (
     PREMIUM_VIDEO_CREDITS,
     PREMIUM_VIDEO_MODEL,
     STANDARD_VIDEO_MODEL,
+    VIDEO_PROBE_ENABLED,
+    VIDEO_PROBE_MIN_SIZE_BYTES,
 )
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -162,7 +164,14 @@ from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.notifications import notify_content_generation_ready
-from cqc_lem.utilities.observability import FEATURE_CONTENT, attribute_llm_cost, llm_attribution, llm_pipeline, llm_step
+from cqc_lem.utilities.observability import (
+    FEATURE_CONTENT,
+    attribute_llm_cost,
+    llm_attribution,
+    llm_pipeline,
+    llm_step,
+    track_video_asset_probe,
+)
 from cqc_lem.utilities.quality_gates import (
     affiliate_promo_finding,
     authenticity_finding,
@@ -1030,6 +1039,66 @@ def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple
     return text_content, video_url
 
 
+def _probe_video_file(file_path: str) -> tuple[bool, str]:
+    """Cheap presence + parse probe for a downloaded video file.
+
+    Returns `(ok, reason)`. A zero-byte file, an unreadable path, or a non-MP4 signature fails.
+    When ffprobe is available we also require a positive duration parse; ffprobe absence is a
+    warning but does NOT fail the probe by itself, because the head check is deterministic and
+    the feature is fail-open unless `VIDEO_PROBE_ENABLED` is ON (issue #1280).
+    """
+    try:
+        st = os.stat(file_path)
+    except (OSError, FileNotFoundError) as e:
+        return False, f"file not readable: {type(e).__name__}"
+
+    if st.st_size == 0:
+        return False, "zero-byte file"
+    if st.st_size < VIDEO_PROBE_MIN_SIZE_BYTES:
+        return False, f"file smaller than {VIDEO_PROBE_MIN_SIZE_BYTES} bytes"
+
+    # Deterministic MP4 head check: ISO base media files start with an ftyp box.
+    try:
+        with open(file_path, 'rb') as f:
+            box_size_bytes = f.read(4)
+            box_type = f.read(4)
+        if len(box_size_bytes) < 4 or len(box_type) < 4 or box_type != b'ftyp':
+            return False, "missing MP4 ftyp signature"
+        box_size = int.from_bytes(box_size_bytes, 'big')
+        if box_size < 8 or box_size > st.st_size:
+            return False, "invalid MP4 ftyp box size"
+    except Exception as e:
+        return False, f"head parse error: {type(e).__name__}"
+
+    # Best-effort ffprobe when installed. A parseable duration is extra confidence, but absence
+    # only logs a warning so the probe stays fail-open.
+    try:
+        import shutil
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            import subprocess
+            out = subprocess.run(
+                [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                raw = (out.stdout or "").strip()
+                if raw.startswith("duration="):
+                    raw = raw.split("=", 1)[1]
+                try:
+                    duration = float(raw)
+                    if duration <= 0:
+                        return False, "ffprobe reports zero/negative duration"
+                except ValueError:
+                    return False, "ffprobe duration unparseable"
+            # Non-zero ffprobe exit is advisory: the deterministic head check already passed.
+    except Exception as e:
+        log_warning("ffprobe availability/duration check failed — accepting head signature",
+                    exc=e, task_name="_probe_video_file")
+
+    return True, ""
+
+
 def _store_video_asset(post_id: int, video_src_url: str) -> str:
     """Download a generated video into the shared assets volume, attach C2PA credentials to AI
     output, persist posts.video_url, and return the public API asset URL. The ONE place a
@@ -1038,6 +1107,22 @@ def _store_video_asset(post_id: int, video_src_url: str) -> str:
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
     video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+
+    # Probe the downloaded file before accepting it (issue #1280). The probe is fail-open: a failure
+    # is logged/tracked but only treated as a hard failure when VIDEO_PROBE_ENABLED is ON, so the
+    # backfill healer can still recover a post whose first download wrote a corrupt file.
+    probe_ok, probe_reason = _probe_video_file(video_file_path)
+    ai_source = "runway" if str(video_src_url).startswith("http") else "pexels"
+    track_video_asset_probe(post_id=post_id, probe_ok=probe_ok, reason=probe_reason,
+                            source=ai_source)
+    if not probe_ok:
+        log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
+                    post_id=post_id, task_name="regenerate_post_video_task")
+        if VIDEO_PROBE_ENABLED:
+            raise RuntimeError(f"video asset probe failed: {probe_reason}")
+        # When the probe is advisory, still warn and continue. The post is left without a usable URL
+        # only if the caller's own flow chooses to hold it; this keeps the existing behavior intact.
+
     # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
     if str(video_src_url).startswith("http"):
         try:

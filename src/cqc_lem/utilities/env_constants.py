@@ -103,6 +103,12 @@ PREMIUM_TOP_VIDEO_MODEL = get_constant_from_env('PREMIUM_TOP_VIDEO_MODEL', defau
 PREMIUM_VIDEO_CREDITS = int(get_constant_from_env('PREMIUM_VIDEO_CREDITS', default_value='1'))
 PREMIUM_TOP_VIDEO_CREDITS = int(get_constant_from_env('PREMIUM_TOP_VIDEO_CREDITS', default_value='3'))
 
+# Video asset probe (issue #1280). Before a downloaded/generated video is accepted as the
+# post's media, check it is non-empty and at least head-parseable as an MP4. The probe is
+# fail-open: ffprobe absence / non-zero exit only blocks when the env flag is explicitly ON.
+VIDEO_PROBE_ENABLED = isTrue(get_constant_from_env('VIDEO_PROBE_ENABLED', default_value='False'))
+VIDEO_PROBE_MIN_SIZE_BYTES = int(get_constant_from_env('VIDEO_PROBE_MIN_SIZE_BYTES', default_value='64'))
+
 # --- Carousel content-slide imagery ---
 # Content (middle) carousel slides carry a relevant image so they don't render as
 # text-on-blank. Sourcing is deterministic and cheap-first: Pexels stock (just an
