@@ -48,6 +48,19 @@ them, `AuthContext` now holds the non-secret sentinel `COOKIE_SESSION = 'cookie'
 2. otherwise the request's `lem_session` cookie (read off a `ContextVar` set by
    `session_cookie_middleware`, so handlers that never took a `Request` still get cookie auth).
 
+That `ContextVar` is **module state**, which makes the module's IDENTITY part of the auth path.
+`api/main.py` may only ever be imported as `cqc_lem.api.main`. Both `/app` and `/app/src` are
+importable in the container, so `src.cqc_lem.api.main` loads the same file a SECOND time as a
+distinct module object with its own ContextVars — and serving the app from that copy (`uvicorn
+src.cqc_lem.api.main:app`, which is what the start script said until #1354) means
+`session_cookie_middleware` publishes the cookie where no `api/routers/*.py` handler can read it.
+Cookie auth then returns `None` for every router-served route while the handful of routes still
+defined in `main.py` keep working, so **sign-in succeeds and everything after it 401s** — which the
+SPA's 401 interceptor turns into "cannot get past the login screen". Nothing raises. The guards are
+`_guard_canonical_module()` (CRITICAL on an aliased import) and
+`tests/unit/api/test_canonical_module_identity.py`, which pins the uvicorn target in
+`compose/local/fastapi/start*`.
+
 A stale explicit token falls **through** to the cookie rather than 401ing: a browser holding a token
 from before the cutover is still the signed-in person on that cookie. `current_session_token()`
 follows the SAME order — an explicit token only wins there if it resolves — so the two can never
