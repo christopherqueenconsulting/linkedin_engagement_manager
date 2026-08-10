@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.140.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.139.0...v0.140.0) (2026-08-10)
+
+
+### Features
+
+* **brand:** add LEM logo package and official colour palette ([#1294](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1294)) ([b828366](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8283664badcb79a74db03134aee6e0a03818ef2))
+* **content-quality:** audit LEM's text posts and pin the writer side to the checking side (closes [#1138](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1138)) ([#1268](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1268)) ([5ef1e23](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5ef1e23f058c7f0880a93d9a54d9c8fcbb094d0b))
+* **content-quality:** audit the image engine and wire the surfaces it never reached (closes [#1141](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1141)) ([#1293](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1293)) ([5af67bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5af67bd873eabf41d28f514ba7b718a2de8de5d7))
+* **pipeline:** route lanes by REAL subscription usage, not a failure estimate ([#1272](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1272)) ([d815f59](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d815f597a5002c305b65e97b685f4cdaa00a52c0))
+* **pipeline:** v2 daemon skeleton — state layer, config, capacity, supervision ([#1258](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1258)) ([c827ac8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c827ac85d4662acca61d26b15494717ec0797dc7))
+* **pipeline:** v2 dispatch, budgets and a failsafe that can actually fire ([#1297](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1297)) ([9778130](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9778130321f0b208e01a908c57ee82a17072e999))
+* **pipeline:** v2 state machine, GitHub reader and scheduler loop ([#1269](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1269)) ([0659fcd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0659fcde2b6616c5c9f5a31a7f0ba12d667657e6))
+* **pipeline:** v2 webhook receiver — HMAC-verified GitHub events into the queue ([#1262](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1262)) ([55698d1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/55698d1a46a82a139e701dbcc6b45434f24dfd1b))
+
+
+### Bug Fixes
+
+* **article_editor:** suppress publish selector miss warning on editor screen (closes [#1147](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1147)) ([#1260](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1260)) ([596da85](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/596da857484645e633bf283cabc49e27b46819f4))
+* **observability:** ship comment sort-control DOM evidence at a level prod keeps ([#1117](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1117)) ([#1255](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1255)) ([eee64ad](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/eee64ad3b0864997489f382b5ac84d6641dd088f))
+* **pipeline:** a scratch install must never schedule anything ([#1276](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1276)) ([54ae373](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/54ae3735937ab914d8398e0b484380e39b988130))
+* **pipeline:** budget agent runs in a ledger, not commits — and bound every lane ([#1250](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1250)) ([d398ba6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d398ba6a48dbe18fbdf70da7842f1fbbf11ae0f4))
+* **pipeline:** match numberless check_suite deliveries by head SHA ([#1273](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1273)) ([1d10a40](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1d10a404f8af506562e6802837ed6f082485dede))
+* **pipeline:** the review marker could not detect itself (5 duplicate comments) ([#1275](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1275)) ([001cb77](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/001cb7708c213d507ec122b76157f8ddeaa915c8))
+* **pipeline:** the v2 receiver must not import the app's logger ([#1271](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1271)) ([e3eb9b3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e3eb9b33790f3da04685b385b010ba2ed49b056d))
+* **pipeline:** v2 skeleton defects found by an unguided adversarial review ([#1263](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1263)) ([0d1f7b7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0d1f7b7ee92db8e9727ec14a7f0cdf5a4f611d47))
+* **probe:** silence Composer share box selector miss to debug (closes [#1146](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1146)) ([#1256](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1256)) ([0254486](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0254486d7e9430f5461d9b507deb56bdf9874f0f))
+* **scrapper:** attribute every sibling role to the company header above it (closes [#1096](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1096)) ([#1246](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1246)) ([e11e82b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e11e82b3c2dcef30b0b0bfa4b28ed96c3181df24))
+* **security:** the runner no longer holds the GitHub App private key ([#1261](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1261)) ([01f02f5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/01f02f5bf46c734662c26df28a046b9ca7f12b29))
+
 ## [0.139.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.138.0...v0.139.0) (2026-08-09)
 
 
