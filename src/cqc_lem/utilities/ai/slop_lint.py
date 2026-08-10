@@ -26,6 +26,7 @@ import statistics
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_alignment import AI_TELL_WORDS
+from cqc_lem.utilities.ai.content_framework import POST_BANNED_SCAFFOLDS
 from cqc_lem.utilities.linkedin_formatter import contains_engagement_bait
 
 SEVERITY_HARD = "hard"
@@ -41,16 +42,19 @@ CHECK_EM_DASH = "em_dash_density"
 CHECK_RULE_OF_THREE = "rule_of_three"
 CHECK_BURSTINESS = "burstiness"
 CHECK_RHETORICAL_HOOK = "rhetorical_hook"
+CHECK_SCAFFOLD = "canned_scaffold"
 
 # Default severities. HARD violations are regenerated and then block; WARN ones are recorded and
 # reported but never hold a draft.
 #
 # The split is about how often a check is WRONG about a good human draft, not about how bad the
-# pattern is. The hard five are unambiguous machine tells with a one-line fix. The warn four are
+# pattern is. The hard five are unambiguous machine tells with a one-line fix. The warn five are
 # statistical or structural signals with real false positives — a legitimate list of three tools
 # reads exactly like a rule-of-three, a genuinely short post has no sentence-length variance to
-# measure, and a question hook can be the right opening. Ops can promote any of them per-deploy
-# with SLOP_LINT_SEVERITY_<CHECK>.
+# measure, a question hook can be the right opening, and "in my experience as a Solutions
+# Architect, we cut deploys to 9 minutes" is a templated OPENER carrying a real specific, which no
+# substring match can tell from filler. Ops can promote any of them per-deploy with
+# SLOP_LINT_SEVERITY_<CHECK>.
 DEFAULT_SEVERITIES: dict = {
     CHECK_LEXICON: SEVERITY_HARD,
     CHECK_CONTRASTIVE: SEVERITY_HARD,
@@ -61,6 +65,7 @@ DEFAULT_SEVERITIES: dict = {
     CHECK_RULE_OF_THREE: SEVERITY_WARN,
     CHECK_BURSTINESS: SEVERITY_WARN,
     CHECK_RHETORICAL_HOOK: SEVERITY_WARN,
+    CHECK_SCAFFOLD: SEVERITY_WARN,
 }
 
 # How many DISTINCT tier-1 tell words a draft may carry before the lexicon check fires. Not zero on
@@ -268,6 +273,18 @@ def banned_phrases() -> tuple:
     return SLOP_PHRASES + tuple(p for p in dict.fromkeys(extra) if p and p not in SLOP_PHRASES)
 
 
+def banned_scaffolds() -> tuple:
+    """`content_framework.POST_BANNED_SCAFFOLDS`, extended per-deploy via SLOP_LINT_EXTRA_SCAFFOLDS.
+
+    Never a second list: the shared constant is what the writer-side post directive names, so a
+    phrase can only be banned in the prompt and unchecked here (or the reverse) by editing it away.
+    """
+    extra = [p.strip().lower()
+             for p in (os.environ.get("SLOP_LINT_EXTRA_SCAFFOLDS") or "").split(",")]
+    return POST_BANNED_SCAFFOLDS + tuple(p for p in dict.fromkeys(extra)
+                                         if p and p not in POST_BANNED_SCAFFOLDS)
+
+
 # ---------------------------------------------------------------------------
 # Text helpers
 # ---------------------------------------------------------------------------
@@ -457,6 +474,28 @@ def _check_rhetorical_hook(text: str, sents: list, ctx: dict) -> Optional[dict]:
             "evidence": [_excerpt(first, 120)], "score": 1.0, "threshold": 0.0}
 
 
+def find_canned_scaffolds(text: Optional[str]) -> list:
+    """The banned scaffold templates present in `text`, in list order, deduped."""
+    plain = _plain(text)
+    return [p for p in banned_scaffolds() if p in plain]
+
+
+def _check_scaffold(text: str, sents: list, ctx: dict) -> Optional[dict]:
+    # POST-only ON PURPOSE. Every phrase in the list was sampled from LEM's own POST system
+    # prompts, and comments already run their own filler-opener contract
+    # (content_framework.comment_filler_openers) against a tighter, addressed voice — grading a
+    # comment against the post list would fire a second signal for the same idea on a surface the
+    # evidence never measured.
+    if ctx.get("content_type") != "post":
+        return None
+    hits = find_canned_scaffolds(text)
+    if not hits:
+        return None
+    return {"detail": ("leans on canned scaffolding that would paste unchanged under any post: "
+                       + ", ".join(f'"{h}"' for h in hits[:5])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
+
 _CHECKS: tuple = (
     (CHECK_LEXICON, _check_lexicon),
     (CHECK_CONTRASTIVE, _check_contrastive),
@@ -467,6 +506,7 @@ _CHECKS: tuple = (
     (CHECK_RULE_OF_THREE, _check_rule_of_three),
     (CHECK_BURSTINESS, _check_burstiness),
     (CHECK_RHETORICAL_HOOK, _check_rhetorical_hook),
+    (CHECK_SCAFFOLD, _check_scaffold),
 )
 
 

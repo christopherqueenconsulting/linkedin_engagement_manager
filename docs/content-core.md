@@ -160,11 +160,21 @@ dropped one would silently cost the week's group slot.)
 - Rule-of-three
 - Burstiness
 - Rhetorical hook
+- Canned scaffold (POSTS only, issue #1138)
 
 Real false positives (a genuine list of three tools reads like a rule-of-three) so these never
 hold. The wordbank is `content_alignment.AI_TELL_WORDS`, NOT a second copy. The bait check
 honours the same lead-magnet `exempt_keyword` `strip_engagement_bait` does, or every "Comment
 YES" CTA would hold its own post.
+
+**Canned scaffold** is the same one-list rule applied to phrases:
+`content_framework.POST_BANNED_SCAFFOLDS` is what `post_writing_directive()` names in the prompt
+AND what the check greps for, so the writer side and the checking side cannot drift — which is
+exactly how they HAD drifted (the post system prompts were handing the model
+"In my experience as a [Job Title]…" as a worked example, and nothing downstream could see it).
+Post-only: comments already run `comment_filler_openers()` against a tighter, addressed voice.
+WARN because a templated opener can still carry a real specific, and no substring match can tell.
+Full audit: `docs/content-quality-audits/text.md`.
 
 ## Content mix (70/20/10) governor
 
