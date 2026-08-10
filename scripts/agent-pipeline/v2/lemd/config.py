@@ -91,6 +91,13 @@ class Config:
     ttl_parked: int
     reconcile_interval: int
     reconcile_interval_degraded: int
+    #: How stale `last_webhook_at` may get before the daemon assumes the event path is broken and
+    #: polls harder. Generous on purpose: a quiet repo produces no deliveries, and treating quiet as
+    #: broken would keep the pipeline permanently degraded on a weekend.
+    webhook_stale_seconds: int
+    #: How long a SIGTERM waits for in-flight children before giving up on watching them. Rollback
+    #: is measured in minutes, so this bounds it — the children keep running either way.
+    drain_seconds: int
     #: Shadow mode: observe and log decisions, mutate nothing. The migration runs here for >=3 days.
     shadow: bool
     raw: dict[str, str] = field(default_factory=dict, repr=False)
@@ -135,6 +142,8 @@ def load(base: str | Path | None = None) -> Config:
         ttl_parked=_int(env, "LEMD_TTL_PARKED", 21600),
         reconcile_interval=_int(env, "LEMD_RECONCILE_INTERVAL", 600),
         reconcile_interval_degraded=_int(env, "LEMD_RECONCILE_INTERVAL_DEGRADED", 120),
+        webhook_stale_seconds=_int(env, "LEMD_WEBHOOK_STALE_SECONDS", 1800),
+        drain_seconds=_int(env, "LEMD_DRAIN_SECONDS", 20),
         shadow=_str(env, "LEMD_SHADOW", "1") not in ("0", "false", "no"),
         raw=env,
     )

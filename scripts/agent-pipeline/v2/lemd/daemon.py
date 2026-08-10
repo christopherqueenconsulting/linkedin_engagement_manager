@@ -23,7 +23,7 @@ import signal
 import time
 from typing import Any
 
-from . import capacity, db, github, observe
+from . import capacity, db, dispatch, github, observe, policy
 from .config import Config, load
 
 LOG = logging.getLogger("lemd")
@@ -48,9 +48,11 @@ class Daemon:
         """Open state and prepare the loop (no I/O against GitHub yet)."""
         self.cfg = cfg
         self.conn = db.connect(cfg.db_path)
+        self.sup = dispatch.Supervisor(cfg, self.conn)
         self._stop = False
         self._last_reconcile = 0.0
         self._decisions = 0
+        self._degraded = False
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -229,11 +231,12 @@ class Daemon:
             return
 
         if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE):
-            # Execution — spawning an agent, arming auto-merge — lands in the next PR. Until then
-            # the decision is recorded and the item is left dispatchable, so nothing is lost by the
-            # daemon being unable to act yet. ACT_MERGE must NOT be written as `awaiting_queue`
-            # here: nothing enqueued it, so that state would claim a merge attempt that never
-            # happened and re-decide the same ACT_MERGE every ttl_queue seconds forever.
+            # The verdict is written DOWN, not held in memory, and the item is left dispatchable.
+            # A pass that runs out of slots must be resumable by the next one: an item left `ready`
+            # with its decision only in a local variable is a dead end, because nothing will mark it
+            # dirty again. ACT_MERGE must NOT be written as `awaiting_queue` here either — nothing
+            # enqueued it, so that state would claim a merge attempt that never happened and
+            # re-decide the same ACT_MERGE every ttl_queue seconds forever.
             #
             # `wake_at=None` is the important half. Nothing else clears a deadline left over from a
             # wait state, and while `due_items()` is scoped to the TTL states, `next_sleep()`
@@ -241,6 +244,16 @@ class Daemon:
             # a 1-second spin, which is precisely the unconditional polling v2 exists to remove.
             db.upsert_item(
                 self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
+                pending_mode=(decision.mode if decision.action == observe.ACT_DISPATCH else "merge"),
+                head_sha=snap.head_sha or row["head_sha"],
+                branch=snap.branch or row["branch"],
+            )
+            return
+
+        if decision.action == observe.ACT_PARK:
+            db.upsert_item(
+                self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
+                pending_mode="park", parked_reason=decision.park_reason,
                 head_sha=snap.head_sha or row["head_sha"],
                 branch=snap.branch or row["branch"],
             )
@@ -250,7 +263,7 @@ class Daemon:
             self.conn, kind=kind, number=number, state=decision.next_state,
             wait_reason=decision.wait_reason, parked_reason=decision.park_reason,
             wake_at=wake_at, head_sha=snap.head_sha or row["head_sha"],
-            branch=snap.branch or row["branch"], dirty=0,
+            branch=snap.branch or row["branch"], dirty=0, pending_mode=None,
         )
 
     def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision) -> None:
@@ -272,6 +285,119 @@ class Daemon:
                 fh.write(json.dumps(payload, separators=(",", ":")) + "\n")
         except OSError as exc:  # telemetry must never break the loop
             LOG.warning("could not write decision log: %s", exc)
+
+    # ---------------------------------------------------------------- execution
+
+    def act(self) -> int:
+        """Fill both pools with the work `observe()` already decided on.
+
+        Continuous dispatch, not one-per-pass: v1's ceiling was never `MAX_AGENTS`, it was one unit
+        of work per cron fire, and this loop is what removes that. Two pools are drained
+        independently so a two-second merge-enable never queues behind a twenty-minute
+        implementation run.
+
+        Returns:
+            How many actions were launched this pass.
+        """
+        if self.cfg.shadow:
+            return 0
+        launched = 0
+        for row in db.dispatchable(self.conn):
+            mode = row["pending_mode"]
+            pool = "gh" if mode in ("merge", "park") else "agent"
+            if self.sup.free(pool) <= 0:
+                continue
+            # A cheap local read that saves a doomed spawn. It is NOT the authoritative check —
+            # `agent_run.sh` re-checks and charges inside the branch flock, so this being a moment
+            # stale can only waste a process, never overspend a budget.
+            if pool == "agent" and policy.exhausted(self.cfg.base, row["kind"], row["number"], mode):
+                LOG.info("#%s has spent its %s budget — parking instead of dispatching",
+                         row["number"], mode)
+                self._park(row, f"{mode}_exhausted")
+                continue
+            if not db.claim_item(self.conn, row["id"]):
+                continue
+            child = self._launch(row, mode)
+            if child is None:
+                # The claim must not outlive a failed spawn: `claimed` holds the branch through the
+                # partial unique index, and only `startup_recover` would ever release it.
+                db.force_state(self.conn, row["id"], db.STATE_READY, dirty=1)
+                continue
+            launched += 1
+        return launched
+
+    def _launch(self, row, mode: str):
+        """Start the right action for one decided item."""
+        kind, number = row["kind"], row["number"]
+        if mode == "merge":
+            return self.sup.dispatch_gh(action="merge_enable", kind=kind, number=number,
+                                        args=[str(number), row["head_sha"] or ""],
+                                        item_id=row["id"])
+        if mode == "park":
+            return self.sup.dispatch_gh(
+                action="park", kind=kind, number=number,
+                args=[kind, str(number), row["parked_reason"] or "parked"], item_id=row["id"])
+        return self.sup.dispatch_agent(mode=mode, kind=kind, number=number,
+                                       branch=row["branch"], item_id=row["id"])
+
+    def _park(self, row, reason: str) -> None:
+        """Queue a park for one item (the gh pool performs it)."""
+        db.upsert_item(self.conn, kind=row["kind"], number=row["number"], state=db.STATE_READY,
+                       pending_mode="park", parked_reason=reason, dirty=0, wake_at=None)
+
+    def collect(self) -> int:
+        """Fold finished actions back into item state.
+
+        The exit code is the entire report, which is why the actions use a distinct code per
+        refusal: v1 collapsed "you may not do this" and "that run failed" into one non-zero, and
+        then retried both every five minutes.
+        """
+        finished = self.sup.reap()
+        for child, rc in finished:
+            item = db.get_item(self.conn, child.kind, child.number)
+            if item is None:
+                continue
+            if rc == dispatch.EX_BUDGET:
+                # The action refused under the flock — the authoritative answer. Park.
+                db.force_state(self.conn, item["id"], db.STATE_READY, dirty=0, wake_at=None,
+                               pending_mode="park", parked_reason=f"{child.mode}_exhausted")
+            elif rc == dispatch.EX_TRUST:
+                # Never retried on a timer: a trust refusal is answered by a human re-labelling,
+                # which arrives as an event. The slow TTL is only a safety net against a lost one.
+                db.force_state(self.conn, item["id"], db.STATE_PARKED, dirty=0,
+                               pending_mode=None, parked_reason="trust_refused",
+                               wake_at=int(time.time()) + self.cfg.ttl_parked)
+            elif rc == dispatch.EX_BUSY:
+                # Someone else holds the branch — a v1 tick, most likely, during coexistence.
+                # Keep the decision and try again shortly.
+                db.force_state(self.conn, item["id"], db.STATE_READY, dirty=0,
+                               wake_at=int(time.time()) + 120)
+            else:
+                # Everything else — success, agent failure, timeout — is answered by looking at
+                # GitHub again rather than by guessing locally what the run achieved.
+                db.force_state(self.conn, item["id"], db.STATE_READY, dirty=1,
+                               pending_mode=None, wake_at=None)
+            self._emit_run(child, rc)
+        return len(finished)
+
+    def _emit_run(self, child, rc: int) -> None:
+        """One structured line per finished action."""
+        payload = {
+            "ts": int(time.time()), "event": "run_finished", "mode": child.mode,
+            "kind": child.kind, "number": child.number, "rc": rc,
+            "run_seconds": round(time.time() - child.started, 1),
+            "outcome": ("ok" if rc == 0 else
+                        "timeout" if child.killed else
+                        "refused" if rc in dispatch.REFUSALS else "failed"),
+        }
+        LOG.info("run %s", json.dumps(payload, separators=(",", ":")))
+        try:
+            path = self.cfg.base / "logs" / "lemd-decisions.ndjson"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as fh:
+                fh.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        except OSError as exc:
+            LOG.warning("could not write run log: %s", exc)
 
     # ---------------------------------------------------------------- the loop
 
@@ -296,14 +422,46 @@ class Daemon:
     def tick(self) -> None:
         """One pass of the loop."""
         capacity.heartbeat(self.cfg.heartbeat_file)
+        # Reaping runs even while PAUSED. A pause stops the pipeline STARTING work; leaving already
+        # running children uncollected would hold their claims and their branches for the whole
+        # duration of the pause, so the resume would find every branch locked.
+        self.collect()
         if self.cfg.is_paused():
             LOG.info("PAUSED file present — observing nothing this pass")
             return
         self.drain_events()
-        if time.time() - self._last_reconcile >= self.cfg.reconcile_interval:
+        if time.time() - self._last_reconcile >= self.reconcile_interval():
             self.reconcile()
         self.observe_dirty()
         self.sweep_ttls()
+        self.act()
+
+    def reconcile_interval(self) -> int:
+        """How often to re-derive from GitHub — faster when the event path looks broken.
+
+        ONE knob, deliberately. Degraded mode makes the daemon poll harder; it never makes it act
+        differently, because events only ever make the scheduler PROMPT, never ABLE. Anything a
+        webhook would have told us is derivable here, so a silent event outage costs latency and
+        nothing else.
+        """
+        last = db.kv_get(self.conn, "last_webhook_at")
+        if not last:
+            return self.cfg.reconcile_interval
+        try:
+            age = time.time() - float(last)
+        except ValueError:
+            return self.cfg.reconcile_interval
+        if age > self.cfg.webhook_stale_seconds:
+            if not self._degraded:
+                LOG.warning("no webhook delivery for %.0f min — reconciling every %ss",
+                            age / 60, self.cfg.reconcile_interval_degraded)
+                self._degraded = True
+            return self.cfg.reconcile_interval_degraded
+        if self._degraded:
+            LOG.info("webhook deliveries resumed — back to the %ss reconcile cadence",
+                     self.cfg.reconcile_interval)
+            self._degraded = False
+        return self.cfg.reconcile_interval
 
     def run(self) -> None:
         """Loop until asked to stop."""
@@ -318,6 +476,9 @@ class Daemon:
             if elapsed > 30:
                 LOG.warning("slow pass: %.1fs", elapsed)
             time.sleep(self.next_sleep())
+        # DRAIN, not kill: rollback is "stop claiming, let what is in flight land". Killing a
+        # mid-flight agent would abandon its commits in a worktree that v1 is about to take over.
+        self.sup.drain(timeout=self.cfg.drain_seconds)
         LOG.info("stopped after %s decisions", self._decisions)
 
 

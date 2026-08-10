@@ -1,0 +1,219 @@
+"""Execution: the daemon's supervisor for the bash actions that actually touch GitHub.
+
+The daemon decides; nothing here decides. This module owns process lifecycle only — two bounded
+pools, spawn, reap, and kill-on-deadline — and it deliberately performs no GitHub call and no trust
+evaluation of its own. Both of those live in `actions/*.sh`, which source the same
+incident-hardened `lib/guards.sh` that v1 runs on, so there is exactly one implementation of the
+trust boundary rather than a Python paraphrase of it.
+
+Two pools, because they have nothing in common:
+
+* `agent_slots` — `claude -p` runs. Minutes to tens of minutes, and the scarce resource is the
+  subscription, not the box.
+* `gh_slots` — arming auto-merge, parking, labels. Seconds, no model spend. Separate so a merge
+  never queues behind a 20-minute implementation run, which is a large part of how v1 turned a
+  3.8-minute merge queue into hours of latency.
+
+Every child is started in its own process GROUP (`start_new_session`), and the deadline is enforced
+with `killpg`. Killing only the direct child would leave the `claude` process it spawned running
+against the same worktree, which is the shape of a double-dispatch: the item is reaped, re-observed
+and re-dispatched while the original agent is still writing to the branch.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import signal
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import db, policy
+
+LOG = logging.getLogger("lemd.dispatch")
+
+#: Exit codes the actions use to say WHY they refused. Distinct on purpose: a trust refusal and a
+#: flaky run must never be retried the same way, and v1's habit of collapsing both into "non-zero"
+#: is how a refused item got re-attempted every five minutes forever.
+EX_TRUST = 70
+EX_BUDGET = 71
+EX_BUSY = 72
+EX_SETUP = 73
+REFUSALS = frozenset({EX_TRUST, EX_BUDGET, EX_BUSY, EX_SETUP})
+
+
+@dataclass
+class Child:
+    """One running action."""
+
+    proc: subprocess.Popen
+    pool: str
+    mode: str
+    kind: str
+    number: int
+    item_id: int | None
+    run_id: int | None
+    deadline: float
+    started: float
+    log_path: Path | None = None
+    killed: bool = False
+    env: dict[str, str] = field(default_factory=dict, repr=False)
+
+    @property
+    def label(self) -> str:
+        """Short identity for log lines."""
+        return f"{self.mode}:{self.kind}#{self.number}"
+
+
+class Supervisor:
+    """Bounded, non-blocking execution of the action scripts."""
+
+    def __init__(self, cfg, conn) -> None:
+        """Bind to the daemon's config and queue connection."""
+        self.cfg = cfg
+        self.conn = conn
+        self.children: list[Child] = []
+        self.actions = Path(cfg.base) / "v2" / "actions"
+
+    # ------------------------------------------------------------------ capacity
+
+    def in_pool(self, pool: str) -> int:
+        """How many children of one pool are running."""
+        return sum(1 for c in self.children if c.pool == pool)
+
+    def free(self, pool: str) -> int:
+        """Slots left in one pool."""
+        cap = self.cfg.max_agents if pool == "agent" else self.cfg.gh_slots
+        return max(0, cap - self.in_pool(pool))
+
+    @property
+    def occupancy(self) -> float:
+        """Agent-pool utilisation, 0.0-1.0 — the input to the timeout stretch (M6)."""
+        cap = max(1, self.cfg.max_agents)
+        return min(1.0, self.in_pool("agent") / cap)
+
+    # ------------------------------------------------------------------ spawning
+
+    def _spawn(self, argv: list[str], *, pool: str, mode: str, kind: str, number: int,
+               item_id: int | None, timeout_s: int) -> Child | None:
+        """Start one action detached into its own process group."""
+        logdir = Path(self.cfg.base) / "logs"
+        logdir.mkdir(parents=True, exist_ok=True)
+        log_path = logdir / f"v2-{mode}-{kind}{number}-{int(time.time())}.log"
+        env = dict(os.environ)
+        env.update({
+            "BASE": str(self.cfg.base),
+            "REPO": str(self.cfg.repo),
+            "SLUG": self.cfg.slug,
+            "LEMD_BUDGET": str(policy.budget_for(mode)),
+            # run_lane's own `timeout` sits UNDER the daemon's killpg, deliberately a minute longer:
+            # if both fire the daemon's is the one that reaps the whole group, and a race between
+            # two kill paths at the same instant produces confusing half-dead states.
+            "CLAUDE_TIMEOUT": f"{max(1, timeout_s // 60) + 1}m",
+        })
+        try:
+            handle = log_path.open("a")
+            proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                argv, stdout=handle, stderr=subprocess.STDOUT, env=env,
+                cwd=str(self.cfg.base), start_new_session=True,
+            )
+        except OSError as exc:
+            LOG.error("could not spawn %s for %s#%s: %s", mode, kind, number, exc)
+            return None
+
+        run_id = None
+        if item_id is not None:
+            run_id = db.start_run(
+                self.conn, item_id=item_id, mode=mode, pid=proc.pid,
+                log_path=str(log_path), timeout_s=timeout_s,
+            )
+        child = Child(
+            proc=proc, pool=pool, mode=mode, kind=kind, number=number, item_id=item_id,
+            run_id=run_id, deadline=time.time() + timeout_s, started=time.time(),
+            log_path=log_path,
+        )
+        self.children.append(child)
+        LOG.info("spawned %s pid=%s timeout=%ss log=%s", child.label, proc.pid, timeout_s, log_path)
+        return child
+
+    def dispatch_agent(self, *, mode: str, kind: str, number: int, branch: str | None,
+                       item_id: int | None) -> Child | None:
+        """Launch an agent run for one item."""
+        if self.free("agent") <= 0:
+            return None
+        timeout_s = policy.timeout_for(mode, occupancy=self.occupancy)
+        argv = [str(self.actions / "agent_run.sh"), mode, kind, str(number), branch or ""]
+        return self._spawn(argv, pool="agent", mode=mode, kind=kind, number=number,
+                           item_id=item_id, timeout_s=timeout_s)
+
+    def dispatch_gh(self, *, action: str, kind: str, number: int, args: list[str],
+                    item_id: int | None) -> Child | None:
+        """Launch a cheap gh mutation (merge-enable, park)."""
+        if self.free("gh") <= 0:
+            return None
+        script = self.actions / f"{action}.sh"
+        # 180s: these are single API calls plus at most 40s of documented backoff. A gh mutation
+        # that has not returned in three minutes is wedged, and holding a gh slot open for it
+        # starves the lane that exists to be fast.
+        return self._spawn([str(script), *args], pool="gh", mode=action, kind=kind,
+                           number=number, item_id=item_id, timeout_s=180)
+
+    # ------------------------------------------------------------------ reaping
+
+    def reap(self) -> list[tuple[Child, int]]:
+        """Collect finished children and kill any that overran.
+
+        Returns:
+            `(child, rc)` for each child that ended this pass. A timed-out child reports rc=-9 so
+            the caller can tell "the agent decided it failed" from "we stopped it", which is what
+            makes a starvation-park auditable rather than indistinguishable from a real failure.
+        """
+        done: list[tuple[Child, int]] = []
+        now = time.time()
+        for child in list(self.children):
+            rc = child.proc.poll()
+            if rc is None:
+                if now >= child.deadline and not child.killed:
+                    self._kill(child)
+                continue
+            self.children.remove(child)
+            if child.run_id is not None:
+                db.finish_run(self.conn, child.run_id, rc)
+            LOG.info("%s finished rc=%s in %.0fs%s", child.label, rc, now - child.started,
+                     " (killed on deadline)" if child.killed else "")
+            done.append((child, rc))
+        return done
+
+    def _kill(self, child: Child) -> None:
+        """Stop an overrunning child and everything it spawned."""
+        child.killed = True
+        LOG.warning("%s exceeded its deadline — killing process group %s",
+                    child.label, child.proc.pid)
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(os.getpgid(child.proc.pid), sig)
+            except (ProcessLookupError, PermissionError):
+                return
+            try:
+                child.proc.wait(timeout=10)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+
+    def drain(self, *, timeout: float = 0.0) -> None:
+        """Stop claiming and let running children finish — the rollback path.
+
+        Children are deliberately NOT killed: the <5-minute rollback is "stop starting work, let
+        what is in flight land", so that a mid-flight agent's commits are not abandoned in a
+        worktree while v1 takes over the same branch.
+        """
+        deadline = time.time() + timeout
+        while self.children and (timeout <= 0 or time.time() < deadline):
+            self.reap()
+            if self.children:
+                time.sleep(1.0)
+        if self.children:
+            LOG.info("draining: %s child(ren) still running, leaving them to finish",
+                     len(self.children))

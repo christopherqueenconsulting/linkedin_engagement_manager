@@ -59,6 +59,10 @@ files() {
   for f in "$SRC"/v2/*.md;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
   for f in "$SRC"/v2/*.sh;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
   for f in "$SRC"/v2/lemd/*.py; do [ -e "$f" ] && echo "v2/lemd/$(basename "$f")"; done
+  # The bash actions are the ONLY thing v2 uses to mutate GitHub or spawn an agent, and they source
+  # lib/guards.sh from this same tree — so shipping the daemon without them installs a scheduler
+  # that decides correctly and cannot act, which looks identical to an idle pipeline.
+  for f in "$SRC"/v2/actions/*.sh; do [ -e "$f" ] && echo "v2/actions/$(basename "$f")"; done
   for f in "$SRC"/v2/systemd/*; do [ -e "$f" ] && echo "v2/systemd/$(basename "$f")"; done
 }
 
@@ -107,7 +111,8 @@ if [ "$SYNC" = 1 ] && [ "$FIRST_INSTALL" = 1 ]; then
   exit 2
 fi
 
-mkdir -p "$DEST/logs" "$DEST/work" "$DEST/lib" "$DEST/docs" "$DEST/state" "$DEST/locks"
+mkdir -p "$DEST/logs" "$DEST/work" "$DEST/lib" "$DEST/docs" "$DEST/state" "$DEST/locks" \
+         "$DEST/v2/actions" "$DEST/v2/lemd" "$DEST/v2/systemd" "$DEST/v2/state"
 
 if [ "$SYNC" = 1 ]; then
   updated=0; skipped=(); same=0
