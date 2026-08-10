@@ -299,10 +299,17 @@ def test_a_held_item_without_an_answer_still_just_waits():
     assert d(snap).reason == "human_hold"
 
 
+def _guard_calls(src: str) -> list[str]:
+    """The guard invocations in `unpark.sh`, ignoring the prose that explains them."""
+    return [ln.strip() for ln in src.splitlines()
+            if ln.strip().startswith("if !") and ("trust" in ln or "author" in ln or "answered" in ln)]
+
+
 def test_admission_is_not_authorisation():
-    """The action re-asks the trust question; a hold label may never grant work by itself."""
+    """The action re-asks a trust question on BOTH paths; a hold label never grants work itself."""
     src = (_V2 / "actions" / "unpark.sh").read_text()
-    assert src.count("v2_trust_ok") == 2          # the PR path and the issue path
+    calls = _guard_calls(src)
+    assert len(calls) == 2, calls          # the PR path and the issue path
     assert 'exit "$EX_TRUST"' in src
 
 
@@ -341,3 +348,48 @@ def test_priority_still_orders_within_the_same_lane(tmp_path):
     db.upsert_item(conn, kind="issue", number=2, state=db.STATE_READY, pending_mode="start",
                    priority=1)
     assert [r["number"] for r in db.dispatchable(conn)] == [2, 1]
+
+
+# ---------------------------------------------------------------- the action's half of the gate
+
+
+def test_the_unpark_asks_about_the_answer_not_about_a_label():
+    """`v2_trust_ok issue` asks who applied `agent:ready`. On this path there may never be one.
+
+    Issue #1360 was authored AND answered by the owner, was never in the work queue, and was
+    refused with "no readable 'agent:ready' labeler" — so the owner's answer to their own issue did
+    nothing, silently, which is the exact failure this lane exists to remove. The label is a proxy
+    for "who queued this"; here the authorising act is the answer.
+    """
+    src = (_V2 / "actions" / "unpark.sh").read_text()
+    issue_guard = [c for c in _guard_calls(src) if "$TISS" in c]
+    assert len(issue_guard) == 1
+    # Asserted on the CALL, not on the file: the comment above it names `v2_trust_ok` to explain
+    # what changed and why, and a substring test over prose would pass for the wrong reason.
+    assert "v2_owner_answered issue" in issue_guard[0]
+    assert "v2_trust_ok" not in issue_guard[0]
+    # ...and the other half is still asked: a stranger's issue must not become agent work.
+    assert 'author_trusted "$TISS"' in issue_guard[0]
+
+
+def test_the_authorship_check_cannot_be_buried_by_a_bot():
+    """The action and `answers.parse` must agree about the same thread.
+
+    Selecting the newest eligible comment and then comparing its author would let any bot bury the
+    answer by commenting after it — codecov posts on every push. The parser skips non-owner
+    comments rather than stopping at them, so the shell filter has to select the owner INSIDE the
+    query, not after it.
+    """
+    src = (_V2 / "actions" / "common.sh").read_text()
+    body = src[src.index("v2_owner_answered()"):]
+    select_owner = body.index('select((.author.login // "") == ')
+    take_last = body.index("| (last // empty)")
+    assert select_owner < take_last, "the owner filter must run before `last`"
+
+
+def test_the_authorship_check_refuses_an_unreadable_thread():
+    """Unreadable is a refusal here as everywhere else in `common.sh`."""
+    src = (_V2 / "actions" / "common.sh").read_text()
+    body = src[src.index("v2_owner_answered()"):]
+    assert 'refusing.' in body
+    assert 'return 1' in body

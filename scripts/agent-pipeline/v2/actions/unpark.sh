@@ -91,10 +91,19 @@ if [ -n "$DONEPR" ] \
   exit 0
 fi
 
-# `agent:ready` GRANTS work, so this path carries the stricter half of the boundary: the issue's
-# author must have standing and the last actor to apply `agent:ready` must be allowlisted. An issue
-# that never legitimately held it refuses here rather than being granted one by an un-park.
-if ! v2_trust_ok issue "$TISS"; then
+# `agent:ready` GRANTS work, so this path carries the stricter half of the boundary — but it asks
+# the two questions that are actually load-bearing HERE, which is not what `v2_trust_ok` asks.
+#
+# `v2_trust_ok issue` requires an allowlisted actor to have applied `agent:ready`. For an un-park
+# there may never have been one: issue #1360 was authored AND answered by the owner, was never in
+# the work queue, and was refused with "no readable 'agent:ready' labeler" — so the owner's answer
+# to their own issue did nothing, silently, which is the exact complaint this whole lane exists to
+# fix. The label is a proxy for "who put this in the queue"; on this path the authorising act is
+# the ANSWER, so ask about the answer.
+#
+# Both halves are required. `author_trusted` keeps a stranger's issue from becoming agent work, and
+# `v2_owner_answered` keeps anyone but the owner from being the one who released it.
+if ! author_trusted "$TISS" || ! v2_owner_answered issue "$TISS"; then
   log "TRUST refused un-park of issue #$TISS — leaving it parked."; exit "$EX_TRUST"
 fi
 
