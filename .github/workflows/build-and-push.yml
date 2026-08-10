@@ -57,7 +57,6 @@ jobs:
             VITE_POSTHOG_HOST=${{ vars.UI_POSTHOG_HOST }}
             VITE_POSTHOG_REPLAY=${{ vars.UI_POSTHOG_REPLAY }}
             VITE_POSTHOG_REPLAY_SAMPLE=${{ vars.UI_POSTHOG_REPLAY_SAMPLE }}
-            VITE_PUBLIC_BASE_URL=${{ vars.PUBLIC_BASE_URL }}
             POSTHOG_CLI_ENV_ID=${{ vars.POSTHOG_PROJECT_ID }}
             POSTHOG_CLI_HOST=${{ vars.POSTHOG_APP_HOST }}
           # Personal API key with error_tracking:write — a build secret, never an ARG, so it can't
