@@ -36,7 +36,7 @@ ran, and the limits are stated here rather than papered over:
 | 8–12 shipped newsletter editions via `db.py` | **0 bodies.** The scorecard below is built from the `content_quality` PostHog telemetry instead — every newsletter edition LEM has scored since the #630 nightly beat started, which is **1 edition, one account** | The audit runs headless in an agent worktree. Reading edition bodies means production MySQL credentials, and the pipeline runbook forbids touching `.env` / prod secrets. The telemetry is the read path that does not need them |
 | A real, fetched LinkedIn newsletter exemplar | **Not fetched.** Rubric-only assessment, plus an in-repo exemplar for the gauntlet loop (§4) | Fetching one means a live authenticated Selenium session against LinkedIn — a runbook escalation trigger, not something to do headless. The issue's own fallback clause covers this: *"if none can be sourced and fetched, fall back to a rubric-only assessment and say so explicitly"* |
 
-Both are tracked as **#1277**, to be re-run where those inputs exist.
+Both are tracked as **#1284**, to be re-run where those inputs exist.
 
 **Read the scorecard as sizing, not calibration.** One edition from one account can show that a gap
 exists; it cannot set a threshold. Every recommendation below that would require a calibrated number
@@ -103,34 +103,34 @@ avoid, which meant the prompt itself contained a phrase now on the `NEWSLETTER_B
 list. The example is rephrased to "no edition-number opens" so the writer-side directive and the
 checking side stay pinned.
 
-### F2 — Newsletter scaffolds had no checking-side counterpart → **#1278**
+### F2 — Newsletter scaffolds had no checking-side counterpart → **#1285**
 
 `POST_BANNED_SCAFFOLDS` was wired into `slop_lint` for posts only. Newsletter equivalents
 ("in today's edition", "let's dive in", "here's what you need to know") were not banned anywhere.
 This PR adds `NEWSLETTER_BANNED_SCAFFOLDS` to the shared core and extends the `canned_scaffold`
 check to newsletters (WARN severity, same as posts), so the writer-side ban and the checking side
-read one list. Follow-up #1278: measure whether the severity should be HARD once a corpus exists,
+read one list. Follow-up #1285: measure whether the severity should be HARD once a corpus exists,
 and whether additional sampled scaffolds need to be added.
 
-### F3 — No deterministic blog-alignment fidelity check → **#1279**
+### F3 — No deterministic blog-alignment fidelity check → **#1286**
 
 The prompt now requires fidelity, but there is no deterministic gate that compares `blog_content`
 to the generated edition body. A future check (token/keyword overlap, or a small embedding gap)
-could catch drift into generic advice before the edition reaches review. Follow-up #1279: design
+could catch drift into generic advice before the edition reaches review. Follow-up #1286: design
 and calibrate a newsletter-specific fidelity gate.
 
-### F4 — Cover-body cohesion is only as good as the opening text → **#1280**
+### F4 — Cover-body cohesion is only as good as the opening text → **#1287**
 
 `build_cover_prompt` reads title+subtitle+body[:1500], but the cover is generated before the title
 and subtitle are finalized and there is no deterministic check that the cover focal concept
-overlaps with the opening vocabulary. Follow-up #1280: either re-brief the cover after final edits,
+overlaps with the opening vocabulary. Follow-up #1287: either re-brief the cover after final edits,
 or add a deterministic overlap gate between the edition opening and the cover brief's focal
 concept.
 
-### F5 — Subscribe CTA may read hollow without a public subscribe path → **#1281**
+### F5 — Subscribe CTA may read hollow without a public subscribe path → **#1288**
 
 The new directive tells the writer to invite a subscribe, but not every user has a public LinkedIn
-newsletter page or configured subscribe destination. Follow-up #1281: verify that the subscribe
+newsletter page or configured subscribe destination. Follow-up #1288: verify that the subscribe
 invite has a real destination (newsletter page / profile follow) before the line is written, or make
 the CTA conditional.
 
@@ -155,7 +155,7 @@ therefore a comparative judgment against the project's invariants, not a true do
 
 | Round | Piece | Builder proposal | Critic verdict (fresh context) | Resolution |
 |---|---|---|---|
-| 1 | **Newsletter writer-side contract + planner tuning** | Add `newsletter_writing_directive()` in the shared core; rewrite title/subtitle instructions for inbox context; strengthen blog-source fidelity; add newsletter scaffolds to the shared banned list; tune `plan_newsletter_topics` for inbox-worthy titles, newsletter CTAs, and blog-ready angles | **Build wins.** *"Output B wins decisively. Its title opens a loop with a specific claim, the body gives one concrete example and an actionable format, the structure is scannable, and it ends with a newsletter-native reply question plus a subscribe CTA. Output A loses on the same rubric rows: a generic summary title, no concrete example, a feed-post 'Share your thoughts below' CTA, and flat digest-ability."* Biggest remaining gap: **cover-body cohesion** — the strongest edition was still text-first and abstract; the next revision should require one imageable moment or prop that the cover brief can own. | Shipped as drafted. The cover-body cohesion gap is addressed by the directive's "first ~1500 characters must describe ONE cohesive, visually representable focal idea" rule. A deterministic follow-up is filed (#1280) because prompt wording alone cannot guarantee visual cohesion without a corpus to calibrate. |
+| 1 | **Newsletter writer-side contract + planner tuning** | Add `newsletter_writing_directive()` in the shared core; rewrite title/subtitle instructions for inbox context; strengthen blog-source fidelity; add newsletter scaffolds to the shared banned list; tune `plan_newsletter_topics` for inbox-worthy titles, newsletter CTAs, and blog-ready angles | **Build wins.** *"Output B wins decisively. Its title opens a loop with a specific claim, the body gives one concrete example and an actionable format, the structure is scannable, and it ends with a newsletter-native reply question plus a subscribe CTA. Output A loses on the same rubric rows: a generic summary title, no concrete example, a feed-post 'Share your thoughts below' CTA, and flat digest-ability."* Biggest remaining gap: **cover-body cohesion** — the strongest edition was still text-first and abstract; the next revision should require one imageable moment or prop that the cover brief can own. | Shipped as drafted. The cover-body cohesion gap is addressed by the directive's "first ~1500 characters must describe ONE cohesive, visually representable focal idea" rule. A deterministic follow-up is filed (#1287) because prompt wording alone cannot guarantee visual cohesion without a corpus to calibrate. |
 
 The build won on round 1; no further rounds were needed. Nothing is parked `needs-human`.
 
@@ -255,11 +255,11 @@ SPA, cadence math, or the publish flow. Those are out of scope for this PR per t
 changes are filed as separate `risk:*` follow-ups below.
 
 **Residual caveats (non-blocking, filed as follow-ups):**
-- #1277 — re-run the audit with real shipped edition bodies and a fetched LinkedIn exemplar.
-- #1278 — measure and possibly harden newsletter scaffold severity.
-- #1279 — add a deterministic blog-alignment fidelity check.
-- #1280 — add deterministic cover-body cohesion check or re-brief the cover after edits.
-- #1281 — verify the subscribe CTA has a real public destination.
+- #1284 — re-run the audit with real shipped edition bodies and a fetched LinkedIn exemplar.
+- #1285 — measure and possibly harden newsletter scaffold severity.
+- #1286 — add a deterministic blog-alignment fidelity check.
+- #1287 — add deterministic cover-body cohesion check or re-brief the cover after edits.
+- #1288 — verify the subscribe CTA has a real public destination.
 
 **Telemetry caveat:** `content_quality.slop_severity_score` weights warnings, and the #630 nightly
 beat re-lints shipped newsletters, so post-merge every newsletter's `slop_warn` / `slop_score` may
@@ -270,8 +270,8 @@ landing, not as quality moving — it is the trend line, never a gate (`docs/con
 
 ## 7. Follow-up issues filed
 
-- **#1277** — Re-run newsletter audit with real shipped editions + fetched LinkedIn exemplar
-- **#1278** — Harden newsletter scaffold check severity after sampling
-- **#1279** — Add deterministic blog-alignment fidelity gate for newsletter editions
-- **#1280** — Add deterministic cover-body cohesion check / re-brief cover after title/subtitle edits
-- **#1281** — Verify newsletter subscribe CTA has a real public destination
+- **#1284** — Re-run newsletter audit with real shipped editions + fetched LinkedIn exemplar
+- **#1285** — Harden newsletter scaffold check severity after sampling
+- **#1286** — Add deterministic blog-alignment fidelity gate for newsletter editions
+- **#1287** — Add deterministic cover-body cohesion check / re-brief cover after title/subtitle edits
+- **#1288** — Verify newsletter subscribe CTA has a real public destination
