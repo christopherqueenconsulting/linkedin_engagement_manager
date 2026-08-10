@@ -335,4 +335,8 @@ class TestGenerateCoverForEdition:
             rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert reason is None and rel is not None
         assert lora.call_count == 2
-        assert "distorted face" in lora.call_args[0][0]
+        # The re-render says what the cover must SHOW, not what was wrong with the last one:
+        # this path is FLUX, which renders whatever a prompt names (issue #1141).
+        retry = lora.call_args[0][0]
+        assert "naturally proportioned subject" in retry
+        assert "distorted" not in retry

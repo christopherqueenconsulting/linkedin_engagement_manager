@@ -19,6 +19,14 @@ pytestmark = pytest.mark.unit
 
 _MOD = "cqc_lem.utilities.marketing.video_tutorials"
 
+# What the ONE brief engine hands back for a thumbnail — photography vocabulary, positive
+# phrasing, no marks named (issue #1141).
+_BRIEF = SimpleNamespace(
+    prompt=("A single ceramic mug resting on a pale oak desk beside a closed notebook, soft "
+            "window light from camera left, shot on an 85mm lens at f/2, subtle film grain."),
+    ratio="16:9", surface="thumbnail", style_preset="thumbnail",
+    focal_concept="a calm desk still life")
+
 
 @pytest.fixture(autouse=True)
 def _isolated_assets(tmp_path, monkeypatch):
@@ -445,7 +453,9 @@ class TestRender:
     def test_thumbnail_is_off_by_default_and_never_raises(self, tmp_path, monkeypatch):
         assert vt.generate_thumbnail(_flow(), str(tmp_path)) is None
         monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", True)
-        with patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_BRIEF), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
                    side_effect=RuntimeError("no image")):
             assert vt.generate_thumbnail(_flow(), str(tmp_path)) is None
 
@@ -455,12 +465,36 @@ class TestRender:
         rendered.parent.mkdir()
         rendered.write_bytes(b"png")
         out_dir = tmp_path / "out"
-        with patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_BRIEF), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
                    return_value=str(rendered)) as render:
             assert vt.generate_thumbnail(_flow(), str(out_dir)) == str(out_dir / "a.png")
         # 16:9 at draft quality — a YouTube thumbnail, not a square hd render.
         assert render.call_args[1] == {"ratio": "16:9", "quality": "low"}
         assert (out_dir / "a.png").read_bytes() == b"png"
+
+    def test_thumbnail_prompt_comes_from_the_one_brief_engine(self, tmp_path, monkeypatch):
+        """A thumbnail prompt is authored by the ONE brief engine, never inline.
+
+        Issue #1141: the inline prompt was a per-content-type prompt helper (banned by
+        CLAUDE.md) that also said "No text, no logos" — negation, which the FLUX fallback
+        backend renders rather than avoids.
+        """
+        monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", True)
+        rendered = tmp_path / "src" / "a.png"
+        rendered.parent.mkdir()
+        rendered.write_bytes(b"png")
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_BRIEF) as brief, \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+                   return_value=str(rendered)) as render:
+            vt.generate_thumbnail(_flow(), str(tmp_path / "out"))
+
+        assert brief.call_args[1]["surface"] == "thumbnail"
+        assert brief.call_args[1]["ratio"] == "16:9"
+        assert render.call_args[0][0] == _BRIEF.prompt
+        assert "no text" not in render.call_args[0][0].lower()
 
 
 class TestYouTubePublish:

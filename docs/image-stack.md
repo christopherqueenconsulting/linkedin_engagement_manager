@@ -26,13 +26,20 @@ brief decides whether the render is relevant at all — the failure the cheap ti
 | `post_image` | Scroll-stopping single subject for a feed post; one strong color accent |
 | `carousel` | Quiet supporting photo for ONE slide; uncluttered background a text panel can sit beside |
 | `video` | Opening frame posed so subtle motion can bring it alive; layered depth |
-| `thumbnail` | Flat product-tutorial illustration; calm palette, one clear subject |
+| `thumbnail` | Bold, high-contrast product-tutorial thumbnail; one tangible object, framed to read at player-tile size |
 
 A preset only says what THIS surface is for. The photographic fundamentals — subject-first
 ordering, 40–80 words of flowing prose, concrete camera/lighting vocabulary instead of generic
 quality tags, positive phrasing only (FLUX has no negative prompts — naming a thing summons it),
 and the skin-texture rules that kill the AI sheen — live in the shared system prompt, written to
 hold for BOTH FLUX LoRA renders and FLUX.2/gpt-image.
+
+The preset and that system prompt reach the model in the SAME request, so they can contradict each
+other silently: the `thumbnail` preset asked for an "illustration", the word the system prompt
+calls a dead word, and nothing compared the two (#1141). `DEAD_STYLE_WORDS` / `DEAD_QUALITY_TAGS`
+are now ONE list the prompt names and `test_image_preset_drift.py` greps — and that test also fails
+the build on a preset **no caller ever selects**, which is how `thumbnail` stayed wrong: nothing
+passed `surface="thumbnail"` at all until #1141 wired `video_tutorials.generate_thumbnail` up to it.
 
 **NO text, letters, or logos in any render prompt** — enforced in the system prompt, with
 `with_no_marks()` as the render-side belt.
@@ -64,6 +71,14 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
 - **Fails OPEN**: `QualityVerdict.checked=False` means the gate could not run. A vision outage must
   never take a cover or post image down with it — and for newsletter covers the human
   `pending_review` gate still sits behind this one.
+- **A rejected render's retry never names the defect back at FLUX.** `repair_directive` carries the
+  same backend split, for the same reason, as `with_no_marks`: gpt-image is told what to avoid,
+  FLUX is told what the image must SHOW (an off-topic verdict names the `focal_concept` back). The
+  gate reports what is WRONG — "six fingers on the left hand" — and pasting that into a FLUX prompt
+  was re-requesting it, inside a two-render budget, on the path every likeness render takes (#1141).
+
+Full grading of this engine's output, its per-surface gaps and what is still unmeasurable:
+**`docs/content-quality-audits/image.md`**.
 
 ## Avatar likeness never renders here
 

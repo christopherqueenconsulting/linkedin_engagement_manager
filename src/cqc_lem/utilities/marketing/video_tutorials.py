@@ -750,12 +750,14 @@ def generate_thumbnail(flow: TutorialFlow, out_dir: str) -> Optional[str]:
     try:
         import shutil
 
+        from cqc_lem.utilities.ai.image_brief import build_image_brief
         from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
-        # 16:9 to match the YouTube player; quality low — a thumbnail draft tier is plenty.
-        path = render_image_from_prompt(
-            f"Clean, flat product-tutorial thumbnail illustrating: {flow.title}. "
-            "No text, no logos, calm blue palette.",
-            ratio="16:9", quality="low")
+        # Through the ONE brief engine and its `thumbnail` preset, not a hand-written prompt: the
+        # inline one said "No text, no logos", and negation is what SUMMONS both on the FLUX
+        # fallback backend (issue #1141). 16:9 to match the YouTube player; quality low — a
+        # thumbnail draft tier is plenty.
+        brief = build_image_brief(flow.title, surface="thumbnail", ratio="16:9")
+        path = render_image_from_prompt(brief.prompt, ratio="16:9", quality="low")
         if not path:
             return None
         os.makedirs(out_dir, exist_ok=True)

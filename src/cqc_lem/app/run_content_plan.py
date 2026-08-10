@@ -951,8 +951,12 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # then contradict (issue #744). None here means the guardrails said no.
         avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
         has_avatar = avatar is not None
+        # Brief the ratio this tier will actually RENDER at: the image brief composes framing for
+        # the aspect ratio it is handed, so briefing 1:1 and rendering the premium source frame at
+        # 9:16 asked for a square composition and cropped it vertical (issue #1141).
+        source_frame_ratio = "9:16" if is_premium(model) else DEFAULT_IMAGE_RATIO
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
-                                                    ratio=DEFAULT_IMAGE_RATIO, avatar=avatar,
+                                                    ratio=source_frame_ratio, avatar=avatar,
                                                     surface="video")
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
@@ -962,7 +966,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                                                     language=language)[:512]
         if is_premium(model):
             if has_avatar:
-                image_path = generate_post_image(image_prompt, user_id, ratio="9:16",
+                image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
                                           user_id=user_id, post_id=post_id)
@@ -978,11 +982,11 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             # (avatar likeness regardless of tier; premium only adds the higher-quality Veo motion +
             # credit spend). generate_post_image falls back to base Flux.1 when there is no avatar.
             if has_avatar:
-                image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO,
+                image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
             else:
                 from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
-                image_path = render_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO,
+                image_path = render_image_from_prompt(image_prompt, ratio=source_frame_ratio,
                                                       user_id=user_id, post_id=post_id)
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
                                       user_id=user_id, post_id=post_id)

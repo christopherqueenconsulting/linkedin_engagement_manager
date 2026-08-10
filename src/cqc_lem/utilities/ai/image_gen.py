@@ -73,6 +73,61 @@ def with_no_marks(prompt: str, backend: str = "gpt-image") -> str:
     return f"{prompt}{suffix}"
 
 
+# What a rejected render must show INSTEAD, keyed by what the vision gate actually reports. Its
+# issue strings name the DEFECT ("garbled text on whiteboard", "six fingers on the left hand"),
+# and the repair round used to paste them straight back into the next prompt — which is fine for
+# instruction-following gpt-image and actively harmful on FLUX, where naming a thing summons it
+# and negation is largely ignored. So the retry was re-requesting the exact defect it rejected
+# (issue #1141). Same backend split, and same reason, as _NO_MARKS_* above.
+_REPAIR_COUNTERS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("text", "letter", "word", "caption", "writing", "typograph", "watermark", "logo",
+      "brand", "icon", "chart", "ui "),
+     "every garment and surface plain and unmarked, screens blank, walls clean"),
+    (("hand", "finger", "thumb", "knuckle", "digit"),
+     "hands relaxed and out of frame, the subject framed above the waist"),
+    # "six fingers" is only ONE way the gate phrases bad anatomy; "malformed face", "extra limb"
+    # and "distorted torso" all describe the same repair and matched nothing at first.
+    (("anatomy", "anatomical", "face", "limb", "torso", "distort", "deform", "malform",
+      "uncanny", "mangl", "fused", "merging", "extra "),
+     "one whole, naturally proportioned subject cleanly separated from its surroundings"),
+    (("relevance", "relate", "abstract", "filler", "generic", "unrelated", "meaningless"),
+     "a literal, concrete depiction of {focal}, in a real setting"),
+)
+_REPAIR_FALLBACK = "one clear, concrete subject in a real setting, cleanly lit and plainly framed"
+
+
+def repair_directive(issues: list, backend: str = "gpt-image",
+                     focal_concept: Optional[str] = None) -> str:
+    """The re-render clause for a render the vision gate rejected, phrased for that backend.
+
+    gpt-image is told what to AVOID (it follows instructions); FLUX is told what to SHOW, because
+    a FLUX prompt that names a defect renders it. A verdict this map has no counter for still
+    yields a positive directive rather than nothing — an empty retry clause is just the same
+    render again.
+
+    Args:
+        issues: ``QualityVerdict.issues`` — short phrases naming what was WRONG.
+        backend: ``flux`` or ``gpt-image``; decides which phrasing the clause takes.
+        focal_concept: the subject the brief asked for, named back on an off-topic verdict —
+            repeating "the stated subject" is the vagueness that let it drift.
+    """
+    cleaned = [str(i).strip() for i in (issues or []) if str(i).strip()]
+    if backend != "flux":
+        fixes = "; ".join(cleaned) or "low relevance to the subject"
+        return (f"The previous render was rejected for: {fixes}. "
+                f"Avoid those problems entirely in this render.")
+    focal = (focal_concept or "").strip() or "the subject the brief describes"
+    lowered = " ".join(cleaned).lower()
+    wanted = [counter.format(focal=focal) for triggers, counter in _REPAIR_COUNTERS
+              if any(trigger in lowered for trigger in triggers)]
+    return "Render this scene again with " + "; ".join(wanted or [_REPAIR_FALLBACK]) + "."
+
+
+def _configured_backend() -> str:
+    """Which backend a render will actually be phrased for. ``auto`` leads with gpt-image."""
+    return "flux" if (IMAGE_BACKEND or "auto").strip().lower() == "flux" else "gpt-image"
+
+
 @dataclass
 class QualityVerdict:
     """Outcome of the vision gate. ``checked=False`` means the gate could not run (fails open)."""
@@ -286,9 +341,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                  issues="; ".join(verdict.issues))
         if not enforced or attempt == attempts:
             break
-        fixes = "; ".join(verdict.issues) or "low relevance to the subject"
-        current_prompt = (f"{prompt}\n\nThe previous render was rejected for: {fixes}. "
-                          f"Avoid those problems entirely in this render.")
+        # Always FLUX on this path — the likeness renders on Replicate.
+        current_prompt = f"{prompt}\n\n{repair_directive(verdict.issues, 'flux', focal_concept)}"
     return path
 
 
@@ -321,7 +375,5 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                  surface=surface, attempt=attempt, issues="; ".join(verdict.issues))
         if not enforced or attempt == attempts:
             break
-        fixes = "; ".join(verdict.issues) or "low relevance to the subject"
-        current_prompt = (f"{prompt}\n\nThe previous render was rejected for: {fixes}. "
-                          f"Avoid those problems entirely in this render.")
+        current_prompt = f"{prompt}\n\n{repair_directive(verdict.issues, _configured_backend(), focal_concept)}"
     return path
