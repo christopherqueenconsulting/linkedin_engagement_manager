@@ -32,7 +32,7 @@ from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefull
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
                         measurement_only: bool = False, debug: bool = False,
-                        force_refresh: bool = False) -> Tuple[
+                        force_refresh: bool = False, debug_required: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
@@ -41,7 +41,9 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     rate_limit.is_measurement_paused.
 
     `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
-    back to the normal pool when the node is busy or absent.
+    back to the normal pool when the node is busy or absent. `debug_required` removes that
+    fallback and raises `DebugNodeUnavailable` instead — the live-validation probe an autonomous
+    agent runs must never take a slot the engagement lanes are sized for (#1108).
 
     `force_refresh` makes the scrape bypass the profile cache (issue #1076). The cached FALLBACK
     below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and
@@ -51,7 +53,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug)
+    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug,
+                                        debug_required=debug_required)
 
     # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
     # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.

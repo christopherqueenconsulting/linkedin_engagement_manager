@@ -346,6 +346,12 @@ services:
       - SE_NODE_OVERRIDE_MAX_SESSIONS=true
       - SE_NODE_SESSION_TIMEOUT=600
       - SE_LOG_LEVEL=WARN
+      # This standalone IS the whole pool, so it declares the pool side of the debug pin (#1108)
+      # for parity with docker-compose.grid.yml: production sessions ask for `lem:debug=false` and
+      # match here, a `--require-debug-node` probe asks for `true` and correctly finds nothing to
+      # run on (this topology has no watchable node). Quote the whole KEY=value pair — see the
+      # grid overlay for what quoting only the JSON does.
+      - 'SE_NODE_STEREOTYPE_EXTRA={"lem:debug":false}'
     volumes:
       - chrome-profile:/home/seluser/chrome-profile
     restart: unless-stopped
