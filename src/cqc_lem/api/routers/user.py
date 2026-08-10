@@ -1738,7 +1738,7 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
 
 @router.get("/linkedin-profile-skills")
 def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel:
-    """Return the top-5 skills from the user's cached LinkedIn profile and their overlap with declared focus topics (issue #1075).
+    """Return the cached profile's top-5 skills and their overlap with declared focus topics.
 
     Read-only and best-effort: a missing or unparseable profile returns an empty list, never an
     error, so the Settings page always renders.
