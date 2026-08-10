@@ -751,13 +751,17 @@ def generate_thumbnail(flow: TutorialFlow, out_dir: str) -> Optional[str]:
         import shutil
 
         from cqc_lem.utilities.ai.image_brief import build_image_brief
-        from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
+        from cqc_lem.utilities.ai.image_gen import render_image_gated
         # Through the ONE brief engine and its `thumbnail` preset, not a hand-written prompt: the
         # inline one said "No text, no logos", and negation is what SUMMONS both on the FLUX
         # fallback backend (issue #1141). 16:9 to match the YouTube player; quality low — a
-        # thumbnail draft tier is plenty.
+        # thumbnail draft tier is plenty. The render is graded by the bounded vision gate with
+        # the brief's focal_concept; because `thumbnail` is outside IMAGE_QUALITY_GATE_SURFACES
+        # by default, the verdict is advisory-only and a vision outage fails open (issue #1290).
         brief = build_image_brief(flow.title, surface="thumbnail", ratio="16:9")
-        path = render_image_from_prompt(brief.prompt, ratio="16:9", quality="low")
+        path = render_image_gated(
+            brief.prompt, surface="thumbnail", ratio="16:9", quality="low",
+            focal_concept=brief.focal_concept)
         if not path:
             return None
         os.makedirs(out_dir, exist_ok=True)

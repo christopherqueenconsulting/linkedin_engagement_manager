@@ -476,9 +476,11 @@ def _generate_avatar_slide_image(query: str, user_id: int, post_id: Optional[int
         # clean minimal background...") is exactly the generic filler this engine replaces.
         slide_text = "\n".join(t for t in (title, content) if t) or query
         brief = build_image_brief(slide_text, surface="carousel", ratio="1:1")
-        path = generate_post_image(brief.prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
-                                   post_id=post_id,
-                                   depicts_person=_query_depicts_person(query, content_type))
+        path = generate_post_image(
+            brief.prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
+            post_id=post_id,
+            depicts_person=_query_depicts_person(query, content_type),
+            focal_concept=brief.focal_concept)
         return path or None
     except Exception as e:
         log_warning("Carousel avatar image generation failed, falling back to Pexels",

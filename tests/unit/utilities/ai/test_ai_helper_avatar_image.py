@@ -61,24 +61,27 @@ class TestGeneratePostImage:
     def test_ratio_is_threaded_to_the_avatar_render(self):
         """The 9:16 source frame for premium avatar video used to be rendered square."""
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_AVATAR), \
-             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
-                   return_value=("/tmp/a.webp", True)) as gen, \
-             patch(f"{_AH}._record_avatar_media"):
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
+                   return_value="/tmp/a.webp") as gen:
             assert self._generate(ratio="9:16") == "/tmp/a.webp"
         assert gen.call_args.kwargs["ratio"] == "9:16"
-        assert gen.call_args.kwargs["fallback_prompt"] == "a whiteboard session"
 
     def test_prompt_carries_trigger_word_and_declared_clause(self):
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_AVATAR), \
-             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
-                   return_value=("/tmp/a.webp", True)) as gen, \
-             patch(f"{_AH}._record_avatar_media"):
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
+                   return_value="/tmp/a.webp") as gen:
             self._generate()
-        assert gen.call_args[0][0] == "LEMAVTR1, a man in his 40s, a whiteboard session"
+        # The trigger word + declared clause are applied inside the gate, not before it, so the
+        # prompt passed in is the raw brief prompt and the gate applies the subject clause.
+        assert gen.call_args[0][0] == "a whiteboard session"
+        assert gen.call_args.kwargs["avatar"] == _AVATAR
 
     def test_object_scenes_never_reach_the_lora(self):
+        """Prepending the trigger word to 'quarterly dashboard metrics' asked the LoRA to insert
+        the user's face into a scene never written to contain a person (issue #744).
+        """
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as resolve, \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/f.webp") as render:
             assert self._generate(depicts_person=False) == "/tmp/f.webp"
         resolve.assert_not_called()
@@ -86,7 +89,7 @@ class TestGeneratePostImage:
 
     def test_guardrail_decline_uses_the_base_renderer(self):
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value="/tmp/f.webp") as render:
             assert self._generate(ratio="4:5") == "/tmp/f.webp"
         assert render.call_args.kwargs["ratio"] == "4:5"
@@ -100,21 +103,21 @@ class TestGeneratePostImage:
             assert self._generate(image_model="black-forest-labs/flux-1.1-pro") == "/tmp/f.webp"
         assert flux.call_args.kwargs["image_model"] == "black-forest-labs/flux-1.1-pro"
 
-    def test_provenance_recorded_only_when_the_avatar_actually_rendered(self):
+    def test_focal_concept_reaches_the_avatar_gate(self):
+        """Issue #1290: the brief's focal_concept is graded, not dropped."""
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_AVATAR), \
-             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
-                   return_value=("/tmp/a.webp", False)), \
-             patch(f"{_AH}._record_avatar_media") as record:
-            self._generate(post_id=9)
-        record.assert_not_called()
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
+                   return_value="/tmp/a.webp") as gen:
+            self._generate(surface="carousel", focal_concept="a founder at a whiteboard")
+        assert gen.call_args.kwargs["focal_concept"] == "a founder at a whiteboard"
 
-    def test_provenance_recorded_on_a_real_avatar_render(self):
-        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_AVATAR), \
-             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
-                   return_value=("/tmp/a.webp", True)), \
-             patch(f"{_AH}._record_avatar_media") as record:
-            self._generate(post_id=9)
-        record.assert_called_once_with("/tmp/a.webp", 9, 7)
+    def test_focal_concept_reaches_the_base_gate(self):
+        """Issue #1290: non-avatar renders also grade against the brief's focal_concept."""
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value="/tmp/f.webp") as render:
+            self._generate(surface="carousel", focal_concept="a quarterly dashboard")
+        assert render.call_args.kwargs["focal_concept"] == "a quarterly dashboard"
 
 
 class TestRecordAvatarMedia:
