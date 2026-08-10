@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -50,6 +51,15 @@ PASSED_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 #: as a review, or v2's shadow decisions diverge from v1's for a reason that is not a defect.
 COPILOT_LOGIN = "copilot-pull-request-reviewer"
 CLAUDE_REVIEW_MARKER = "🔎 Claude adversarial review"
+#: The ASCII half of the marker — what detection keys on. The decorated marker opens with a non-BMP
+#: character that does not survive the round-trip through the agent posting it (it lands as U+FFFD),
+#: so matching the whole marker finds nothing and the agent re-reviews forever: five identical
+#: comments on PR #1273. The phrase must still OPEN the comment — an unbounded search would count a
+#: Decision Comment that merely mentions the review (which a selfreview escalation posts INSTEAD of
+#: a marker) as evidence the review happened. Leading non-letters are stripped first: exactly the
+#: room the decoration needs (`🔎`, its four U+FFFD, `#`, `**`), none for a word in front of it.
+CLAUDE_REVIEW_MARKER_TEXT = "Claude adversarial review"
+MARKER_DECORATION_RE = re.compile(r"^[^A-Za-z]*")
 
 
 class GitHubUnavailable(RuntimeError):
@@ -249,7 +259,8 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
             stamps.append(review["submittedAt"])
     for comment in ((node.get("comments") or {}).get("nodes") or []):
         body = (comment or {}).get("body") or ""
-        if body.lstrip().startswith(CLAUDE_REVIEW_MARKER) and comment.get("createdAt"):
+        undecorated = MARKER_DECORATION_RE.sub("", body)
+        if undecorated.startswith(CLAUDE_REVIEW_MARKER_TEXT) and comment.get("createdAt"):
             stamps.append(comment["createdAt"])
     reviewed_at = max(stamps, key=_epoch) if stamps else ""
 

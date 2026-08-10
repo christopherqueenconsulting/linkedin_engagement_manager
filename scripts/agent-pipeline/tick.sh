@@ -679,9 +679,17 @@ claude_reviewed_at() {  # $1=pr
   # on non-BMP emoji — strip them first"). Anchoring on the ASCII phrase makes detection
   # independent of whether the decoration survives, and makes already-posted mangled markers count
   # rather than needing a cleanup pass.
+  #
+  # The phrase must still OPEN the comment. A bare `contains` would count any comment that merely
+  # MENTIONS the review as review evidence — and two such comments are routine: a MODE=selfreview
+  # escalation deliberately posts a Decision Comment INSTEAD of the marker, and this repo is
+  # public, so anyone can write the phrase in prose. Either would clear the merge gate for a PR
+  # that was never reviewed. Leading NON-LETTERS are stripped first, which is exactly the room the
+  # decoration needs (`🔎`, its four U+FFFD, `#`, `**`, spaces) and no room at all for a word like
+  # "the" in front of it.
   gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
     | jq -r --arg m "$CLAUDE_REVIEW_MARKER_TEXT" \
-        '[(.comments // [])[] | select((.body // "") | contains($m))] | last | .createdAt // empty' 2>/dev/null
+        '[(.comments // [])[] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | last | .createdAt // empty' 2>/dev/null
 }
 
 # 0 when a Claude adversarial-review marker exists that is fresh for the current head.

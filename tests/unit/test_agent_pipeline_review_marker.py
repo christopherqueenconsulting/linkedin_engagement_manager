@@ -6,18 +6,29 @@ what occurred on PR #1273: five identical comments from one run, because the mar
 non-BMP emoji that did not survive the round-trip and landed as U+FFFD replacement characters.
 
 The lesson these tests encode: DETECTION must never depend on a decorative character surviving a
-trip through a model, a shell, and an API.
+trip through a model, a shell, and an API — and, equally, must never be so loose that a comment
+which merely MENTIONS the review passes as one. Both halves gate a merge.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-TICK = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "tick.sh"
+_PIPELINE = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline"
+sys.path.insert(0, str(_PIPELINE / "v2"))
+
+from lemd import github  # noqa: E402
+
+TICK = _PIPELINE / "tick.sh"
+
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="the detector is a jq filter")
 
 
 def _var(name: str) -> str:
@@ -25,6 +36,44 @@ def _var(name: str) -> str:
     m = re.search(rf'^{name}="([^"]*)"', TICK.read_text(), re.M)
     assert m, f"{name} not found in tick.sh"
     return m.group(1)
+
+
+def _detector_body() -> str:
+    """The source of `claude_reviewed_at`, comments stripped.
+
+    The rationale comment names `startswith` to explain why it was wrong, so a naive substring
+    check over the raw function reads that explanation as the code still doing it. (Same trap as
+    the KillMode test in the v2 defect suite — worth failing for once and never again.)
+    """
+    body = TICK.read_text()
+    fn = body[body.index("claude_reviewed_at()"):]
+    fn = fn[: fn.index("\n}")]
+    return "\n".join(line for line in fn.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _jq_filter() -> str:
+    """The REAL jq expression tick.sh runs, lifted out of the script.
+
+    Tests that paste a copy of the filter prove only that the copy works; this one fails when the
+    shipped query regresses, which is the whole point of testing a detector.
+    """
+    m = re.search(r"'(\[\(\.comments.*?)'", _detector_body(), re.S)
+    assert m, "could not lift the jq filter out of claude_reviewed_at"
+    return m.group(1)
+
+
+def _detect(*comments: dict) -> str:
+    """Run the shipped filter over a comments payload and return the timestamp it resolves."""
+    out = subprocess.run(
+        ["jq", "-r", "--arg", "m", _var("CLAUDE_REVIEW_MARKER_TEXT"), _jq_filter()],
+        input=json.dumps({"comments": list(comments)}),
+        capture_output=True, text=True, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+MANGLED = "���� Claude adversarial review — no findings"
 
 
 def test_detection_anchor_is_bmp_only():
@@ -45,50 +94,68 @@ def test_anchor_is_a_substring_of_the_decorated_marker():
     assert _var("CLAUDE_REVIEW_MARKER_TEXT") in _var("CLAUDE_REVIEW_MARKER")
 
 
-def test_detector_matches_by_contains_not_startswith():
-    """`startswith` on the decorated marker is precisely what broke #1273."""
-    body = TICK.read_text()
-    fn = body[body.index("claude_reviewed_at()"):]
-    fn = fn[: fn.index("\n}")]
-    # Strip comments before asserting: the rationale explains why `startswith` was wrong, and a
-    # naive substring check reads that explanation as the code still doing it. (Same trap as the
-    # KillMode test in the v2 defect suite — worth failing for once and never again.)
-    code = "\n".join(
-        line for line in fn.splitlines() if not line.lstrip().startswith("#")
-    )
-    assert "CLAUDE_REVIEW_MARKER_TEXT" in code, "detection must use the ASCII anchor"
-    assert "startswith" not in code, "startswith on the decorated marker cannot match a mangled post"
+def test_detector_never_matches_the_decorated_marker():
+    """Matching the DECORATED marker is precisely what broke #1273.
 
-
-def test_detector_finds_a_marker_whose_emoji_was_mangled():
-    """The real failure: four U+FFFD where the emoji should be.
-
-    Reproduced through the same jq expression tick.sh uses, so this fails if the query regresses.
+    The decoration cannot survive the trip, so any comparison against `$CLAUDE_REVIEW_MARKER`
+    matches nothing and the agent re-reviews forever.
     """
-    anchor = _var("CLAUDE_REVIEW_MARKER_TEXT")
-    mangled = "���� Claude adversarial review — no findings"
-    payload = (
-        '{"comments":[{"body":' + __import__("json").dumps(mangled)
-        + ',"createdAt":"2026-08-10T03:04:02Z"}]}'
-    )
-    out = subprocess.run(
-        ["jq", "-r", "--arg", "m", anchor,
-         '[(.comments // [])[] | select((.body // "") | contains($m))] | last | .createdAt // empty'],
-        input=payload, capture_output=True, text=True, check=False,
-    )
-    assert out.stdout.strip() == "2026-08-10T03:04:02Z"
+    code = _detector_body()
+    assert "CLAUDE_REVIEW_MARKER_TEXT" in code, "detection must use the ASCII anchor"
+    assert '"$CLAUDE_REVIEW_MARKER"' not in code, "the decorated marker must not gate detection"
 
 
+@needs_jq
+def test_detector_finds_a_marker_whose_emoji_was_mangled():
+    """The real failure: four U+FFFD where the emoji should be."""
+    assert _detect({"body": MANGLED, "createdAt": "2026-08-10T03:04:02Z"}) == "2026-08-10T03:04:02Z"
+
+
+@needs_jq
+@pytest.mark.parametrize("body", [
+    "🔎 Claude adversarial review — PASS",
+    "**🔎 Claude adversarial review** — FIXED 2 findings",
+    "## Claude adversarial review\n- a finding",
+])
+def test_detector_still_finds_an_intact_marker(body):
+    """Stripping the decoration must not cost us the un-mangled forms agents actually post."""
+    assert _detect({"body": body, "createdAt": "2026-08-10T03:04:02Z"}) == "2026-08-10T03:04:02Z"
+
+
+@needs_jq
 def test_detector_ignores_unrelated_comments():
     """Anchoring on a phrase must not make every comment look like a review."""
-    anchor = _var("CLAUDE_REVIEW_MARKER_TEXT")
-    payload = '{"comments":[{"body":"looks good to me","createdAt":"2026-01-01T00:00:00Z"}]}'
-    out = subprocess.run(
-        ["jq", "-r", "--arg", "m", anchor,
-         '[(.comments // [])[] | select((.body // "") | contains($m))] | last | .createdAt // empty'],
-        input=payload, capture_output=True, text=True, check=False,
+    assert _detect({"body": "looks good to me", "createdAt": "2026-01-01T00:00:00Z"}) == ""
+
+
+@needs_jq
+def test_a_comment_that_only_mentions_the_review_is_not_review_evidence():
+    """The loosening this fix introduced, bounded.
+
+    MODE=selfreview escalates by posting a Decision Comment INSTEAD of the marker — the review
+    deliberately did NOT pass. This repo is also public, so any commenter can write the phrase in
+    prose. An unbounded `contains` would read either as "reviewed" and merge the PR.
+    """
+    decision = (
+        "## 🧑‍⚖️ Human decision needed — reply with option letters\n"
+        "Held (`needs-human`). Found while running the Claude adversarial review; I cannot "
+        "safely fix it.\n"
     )
-    assert out.stdout.strip() == ""
+    assert _detect({"body": decision, "createdAt": "2026-08-10T04:00:00Z"}) == ""
+    assert _detect(
+        {"body": "the Claude adversarial review missed the race in the sweep",
+         "createdAt": "2026-08-10T04:00:00Z"},
+    ) == ""
+
+
+@needs_jq
+def test_detector_returns_the_newest_marker():
+    """Freshness is compared against the head commit, so the wrong pick silently re-reviews."""
+    assert _detect(
+        {"body": MANGLED, "createdAt": "2026-08-09T01:00:00Z"},
+        {"body": "unrelated", "createdAt": "2026-08-09T02:00:00Z"},
+        {"body": MANGLED, "createdAt": "2026-08-10T03:04:02Z"},
+    ) == "2026-08-10T03:04:02Z"
 
 
 def test_pipeline_exports_a_utf8_locale():
@@ -110,3 +177,44 @@ def test_marker_vars_are_defined_before_use(var):
     first_use = body.find(f'${var}')
     if first_use != -1:
         assert assign < first_use, f"{var} is used before it is assigned"
+
+
+# --- v1/v2 agreement ---------------------------------------------------------------------------
+# github.py pins these strings to tick.sh's on purpose: "during migration both runners must agree
+# on what counts as a review, or v2's shadow decisions diverge from v1's for a reason that is not a
+# defect." Fixing only v1 IS that divergence.
+
+
+def test_v2_pins_the_same_anchor_as_tick_sh():
+    """v2 shadows v1's merge decisions; a different anchor makes the shadow lie."""
+    assert github.CLAUDE_REVIEW_MARKER_TEXT == _var("CLAUDE_REVIEW_MARKER_TEXT")
+    assert github.CLAUDE_REVIEW_MARKER == _var("CLAUDE_REVIEW_MARKER")
+
+
+def test_v2_review_state_sees_a_mangled_marker(monkeypatch):
+    """The #1273 body, through v2's own reader."""
+    monkeypatch.setattr(github, "gh_json", lambda *a, **k: {"data": {"repository": {
+        "pullRequest": {
+            "commits": {"nodes": [{"commit": {"committedDate": "2026-08-10T03:00:00Z"}}]},
+            "reviews": {"nodes": []},
+            "comments": {"nodes": [{"createdAt": "2026-08-10T03:04:02Z", "body": MANGLED}]},
+            "reviewThreads": {"nodes": []},
+        }}}})
+    state = github.review_state("o/r", 1)
+    assert state.reviewed_at == "2026-08-10T03:04:02Z"
+    assert state.fresh is True
+
+
+def test_v2_ignores_a_comment_that_only_mentions_the_review(monkeypatch):
+    """Same rule as tick.sh: a comment the phrase does not OPEN is not review evidence."""
+    body = "## 🧑‍⚖️ Human decision needed\nHeld during the Claude adversarial review.\n"
+    monkeypatch.setattr(github, "gh_json", lambda *a, **k: {"data": {"repository": {
+        "pullRequest": {
+            "commits": {"nodes": [{"commit": {"committedDate": "2026-08-10T03:00:00Z"}}]},
+            "reviews": {"nodes": []},
+            "comments": {"nodes": [{"createdAt": "2026-08-10T03:04:02Z", "body": body}]},
+            "reviewThreads": {"nodes": []},
+        }}}})
+    state = github.review_state("o/r", 1)
+    assert state.reviewed_at == ""
+    assert state.fresh is False
