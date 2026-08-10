@@ -29,12 +29,19 @@ def pytest_collection_modifyitems(config, items):
     left to shorten it is more machines. Two jobs at `-n 4` is eight-way parallelism.
 
     Sharding is by FILE, not by test, so `--dist loadfile` still means what it means and a file's
-    module-scoped fixtures are still built once. The bucket is a stable hash of the path, which is
-    what makes this need no committed durations file to go stale: measured over the 456 unit files
-    it lands within 2% of an even split at UNIT_SHARDS=2. It is deliberately NOT used above 2 —
-    at 3 or 4 the handful of heavy files (test_connection_seam.py alone is 16s of 98s) dominate a
-    bucket and imbalance reaches +67%, and there is nothing to gain anyway once the lane drops
-    under the CodeQL floor that sets the PR's wall clock.
+    module-scoped fixtures are still built once. There is no committed durations file to go stale;
+    the bucket is a hash instead.
+
+    That hash is taken over the ROOTDIR-RELATIVE path, from `item.nodeid`, and that detail is the
+    whole reason this is reproducible. Hashing `item.fspath` — the absolute path — makes the split
+    depend on the checkout directory, so a balance measured locally says nothing about what CI will
+    do, and CI itself would re-shuffle if the runner's working directory ever changed. Still a valid
+    partition either way, just an unpredictable one, which defeats the point of being able to
+    measure the balance before shipping it.
+
+    Deliberately not used above UNIT_SHARDS=2: past that, the handful of heavy files
+    (test_connection_seam.py alone is 16s of 98s) dominate a bucket and imbalance runs to +67%,
+    and there is nothing to gain once this lane drops under the CodeQL floor that sets wall clock.
 
     Unset (the default, and every local run) selects everything.
     """
@@ -44,8 +51,8 @@ def pytest_collection_modifyitems(config, items):
     shard = int(os.getenv("UNIT_SHARD", "1"))
     kept, dropped = [], []
     for item in items:
-        path = str(item.fspath if hasattr(item, "fspath") else item.path)
-        bucket = int(hashlib.sha256(path.encode()).hexdigest(), 16) % shards + 1
+        rel = item.nodeid.split("::", 1)[0]
+        bucket = int(hashlib.sha256(rel.encode()).hexdigest(), 16) % shards + 1
         (kept if bucket == shard else dropped).append(item)
     items[:] = kept
     config.hook.pytest_deselected(items=dropped)
