@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.143.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.142.1...v0.143.0) (2026-08-10)
+
+
+### Features
+
+* **agents:** version the pipeline MCP config so agent runs keep their browser ([#1315](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1315)) ([27c9b09](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27c9b0939f051ea18944638195d37e20598a8da4))
+
+
+### Bug Fixes
+
+* **agents:** ask the right trust question when un-parking an issue ([#1372](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1372)) ([3ad312f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3ad312f4866b272c4b94cc1bd9eb63f5be66dcf3))
+* **agents:** give v2 a way out of a park — the owner answer lane ([#1367](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1367)) ([3012dba](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3012dbabcd66b5e579ed9d954a13ce48b3fcaad5))
+* **agents:** refuse to run without a pipeline credential ([#1371](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1371)) ([56f5376](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/56f5376e9d262afe04b98e7e540e9e96ffad7a7b))
+* **agents:** refuse to run without a pipeline credential (closes [#1362](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1362)) ([56f5376](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/56f5376e9d262afe04b98e7e540e9e96ffad7a7b))
+* **agents:** stop the daemon lying about its own health ([#1370](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1370)) ([a680ee1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a680ee1e871ca4366cebbe8bf9de73533b29673c))
+* **agents:** stop the daemon lying about its own health (closes [#1359](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1359), closes [#1352](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1352)) ([a680ee1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a680ee1e871ca4366cebbe8bf9de73533b29673c))
+* **observability:** stop $ai_generation batches 413ing on previous_models ([db9d9e3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/db9d9e3f10a8eeafd6edb7e3f9f5d99302f27be8))
+* **observability:** stop $ai_generation batches 413ing on previous_models (closes [#1310](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1310)) ([#1314](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1314)) ([db9d9e3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/db9d9e3f10a8eeafd6edb7e3f9f5d99302f27be8))
+
 ## [0.142.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.142.0...v0.142.1) (2026-08-10)
 
 
