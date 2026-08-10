@@ -1073,6 +1073,34 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
                        task_name=_current_task_context()[0])
 
 
+def track_avatar_likeness_probe(
+    user_id: Optional[int],
+    post_id: Optional[int],
+    verdict: Optional[dict],
+    **extra,
+) -> None:
+    """Emit one avatar-likeness probe reading (issue #1279).
+
+    The probe checks whether a generated source frame still depicts the user's declared likeness.
+    Telemetry-only by default; the separate ``AVATAR_LIKENESS_VIDEO_HOLD_ENABLED`` flag controls whether
+    a failed probe may hold the video. Every probe is emitted, including unchecked ones, so false
+    positive/negative rates can be measured before any hold is enabled.
+    """
+    verdict = dict(verdict or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="avatar_likeness_probe",
+        properties={
+            "user_id": user_id,
+            "post_id": post_id,
+            "present": verdict.get("present"),
+            "checked": verdict.get("checked"),
+            "reason": verdict.get("reason"),
+            **extra,
+        },
+    )
+
+
 def _rollup_field(user_id: Optional[int], feature: Optional[str], model_tier: Optional[str]) -> str:
     return f"{user_id if user_id is not None else ''}|{feature or FEATURE_SYSTEM}|{model_tier or ''}"
 

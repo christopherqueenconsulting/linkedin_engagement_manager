@@ -149,6 +149,8 @@ from cqc_lem.utilities.env_constants import (
     AI_DISCLOSURE_ENABLED,
     AI_DISCLOSURE_TEXT,
     API_URL_FINAL,
+    AVATAR_LIKENESS_PROBE_ENABLED,
+    AVATAR_LIKENESS_VIDEO_HOLD_ENABLED,
     DEFAULT_IMAGE_RATIO,
     DEFAULT_VIDEO_RATIO,
     PREMIUM_TOP_VIDEO_CREDITS,
@@ -864,6 +866,36 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     return post_text
 
 
+def _check_avatar_likeness(image_path: str, avatar: dict,
+                           user_id: Optional[int] = None,
+                           post_id: Optional[int] = None) -> None:
+    """Telemetry-only likeness probe on the stored source frame (issue #1279).
+
+    Runs after the avatar source frame renders and before the video model sees it. The probe is
+    telemetry-only by default; ``AVATAR_LIKENESS_VIDEO_HOLD_ENABLED`` makes a failed probe drop the
+    AI video to the Pexels fallback. Every result is emitted to PostHog via
+    ``track_avatar_likeness_probe`` so the false-positive rate can be measured before any hold is
+    turned on.
+    """
+    if not AVATAR_LIKENESS_PROBE_ENABLED:
+        return
+
+    from cqc_lem.utilities.avatar.likeness_probe import probe_avatar_likeness
+    from cqc_lem.utilities.observability import track_avatar_likeness_probe
+
+    verdict = probe_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
+    track_avatar_likeness_probe(user_id, post_id, verdict)
+    if AVATAR_LIKENESS_VIDEO_HOLD_ENABLED and verdict.get("checked") and verdict.get("present") is False:
+        log_warning(
+            "Avatar likeness probe did not confirm the source frame — dropping to stock fallback",
+            user_id=user_id,
+            post_id=post_id,
+            action_type="avatar_likeness_probe",
+            reason=verdict.get("reason"),
+        )
+        raise RuntimeError("Avatar likeness probe declined the source frame")
+
+
 def _post_missing_required_asset(post_id: int, post_type, video_url) -> bool:
     """True when a video post has no video or a carousel post has no slides — used to
     hold such posts PENDING instead of approving them to publish with no media.
@@ -979,6 +1011,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
+                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
                                           user_id=user_id, post_id=post_id)
             else:
@@ -995,6 +1028,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
+                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
             else:
                 from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
                 image_path = render_image_from_prompt(image_prompt, ratio=source_frame_ratio,

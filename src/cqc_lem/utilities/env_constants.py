@@ -133,6 +133,17 @@ CAROUSEL_IMAGE_QUERY_LLM = isTrue(get_constant_from_env('CAROUSEL_IMAGE_QUERY_LL
 # inference money but no training credit, so without it "Regenerate" is an unbounded spend.
 AVATAR_SAMPLE_REGEN_MAX = int(get_constant_from_env('AVATAR_SAMPLE_REGEN_MAX', default_value='3'))
 
+# --- Avatar likeness probe on video source frames (issue #1279) ---
+# Telemetry-only by default: a cheap lem-vision check that the generated source frame still
+# depicts the user's declared likeness. The hold flag is OFF by default because a false positive
+# would block a user's own video posts; enable only after the telemetry proves the probe reliable.
+AVATAR_LIKENESS_PROBE_ENABLED = isTrue(
+    get_constant_from_env('AVATAR_LIKENESS_PROBE_ENABLED', default_value='True'))
+AVATAR_LIKENESS_VIDEO_HOLD_ENABLED = isTrue(
+    get_constant_from_env('AVATAR_LIKENESS_VIDEO_HOLD_ENABLED', default_value='False'))
+AVATAR_LIKENESS_PROBE_MODEL = get_constant_from_env(
+    'AVATAR_LIKENESS_PROBE_MODEL', default_value='lem-vision')
+
 # Inline feed reactions. Back ON: the #816 stand-down is lifted.
 #
 # The real break was never the reaction anchors — it was the card walk (#901): `Comment` lost its

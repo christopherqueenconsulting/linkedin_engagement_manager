@@ -282,7 +282,29 @@ trained on a better photo set, which costs a training credit and changes nothing
 
 ---
 
-## 5. Product decisions — **signed off 2026-07-25 (`1A 2A 3A 4A`)**
+## 5. Video source-frame likeness probe (issue #1279)
+
+The avatar path renders a source frame, then a video model animates it. The video model can distort
+or drop the likeness even when the source frame was correct, so #1279 adds a deterministic probe
+that runs on the **stored source frame** before the video model sees it.
+
+- **ONE place:** `utilities/avatar/likeness_probe.probe_avatar_likeness` is the check;
+  `_check_avatar_likeness` in `run_content_plan.py` is the only caller that can act on it.
+- **Policy-aligned:** the probe asks only about the user's **self-declared** likeness attributes
+  (`gender_presentation` + `age_band` → the canonical subject clause). It never infers gender, age,
+  or identity from the image itself, and an empty subject clause means there is nothing to verify.
+- **Telemetry-only by default:** `AVATAR_LIKENESS_PROBE_ENABLED=true` emits a `avatar_likeness_probe`
+  PostHog event on every avatar-driven video generation. The hold flag
+  `AVATAR_LIKENESS_VIDEO_HOLD_ENABLED` defaults to **false** because a false positive would block a
+  user's own video posts. Turn it on only after the telemetry shows the probe is reliable.
+- **Fails open:** a vision outage, an unreadable image, or an empty declared likeness returns
+  `checked=False`; the video still renders. Only a checked, negative verdict can trigger the hold.
+- **Escalation path:** if the probe disagrees with human review, disable the hold flag and inspect
+  the `avatar_likeness_probe` event (`present`, `checked`, `reason`) for that `post_id`.
+
+---
+
+## 6. Product decisions — **signed off 2026-07-25 (`1A 2A 3A 4A`)**
 
 1. **Audio policy for audio-capable video models** → **A. Ambience only, speech explicitly banned.**
    The prompt states the user's language *and* forbids spoken dialogue/voiceover. Native audio is
