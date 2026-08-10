@@ -1,0 +1,23 @@
+[Unit]
+Description=Mint a GitHub App installation token for the agent pipeline (root holds the key)
+Documentation=https://github.com/christopherqueenconsulting/linkedin_engagement_manager/blob/main/docs/contribution-security.md
+
+[Service]
+Type=oneshot
+User=root
+
+# The whole point of this unit: the App private key is root-owned in /etc/lem and the pipeline
+# runner never reads it. Agent runs execute as the runner's uid with --dangerously-skip-permissions,
+# so anything that uid can read is reachable from a prompt-injected run. Root mints; `lem` consumes
+# a token that expires in ~1h.
+Environment=GH_APP_KEY=/etc/lem/github-app.pem
+Environment=BASE=/home/lem/agent-pipeline
+Environment=LEM_RUNNER_USER=lem
+EnvironmentFile=/etc/lem/github-app.env
+
+ExecStart=/bin/bash -c '. /home/lem/agent-pipeline/lib/gh_app_token.sh && gh_app_mint_token >/dev/null'
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/lem/agent-pipeline/state

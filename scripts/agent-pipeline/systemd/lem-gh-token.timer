@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the agent pipeline's GitHub App token before it expires
+
+[Timer]
+# Installation tokens last ~60 min; refresh at 45 so the runner never sees a gap, and once at boot
+# so a restarted box has a token before the first tick fires.
+OnBootSec=30s
+OnUnitActiveSec=45min
+AccuracySec=1min
+Unit=lem-gh-token.service
+
+[Install]
+WantedBy=timers.target
