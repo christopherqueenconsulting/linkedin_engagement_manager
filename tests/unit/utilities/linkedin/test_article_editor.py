@@ -653,6 +653,42 @@ class TestFillArticleEditor:
         assert len(initial_publish) == 1
         assert initial_publish[0][1] is False
 
+    def test_publish_reresolved_after_next_still_warns(self, monkeypatch):
+        """A Publish miss in the dialog Next opens is selector rot and must still WARN.
+
+        This is the other half of the #1147 suppression: silencing the editor-screen read is
+        only safe while the post-Next read keeps `warn_on_miss=True`. Without this assertion a
+        refactor could route the re-resolve through `find_article_editor_elements` and lose the
+        only drift signal Publish has.
+        """
+        captured = []
+        title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
+        body = FakeElement(tag="div", attrs={"role": "textbox"})
+        nxt = FakeElement(tag="button")
+
+        def patched_resolve(driver, wait, step, locators, *, user_id=None, visible_only=True,
+                            warn_on_miss=True):
+            captured.append((step, warn_on_miss))
+            if step == ae.STEP_TITLE:
+                return ae.ResolvedElement(step=ae.STEP_TITLE, element=title,
+                                          route=ae.ROUTE_TITLE_PLACEHOLDER, enabled=True)
+            if step == ae.STEP_BODY:
+                return ae.ResolvedElement(step=ae.STEP_BODY, element=body,
+                                          route=ae.ROUTE_BODY_ROLE, enabled=True)
+            if step == ae.STEP_NEXT:
+                return ae.ResolvedElement(step=ae.STEP_NEXT, element=nxt,
+                                          route=ae.ROUTE_NEXT_TEXT, enabled=True)
+            return ae.ResolvedElement(step=ae.STEP_PUBLISH)
+
+        monkeypatch.setattr(ae, "resolve_article_editor_step", patched_resolve)
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+        url, failed = ae.fill_article_editor(FakeDriver(), MagicMock(), "title", "body")
+        assert url is None
+        assert failed == ae.STEP_PUBLISH
+        publish_calls = [call for call in captured if call[0] == ae.STEP_PUBLISH]
+        # First read is the editor screen (silent), second is post-Next (must warn).
+        assert [call[1] for call in publish_calls] == [False, True]
+
 
 class TestTwoScreenGrading:
     """The editor is two screens (#804, live-validated 2026-07-31).
