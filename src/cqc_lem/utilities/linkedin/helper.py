@@ -47,6 +47,7 @@ from cqc_lem.utilities.linkedin.rate_limit import (
 )
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.profile_skills_window import record_profile_skills_change
 from cqc_lem.utilities.selenium_util import (
     get_element_wait_retry,
     get_visible_element_wait_retry,
@@ -812,6 +813,13 @@ def get_my_profile(driver, wait, user_email: str, user_password: str, user_id: O
             # Add profile to DB for faster future retrieval
             if add_linkedin_profile(profile, user_id=user_id):
                 log_info(f"Profile saved to DB: {profile.full_name}")
+                # Issue #1075: detect top-5 skill reorder/additions after a fresh scrape and open
+                # the re-index window so generated content echoes the new keywords.
+                if user_id is not None:
+                    try:
+                        record_profile_skills_change(user_id, profile)
+                    except Exception as e:
+                        log_debug("Could not record profile-skills change", exc=e, user_id=user_id)
             else:
                 # DEBUG: add_linkedin_profile logs the write failure where it happens, at ERROR.
                 # Warn where you detect, not where you notice (issue #1038).

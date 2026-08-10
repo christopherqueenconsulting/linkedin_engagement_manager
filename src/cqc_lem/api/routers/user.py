@@ -40,6 +40,7 @@ from cqc_lem.api.models import (
     error_responses,
 )
 from cqc_lem.app.engagement.posting import update_stale_profile
+from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY,
     METHOD_TOTP,
@@ -187,6 +188,7 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
+from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.linkedin.login_status import get_login_status
 from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -1730,6 +1732,31 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
     if not updated:
         raise HTTPException(status_code=500, detail="Could not update preferences")
     return ResponseModel(status_code=200, detail="Preferences updated")
+
+
+@router.get("/linkedin-profile-skills")
+def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel:
+    """Return the cached profile's top-5 skills and their overlap with declared focus topics.
+
+    Read-only and best-effort: a missing or unparseable profile returns an empty list, never an
+    error, so the Settings page always renders.
+    """
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    try:
+        profile = load_profile_for_user(user_id)
+    except Exception:
+        profile = None
+    skills = profile_niche_anchors(profile) if profile else []
+    prefs = get_engagement_preferences(user_id)
+    focus = [t.strip().lower() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
+    adopted = [s for s in skills if s.strip().lower() in focus]
+    return ResponseModel(status_code=200, detail={
+        "skills": skills,
+        "adopted": adopted,
+        "focus_topics": prefs.get("focus_topics") or [],
+    })
 
 
 @router.get("/engagement-preferences")

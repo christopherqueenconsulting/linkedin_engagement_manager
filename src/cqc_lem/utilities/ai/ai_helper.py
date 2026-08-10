@@ -71,6 +71,7 @@ from cqc_lem.utilities.linkedin_formatter import (
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
+from cqc_lem.utilities.profile_skills_window import profile_skills_directive as _profile_skills_directive
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 
 # Load .env file
@@ -474,6 +475,7 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
                 {user_comment}
                 {_intention_directive(prefs)}
                 {_style_directive(prefs)}
+                {_profile_skills_directive(user_id)}
                 {research_block}
 
                 Only provide the final comment once it perfectly reflects the LinkedIn user’s style
@@ -974,7 +976,7 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
 
 
 def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict = None,
-                          profile_synthesis: str = None):
+                          profile_synthesis: str = None, user_id: int = None):
     """The author's own FIRST comment on their post, to seed a discussion thread (threads drive
     reach). The model picks whatever fits the post — an open question to the audience OR a short
     behind-the-scenes insight/context the post didn't cover — and always invites replies. No
@@ -994,7 +996,8 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
     user_prompt = {
         "role": "user",
         "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
-                   f"My post:\n<content>{post_content}</content>\n{_intention_directive(prefs)}{_style_directive(prefs)}",
+                   f"My post:\n<content>{post_content}</content>\n{_intention_directive(prefs)}{_style_directive(prefs)}"
+                   f"{_profile_skills_directive(user_id)}"
     }
     temperature = round(random.uniform(0.5, 0.7), 2)
 
@@ -1051,7 +1054,8 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
         "role": "user",
         "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
                    f"My post (published earlier today):\n<content>{post_content}</content>\n"
-                   f"{story_directive or ''}{_intention_directive(prefs)}{_style_directive(prefs)}",
+                   f"{story_directive or ''}{_intention_directive(prefs)}{_style_directive(prefs)}"
+                   f"{_profile_skills_directive(user_id)}",
     }
     temperature = round(random.uniform(0.5, 0.7), 2)
 
@@ -1076,7 +1080,8 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
-                          prefs: dict = None, profile_synthesis: str = None) -> "str | None":
+                          prefs: dict = None, profile_synthesis: str = None,
+                          user_id: int = None) -> "str | None":
     """Reply to a commenter on the AUTHOR's own post so the thread KEEPS GOING: acknowledge their
     specific point, add one useful thought, and END with a genuine, easy follow-up question directed
     back to them. First-hour thread depth is the top 2026 reach signal. Short.
@@ -1091,7 +1096,8 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
     }
     user_prompt = {"role": "user", "content":
         f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n\nMy post:\n{post_content}\n\n"
-        f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
+        f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"
+        f"{_profile_skills_directive(user_id)}"}
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
@@ -1111,7 +1117,8 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
 
 def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile",
                                     our_comment: str = None, post_content: str = None,
-                                    prefs: dict = None, profile_synthesis: str = None) -> "str | None":
+                                    prefs: dict = None, profile_synthesis: str = None,
+                                    user_id: int = None) -> "str | None":
     """Reply to someone who replied to OUR comment on SOMEONE ELSE'S post (issue #478). Unlike
     generate_thread_reply, we are NOT the post author here — we're a guest in their thread, so the
     prompt must not speak as if we own the post. Acknowledge their specific point, add one useful
@@ -1132,7 +1139,8 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
         ctx += f"My earlier comment:\n{our_comment}\n\n"
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
-        f"Their reply to me:\n{their_reply}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
+        f"Their reply to me:\n{their_reply}\n{_intention_directive(prefs)}{_style_directive(prefs)}"
+        f"{_profile_skills_directive(user_id)}"}
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
@@ -1879,7 +1887,8 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
                                         prefs: dict = None, profile_synthesis: str = None,
                                         blueprint: dict = None, lead_magnet_cta: str = None,
                                         post_id: int = None, history_directive: str = None,
-                                        story_directive: str = None, content_mix: str = None):
+                                        story_directive: str = None, content_mix: str = None,
+                                        user_id: int = None):
     """Generate a thought leadership post based on user's expertise and industry.
     Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
     """
@@ -1918,6 +1927,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     prompt += _subject_anchor_line(trends)
 
     prompt += _alignment_directive(prefs, lead_magnet_cta, content_mix)
+    prompt += _profile_skills_directive(user_id)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -2105,7 +2115,8 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
                                    prefs: dict = None, profile_synthesis: str = None,
                                    blueprint: dict = None, lead_magnet_cta: str = None,
                                    post_id: int = None, history_directive: str = None,
-                                   story_directive: str = None, content_mix: str = None):
+                                   story_directive: str = None, content_mix: str = None,
+                                   user_id: int = None):
     """Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=3,
@@ -2143,6 +2154,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     """
 
     prompt += _alignment_directive(prefs, lead_magnet_cta, content_mix)
+    prompt += _profile_skills_directive(user_id)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -2304,7 +2316,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
                                     prefs: dict = None, profile_synthesis: str = None,
                                     blueprint: dict = None, lead_magnet_cta: str = None,
                                     post_id: int = None, history_directive: str = None,
-                                    story_directive: str = None, content_mix: str = None):
+                                    story_directive: str = None, content_mix: str = None,
+                                    user_id: int = None):
     """Generate a post sharing a personal or professional story, based on the user's profile.
     """
     # Pull from the user's recent milestones, achievements, or challenges
@@ -2346,6 +2359,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
         """
 
     prompt += _alignment_directive(prefs, lead_magnet_cta, content_mix)
+    prompt += _profile_skills_directive(user_id)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -2427,7 +2441,8 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
                                     prefs: dict = None, profile_synthesis: str = None,
                                     blueprint: dict = None, lead_magnet_cta: str = None,
                                     post_id: int = None, history_directive: str = None,
-                                    story_directive: str = None, content_mix: str = None):
+                                    story_directive: str = None, content_mix: str = None,
+                                    user_id: int = None):
     """Generate a question or prompt that encourages engagement from followers.
     """
     # Create a question or engagement prompt related to the user's field
@@ -2468,6 +2483,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
             """
 
     prompt += _alignment_directive(prefs, lead_magnet_cta, content_mix)
+    prompt += _profile_skills_directive(user_id)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)

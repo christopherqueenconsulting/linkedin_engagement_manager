@@ -18,10 +18,21 @@ This playbook maps those items onto LEM (workstream 1), gives the profile update
 | Issue | What | Why it exists |
 |---|---|---|
 | [#1074](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1074) | Occasion/milestone post drafts, phased. Phase 1: `occasion_milestone` archetype family + `posts.manual_publish` flag — LEM drafts, user publishes natively so the post carries the occasion entity (it has **no API entity**; `poster.py` is REST-only). Phase 2 (deferred): Selenium composer walk. | Video item 1. Phase 2 deferred: high SDUI drift risk for a ~1/month action that's cheap by hand. |
-| [#1075](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1075) | Skills↔keyword alignment first-class: skills-change detection on re-scrape, ~14-day "re-index window" directive weaving top-5 skill keywords into generated content, SPA overlap panel with one-click "adopt skills as focus topics". Builds on the existing fallback seam `profile_niche_anchors` (`content_alignment.py:591`). | Video item 4, automated for every future profile update. |
+| [#1075](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1075) **shipped** | Skills↔keyword alignment first-class: skills-change detection on re-scrape, ~14-day "re-index window" directive weaving top-5 skill keywords into generated content, SPA overlap panel with one-click "adopt skills as focus topics". Builds on the existing fallback seam `profile_niche_anchors` (`content_alignment.py:591`). | Video item 4, automated for every future profile update. |
 | [#1076](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1076) **shipped** | `POST /user/linkedin-profile/refresh` — on-demand profile re-scrape + `profile_synthesis` regen. Settings → Setup → "Refresh my profile data"; one press per user per day (Redis window, fails open), queues `update_stale_profile(force_refresh=True)` on `se_outreach`. | Makes "edit profile → LEM reacts" immediate; items 2–4 hinge on LEM seeing the new skills. |
 
 Until #1074 ships, occasion posts are manual (see WS2). A profile edit now reaches LEM as soon as the owner presses **Refresh my profile data** (#1076); the ≤7-day `auto_refresh_profile_syntheses` beat remains the floor for anyone who does not.
+
+### How the keyword echo runs (#1075, shipped)
+
+Video item 4 is automated end to end — the ONE place is `utilities/profile_skills_window.py`.
+
+1. **Skills-change detection.** Every successful profile re-scrape (`get_my_profile`, and the forced refresh inside `update_stale_profile`) compares the current top-5 skills to the `profiles.last_recorded_skills` snapshot. A changed order or set records the diff. The FIRST snapshot is not a change — a brand-new account never opens a window — and a scrape that returned NO skills is an undetectable diff, so it leaves the snapshot alone rather than wiping the baseline.
+2. **14-day re-index window.** A detected change writes the top-5 keywords to Redis with a 14-day TTL (persisted, so a task retry never re-rolls the window and a restart never re-opens one).
+3. **The directive.** `profile_skills_directive(user_id)` is the same shape as `focus_directive` (`content_alignment.py`) — soft subject steering, appended where the post/comment prompts already append focus steering: the four auto post archetypes that carry `user_id` (thought leadership, industry news, personal story, engagement prompt), feed comments, seed and second-wave comments, thread replies, and comment-reply follow-ups. It layers on; it never overrides the subject, and the existing gates (topic-DNA on-niche, slop lint, similarity) still decide what ships.
+4. **Reconciliation panel.** Settings → Content renders top-5 profile skills against `focus_topics`, adopted ones green, with one click to merge the rest in via the existing `PUT /user/engagement-preferences` (nothing is ever removed). It reads `GET /user/linkedin-profile-skills`, which is best-effort: an unreadable profile renders no panel rather than an error.
+
+Failure posture throughout: Redis unavailable = **no window**, never a block, logged DEBUG — this is steering, and steering that fails must not stop content from being generated.
 
 ---
 

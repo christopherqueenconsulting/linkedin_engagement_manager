@@ -1,4 +1,8 @@
+import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import Toggle from '../../../components/Toggle'
+import api from '../../../api/client'
+import { useAuth } from '../../../contexts/AuthContext'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { useUserPrefs } from './UserPrefsContext'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
@@ -100,6 +104,73 @@ export default function ContentSection() {
           </Field>
         </div>
       </Advanced>
+      <ProfileSkillsPanel />
     </SectionCard>
+  )
+}
+
+function ProfileSkillsPanel() {
+  const { sessionToken } = useAuth()
+  const { eng, setEng, save } = useEngagementPrefs()
+  const [pendingSave, setPendingSave] = useState(false)
+  const { data, isLoading } = useQuery({
+    queryKey: ['linkedin-profile-skills', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/linkedin-profile-skills?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as { skills: string[]; adopted: string[]; focus_topics: string[] }),
+    enabled: !!sessionToken,
+    staleTime: 5 * 60 * 1000,
+  })
+  // Save from an effect, NOT from the click handler: `save()` sends whatever `eng` the provider
+  // last rendered, so it has to run on the render that already carries the merged focus topics.
+  useEffect(() => {
+    if (!pendingSave) return
+    setPendingSave(false)
+    void save()
+  }, [pendingSave, save])
+  if (!eng || isLoading || !data || data.skills.length === 0) return null
+
+  // Overlap is judged against the LIVE (possibly unsaved) focus topics, not the server's snapshot —
+  // the skills query is cached for 5 minutes, so reading `data.adopted` would leave the panel
+  // advertising "adopt" for skills the user just adopted.
+  const focus = (eng.focus_topics || []).map((t) => t.trim().toLowerCase())
+  const isAdopted = (skill: string) => focus.includes(skill.trim().toLowerCase())
+  const unadopted = data.skills.filter((s) => !isAdopted(s))
+  const adopt = () => {
+    setEng({ focus_topics: [...(eng.focus_topics || []), ...unadopted] })
+    setPendingSave(true)
+  }
+
+  return (
+    <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+      <h4 className="text-sm font-semibold text-blue-900">Profile skills</h4>
+      <p className="text-xs text-blue-800 mt-1">
+        Top skills from your LinkedIn profile:
+        {' '}
+        {data.skills.map((s) => (
+          <span
+            key={s}
+            className={`inline-block mr-1 mb-1 px-2 py-0.5 rounded-full text-xs ${
+              isAdopted(s) ? 'bg-green-100 text-green-800' : 'bg-white text-blue-800 border border-blue-200'
+            }`}
+          >
+            {s}
+          </span>
+        ))}
+      </p>
+      {unadopted.length > 0 && (
+        <button
+          type="button"
+          onClick={adopt}
+          className="mt-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-md"
+        >
+          Adopt {unadopted.length} skill{unadopted.length === 1 ? '' : 's'} as focus topics
+        </button>
+      )}
+      {unadopted.length === 0 && (
+        <p className="mt-2 text-xs text-green-700">All top profile skills already match your focus topics.</p>
+      )}
+    </div>
   )
 }

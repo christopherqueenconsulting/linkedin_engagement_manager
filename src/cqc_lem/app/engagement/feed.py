@@ -2768,7 +2768,8 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         my_profile = load_profile_for_user(user_id)  # cached DB read — no scrape/login
         with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
             seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id),
-                                         profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile))
+                                         profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile),
+                                         user_id=user_id)
         # The generated comment never contains links (the prompt forbids them); the link held back at
         # publish time is appended deterministically here. A link on its own still ships when the
         # generator came back empty — losing the link entirely would be the worse failure.

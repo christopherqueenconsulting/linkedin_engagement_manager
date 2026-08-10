@@ -24,7 +24,7 @@ def _run(stories=None, prefs=None, generated="generated post", post_id=77):
 
     def gen(user_profile, stage, prefs=None, profile_synthesis=None, blueprint=None,
             lead_magnet_cta=None, post_id=None, history_directive=None, story_directive=None,
-            content_mix=None):
+            content_mix=None, user_id=None):
         captured["story_directive"] = story_directive
         return generated
 
