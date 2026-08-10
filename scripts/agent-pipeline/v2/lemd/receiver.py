@@ -49,6 +49,30 @@ LOG = logging.getLogger("lemd.receiver")
 #: Longest caller-controlled fragment a single log line will carry.
 LOG_VALUE_MAX = 200
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def configure_logging(stream: Any = None) -> None:
+    """Attach the one handler that makes this process's log lines visible.
+
+    A stdlib logger with no handler configured is not "logging to stderr" — `logging.lastResort`
+    emits WARNING and above and DROPS every INFO record, unformatted. Without this call the
+    receiver would run under systemd with "listening", "stored delivery" and every access line
+    silently discarded into a log file that only ever showed rejections: an audit trail that
+    disappears the moment things are going well. Called from `main()` only, so importing this
+    module never reconfigures the logging of a host process that has its own.
+
+    Configured on the `lemd` parent, not on this module's logger, so anything else in the package
+    inherits it; `propagate` is off because this process owns its output and a root handler
+    installed by an embedder would otherwise duplicate every line.
+    """
+    handler = logging.StreamHandler(stream) if stream is not None else logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    package_logger = logging.getLogger("lemd")
+    package_logger.handlers[:] = [handler]
+    package_logger.setLevel(logging.INFO)
+    package_logger.propagate = False
+
 
 def loggable(value: Any) -> str:
     """Flatten a caller-controlled value into something safe to put in a log line.
@@ -327,6 +351,16 @@ def serve(
         host, port = "0.0.0.0", ports.pop()  # noqa: S104 - see the firewall note above
     else:
         host, port = binds[0]
+        if len(binds) > 1:
+            # One socket serves one port, so addresses on a DIFFERENT port are dropped here — the
+            # very bug above, reachable again by pointing LEM_WEBHOOK_BIND at a non-default port.
+            # Say so loudly: a silently-unbound loopback reads as a dead receiver to the watchdog.
+            LOG.warning(
+                "binding %s:%s only — NOT listening on %s (a single socket serves one port)",
+                host,
+                port,
+                ", ".join(f"{h}:{p}" for h, p in binds[1:]),
+            )
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.secret = secret  # type: ignore[attr-defined]
     httpd.db_path = str(db_path)  # type: ignore[attr-defined]
@@ -339,6 +373,8 @@ def main() -> None:
     import argparse
 
     from .config import _str, load
+
+    configure_logging()
 
     ap = argparse.ArgumentParser(description="LEM agent-pipeline v2 webhook receiver")
     ap.add_argument("--bind", action="append", default=[], metavar="HOST:PORT")

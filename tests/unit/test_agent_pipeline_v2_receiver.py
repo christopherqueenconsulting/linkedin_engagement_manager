@@ -9,7 +9,9 @@ then drops looks healthy to every monitor while starving the pipeline.
 from __future__ import annotations
 
 import hmac
+import io
 import json
+import logging
 import sys
 import threading
 import urllib.error
@@ -271,10 +273,32 @@ def test_multiple_binds_on_one_port_listen_everywhere(tmp_path):
     reported the receiver dead while it was serving the tunnel perfectly.
     """
     httpd = receiver.serve(
-        binds=[("127.0.0.1", 0)], db_path=tmp_path / "q.db", secret=SECRET
+        binds=[("127.0.0.1", 0), ("127.0.0.2", 0)], db_path=tmp_path / "q.db", secret=SECRET
     )
     try:
-        assert httpd.server_address[0] == "127.0.0.1"  # single bind is unchanged
+        assert httpd.server_address[0] == "0.0.0.0"
+    finally:
+        httpd.server_close()
+
+
+def test_binds_on_different_ports_say_which_one_was_dropped(tmp_path, caplog):
+    """One socket serves one port, so the fallback still drops addresses — it must not do it quietly.
+
+    `LEM_WEBHOOK_BIND` carries a port, so pointing it at anything but 8420 puts the deployment back
+    on binds[0] with loopback unbound, and an unbound loopback reads to the watchdog as a receiver
+    that died.
+    """
+    with caplog.at_level("WARNING", logger="lemd.receiver"):
+        httpd = receiver.serve(
+            binds=[("127.0.0.1", 0), ("127.0.0.1", 9), ("127.0.0.1", 10)],
+            db_path=tmp_path / "q.db",
+            secret=SECRET,
+        )
+    try:
+        assert httpd.server_address[0] == "127.0.0.1"
+        (record,) = [r for r in caplog.records if "NOT listening" in r.getMessage()]
+        assert "127.0.0.1:9" in record.getMessage()
+        assert "127.0.0.1:10" in record.getMessage()
     finally:
         httpd.server_close()
 
@@ -322,3 +346,58 @@ def test_the_reject_path_puts_the_delivery_header_through_loggable(server, caplo
     (record,) = [r for r in caplog.records if "unparseable payload" in r.getMessage()]
     assert "...(truncated)" in record.getMessage()
     assert "d" * (receiver.LOG_VALUE_MAX + 1) not in record.getMessage()
+
+
+# ---------------------------------------------------------------- log configuration
+
+
+@pytest.fixture()
+def restore_package_logger():
+    """Give back the `lemd` logger exactly as found — configure_logging replaces its handlers."""
+    logger = logging.getLogger("lemd")
+    saved = (logger.handlers[:], logger.level, logger.propagate)
+    yield logger
+    logger.handlers[:], logger.level, logger.propagate = saved
+
+
+def test_configure_logging_makes_info_records_visible(restore_package_logger):
+    """An unconfigured stdlib logger drops INFO entirely — the receiver's whole audit trail.
+
+    `logging.lastResort` only prints WARNING and above, so without this call the log file would
+    have shown rejections and nothing else: no "listening", no stored deliveries, no access lines.
+    """
+    stream = io.StringIO()
+    receiver.configure_logging(stream)
+    receiver.LOG.info("stored pull_request/opened delivery=d1")
+    written = stream.getvalue()
+    assert "stored pull_request/opened delivery=d1" in written
+    assert "INFO lemd.receiver" in written  # level and source, not a bare message
+
+
+def test_configure_logging_does_not_double_log_through_the_root_logger(restore_package_logger):
+    """Two handlers on one record is how a log file doubles in size for no extra information."""
+    stream = io.StringIO()
+    receiver.configure_logging(stream)
+    receiver.configure_logging(stream)
+    receiver.LOG.warning("once")
+    assert stream.getvalue().count("once") == 1
+    assert logging.getLogger("lemd").propagate is False
+
+
+def test_main_configures_logging_before_it_serves(monkeypatch, tmp_path):
+    """The wiring, not the function: an uncalled configure_logging logs exactly as little as none."""
+    calls: list[str] = []
+
+    class _Stop(Exception):
+        pass
+
+    def _serve(**_kwargs):
+        calls.append("served")
+        raise _Stop
+
+    monkeypatch.setattr(receiver, "configure_logging", lambda *a, **k: calls.append("configured"))
+    monkeypatch.setattr(receiver, "serve", _serve)
+    monkeypatch.setattr(sys, "argv", ["receiver", "--db", str(tmp_path / "q.db")])
+    with pytest.raises(_Stop):
+        receiver.main()
+    assert calls == ["configured", "served"]
