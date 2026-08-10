@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.142.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.142.0...v0.142.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **agents:** record which lane a v2 run actually used ([#1353](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1353)) ([d1b1bb6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d1b1bb6c770f3d8d4e19f6264387c915b23d9f28))
+* **auth:** serve the API under its canonical module name so cookie auth resolves ([e512eaf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e512eafa776bbf44bf692b4ddf5fb569e6789755))
+* **auth:** serve the API under its canonical module name so cookie auth resolves (closes [#1354](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1354)) ([#1356](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1356)) ([e512eaf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e512eafa776bbf44bf692b4ddf5fb569e6789755))
+
 ## [0.142.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.141.0...v0.142.0) (2026-08-10)
 
 
