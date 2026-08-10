@@ -7,6 +7,7 @@ fail on a test that names it rather than on a vague invariant.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -18,7 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 _V2 = REPO / "scripts" / "agent-pipeline" / "v2"
 sys.path.insert(0, str(_V2))
 
-from lemd import db  # noqa: E402
+from lemd import daemon, db, observe  # noqa: E402
 from lemd.config import load  # noqa: E402
 
 
@@ -189,3 +190,96 @@ def test_heartbeat_tempfile_does_not_replace_the_suffix(tmp_path):
     capacity.heartbeat(p, now=5)
     assert p.read_text() == "5"
     assert not (tmp_path / "lemd.new").exists()
+
+
+# ---------------------------------------------------------------- #1348: the ledger lied
+
+def _ledger(base) -> list[dict]:
+    """Every row the daemon has written to its decision ledger."""
+    path = base / "logs" / "lemd-decisions.ndjson"
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def _acting_daemon(tmp_path, extra: str = ""):
+    """A daemon that is allowed to act (not shadow), on a throwaway queue."""
+    (tmp_path / "config.env").write_text(
+        f"LEMD_DB={tmp_path}/queue.db\nLEMD_SHADOW=0\n"
+        "SLUG=christopherqueenconsulting/linkedin_engagement_manager\n" + extra
+    )
+    return daemon.Daemon(load(tmp_path))
+
+
+def test_a_held_start_is_never_recorded_as_a_dispatch(tmp_path):
+    """The defect: `_emit` logged `decide`'s INTENT, and `act`'s gates run afterwards.
+
+    Under `LEMD_HOLD_STARTS=1` with a 48-issue backlog the ledger gained ~40 `action=dispatch`
+    rows a pass while the pipeline spawned nothing, for as long as the hold was set. Any
+    dispatch-rate or success-rate figure computed from the ledger was inflated by the entire
+    backlog, and the one true explanation appeared only as a single human-readable log line.
+    """
+    dm = _acting_daemon(tmp_path, extra="LEMD_HOLD_STARTS=1\n")
+    for number in (2001, 2002, 2003):
+        i = db.upsert_item(dm.conn, kind="issue", number=number, state=db.STATE_READY)
+        db.upsert_item(dm.conn, kind="issue", number=number, state=db.STATE_READY,
+                       pending_mode="start")
+        assert i
+
+    assert dm.act() == 0
+    rows = _ledger(dm.cfg.base)
+    assert rows, "a refusal must leave evidence, not silence"
+    assert not [r for r in rows if r.get("executed")], "nothing ran, so nothing may read as run"
+    assert {r["number"] for r in rows if r.get("refused_by") == "hold_starts"} == {2001, 2002, 2003}
+    dm.conn.close()
+
+
+def test_a_standing_refusal_is_recorded_once_not_every_pass(tmp_path):
+    """Bounded volume is half the fix.
+
+    A refusal that has not changed is a fact about the gate, not an event. Re-stating it every
+    pass reproduces exactly the noise the once-per-pass hold log line was introduced to remove —
+    only in the file consumers parse.
+    """
+    dm = _acting_daemon(tmp_path, extra="LEMD_HOLD_STARTS=1\n")
+    db.upsert_item(dm.conn, kind="issue", number=2004, state=db.STATE_READY, pending_mode="start")
+
+    dm.act()
+    after_first = len(_ledger(dm.cfg.base))
+    for _ in range(5):
+        dm.act()
+    assert len(_ledger(dm.cfg.base)) == after_first
+    dm.conn.close()
+
+
+def test_an_executed_dispatch_is_marked_executed(tmp_path, monkeypatch):
+    """The other half: a real launch must be distinguishable from an intent."""
+    dm = _acting_daemon(tmp_path)
+    db.upsert_item(dm.conn, kind="pr", number=2005, state=db.STATE_READY,
+                   branch="feature/x", pending_mode="merge")
+    monkeypatch.setattr(dm.sup, "dispatch_gh", lambda **kw: object())
+    monkeypatch.setattr(dm.sup, "v1_slots_busy", lambda: 0)
+
+    assert dm.act() == 1
+    executed = [r for r in _ledger(dm.cfg.base) if r.get("executed")]
+    assert [(r["kind"], r["number"], r["mode"]) for r in executed] == [("pr", 2005, "merge")]
+    assert executed[0]["stage"] == "act"
+    dm.conn.close()
+
+
+def test_observation_rows_are_intent_only(tmp_path):
+    """`stage=observe` is where `action=dispatch` lives, and it is never an execution."""
+    dm = _acting_daemon(tmp_path, extra="LEMD_HOLD_STARTS=1\n")
+    dm._emit(
+        {"kind": "issue", "number": 2006, "state": db.STATE_READY},
+        observe.Snapshot(kind="issue", number=2006, work_exists=False,
+                         labels=frozenset({"agent:ready"})),
+        observe.decide(
+            observe.Snapshot(kind="issue", number=2006, work_exists=False,
+                             labels=frozenset({"agent:ready"})),
+            ttl_ci=1, ttl_review=1, ttl_queue=1, ttl_parked=1),
+        db.STATE_READY,
+    )
+    row = _ledger(dm.cfg.base)[-1]
+    assert (row["action"], row["stage"], row["executed"]) == ("dispatch", "observe", False)
+    dm.conn.close()

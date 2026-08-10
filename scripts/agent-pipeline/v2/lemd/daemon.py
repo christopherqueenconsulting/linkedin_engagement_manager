@@ -54,6 +54,11 @@ class Daemon:
         self._decisions = 0
         self._degraded = False
         self._last_usage_probe = 0.0
+        #: (kind, number) -> the gate that last refused this item, so a standing refusal is
+        #: recorded ONCE rather than on every pass. Under a hold with a 48-issue backlog the
+        #: undeduped form would write ~40 rows a pass for ever, which is the volume problem that
+        #: made the per-item hold log line unreadable in the first place.
+        self._refused: dict[tuple[str, int], str] = {}
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -285,24 +290,64 @@ class Daemon:
 
     def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision,
               persisted: str | None = None) -> None:
-        """One structured line per decision — the shadow phase's entire evidence base."""
+        """One structured line per decision — the shadow phase's entire evidence base.
+
+        `action` here is an INTENT and nothing more. `act()` applies four gates after this runs
+        (the start hold, a draining v1 tick, a full pool, the WIP limit) and any of them can refuse
+        it, so `stage=observe` rows carry `executed: false` unconditionally. Executions are
+        recorded separately by `_emit_act`.
+        """
         payload = {
             "ts": int(time.time()),
             "shadow": self.cfg.shadow,
+            "stage": "observe",
             "kind": row["kind"], "number": row["number"],
             "from_state": row["state"], "to_state": persisted or decision.next_state,
             "intent": decision.next_state,
             "action": decision.action, "mode": decision.mode, "reason": decision.reason,
+            # The field that closes the defect. Without it a consumer counting `action=dispatch`
+            # reads ~40 dispatches a pass off a pipeline that spawned nothing, for as long as the
+            # hold is set — and every dispatch-rate or success-rate figure built on the ledger is
+            # inflated by the whole backlog.
+            "executed": False,
             "wake_in": decision.wake_in, "readable": snap.readable,
             **({"details": decision.details} if decision.details else {}),
         }
         LOG.info("decision %s", json.dumps(payload, separators=(",", ":")))
+        self._write_decision(payload)
+
+    def _emit_act(self, row, mode: str, *, executed: bool, refused_by: str | None = None) -> None:
+        """Record what `act()` actually DID with a decision.
+
+        Executions are written every time and are bounded by the slot cap. Refusals are written
+        once per (item, gate): a standing refusal is a fact about the gate, not an event, and
+        re-stating it every pass is what buries the rows an operator is reading for.
+        """
+        key = (row["kind"], int(row["number"]))
+        if executed:
+            self._refused.pop(key, None)
+        else:
+            if self._refused.get(key) == refused_by:
+                return
+            self._refused[key] = refused_by or "unknown"
+        payload = {
+            "ts": int(time.time()),
+            "shadow": self.cfg.shadow,
+            "stage": "act",
+            "kind": row["kind"], "number": row["number"], "mode": mode,
+            "executed": executed,
+            "refused_by": refused_by,
+        }
+        self._write_decision(payload)
+
+    def _write_decision(self, payload: dict[str, Any]) -> None:
+        """Append one row to the decision ledger. Telemetry must never break the loop."""
         try:
             path = self.cfg.base / "logs" / "lemd-decisions.ndjson"
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a") as fh:
                 fh.write(json.dumps(payload, separators=(",", ":")) + "\n")
-        except OSError as exc:  # telemetry must never break the loop
+        except OSError as exc:
             LOG.warning("could not write decision log: %s", exc)
 
     # ---------------------------------------------------------------- execution
@@ -344,10 +389,13 @@ class Daemon:
                     LOG.info("LEMD_HOLD_STARTS set — holding new starts; merge/park/selfreview "
                              "continue so in-flight PRs still drain")
                 held_by_switch += 1
+                self._emit_act(row, mode, executed=False, refused_by="hold_starts")
                 continue
             if busy and pool == "agent":
+                self._emit_act(row, mode, executed=False, refused_by="v1_busy")
                 continue
             if self.sup.free(pool) <= 0:
+                self._emit_act(row, mode, executed=False, refused_by="pool_full")
                 continue
             if mode == "start" and wip >= self.cfg.max_agents:
                 # v1's gate, ported deliberately: new work never outruns merge throughput. Without
@@ -361,6 +409,7 @@ class Daemon:
                     LOG.info("WIP limit: %s PR(s) in flight >= %s — holding new starts",
                              wip, self.cfg.max_agents)
                 held_by_wip += 1
+                self._emit_act(row, mode, executed=False, refused_by="wip_limit")
                 continue
             # A cheap local read that saves a doomed spawn. It is NOT the authoritative check —
             # `agent_run.sh` re-checks and charges inside the branch flock, so this being a moment
@@ -368,6 +417,7 @@ class Daemon:
             if pool == "agent" and policy.exhausted(self.cfg.base, row["kind"], row["number"], mode):
                 LOG.info("#%s has spent its %s budget — parking instead of dispatching",
                          row["number"], mode)
+                self._emit_act(row, mode, executed=False, refused_by="budget_exhausted")
                 self._park(row, f"{mode}_exhausted")
                 continue
             # The claim is taken AFTER every gate and immediately before the spawn, so an item the
@@ -376,6 +426,7 @@ class Daemon:
             # `_emit` was reporting `decide`'s nominal next state instead of the state persisted.
             # Worth stating, because the obvious reading of that log is a claim storm here.)
             if not db.claim_item(self.conn, row["id"]):
+                self._emit_act(row, mode, executed=False, refused_by="claim_lost")
                 continue
             child = self._launch(row, mode)
             if mode == "start" and child is not None:
@@ -387,7 +438,9 @@ class Daemon:
                 # The claim must not outlive a failed spawn: `claimed` holds the branch through the
                 # partial unique index, and only `startup_recover` would ever release it.
                 db.force_state(self.conn, row["id"], db.STATE_READY, dirty=1)
+                self._emit_act(row, mode, executed=False, refused_by="spawn_failed")
                 continue
+            self._emit_act(row, mode, executed=True)
             launched += 1
         return launched
 
