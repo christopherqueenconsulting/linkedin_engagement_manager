@@ -89,6 +89,7 @@ from cqc_lem.utilities.db import (
     get_connection_requests,
     get_dashboard_counts,
     get_engagement_preferences,
+    get_latest_post_stats,
     get_latest_review_feedback_id,
     get_lead,
     get_lead_signal,
@@ -99,6 +100,7 @@ from cqc_lem.utilities.db import (
     get_post_type,
     get_post_url_from_log_for_user,
     get_post_user_id,
+    get_posted_posts,
     get_posts,
     get_recent_logs,
     get_scheduled_dm_user_id,
@@ -257,6 +259,10 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # GET-only; it returns the registry's own toggle values, and the optional session_token is
 # self-authenticating (an invalid one resolves the "system" identity rather than erroring) — same
 # model as /api/user/linkedin-cookie.
+# /api/brand-showcase is public: it serves the LEM brand account's own published posts and stored
+# engagement counts to the front-page showcase (issue #1299). Read-only, no user data, same shape as
+# /api/faq. It is also gated by a feature flag inside the handler, so the default-off posture keeps
+# the route harmless until the owner enables it.
 # /api/docs, /api/redoc and /api/openapi.json are the docs surface moved in from the FastAPI
 # defaults (issue #1020). They are LEAF entries, not "/api/docs/" subtrees: the non-slash branch
 # below already matches path-segment children, so "/api/docs/oauth2-redirect" is covered while a
@@ -265,7 +271,7 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # move buys is that the admin surface is no longer IN the schema (see _hide_admin_routes_from_schema).
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
-                        "/api/app-info", "/api/faq", "/api/flags",
+                        "/api/app-info", "/api/faq", "/api/flags", "/api/brand-showcase",
                         "/api/extension/", "/api/user/linkedin-cookie",
                         "/api/docs", "/api/redoc", "/api/openapi.json")
 
@@ -1515,6 +1521,116 @@ def faq_endpoint() -> ResponseModel:
                      "updated_at": _utc_iso(e.get("updated_at"))}
                     for e in get_published_faq_entries()],
     })
+
+
+_BRAND_SHOWCASE_LIMIT = 6
+_BRAND_SHOWCASE_WINDOW_SECONDS = 60
+_BRAND_SHOWCASE_CACHE_TTL_SECONDS = 300
+
+
+def _brand_showcase_rate_limit_key(ip: Optional[str]) -> str:
+    return f"brand-showcase:rate:{ip or 'unknown'}"
+
+
+def _brand_showcase_cache_key() -> str:
+    return "brand-showcase:posts"
+
+
+def _brand_showcase_posts(brand_user_id: int) -> List[dict]:
+    """Build the curated list of brand posts with their stored stats.
+
+    Filters to `status='posted'` via `get_posted_posts`, so drafts or errored rows can never
+    reach the public endpoint. Numbers are read straight from `post_stats` and passed through
+    unchanged; the UI displays them exactly as received.
+    """
+    raw_posts = get_posted_posts(brand_user_id)
+    if raw_posts is None:
+        raise RuntimeError("Could not read brand posts")
+
+    posts: List[dict] = []
+    for row in reversed(raw_posts[-_BRAND_SHOWCASE_LIMIT:]):
+        post_id = row.get("id")
+        if not isinstance(post_id, int):
+            continue
+        stats = get_latest_post_stats(brand_user_id, post_id)
+        posts.append({
+            "id": post_id,
+            "content": row.get("content") or "",
+            "post_type": row.get("post_type") or PostType.TEXT.value,
+            "published_at": _utc_iso(row.get("scheduled_time")),
+            "post_url": get_post_url_from_log_for_user(brand_user_id, post_id) or None,
+            "reactions": stats.get("reactions") if stats else None,
+            "comments": stats.get("comments") if stats else None,
+            "reposts": stats.get("reposts") if stats else None,
+            "impressions": stats.get("impressions") if stats else None,
+            "saves": stats.get("saves") if stats else None,
+        })
+    return posts
+
+
+@router.get("/brand-showcase", responses={
+    200: {"description": "Brand posts returned"},
+    503: {"description": "Database unavailable"},
+})
+def brand_showcase_endpoint(request: Request) -> ResponseModel:
+    """Public: real posts and stored engagement counts from the LEM brand account (issue #1299).
+
+    Returns only posts already published by the brand user and only stats already recorded in
+    `post_stats`. A feature flag gates the endpoint so it stays harmless by default; when disabled
+    or when there is nothing to show it returns a 200 with an empty list. Database faults return
+    503, matching the identity-and-sessions posture.
+    """
+    import mysql.connector
+
+    from cqc_lem.utilities.brand_account import brand_user_id
+    from cqc_lem.utilities.flags import BRAND_SHOWCASE, flag_enabled
+    from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+
+    if not flag_enabled(BRAND_SHOWCASE):
+        return ResponseModel(status_code=200, detail={"posts": []})
+
+    client = shared_redis_client()
+    ip = _client_ip(request)
+
+    if client is not None:
+        try:
+            count = int(client.get(_brand_showcase_rate_limit_key(ip)) or 0)
+            if count >= 30:
+                return ResponseModel(status_code=200, detail={"posts": []})
+            pipe = client.pipeline()
+            rate_key = _brand_showcase_rate_limit_key(ip)
+            pipe.incr(rate_key)
+            pipe.expire(rate_key, _BRAND_SHOWCASE_WINDOW_SECONDS)
+            pipe.execute()
+        except Exception as exc:
+            log_debug("Brand showcase rate-limit check skipped", exc=exc)
+
+    if client is not None:
+        try:
+            cached = client.get(_brand_showcase_cache_key())
+            if cached:
+                posts = json.loads(cached)
+                return ResponseModel(status_code=200, detail={"posts": posts})
+        except Exception as exc:
+            log_debug("Brand showcase cache read skipped", exc=exc)
+
+    try:
+        posts = _brand_showcase_posts(brand_user_id())
+    except mysql.connector.Error as exc:
+        log_error("Brand showcase could not read brand posts", exc=exc)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    except Exception as exc:
+        log_error("Brand showcase failed", exc=exc)
+        raise HTTPException(status_code=503, detail="Could not build brand showcase")
+
+    if client is not None:
+        try:
+            client.setex(_brand_showcase_cache_key(), _BRAND_SHOWCASE_CACHE_TTL_SECONDS,
+                         json.dumps(posts, default=str))
+        except Exception as exc:
+            log_debug("Brand showcase cache write skipped", exc=exc)
+
+    return ResponseModel(status_code=200, detail={"posts": posts})
 
 
 @router.post("/shipped/ack")

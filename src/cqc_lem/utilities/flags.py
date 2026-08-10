@@ -73,6 +73,7 @@ FEED_FALLBACK_DEFAULT = "feed-fallback-when-empty-default"
 COST_ROUTING = "cost-routing-enabled"
 POSTHOG_SURVEYS = "posthog-surveys-enabled"
 NEWSLETTER_EDITOR = "newsletter-editor-enabled"
+BRAND_SHOWCASE = "brand-showcase-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -132,6 +133,15 @@ FLAGS: Dict[str, FlagSpec] = {
             description=("Final mechanical LLM edit pass on newsletter drafts (capitalization, grammar, "
                          "punctuation, formatting) before slop-lint review. Adds one lem-medium call per "
                          "draft."),
+        ),
+        FlagSpec(
+            key=BRAND_SHOWCASE,
+            env_var="BRAND_SHOWCASE_ENABLED",
+            default=False,
+            owner="marketing",
+            description=("Public front-page showcase of the LEM brand account's own published posts "
+                         "with their stored engagement counts (issue #1299). OFF by default — it "
+                         "exposes a new public /api route and renders a marketing section."),
         ),
     )
 }
