@@ -335,6 +335,12 @@ litellm_settings:
     port: 6379
   custom_callbacks:
     - /app/.litellm/complexity_router.py
+    # Keeps $ai_generation under PostHog's per-request ceiling (issue #1310). LiteLLM attaches the
+    # full retry history as `previous_models` — measured at 725 KB of a 760 KB event — which
+    # `turn_off_message_logging` below does NOT reach, because it rides in request metadata rather
+    # than standard_logging_object. A 413 on /batch/ drops all 100 events silently, so the money
+    # numbers were a floor. Installs at import; fails open to today's behaviour.
+    - /app/.litellm/posthog_payload_guard.py
   # ── LLM analytics → PostHog (issue #647, docs/llm-analytics.md) ──────────────
   # LiteLLM's native logger (>=1.77.3) emits ONE $ai_generation / $ai_embedding per call with the
   # provider model, tokens, response_cost and latency — the proxy's own accounting, so it needs no
