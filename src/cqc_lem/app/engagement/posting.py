@@ -168,6 +168,12 @@ from cqc_lem.utilities.linkedin.rate_limit import (
     release_run_lock,
 )
 from cqc_lem.utilities.linkedin.session import get_current_profile
+from cqc_lem.utilities.linkedin.sort_evidence import (
+    SORT_CANDIDATE_SCAN_CAP,
+    SORT_CONTROL_OWN_TEXT_MAX,
+    build_sort_control_scan_js,
+    scan_sort_control_candidates,
+)
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
@@ -1327,80 +1333,32 @@ _COMMENT_LIKE_COUNT_JS = (
 
 
 # Reading a candidate's label costs two Selenium round-trips, and the broad tail of the chain can
-# match many nodes on a busy thread. Only the first few per locator are worth checking.
-_SORT_CANDIDATE_SCAN_CAP = 8
+# match many nodes on a busy thread. Only the first few per locator are worth checking — the same
+# number the evidence scan caps at, so a locator walk and the sample describing it stay comparable.
+_SORT_CANDIDATE_SCAN_CAP = SORT_CANDIDATE_SCAN_CAP
 
 # When the sort control cannot be read on a page that DID render comments, capture the
-# sort-control-like candidates so the next locator iteration has fresh evidence. The scan is
-# bounded: interactive-ish elements in the main column, first `_SORT_CANDIDATE_SCAN_CAP` hits.
-# Purely read-only — it never changes the outcome.
+# sort-control-like candidates so the next locator iteration has fresh evidence. The two-pass scan
+# itself lives in `utilities/linkedin/sort_evidence.py` — the home feed loses its own sort control
+# to the same drift (#1270) and ships the same evidence, so there is ONE implementation and two
+# surfaces parameterise it. Read the invariants there; what this module supplies is the comment
+# thread's shape.
 #
-# The root is the MAIN COLUMN, not the comment list: `_COMMENT_SORT_LOCATORS` search the whole
+# The scan ROOT is the main column, not the comment list: `_COMMENT_SORT_LOCATORS` search the whole
 # document and the control renders ABOVE the list, so a scan scoped inside the list would be
 # structurally unable to describe the very element that went missing.
 #
-# TWO passes, because a keyword pass alone cannot see the drift it exists to describe (#1117): the
-# first matches anything whose label still names a sort, and when that finds NOTHING — the shape a
-# rotated label produces, and the one that left #818 with no evidence for a month — the second
-# describes the short-labeled interactive controls rendered ABOVE the first comment, which is where
-# the control lives whatever it now calls itself. `reason` says which pass produced a row, and
-# 'unanchored' marks a header pass that could not find the comment list to measure "above" against,
-# so a reader can tell a near-miss from a shot in the dark.
-#
-# BOTH passes ignore an element whose OWN rendered text is long: a container div inherits every
-# descendant's text, so matching on it describes the page rather than a control — it would fill the
-# whole cap with ancestors (any thread containing 'topic' or 'assorted' matches the keywords), leave
-# the header pass permanently unreached, and ship other people's comment text to analytics.
-_SORT_CONTROL_OWN_TEXT_MAX = 40
-_SORT_CONTROL_DIAGNOSTIC_JS = (
-    "const root=document.querySelector('main')||document.body;"
-    # The live-grounded comment anchor (utilities/linkedin/composer.py, validated #478). Comments
-    # are NOT <article> elements on SDUI, so guessing one here would leave `first` null on every
-    # real page and the header pass unanchored.
-    "const first=document.querySelector("
-    "\"[data-testid*='commentList'] [data-testid='expandable-text-box']\")"
-    "||document.querySelector(\"[data-testid*='commentList']\");"
-    f"const CAP={_SORT_CANDIDATE_SCAN_CAP};const TEXT_MAX={_SORT_CONTROL_OWN_TEXT_MAX};"
-    "const out=[];const seen=new Set();"
-    "const own=el=>(el.innerText||'').replace(/\\s+/g,' ').trim();"
-    "const push=(el,reason)=>{"
-    "  if(out.length>=CAP||seen.has(el)) return;"
-    "  seen.add(el);"
-    "  const aria=(el.getAttribute('aria-label')||'');"
-    "  out.push({"
-    "    tag:el.tagName.toLowerCase(),"
-    "    data_testid:el.getAttribute('data-testid')||'',"
-    "    aria_label:aria.slice(0,120),"
-    "    role:el.getAttribute('role')||'',"
-    "    text:own(el).slice(0,80),"
-    "    has_popup:el.getAttribute('aria-haspopup')||'',"
-    "    classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' '),"
-    "    reason:reason"
-    "  });"
-    "};"
-    "const KW=/sort|most relevant|most recent|\\btop\\b|\\bnewest\\b/;"
-    "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
-    "  const text=own(el);"
-    "  if(text.length>TEXT_MAX) continue;"
-    "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
-    "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
-    # Inside the thread, only a LABEL may match: a comment body is prose, and one 'sort of agree'
-    # would fill the cap with comment text and starve the header pass — the only pass that can see
-    # a control whose label rotated away from every keyword.
-    "  const inList=el.closest&&el.closest(\"[data-testid*='commentList']\");"
-    "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
-    "  if(out.length>=CAP) break;"
-    "}"
-    "if(!out.length){"
-    "  for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup]')){"
-    "    if(first){const pos=first.compareDocumentPosition(el);"
-    "      if(!(pos&Node.DOCUMENT_POSITION_PRECEDING)||(pos&Node.DOCUMENT_POSITION_CONTAINS)) continue;}"
-    "    if(own(el).length>TEXT_MAX) continue;"
-    "    push(el,first?'header':'unanchored');"
-    "    if(out.length>=CAP) break;"
-    "  }"
-    "}"
-    "return out;")
+# The anchor is the live-grounded comment one (utilities/linkedin/composer.py, validated #478).
+# Comments are NOT <article> elements on SDUI, so guessing one here would leave the header pass
+# unanchored on every real page. The list is also the prose container: inside the thread only a
+# LABEL may match the sort keywords, because one comment reading 'sort of agree' would otherwise
+# fill the cap with comment text and starve the header pass.
+_COMMENT_LIST_SEL = "[data-testid*='commentList']"
+_SORT_CONTROL_OWN_TEXT_MAX = SORT_CONTROL_OWN_TEXT_MAX
+_SORT_CONTROL_DIAGNOSTIC_JS = build_sort_control_scan_js(
+    item_selectors=[f"{_COMMENT_LIST_SEL} [data-testid='expandable-text-box']", _COMMENT_LIST_SEL],
+    prose_container=_COMMENT_LIST_SEL,
+)
 
 
 def _sort_from_element(el) -> str:
@@ -1426,11 +1384,7 @@ def _diagnose_sort_control_miss(driver) -> list[dict]:
     `reason` the pass matched) so the next locator iteration can be written against production
     evidence rather than guesses. `_report_sort_control_miss` is what ships them.
     """
-    try:
-        result = driver.execute_script(_SORT_CONTROL_DIAGNOSTIC_JS)
-        return [dict(r) for r in (result or []) if isinstance(r, dict)]
-    except Exception:
-        return []
+    return scan_sort_control_candidates(driver, _SORT_CONTROL_DIAGNOSTIC_JS)
 
 
 def _report_sort_control_miss(driver, user_id: int, post_url: str) -> list[dict]:

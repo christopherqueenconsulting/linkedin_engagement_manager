@@ -244,6 +244,156 @@ class TestSwitchFeedToRecent:
         log_error.assert_not_called()
 
 
+class TestFeedSortControlEvidence:
+    """#1270: a home-feed sort miss on a feed that DID render cards ships the page's own shape.
+
+    Prod logged 30 `Selector miss: Feed sort control` in one 7-day window and nothing about what
+    the page rendered instead, so #1108's locator iteration has no production evidence to read. The
+    log line cannot carry it (prod runs `LOG_LEVEL=INFO` / `POSTHOG_LOG_LEVEL=WARNING`); the event
+    can.
+    """
+
+    @staticmethod
+    def _run(driver, candidates=None):
+        """Drive `_switch_feed_to_recent` down the missing-control path, capturing the event."""
+        from cqc_lem.app.engagement.feed import _switch_feed_to_recent
+        driver.execute_script.return_value = candidates if candidates is not None else []
+        with ExitStack() as es:
+            es.enter_context(patch(f"{_FEED}.find_first", return_value=None))
+            track = es.enter_context(patch(f"{_FEED}.track_selector_evidence"))
+            state = _switch_feed_to_recent(driver, MagicMock(), user_id=7)
+        return state, track
+
+    def test_a_rendered_feed_with_no_sort_control_emits_one_evidence_event(self):
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING
+        driver = _driver()
+        driver.find_elements.return_value = [MagicMock(), MagicMock()]
+        rows = [{"tag": "div", "role": "button", "text": "Top", "reason": "header"}]
+        state, track = self._run(driver, rows)
+        assert state == FEED_SORT_MISSING
+        track.assert_called_once()
+        assert track.call_args.args[0] == "feed_sort_control"
+        assert track.call_args.args[1] == rows
+        assert track.call_args.kwargs["user_id"] == 7
+        assert track.call_args.kwargs["task_name"] == "_switch_feed_to_recent"
+
+    def test_a_feed_that_rendered_nothing_ships_no_evidence(self):
+        """Zero is not drift until the page agrees (#1013).
+
+        A dead session and a login wall hand back the same missing control, and their DOM next to
+        real drift poisons the one query #1108 iterates from.
+        """
+        driver = _driver()
+        driver.find_elements.return_value = []
+        _state, track = self._run(driver)
+        track.assert_not_called()
+        driver.execute_script.assert_not_called()
+
+    def test_an_unreadable_cross_check_ships_no_evidence(self):
+        """'We could not ask the page' grounds nothing, so it can never be graded as drift."""
+        from selenium.common.exceptions import WebDriverException
+        driver = _driver()
+        driver.find_elements.side_effect = WebDriverException("invalid session id")
+        _state, track = self._run(driver)
+        track.assert_not_called()
+
+    def test_a_group_feed_never_ships_evidence(self):
+        """A group feed has no such control by design (FEED_SORT_NOT_APPLICABLE).
+
+        Describing its header would file evidence of drift against working behaviour.
+        """
+        from cqc_lem.app.engagement.feed import FEED_SORT_NOT_APPLICABLE
+        driver = _driver("https://www.linkedin.com/groups/12345/")
+        driver.find_elements.return_value = [MagicMock()]
+        state, track = self._run(driver)
+        assert state == FEED_SORT_NOT_APPLICABLE
+        track.assert_not_called()
+
+    def test_an_empty_sample_is_still_emitted(self):
+        """An empty sample is the reading that says the capture itself is blind.
+
+        Suppressing it is how a rotated surface reads as un-drifted (#1255).
+        """
+        driver = _driver()
+        driver.find_elements.return_value = [MagicMock()]
+        _state, track = self._run(driver, [])
+        track.assert_called_once()
+        assert track.call_args.args[1] == []
+
+    def test_a_scan_that_raises_still_emits_and_never_changes_the_return(self):
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING, _switch_feed_to_recent
+        driver = _driver()
+        driver.find_elements.return_value = [MagicMock()]
+        driver.execute_script.side_effect = RuntimeError("stale")
+        with patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.track_selector_evidence") as track:
+            state = _switch_feed_to_recent(driver, MagicMock(), user_id=7)
+        assert state == FEED_SORT_MISSING
+        assert track.call_args.args[1] == []
+
+    def test_a_telemetry_failure_never_costs_the_sort_attempt(self):
+        from cqc_lem.app.engagement.feed import FEED_SORT_MISSING, _switch_feed_to_recent
+        driver = _driver()
+        driver.find_elements.return_value = [MagicMock()]
+        with patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.track_selector_evidence", side_effect=RuntimeError("posthog down")), \
+             patch(f"{_FEED}.log_warning") as log_warning:
+            state = _switch_feed_to_recent(driver, MagicMock(), user_id=7)
+        assert state == FEED_SORT_MISSING
+        # The outer handler must not have caught it either — that would log the miss a second time
+        # and file a grouped defect for a telemetry hiccup.
+        log_warning.assert_not_called()
+
+    def test_the_capture_only_logs_at_debug(self):
+        """`_report_zero_walk` already owns the WARNING for this miss.
+
+        Re-stating it would file a second grouped `$exception` for one fault (utilities/CLAUDE.md).
+        """
+        from cqc_lem.app.engagement.feed import _report_feed_sort_control_miss
+        driver = _driver()
+        driver.execute_script.return_value = []
+        with patch(f"{_FEED}.track_selector_evidence"), \
+             patch(f"{_FEED}.log_debug") as log_debug, \
+             patch(f"{_FEED}.log_warning") as log_warning:
+            _report_feed_sort_control_miss(driver, 7)
+        assert log_debug.called
+        log_warning.assert_not_called()
+
+    def test_the_sample_is_capped_and_carries_the_shape_fields(self):
+        from cqc_lem.app.engagement.feed import _FEED_SORT_CONTROL_SCAN_JS
+        from cqc_lem.utilities.linkedin.sort_evidence import SORT_CANDIDATE_SCAN_CAP
+        assert f"const CAP={SORT_CANDIDATE_SCAN_CAP};" in _FEED_SORT_CONTROL_SCAN_JS
+        assert SORT_CANDIDATE_SCAN_CAP <= 8
+        for field in ("tag:", "data_testid:", "aria_label:", "role:", "text:", "has_popup:",
+                      "classes:", "reason:reason"):
+            assert field in _FEED_SORT_CONTROL_SCAN_JS
+
+    def test_the_scan_is_the_one_shared_with_the_comment_sweep(self):
+        """One implementation, two surfaces (#1270 scope item 2).
+
+        A forked copy of this JS is how the two captures drift apart and only one of them gets the
+        next fix.
+        """
+        from cqc_lem.app.engagement import feed, posting
+        from cqc_lem.utilities.linkedin.sort_evidence import build_sort_control_scan_js
+        assert feed.build_sort_control_scan_js is build_sort_control_scan_js
+        assert posting.build_sort_control_scan_js is build_sort_control_scan_js
+        # Same generator, different surface parameters — the feed anchors on its own cards.
+        assert feed._FEED_SORT_CONTROL_SCAN_JS != posting._SORT_CONTROL_DIAGNOSTIC_JS
+
+    def test_the_feed_scan_anchors_on_the_card_selector_the_walk_uses(self):
+        """The anchor has to be live-grounded.
+
+        An invented one leaves every real page unanchored, and the header pass then describes the
+        whole column instead of the header strip.
+        """
+        from cqc_lem.app.engagement.feed import _FEED_POST_TEXT_SEL, _FEED_SORT_CONTROL_SCAN_JS
+        assert f'document.querySelector("{_FEED_POST_TEXT_SEL}")' in _FEED_SORT_CONTROL_SCAN_JS
+        # …and post PROSE cannot match the sort keywords, or one short post reading 'sort of agree'
+        # fills the cap and starves the header pass.
+        assert f'el.closest("{_FEED_POST_TEXT_SEL}")' in _FEED_SORT_CONTROL_SCAN_JS
+
+
 class TestFeedSortLocators:
     def test_locator_chain_is_ordered_and_never_keys_on_class_names(self):
         from cqc_lem.app.engagement.feed import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS

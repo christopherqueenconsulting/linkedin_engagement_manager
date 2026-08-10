@@ -198,6 +198,10 @@ from cqc_lem.utilities.linkedin.rate_limit import (
     release_run_lock,
 )
 from cqc_lem.utilities.linkedin.session import get_current_profile
+from cqc_lem.utilities.linkedin.sort_evidence import (
+    build_sort_control_scan_js,
+    scan_sort_control_candidates,
+)
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
@@ -205,6 +209,7 @@ from cqc_lem.utilities.observability import (
     FEATURE_CONTENT,
     llm_attribution,
     track_feed_scan,
+    track_selector_evidence,
 )
 from cqc_lem.utilities.selenium_util import (
     click_first,
@@ -1827,6 +1832,53 @@ _FEED_RECENT_OPTION_LOCATORS = [
 ]
 
 
+# When the home-feed sort control does not resolve on a feed that DID render cards, describe what
+# the page rendered instead (#1270). Same mechanism as the comment sweep's capture (#1117/#1255) —
+# ONE two-pass scan in `utilities/linkedin/sort_evidence.py`, parameterised here with the feed's own
+# shape. The prod reading it produces is what #1108's locator iteration is currently missing: in one
+# 7-day window the sweep logged 30 `Selector miss: Feed sort control` and shipped nothing about the
+# page's shape anywhere a human can query.
+#
+# The anchor and the prose container are BOTH `_FEED_POST_TEXT_SEL` — the same live-grounded node
+# the card walk enumerates posts from. As the anchor it is the first feed card, so the header pass
+# keeps only controls rendered above it (the sort control's home, whatever it now calls itself). As
+# the prose container it stops a post BODY from matching the sort keywords: a short post reading
+# 'sort of agree' would otherwise fill the cap with someone's writing and starve the header pass —
+# the only pass that can see a control whose label rotated away from every keyword.
+_FEED_SORT_CONTROL_SCAN_JS = build_sort_control_scan_js(
+    item_selectors=[_FEED_POST_TEXT_SEL],
+    prose_container=_FEED_POST_TEXT_SEL,
+)
+
+
+def _report_feed_sort_control_miss(driver, user_id: Optional[int] = None) -> list[dict]:
+    """Ship the page's own shape when the home-feed sort control is unreadable, and return it.
+
+    Called ONLY once the zero-walk cross-check has graded the miss as real drift, so the sample
+    always describes a feed that provably rendered cards — a dead session and a login wall hand back
+    the same missing control and describing either would be evidence about nothing.
+
+    The level here is DEBUG deliberately: `_report_zero_walk` already owns the WARNING for this
+    miss, and re-stating it would file a second grouped `$exception` for one fault
+    (`utilities/CLAUDE.md`, "one condition gets ONE warning"). The EVENT is what survives prod's
+    `LOG_LEVEL=INFO` + `POSTHOG_LOG_LEVEL=WARNING`, which is exactly what dropped #1118's capture.
+
+    Never raises: evidence collection must not cost the sort attempt it rode in on.
+    """
+    try:
+        candidates = scan_sort_control_candidates(driver, _FEED_SORT_CONTROL_SCAN_JS)
+        log_debug("Feed sort control unreadable on a feed that rendered cards",
+                  user_id=user_id, action_type="scrape", task_name="_switch_feed_to_recent",
+                  candidates=candidates)
+        track_selector_evidence("feed_sort_control", candidates, user_id=user_id,
+                                task_name="_switch_feed_to_recent")
+        return candidates
+    except Exception as e:
+        log_debug(f"Could not capture feed sort-control evidence: {e}", user_id=user_id,
+                  action_type="scrape", task_name="_switch_feed_to_recent")
+        return []
+
+
 def _is_home_feed(driver) -> bool:
     """Return True only on linkedin.com/feed itself.
 
@@ -1882,7 +1934,8 @@ def _switch_feed_to_recent(driver, wait, user_id: int = None) -> str:
 
     A miss is graded against the page itself before it is logged as drift (#1108): the return value
     is FEED_SORT_MISSING either way, so callers are unaffected, but only a feed that provably
-    rendered posts turns a missing control into a WARNING.
+    rendered posts turns a missing control into a WARNING — and only that same reading ships a DOM
+    evidence sample (#1270), so the next locator iteration has the page's own shape to read.
     """
     try:
         if not _is_home_feed(driver):
@@ -1896,9 +1949,14 @@ def _switch_feed_to_recent(driver, wait, user_id: int = None) -> str:
             # — so the miss is graded against a per-post control this chain does not use (#1013).
             # That grading owns the log level (`warn_on_miss=False` above), because `find_first`
             # would otherwise warn on all three and file a defect for a feed that never rendered.
-            _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed sort control",
-                              user_id=user_id, action_type="scrape",
-                              task_name="_switch_feed_to_recent")
+            verdict = _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed sort control",
+                                        user_id=user_id, action_type="scrape",
+                                        task_name="_switch_feed_to_recent")
+            # Only DRIFT is worth an evidence sample: 'empty' and 'unknown' describe a page that
+            # rendered nothing to describe, and shipping those readings would put a dead session's
+            # DOM next to real drift in the one query #1108 iterates from.
+            if verdict == _zw.DRIFT:
+                _report_feed_sort_control_miss(driver, user_id)
             return FEED_SORT_MISSING
         # The control reads 'Recent' once flipped — skip re-opening the menu so the second caller in
         # a run (navigate_to_feed then comment_on_feed_inline) is a cheap no-op.

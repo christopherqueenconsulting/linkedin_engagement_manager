@@ -30,7 +30,7 @@ code is missing from this table.
 
 | Surface | Code | Probe flag | In the weekly sweep | Production tripwire |
 |---|---|---|---|---|
-| Home feed "Sort by → Recent" | `_switch_feed_to_recent` | `--feed-sort` | yes | `feed_sort` on the funnel + `feed_scan` (#817) |
+| Home feed "Sort by → Recent" | `_switch_feed_to_recent` | `--feed-sort` | yes | `feed_sort` on the funnel + `feed_scan` (#817). A home feed that rendered cards and still resolved no sort control also ships a bounded DOM sample as `sdui_selector_evidence` (`surface='feed_sort_control'`) — the same two-pass scan the comment sweep uses (`utilities/linkedin/sort_evidence.py`), shipped as an EVENT so prod's log filters cannot drop it (#1270). Nothing is emitted off the home feed or on a feed the zero-walk cross-check says rendered nothing |
 | Feed card walk + reactions | `_card_for_textbox` / `react_to_post_inline` | `--reaction-probe` | yes | `feed_walk` / `cards_seen` (and `textboxes_seen`) on the funnel — zero markers is cross-checked against the REACTION control (`_FEED_WALK_CROSSCHECK_SEL`), never against a marker the walk already counts; `no_text` (image/video-only cards) and `not_walked` (budget spent / deadline passed) are DEBUG, only `drift` warns (#1013/#1081) |
 | Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876) |
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
