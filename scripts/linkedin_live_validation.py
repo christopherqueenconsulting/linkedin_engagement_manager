@@ -22,7 +22,18 @@ Answers, against a REAL logged-in session, the two questions
      read, and from which entity selector? — grounds #970. The whole profile is dumped into the
      voice-synthesis prompt, so a misparse here is not inert: it grounds every comment and DM.
 
-**Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
+**Read-only, and since #1108 that is ENFORCED rather than intended.** `install_read_only_guard`
+patches Selenium at the start of `main`, so for the life of the process this script cannot type a
+printable character anywhere (every LinkedIn write starts with typed content) and cannot press a
+control whose own label says it commits something — Post, Send, Publish, Connect, Invite,
+Withdraw, Follow, Like, Join — whether through `WebElement.click`, `ActionChains` or
+`arguments[0].click()`. A violation raises `ReadOnlyViolation` and is reported. There is no
+override flag: a write is a human escalation. Two more gates run BEFORE the browser opens — the
+429 breaker / automation pause (fail CLOSED; an unreadable breaker refuses) and the Grid debug-node
+pin, so a probe never spends a Chrome slot the engagement lanes are sized for. A refusal exits
+``75`` and means WAIT, not FAIL.
+
+It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
 attaching or posting anything; ``--permalink-comment`` does the same for a POST's comment composer
@@ -113,6 +124,369 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
     reading["state"] = state
     reading["verdict"] = verdict
     return reading
+
+
+# ───────────────────────── read-only enforcement (issue #1108) ─────────────────────────
+# Until #1108 "read-only" was a PROPERTY of this file: every probe was written not to submit
+# anything, and a reviewer checked that by reading it. That is what kept autonomous agents out —
+# a headless lane launches with `--dangerously-skip-permissions`, so nothing but the code itself
+# stands between a probe and a post on the owner's real account.
+#
+# So it is a MECHANISM now. Every LinkedIn write needs one of exactly two things:
+#
+#   1. typed content  — a comment, a DM, a post, an invite note. `_guard_send_keys` refuses every
+#      printable character, everywhere, with no exception and no flag. Selenium's control keys live
+#      in the Unicode private-use area (U+E000–U+F8FF), so Escape/Tab/arrows still work and no
+#      sentence can be typed.
+#   2. a commit CLICK — Like, Follow, Connect, Invite, Send, Withdraw, Post, Publish, Join. Those
+#      need no typing at all, so `_guard_click` reads the control's own label and refuses the
+#      submit vocabulary. It is deliberately NOT an allow-list of labels: an allow-list breaks the
+#      moment LinkedIn renames a control, and refusing to click the control this probe exists to
+#      measure would make the probe useless exactly when it matters.
+#
+# Both guards are installed by monkeypatching Selenium itself, not by discipline at the call site,
+# so they also cover the shipped `cqc_lem` helpers the probes call (`click_first` and friends) and
+# any probe added later. `execute_script` goes through the same label gate, because
+# `arguments[0].click()` is the other way to press a button.
+#
+# Escalation to a human remains the ONLY path to a write. There is no override flag.
+
+class ReadOnlyViolation(RuntimeError):
+    """A probe tried to do something that could change LinkedIn state. Never caught internally."""
+
+
+# Selenium's Keys.* constants are private-use-area code points; anything outside that range is a
+# character a human could have typed.
+_PRIVATE_USE = ("\ue000", "\uf8ff")
+
+# The submit vocabulary. Each entry is (regex over the normalised label, what it would have done).
+# Anchored on purpose: "Start a post" is how the composer OPENS and must stay clickable, while a
+# bare "Post" is how it commits.
+_SUBMIT_LABEL_PATTERNS = (
+    (r"^post$", "publish a post"),
+    (r"^post comment\b", "publish a comment"),
+    (r"^publish\b", "publish"),
+    (r"^send\b", "send a message or invitation"),
+    (r"^submit\b", "submit a form"),
+    (r"^reply$", "publish a reply"),
+    (r"^connect$", "send a connection invite"),
+    (r"^invite\b", "send an invite"),
+    (r"\binvite\b.*\bto connect\b", "send a connection invite"),
+    (r"^withdraw\b", "withdraw an invite (one-way, ~3 weeks before a re-invite)"),
+    (r"^(un)?follow\b", "follow or unfollow someone"),
+    (r"^like$", "leave a reaction"),
+    (r"^react\b", "leave a reaction"),
+    (r"^(celebrate|support|love|insightful|funny|curious)$", "leave a reaction"),
+    (r"^repost\b", "repost"),
+    (r"^share\b", "share a post"),
+    (r"^accept\b", "accept an invitation"),
+    (r"^(join|leave)\b", "join or leave a group"),
+    (r"^subscribe\b", "subscribe to a newsletter"),
+    (r"^endorse\b", "endorse a skill"),
+    (r"^add a note\b", "add a note to an invite"),
+    (r"^(save|done|next|delete|remove)$", "commit a form step"),
+)
+
+# What the guard actually stopped (and what it let through but could not attribute), so the report
+# says so instead of the run merely not crashing.
+_GUARD_LEDGER = {"installed": False, "refusals": [], "unlabelled_clicks": 0}
+
+
+def guard_ledger() -> dict:
+    """The read-only guard's own report section: what it refused, and what it could not attribute."""
+    return {"installed": _GUARD_LEDGER["installed"],
+            "refusals": list(_GUARD_LEDGER["refusals"]),
+            # A click on a control with no readable label is allowed (a stale element reads the
+            # same way, and refusing would break probes on a non-write) but it is the one gap in
+            # the click half, so it is COUNTED rather than left invisible.
+            "unlabelled_clicks": _GUARD_LEDGER["unlabelled_clicks"]}
+
+
+def normalise_label(text: Optional[str]) -> str:
+    """Lowercase, whitespace-collapsed label text for vocabulary matching."""
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def submit_control_reason(label: Optional[str]) -> Optional[str]:
+    """What clicking a control with this label would COMMIT, or None if it commits nothing."""
+    normalised = normalise_label(label)
+    if not normalised:
+        return None
+    for pattern, consequence in _SUBMIT_LABEL_PATTERNS:
+        if re.search(pattern, normalised):
+            return consequence
+    return None
+
+
+def element_labels(element) -> list:
+    """Every label an element answers to — aria-label, its text, value, title.
+
+    Read defensively: a stale or detached element raises on every one of these, and an unreadable
+    element must not crash a probe whose whole job is to describe broken DOM.
+    """
+    labels = []
+    for source in ("aria-label", "value", "title"):
+        try:
+            labels.append(element.get_attribute(source))
+        except Exception:
+            continue
+    try:
+        labels.append(element.text)
+    except Exception:
+        pass
+    return [label for label in labels if normalise_label(label)]
+
+
+def typed_characters(keys) -> str:
+    """The printable characters in a send_keys payload — i.e. what a human would have typed.
+
+    Selenium's Keys.* are private-use code points, so Escape and friends contribute nothing here.
+    """
+    typed = []
+    for item in keys:
+        if isinstance(item, (list, tuple)):
+            typed.append(typed_characters(item))
+            continue
+        for char in str(item):
+            if not (_PRIVATE_USE[0] <= char <= _PRIVATE_USE[1]):
+                typed.append(char)
+    return "".join(typed)
+
+
+def script_is_interactive(script: Optional[str]) -> bool:
+    """True if this JS could press or fill something, rather than only read/scroll the page."""
+    body = normalise_label(script).replace(" ", "")
+    return any(token in body for token in
+               (".click(", ".submit(", "dispatchevent(", "innerhtml=", ".value=", ".focus("))
+
+
+def _refuse(action: str, detail: str) -> None:
+    _GUARD_LEDGER["refusals"].append({"action": action, "detail": detail})
+    raise ReadOnlyViolation(
+        f"read-only probe refused to {action}: {detail}. Nothing may be posted to a live LinkedIn "
+        "account from this script — a write is a human escalation, not a flag.")
+
+
+def _guard_element(element, action: str) -> None:
+    """Refuse a press on a control whose own label says it commits something."""
+    labels = element_labels(element)
+    if not labels:
+        _GUARD_LEDGER["unlabelled_clicks"] += 1
+        return
+    for label in labels:
+        reason = submit_control_reason(label)
+        if reason:
+            _refuse(action, f"control labelled {normalise_label(label)!r} would {reason}")
+
+
+def install_read_only_guard() -> dict:
+    """Monkeypatch Selenium so this process cannot type text or press a commit control.
+
+    Installed once, before the browser opens, and never uninstalled. Returns the ledger so a caller
+    can report on it.
+    """
+    if _GUARD_LEDGER["installed"]:
+        return guard_ledger()
+
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.remote.webdriver import WebDriver
+    from selenium.webdriver.remote.webelement import WebElement
+
+    element_click, element_send_keys = WebElement.click, WebElement.send_keys
+    element_submit, element_clear = WebElement.submit, WebElement.clear
+    driver_script = WebDriver.execute_script
+    chain_click, chain_send_keys = ActionChains.click, ActionChains.send_keys
+    chain_send_to = ActionChains.send_keys_to_element
+
+    def click(self, *args, **kwargs):
+        _guard_element(self, "click a control")
+        return element_click(self, *args, **kwargs)
+
+    def send_keys(self, *value):
+        typed = typed_characters(value)
+        if typed:
+            _refuse("type text", f"{len(typed)} printable character(s) into the page — every "
+                                 "LinkedIn write starts here")
+        return element_send_keys(self, *value)
+
+    def submit(self, *args, **kwargs):
+        _refuse("submit a form", "WebElement.submit() commits whatever form it is in")
+
+    def clear(self, *args, **kwargs):
+        _refuse("clear a field", "clearing an input edits page state the probe only reads")
+
+    def execute_script(self, script=None, *args):
+        if script_is_interactive(script):
+            elements = [arg for arg in args if isinstance(arg, WebElement)]
+            if not elements:
+                # An interactive script with no element argument names no target, so there is
+                # nothing to check — and an unattributable press is exactly what must not happen.
+                _refuse("run interactive JavaScript",
+                        "the script presses or fills something but names no element to check")
+            for element in elements:
+                _guard_element(element, "click a control via JavaScript")
+        return driver_script(self, script, *args)
+
+    def chained_click(self, on_element=None):
+        if on_element is not None:
+            _guard_element(on_element, "click a control via ActionChains")
+        return chain_click(self, on_element)
+
+    def chained_send_keys(self, *keys_to_send):
+        typed = typed_characters(keys_to_send)
+        if typed:
+            _refuse("type text", f"{len(typed)} printable character(s) via ActionChains")
+        return chain_send_keys(self, *keys_to_send)
+
+    def chained_send_keys_to_element(self, element, *keys_to_send):
+        typed = typed_characters(keys_to_send)
+        if typed:
+            _refuse("type text", f"{len(typed)} printable character(s) via ActionChains")
+        return chain_send_to(self, element, *keys_to_send)
+
+    WebElement.click, WebElement.send_keys = click, send_keys
+    WebElement.submit, WebElement.clear = submit, clear
+    WebDriver.execute_script = execute_script
+    ActionChains.click, ActionChains.send_keys = chained_click, chained_send_keys
+    ActionChains.send_keys_to_element = chained_send_keys_to_element
+    _GUARD_LEDGER["installed"] = True
+    return guard_ledger()
+
+
+# ───────────────────────── the 429 breaker gate (issue #1108) ─────────────────────────
+# The probe drives the owner's REAL session through the production cookie/proxy stack, on an
+# account with a 429-lockout history that once cost days of engagement. Read-only still spends
+# rate budget, so a probe run while the breaker is open is the doom loop's fuel.
+#
+# The app's own `rate_limit_cooldown_remaining()` fails OPEN (no Redis → 0 seconds) because a
+# broken Redis must never stop production work. A probe is not production work: unreadable state
+# means the probe cannot prove it is safe to run, and it REFUSES. That is why the read is done
+# here against the shared client rather than through that helper.
+BREAKER_REFUSAL_EXIT_CODE = 75  # EX_TEMPFAIL — "wait and retry", never "this task failed"
+_COOLDOWN_KEY_FALLBACK = "linkedin:429_cooldown"
+_PAUSE_KEY_FALLBACK = "linkedin:automation_paused"
+
+
+def breaker_reading() -> dict:
+    """Read the 429 breaker and the manual automation pause, failing CLOSED.
+
+    Returns `{"readable": bool, "open": bool, "wait_seconds": int, "reason": str}`. `readable` is
+    False whenever Redis (or the module that owns the keys) could not be consulted at all — the
+    caller must treat that as "do not run", not as "not paused".
+    """
+    reading = {"readable": False, "open": False, "wait_seconds": 0, "reason": ""}
+    try:
+        from cqc_lem.utilities.linkedin import rate_limit
+        client = rate_limit.shared_redis_client()
+    except Exception as e:
+        reading["reason"] = f"could not load the rate-limit breaker ({type(e).__name__}: {e})"
+        return reading
+    if client is None:
+        reading["reason"] = "Redis is unavailable, so the 429 breaker cannot be read"
+        return reading
+
+    # Read the keys the breaker actually uses. `getattr` with a literal default because the probe
+    # is piped into whatever image is deployed, which may predate any rename.
+    keys = {"429 circuit breaker": getattr(rate_limit, "_COOLDOWN_KEY", _COOLDOWN_KEY_FALLBACK),
+            "manual automation pause": getattr(rate_limit, "_PAUSE_KEY", _PAUSE_KEY_FALLBACK)}
+    try:
+        for label, key in keys.items():
+            ttl = client.ttl(key)
+            if ttl and ttl > 0:
+                reading.update(readable=True, open=True, wait_seconds=int(ttl),
+                               reason=f"the {label} is OPEN for another {int(ttl)}s")
+                return reading
+    except Exception as e:
+        reading["reason"] = f"the breaker state could not be read ({type(e).__name__}: {e})"
+        return reading
+
+    reading.update(readable=True, reason="the 429 breaker and the automation pause are both clear")
+    return reading
+
+
+class ProbeRefused(RuntimeError):
+    """The probe declined to start. Carries the machine-readable refusal for the report."""
+
+    def __init__(self, refusal: dict):
+        super().__init__(refusal.get("detail") or refusal.get("reason", "refused"))
+        self.refusal = refusal
+
+
+def open_probe_session(get_current_profile: Callable, user_id: int, require_debug_node: bool):
+    """Open the probe's session, pinned to the watchable Grid node.
+
+    The pin is the default now (#1108): an ad-hoc probe has no business taking one of the eight
+    Chrome slots the engagement lanes are sized for, and the ninth node exists for exactly this.
+    `require_debug_node` turns "best-effort pin" into "refuse rather than borrow a lane slot",
+    which is what an autonomous agent must run with.
+
+    A deployed image that predates `debug_required` cannot make that guarantee, so requiring the
+    pin against one is a REFUSAL, not a silent downgrade — the probe is piped into whatever image
+    is live, so this is the ordinary case for a few hours after a merge, and "wait for the release"
+    is the honest answer.
+    """
+    import inspect
+
+    kwargs = {"user_id": user_id, "session_name": "Live Validation", "debug": True}
+    supported = "debug_required" in inspect.signature(get_current_profile).parameters
+    if require_debug_node:
+        if not supported:
+            raise ProbeRefused({
+                "refused": True, "reason": "debug_node_pin_unsupported", "wait_seconds": 0,
+                "detail": "the deployed image predates the debug-node pin (#1108), so this run "
+                          "cannot be kept off the production Chrome slots",
+                "action": "wait for the release that ships it, then re-run"})
+        kwargs["debug_required"] = True
+
+    try:
+        driver, _wait, _email, profile = get_current_profile(**kwargs)
+    except Exception as e:
+        # Matched by NAME so this still works against an image whose selenium_util predates the
+        # exception class — the probe is piped into whatever is deployed.
+        if type(e).__name__ != "DebugNodeUnavailable":
+            raise
+        raise ProbeRefused({
+            "refused": True, "reason": "debug_node_unavailable", "wait_seconds": 0,
+            "detail": str(e),
+            "action": "the watchable node is busy or absent; re-run later rather than spending a "
+                      "slot the engagement lanes need"}) from e
+
+    return driver, profile, {"debug_node_pin": "required" if require_debug_node else "best-effort",
+                             "debug_node_pin_supported": supported}
+
+
+def emit_refusal(user_id: int, refusal: dict, breaker: dict, guard: dict) -> int:
+    """Print a refusal inside the report fences and return the exit code callers key on.
+
+    Fenced like any other report so the weekly cron's parser and an agent read the SAME shape, and
+    non-zero so a caller that only checks the exit status never mistakes a refusal for a clean run.
+    """
+    print(REPORT_JSON_BEGIN)
+    print(json.dumps({"user_id": user_id, "refusal": refusal, "breaker": breaker,
+                      "read_only_guard": guard}, indent=2))
+    print(REPORT_JSON_END)
+    print(f"REFUSED: {refusal.get('detail', '')} — {refusal.get('action', '')}", file=sys.stderr)
+    return BREAKER_REFUSAL_EXIT_CODE
+
+
+def breaker_refusal(reading: dict) -> Optional[dict]:
+    """The refusal a caller should print and exit on, or None when the probe may run.
+
+    Both refusals mean WAIT, never FAIL: an open breaker clears on its own, and unreadable state
+    is a stack problem, not a defect in whatever the probe was going to ground.
+    """
+    if reading.get("open"):
+        return {"refused": True, "reason": "rate_limit_breaker_open",
+                "wait_seconds": int(reading.get("wait_seconds") or 0),
+                "detail": reading.get("reason", ""),
+                "action": "wait for the cooldown to expire and re-run; do not escalate yet"}
+    if not reading.get("readable"):
+        return {"refused": True, "reason": "rate_limit_breaker_unreadable",
+                "wait_seconds": 0,
+                "detail": reading.get("reason", ""),
+                "action": "the breaker could not be read, so the probe cannot prove it is safe to "
+                          "run — treat as blocked and escalate if it persists"}
+    return None
 
 
 # ─────────────────────── surface inventory / probe coverage matrix (#1013) ───────────────────
@@ -3516,7 +3890,18 @@ def build_parser() -> "argparse.ArgumentParser":
                              "whether the lazy-load scroll grows the list")
     parser.add_argument("--watch", action="store_true",
                         help="request the watchable Grid debug node so the session is visible via "
-                             "noVNC; falls back to the pool if the debug node is busy/absent")
+                             "noVNC; falls back to the pool if the debug node is busy/absent. This "
+                             "is the DEFAULT since #1108 — the flag is kept because it is what "
+                             "everyone types, and because it says out loud where the session went")
+    parser.add_argument("--require-debug-node", action="store_true",
+                        help="refuse to run at all unless the session can be pinned to the "
+                             "watchable debug node. Pipeline agents MUST pass this: it is what "
+                             "guarantees a probe never takes one of the Chrome slots the "
+                             "engagement lanes are sized for.")
+    parser.add_argument("--ignore-breaker", action="store_true",
+                        help="run even though the LinkedIn 429 breaker / automation pause is open. "
+                             "OWNER ONLY, for a breaker stuck open. An autonomous agent must never "
+                             "pass this — an open breaker is a WAIT.")
     parser.add_argument("--reaction-probe", action="store_true",
                         help="capture the feed cards' reaction controls (issue #816). Read-only: "
                              "it never leaves a reaction.")
@@ -3604,15 +3989,28 @@ def main(argv: Optional[list] = None) -> int:
                      "--permalink-comment and/or "
                      "--probe-composer")
 
-    # `get_current_profile` moved down to `utilities/linkedin/session.py` in #1154; importing it
-    # from the module it LIVES in also keeps the probe off the Celery task graph entirely.
+    # Installed BEFORE anything imports a page: from here on this process cannot type a printable
+    # character or press a control whose label says it commits something. See the guard block.
+    guard = install_read_only_guard()
+
+    # Decided BEFORE Chrome opens, the same rule `plan_daily_invites` follows — a refusal that has
+    # already spent a session is not a refusal.
+    breaker = breaker_reading()
+    breaker["overridden"] = bool(args.ignore_breaker)
+    refusal = None if args.ignore_breaker else breaker_refusal(breaker)
+    if refusal:
+        return emit_refusal(args.user_id, refusal, breaker, guard)
+
     from cqc_lem.utilities.linkedin.session import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
 
-    driver, _wait, _email, profile = get_current_profile(user_id=args.user_id,
-                                                        session_name="Live Validation",
-                                                        debug=args.watch)
-    report = {"user_id": args.user_id}
+    try:
+        driver, profile, session_reading = open_probe_session(
+            get_current_profile, args.user_id, require_debug_node=args.require_debug_node)
+    except ProbeRefused as refused:
+        return emit_refusal(args.user_id, refused.refusal, breaker, guard)
+
+    report = {"user_id": args.user_id, "session": session_reading}
     try:
         if args.sweep:
             # The sweep IS the report: it replaces the per-probe keys wholesale, so the weekly
@@ -3681,6 +4079,10 @@ def main(argv: Optional[list] = None) -> int:
     finally:
         quit_gracefully(driver)
 
+    report["breaker"] = breaker
+    # Reported at the END so it covers the whole run: "nothing was refused" is a claim about what
+    # happened, not about what was configured.
+    report["read_only_guard"] = guard_ledger()
     print(REPORT_JSON_BEGIN)
     print(json.dumps(report, indent=2))
     print(REPORT_JSON_END)

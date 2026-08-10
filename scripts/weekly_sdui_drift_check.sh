@@ -69,9 +69,19 @@ PROBE_ARGS=(--user-id "$USER_ID" --sweep)
 
 # `scripts/` is not baked into the image, so the probe is piped in on stdin — the same way the
 # weekly LinkedIn version check runs its probe.
-if ! sudo -n docker exec -i "$CONTAINER" python - "${PROBE_ARGS[@]}" \
-      < "$REPO/scripts/linkedin_live_validation.py" >"$SWEEP" 2>>"$LOG"; then
-  alert "SDUI drift sweep could not run (docker exec into $CONTAINER failed) — no surface was probed this week."
+sudo -n docker exec -i "$CONTAINER" python - "${PROBE_ARGS[@]}" \
+      < "$REPO/scripts/linkedin_live_validation.py" >"$SWEEP" 2>>"$LOG"
+PROBE_RC=$?
+# 75 (EX_TEMPFAIL) is the probe REFUSING to start: the LinkedIn 429 breaker is open, the breaker
+# could not be read, or the watchable Grid node was unavailable (#1108). None of those is a broken
+# sweep and none of them warrants paging anyone — the refusal is in the fenced JSON, and next
+# Monday's run measures the same surfaces. Anything else is a real failure.
+if [ "$PROBE_RC" = "75" ]; then
+  log "sweep REFUSED to start (rc=75) — see the refusal in $SWEEP; no surface probed this week."
+  exit 0
+fi
+if [ "$PROBE_RC" != "0" ]; then
+  alert "SDUI drift sweep could not run (docker exec into $CONTAINER failed, rc=$PROBE_RC) — no surface was probed this week."
   exit 1
 fi
 
