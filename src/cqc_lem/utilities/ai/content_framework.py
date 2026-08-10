@@ -1577,6 +1577,31 @@ def dwell_directive() -> str:
     )
 
 
+def motion_prompt_directive() -> str:
+    """The WRITER-side motion-prompt contract for Runway Gen-4 / Veo image-to-video.
+
+    LinkedIn autoplays native video muted, so the first 1–2 seconds are the entire pitch. This
+    directive is appended to the motion-prompt system prompt in `ai_helper.py` so the writer side
+    and the checking side stay in one shared core — no parallel video-only helper module.
+    """
+    return (
+        "\n\nMOTION-PROMPT CONTRACT (violating any of these produces a stock-looking clip):\n"
+        "1. OPEN IN THE FIRST 1–2 SECONDS — the key subject or the camera move must be readable "
+        "before the viewer scrolls. A 'slow reveal' that resolves at second 4 is too late.\n"
+        "2. ONE CONTINUOUS MOTION ONLY — no cuts, no montage, no 'then transition to', no 'b-roll'. "
+        "Gen-4 image-to-video is a single shot, not an edited sequence.\n"
+        "3. CONCRETE PHYSICAL TERMS ONLY — describe the camera move and what the subject does in plain "
+        "words (e.g. 'slow push-in', 'she looks up', 'papers shift'). No mood words, no 'cinematic', "
+        "no 'dynamic energy', no film-stock or lighting adjectives.\n"
+        "4. MATCH THE TIER — standard Gen-4 favors subtle, natural motion; Veo can carry slightly "
+        "more camera movement but still one continuous shot.\n"
+        "5. NEVER DESCRIBE AUDIO — the system appends an audio direction automatically for audio-"
+        "capable models; adding your own risks inventing voiceovers.\n"
+        "6. END ON A RESOLVED VISUAL BEAT — the last motion completes, it does not fade out or drift "
+        "into ambiguity."
+    )
+
+
 def save_worthy_directive(content_type: str = "carousel") -> str:
     """Reference-framing rules that make a CAROUSEL/document worth SAVING rather than swiping past
     (issue #391 / C2). A saved carousel is the strongest 2026 signal there is: it holds the reader

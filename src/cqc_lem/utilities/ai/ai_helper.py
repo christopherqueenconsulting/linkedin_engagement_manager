@@ -3007,6 +3007,7 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     model's output — the LLM is told to stay off audio entirely, because the clause it would
     have to write is made of negatives this system prompt otherwise forbids.
     """
+    from cqc_lem.utilities.ai.content_framework import motion_prompt_directive
     audio_direction = _audio_direction(model, language)
     audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
                   "direction is appended automatically." if audio_direction else "")
@@ -3044,6 +3045,7 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
         and smiles at the camera. Soft papers flutter in the background."
 
         Output only the motion prompt — no quotes, no prefix, no explanation.
+        {motion_prompt_directive()}
         """
     }
 
