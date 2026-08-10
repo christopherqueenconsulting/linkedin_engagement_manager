@@ -24,6 +24,11 @@ prompt. None of it failed, because on every one of these seams the two sides wer
 
 ## 1. What could and could not be sampled
 
+> **Superseded in part by §7.** Phase 2 (#1292) ran from the VPS, read the assets volume and the
+> production rows, and scored 10 real renders across all four wired surfaces — including the
+> feed-width check this section could not make. The limits below are what was true for the
+> machinery audit; §7.4 lists which of them still hold.
+
 The issue asked for 10–15 recently-shipped images across surfaces and a real high-engagement
 LinkedIn post as the reference exemplar. Both were bounded by where this audit ran, and the limits
 are stated here rather than papered over:
@@ -287,3 +292,78 @@ Filed as **#1290**.
 - Follow-ups filed and linked: **#1290** (carousel gate + focal concept, `risk:product-decision`),
   **#1291** (surface attribution + gate verdict telemetry), **#1292** (score the real rendered
   images once they can be read).
+
+---
+
+## 7. Phase 2 — the REAL renders, scored (#1292)
+
+§1 recorded that 0 image files could be read and the visual question therefore went unanswered.
+This section answers it. Run 2026-08-10 from the VPS, where the assets volume and production
+`posts` rows are both readable, under an explicit owner authorisation for live LEM and LinkedIn
+pulls (`1A 2A` on #1292).
+
+**Sample:** 10 renders across all four wired surfaces, newest first — pulled from
+`/var/lib/docker/volumes/lem_assets/_data` and paired with `posts` / `newsletter_editions` rows via
+`cqc_lem.utilities.db`. Every image below is the actual shipped file, resized for the repo. Each is
+shown twice: at reading size, and **at 360 px — the width LinkedIn gives a feed image on mobile**,
+which is where R1 is decided and is exactly the check §1 could not make.
+
+### 7.1 The scored table
+
+| # | Surface | Source | Render | At feed width (360px) | Passes | Fails |
+|---|---|---|---|---|---|---|
+| 1 | `post_image` | post 84 · `myth_vs_reality` · 1024×1024 | <img src="assets/1292/post84_post_image.jpg" width="180"> | <img src="assets/1292/post84_post_image_feed360.jpg" width="180"> | R2, R3, R4, R7 | **R6** — a plain portrait depicts no idea; nothing in it says "myth vs reality". **R5** — 1:1, see P5 |
+| 2 | `newsletter` | ed10 · "AI Governance: Your Steering Wheel, Not a Brake Pedal" · 1536×1024 | <img src="assets/1292/nl10_cover.jpg" width="180"> | <img src="assets/1292/nl10_cover_feed360.jpg" width="180"> | **R1, R2, R4, R6, R7** — the steering wheel IS the title's metaphor, and it still reads at 360px. The best render in the sample | R5 — 3:2, neither 1:1 nor 4:5 |
+| 3 | `newsletter` | ed9 · "Hidden Cost Ceiling in Your AI Line…" · 1536×1024 | <img src="assets/1292/nl09_cover.jpg" width="180"> | <img src="assets/1292/nl09_cover_feed360.jpg" width="180"> | R1, R4, R7 | **R2 — hard fail.** The laptop screen renders four logo tiles including a recognisable third-party mark and the letters "AI". Still legible at 360px. See P2 |
+| 4 | `carousel` | post 87 slide 1/5 · hook · 1080×1080 | <img src="assets/1292/car87_slide01.jpg" width="180"> | <img src="assets/1292/car87_slide01_feed360.jpg" width="180"> | R1, R5, R6, R7 | — (title holds at 360px; "Swipe to read" does not, but carries no meaning) |
+| 5 | `carousel` | post 87 slide 3/5 · body | <img src="assets/1292/car87_slide03.jpg" width="180"> | <img src="assets/1292/car87_slide03_feed360.jpg" width="180"> | R5 | **Truncated** — "…became a non-event due to automated". **R6** — a PLC/industrial photo under a software-release claim. See P1 |
+| 6 | `carousel` | post 87 slide 4/5 · body | <img src="assets/1292/car87_slide04.jpg" width="180"> | <img src="assets/1292/car87_slide04_feed360.jpg" width="180"> | R5 | **Truncated** — "…the risk per release drops" |
+| 7 | `carousel` | post 87 slide 5/5 · **CTA** | <img src="assets/1292/car87_slide05.jpg" width="180"> | <img src="assets/1292/car87_slide05_feed360.jpg" width="180"> | R1, R5 | **Truncated on the closing ask** — "Save this for your next sprint retrospective to spark the" |
+| 8 | `carousel` | post 86 slide 2/6 · body | <img src="assets/1292/car86_slide02.jpg" width="180"> | <img src="assets/1292/car86_slide02_feed360.jpg" width="180"> | R1, R5 | **R6** — a trading-desk stock photo under "Why I needed a checklist" |
+| 9 | `carousel` | post 86 slide 3/6 · body | <img src="assets/1292/car86_slide03.jpg" width="180"> | <img src="assets/1292/car86_slide03_feed360.jpg" width="180"> | R5 | **Truncated** — "…Coverage floor >=80% - ensures". **R6** — a CD-wallet photo under an agent-pipeline claim |
+| 10 | `video` (source frame) | post 83 · 720×1280 · frame 0 | <img src="assets/1292/vid83_frame0.jpg" width="180"> | <img src="assets/1292/vid83_frame0_feed360.jpg" width="180"> | R2, R3, R4, R7 | **R6** — a smiling portrait; the `industry_observation` idea is not depicted |
+
+**Aggregate: 4 of 8 sampled carousel/body slides ship a sentence cut off mid-word-group, and 5 of
+10 renders fail R6.** R2 held on 9 of 10 — the one leak is on the live render path, not a
+hand-written prompt, which is what makes P2 different from F1/F3.
+
+### 7.2 New findings — all filed separately, per the issue's own rule
+
+| ID | Finding | Evidence | Filed |
+|---|---|---|---|
+| **P1** | **Carousel body text is truncated mid-sentence, systematically.** Not one bad slide: 4 of 8 body slides across BOTH sampled posts, including post 87's closing CTA — the slide whose entire job is the ask. No ellipsis, no reflow, no smaller type; the sentence simply stops | rows 5, 6, 7, 9 above | #1375 |
+| **P2** | **A newsletter cover rendered third-party logos and the letters "AI" into the image** — R2's exact prohibition, on the gated live path rather than a hand-written prompt. `cover_image_status` was `pending_review`, so the human gate is the only thing between this and a public brand asset | row 3 | #1376 |
+| **P3** | **`posts.image_url` / `video_url` can point at files that no longer exist**, and nothing detects it. 3 of the sampled rows dangle — posts 79 and 82 (`images/posts/{79,82}/out-0.webp`) and post 85's video — and all three are `posted` | volume listing vs DB rows | #1377 |
+| **P4** | **`ImageBrief.focal_concept` is never persisted with the render**, so R6 is unauditable after the fact — this audit could only infer intent from the post's topic and archetype. There is no `media_cost` table at all in production; the cost path writes `cost_ledger` | schema read | #1377 |
+| **P5** | **No surface renders 4:5.** `post_image` and `carousel` are 1:1, `newsletter` 3:2, `video` 9:16. Published 2026 guidance is consistent that 1080×1350 (4:5) takes the most mobile feed real estate and is the thumb-stopping format — LEM never asks for it | dimensions above | #1375 |
+
+### 7.3 The exemplar — fallback restated (option 2A)
+
+No live authenticated LinkedIn fetch was performed, so **no real high-engagement post image is
+embedded here**, and this is the second audit to say so. The authorisation to do live pulls was
+granted and the recommendation on #1292 was still to defer it: a fetched competitor image is a
+third-party asset this public repo would then hold, and the R1 question does not need one — R1 is
+decided by shrinking LEM's OWN render to feed width, which §7.1 now does for every row.
+
+In place of a fetched exemplar, the reference standard used for R1 and P5 is published 2026 LinkedIn
+format guidance: **1080×1350 (4:5) portrait maximises mobile feed real estate**, 1080×1080 is the
+square baseline, and images featuring real people measurably lift engagement — which is the
+external corroboration for R4 and for keeping the avatar path. Sources:
+[draftly](https://www.draftly.so/blog/linkedin-image-size-guide),
+[postiv](https://postiv.ai/blog/linkedin-posts-specs),
+[dsmn8](https://dsmn8.com/blog/engaging-images-linkedin-content/).
+
+### 7.4 What this changes about §1
+
+§1's four "not available" rows are now three answered and one deliberately deferred:
+
+| §1 said | Now |
+|---|---|
+| 0 image FILES | **10 files, all four wired surfaces**, §7.1 |
+| Per-surface split unavailable | Read from the volume's own directory layout (`images/posts/`, `images/carousel/<post_id>/`, `images/newsletter_covers/`, `videos/`) — but still absent from telemetry, which is why #1291 stands |
+| No real exemplar fetched | Still not fetched, **by choice** — §7.3 |
+| Sample never graded visually | **Graded**, §7.1 |
+
+The machinery grades from §3 are unchanged. What this pass adds is that the machinery being right
+does not make the output right: R2 held in the prompt layer and still leaked once, and the largest
+defect found here (P1) is not in the image engine at all — it is in the carousel's text layout.
