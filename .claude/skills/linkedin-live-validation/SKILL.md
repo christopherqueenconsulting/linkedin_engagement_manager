@@ -11,7 +11,9 @@ description: Use when a LinkedIn selector, scrape, or automation flow may have d
 > stood between a probe and a post on the owner's real account. All three reasons are now
 > mechanisms, not intentions:
 >
-> 1. **It cannot write.** `install_read_only_guard()` patches Selenium at the start of every run: no
+> 1. **It cannot write.** `install_read_only_guard()` patches Selenium the moment the session is up
+>    (signing in is the one step that legitimately types — credentials and the emailed PIN — through
+>    production's own login path), so for every probe that follows: no
 >    printable character can be typed anywhere (every LinkedIn write starts with typed content) and
 >    no control whose own label commits something — Post, Send, Publish, Connect, Invite, Withdraw,
 >    Follow, Like, Join — can be clicked, via `WebElement.click`, `ActionChains` **or**
