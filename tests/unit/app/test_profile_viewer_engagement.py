@@ -10,7 +10,6 @@ The JS read is also what keeps the walk off `get_elements_as_list_wait_stale`, w
 wait is what raised the escalated "Finding Profile Viewers" TimeoutException (issue #1040).
 """
 
-from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
