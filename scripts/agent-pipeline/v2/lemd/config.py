@@ -74,6 +74,9 @@ class Config:
     base: Path
     repo: Path
     slug: str
+    #: The owner's GitHub login. The answer lane reads it to tell whose reply un-parks work — an
+    #: agent posting under the App identity must never be able to answer its own Decision Comment.
+    assignee: str
     db_path: Path
     #: Concurrency. `agent_slots` bounds `claude -p` children; `gh_slots` bounds cheap gh-only
     #: mutations so a merge-enable never queues behind a 20-minute implementation run.
@@ -134,6 +137,7 @@ def load(base: str | Path | None = None) -> Config:
         base=b,
         repo=Path(_str(env, "REPO", "/home/lem/linkedin_engagement_manager")),
         slug=_str(env, "SLUG", "christopherqueenconsulting/linkedin_engagement_manager"),
+        assignee=_str(env, "ASSIGNEE", "gitchrisqueen"),
         db_path=Path(_str(env, "LEMD_DB", str(b / "v2" / "state" / "queue.db"))),
         # LEMD_MAX_AGENTS, not MAX_AGENTS: v1's knob is 5 on this box, and reading it here made the
         # documented "cap v2 at 3 until the CPU envelope is measured" a fallback that never applied.

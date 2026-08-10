@@ -59,6 +59,10 @@ class Daemon:
         #: undeduped form would write ~40 rows a pass for ever, which is the volume problem that
         #: made the per-item hold log line unreadable in the first place.
         self._refused: dict[tuple[str, int], str] = {}
+        #: (kind, number) -> the answer id an in-flight un-park is spending. Written to
+        #: `items.last_comment_id` only when that action succeeds, so a failed un-park retries on
+        #: the next observation instead of consuming the owner's reply.
+        self._answer_ids: dict[tuple[str, int], str] = {}
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -171,6 +175,17 @@ class Daemon:
                 ("agent:revise", "pr"),
                 ("agent:depfix", "pr"),
                 ("agent:docfix", "pr"),
+                # The HOLD labels, both kinds, and this is not bookkeeping. `park.sh` strips
+                # `agent:working` when it parks, so a parked item matches none of the queries above:
+                # once it leaves the SQLite queue — a rebuilt database, a cutover, an item parked by
+                # v1 — nothing would ever look at it again, and the owner's answer would land on a
+                # thread no runner reads. #1274 was parked with both labels and absent from the
+                # queue entirely. Admission is unaffected: `agent:blocked` satisfies the `agent:`
+                # prefix test, and `decide` still holds anything carrying either label.
+                ("needs-human", "pr"),
+                ("needs-human", "issue"),
+                ("agent:blocked", "pr"),
+                ("agent:blocked", "issue"),
             ):
                 for obj in github.list_by_label(self.cfg.slug, label, kind):
                     number = obj.get("number")
@@ -218,10 +233,14 @@ class Daemon:
     def _observe_one(self, row) -> None:
         """Snapshot one item, decide, and record the outcome."""
         kind, number = row["kind"], row["number"]
+        routed = row["last_comment_id"]
+        routed = str(routed) if routed is not None else None
         if kind == "pr":
-            snap = observe.snapshot_pr(self.cfg.slug, number)
+            snap = observe.snapshot_pr(self.cfg.slug, number, owner=self.cfg.assignee,
+                                       answer_routed=routed)
         else:
-            snap = observe.snapshot_issue(self.cfg.slug, number)
+            snap = observe.snapshot_issue(self.cfg.slug, number, owner=self.cfg.assignee,
+                                          answer_routed=routed)
 
         decision = observe.decide(
             snap,
@@ -235,7 +254,8 @@ class Daemon:
         # 13 `ready -> claimed` transitions in four seconds that never occurred — an operator
         # debugging churn would have gone looking for a claim storm that was purely a log artefact.
         persisted = decision.next_state
-        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_PARK):
+        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_PARK,
+                               observe.ACT_UNPARK):
             persisted = db.STATE_READY
         self._emit(row, snap, decision, persisted)
 
@@ -249,6 +269,20 @@ class Daemon:
                 self.conn, kind=kind, number=number, state=row["state"],
                 head_sha=snap.head_sha or row["head_sha"],
                 branch=snap.branch or row["branch"], dirty=0, wake_at=None,
+            )
+            return
+
+        if decision.action == observe.ACT_UNPARK:
+            # The answer id is held here rather than written now: `last_comment_id` is the "already
+            # routed" marker, and writing it before the action runs would burn the owner's reply on
+            # an un-park that failed. `collect` records it only on rc=0.
+            if snap.answer is not None:
+                self._answer_ids[(kind, number)] = snap.answer.comment_id
+            db.upsert_item(
+                self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
+                pending_mode="unpark",
+                head_sha=snap.head_sha or row["head_sha"],
+                branch=snap.branch or row["branch"],
             )
             return
 
@@ -379,7 +413,10 @@ class Daemon:
         wip = db.wip_count(self.conn)
         for row in db.dispatchable(self.conn):
             mode = row["pending_mode"]
-            pool = "gh" if mode in ("merge", "park") else "agent"
+            # `unpark` is a gh-pool action: four label writes and a ledger reset, no model. It
+            # must never queue behind a 20-minute implementation run — the whole complaint it fixes
+            # is work sitting parked while the owner waits.
+            pool = "gh" if mode in ("merge", "park", "unpark") else "agent"
             if mode == "start" and self.cfg.hold_starts:
                 # Checked BEFORE the slot read: an operator holding new work still wants to see
                 # that it is being held, and a full pool would otherwise `continue` first and
@@ -455,6 +492,11 @@ class Daemon:
             return self.sup.dispatch_gh(
                 action="park", kind=kind, number=number,
                 args=[kind, str(number), row["parked_reason"] or "parked"], item_id=row["id"])
+        if mode == "unpark":
+            return self.sup.dispatch_gh(
+                action="unpark", kind=kind, number=number,
+                args=[kind, str(number), self._answer_ids.get((kind, number), "")],
+                item_id=row["id"])
         return self.sup.dispatch_agent(mode=mode, kind=kind, number=number,
                                        branch=row["branch"], item_id=row["id"])
 
@@ -490,6 +532,18 @@ class Daemon:
                 # Keep the decision and try again shortly.
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=0,
                                wake_at=int(time.time()) + 120)
+            elif rc == 0 and child.mode == "unpark":
+                # The answer is spent only now. Recording it is what stops the SAME reply un-parking
+                # a future park raised for a different reason — after a successful un-park the hold
+                # labels are gone, but the comment stays the newest one in the thread for ever.
+                # Written through `force_state`, not `upsert_item`: the item is `running` here, and
+                # the upsert guard exists precisely to stop writes landing on an active item.
+                # Re-observe immediately rather than on a TTL — the labels this action just rewrote
+                # ARE the next decision, and the owner is waiting on it.
+                answer_id = self._answer_ids.pop((child.kind, child.number), None)
+                db.force_state(self.conn, item["id"], db.STATE_READY, dirty=1,
+                               pending_mode=None, parked_reason=None, wake_at=None,
+                               last_comment_id=answer_id)
             elif rc == 0 and child.mode == "merge":
                 # A successful arm is a WAIT, not a reason to look again immediately. Re-observing
                 # here is what let #1295 spend its whole per-head merge budget in three minutes:

@@ -130,7 +130,10 @@ class Supervisor:
                 continue  # already counted above
             if not db.pid_alive(int(row["pid"]), row["pid_start"]):
                 continue
-            row_pool = "gh" if row["mode"] in ("merge_enable", "park") else "agent"
+            # Keep this set in step with `act()`'s pool routing. A gh action counted as an AGENT
+            # here would let a restart adopt it against the wrong cap — the agent pool is the
+            # scarce one, and mis-attributing a two-second label write to it stalls a real run.
+            row_pool = "gh" if row["mode"] in ("merge_enable", "park", "unpark") else "agent"
             if row_pool == pool:
                 adopted += 1
         return live + adopted
@@ -207,7 +210,7 @@ class Supervisor:
 
     def dispatch_gh(self, *, action: str, kind: str, number: int, args: list[str],
                     item_id: int | None) -> Child | None:
-        """Launch a cheap gh mutation (merge-enable, park)."""
+        """Launch a cheap gh mutation (merge-enable, park, unpark)."""
         if self.free("gh") <= 0:
             return None
         script = self.actions / f"{action}.sh"

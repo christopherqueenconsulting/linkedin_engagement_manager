@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import db, github
+from . import answers, db, github
 
 LOG = logging.getLogger("lemd.observe")
 
@@ -33,6 +33,7 @@ ACT_NONE = "none"
 ACT_DISPATCH = "dispatch"        # run an agent in some MODE
 ACT_MERGE = "merge"              # gh-only: arm auto-merge
 ACT_PARK = "park"                # gh-only: escalate to the owner
+ACT_UNPARK = "unpark"            # gh-only: the owner answered — release the hold
 ACT_CLOSE = "close"              # terminal bookkeeping
 
 
@@ -57,6 +58,13 @@ class Snapshot:
     #: For an ISSUE: has a previous run already produced a branch or a PR? Three-valued, and the
     #: third value is the point — `None` means "could not tell", which must never be read as "no".
     work_exists: bool | None = None
+    #: The owner's newest reply to the latest Decision Comment, when this item is held. Read ONLY
+    #: for held items — every other decision is reached without the extra call.
+    answer: answers.Answer | None = None
+    #: The answer id this item was already un-parked on, from `items.last_comment_id`. What stops
+    #: one reply being routed twice: after a successful un-park the labels are gone, but a park that
+    #: lands again later must not re-route on the answer to the PREVIOUS question.
+    answer_routed: str | None = None
     readable: bool = True           # False when any required read failed
 
 
@@ -103,7 +111,14 @@ def admissible(snap: Snapshot) -> tuple[bool, str]:
     if "autorelease: pending" in snap.labels:
         return False, "release_pr"
     if not any(ll.startswith("agent:") for ll in snap.labels):
-        return False, "no_agent_label"
+        # ...unless it is HELD. An item carrying a hold is one the pipeline parked, and the only
+        # decision available for it is the answer branch below — which is the one thing that can
+        # ever release it. Refusing admission here instead made a park unanswerable whenever the
+        # `agent:*` label went with it: issues #1284 and #1285 hold `needs-human` and nothing else,
+        # so an owner reply on either would have been read, classified, and then discarded one
+        # branch later. Admission is not authorisation — `v2_trust_ok` still gates the action.
+        if not (snap.labels & HOLD_LABELS):
+            return False, "no_agent_label"
     return True, "ok"
 
 
@@ -133,6 +148,27 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
 
     # ---- the owner's holds outrank every lane -------------------------------------------------
     if snap.labels & HOLD_LABELS:
+        # ...but an ANSWER is the owner lifting their own hold, and it is the only thing that can.
+        # Nothing else in v2 clears a hold label, so without this branch every park is permanent:
+        # `park.sh` promised un-parking happened "through the existing answer lane" and that lane
+        # was never ported off v1, which now stands down whenever the daemon heartbeat is fresh.
+        ans = snap.answer
+        if ans is not None:
+            if not ans.actionable:
+                # `hold` and `question` are recognised so they can be REFUSED by name. Ambiguity
+                # never starts a build — an owner who leads with `1B` and then writes "but don't
+                # merge until Friday" has not said go.
+                return Decision(ACT_NONE, db.STATE_PARKED, f"human_hold:{ans.verdict}",
+                                park_reason="needs_human", wake_in=ttl_parked,
+                                details={"answer": ans.excerpt})
+            if ans.comment_id and ans.comment_id == snap.answer_routed:
+                # Already acted on. Reached when an un-park succeeded and the item was parked again
+                # later for a NEW reason: the old reply is still the newest comment in the thread,
+                # and routing on it would answer a question nobody asked.
+                return Decision(ACT_NONE, db.STATE_PARKED, "human_hold:answer_already_routed",
+                                park_reason="needs_human", wake_in=ttl_parked)
+            return Decision(ACT_UNPARK, db.STATE_READY, "owner_answered", mode="unpark",
+                            details={"verdict": ans.verdict, "answer": ans.excerpt})
         # Event-driven (an owner comment or a label removal), with a slow safety re-check so a
         # missed webhook costs hours, not forever.
         return Decision(ACT_NONE, db.STATE_PARKED, "human_hold",
@@ -238,7 +274,21 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                     wait_reason="merge_queue", wake_in=ttl_queue)
 
 
-def snapshot_pr(slug: str, number: int, *,
+def _answer_for(slug: str, kind: str, number: int, labels: frozenset[str],
+                owner: str | None) -> answers.Answer | None:
+    """Read the owner's newest Decision-Comment reply, but only when it can change the answer.
+
+    Gated on the hold labels for cost, not for correctness: this is one `gh view --json comments`
+    call, and asking it for every observation would put it on the hot path of a queue whose whole
+    point is that a waiting item costs nothing.
+    """
+    if not owner or not (labels & HOLD_LABELS):
+        return None
+    return answers.newest(slug, kind, number, owner)
+
+
+def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
+                answer_routed: str | None = None,
                 review: github.ReviewState | None = None) -> Snapshot:
     """Build a `Snapshot` for a PR from live GitHub reads.
 
@@ -260,10 +310,11 @@ def snapshot_pr(slug: str, number: int, *,
         LOG.warning("PR #%s unreadable: %s", number, exc)
         return Snapshot(kind="pr", number=number, readable=False)
 
+    labels = frozenset(github.label_names(facts))
     return Snapshot(
         kind="pr",
         number=number,
-        labels=frozenset(github.label_names(facts)),
+        labels=labels,
         state=(facts.get("state") or "OPEN").upper(),
         is_draft=bool(facts.get("isDraft")),
         upstream=github.is_upstream(facts, slug),
@@ -275,12 +326,20 @@ def snapshot_pr(slug: str, number: int, *,
         checks=checks,
         review_fresh=reviews.fresh,
         unresolved_threads=reviews.unresolved,
+        answer=_answer_for(slug, "pr", number, labels, owner),
+        answer_routed=answer_routed,
         readable=True,
     )
 
 
-def snapshot_issue(slug: str, number: int) -> Snapshot:
-    """Build a `Snapshot` for an issue."""
+def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
+                   answer_routed: str | None = None) -> Snapshot:
+    """Build a `Snapshot` for an issue.
+
+    The answer read is not PR-only, and that is the half v1 got right and is easy to drop: a
+    Decision Comment raised before any PR exists has only the issue thread to live on, and an owner
+    who answers on the issue out of habit is answering.
+    """
     try:
         facts = github.gh_json(
             ["issue", "view", str(number), "--repo", slug, "--json",
@@ -303,6 +362,8 @@ def snapshot_issue(slug: str, number: int) -> Snapshot:
         labels=labels,
         state=(facts.get("state") or "OPEN").upper(),
         work_exists=work,
+        answer=_answer_for(slug, "issue", number, labels, owner),
+        answer_routed=answer_routed,
         readable=True,
     )
 

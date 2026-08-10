@@ -318,11 +318,19 @@ def dispatchable(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     Wait-state and parked items are absent by construction, which is what removes v1's head-of-line
     blocking: a PR waiting on the merge queue is not a candidate, so it cannot starve the ones
     behind it.
+
+    **Finishing work outranks starting work.** `start` sorts last, ahead of nothing. `ready_since`
+    alone put a 40-issue backlog — all stamped with the same older timestamp — in front of every
+    PR that had just become dispatchable, so six PRs un-parked at 21:47 would have waited for that
+    entire backlog to drain before getting a slot. The WIP gate does not catch this: it counts PRs
+    in flight, and a PR sitting `ready` behind the queue is not in flight, so the gate reads zero
+    and lets the starts through. This is v1's "new work never outruns merge throughput" rule
+    applied where the ordering is actually decided.
     """
     return list(
         conn.execute(
             "SELECT * FROM items WHERE state IN (%s) AND dirty=0 AND pending_mode IS NOT NULL "
-            "ORDER BY priority ASC, ready_since ASC"
+            "ORDER BY (pending_mode = 'start') ASC, priority ASC, ready_since ASC"
             % ",".join("?" * len(DISPATCHABLE_STATES)),
             tuple(sorted(DISPATCHABLE_STATES)),
         ).fetchall()
