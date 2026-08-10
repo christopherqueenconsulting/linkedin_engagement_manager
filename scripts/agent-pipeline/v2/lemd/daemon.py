@@ -154,6 +154,14 @@ class Daemon:
         try:
             for label, kind in (
                 ("agent:ready", "issue"),
+                # BOTH kinds, and the issue half is not decoration. v1 wrote `agent:working` onto
+                # the ISSUE as its in-flight claim marker, so an issue left holding it at the v1
+                # cutover matched no query here — not `agent:ready`, and the working query was
+                # PR-only. With v1 retired to a heartbeat-gated failsafe, nothing else would ever
+                # look at it again: #1091 and #1140 sat OPEN and un-worked from 05:20 UTC on
+                # 2026-08-10, absent from the queue entirely. `startup_recover` could not help,
+                # because it releases stranded claims for items ALREADY in the queue.
+                ("agent:working", "issue"),
                 ("agent:working", "pr"),
                 ("agent:revise", "pr"),
                 ("agent:depfix", "pr"),

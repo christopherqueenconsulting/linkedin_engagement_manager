@@ -224,8 +224,57 @@ def test_ready_issue_dispatches_start():
 
 
 def test_issue_without_ready_is_not_started():
-    got = d(observe.Snapshot(kind="issue", number=9, labels=frozenset({"agent:working"})))
+    got = d(observe.Snapshot(kind="issue", number=9, labels=frozenset({"agent:triage"})))
     assert got.action == observe.ACT_NONE
+
+
+def test_a_stranded_working_claim_on_an_issue_is_recovered():
+    """#1091 and #1140: v1 marked the ISSUE `agent:working` and died holding it.
+
+    The label lives on GitHub, not in the queue, so `startup_recover` never sees it, and with v1
+    retired to a heartbeat-gated failsafe nothing else would look at the issue again. Both sat OPEN
+    and un-worked from the 2026-08-10 cutover. Recovery is a `start`, but ONLY once the work
+    question says there is nothing to fork.
+    """
+    stranded = observe.Snapshot(kind="issue", number=1091,
+                                labels=frozenset({"agent:working"}), work_exists=False)
+    got = d(stranded)
+    assert (got.action, got.mode, got.reason) == (
+        observe.ACT_DISPATCH, "start", "working_claim_stranded")
+
+
+def test_a_working_claim_with_real_work_behind_it_is_never_restarted():
+    """The honest case. A branch or linked PR means the claim is true and the PR carries it."""
+    from dataclasses import replace
+    honest = observe.Snapshot(kind="issue", number=1091,
+                              labels=frozenset({"agent:working"}), work_exists=True)
+    assert d(honest).action == observe.ACT_NONE
+    assert d(honest).next_state == db.STATE_WAIT_REVIEW
+    # Unreadable is not "no work" — guessing wrong here puts two agents on one branch.
+    assert d(replace(honest, work_exists=None)).action == observe.ACT_NONE
+
+
+def test_a_held_working_claim_is_still_the_owners():
+    """`needs-human` outranks the recovery lane exactly as it outranks every other."""
+    got = d(observe.Snapshot(kind="issue", number=1091, work_exists=False,
+                             labels=frozenset({"agent:working", "needs-human"})))
+    assert (got.action, got.next_state) == (observe.ACT_NONE, db.STATE_PARKED)
+
+
+def test_snapshot_issue_asks_the_work_question_for_a_working_claim(monkeypatch):
+    """The seam that makes the recovery real.
+
+    `work_exists` was only computed for `agent:ready`, so a reconciled `agent:working` issue would
+    have arrived with `None` — read as unreadable — and waited in `awaiting_ci` for ever instead of
+    being recovered. Silent, and indistinguishable from a healthy wait.
+    """
+    monkeypatch.setattr(github, "gh_json", lambda *a, **k: {
+        "number": 1091, "state": "OPEN", "labels": [{"name": "agent:working"}],
+    })
+    monkeypatch.setattr(observe, "_work_exists_for_issue", lambda *a, **k: False)
+    snap = observe.snapshot_issue("o/r", 1091)
+    assert snap.work_exists is False
+    assert d(snap).mode == "start"
 
 
 def test_held_issue_is_never_started():
