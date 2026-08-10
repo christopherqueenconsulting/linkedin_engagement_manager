@@ -277,9 +277,9 @@ def banned_phrases() -> tuple:
 
 
 def banned_scaffolds() -> tuple:
-    """`content_framework.POST_BANNED_SCAFFOLDS` + `NEWSLETTER_BANNED_SCAFFOLDS`, extended per-deploy
-    via `SLOP_LINT_EXTRA_SCAFFOLDS`.
+    """The banned-scaffold list, extended per-deploy via `SLOP_LINT_EXTRA_SCAFFOLDS`.
 
+    `content_framework.POST_BANNED_SCAFFOLDS` + `NEWSLETTER_BANNED_SCAFFOLDS`.
     Never a second list: the shared constants are what the writer-side directives name, so a phrase
     can only be banned in the prompt and unchecked here (or the reverse) by editing it away.
     """

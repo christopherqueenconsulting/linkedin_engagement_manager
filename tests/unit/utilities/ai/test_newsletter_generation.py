@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 pytestmark = pytest.mark.unit
 
 _AI = "cqc_lem.utilities.ai.ai_helper"

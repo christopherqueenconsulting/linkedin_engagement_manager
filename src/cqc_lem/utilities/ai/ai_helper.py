@@ -874,7 +874,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
           title's loop. Think "email preview text", not an H1 summary.
         - subject: a short (<= ~120 char) phrase naming THIS edition's specific subject/angle, for
           internal dedup history (echo the given subject when one is provided).
-        - body: the full plain-text article with real line breaks (\\n) as described above.""" + blueprint_block + _framework.newsletter_writing_directive(),
+        - body: the full plain-text article with real line breaks (\\n) as described above."""
+                   + blueprint_block
+                   + _framework.newsletter_writing_directive(),
     }
     user_prompt = {"role": "user",
                    "content": f"Author voice reference (TONE + CREDIBILITY only):\n"
