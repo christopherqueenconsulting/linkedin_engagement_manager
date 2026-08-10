@@ -1,6 +1,7 @@
 """Unit tests for the Grid debug-node pin (issue #753, made two-way and enforceable in #1301)."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -210,26 +211,37 @@ class TestComposeDebugStereotype:
     """
 
     @staticmethod
-    def _services(filename: str) -> dict:
-        # Parsed as YAML, not grepped, because the bug WAS the quoting: the node receives whatever
-        # a YAML parser resolves this to, and `KEY='{...}'` resolves to a value with literal
-        # apostrophes in it. A substring assertion cannot see the difference; this can.
-        import yaml
+    def _yaml_scalar(raw: str) -> str:
+        """The value a YAML parser resolves this list entry to — quotes RESOLVED, not stripped.
 
-        class _Loader(yaml.SafeLoader):
-            """SafeLoader that tolerates compose's `!override` / `!reset` merge tags."""
-
-        _Loader.add_multi_constructor(
-            "!", lambda loader, suffix, node: loader.construct_mapping(node, deep=True)
-            if isinstance(node, yaml.MappingNode) else None)
-        return yaml.load((REPO_ROOT / filename).read_text(), Loader=_Loader)["services"]
+        This is the whole test. The bug was the quoting: `- KEY='{...}'` is a PLAIN scalar whose
+        value keeps the apostrophes, while `- 'KEY={...}'` is a quoted scalar whose value does not.
+        Hand-rolled rather than imported: pyyaml is not a declared dependency, and the two forms
+        differ by exactly one rule.
+        """
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+            inner = raw[1:-1]
+            return inner.replace("''", "'") if raw[0] == "'" else inner
+        return raw
 
     def _stereotype_extra(self, filename: str, service: str):
-        env = self._services(filename)[service]["environment"]
-        values = [entry.split("=", 1)[1] for entry in env
-                  if entry.split("=", 1)[0] == "SE_NODE_STEREOTYPE_EXTRA"]
+        block = self._block((REPO_ROOT / filename).read_text(), service)
+        values = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("- "):
+                continue
+            entry = self._yaml_scalar(stripped[2:])
+            key, _, value = entry.partition("=")
+            if key == "SE_NODE_STEREOTYPE_EXTRA":
+                values.append(value)
         assert values, f"{service} declares no SE_NODE_STEREOTYPE_EXTRA"
         return json.loads(values[0])
+
+    @staticmethod
+    def _block(compose: str, name: str) -> str:
+        return re.split(r"\n  (?=[\w-]+:)", compose.split(f"\n  {name}:\n")[1])[0]
 
     def test_the_debug_node_declares_lem_debug_true_as_PARSEABLE_json(self):
         # json.loads is the regression guard. `SE_NODE_STEREOTYPE_EXTRA='{"lem:debug":true}'` (the

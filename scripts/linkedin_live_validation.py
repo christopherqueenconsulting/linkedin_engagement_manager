@@ -235,6 +235,8 @@ def element_labels(element) -> list:
     try:
         labels.append(element.text)
     except Exception:
+        # Same reason as the attribute loop above: an element that went stale between the find and
+        # this read has no text to offer, and the labels already collected still classify it.
         pass
     return [label for label in labels if normalise_label(label)]
 
@@ -294,8 +296,9 @@ def install_read_only_guard() -> dict:
     from selenium.webdriver.remote.webdriver import WebDriver
     from selenium.webdriver.remote.webelement import WebElement
 
+    # `submit` and `clear` are deliberately NOT captured: their replacements always refuse, so
+    # there is no original left to call.
     element_click, element_send_keys = WebElement.click, WebElement.send_keys
-    element_submit, element_clear = WebElement.submit, WebElement.clear
     driver_script = WebDriver.execute_script
     chain_click, chain_send_keys = ActionChains.click, ActionChains.send_keys
     chain_send_to = ActionChains.send_keys_to_element
