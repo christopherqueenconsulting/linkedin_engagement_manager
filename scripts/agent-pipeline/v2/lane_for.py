@@ -42,6 +42,11 @@ def main(argv: list[str]) -> int:
         if isinstance(data, dict) and time.time() - float(data.get("at") or 0) < MAX_AGE:
             usage = spend.Usage(**{k: v for k, v in data.items() if k in spend.Usage.__annotations__})
     except (OSError, ValueError, TypeError):
+        # Absent, unreadable, truncated mid-write, or hand-edited: every one of those means the same
+        # thing here — there is no trustworthy reading. `usage` stays `readable=False`, which makes
+        # `lane.decide` return `probe_unavailable` and leaves the existing health-based routing in
+        # place. Raising instead would take down a dispatch over a stale cache file, and defaulting
+        # to a lane would be a routing decision made from no evidence.
         pass
 
     # How long the Claude lane has been paused, for selfreview's bounded wait. The pause file holds
@@ -55,6 +60,10 @@ def main(argv: list[str]) -> int:
         if until > time.time():
             paused_seconds = max(0.0, time.time() - started)
     except (OSError, ValueError):
+        # No pause file, or an unparseable one. Both mean "the Claude lane is not paused as far as
+        # we can tell", which leaves `paused_seconds` at 0 — and 0 is the SAFE reading: it makes
+        # selfreview prefer Claude rather than believing a wait has already been exhausted and
+        # downgrading the review to tier 3. The bounded wait can only be entered on evidence.
         pass
 
     choice = lane.decide(
