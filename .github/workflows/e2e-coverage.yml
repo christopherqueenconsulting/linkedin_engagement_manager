@@ -73,10 +73,13 @@ jobs:
             poetry run playwright install --with-deps chromium
           fi
 
+      # main only, for the reason spelled out in poetry_setup: a merge-queue ref is deleted on merge,
+      # so a cache written from one is orphaned immediately, and a merge_group run can already read
+      # main's entry through the default-branch fallback.
       - name: Save Playwright browsers
         if: >-
           steps.pw-cache.outputs.cache-hit != 'true' &&
-          (github.ref == 'refs/heads/main' || github.event_name == 'merge_group')
+          github.ref == 'refs/heads/main'
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ms-playwright
