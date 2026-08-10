@@ -50,6 +50,7 @@ class Snapshot:
     head_sha: str | None = None
     merge_state: str = ""           # GitHub mergeStateStatus
     queue_state: str = ""           # mergeQueueEntry state, "" = no entry
+    auto_merge: bool = False        # auto-merge already armed on this PR
     checks: github.ChecksState | None = None
     review_fresh: bool = False      # a review marker at or after the current head
     unresolved_threads: int = 0
@@ -151,6 +152,19 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
     if "agent:docfix" in snap.labels:
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "lint_gate_failure", mode="docfix")
 
+    if snap.auto_merge:
+        # Already armed. GitHub will enqueue it the moment its gate clears, so there is nothing to
+        # decide and nothing to ask for — this is a WAIT, and saying so is what stops v2 reproducing
+        # the incident it was built to prevent.
+        #
+        # This sits ABOVE the checks branch on purpose. An armed PR reporting BLOCKED is the normal,
+        # healthy state of a PR waiting on required checks; without this, `decide` fell through to
+        # "gate satisfied -> ACT_MERGE" on every pass and burned the per-head merge budget in three
+        # minutes, one pass from parking a perfectly good PR. Measured live on #1295.
+        return Decision(ACT_NONE, db.STATE_WAIT_QUEUE, "auto_merge_armed",
+                        wait_reason="merge_queue", wake_in=ttl_queue,
+                        details={"merge_state": snap.merge_state})
+
     checks = snap.checks
     if checks is None:
         return Decision(ACT_NONE, db.STATE_WAIT_CI, "checks_unknown",
@@ -215,6 +229,7 @@ def snapshot_pr(slug: str, number: int, *,
         head_sha=facts.get("headRefOid"),
         merge_state=(facts.get("mergeStateStatus") or "").upper(),
         queue_state=queue,
+        auto_merge=facts.get("autoMergeRequest") is not None,
         checks=checks,
         review_fresh=reviews.fresh,
         unresolved_threads=reviews.unresolved,

@@ -292,3 +292,47 @@ def test_v2_trusts_the_app_bot_as_a_labeller_exactly_as_v1_does(tmp_path):
     # And both must gate it on the identity actually being active, not merely configured.
     for text in (tick, common):
         assert '[ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]' in text
+
+
+# --------------------------------------------------------------------------- the #1120 shape
+
+def test_an_already_armed_pr_is_a_wait_not_another_merge_request():
+    """The incident v2 exists to prevent, reproduced by v2 within minutes of cutover.
+
+    An armed PR reporting BLOCKED is the NORMAL state of one waiting on required checks. Without
+    reading `autoMergeRequest`, `decide` fell through to "gate satisfied -> ACT_MERGE" on every
+    pass, spent the whole per-head merge budget in three minutes, and parked a perfectly healthy
+    PR (#1295). GitHub enqueues an armed PR by itself; there is nothing left to ask for.
+    """
+    from lemd import observe
+
+    armed = observe.Snapshot(
+        kind="pr", number=1295, labels=frozenset({"agent:working"}),
+        merge_state="BLOCKED", auto_merge=True, review_fresh=True,
+    )
+    d = observe.decide(armed, ttl_ci=1800, ttl_review=3600, ttl_queue=900, ttl_parked=21600)
+    assert d.action == observe.ACT_NONE
+    assert d.next_state == db.STATE_WAIT_QUEUE
+    assert d.reason == "auto_merge_armed"
+    assert d.wake_in == 900
+
+
+def test_an_unarmed_green_pr_still_asks_for_the_merge():
+    """The guard above must not disable the merge lane it is protecting."""
+    from lemd import github, observe
+
+    green = observe.Snapshot(
+        kind="pr", number=99, labels=frozenset({"agent:working"}), auto_merge=False,
+        review_fresh=True, checks=github.ChecksState(failed=0, pending=0, total=3),
+    )
+    d = observe.decide(green, ttl_ci=1800, ttl_review=3600, ttl_queue=900, ttl_parked=21600)
+    assert d.action == observe.ACT_MERGE
+
+
+def test_the_snapshot_actually_reads_auto_merge_from_github():
+    """A field the state machine branches on must be in the fields the reader requests."""
+    from lemd import github
+
+    src = (_V2 / "lemd" / "github.py").read_text()
+    assert "autoMergeRequest" in src
+    assert hasattr(github, "pr_facts")

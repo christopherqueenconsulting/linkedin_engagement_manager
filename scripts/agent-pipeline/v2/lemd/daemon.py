@@ -402,6 +402,15 @@ class Daemon:
                 # Keep the decision and try again shortly.
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=0,
                                wake_at=int(time.time()) + 120)
+            elif rc == 0 and child.mode == "merge":
+                # A successful arm is a WAIT, not a reason to look again immediately. Re-observing
+                # here is what let #1295 spend its whole per-head merge budget in three minutes:
+                # each pass saw an armed-but-not-yet-enqueued PR, read it as "gate satisfied", and
+                # asked again. `observe.decide` now refuses that too, and this is the second half —
+                # the run's own outcome must not contradict the state its success implies.
+                db.force_state(self.conn, item["id"], db.STATE_WAIT_QUEUE, dirty=0,
+                               pending_mode=None, wait_reason="merge_queue",
+                               wake_at=int(time.time()) + self.cfg.ttl_queue)
             else:
                 # Everything else — success, agent failure, timeout — is answered by looking at
                 # GitHub again rather than by guessing locally what the run achieved.

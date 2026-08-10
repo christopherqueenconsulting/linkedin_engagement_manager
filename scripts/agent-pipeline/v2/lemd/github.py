@@ -156,9 +156,13 @@ def checks_for(slug: str, pr: int, *, timeout: int = 30) -> ChecksState:
 
 def pr_facts(slug: str, pr: int, *, timeout: int = 30) -> dict[str, Any]:
     """The PR fields the state machine reads, in one call."""
+    # `autoMergeRequest` is load-bearing, not diagnostic: without it the state machine cannot tell
+    # "this PR needs auto-merge armed" from "this PR is armed and waiting", and re-decides the
+    # former every pass. That is the #1120 shape — 45 enqueue requests against a budget of 12 —
+    # reproduced in a scheduler built to prevent it.
     fields = (
         "number,state,isDraft,mergeStateStatus,headRefName,headRefOid,labels,author,"
-        "headRepositoryOwner,updatedAt,mergedAt"
+        "headRepositoryOwner,updatedAt,mergedAt,autoMergeRequest"
     )
     return gh_json(
         ["pr", "view", str(pr), "--repo", slug, "--json", fields],
