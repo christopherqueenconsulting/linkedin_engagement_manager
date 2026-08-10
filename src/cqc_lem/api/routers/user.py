@@ -1966,6 +1966,29 @@ def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
     })
 
 
+def _should_rebrief_cover(existing: dict, request: "NewsletterDraftRequest") -> bool:
+    """True when the edited fields change the opening text of an AI-generated cover.
+
+    Only title or subtitle edits trigger a re-brief: they are the text the cover brief reads
+    alongside the body, and the cover is generated before final edits. Body-only edits are left
+    to the author to decide — they may be deep in the newsletter and not change the visual idea.
+    Uploads are never re-briefed: the author chose that artwork themselves.
+    """
+    if existing.get("cover_image_source") != "ai":
+        return False
+    if existing.get("cover_image_status") is None:
+        return False
+    title = request.title
+    subtitle = request.subtitle
+    if title is None and subtitle is None:
+        return False
+    existing_title = (existing.get("title") or "").strip()
+    existing_subtitle = (existing.get("subtitle") or "").strip()
+    new_title = (title if title is not None else existing.get("title") or "").strip()
+    new_subtitle = (subtitle if subtitle is not None else existing.get("subtitle") or "").strip()
+    return new_title != existing_title or new_subtitle != existing_subtitle
+
+
 @router.put("/newsletter-draft")
 def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> ResponseModel:
     """Edit a queued edition, and optionally approve or skip it.
@@ -1973,6 +1996,10 @@ def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> Respons
     An unrecognised `action` maps to no status change, so it saves the fields rather than
     publishing on a typo. Ownership is checked against the edition's own `user_id` — a foreign
     edition id is a 404, never an edit.
+
+    When a title/subtitle edit lands on an AI-generated cover, the cover is re-briefed from the
+    updated opening text (issue #1287). The old AI cover file is removed, a new generation is
+    queued, and the result still lands `pending_review` — the hard-approval gate is unchanged.
     """
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -1981,10 +2008,29 @@ def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> Respons
     if not existing or existing.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Edition not found")
     status = {"approve": "approved", "skip": "skipped"}.get(request.action)  # None for 'save'
+    rebrief = _should_rebrief_cover(existing, request)
     if not update_newsletter_edition(request.edition_id, user_id, title=request.title,
                                      subtitle=request.subtitle, body=request.body, status=status,
                                      scheduled_for=request.scheduled_datetime):
         raise HTTPException(status_code=500, detail="Could not update newsletter draft")
+    if rebrief:
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        from cqc_lem.utilities.db import clear_edition_cover_image
+        from cqc_lem.utilities.newsletter_cover import remove_cover_file
+
+        previous_path = existing.get("cover_image_path")
+        if clear_edition_cover_image(request.edition_id, user_id):
+            if previous_path:
+                remove_cover_file(previous_path)
+        else:
+            log_warning("Could not clear stale AI cover before re-brief",
+                        user_id=user_id, edition_id=request.edition_id,
+                        action_type="newsletter_cover")
+        generate_newsletter_cover.apply_async(
+            kwargs={"edition_id": request.edition_id, "use_avatar": None})
+        log_info("Re-briefing newsletter cover after title/subtitle edit",
+                 user_id=user_id, edition_id=request.edition_id,
+                 action_type="newsletter_cover")
     return ResponseModel(status_code=200, detail="Newsletter draft updated")
 
 
