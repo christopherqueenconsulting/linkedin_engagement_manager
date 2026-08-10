@@ -21,6 +21,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 LOG = logging.getLogger("lemd.github")
@@ -37,7 +38,18 @@ REQUIRED_CHECKS = (
 )
 
 FAILED_CONCLUSIONS = frozenset({"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"})
-PENDING_CONCLUSIONS = frozenset({"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", ""})
+#: The ONLY conclusions that count as "this check is done and did not fail". Everything else —
+#: PENDING/QUEUED/IN_PROGRESS, and equally the ones nobody thinks about (`ACTION_REQUIRED` on a
+#: workflow awaiting approval, `STALE`) — counts as NOT REPORTED YET. Classifying by an explicit
+#: pass list rather than by a pending list is the difference between an unknown conclusion holding
+#: a PR and an unknown conclusion reading as green.
+PASSED_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+
+#: Reviewer identities and the marker MODE=selfreview posts, pinned to the same strings tick.sh
+#: uses (`COPILOT`, `CLAUDE_REVIEW_MARKER`). During migration both runners must agree on what counts
+#: as a review, or v2's shadow decisions diverge from v1's for a reason that is not a defect.
+COPILOT_LOGIN = "copilot-pull-request-reviewer"
+CLAUDE_REVIEW_MARKER = "🔎 Claude adversarial review"
 
 
 class GitHubUnavailable(RuntimeError):
@@ -52,6 +64,7 @@ class ChecksState:
     pending: int
     total: int
     names_failed: tuple[str, ...] = field(default=())
+    names_pending: tuple[str, ...] = field(default=())
 
     @property
     def green(self) -> bool:
@@ -96,26 +109,38 @@ def checks_for(slug: str, pr: int, *, timeout: int = 30) -> ChecksState:
     Non-required noise (CodeQL Security Analysis, E2E, the docstring gate) is filtered out for the
     same reason v1 filters it: those can be red on a PR that is legitimately mergeable, and gating
     on them would park healthy work.
+
+    A required context that is ABSENT from the rollup counts as pending, not as absent-and-therefore
+    fine. Every workflow behind the six required contexts triggers unconditionally on
+    `pull_request`, so a head listing only three of them is a head where the other three have not
+    been created yet — and `total > 0 and failed == 0 and pending == 0` would call that green and
+    arm auto-merge before CI had reported. The `total == 0` guard alone only catches the instant
+    before the FIRST check appears.
     """
     data = gh_json(
         ["pr", "view", str(pr), "--repo", slug, "--json", "statusCheckRollup"], timeout=timeout
     )
     rollup = (data or {}).get("statusCheckRollup") or []
     failed: list[str] = []
-    pending = 0
-    total = 0
+    pending: list[str] = []
+    reported: set[str] = set()
     for c in rollup:
         name = c.get("name") or c.get("context") or ""
         if name not in REQUIRED_CHECKS:
             continue
-        total += 1
+        reported.add(name)
         state = (c.get("conclusion") or c.get("state") or "").upper()
         if state in FAILED_CONCLUSIONS:
             failed.append(name)
-        elif state in PENDING_CONCLUSIONS:
-            pending += 1
+        elif state not in PASSED_CONCLUSIONS:
+            pending.append(name)
+    pending.extend(n for n in REQUIRED_CHECKS if n not in reported)
     return ChecksState(
-        failed=len(failed), pending=pending, total=total, names_failed=tuple(sorted(failed))
+        failed=len(failed),
+        pending=len(pending),
+        total=len(reported),
+        names_failed=tuple(sorted(failed)),
+        names_pending=tuple(sorted(pending)),
     )
 
 
@@ -151,6 +176,94 @@ def merge_queue_state(slug: str, pr: int, *, timeout: int = 30) -> str:
         timeout=timeout,
     )
     return out.strip()
+
+
+@dataclass(frozen=True)
+class ReviewState:
+    """A PR's review evidence: is there a review of the CURRENT head, and what is still unresolved."""
+
+    fresh: bool
+    unresolved: int
+    reviewed_at: str = ""
+    head_at: str = ""
+
+
+def _epoch(value: str | None) -> float:
+    """ISO-8601 to epoch seconds; 0.0 for absent or unparseable — i.e. "no evidence"."""
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+_REVIEW_QUERY = (
+    "query=query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){"
+    "pullRequest(number:$p){"
+    "commits(last:1){nodes{commit{committedDate}}}"
+    "reviews(last:20){nodes{submittedAt author{login}}}"
+    # 100 (the connection maximum), not a smaller window: the marker is an ISSUE comment, so on a
+    # PR with a long discussion a short window scrolls the review evidence out of sight and the
+    # selfreview lane re-dispatches on a PR that was already reviewed.
+    "comments(last:100){nodes{createdAt body}}"
+    "reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}"
+    "}}}"
+)
+
+
+def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
+    """Whether this PR carries review evidence for its current head, and its unresolved-thread count.
+
+    Both facts in one GraphQL call because both are read on every observation of every open PR, and
+    they are the two the merge gate actually turns on.
+
+    Freshness is STRICTER than v1's `claude_marker_fresh_p`, which accepts a marker older than the
+    head once the head has aged past `REVIEW_GRACE_SECONDS`. Here a review must be at or after the
+    head commit, full stop: being wrong in this direction costs one extra selfreview run, being
+    wrong in the other direction merges code no reviewer ever saw. A head with no readable commit
+    date falls back to "any review counts", because refusing every PR when a date is unreadable
+    would wedge the whole gate.
+
+    Only COPILOT-authored threads count as unresolved, mirroring `copilot_unresolved_threads`: a
+    human's unresolved nit is not something MODE=review can resolve, so counting it would dispatch
+    that lane forever.
+    """
+    owner, _, name = slug.partition("/")
+    data = gh_json(
+        ["api", "graphql", "-f", _REVIEW_QUERY,
+         "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={pr}"],
+        timeout=timeout,
+    ) or {}
+    node = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
+
+    commits = ((node.get("commits") or {}).get("nodes") or [])
+    head_at = ""
+    if commits:
+        head_at = ((commits[-1] or {}).get("commit") or {}).get("committedDate") or ""
+
+    stamps: list[str] = []
+    for review in ((node.get("reviews") or {}).get("nodes") or []):
+        login = ((review or {}).get("author") or {}).get("login") or ""
+        if COPILOT_LOGIN in login.lower() and review.get("submittedAt"):
+            stamps.append(review["submittedAt"])
+    for comment in ((node.get("comments") or {}).get("nodes") or []):
+        body = (comment or {}).get("body") or ""
+        if body.lstrip().startswith(CLAUDE_REVIEW_MARKER) and comment.get("createdAt"):
+            stamps.append(comment["createdAt"])
+    reviewed_at = max(stamps, key=_epoch) if stamps else ""
+
+    unresolved = 0
+    for thread in ((node.get("reviewThreads") or {}).get("nodes") or []):
+        if (thread or {}).get("isResolved"):
+            continue
+        first = ((thread.get("comments") or {}).get("nodes") or [{}])[0] or {}
+        login = (first.get("author") or {}).get("login") or ""
+        if COPILOT_LOGIN in login.lower():
+            unresolved += 1
+
+    fresh = bool(reviewed_at) and (not head_at or _epoch(reviewed_at) >= _epoch(head_at))
+    return ReviewState(fresh=fresh, unresolved=unresolved, reviewed_at=reviewed_at, head_at=head_at)
 
 
 def list_by_label(slug: str, label: str, kind: str = "pr", *, limit: int = 100,

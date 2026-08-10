@@ -8,7 +8,9 @@ invariant.
 
 from __future__ import annotations
 
+import dataclasses
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -16,7 +18,13 @@ import pytest
 _V2 = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "v2"
 sys.path.insert(0, str(_V2))
 
-from lemd import db, observe  # noqa: E402
+from lemd import (  # noqa: E402
+    daemon as daemon_mod,  # noqa: E402
+    db,
+    github,
+    observe,
+)
+from lemd.config import load  # noqa: E402
 from lemd.github import ChecksState  # noqa: E402
 
 TTLS = dict(ttl_ci=1800, ttl_review=3600, ttl_queue=900, ttl_parked=21600)
@@ -228,3 +236,214 @@ def test_every_decision_carries_a_reason():
     for snap in (pr(), pr(checks=RED), pr(readable=False), pr(is_draft=True),
                  pr(state="MERGED"), pr(upstream=False)):
         assert d(snap).reason
+
+
+# ---------------------------------------------------------------- the rollup reader
+
+
+def _rollup(monkeypatch, entries):
+    """Serve one `statusCheckRollup` payload to `checks_for`."""
+    monkeypatch.setattr(github, "gh_json", lambda *a, **k: {"statusCheckRollup": entries})
+
+
+def test_all_required_checks_green_is_green(monkeypatch):
+    _rollup(monkeypatch, [{"name": n, "conclusion": "SUCCESS"} for n in github.REQUIRED_CHECKS])
+    assert github.checks_for("o/r", 1).green is True
+
+
+def test_a_required_check_that_has_not_reported_counts_as_pending(monkeypatch):
+    """The hazard `total == 0` does not catch: a head where only SOME checks exist yet.
+
+    Every workflow behind the six required contexts triggers on every `pull_request`, so three
+    green entries means the other three have not been created — reading that as green armed
+    auto-merge before CI had reported.
+    """
+    _rollup(monkeypatch, [{"name": n, "conclusion": "SUCCESS"}
+                          for n in github.REQUIRED_CHECKS[:3]])
+    state = github.checks_for("o/r", 1)
+    assert state.green is False
+    assert state.pending == 3
+    assert d(pr(checks=state)).next_state == db.STATE_WAIT_CI
+
+
+def test_an_unknown_conclusion_is_never_treated_as_success(monkeypatch):
+    """`ACTION_REQUIRED` (a workflow awaiting approval) must hold the PR, not pass it."""
+    entries = [{"name": n, "conclusion": "SUCCESS"} for n in github.REQUIRED_CHECKS[:-1]]
+    entries.append({"name": github.REQUIRED_CHECKS[-1], "conclusion": "ACTION_REQUIRED"})
+    _rollup(monkeypatch, entries)
+    state = github.checks_for("o/r", 1)
+    assert (state.green, state.pending) == (False, 1)
+    assert state.names_pending == (github.REQUIRED_CHECKS[-1],)
+
+
+def test_non_required_noise_is_ignored(monkeypatch):
+    entries = [{"name": n, "conclusion": "SUCCESS"} for n in github.REQUIRED_CHECKS]
+    entries.append({"name": "CodeQL Security Analysis", "conclusion": "FAILURE"})
+    _rollup(monkeypatch, entries)
+    assert github.checks_for("o/r", 1).green is True
+
+
+def test_failed_required_check_is_named(monkeypatch):
+    entries = [{"name": n, "conclusion": "SUCCESS"} for n in github.REQUIRED_CHECKS[1:]]
+    entries.append({"name": github.REQUIRED_CHECKS[0], "conclusion": "FAILURE"})
+    _rollup(monkeypatch, entries)
+    state = github.checks_for("o/r", 1)
+    assert state.failed == 1 and state.names_failed == (github.REQUIRED_CHECKS[0],)
+
+
+# ---------------------------------------------------------------- the review reader
+
+
+def _review_payload(*, head="2026-08-10T10:00:00Z", comments=(), reviews=(), threads=()):
+    """A GraphQL response shaped like the one `review_state` reads."""
+    return {"data": {"repository": {"pullRequest": {
+        "commits": {"nodes": [{"commit": {"committedDate": head}}]},
+        "reviews": {"nodes": list(reviews)},
+        "comments": {"nodes": list(comments)},
+        "reviewThreads": {"nodes": list(threads)},
+    }}}}
+
+
+def _serve(monkeypatch, payload):
+    monkeypatch.setattr(github, "gh_json", lambda *a, **k: payload)
+
+
+def test_marker_after_the_head_commit_is_fresh(monkeypatch):
+    _serve(monkeypatch, _review_payload(comments=[
+        {"createdAt": "2026-08-10T10:05:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS"},
+    ]))
+    assert github.review_state("o/r", 1).fresh is True
+
+
+def test_marker_older_than_the_head_commit_is_stale(monkeypatch):
+    """A review of the PREVIOUS head is not a review of this one — a new push must be re-reviewed."""
+    _serve(monkeypatch, _review_payload(comments=[
+        {"createdAt": "2026-08-10T09:00:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS"},
+    ]))
+    state = github.review_state("o/r", 1)
+    assert state.fresh is False
+    assert d(pr(review_fresh=state.fresh)).mode == "selfreview"
+
+
+def test_a_copilot_review_also_satisfies_freshness(monkeypatch):
+    _serve(monkeypatch, _review_payload(reviews=[
+        {"submittedAt": "2026-08-10T10:30:00Z",
+         "author": {"login": "copilot-pull-request-reviewer[bot]"}},
+    ]))
+    assert github.review_state("o/r", 1).fresh is True
+
+
+def test_an_unrelated_comment_is_not_a_review(monkeypatch):
+    _serve(monkeypatch, _review_payload(comments=[
+        {"createdAt": "2026-08-10T11:00:00Z", "body": "looks good to me"},
+    ]))
+    assert github.review_state("o/r", 1).fresh is False
+
+
+def test_only_copilot_threads_count_as_unresolved(monkeypatch):
+    """A human's unresolved nit is not something MODE=review can resolve, so it must not dispatch it."""
+    _serve(monkeypatch, _review_payload(threads=[
+        {"isResolved": False, "comments": {"nodes": [{"author": {"login": "gitchrisqueen"}}]}},
+        {"isResolved": False,
+         "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer[bot]"}}]}},
+        {"isResolved": True,
+         "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer[bot]"}}]}},
+    ]))
+    assert github.review_state("o/r", 1).unresolved == 1
+
+
+def test_unreadable_head_date_accepts_an_existing_review(monkeypatch):
+    """Refusing every PR when a commit date is unreadable would wedge the gate."""
+    payload = _review_payload(head="", comments=[
+        {"createdAt": "2026-08-01T00:00:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS"},
+    ])
+    _serve(monkeypatch, payload)
+    assert github.review_state("o/r", 1).fresh is True
+
+
+def test_snapshot_pr_reads_review_evidence_instead_of_defaulting_it(monkeypatch):
+    """The defect this covers: review facts arrived as kwargs NO caller passed.
+
+    Every observation therefore asserted "no fresh review, no unresolved threads", so `ACT_MERGE`
+    was unreachable from the daemon and every green PR reported as needing a selfreview.
+    """
+    monkeypatch.setattr(github, "pr_facts", lambda *a, **k: {
+        "number": 7, "state": "OPEN", "isDraft": False, "mergeStateStatus": "CLEAN",
+        "headRefName": "feature/x", "headRefOid": "abc",
+        "labels": [{"name": "agent:working"}],
+        "headRepositoryOwner": {"login": "o"},
+    })
+    monkeypatch.setattr(github, "checks_for", lambda *a, **k: GREEN)
+    monkeypatch.setattr(github, "merge_queue_state", lambda *a, **k: "")
+    monkeypatch.setattr(github, "review_state", lambda *a, **k: github.ReviewState(
+        fresh=True, unresolved=0))
+
+    snap = observe.snapshot_pr("o/r", 7)
+    assert (snap.review_fresh, snap.unresolved_threads) == (True, 0)
+    assert d(snap).action == observe.ACT_MERGE
+
+
+# ---------------------------------------------------------------- the loop's use of the decision
+
+
+@pytest.fixture()
+def dmn(tmp_path):
+    """A daemon on a throwaway queue database, as it looks just after its first reconcile."""
+    d_ = daemon_mod.Daemon(load(tmp_path))
+    d_._last_reconcile = time.time()
+    yield d_
+    d_.conn.close()
+
+
+def test_a_pr_comment_marks_the_pr_not_a_phantom_issue(dmn):
+    """GitHub delivers PR comments as `issue_comment` with only an `issue` object.
+
+    Keying that to kind `issue` meant the owner's reply to a Decision Comment — the whole
+    revise-unblock path — marked an item that does not exist and was dropped.
+    """
+    db.upsert_item(dmn.conn, kind="pr", number=1269, state=db.STATE_PARKED)
+    assert dmn._event_target("issue_comment", 1269) == ("pr", 1269)
+
+
+def test_an_issue_comment_on_a_real_issue_still_targets_the_issue(dmn):
+    db.upsert_item(dmn.conn, kind="issue", number=42, state=db.STATE_READY)
+    assert dmn._event_target("issue_comment", 42) == ("issue", 42)
+
+
+def test_an_event_for_an_unknown_item_targets_nothing(dmn):
+    assert dmn._event_target("issue_comment", 999) is None
+
+
+def test_a_pr_only_event_never_resolves_to_an_issue(dmn):
+    db.upsert_item(dmn.conn, kind="issue", number=8, state=db.STATE_READY)
+    assert dmn._event_target("check_suite", 8) is None
+
+
+def test_next_sleep_ignores_deadlines_no_sweep_will_ever_return(dmn):
+    """A stale `wake_at` on a non-wait item used to pin the loop at the 1-second floor forever."""
+    db.upsert_item(dmn.conn, kind="pr", number=5, state=db.STATE_MERGED, wake_at=1)
+    assert dmn.next_sleep() > 1.0
+
+
+def test_next_sleep_still_honours_a_live_wait_deadline(dmn):
+    db.upsert_item(dmn.conn, kind="pr", number=6, state=db.STATE_WAIT_CI, wake_at=1)
+    assert dmn.next_sleep() == 1.0
+
+
+def test_merge_decision_is_not_recorded_as_queued_and_clears_its_deadline(tmp_path, monkeypatch):
+    """Nothing arms auto-merge yet, so writing `awaiting_queue` would claim a merge that never was.
+
+    It would also re-decide the same ACT_MERGE every `ttl_queue` seconds forever.
+    """
+    cfg = dataclasses.replace(load(tmp_path), shadow=False)
+    dm = daemon_mod.Daemon(cfg)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=11, state=db.STATE_WAIT_CI,
+                       branch="feature/x", wake_at=1)
+        monkeypatch.setattr(observe, "snapshot_pr", lambda *a, **k: pr(number=11))
+        dm._observe_one(db.get_item(dm.conn, "pr", 11))
+        row = db.get_item(dm.conn, "pr", 11)
+        assert row["state"] == db.STATE_READY
+        assert row["wake_at"] is None
+    finally:
+        dm.conn.close()

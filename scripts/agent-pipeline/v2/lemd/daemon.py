@@ -32,6 +32,14 @@ LOG = logging.getLogger("lemd")
 #: short delay rather than a stall.
 MAX_SLEEP = 60
 
+#: Events that can only ever mean a PR. `issues` can only mean an issue. Everything else —
+#: `issue_comment` above all — is AMBIGUOUS: GitHub delivers PR comments as `issue_comment` with
+#: only an `issue` object in the payload, so those are resolved against the queue instead.
+PR_ONLY_EVENTS = frozenset({
+    "pull_request", "pull_request_review", "pull_request_review_thread",
+    "check_suite", "merge_group",
+})
+
 
 class Daemon:
     """Owns the queue, the loop, and the decision to act or merely observe."""
@@ -81,16 +89,35 @@ class Daemon:
             number = row["number"]
             if not number:
                 continue
-            kind = "pr" if row["event"] in {
-                "pull_request", "pull_request_review", "pull_request_review_thread",
-                "check_suite", "merge_group",
-            } else "issue"
-            if db.get_item(self.conn, kind, number) is not None:
-                db.mark_dirty(self.conn, kind, number)
-            seen.add((kind, number))
+            target = self._event_target(row["event"], int(number))
+            if target is None:
+                continue
+            db.mark_dirty(self.conn, *target)
+            seen.add(target)
         db.mark_events_processed(self.conn, [r["id"] for r in rows])
         LOG.info("drained %s event(s) touching %s item(s)", len(rows), len(seen))
         return len(rows)
+
+    def _event_target(self, event: str, number: int) -> tuple[str, int] | None:
+        """Which queue item this delivery refers to, or None when we hold no such item.
+
+        `issue_comment` is the ambiguous one, and it is the one that matters: GitHub delivers a
+        comment on a PULL REQUEST as `issue_comment` carrying only an `issue` object, so keying it
+        to kind `issue` meant the owner's reply to a Decision Comment — the entire revise-unblock
+        path — marked an item that does not exist and was silently dropped. Issue and PR numbers
+        share one sequence per repository, so resolving by whichever item the queue holds is
+        unambiguous.
+        """
+        if event in PR_ONLY_EVENTS:
+            kinds: tuple[str, ...] = ("pr",)
+        elif event == "issues":
+            kinds = ("issue",)
+        else:
+            kinds = ("pr", "issue")
+        for kind in kinds:
+            if db.get_item(self.conn, kind, number) is not None:
+                return kind, number
+        return None
 
     def reconcile(self) -> int:
         """Re-derive the queue from GitHub. The backstop that makes missed events harmless.
@@ -175,14 +202,26 @@ class Daemon:
             db.upsert_item(
                 self.conn, kind=kind, number=number, state=row["state"],
                 head_sha=snap.head_sha or row["head_sha"],
-                branch=snap.branch or row["branch"], dirty=0,
+                branch=snap.branch or row["branch"], dirty=0, wake_at=None,
             )
             return
 
-        if decision.action == observe.ACT_DISPATCH:
-            # Dispatch lands in the next PR. Until then the decision is recorded and the item is
-            # left dispatchable, so nothing is lost by the daemon being unable to act yet.
-            db.upsert_item(self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0)
+        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE):
+            # Execution — spawning an agent, arming auto-merge — lands in the next PR. Until then
+            # the decision is recorded and the item is left dispatchable, so nothing is lost by the
+            # daemon being unable to act yet. ACT_MERGE must NOT be written as `awaiting_queue`
+            # here: nothing enqueued it, so that state would claim a merge attempt that never
+            # happened and re-decide the same ACT_MERGE every ttl_queue seconds forever.
+            #
+            # `wake_at=None` is the important half. Nothing else clears a deadline left over from a
+            # wait state, and while `due_items()` is scoped to the TTL states, `next_sleep()`
+            # reads MIN(wake_at) — so one past deadline on a `ready` item pinned the whole loop at
+            # a 1-second spin, which is precisely the unconditional polling v2 exists to remove.
+            db.upsert_item(
+                self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
+                head_sha=snap.head_sha or row["head_sha"],
+                branch=snap.branch or row["branch"],
+            )
             return
 
         db.upsert_item(
@@ -215,9 +254,18 @@ class Daemon:
     # ---------------------------------------------------------------- the loop
 
     def next_sleep(self) -> float:
-        """Seconds until the next thing is due, bounded."""
+        """Seconds until the next thing is due, bounded.
+
+        Scoped to the TTL states for the same reason `due_items()` is: nothing clears `wake_at` when
+        an item leaves a wait state, so an unscoped MIN() sleeps on deadlines belonging to merged
+        PRs and other items no sweep will ever return — a past one of those makes every pass sleep
+        the 1-second floor and turns the loop back into a poll.
+        """
+        placeholders = ",".join("?" * len(db.TTL_STATES))
         row = self.conn.execute(
-            "SELECT MIN(wake_at) AS w FROM items WHERE wake_at IS NOT NULL"
+            "SELECT MIN(wake_at) AS w FROM items "
+            f"WHERE wake_at IS NOT NULL AND state IN ({placeholders})",
+            tuple(sorted(db.TTL_STATES)),
         ).fetchone()
         due_in = (row["w"] - time.time()) if row and row["w"] else MAX_SLEEP
         until_reconcile = (self._last_reconcile + self.cfg.reconcile_interval) - time.time()

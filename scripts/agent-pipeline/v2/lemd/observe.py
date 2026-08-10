@@ -182,18 +182,24 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                     wait_reason="merge_queue", wake_in=ttl_queue)
 
 
-def snapshot_pr(slug: str, number: int, *, review_fresh: bool = False,
-                unresolved: int = 0) -> Snapshot:
+def snapshot_pr(slug: str, number: int, *,
+                review: github.ReviewState | None = None) -> Snapshot:
     """Build a `Snapshot` for a PR from live GitHub reads.
 
     Any failed read yields `readable=False` rather than a partial snapshot, because a snapshot
     that is half-true is worse than one that admits ignorance: `decide` can handle "I don't know"
     and cannot handle "green" that was actually "unreadable".
+
+    Review evidence is READ here, not defaulted. It used to arrive as keyword arguments no caller
+    passed, so every observation asserted "no fresh review, no unresolved threads" — which made
+    `ACT_MERGE` unreachable from the daemon and reported every green PR as needing a selfreview.
+    `review` is injectable only so a replay harness can feed recorded facts.
     """
     try:
         facts = github.pr_facts(slug, number)
         checks = github.checks_for(slug, number)
         queue = github.merge_queue_state(slug, number)
+        reviews = review if review is not None else github.review_state(slug, number)
     except github.GitHubUnavailable as exc:
         LOG.warning("PR #%s unreadable: %s", number, exc)
         return Snapshot(kind="pr", number=number, readable=False)
@@ -210,8 +216,8 @@ def snapshot_pr(slug: str, number: int, *, review_fresh: bool = False,
         merge_state=(facts.get("mergeStateStatus") or "").upper(),
         queue_state=queue,
         checks=checks,
-        review_fresh=review_fresh,
-        unresolved_threads=unresolved,
+        review_fresh=reviews.fresh,
+        unresolved_threads=reviews.unresolved,
         readable=True,
     )
 
