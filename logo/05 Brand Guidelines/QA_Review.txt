@@ -1,0 +1,23 @@
+QA Review
+=========
+Baseline references:
+- 07 Reference/Approved_Main_Full_Baseline.png
+- 07 Reference/Approved_Compact_Icon_Baseline.png
+- 07 Reference/Approved_Compact_Icon_Blue_Clean.png
+- 07 Reference/Approved_Compact_Icon_Dark_Clean.png
+- 07 Reference/Full_E_Correction_Review_Baseline.png
+
+Fixes applied in this rebuild:
+1. Removed the separator line and extra white header space from the compact square icon exports.
+2. Rebuilt the ultra-minimal icon so it shows the E logic. top dash, centered arrow, bottom dash.
+3. Rebuilt dependent favicon and social-avatar exports from the corrected compact sources.
+4. Updated the proof sheet to reflect the corrected compact family.
+
+Edge cleanup pass:
+- Applied white-matte removal to transparent PNG assets to eliminate white fringe pixels on logo edges.
+- Rebuilt ICO files from corrected PNGs.
+
+Crisp edge rebuild:
+- Rebuilt compact square icons from a clean extracted mark based on the approved baseline E.
+- Removed halo, shadow, and fringe around compact square icons for sharp transparent edges.
+- Rebuilt bot compact icons, app icons, favicons, and social avatars from the clean masters.

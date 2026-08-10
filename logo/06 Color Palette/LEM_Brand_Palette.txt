@@ -1,0 +1,6 @@
+LEM Official Palette Sampled from Approved Baseline
+==================================================
+Primary Blue: #054DB1
+Primary Charcoal: #1F2C37
+Light Background: #F9F9F9
+White: #FFFFFF
