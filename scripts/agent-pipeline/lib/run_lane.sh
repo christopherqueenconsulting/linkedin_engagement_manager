@@ -186,6 +186,20 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   _EMIT_EXTRA="{\"success\":$([ $rc -eq 0 ] && echo true || echo false),\"latency_ms\":$ms,\"retry_count\":0,\"tokens_in\":0,\"tokens_out\":0,\"total_tokens\":0,\"estimated_cost\":0,\"error_type\":\"$([ $rc -ne 0 ] && echo nonzero_exit)\",\"fallback_from\":\"${FALLBACK_FROM}\",\"fallback_to\":\"${FALLBACK_TO}\"}" \
     _emit "$([ $rc -eq 0 ] && echo ai_call_completed || echo ai_call_failed)"
 
+  # Report the lane back to whoever spawned us. The v2 daemon opens the `runs` row BEFORE the lane
+  # exists — routing is decided here, in the child — so `runs.lane`/`model`/`route_reason` were NULL
+  # on every row ever written (59 of 59 on cutover day). That is not a cosmetic gap: it makes
+  # "which lane is failing?" unanswerable from the queue, and that is the exact question #1311 says
+  # to settle before the start-lane throttle is lifted.
+  #
+  # A file rather than an exit code or a log grep: the daemon already knows this path (it passes
+  # it), a write is atomic enough at this size, and a child that dies before writing simply leaves
+  # the columns NULL — the status quo, never a wrong attribution.
+  if [ -n "${LEMD_RUN_META:-}" ]; then
+    printf 'lane=%s\nmodel=%s\nroute_reason=%s\n' \
+      "$LANE" "${AGENT_TIER:-${AGENT_MODEL:-}}" "${ROUTE_REASON:-}" >"$LEMD_RUN_META" 2>/dev/null || true
+  fi
+
   local kind="pr" num="${ISSUE:-${PR:-}}"
   [ -n "${ISSUE:-}" ] && kind="issue"
   [ -n "$num" ] && apply_lane_labels "$kind" "$num" "$LANE" "${AGENT_TIER:-${AGENT_MODEL:-}}" "$ROUTE_REASON"

@@ -420,3 +420,79 @@ def test_the_hold_only_touches_starts():
     """merge, park and selfreview must keep draining, or the hold becomes a wedge."""
     src = (_V2 / "lemd" / "daemon.py").read_text()
     assert 'if mode == "start" and self.cfg.hold_starts:' in src
+
+
+# ---------------------------------------------------------------- lane attribution
+
+def test_a_run_row_records_the_lane_the_child_actually_chose(tmp_path):
+    """All 59 runs written on cutover day had lane=model=route_reason=NULL.
+
+    The run row is opened by the daemon at spawn; the lane is decided inside `run_lane.sh`, after.
+    With no channel back, the columns could never be anything but NULL — which makes "which lane is
+    failing?" unanswerable from the queue, and that is precisely the question that has to be
+    settled before the start-lane throttle is lifted.
+    """
+    conn = db.connect(tmp_path / "queue.db")
+    item = db.upsert_item(conn, kind="issue", number=7, state=db.STATE_READY)
+    run_id = db.start_run(conn, item_id=item, mode="start", pid=None)
+
+    row = conn.execute("SELECT lane, model FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert (row["lane"], row["model"]) == (None, None), "the row starts unattributed by design"
+
+    db.set_run_lane(conn, run_id, lane="ollama", model="lem-agent-tier2",
+                    route_reason="parallel")
+    row = conn.execute(
+        "SELECT lane, model, route_reason FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert (row["lane"], row["model"], row["route_reason"]) == (
+        "ollama", "lem-agent-tier2", "parallel")
+    conn.close()
+
+
+def test_a_partial_report_never_erases_an_existing_attribution(tmp_path):
+    """COALESCE, not assignment: a truncated meta file must not blank a good lane."""
+    conn = db.connect(tmp_path / "queue.db")
+    item = db.upsert_item(conn, kind="issue", number=8, state=db.STATE_READY)
+    run_id = db.start_run(conn, item_id=item, mode="start", pid=None)
+    db.set_run_lane(conn, run_id, lane="claude", model="opus", route_reason="primary")
+
+    db.set_run_lane(conn, run_id, lane=None, model=None, route_reason=None)
+    row = conn.execute("SELECT lane, model FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert (row["lane"], row["model"]) == ("claude", "opus")
+    conn.close()
+
+
+def test_run_lane_sh_writes_the_meta_file_the_daemon_reads(tmp_path):
+    """The two halves must agree on the format, or attribution silently stays NULL.
+
+    Asserted against the SHIPPED script rather than a copy of its printf: a change to either side
+    alone is exactly the drift this pins.
+    """
+    import re
+    src = (Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "lib"
+           / "run_lane.sh").read_text()
+    assert "LEMD_RUN_META" in src, "run_lane.sh must report its lane back"
+    # The daemon parses `key=value` lines; anything else reads as no attribution at all.
+    block = re.search(r"printf 'lane=%s\\nmodel=%s\\nroute_reason=%s\\n'", src)
+    assert block, "the meta format must stay key=value, one per line"
+
+
+def test_a_missing_meta_file_leaves_the_row_untouched(tmp_path, monkeypatch):
+    """Telemetry must never be able to fail a reap.
+
+    Losing a lane label costs one data point; a reap that raises leaks a pool slot for the life of
+    the daemon.
+    """
+    conn = db.connect(tmp_path / "queue.db")
+    item = db.upsert_item(conn, kind="issue", number=9, state=db.STATE_READY)
+    run_id = db.start_run(conn, item_id=item, mode="start", pid=None)
+
+    (tmp_path / "config.env").write_text(f"LEMD_DB={tmp_path}/queue.db\n")
+    sup = dispatch.Supervisor(load(tmp_path), conn)
+    child = dispatch.Child(
+        proc=None, pool="agent", mode="start", kind="issue", number=9, item_id=item,
+        run_id=run_id, deadline=0.0, started=0.0, log_path=tmp_path / "nonexistent.log",
+    )
+    sup._record_lane(child)   # must not raise
+    row = conn.execute("SELECT lane FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert row["lane"] is None
+    conn.close()
