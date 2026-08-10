@@ -204,7 +204,12 @@ src/cqc_lem/ui/dist/
 
 .qodo
 .vscode/mcp.json
-.mcp.json
+# .mcp.json is TRACKED on purpose. `.claude/settings.json` pre-enables `selenium-lem` and
+# `playwright` in enabledMcpjsonServers, but the definitions live here — and the agent pipeline
+# runs every agent in a fresh `git worktree`, where an ignored file does not exist. Ignoring this
+# meant a worktree-isolated agent silently had NEITHER browser server: the servers were enabled
+# and undefined. Same reason settings.json itself is checked in. It holds no secrets; if it ever
+# needs one, the secret goes in the environment, not in this file.
 
 # Claude Code local worktrees are created outside normal git worktrees and should never be tracked.
 # They are ephemeral per-agent-session copies; tracking them pollutes the repo and risks merging
