@@ -132,6 +132,6 @@ def heartbeat(path, now: float | None = None) -> None:
 
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".new")
+    tmp = p.with_name(p.name + ".new")  # with_suffix would REPLACE .heartbeat, not append
     tmp.write_text(str(int(now if now is not None else time.time())))
     tmp.replace(p)

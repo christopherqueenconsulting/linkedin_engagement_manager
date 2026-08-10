@@ -41,6 +41,8 @@ STATE_MERGED = "merged"
 STATE_CLOSED = "closed"
 
 TERMINAL_STATES = frozenset({STATE_MERGED, STATE_CLOSED})
+#: States where something already owns the item, so observation must not move it (see upsert_item).
+ACTIVE_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING})
 #: States the scheduler may pick work from. `claimed`/`running` are excluded because something
 #: already owns them; the wait states are excluded because only an event or TTL may revive them.
 DISPATCHABLE_STATES = frozenset({STATE_READY})
@@ -82,7 +84,9 @@ CREATE INDEX IF NOT EXISTS items_wake  ON items(wake_at) WHERE wake_at IS NOT NU
 
 CREATE TABLE IF NOT EXISTS events (
   id           INTEGER PRIMARY KEY,
-  delivery_id  TEXT UNIQUE,
+  -- NOT NULL because SQLite treats NULLs as DISTINCT: a nullable unique column silently allows
+  -- unlimited rows with no delivery id, bypassing dedupe entirely.
+  delivery_id  TEXT NOT NULL UNIQUE,
   event        TEXT NOT NULL,
   action       TEXT,
   number       INTEGER,
@@ -101,6 +105,8 @@ CREATE TABLE IF NOT EXISTS runs (
   model        TEXT,
   route_reason TEXT,
   pid          INTEGER,
+  -- /proc/<pid>/stat field 22. Paired with pid so a recycled pid cannot make a dead run look alive.
+  pid_start    TEXT,
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER,
   rc           INTEGER,
@@ -185,10 +191,20 @@ def upsert_item(
 
     Only the columns passed in `fields` are touched on update, so a webhook carrying just a head SHA
     cannot blank the branch an earlier reconcile established.
+
+    **State is NOT overwritten while an item is `claimed` or `running`.** The branch index prevents
+    two ROWS sharing a branch; it cannot stop one row being walked back to `ready` and re-claimed.
+    Without this guard the sequence is: item is `running` → a webhook arrives → `observe()` upserts
+    it as `ready` → the next pass claims it and spawns a SECOND agent on the same branch and
+    worktree, which is precisely the double-dispatch the claim model exists to make impossible.
+    Observation may still update `head_sha`, `labels_json`, `dirty` and the rest — only the state
+    transition is deferred until the run finishes and `finish_run()` hands the decision back.
     """
     now = int(now if now is not None else time.time())
     cols = {k: v for k, v in fields.items() if k in _ITEM_COLUMNS}
-    row = conn.execute("SELECT id FROM items WHERE kind=? AND number=?", (kind, number)).fetchone()
+    row = conn.execute(
+        "SELECT id, state FROM items WHERE kind=? AND number=?", (kind, number)
+    ).fetchone()
     if row is None:
         cols.setdefault("ready_since", now)
         names = ["kind", "number", "state", "updated_at", *cols]
@@ -197,12 +213,38 @@ def upsert_item(
             [kind, number, state, now, *cols.values()],
         )
         return int(conn.execute("SELECT last_insert_rowid() AS i").fetchone()["i"])
+
+    if row["state"] in ACTIVE_STATES and state != row["state"]:
+        # Something owns this item. Record the observation, refuse the transition.
+        sets = ["updated_at=?"] + [f"{c}=?" for c in cols]
+        conn.execute(
+            f"UPDATE items SET {', '.join(sets)} WHERE id=?", [now, *cols.values(), row["id"]]
+        )
+        return int(row["id"])
+
     sets = ["state=?", "updated_at=?"] + [f"{c}=?" for c in cols]
     conn.execute(
         f"UPDATE items SET {', '.join(sets)} WHERE id=?",
         [state, now, *cols.values(), row["id"]],
     )
     return int(row["id"])
+
+
+def force_state(
+    conn: sqlite3.Connection, item_id: int, state: str, *, now: int | None = None, **fields: Any
+) -> None:
+    """Move an item's state regardless of the `upsert_item` active-state guard.
+
+    The guard exists to stop OBSERVATION walking a running item backwards. The run lifecycle itself
+    (finish, timeout, crash recovery) legitimately needs to move it, so those paths call this
+    explicitly — making every state change out of `claimed`/`running` easy to find and audit.
+    """
+    now = int(now if now is not None else time.time())
+    cols = {k: v for k, v in fields.items() if k in _ITEM_COLUMNS}
+    sets = ["state=?", "updated_at=?"] + [f"{c}=?" for c in cols]
+    conn.execute(
+        f"UPDATE items SET {', '.join(sets)} WHERE id=?", [state, now, *cols.values(), item_id]
+    )
 
 
 _ITEM_COLUMNS = frozenset(
@@ -266,20 +308,28 @@ def dispatchable(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     )
 
 
-def due_items(conn: sqlite3.Connection, *, now: int | None = None) -> list[sqlite3.Row]:
-    """Wait-state items whose TTL has expired and that must be re-polled once.
+#: States a TTL may fire for: the wait states, plus `running` — whose deadline is its run timeout.
+#: Scoped deliberately. Nothing clears `wake_at` when an item leaves these, so an UNSCOPED query
+#: keeps returning every PR that ever waited (merged ones included) and the TTL sweep grows back
+#: into the unconditional re-polling v2 exists to remove.
+TTL_STATES = frozenset({*WAIT_STATES, STATE_RUNNING})
 
-    Scoped to `WAIT_STATES` on purpose. Nothing clears `wake_at` when an item leaves a wait state,
-    so an unscoped query keeps returning every PR that ever waited — including merged ones — and the
-    TTL sweep grows into exactly the unconditional re-polling v2 exists to remove.
+
+def due_items(conn: sqlite3.Connection, *, now: int | None = None) -> list[sqlite3.Row]:
+    """Items whose TTL has expired: a wait state to re-poll, or a run that overran its deadline.
+
+    `running` is included because `start_run()` stamps the run's deadline as `wake_at`. That is the
+    TTL edge which keeps `running` from being a dead end — an agent whose completion is never
+    observed (daemon killed between the child exiting and the state write) would otherwise be
+    invisible to both `dispatchable()` and this query, wedging the item and holding its branch.
     """
     now = int(now if now is not None else time.time())
-    placeholders = ",".join("?" * len(WAIT_STATES))
+    placeholders = ",".join("?" * len(TTL_STATES))
     return list(
         conn.execute(
             "SELECT * FROM items WHERE wake_at IS NOT NULL AND wake_at <= ? "
             f"AND state IN ({placeholders}) ORDER BY wake_at ASC",
-            (now, *sorted(WAIT_STATES)),
+            (now, *sorted(TTL_STATES)),
         ).fetchall()
     )
 
@@ -339,17 +389,29 @@ def start_run(
     model: str | None = None,
     route_reason: str | None = None,
     log_path: str | None = None,
+    timeout_s: int = 2700,
     now: int | None = None,
 ) -> int:
-    """Open a run row and move its item to `running`."""
+    """Open a run row and move its item to `running`.
+
+    `wake_at` is set to the run's deadline so `running` has a TTL edge as well as an event edge.
+    Without it, a run whose completion is never observed (daemon killed between the child exiting
+    and the state write) leaves the item invisible to both `dispatchable()` and `due_items()` — a
+    dead end that also holds its branch, violating the invariant that every non-terminal state must
+    be leaveable two ways.
+    """
     now = int(now if now is not None else time.time())
     conn.execute(
-        "INSERT INTO runs(item_id, mode, lane, model, route_reason, pid, started_at, log_path) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (item_id, mode, lane, model, route_reason, pid, now, log_path),
+        "INSERT INTO runs(item_id, mode, lane, model, route_reason, pid, pid_start, started_at, log_path) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (item_id, mode, lane, model, route_reason, pid,
+         pid_starttime(pid) if pid else None, now, log_path),
     )
     run_id = int(conn.execute("SELECT last_insert_rowid() AS i").fetchone()["i"])
-    conn.execute("UPDATE items SET state=?, updated_at=? WHERE id=?", (STATE_RUNNING, now, item_id))
+    conn.execute(
+        "UPDATE items SET state=?, updated_at=?, wake_at=? WHERE id=?",
+        (STATE_RUNNING, now, now + max(60, timeout_s), item_id),
+    )
     return run_id
 
 
@@ -376,8 +438,12 @@ def startup_recover(conn: sqlite3.Connection, *, now: int | None = None) -> dict
     """
     now = int(now if now is not None else time.time())
     closed = 0
-    for row in conn.execute("SELECT id, pid FROM runs WHERE ended_at IS NULL").fetchall():
-        if row["pid"] and _pid_alive(int(row["pid"])):
+    for row in conn.execute(
+        "SELECT id, pid, pid_start FROM runs WHERE ended_at IS NULL"
+    ).fetchall():
+        # Identity, not just existence: a recycled pid must read as dead, or the run it replaced
+        # stays "alive" forever and its item can never leave `running`.
+        if row["pid"] and _pid_alive(int(row["pid"]), row["pid_start"]):
             continue
         conn.execute("UPDATE runs SET ended_at=?, rc=-9 WHERE id=?", (now, row["id"]))
         closed += 1
@@ -393,9 +459,33 @@ def startup_recover(conn: sqlite3.Connection, *, now: int | None = None) -> dict
     return {"runs_closed": closed, "claims_released": cur.rowcount}
 
 
-def _pid_alive(pid: int) -> bool:
-    """True when a process with this pid exists (any owner)."""
-    return Path(f"/proc/{pid}").exists()
+def pid_starttime(pid: int) -> str | None:
+    """The process's start time from `/proc/<pid>/stat` field 22, or None if it is gone.
+
+    Recorded alongside the pid because a bare pid is a reuse oracle: pids wrap, and on a box that
+    spawns an agent every few minutes a recycled pid makes a dead run look alive forever. Since
+    `running` has no other exit edge, that would wedge the item AND its branch permanently.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    # comm (field 2) may contain spaces and parentheses; everything after the final ')' is safe.
+    tail = stat.rpartition(")")[2].split()
+    # After comm, fields are 1-indexed from `state`: starttime is field 22 overall => index 19 here.
+    return tail[19] if len(tail) > 19 else None
+
+
+def _pid_alive(pid: int, starttime: str | None = None) -> bool:
+    """True when this pid is alive AND is the same process we started.
+
+    With `starttime` supplied, a recycled pid reads as dead — which is the correct answer, because
+    the run we launched is gone regardless of what now occupies its number.
+    """
+    current = pid_starttime(pid)
+    if current is None:
+        return False
+    return True if starttime is None else current == starttime
 
 
 def counts_by_state(conn: sqlite3.Connection) -> dict[str, int]:

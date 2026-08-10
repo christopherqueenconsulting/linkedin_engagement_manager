@@ -119,7 +119,10 @@ def load(base: str | Path | None = None) -> Config:
         repo=Path(_str(env, "REPO", "/home/lem/linkedin_engagement_manager")),
         slug=_str(env, "SLUG", "christopherqueenconsulting/linkedin_engagement_manager"),
         db_path=Path(_str(env, "LEMD_DB", str(b / "v2" / "state" / "queue.db"))),
-        max_agents=_int(env, "MAX_AGENTS", 3),
+        # LEMD_MAX_AGENTS, not MAX_AGENTS: v1's knob is 5 on this box, and reading it here made the
+        # documented "cap v2 at 3 until the CPU envelope is measured" a fallback that never applied.
+        # v2 runs several agents genuinely concurrently, sharing one cgroup with the prod stack.
+        max_agents=_int(env, "LEMD_MAX_AGENTS", 3),
         gh_slots=_int(env, "MAX_GH_ACTIONS", 2),
         scale_per_issues=_int(env, "SCALE_PER_ISSUES", 8),
         busy_hours=_str(env, "BUSY_HOURS", ""),

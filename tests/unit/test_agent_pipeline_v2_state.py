@@ -90,7 +90,10 @@ def test_branch_frees_when_the_first_item_leaves_active_states(conn):
     a = db.upsert_item(conn, kind="issue", number=14, state=db.STATE_READY, branch="feature/f")
     b = db.upsert_item(conn, kind="pr", number=15, state=db.STATE_READY, branch="feature/f")
     assert db.claim_item(conn, a) is True
-    db.upsert_item(conn, kind="issue", number=14, state=db.STATE_MERGED)
+    # `force_state`, not `upsert_item`: observation is deliberately refused while an item is owned
+    # (that guard is what stops a webhook un-running a running item into a double dispatch). The
+    # run lifecycle is what may move it, and it has to say so explicitly.
+    db.force_state(conn, a, db.STATE_MERGED)
     assert db.claim_item(conn, b) is True
 
 
@@ -243,8 +246,10 @@ def test_parse_env_file_missing_is_empty_not_fatal(tmp_path):
 
 
 def test_load_prefers_config_env_then_defaults(tmp_path, monkeypatch):
-    (tmp_path / "config.env").write_text("MAX_AGENTS=4\nBUSY_HOURS=10-17\nBUSY_TZ=America/New_York\n")
-    monkeypatch.delenv("MAX_AGENTS", raising=False)
+    (tmp_path / "config.env").write_text(
+        "LEMD_MAX_AGENTS=4\nBUSY_HOURS=10-17\nBUSY_TZ=America/New_York\n"
+    )
+    monkeypatch.delenv("LEMD_MAX_AGENTS", raising=False)
     cfg = load(tmp_path)
     assert cfg.max_agents == 4
     assert cfg.busy_tz == "America/New_York"
