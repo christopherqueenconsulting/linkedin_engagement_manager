@@ -50,6 +50,15 @@ get one PR parked at 2 attempts and another retried forever.
 rather than merely guarded. v1 needed `flock`s and could still re-arm auto-merge on a PR another
 slot was parking.
 
+**A park has exactly one way out, and the daemon owns both ends.** `actions/park.sh` places the
+hold (`needs-human` + `agent:blocked`); `actions/unpark.sh` is the ONLY thing that lifts it, and it
+runs only when `lemd/answers.py` reads an actionable owner reply to the newest Decision Comment on
+either thread. Three rules make that safe, each ported from v1: ambiguity (`hold`, `question`)
+leaves the work parked; an answer is spent ONCE, recorded in `items.last_comment_id` only after the
+un-park succeeds; and un-parking resets the run ledger, because the budget that caused the park is
+otherwise still exhausted. `reconcile` therefore queries the hold labels too — `park.sh` strips
+`agent:working`, so without that a parked item would leave the queue and never return.
+
 **Wait states are invisible to the scheduler.** An item awaiting CI, review, the merge queue, or a
 human costs zero attention until an event marks it dirty or its TTL fires. This is the entire
 economy change, and it is also what removes head-of-line blocking: a waiting PR is not a candidate,
