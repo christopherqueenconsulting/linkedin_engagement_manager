@@ -443,12 +443,6 @@ def debug_node_status() -> dict:
     return status  # debug node is not registered
 
 
-def _debug_node_has_free_slot() -> bool:
-    """True if the Grid's watchable debug node is usable AND free right now."""
-    status = debug_node_status()
-    return bool(status["registered"] and status["advertised"] and status["free_slot"])
-
-
 def apply_debug_node(options: Options, debug: bool = False, required: bool = False) -> bool:
     """Decide which side of the Grid this session may run on. Returns True if it was pinned.
 
