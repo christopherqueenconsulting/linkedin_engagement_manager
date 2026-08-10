@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # States. An item in a `wait_*` state costs the scheduler nothing until an event marks it dirty or
 # its TTL fires — that is the whole point of v2, because v1 spent 75-84% of its ticks re-asking
@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS items (
   ready_since     INTEGER,
   last_comment_id INTEGER,
   labels_json     TEXT,
+  -- The action `observe()` decided on but the scheduler has not yet had a free slot for. It must be
+  -- DURABLE: an item left `ready` with the decision held only in memory is a dead end, because
+  -- nothing marks it dirty again and its `wake_at` is deliberately cleared. Storing the verdict is
+  -- what lets a pass that ran out of slots be resumed by the next one.
+  pending_mode    TEXT,
   dirty           INTEGER NOT NULL DEFAULT 0,
   updated_at      INTEGER NOT NULL,
   UNIQUE (kind, number)
@@ -140,12 +145,26 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.execute(
         "INSERT INTO kv(k, v) VALUES('schema_version', ?) "
         "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
         (str(SCHEMA_VERSION),),
     )
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns to a database created by an older schema.
+
+    `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a new column is
+    invisible to every box that installed an earlier version — and the daemon would then fail on
+    every write instead of on the one upgrade. Additive only: the queue is disposable, but taking it
+    down on restart is not, and a daemon that cannot start is a pipeline that cannot roll back.
+    """
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(items)").fetchall()}
+    if "pending_mode" not in have:
+        conn.execute("ALTER TABLE items ADD COLUMN pending_mode TEXT")
 
 
 @contextmanager
@@ -251,6 +270,7 @@ _ITEM_COLUMNS = frozenset(
     {
         "issue_number", "branch", "head_sha", "wait_reason", "parked_reason", "priority",
         "risk", "model_hint", "wake_at", "ready_since", "last_comment_id", "labels_json", "dirty",
+        "pending_mode",
     }
 )
 
@@ -301,7 +321,8 @@ def dispatchable(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """
     return list(
         conn.execute(
-            "SELECT * FROM items WHERE state IN (%s) AND dirty=0 ORDER BY priority ASC, ready_since ASC"
+            "SELECT * FROM items WHERE state IN (%s) AND dirty=0 AND pending_mode IS NOT NULL "
+            "ORDER BY priority ASC, ready_since ASC"
             % ",".join("?" * len(DISPATCHABLE_STATES)),
             tuple(sorted(DISPATCHABLE_STATES)),
         ).fetchall()

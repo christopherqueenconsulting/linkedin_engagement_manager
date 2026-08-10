@@ -110,17 +110,28 @@ def test_null_branch_items_do_not_block_each_other(conn):
 
 def test_wait_states_are_invisible_to_the_scheduler(conn):
     """The core v2 economy: waiting costs zero scheduler attention."""
-    db.upsert_item(conn, kind="pr", number=20, state=db.STATE_READY)
+    db.upsert_item(conn, kind="pr", number=20, state=db.STATE_READY, pending_mode="fix")
     for n, s in ((21, db.STATE_WAIT_CI), (22, db.STATE_WAIT_QUEUE), (23, db.STATE_WAIT_REVIEW),
                  (24, db.STATE_PARKED), (25, db.STATE_MERGED)):
-        db.upsert_item(conn, kind="pr", number=n, state=s)
+        db.upsert_item(conn, kind="pr", number=n, state=s, pending_mode="fix")
     assert [r["number"] for r in db.dispatchable(conn)] == [20]
 
 
+def test_ready_without_a_decided_action_is_not_dispatchable(conn):
+    """`ready` means "not waiting on anything", not "there is something to do".
+
+    The scheduler acts on the verdict `observe()` reached, and that verdict is stored rather than
+    held in memory so a pass that ran out of slots is resumable. An item with no stored verdict has
+    not been observed yet — dispatching it would mean choosing a mode with no facts behind it.
+    """
+    db.upsert_item(conn, kind="pr", number=26, state=db.STATE_READY)
+    assert db.dispatchable(conn) == []
+
+
 def test_dispatchable_orders_by_priority_then_age(conn):
-    db.upsert_item(conn, kind="issue", number=30, state=db.STATE_READY, priority=2, ready_since=100)
-    db.upsert_item(conn, kind="issue", number=31, state=db.STATE_READY, priority=0, ready_since=500)
-    db.upsert_item(conn, kind="issue", number=32, state=db.STATE_READY, priority=2, ready_since=50)
+    for n, pri, since in ((30, 2, 100), (31, 0, 500), (32, 2, 50)):
+        db.upsert_item(conn, kind="issue", number=n, state=db.STATE_READY, priority=pri,
+                       ready_since=since, pending_mode="start")
     assert [r["number"] for r in db.dispatchable(conn)] == [31, 32, 30]
 
 
