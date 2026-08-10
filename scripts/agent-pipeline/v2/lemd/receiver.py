@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import logging
 import os
 import sqlite3
 import time
@@ -36,9 +35,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from . import db
+from cqc_lem.utilities.logger import log_error, log_info, log_warning
 
-LOG = logging.getLogger("lemd.receiver")
+from . import db
 
 #: Only these events are recorded. Anything else GitHub sends is acknowledged and dropped, so
 #: widening the app's subscription list cannot silently fill the queue with rows nothing reads.
@@ -140,7 +139,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """Route access logging through our logger instead of stderr."""
-        LOG.info("%s - %s", self.address_string(), fmt % args)
+        log_info("access", address=self.address_string(), request=fmt % args)
 
     def _reply(self, code: int, body: str = "") -> None:
         """Send a short plain-text response."""
@@ -169,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
         except Exception as exc:  # noqa: BLE001 - any failure means unhealthy
-            LOG.error("healthz write failed: %s", exc)
+            log_error("healthz write failed", exc=exc)
             self._reply(500, "db write failed")
             return
         self._reply(200, "ok")
@@ -200,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_signature(self.server.secret, body, self.headers.get("X-Hub-Signature-256")):  # type: ignore[attr-defined]
             # No detail in the response and no body in the log: a signature oracle would let a
             # caller probe the secret one guess at a time.
-            LOG.warning("rejected delivery: bad or missing signature")
+            log_warning("rejected delivery: bad or missing signature")
             self._reply(401, "bad signature")
             return
 
@@ -219,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("payload is not an object")
         except ValueError as exc:
-            LOG.warning("rejected delivery %s: unparseable payload (%s)", delivery, exc)
+            log_warning("rejected delivery: unparseable payload", delivery=delivery, exc=exc)
             self._reply(400, "bad json")
             return
 
@@ -246,11 +245,11 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error as exc:
             # 500 (not 202) so GitHub retries and the delivery is not lost. This is the branch that
             # makes "202 means committed" true.
-            LOG.error("delivery %s NOT stored: %s", delivery, exc)
+            log_error("delivery NOT stored", delivery=delivery, exc=exc)
             self._reply(500, "storage failed")
             return
 
-        LOG.info("stored %s/%s delivery=%s number=%s new=%s", event, action, delivery, number, fresh)
+        log_info("stored delivery", event=event, action=action, delivery=delivery, number=number, fresh=fresh)
         self._reply(202, "queued" if fresh else "duplicate")
 
 
@@ -288,7 +287,7 @@ def serve(
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.secret = secret  # type: ignore[attr-defined]
     httpd.db_path = str(db_path)  # type: ignore[attr-defined]
-    LOG.info("receiver listening on %s:%s db=%s", host, port, db_path)
+    log_info("receiver listening", host=host, port=port, db_path=str(db_path))
     return httpd
 
 
@@ -298,7 +297,6 @@ def main() -> None:
 
     from .config import _str, load
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     ap = argparse.ArgumentParser(description="LEM agent-pipeline v2 webhook receiver")
     ap.add_argument("--bind", action="append", default=[], metavar="HOST:PORT")
     ap.add_argument("--db", default=None)
@@ -318,7 +316,7 @@ def main() -> None:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        LOG.info("receiver stopping")
+        log_info("receiver stopping")
         httpd.shutdown()
 
 
