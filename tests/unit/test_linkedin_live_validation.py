@@ -292,6 +292,25 @@ class TestMessageThreadProbe:
         assert llv.message_thread_verdict({"opened": True, "route": "anchor", "events": 12,
                                            "self_name": "Christopher Queen"}) == "opened via anchor"
 
+    def test_the_search_route_is_not_probe_able_and_says_so_instead_of_crashing(self, monkeypatch):
+        """The production ladder's last resort types a name and presses Enter.
+
+        The #1108 guard refuses that — a box that takes text and commits on Enter is, from here,
+        indistinguishable from a composer — so the probe must report an UNKNOWN naming the guard,
+        not die mid-run and not read as a broken route.
+        """
+        thread = types.ModuleType("cqc_lem.utilities.linkedin.message_thread")
+        thread.open_message_thread = MagicMock(
+            side_effect=llv.ReadOnlyViolation("refused to type text"))
+        thread.read_last_sender = lambda d: ""
+        thread.profile_urn_from_page = lambda d, u: ""
+        monkeypatch.setitem(sys.modules, "cqc_lem.utilities.linkedin.message_thread", thread)
+
+        reading = llv.probe_message_thread(MagicMock(), "https://www.linkedin.com/in/jane/")
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "messaging-search route" in reading["verdict"]
+        assert reading["read_only_blocked"]
+
     def test_a_readable_thread_with_no_saved_name_is_still_unknown(self):
         # The other half of a live reply check: the ladder can win and the verdict still be UNKNOWN
         # because Settings has no display name to compare the sender against.
@@ -2649,6 +2668,29 @@ class TestMainRefusals:
                                      "reason": "open"})
         assert llv.main(["--feed-sort", "--ignore-breaker"]) == 0
         assert self._fenced(capsys)["breaker"]["overridden"] is True
+
+    def test_the_guard_is_armed_after_login_and_before_the_first_probe(self, monkeypatch, capsys):
+        """The one seam: signing in types the credentials and the emailed PIN.
+
+        So the guard cannot already be on while the session opens — and it must be on for
+        everything after, or "read-only" is back to being a promise.
+        """
+        seen = {}
+
+        def _login(**kwargs):
+            seen["armed_during_login"] = llv.guard_ledger()["installed"]
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        def _probe(_driver):
+            seen["armed_during_probe"] = llv.guard_ledger()["installed"]
+            return {"verdict": "ok"}
+
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile", _login)
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_feed_sort", _probe)
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--feed-sort"]) == 0
+        assert seen == {"armed_during_login": False, "armed_during_probe": True}
 
     def test_a_clean_run_reports_the_guard_and_the_breaker(self, monkeypatch, capsys):
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",

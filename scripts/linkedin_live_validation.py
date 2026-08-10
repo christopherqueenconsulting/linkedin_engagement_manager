@@ -23,7 +23,9 @@ Answers, against a REAL logged-in session, the two questions
      voice-synthesis prompt, so a misparse here is not inert: it grounds every comment and DM.
 
 **Read-only, and since #1108 that is ENFORCED rather than intended.** `install_read_only_guard`
-patches Selenium at the start of `main`, so for the life of the process this script cannot type a
+patches Selenium the moment the session is established (signing in is the one step that
+legitimately types — credentials, and the emailed PIN — and it is production's own shared login
+path), so for every probe that follows this script cannot type a
 printable character anywhere (every LinkedIn write starts with typed content) and cannot press a
 control whose own label says it commits something — Post, Send, Publish, Connect, Invite,
 Withdraw, Follow, Like, Join — whether through `WebElement.click`, `ActionChains` or
@@ -3675,13 +3677,27 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     on their own messages? A mismatch reads as UNKNOWN in production and silently stops follow-ups.
 
     Read-only: it opens the thread and reads it. It types nothing into the composer and sends nothing.
+
+    One route of the production ladder is NOT probe-able under the #1108 guard: the last-resort
+    messaging SEARCH types a name into a box and presses Enter, and the guard refuses every
+    printable character precisely because a box that takes text and commits on Enter is
+    indistinguishable, from here, from a composer. That grades `unknown` — the ladder was not fully
+    walked, so this run grounds nothing about it — rather than pretending the route is broken.
     """
     from cqc_lem.utilities.linkedin.message_thread import (open_message_thread, read_last_sender,
                                                            profile_urn_from_page)
     from selenium.webdriver.support.ui import WebDriverWait
 
     wait = WebDriverWait(driver, 10)
-    opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None)
+    try:
+        opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None)
+    except ReadOnlyViolation as e:
+        return graded({"profile_url": profile_url, "opened": False, "route": None,
+                       "read_only_blocked": str(e)}, STATE_UNKNOWN,
+                      "the ladder reached the messaging-search route, which types a name and "
+                      "presses Enter — the read-only guard refuses that, so this run grounds "
+                      "nothing about the earlier routes either; re-run with a person whose thread "
+                      "one of the direct routes opens")
     reading = {"profile_url": profile_url,
                "opened": opened.opened,
                "route": opened.route,
@@ -3989,17 +4005,13 @@ def main(argv: Optional[list] = None) -> int:
                      "--permalink-comment and/or "
                      "--probe-composer")
 
-    # Installed BEFORE anything imports a page: from here on this process cannot type a printable
-    # character or press a control whose label says it commits something. See the guard block.
-    guard = install_read_only_guard()
-
     # Decided BEFORE Chrome opens, the same rule `plan_daily_invites` follows — a refusal that has
     # already spent a session is not a refusal.
     breaker = breaker_reading()
     breaker["overridden"] = bool(args.ignore_breaker)
     refusal = None if args.ignore_breaker else breaker_refusal(breaker)
     if refusal:
-        return emit_refusal(args.user_id, refusal, breaker, guard)
+        return emit_refusal(args.user_id, refusal, breaker, guard_ledger())
 
     from cqc_lem.utilities.linkedin.session import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -4008,7 +4020,15 @@ def main(argv: Optional[list] = None) -> int:
         driver, profile, session_reading = open_probe_session(
             get_current_profile, args.user_id, require_debug_node=args.require_debug_node)
     except ProbeRefused as refused:
-        return emit_refusal(args.user_id, refused.refusal, breaker, guard)
+        return emit_refusal(args.user_id, refused.refusal, breaker, guard_ledger())
+
+    # Armed HERE, not earlier, and this is the one seam worth stating plainly: signing in is the
+    # only thing in this process that legitimately types — the stored credentials, and the emailed
+    # PIN when LinkedIn challenges. That is production's shared login path (`login_to_linkedin`),
+    # it is identical for every Celery task, and it publishes nothing. From this line to the end of
+    # the run — i.e. for every probe — nothing can type a printable character or press a control
+    # whose label commits something.
+    install_read_only_guard()
 
     report = {"user_id": args.user_id, "session": session_reading}
     try:
