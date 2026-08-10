@@ -78,6 +78,9 @@ BUSY_MAX_AGENTS="${BUSY_MAX_AGENTS:-1}"
 USAGE_PAUSE_MINUTES="${USAGE_PAUSE_MINUTES:-60}"
 
 export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# cron supplies no locale, so anything touching non-ASCII text (agent prompts, PR bodies, comment
+# markers) runs under the C locale and mangles it. Set one explicitly.
+export LANG="${LANG:-C.UTF-8}" LC_ALL="${LC_ALL:-C.UTF-8}"
 export HOME="/home/lem"
 export GH_PROMPT_DISABLED=1
 
@@ -641,6 +644,9 @@ copilot_last_review_at() {  # $1=pr
 #       claude (default) = run the adversarial review instead;  merge = merge with a ⚠️ comment;
 #       hold = keep waiting.
 CLAUDE_REVIEW_MARKER="🔎 Claude adversarial review"
+# The ASCII half — what detection keys on. Separate from the decorated marker so the decoration can
+# change, or be mangled in transit, without silently breaking "has this been reviewed?".
+CLAUDE_REVIEW_MARKER_TEXT="Claude adversarial review"
 FIRST_REVIEW_TIMEOUT_SECONDS="${FIRST_REVIEW_TIMEOUT_SECONDS:-3600}"
 REVIEW_FALLBACK="${REVIEW_FALLBACK:-claude}"
 
@@ -663,9 +669,19 @@ try_request_copilot_review() {  # $1=pr (best-effort, silent; skips when already
 
 # ISO timestamp of the newest Claude adversarial-review marker comment (empty if none).
 claude_reviewed_at() {  # $1=pr
+  # Match the ASCII PHRASE, not the whole marker. The marker opens with a non-BMP emoji (U+1F50E),
+  # and a non-BMP character does not survive the round-trip through the agent that posts it — the
+  # comment lands as four U+FFFD replacement characters. `startswith($m)` therefore never matched
+  # what was actually written, so the agent could not see its OWN marker, concluded the review had
+  # not happened, and posted again: five identical comments on PR #1273 before it was noticed.
+  #
+  # Same class of defect CLAUDE.md already documents for Selenium ("ChromeDriver send_keys throws
+  # on non-BMP emoji — strip them first"). Anchoring on the ASCII phrase makes detection
+  # independent of whether the decoration survives, and makes already-posted mangled markers count
+  # rather than needing a cleanup pass.
   gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
-    | jq -r --arg m "$CLAUDE_REVIEW_MARKER" \
-        '[(.comments // [])[] | select((.body // "") | startswith($m))] | last | .createdAt // empty' 2>/dev/null
+    | jq -r --arg m "$CLAUDE_REVIEW_MARKER_TEXT" \
+        '[(.comments // [])[] | select((.body // "") | contains($m))] | last | .createdAt // empty' 2>/dev/null
 }
 
 # 0 when a Claude adversarial-review marker exists that is fresh for the current head.
