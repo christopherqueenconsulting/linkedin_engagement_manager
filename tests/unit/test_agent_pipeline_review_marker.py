@@ -100,8 +100,10 @@ def test_pipeline_exports_a_utf8_locale():
 
 @pytest.mark.parametrize("var", ["CLAUDE_REVIEW_MARKER", "CLAUDE_REVIEW_MARKER_TEXT"])
 def test_marker_vars_are_defined_before_use(var):
-    """A marker referenced before assignment silently becomes the empty string, which `contains`
-    treats as matching EVERY comment — turning a detection bug into an auto-approve bug.
+    """A marker must be assigned before it is used.
+
+    Referenced before assignment it silently becomes the empty string, which `contains` treats as
+    matching EVERY comment — turning a detection bug into an auto-approve bug.
     """
     body = TICK.read_text()
     assign = body.index(f'{var}="')
