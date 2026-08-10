@@ -77,7 +77,9 @@ class TestGeneratePostImage:
         assert gen.call_args.kwargs["avatar"] == _AVATAR
 
     def test_object_scenes_never_reach_the_lora(self):
-        """Prepending the trigger word to 'quarterly dashboard metrics' asked the LoRA to insert
+        """A slide about a dashboard is not a scene the author appears in.
+
+        Prepending the trigger word to 'quarterly dashboard metrics' asked the LoRA to insert
         the user's face into a scene never written to contain a person (issue #744).
         """
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as resolve, \
@@ -95,7 +97,9 @@ class TestGeneratePostImage:
         assert render.call_args.kwargs["ratio"] == "4:5"
 
     def test_pinned_replicate_model_stays_a_flux_render(self):
-        """The admin variant tool names a specific FLUX model — that must not silently
+        """A pinned model must stay a FLUX render.
+
+        The admin variant tool names a specific FLUX model — that must not silently
         become a gpt-image render.
         """
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
