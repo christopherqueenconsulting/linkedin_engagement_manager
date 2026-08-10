@@ -455,7 +455,7 @@ class TestRender:
         monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", True)
         with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    return_value=_BRIEF), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    side_effect=RuntimeError("no image")):
             assert vt.generate_thumbnail(_flow(), str(tmp_path)) is None
 
@@ -467,11 +467,14 @@ class TestRender:
         out_dir = tmp_path / "out"
         with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    return_value=_BRIEF), \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value=str(rendered)) as render:
             assert vt.generate_thumbnail(_flow(), str(out_dir)) == str(out_dir / "a.png")
-        # 16:9 at draft quality — a YouTube thumbnail, not a square hd render.
-        assert render.call_args[1] == {"ratio": "16:9", "quality": "low"}
+        # 16:9 at draft quality, surface + focal_concept handed to the gate.
+        assert render.call_args[1]["ratio"] == "16:9"
+        assert render.call_args[1]["quality"] == "low"
+        assert render.call_args[1]["surface"] == "thumbnail"
+        assert render.call_args[1]["focal_concept"] == _BRIEF.focal_concept
         assert (out_dir / "a.png").read_bytes() == b"png"
 
     def test_thumbnail_prompt_comes_from_the_one_brief_engine(self, tmp_path, monkeypatch):
@@ -487,7 +490,7 @@ class TestRender:
         rendered.write_bytes(b"png")
         with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    return_value=_BRIEF) as brief, \
-             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value=str(rendered)) as render:
             vt.generate_thumbnail(_flow(), str(tmp_path / "out"))
 
@@ -495,6 +498,18 @@ class TestRender:
         assert brief.call_args[1]["ratio"] == "16:9"
         assert render.call_args[0][0] == _BRIEF.prompt
         assert "no text" not in render.call_args[0][0].lower()
+
+    def test_thumbnail_gate_fails_open(self, tmp_path, monkeypatch):
+        """Issue #1290: a vision outage must not take the thumbnail down with it."""
+        monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", True)
+        rendered = tmp_path / "src" / "a.png"
+        rendered.parent.mkdir()
+        rendered.write_bytes(b"png")
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_BRIEF), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   side_effect=RuntimeError("vision down")):
+            assert vt.generate_thumbnail(_flow(), str(tmp_path / "out")) is None
 
 
 class TestYouTubePublish:

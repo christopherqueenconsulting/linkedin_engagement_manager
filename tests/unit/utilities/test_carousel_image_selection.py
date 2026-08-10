@@ -233,6 +233,21 @@ class TestGenerateAvatarSlideImage:
             _generate_avatar_slide_image("quarterly dashboard metrics", 5, 9, "educational")
         assert gen.call_args.kwargs["depicts_person"] is False
 
+    def test_focal_concept_from_brief_reaches_the_gate(self):
+        """Issue #1290: a carousel slide builds a real brief and must not drop focal_concept."""
+        from types import SimpleNamespace
+
+        brief = SimpleNamespace(
+            prompt="a quiet supporting photograph of a team retro",
+            focal_concept="a team retrospective around a whiteboard",
+            ratio="1:1", surface="carousel", style_preset="carousel")
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=brief), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/gen.png") as gen:
+            _generate_avatar_slide_image("team retro", 5, 9, "personal_story")
+        assert gen.call_args.kwargs["focal_concept"] == "a team retrospective around a whiteboard"
+
 
 @pytest.mark.unit
 class TestQueryDepictsPerson:

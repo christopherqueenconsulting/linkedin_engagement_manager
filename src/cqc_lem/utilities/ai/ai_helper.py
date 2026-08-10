@@ -2901,38 +2901,41 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
                         image_model: str = DEFAULT_IMAGE_MODEL,
                         surface: str = AVATAR_SURFACE_POST_IMAGE,
                         post_id: "int | None" = None,
-                        depicts_person: bool = True) -> str:
+                        depicts_person: bool = True,
+                        focal_concept: Optional[str] = None) -> str:
     """Generate a LinkedIn post image, using the user's avatar LoRA when the guardrails allow it.
 
     Falls back to the base Flux.1 model whenever ``resolve_avatar_for`` declines (issue #744):
     no approved avatar, the surface's opt-in is off, this post opted out, or the user switched
-    their avatar off entirely.
+    their avatar off entirely. ``resolve_avatar_for`` remains the single decision point for
+    whether a likeness renders.
 
     ``depicts_person=False`` is the object/concept case — a slide about a dashboard is not a
     scene the author appears in, and prepending the trigger word there asked the LoRA to insert
     the user's face into a scene never written to contain a person.
 
-    Non-avatar renders route through ``image_gen.render_image_from_prompt`` (gpt-image hero,
-    FLUX fallback) — unless the caller explicitly pinned a Replicate model, which stays a FLUX
-    render so the admin variant tool keeps meaning what it says.
+    Every render routes through the bounded vision gate in ``image_gen`` so the brief's
+    ``focal_concept`` is graded against (issue #1290). Surfaces outside
+    ``IMAGE_QUALITY_GATE_SURFACES`` get one advisory-only look: the verdict is recorded, the
+    render is kept, and a vision outage fails open.
+
+    A caller that explicitly pinned a Replicate model still gets a direct FLUX render so the
+    admin variant tool keeps meaning what it says; the gate is not applied to pinned-model
+    renders because they are intentionally not the default ``auto`` backend.
     """
-    from cqc_lem.utilities.avatar.attributes import apply_subject_clause
+    from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
-    from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
 
     avatar = resolve_avatar_for(user_id, surface=surface, post_id=post_id) if depicts_person else None
     if avatar:
-        full_prompt = apply_subject_clause(prompt, avatar)
-        path, used_avatar = generate_image_with_avatar(
-            full_prompt, avatar["model_ref"], ratio=ratio, fallback_prompt=prompt)
-        if used_avatar:
-            _record_avatar_media(path, post_id, user_id)
-        return path
+        return render_avatar_image_gated(
+            prompt, avatar=avatar, user_id=user_id, surface=surface,
+            ratio=ratio, focal_concept=focal_concept, post_id=post_id)
     if image_model != DEFAULT_IMAGE_MODEL:
         return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model)
-    from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
-    return render_image_from_prompt(prompt, ratio=ratio, user_id=user_id, post_id=post_id,
-                                    image_model=image_model)
+    return render_image_gated(
+        prompt, surface=surface, ratio=ratio, focal_concept=focal_concept,
+        user_id=user_id, post_id=post_id, image_model=image_model)
 
 
 def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:
