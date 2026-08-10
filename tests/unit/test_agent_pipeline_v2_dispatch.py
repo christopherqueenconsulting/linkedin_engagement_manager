@@ -271,3 +271,24 @@ def test_a_live_v1_tick_holds_back_the_agent_pool(tmp_path):
         os.close(fd)
     # Released: the daemon may take the agent pool again without an operator doing anything.
     assert sup.v1_slots_busy() == 0
+
+
+def test_v2_trusts_the_app_bot_as_a_labeller_exactly_as_v1_does(tmp_path):
+    """v1 and v2 must not disagree about who may mint `agent:ready`.
+
+    The runner re-applies that label itself — the stale-claim reaper, the answered-Decision-Comment
+    requeue, and every phasefix follow-up issue. Under the PAT those writes were the owner's; under
+    the App they are the bot's, and tick.sh adds the bot to the allowlist for exactly that reason.
+
+    v2 omitting it did not fail safe, it failed silently DIFFERENT: the same issue read as workable
+    to v1 and untrusted to v2, so a rollback would quietly resurrect work v2 had written off.
+    Measured live on issue #1292 within minutes of cutover.
+    """
+    tick = (_PIPE / "tick.sh").read_text()
+    common = (_V2 / "actions" / "common.sh").read_text()
+    grant = 'AGENT_LABEL_TRUSTED_ACTORS="$AGENT_LABEL_TRUSTED_ACTORS $GH_APP_BOT_LOGIN"'
+    assert grant in tick
+    assert grant in common
+    # And both must gate it on the identity actually being active, not merely configured.
+    for text in (tick, common):
+        assert '[ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]' in text

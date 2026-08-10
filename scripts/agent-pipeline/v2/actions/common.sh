@@ -72,6 +72,24 @@ elif [ -n "${AGENT_GH_TOKEN:-}" ]; then
   export GH_TOKEN="$AGENT_GH_TOKEN"
 fi
 
+# ...and the allowlist entry that identity requires, exactly as tick.sh derives it. This is NOT a
+# widening of the gate: the runner re-applies `agent:ready` itself in two places — the stale-claim
+# reaper and the lane that requeues an issue after the owner answers its Decision Comment — and
+# MODE=phasefix files follow-up issues carrying it. Under the PAT those writes were the OWNER's and
+# passed; under the App they are the bot's.
+#
+# Omitting it here did not fail safe, it failed SILENTLY DIFFERENT: v1 accepted those issues and v2
+# refused them, so the same item read as workable to one runner and untrusted to the other, and the
+# rollback path would have quietly resurrected work v2 had written off. Measured live on issue
+# #1292 within minutes of cutover. The outsider path this allowlist exists to close — a stranger's
+# issue labelled by a non-allowlisted actor — is unchanged.
+if [ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]; then
+  case " $AGENT_LABEL_TRUSTED_ACTORS " in
+    *" $GH_APP_BOT_LOGIN "*) ;;
+    *) AGENT_LABEL_TRUSTED_ACTORS="$AGENT_LABEL_TRUSTED_ACTORS $GH_APP_BOT_LOGIN" ;;
+  esac
+fi
+
 # ---------------------------------------------------------------------------- exit vocabulary
 # Distinct codes so the daemon can tell "refused" from "failed" from "the agent ran and lost".
 # Collapsing them would make a trust refusal look like a flaky run and get retried forever.
