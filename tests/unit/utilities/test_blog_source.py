@@ -11,8 +11,23 @@ pytestmark = pytest.mark.unit
 
 _DB = "cqc_lem.utilities.db"
 _RCP = "cqc_lem.app.run_content_plan"
+_BS = "cqc_lem.utilities.blog_source"
 
 _ON = {"align_with_blog": True}
+
+
+def _in_order(seq, k):
+    """`random.sample` with the shuffle taken out, for the tests that assert a VISIT ORDER.
+
+    `_from_sitemap` draws its pages with `random.sample`, which is right for production — a fixed
+    pick would hand every edition queued in one run the same page. But a test that puts an
+    unreadable page first and a readable one second is asserting that the walk SKIPS the first,
+    and sample is free to return the readable one first, in which case the skip branch never runs
+    and the assertion passes anyway. That is how the `except Exception: continue` arm came to be
+    covered only by luck: which way the coin landed depended on global `random` state left by
+    whatever ran earlier, so it was covered serially and missed under `-n 4` sharding.
+    """
+    return list(seq)[:k]
 
 
 class TestPlainText:
@@ -80,6 +95,7 @@ class TestResolveBlogSource:
              patch(f"{_DB}.get_user_sitemap_url", return_value="https://x.com/sitemap.xml"), \
              patch(f"{_RCP}.fetch_sitemap_urls", return_value=list(pages)), \
              patch(f"{_RCP}.filter_relevant_urls", side_effect=lambda urls, **kw: urls), \
+             patch(f"{_BS}.random.sample", _in_order), \
              patch(f"{_RCP}.extract_page_content", side_effect=lambda u: pages[u]):
             assert resolve_blog_source(1, _ON) == "B\nReadable."
 
@@ -93,6 +109,7 @@ class TestResolveBlogSource:
              patch(f"{_DB}.get_user_sitemap_url", return_value="https://x.com/sitemap.xml"), \
              patch(f"{_RCP}.fetch_sitemap_urls", return_value=["https://x.com/a", "https://x.com/b"]), \
              patch(f"{_RCP}.filter_relevant_urls", side_effect=lambda urls, **kw: urls), \
+             patch(f"{_BS}.random.sample", _in_order), \
              patch(f"{_RCP}.extract_page_content", side_effect=_extract):
             assert resolve_blog_source(1, _ON) == "B\nReadable."
 
@@ -104,8 +121,16 @@ class TestResolveBlogSource:
              patch(f"{_RCP}.fetch_sitemap_urls", return_value=urls), \
              patch(f"{_RCP}.filter_relevant_urls", side_effect=lambda u, **kw: u), \
              patch(f"{_RCP}.extract_page_content", side_effect=lambda u: (None, [f"body {u[-1]}"])):
-            random.seed(967)
-            seen = {resolve_blog_source(1, _ON) for _ in range(12)}
+            # Seed for a reproducible spread, then put the global generator back exactly as found.
+            # An unrestored seed leaks into every test that runs after this one, and what the next
+            # random.sample returns then depends on execution order — which differs between a
+            # serial run and an -n 4 shard.
+            state = random.getstate()
+            try:
+                random.seed(967)
+                seen = {resolve_blog_source(1, _ON) for _ in range(12)}
+            finally:
+                random.setstate(state)
         assert len(seen) > 1
 
     def test_sitemap_fetch_failure_warns_once(self):

@@ -35,10 +35,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
           install-args: --with test
 
+      # -n 4 matches the width of a GitHub-hosted runner and is pinned rather than `auto` for the
+      # same reason as the integration lane. `loadfile` keeps a whole file on one worker, which is
+      # what the 40+ module-scoped TestClient fixtures under tests/unit/api are built for; `load`
+      # would rebuild them per test and `loadscope` splits a module across its classes.
+      # `-q` cancels the `-v` in pyproject's addopts (verbosity is additive) -- 11,728 result lines
+      # times a [gwN] prefix is log noise, not signal. --durations=5 also comes from addopts and
+      # stays, as the straggler probe: loadfile's floor is the slowest single FILE.
       - name: Run unit tests
         run: |
           poetry run pytest tests/unit \
-            -v --tb=short \
+            -n 4 --dist loadfile \
+            -q --tb=short \
             -m "not slow" \
             --cov=src/cqc_lem \
             --cov-report=xml \
