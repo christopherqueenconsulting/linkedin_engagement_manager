@@ -37,7 +37,9 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
-          cache-dependency-path: src/cqc_lem/ui/package.json
+          # The LOCKfile, as in ui-build.yml. package.json carries ranges, so keying on it means
+          # the cache does not track resolved versions and a `npm ci` can restore a stale tree.
+          cache-dependency-path: src/cqc_lem/ui/package-lock.json
 
       - name: Build React UI
         working-directory: src/cqc_lem/ui

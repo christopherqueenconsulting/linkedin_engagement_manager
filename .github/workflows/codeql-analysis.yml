@@ -23,6 +23,14 @@ env:
   # Costs ~20% slower CodeQL on PRs. Cheap against 74 wasted merge-group matrices in one day.
   CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
 
+# Supersede a PR's own in-flight runs when it is pushed to again. cancel-in-progress is gated to
+# pull_request ON PURPOSE: these workflows also run on merge_group, and cancelling a merge-queue run
+# fails that queue entry and evicts the PR -- the #1168/#1171 failure mode. It also protects the
+# push:main runs that codeql_pr_gate.py's base-ref calibration reads from.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   codeql:
     name: Analyze (${{ matrix.language }})
