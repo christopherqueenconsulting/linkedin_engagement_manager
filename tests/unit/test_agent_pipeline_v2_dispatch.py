@@ -336,3 +336,41 @@ def test_the_snapshot_actually_reads_auto_merge_from_github():
     src = (_V2 / "lemd" / "github.py").read_text()
     assert "autoMergeRequest" in src
     assert hasattr(github, "pr_facts")
+
+
+def test_the_cap_counts_runs_this_daemon_did_not_spawn(tmp_path):
+    """A restart must not grant a fresh full pool on top of the agents still working.
+
+    Children are launched into their own sessions so they OUTLIVE a daemon restart — deliberate, so
+    a restart never abandons an agent mid-`git push`. But the in-memory child list is empty after
+    one, so the cap was computed as if nothing were running. Measured live: 5 concurrent runs
+    against a cap of 3 after three restarts in ten minutes.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    sup = dispatch.Supervisor(_Cfg(tmp_path), conn)
+    item = db.upsert_item(conn, kind="pr", number=500, state=db.STATE_READY)
+    # This process is alive and is not ours — exactly the post-restart shape.
+    db.start_run(conn, item_id=item, mode="fix", pid=os.getpid())
+    assert sup.in_pool("agent") == 1
+    assert sup.free("agent") == 2
+
+
+def test_an_orphaned_run_does_not_hold_its_slot_forever(tmp_path):
+    """The counterpart: a long-lived daemon must be able to close a run it never spawned.
+
+    `startup_recover` closes dead runs at START. An orphan that exits five minutes AFTER a restart
+    has no other closer, so it would hold its slot until the next restart — and the usable pool
+    would shrink by one every time the daemon was bounced.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    sup = dispatch.Supervisor(_Cfg(tmp_path), conn)
+    item = db.upsert_item(conn, kind="pr", number=501, state=db.STATE_RUNNING)
+    # A pid that cannot be alive: pid 0 is never a real process on Linux.
+    db.start_run(conn, item_id=item, mode="fix", pid=0)
+    conn.execute("UPDATE runs SET pid=999999999, pid_start='1' WHERE item_id=?", (item,))
+    assert sup.in_pool("agent") == 0
+    sup.reap()
+    open_runs = conn.execute("SELECT COUNT(*) AS n FROM runs WHERE ended_at IS NULL").fetchone()
+    assert open_runs["n"] == 0
+    # And the item is handed back for a fresh observation rather than guessed at locally.
+    assert db.get_item(conn, "pr", 501)["dirty"] == 1

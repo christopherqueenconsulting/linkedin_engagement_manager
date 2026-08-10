@@ -497,6 +497,11 @@ def pid_starttime(pid: int) -> str | None:
     return tail[19] if len(tail) > 19 else None
 
 
+def pid_alive(pid: int, starttime: str | None = None) -> bool:
+    """Public name for the liveness check — the supervisor needs it to count adopted runs."""
+    return _pid_alive(pid, starttime)
+
+
 def _pid_alive(pid: int, starttime: str | None = None) -> bool:
     """True when this pid is alive AND is the same process we started.
 
