@@ -125,3 +125,39 @@ def test_help_prints_the_whole_header(box):
     assert proc.returncode == 0
     assert "--sync --force" in proc.stdout
     assert "set -euo pipefail" not in proc.stdout
+
+
+def test_scratch_install_never_touches_the_crontab(tmp_path, monkeypatch):
+    """LEM_PIPELINE_DEST exists so this installer can be tested; it must not schedule anything.
+
+    The previous version added a cron line for whatever path it was pointed at, so exercising it
+    left `*/5 * * * * /tmp/tmp.XXXX/dest/tick.sh` behind. Two of those accumulated on the live box
+    and fired every five minutes against deleted paths until an audit noticed. A test harness that
+    can schedule work on the host is a bug regardless of whether the work does anything.
+    """
+    src = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    # A crontab stub that records any write; the real one must never be reached.
+    (fake_bin / "crontab").write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = "-l" ]; then cat "{tmp_path}/cron.txt" 2>/dev/null; exit 0; fi\n'
+        f'cat > "{tmp_path}/cron_written.txt"\n'
+    )
+    (fake_bin / "crontab").chmod(0o755)
+    (tmp_path / "cron.txt").write_text("")
+
+    env = dict(os.environ)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["LEM_PIPELINE_DEST"] = str(tmp_path / "dest")
+    subprocess.run([str(src / "install.sh")], cwd=src, env=env, capture_output=True, text=True,
+                   check=False, timeout=60)
+
+    assert not (tmp_path / "cron_written.txt").exists(), "a scratch install wrote to the crontab"
+
+
+def test_cron_line_targets_the_install_destination():
+    """The scheduled path and the installed path must be the same one."""
+    text = (Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline"
+            / "install.sh").read_text()
+    assert 'LINE="*/5 * * * * $DEST/tick.sh' in text

@@ -148,10 +148,18 @@ fi
 # Every 5 minutes, matching what the box actually runs — this said hourly while the installed
 # crontab was `*/5`, so the documented cadence was 12x slower than the real one, and anyone
 # reasoning about how long a pause takes to bite (or how much work a tick can start) got it wrong.
-LINE="*/5 * * * * /home/lem/agent-pipeline/tick.sh >/dev/null 2>&1"
-if crontab -l 2>/dev/null | grep -qF "/home/lem/agent-pipeline/tick.sh"; then
+#
+# NEVER touch the crontab when DEST is overridden. LEM_PIPELINE_DEST exists so this installer can
+# be exercised against a scratch directory, and the previous version happily added a cron line for
+# whatever path it was pointed at — so testing it left `*/5 * * * * /tmp/tmp.XXXX/dest/tick.sh`
+# behind. Two of those accumulated on the live box and fired every five minutes against deleted
+# paths until they were noticed. A test harness must not be able to schedule anything.
+if [ "$DEST" != "/home/lem/agent-pipeline" ]; then
+  echo "cron: skipped (DEST is overridden — a scratch install must never schedule anything)."
+elif crontab -l 2>/dev/null | grep -qF "$DEST/tick.sh"; then
   echo "cron entry already present."
 else
+  LINE="*/5 * * * * $DEST/tick.sh >/dev/null 2>&1"
   ( crontab -l 2>/dev/null; echo "$LINE" ) | crontab -
   echo "cron entry added (every 5 minutes)."
 fi
