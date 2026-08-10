@@ -226,7 +226,7 @@ class Supervisor:
         """Collect finished children and kill any that overran.
 
         Returns:
-            `(child, rc)` for each child that ended this pass. A timed-out child reports rc=-9 so
+            `(child, rc)` for each child that ended this pass. A timed-out child reports `RC_KILLED` so
             the caller can tell "the agent decided it failed" from "we stopped it", which is what
             makes a starvation-park auditable rather than indistinguishable from a real failure.
         """
@@ -275,6 +275,11 @@ class Supervisor:
     def _reap_adopted(self, now: float) -> None:
         """Close run rows whose process is gone but which this daemon never spawned.
 
+        Closed with `RC_VANISHED`, never `RC_KILLED`. The two are different events — we stopped it
+        vs it was already gone — and the whole reason the supervisor uses a distinct code at all is
+        so a reader can tell "the agent decided it failed" from "we stopped it". An orphan closed as
+        a kill makes the start lane look like it is timing out when it is not.
+
         The counterpart to counting them in `in_pool`. `startup_recover` closes dead runs at start,
         but a run adopted by a LONG-LIVED daemon has no other closer — so an orphan that exited five
         minutes after a restart would hold its slot until the next restart, and the pool would shrink
@@ -288,7 +293,7 @@ class Supervisor:
             if row["pid"] in mine or db.pid_alive(int(row["pid"]), row["pid_start"]):
                 continue
             LOG.info("adopting and closing orphaned run %s (pid %s is gone)", row["id"], row["pid"])
-            db.finish_run(self.conn, row["id"], -9, now=int(now))
+            db.finish_run(self.conn, row["id"], db.RC_VANISHED, now=int(now))
             if row["item_id"] is not None:
                 db.force_state(self.conn, row["item_id"], db.STATE_READY, dirty=1,
                                pending_mode=None, wake_at=None, now=int(now))

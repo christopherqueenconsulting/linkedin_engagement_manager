@@ -197,7 +197,10 @@ def test_startup_closes_runs_whose_process_is_gone(conn):
     db.start_run(conn, item_id=i, mode="fix", pid=999_999_999)  # certainly dead
     stats = db.startup_recover(conn)
     assert stats["runs_closed"] == 1
-    assert conn.execute("SELECT rc FROM runs WHERE item_id=?", (i,)).fetchone()["rc"] == -9
+    # RC_VANISHED, not RC_KILLED: nobody killed this run, its process was already gone. Collapsing
+    # the two made every restart look like a batch of agent timeouts (#1359).
+    assert conn.execute("SELECT rc FROM runs WHERE item_id=?",
+                        (i,)).fetchone()["rc"] == db.RC_VANISHED
     assert db.get_item(conn, "pr", 51)["state"] == db.STATE_READY
 
 
