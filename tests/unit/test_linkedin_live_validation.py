@@ -20,7 +20,7 @@ ANALYTICS_TEXT = "Discovery\n72\nImpressions\nEngagement\nReactions\n4\nComments
 
 
 def clear_the_breaker(monkeypatch):
-    """Let `main()` past the #1108 breaker gate.
+    """Let `main()` past the #1301 breaker gate.
 
     Every `main()` case has to say this out loud: the gate fails CLOSED, so in a unit environment
     (no Redis) the probe REFUSES by default. A test that walks through main is asserting what
@@ -295,7 +295,7 @@ class TestMessageThreadProbe:
     def test_the_search_route_is_not_probe_able_and_says_so_instead_of_crashing(self, monkeypatch):
         """The production ladder's last resort types a name and presses Enter.
 
-        The #1108 guard refuses that — a box that takes text and commits on Enter is, from here,
+        The #1301 guard refuses that — a box that takes text and commits on Enter is, from here,
         indistinguishable from a composer — so the probe must report an UNKNOWN naming the guard,
         not die mid-run and not read as a broken route.
         """
@@ -2388,8 +2388,8 @@ class TestProfileExperiencesProbe:
         assert llv.main(["--profile-experiences", "https://www.linkedin.com/in/someone/"]) == 0
 
 
-# ─────────────────────── read-only enforcement + the breaker gate (#1108) ───────────────────────
-# These are the tests that let an autonomous agent run this probe at all. Before #1108 "read-only"
+# ─────────────────────── read-only enforcement + the breaker gate (#1301) ───────────────────────
+# These are the tests that let an autonomous agent run this probe at all. Before #1301 "read-only"
 # was a property of the prose; here it is a property of the process.
 
 @pytest.fixture(autouse=True)

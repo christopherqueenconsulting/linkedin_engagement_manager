@@ -114,7 +114,7 @@ The sweep is read-only in the way that matters: it sends no invite, posts nothin
 nothing, ticks no checkbox, and clicks no Send / Post / Invite control. The composer probes open a
 composer and close it with Escape without typing.
 
-Since #1108 that is **enforced, not intended**: `install_read_only_guard()` patches Selenium once
+Since #1301 that is **enforced, not intended**: `install_read_only_guard()` patches Selenium once
 the session is up, so no probe can type a printable character (every LinkedIn write starts there)
 or press a control whose label commits something — via `WebElement.click`, `ActionChains` or
 `arguments[0].click()` alike. Two gates run before the browser opens: the 429 breaker / automation

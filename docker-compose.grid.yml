@@ -100,7 +100,7 @@ services:
       - SE_NODE_OVERRIDE_MAX_SESSIONS=true
       - SE_NODE_SESSION_TIMEOUT=600
       - SE_LOG_LEVEL=WARN
-      # The POOL half of the debug pin (#1108). Grid's DefaultSlotMatcher only compares an
+      # The POOL half of the debug pin (#1301). Grid's DefaultSlotMatcher only compares an
       # extension capability the node's stereotype actually DECLARES, so declaring `false` here is
       # what makes a `lem:debug=true` request land on the debug node and NOWHERE else. Without it
       # a probe asking for the debug node still matches all 8 of these, and the capability is
@@ -136,7 +136,7 @@ services:
   # ones (MCP debugging, live-validation probes, a session you want to watch) without ever
   # competing with automation for a slot.
   #
-  # Since #1108 the pin is DETERMINISTIC, in both directions: this node declares `lem:debug=true`
+  # Since #1301 the pin is DETERMINISTIC, in both directions: this node declares `lem:debug=true`
   # and every pool node declares `lem:debug=false`, so a client asking for `true` can only land
   # here and a production session (which asks for `false` — see `apply_debug_node`) can never land
   # here. That is what lets an autonomous agent run the read-only live probe without ever taking a
@@ -168,7 +168,7 @@ services:
       # `SE_NODE_STEREOTYPE_EXTRA='{...}'` the single quotes are part of the VALUE (compose does no
       # shell parsing here), the node's json_merge.py rejects it, and it logs "Failed to merge
       # SE_NODE_STEREOTYPE_EXTRA ... Keep using main stereotype" and registers with an ordinary
-      # stereotype. That is exactly what happened between #753 and #1108: `--watch` looked
+      # stereotype. That is exactly what happened between #753 and #1301: `--watch` looked
       # implemented, matched every node, and pinned nothing. `test_selenium_debug_node.py` now
       # json.loads() this value so the same typo cannot come back.
       - 'SE_NODE_STEREOTYPE_EXTRA={"lem:debug":true}'

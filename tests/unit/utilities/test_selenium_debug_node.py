@@ -1,4 +1,4 @@
-"""Unit tests for the Grid debug-node pin (issue #753, made two-way and enforceable in #1108)."""
+"""Unit tests for the Grid debug-node pin (issue #753, made two-way and enforceable in #1301)."""
 
 import json
 from pathlib import Path
@@ -73,7 +73,7 @@ class TestApplyDebugNode:
             assert options.to_capabilities().get(SELENIUM_DEBUG_CAPABILITY) is True
 
     def test_a_production_session_declares_false_rather_than_omitting_the_capability(self):
-        # The whole point of #1108: an ABSENT capability still matches the debug node (Grid only
+        # The whole point of #1301: an ABSENT capability still matches the debug node (Grid only
         # compares extension capabilities a stereotype declares), so omitting it is not exclusion.
         options = Options()
         with _Patches(_patched_grid(_status_response("selenium-node-debug", [_slot()]))):
@@ -113,7 +113,7 @@ class TestApplyDebugNode:
             assert apply_debug_node(options, debug=True) is False
 
     def test_a_node_that_does_not_advertise_the_capability_is_not_a_pin(self):
-        # The #753→#1108 live failure: the compose value carried literal quotes, the node's merge
+        # The #753→#1301 live failure: the compose value carried literal quotes, the node's merge
         # failed, and `--watch` matched every node. A stereotype without the key must read as
         # "cannot be pinned", not as "the debug node".
         options = Options()
@@ -125,7 +125,7 @@ class TestApplyDebugNode:
 
 
 class TestRequiredDebugNode:
-    """`required=True` is the agent's guarantee it never spends a lane slot (#1108)."""
+    """`required=True` is the agent's guarantee it never spends a lane slot (#1301)."""
 
     def _raises(self, response, **kwargs):
         from cqc_lem.utilities.selenium_util import DebugNodeUnavailable, apply_debug_node
@@ -205,7 +205,7 @@ class TestGetDockerDriverDebug:
 
 
 class TestComposeDebugStereotype:
-    """The compose half. Every assertion here failed to catch the live bug before #1108: the value
+    """The compose half. Every assertion here failed to catch the live bug before #1301: the value
     was PRESENT and still never reached the node, because it carried literal quotes.
     """
 
@@ -233,7 +233,7 @@ class TestComposeDebugStereotype:
 
     def test_the_debug_node_declares_lem_debug_true_as_PARSEABLE_json(self):
         # json.loads is the regression guard. `SE_NODE_STEREOTYPE_EXTRA='{"lem:debug":true}'` (the
-        # shipped form until #1108) passes a substring check and fails here, exactly as the node's
+        # shipped form until #1301) passes a substring check and fails here, exactly as the node's
         # own json_merge.py failed on it: "Failed to merge ... Keep using main stereotype".
         assert self._stereotype_extra("docker-compose.grid.yml",
                                       "selenium-node-debug") == {"lem:debug": True}

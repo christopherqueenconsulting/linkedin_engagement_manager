@@ -73,7 +73,7 @@ sudo -n docker exec -i "$CONTAINER" python - "${PROBE_ARGS[@]}" \
       < "$REPO/scripts/linkedin_live_validation.py" >"$SWEEP" 2>>"$LOG"
 PROBE_RC=$?
 # 75 (EX_TEMPFAIL) is the probe REFUSING to start: the LinkedIn 429 breaker is open, the breaker
-# could not be read, or the watchable Grid node was unavailable (#1108). None of those is a broken
+# could not be read, or the watchable Grid node was unavailable (#1301). None of those is a broken
 # sweep and none of them warrants paging anyone — the refusal is in the fenced JSON, and next
 # Monday's run measures the same surfaces. Anything else is a real failure.
 if [ "$PROBE_RC" = "75" ]; then

@@ -207,7 +207,7 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     `debug` (default: env `SELENIUM_DEBUG_NODE`) asks for the watchable Grid node and falls back to
     the normal pool when it is busy or absent, so debugging never queues behind itself.
     `debug_required=True` turns that fallback into a `DebugNodeUnavailable` — the live-validation
-    probe must never quietly spend a slot the engagement lanes are sized for (#1108). Not asking
+    probe must never quietly spend a slot the engagement lanes are sized for (#1301). Not asking
     for the debug node EXCLUDES it, which is what keeps a Celery lane off the watchable node.
     """
     if debug is None:
@@ -394,7 +394,7 @@ class DebugNodeUnavailable(RuntimeError):
     """The watchable debug node was REQUIRED and could not be had.
 
     Raised instead of silently falling back to the pool, for the one caller that must never spend
-    a lane slot: the read-only live-validation probe an autonomous agent runs (#1108).
+    a lane slot: the read-only live-validation probe an autonomous agent runs (#1301).
     """
 
 
@@ -408,7 +408,7 @@ def debug_node_status() -> dict:
     - ``advertised``: its stereotype actually DECLARES ``lem:debug``. Grid's DefaultSlotMatcher only
       compares an extension capability a stereotype declares, so a node that does not advertise it
       matches a ``lem:debug=true`` request as readily as the debug node does — i.e. an unadvertised
-      capability is not a pin, it is decoration. Between #753 and #1108 this was live: the compose
+      capability is not a pin, it is decoration. Between #753 and #1301 this was live: the compose
       value carried literal quotes, the node's merge failed, and every `--watch` session went to a
       random pool node.
     - ``free_slot``: it has a slot nothing is using.
@@ -452,7 +452,7 @@ def _debug_node_has_free_slot() -> bool:
 def apply_debug_node(options: Options, debug: bool = False, required: bool = False) -> bool:
     """Decide which side of the Grid this session may run on. Returns True if it was pinned.
 
-    The capability is set either way, and that is the point (#1108). A production session declares
+    The capability is set either way, and that is the point (#1301). A production session declares
     ``lem:debug=False``, which the debug node's ``lem:debug=true`` stereotype cannot match — so the
     ninth, watchable node is structurally excluded from the pool the Celery lanes share, rather
     than merely being "a spare node nobody happens to ask for". Pool nodes declare
@@ -1012,7 +1012,7 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
     reports at least one window handle, so the caller never gets a half-started session.
 
     `debug_required` is NOT retried on purpose: `DebugNodeUnavailable` is not a full pool, it is a
-    caller that may not use the pool at all (#1108).
+    caller that may not use the pool at all (#1301).
     """
     # Create the driver. Passing user_id applies that user's geo/timezone/locale spoofing.
     driver = None

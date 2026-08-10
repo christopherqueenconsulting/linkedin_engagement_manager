@@ -43,7 +43,7 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
     back to the normal pool when the node is busy or absent. `debug_required` removes that
     fallback and raises `DebugNodeUnavailable` instead — the live-validation probe an autonomous
-    agent runs must never take a slot the engagement lanes are sized for (#1108).
+    agent runs must never take a slot the engagement lanes are sized for (#1301).
 
     `force_refresh` makes the scrape bypass the profile cache (issue #1076). The cached FALLBACK
     below is unaffected on purpose: a forced scrape that fails still beats acting on nothing, and

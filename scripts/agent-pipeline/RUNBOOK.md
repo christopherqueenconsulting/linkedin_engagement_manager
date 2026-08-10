@@ -25,7 +25,7 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
   coverage. Lane/marker/fixture selection: the **test-lanes** skill. Run `poetry run pytest tests/unit -q` locally
   before pushing when the environment allows; **CI is the source of truth**.
 - **Never** edit files under `/opt/lem` (that is live prod), never run `docker`, never deploy, never touch secrets/`.env`.
-  **One carve-out (#1108):** piping the read-only live-validation probe into the Selenium worker —
+  **One carve-out (#1301):** piping the read-only live-validation probe into the Selenium worker —
   `sudo docker exec -i celery_worker_selenium python - --require-debug-node … < scripts/linkedin_live_validation.py`.
   That exact command and no other: it starts nothing, restarts nothing, changes no container, and
   the probe itself cannot write to LinkedIn (see the **linkedin-live-validation** skill).
@@ -71,7 +71,7 @@ what remains in the PR body, and the issue stays open with nothing held.
 - The issue needs a **WRITE on LinkedIn** — posting, commenting, sending an invite or a DM,
   changing an account setting — or **real credentials** you don't have. A write is always a human
   escalation; no flag makes one possible.
-  **A read-only DOM check is NOT this.** Since #1108 you may run the live-validation probe
+  **A read-only DOM check is NOT this.** Since #1301 you may run the live-validation probe
   yourself: it is structurally unable to type or to press a commit control, it refuses to start
   when the 429 breaker is open or unreadable, and `--require-debug-node` keeps it off the Chrome
   slots the engagement lanes need. Read the **linkedin-live-validation** skill first and pass

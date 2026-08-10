@@ -22,7 +22,7 @@ Answers, against a REAL logged-in session, the two questions
      read, and from which entity selector? — grounds #970. The whole profile is dumped into the
      voice-synthesis prompt, so a misparse here is not inert: it grounds every comment and DM.
 
-**Read-only, and since #1108 that is ENFORCED rather than intended.** `install_read_only_guard`
+**Read-only, and since #1301 that is ENFORCED rather than intended.** `install_read_only_guard`
 patches Selenium the moment the session is established (signing in is the one step that
 legitimately types — credentials, and the emailed PIN — and it is production's own shared login
 path), so for every probe that follows this script cannot type a
@@ -128,8 +128,8 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
     return reading
 
 
-# ───────────────────────── read-only enforcement (issue #1108) ─────────────────────────
-# Until #1108 "read-only" was a PROPERTY of this file: every probe was written not to submit
+# ───────────────────────── read-only enforcement (issue #1301) ─────────────────────────
+# Until #1301 "read-only" was a PROPERTY of this file: every probe was written not to submit
 # anything, and a reviewer checked that by reading it. That is what kept autonomous agents out —
 # a headless lane launches with `--dangerously-skip-permissions`, so nothing but the code itself
 # stands between a probe and a post on the owner's real account.
@@ -355,7 +355,7 @@ def install_read_only_guard() -> dict:
     return guard_ledger()
 
 
-# ───────────────────────── the 429 breaker gate (issue #1108) ─────────────────────────
+# ───────────────────────── the 429 breaker gate (issue #1301) ─────────────────────────
 # The probe drives the owner's REAL session through the production cookie/proxy stack, on an
 # account with a 429-lockout history that once cost days of engagement. Read-only still spends
 # rate budget, so a probe run while the breaker is open is the doom loop's fuel.
@@ -417,7 +417,7 @@ class ProbeRefused(RuntimeError):
 def open_probe_session(get_current_profile: Callable, user_id: int, require_debug_node: bool):
     """Open the probe's session, pinned to the watchable Grid node.
 
-    The pin is the default now (#1108): an ad-hoc probe has no business taking one of the eight
+    The pin is the default now (#1301): an ad-hoc probe has no business taking one of the eight
     Chrome slots the engagement lanes are sized for, and the ninth node exists for exactly this.
     `require_debug_node` turns "best-effort pin" into "refuse rather than borrow a lane slot",
     which is what an autonomous agent must run with.
@@ -435,7 +435,7 @@ def open_probe_session(get_current_profile: Callable, user_id: int, require_debu
         if not supported:
             raise ProbeRefused({
                 "refused": True, "reason": "debug_node_pin_unsupported", "wait_seconds": 0,
-                "detail": "the deployed image predates the debug-node pin (#1108), so this run "
+                "detail": "the deployed image predates the debug-node pin (#1301), so this run "
                           "cannot be kept off the production Chrome slots",
                 "action": "wait for the release that ships it, then re-run"})
         kwargs["debug_required"] = True
@@ -3678,7 +3678,7 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
 
     Read-only: it opens the thread and reads it. It types nothing into the composer and sends nothing.
 
-    One route of the production ladder is NOT probe-able under the #1108 guard: the last-resort
+    One route of the production ladder is NOT probe-able under the #1301 guard: the last-resort
     messaging SEARCH types a name into a box and presses Enter, and the guard refuses every
     printable character precisely because a box that takes text and commits on Enter is
     indistinguishable, from here, from a composer. That grades `unknown` — the ladder was not fully
@@ -3907,7 +3907,7 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--watch", action="store_true",
                         help="request the watchable Grid debug node so the session is visible via "
                              "noVNC; falls back to the pool if the debug node is busy/absent. This "
-                             "is the DEFAULT since #1108 — the flag is kept because it is what "
+                             "is the DEFAULT since #1301 — the flag is kept because it is what "
                              "everyone types, and because it says out loud where the session went")
     parser.add_argument("--require-debug-node", action="store_true",
                         help="refuse to run at all unless the session can be pinned to the "

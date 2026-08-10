@@ -172,7 +172,7 @@ nodes as well, because Grid ignores a capability their stereotype does not carry
 capability on the request side matches the debug node, which is why production sets `False` rather
 than omitting it — omitting it is what let a Celery lane be scheduled onto the watchable node.
 
-> **The quoting trap (#753 → #1108).** `- SE_NODE_STEREOTYPE_EXTRA='{"lem:debug":true}'` puts
+> **The quoting trap (#753 → #1301).** `- SE_NODE_STEREOTYPE_EXTRA='{"lem:debug":true}'` puts
 > literal apostrophes in the value — compose does no shell parsing — so the node logs *"Failed to
 > merge SE_NODE_STEREOTYPE_EXTRA … Keep using main stereotype"* and registers ordinary. It shipped
 > that way for weeks: `--watch` matched every node and pinned none. Quote the **whole `KEY=value`
@@ -182,7 +182,7 @@ than omitting it — omitting it is what let a Celery lane be scheduled onto the
 
 Clients that want to **watch the exact session**:
 
-* **Live-validation probe:** pinned by DEFAULT since #1108. `--require-debug-node` refuses to run
+* **Live-validation probe:** pinned by DEFAULT since #1301. `--require-debug-node` refuses to run
   at all rather than fall back to a production slot — what an autonomous agent must pass.
 * **Selenium MCP server:** `SELENIUM_DEBUG_NODE=true poetry run python tools/selenium_mcp_server.py`
 * **Ad-hoc code using `get_docker_driver()`:** `SELENIUM_DEBUG_NODE=true` is read automatically
