@@ -38,8 +38,41 @@ jobs:
           python-version: "3.12"
           install-args: --with test
 
+      # 25s of this 75s lane was re-downloading a browser that never changes between runs. Keyed on
+      # the Playwright version resolved in poetry.lock, because that is what decides which browser
+      # build `playwright install` wants — a key on the lockfile hash alone would miss on every
+      # unrelated dependency bump. Saved from main only, for the same reason poetry_setup is: an
+      # Actions cache is scoped to the ref that wrote it, so a per-PR entry is readable by that one
+      # PR and does nothing but evict main's.
+      - name: Resolve the pinned Playwright version
+        id: pw
+        run: echo "version=$(poetry run playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright browsers
+        id: pw-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+
+      # --with-deps installs apt system libraries, which live outside ~/.cache and are therefore NOT
+      # restored by the cache. That half always has to run; only the browser download is skipped.
       - name: Install Playwright browsers
-        run: poetry run playwright install --with-deps chromium
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            poetry run playwright install-deps chromium
+          else
+            poetry run playwright install --with-deps chromium
+          fi
+
+      - name: Save Playwright browsers
+        if: >-
+          steps.pw-cache.outputs.cache-hit != 'true' &&
+          (github.ref == 'refs/heads/main' || github.event_name == 'merge_group')
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
 
       - name: Start FastAPI test server
         run: |
