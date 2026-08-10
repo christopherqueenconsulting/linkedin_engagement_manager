@@ -225,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("payload is not an object")
         except ValueError as exc:
-            LOG.warning("rejected delivery %s: unparseable payload (%s)", delivery, exc)
+            LOG.warning("rejected delivery %r: unparseable payload (%r)", delivery, exc)
             self._reply(400, "bad json")
             return
 
@@ -252,11 +252,11 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error as exc:
             # 500 (not 202) so GitHub retries and the delivery is not lost. This is the branch that
             # makes "202 means committed" true.
-            LOG.error("delivery %s NOT stored: %s", delivery, exc)
+            LOG.error("delivery %r NOT stored: %r", delivery, exc)
             self._reply(500, "storage failed")
             return
 
-        LOG.info("stored %s/%s delivery=%s number=%s new=%s", event, action, delivery, number, fresh)
+        LOG.info("stored %r/%r delivery=%r number=%s new=%s", event, action, delivery, number, fresh)
         self._reply(202, "queued" if fresh else "duplicate")
 
 
