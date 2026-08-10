@@ -111,7 +111,14 @@ def admissible(snap: Snapshot) -> tuple[bool, str]:
     if "autorelease: pending" in snap.labels:
         return False, "release_pr"
     if not any(ll.startswith("agent:") for ll in snap.labels):
-        return False, "no_agent_label"
+        # ...unless it is HELD. An item carrying a hold is one the pipeline parked, and the only
+        # decision available for it is the answer branch below — which is the one thing that can
+        # ever release it. Refusing admission here instead made a park unanswerable whenever the
+        # `agent:*` label went with it: issues #1284 and #1285 hold `needs-human` and nothing else,
+        # so an owner reply on either would have been read, classified, and then discarded one
+        # branch later. Admission is not authorisation — `v2_trust_ok` still gates the action.
+        if not (snap.labels & HOLD_LABELS):
+            return False, "no_agent_label"
     return True, "ok"
 
 

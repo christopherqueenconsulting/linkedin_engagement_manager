@@ -58,6 +58,12 @@ clear_item_state() {  # clear_item_state pr|issue <number>
 }
 
 if [ -n "$TPR" ]; then
+  # The trust boundary, re-asked at execution time exactly as every dispatch asks it. The daemon
+  # has already established that the OWNER wrote the answer — that is the authority to un-park —
+  # and this is the separate question of whether the work itself may run. Unreadable refuses.
+  if ! v2_trust_ok pr "$TPR"; then
+    log "TRUST refused un-park of PR #$TPR — leaving it parked."; exit "$EX_TRUST"
+  fi
   log "UN-PARKING PR #$TPR (answered on $KIND #$NUMBER${TISS:+, issue #$TISS}) — routing to revise."
   gh pr ready "$TPR" --repo "$SLUG" >/dev/null 2>&1
   if ! gh pr edit "$TPR" --repo "$SLUG" --add-label "agent:revise" \
@@ -83,6 +89,13 @@ if [ -n "$DONEPR" ] \
    && [ "$(gh pr view "$DONEPR" --repo "$SLUG" --json state --jq .state 2>/dev/null)" = "MERGED" ]; then
   log "Issue #$TISS answered, but PR #$DONEPR is already MERGED — leaving parked (needs closing, not redoing)."
   exit 0
+fi
+
+# `agent:ready` GRANTS work, so this path carries the stricter half of the boundary: the issue's
+# author must have standing and the last actor to apply `agent:ready` must be allowlisted. An issue
+# that never legitimately held it refuses here rather than being granted one by an un-park.
+if ! v2_trust_ok issue "$TISS"; then
+  log "TRUST refused un-park of issue #$TISS — leaving it parked."; exit "$EX_TRUST"
 fi
 
 log "UN-PARKING issue #$TISS — no PR yet, returning it to the ready queue."

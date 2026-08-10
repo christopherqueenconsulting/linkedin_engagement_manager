@@ -269,3 +269,44 @@ def test_the_unpark_action_undrafts_before_it_relabels():
 def test_the_unpark_action_resets_the_run_ledger():
     """Without this the six `*_exhausted` parks re-park on their next dispatch, answer or not."""
     assert "ledger_reset" in (_V2 / "actions" / "unpark.sh").read_text()
+
+
+# ---------------------------------------------------------------- admission of held items
+
+
+def test_a_hold_admits_an_item_that_lost_its_agent_label():
+    """The park is unanswerable otherwise, and that is not hypothetical.
+
+    Issues #1284 and #1285 hold `needs-human` and no `agent:*` label at all, so admission refused
+    them one branch BEFORE the answer was considered: the reply would have been read, classified,
+    and then discarded.
+    """
+    snap = observe.Snapshot(kind="issue", number=1284, labels=frozenset({"needs-human"}),
+                            answer=answers.Answer("a1", "answer", "1B"))
+    assert d(snap).action == observe.ACT_UNPARK
+
+
+def test_an_unlabelled_item_without_a_hold_is_still_not_ours():
+    """Admission widened for HELD items only — a stray issue is still none of the pipeline's."""
+    snap = observe.Snapshot(kind="issue", number=9, labels=frozenset({"priority:low"}))
+    got = d(snap)
+    assert (got.action, got.reason) == (observe.ACT_NONE, "not_admissible:no_agent_label")
+
+
+def test_a_held_item_without_an_answer_still_just_waits():
+    """Widening admission must not turn a hold into work."""
+    snap = observe.Snapshot(kind="issue", number=1285, labels=frozenset({"needs-human"}))
+    assert d(snap).reason == "human_hold"
+
+
+def test_admission_is_not_authorisation():
+    """The action re-asks the trust question; a hold label may never grant work by itself."""
+    src = (_V2 / "actions" / "unpark.sh").read_text()
+    assert src.count("v2_trust_ok") == 2          # the PR path and the issue path
+    assert 'exit "$EX_TRUST"' in src
+
+
+def test_a_fork_pr_is_never_un_parked():
+    """The fork refusal outranks admission by hold, as it outranks every other lane."""
+    snap = held(upstream=False, answer=answers.Answer("a1", "answer", "1B"))
+    assert d(snap).action == observe.ACT_NONE
