@@ -475,8 +475,12 @@ def _check_rhetorical_hook(text: str, sents: list, ctx: dict) -> Optional[dict]:
 
 
 def find_canned_scaffolds(text: Optional[str]) -> list:
-    """The banned scaffold templates present in `text`, in list order, deduped."""
-    plain = _plain(text)
+    """The banned scaffold templates present in `text`, in list order, deduped.
+
+    Whitespace is collapsed before matching, so a scaffold broken across a line break — which is how
+    it looks in a wrapped prompt source file, and how a formatted post can read — still matches.
+    """
+    plain = " ".join(_plain(text).split())
     return [p for p in banned_scaffolds() if p in plain]
 
 

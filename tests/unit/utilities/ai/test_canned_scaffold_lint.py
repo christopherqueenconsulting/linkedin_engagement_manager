@@ -42,6 +42,10 @@ class TestFindCannedScaffolds:
         assert find_canned_scaffolds("IN MY EXPERIENCE AS A director, headcount was the bottleneck.")
         assert find_canned_scaffolds("A strategy I’ve found effective is cutting the standup.")
 
+    def test_matches_across_a_line_break(self):
+        # How a scaffold looks in a wrapped prompt source file — and how a formatted post can read.
+        assert find_canned_scaffolds("One of the biggest\nchallenges in   logistics today is EDI.")
+
     def test_specific_first_person_writing_is_left_alone(self):
         assert find_canned_scaffolds(SPECIFIC) == []
 
@@ -103,8 +107,9 @@ class TestSharedList:
 
         directive = post_writing_directive()
         assert "NEVER reach for scaffolding" in directive
-        # Whatever the directive names as banned must be what the checker actually greps for.
-        for phrase in POST_BANNED_SCAFFOLDS[:8]:
+        # EVERY phrase the checker greps for must be named to the writer, and vice versa — a
+        # partial list is the drift this constant exists to prevent, one appended entry later.
+        for phrase in POST_BANNED_SCAFFOLDS:
             assert f"'{phrase}'" in directive
             assert phrase in banned_scaffolds()
 
@@ -114,6 +119,14 @@ class TestSharedList:
         extended = banned_scaffolds()
         assert "as a seasoned professional in" in extended
         assert set(POST_BANNED_SCAFFOLDS).issubset(set(extended))
+
+    def test_an_ops_added_scaffold_reaches_the_writer_too(self, monkeypatch):
+        # The knob extends BOTH sides or it is a second list: a phrase the lint flags this deploy
+        # that the prompt never banned is the drift the shared constant exists to prevent.
+        from cqc_lem.utilities.ai.content_framework import post_writing_directive
+
+        monkeypatch.setenv("SLOP_LINT_EXTRA_SCAFFOLDS", "as a seasoned professional in")
+        assert "'as a seasoned professional in'" in post_writing_directive()
 
 
 class TestWhyThisCheckWasNeeded:

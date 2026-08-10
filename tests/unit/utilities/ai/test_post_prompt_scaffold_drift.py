@@ -81,6 +81,15 @@ class TestPostPromptsMatchTheCheckingSide:
         assert find_ai_tell_words(user.replace(post_writing_directive(), "")) == []
 
     @pytest.mark.parametrize("generator,args", GENERATORS)
+    def test_user_prompt_hands_the_writer_no_canned_scaffold(self, generator, args):
+        # The user prompt is assembled from the SHARED directives (alignment, blueprint, craft,
+        # style, story), so it is a drift surface too — the craft directive is removed first
+        # because it QUOTES the ban list.
+        _, user = _prompts(generator, *args)
+        assert find_canned_scaffolds(user.replace(post_writing_directive(), "")) == [], (
+            f"{generator}'s user prompt supplies a template the lint flags in the output")
+
+    @pytest.mark.parametrize("generator,args", GENERATORS)
     def test_every_post_prompt_carries_the_scaffold_ban(self, generator, args):
         _, user = _prompts(generator, *args)
         assert "NEVER reach for scaffolding" in user

@@ -1640,8 +1640,14 @@ def post_writing_directive() -> str:
     ten-word-sentence, ten-hashtag template — the exact sameness the blueprint system exists to
     kill). Structure/hook/CTA come from the assigned blueprint; these are the invariant rules.
     """
+    # `banned_scaffolds` is EXACTLY what the checking side greps — every entry, plus whatever
+    # SLOP_LINT_EXTRA_SCAFFOLDS adds this deploy. Never a slice and never the bare constant: a
+    # phrase the lint flags but the prompt never named is the writer/checker drift this list exists
+    # to make impossible, and both the provenance rule and the ops knob invite adding one. Imported
+    # lazily — slop_lint imports THIS module at load time.
+    from cqc_lem.utilities.ai.slop_lint import banned_scaffolds
     from cqc_lem.utilities.linkedin_formatter import PLAIN_PUNCTUATION_DIRECTIVE
-    scaffolds = ", ".join(f"'{p}'" for p in POST_BANNED_SCAFFOLDS[:8])
+    scaffolds = ", ".join(f"'{p}'" for p in banned_scaffolds())
     return (
         "\n\nLinkedIn post craft rules (always apply):\n"
         "- The FIRST line is the hook and must land within the first 210 characters — that is all "

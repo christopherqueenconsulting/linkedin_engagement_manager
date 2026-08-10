@@ -237,10 +237,16 @@ here can see anything wrong with it.
   (every entry traceable to one of LEM's own post prompts, extended only on new sampled evidence).
 - `post_writing_directive()` names it, plus the specific-closing-question rule. Extended, not
   duplicated — CLAUDE.md forbids a parallel per-content-type prompt helper.
-- `slop_lint.canned_scaffold` — WARN, post-only, reading the SAME constant via `banned_scaffolds()`
-  (extensible per-deploy with `SLOP_LINT_EXTRA_SCAFFOLDS`, promotable with
-  `SLOP_LINT_SEVERITY_CANNED_SCAFFOLD`). WARN means recorded and reported, never a hold: **no post
-  publishes differently because of this PR.**
+- `slop_lint.canned_scaffold` — WARN, post-only, reading the SAME list via `banned_scaffolds()`
+  (extensible per-deploy with `SLOP_LINT_EXTRA_SCAFFOLDS` — which extends the PROMPT too, or it
+  would be a second list — promotable with `SLOP_LINT_SEVERITY_CANNED_SCAFFOLD`). WARN means
+  recorded and reported, never a hold: **no post is HELD or auto-demoted because of this PR.**
+  Generated text does change, and deliberately so — six post prompts were rewritten, which is the
+  point of F1; what is unchanged is every gate decision.
+- **Telemetry caveat:** `content_quality.slop_severity_score` weights warnings, and the #630 nightly
+  beat re-lints shipped posts, so post-merge every text post's `slop_warn` / `slop_score` steps up
+  with no change to the post. Read the discontinuity at the merge date as this check landing, not as
+  quality moving — it is the trend line, never a gate (`docs/content-quality-telemetry.md`).
 - All six text-post prompt builders scrubbed of canned templates and tier-1 tell words
   (thought leadership, industry news, personal story, engagement prompt, blog summary, website
   content).
