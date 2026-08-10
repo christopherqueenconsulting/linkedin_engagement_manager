@@ -63,6 +63,9 @@ class Daemon:
         #: `items.last_comment_id` only when that action succeeds, so a failed un-park retries on
         #: the next observation instead of consuming the owner's reply.
         self._answer_ids: dict[tuple[str, int], str] = {}
+        #: Undelivered changes the last reconcile found. The evidence half of the staleness
+        #: detector — webhook silence on its own cannot tell a quiet repo from a broken event path.
+        self._reconcile_drift = 0
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -160,6 +163,7 @@ class Daemon:
         largely by asking the same questions per PR per lane.
         """
         found = 0
+        drift = 0
         try:
             for label, kind in (
                 ("agent:ready", "issue"),
@@ -192,12 +196,22 @@ class Daemon:
                     if not number:
                         continue
                     existing = db.get_item(self.conn, kind, number)
+                    labels_json = json.dumps(sorted(github.label_names(obj)))
+                    # DRIFT is the evidence that the event path missed something. An item GitHub
+                    # reports differently from what we hold is a change nobody delivered to us —
+                    # which is exactly the fault the staleness detector is trying to find, and
+                    # unlike webhook silence it cannot be produced by a quiet repository.
+                    if existing is not None and (
+                        existing["head_sha"] != obj.get("headRefOid")
+                        or existing["labels_json"] != labels_json
+                    ):
+                        drift += 1
                     db.upsert_item(
                         self.conn, kind=kind, number=number,
                         state=existing["state"] if existing else db.STATE_READY,
                         branch=obj.get("headRefName"),
                         head_sha=obj.get("headRefOid"),
-                        labels_json=json.dumps(sorted(github.label_names(obj))),
+                        labels_json=labels_json,
                         dirty=1,
                     )
                     found += 1
@@ -205,6 +219,9 @@ class Daemon:
             # A failed reconcile is not a reason to act on stale state; try again next pass.
             LOG.warning("reconcile incomplete: %s", exc)
         self._last_reconcile = time.time()
+        self._reconcile_drift = drift
+        if drift:
+            db.kv_set(self.conn, "last_drift_at", str(int(self._last_reconcile)))
         db.kv_set(self.conn, "last_reconcile_at", str(int(self._last_reconcile)))
         return found
 
@@ -663,10 +680,23 @@ class Daemon:
             age = time.time() - float(last)
         except ValueError:
             return self.cfg.reconcile_interval
-        if age > self.cfg.webhook_stale_seconds:
+        # Silence alone is NOT a fault. `last_webhook_at` is only written when a delivery arrives,
+        # so "no delivery in 30 minutes" reads identically for a broken event path and for a
+        # repository where nothing happened — and resolving that ambiguity by assuming the worst
+        # polled 5x harder exactly when there was least to discover. Measured on 2026-08-10: a
+        # 78-minute warning across a window with ZERO workflow runs created, on a receiver that was
+        # healthy throughout and resumed on its own.
+        #
+        # Drift is the half that disambiguates. If the last reconcile found an item GitHub reports
+        # differently from what we hold, something changed and nobody told us: that is the event
+        # path failing, and polling harder is the right answer. If silence and no drift agree, the
+        # repository is simply quiet and the normal cadence is correct.
+        if age > self.cfg.webhook_stale_seconds and self._reconcile_drift:
             if not self._degraded:
-                LOG.warning("no webhook delivery for %.0f min — reconciling every %ss",
-                            age / 60, self.cfg.reconcile_interval_degraded)
+                LOG.warning("no webhook delivery for %.0f min and the last reconcile found %s "
+                            "undelivered change(s) — reconciling every %ss",
+                            age / 60, self._reconcile_drift,
+                            self.cfg.reconcile_interval_degraded)
                 self._degraded = True
             return self.cfg.reconcile_interval_degraded
         if self._degraded:

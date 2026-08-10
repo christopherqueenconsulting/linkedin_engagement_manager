@@ -457,8 +457,9 @@ def startup_recover(conn: sqlite3.Connection, *, now: int | None = None) -> dict
 
     Two repairs, both from the "every state needs an exit" invariant:
 
-    * A run whose process is gone is closed with rc=-9 and its item marked dirty, so the next
-      observation decides its fate from GitHub rather than from a half-finished local guess.
+    * A run whose process is gone is closed with `RC_VANISHED` and its item marked dirty, so the
+      next observation decides its fate from GitHub rather than from a half-finished local guess.
+      NOT `RC_KILLED`: nobody killed it, and a reader counting deadline kills must not find this.
     * An item stuck in `claimed` (the daemon died between claiming and spawning) returns to `ready`.
       Without this the partial unique index would keep its branch locked forever.
 
@@ -474,7 +475,8 @@ def startup_recover(conn: sqlite3.Connection, *, now: int | None = None) -> dict
         # stays "alive" forever and its item can never leave `running`.
         if row["pid"] and _pid_alive(int(row["pid"]), row["pid_start"]):
             continue
-        conn.execute("UPDATE runs SET ended_at=?, rc=-9 WHERE id=?", (now, row["id"]))
+        conn.execute("UPDATE runs SET ended_at=?, rc=? WHERE id=?",
+                     (now, RC_VANISHED, row["id"]))
         closed += 1
     conn.execute(
         "UPDATE items SET dirty=1, state=?, updated_at=? WHERE state=? "
@@ -527,6 +529,15 @@ def _pid_alive(pid: int, starttime: str | None = None) -> bool:
 #: merge THROUGHPUT rather than to how many agents happen to be idle. Excluding them would let the
 #: scheduler open a PR for every ready issue the moment the agents finished writing them — 35 open
 #: PRs against a queue that merges one at a time.
+#: Run outcomes that are NOT the agent's own exit code. Distinct values because they are distinct
+#: events, and collapsing them cost a real misdiagnosis: on 2026-08-10 nine runs closed `-9` with a
+#: mean duration of ~675s, which reads exactly like a deadline kill. All nine were orphans adopted
+#: across 16 daemon restarts while `config.env` was being edited — durations 149s to 1300s, no
+#: fixed deadline anywhere. `rc=-9` made the start lane look like it had a timeout problem it did
+#: not have, and that number feeds the judgement about lifting the start-lane throttle (#1311 §1).
+RC_KILLED = -9        #: the supervisor stopped it on its deadline (SIGKILL)
+RC_VANISHED = -99     #: its process was already gone — an adopted orphan, or a crash recovery
+
 WIP_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING, STATE_WAIT_CI, STATE_WAIT_REVIEW,
                         STATE_WAIT_QUEUE})
 
