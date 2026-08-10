@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.141.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.140.0...v0.141.0) (2026-08-10)
+
+
+### Features
+
+* **content-quality:** route carousel and thumbnail renders through the lem-vision gate with focal_concept (closes [#1290](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1290)) ([#1308](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1308)) ([5f819e4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5f819e4b6fab5032decee03a5f1ce1996c1ff358))
+* **pipeline:** WIP gate, v1 coexistence wait, and cutover/rollback scripts ([#1303](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1303)) ([f3f35c2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f3f35c22e91663149818453caad14bde2651df6b))
+* **profile:** linkedin top-5 skills re-index window (closes [#1075](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1075)) ([#1295](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1295)) ([00402f8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/00402f8119316d26d07368408eb98cd4a5b2df14))
+
+
+### Bug Fixes
+
+* **agents:** track .mcp.json so worktree agents actually have browser servers ([#1305](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1305)) ([c8fa869](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c8fa86911ba3df8c4678e453b57e87862be886df))
+
 ## [0.140.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.139.0...v0.140.0) (2026-08-10)
 
 
