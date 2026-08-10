@@ -109,7 +109,7 @@ describe('index.html SEO shell', () => {
       for (const key of ['url', 'image', 'logo']) {
         const value = item[key]
         if (typeof value === 'string') {
-          expect(value).toMatch(/^https:\/\/lem\.example\.com/)
+          expect(value).toMatch(/^https:\/\/lem\.example\.com\//)
         }
       }
     }
