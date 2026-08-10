@@ -59,11 +59,13 @@ class TestArtifactCtaLink:
             line = artifact_cta_line(None, newsletter, post_id=12)
         assert url in line and "utm_" not in line
 
-    def test_an_enabled_newsletter_with_no_url_still_ships_the_cta(self):
+    def test_an_enabled_newsletter_with_no_url_omits_the_cta(self):
+        # Issue #1288: without a real public subscribe destination, the line is dropped rather than
+        # shipping a hollow "subscribe" ask that points nowhere.
         from cqc_lem.utilities.ai.content_alignment import artifact_cta_line
         with _Patched(_owned()):
             line = artifact_cta_line(None, {"enabled": True, "title": "The Build Log"}, post_id=1)
-        assert line and "http" not in line
+        assert line == ""
 
 
 class TestFirstCommentPlacement:

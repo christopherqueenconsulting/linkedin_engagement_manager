@@ -70,9 +70,11 @@ class TestArtifactCtaLine:
         assert "The Build Log" in line
         assert "https://li/newsletter/build" in line
 
-    def test_newsletter_line_without_a_url_still_reads_cleanly(self):
+    def test_newsletter_line_without_a_url_is_omitted(self):
+        # Issue #1288: a subscribe CTA with no public destination reads hollow, so the line is
+        # dropped entirely and the post falls back to its assigned conversation CTA.
         line = artifact_cta_line(newsletter={"enabled": True, "title": "The Build Log"})
-        assert "The Build Log" in line and "http" not in line
+        assert line == ""
 
     def test_untitled_newsletter_is_not_named_twice(self):
         line = artifact_cta_line(newsletter={"enabled": True, "newsletter_url": "https://li/n"})
@@ -97,3 +99,19 @@ class TestNewsletterLinkRidesTheFirstComment:
     def test_split_is_a_no_op_when_the_user_turned_it_off(self):
         body = artifact_cta_line(newsletter=_NEWS, post_id=2)
         assert split_link_for_first_comment(body, enabled=False) == (body, [])
+
+    def test_enabled_newsletter_with_no_url_falls_back_to_reply_only(self):
+        """Issue #1288: the subscribe CTA is conditional on a real public destination.
+
+        When no public subscribe path exists, the artifact CTA line returns empty so the post's
+        assigned conversation CTA (reply-only) remains.
+        """
+        line = artifact_cta_line(newsletter={"enabled": True, "title": "The Build Log",
+                                             "newsletter_url": ""})
+        assert line == ""
+        # A real URL brings the subscribe line back.
+        with_url = artifact_cta_line(
+            newsletter={"enabled": True, "title": "The Build Log",
+                        "newsletter_url": "https://linkedin.com/newsletters/build-log"})
+        assert "subscribe" in with_url.lower()
+        assert "https://linkedin.com/newsletters/build-log" in with_url
