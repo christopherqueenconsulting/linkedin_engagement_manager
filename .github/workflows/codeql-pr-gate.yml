@@ -123,18 +123,18 @@ jobs:
       # verification inside the gate run.
       - name: Initialize CodeQL verification
         if: steps.gate.outputs.mechanical_count != '0'
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: python
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild verification
         if: steps.gate.outputs.mechanical_count != '0'
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       - name: Analyze verification
         if: steps.gate.outputs.mechanical_count != '0'
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:python/pr-gate"
           upload: false

@@ -12,7 +12,7 @@ jobs:
     name: Migration Versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Unique versions + timestamp format for new migrations
         run: |
           cd compose/local/database/migrations
