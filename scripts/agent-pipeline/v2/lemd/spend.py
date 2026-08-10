@@ -101,6 +101,7 @@ def parse_usage(text: str, *, now: float | None = None) -> Usage:
     now = float(now if now is not None else time.time())
     session = week = week_model = None
     s_reset = w_reset = ""
+    per_model: list[tuple[float, str]] = []
     for scope, qualifier, pct, resets in _PCT.findall(text or ""):
         value = float(pct)
         resets = (resets or "").strip()
@@ -109,9 +110,18 @@ def parse_usage(text: str, *, now: float | None = None) -> Usage:
         elif "all models" in (qualifier or "").lower() or not qualifier:
             week, w_reset = value, resets
         else:
-            # A per-model line (e.g. "(Fable)") — tracked, but never the binding constraint, since
-            # the all-models number is what actually gates the subscription.
-            week_model = value
+            # A per-model line (e.g. "(Fable)") — tracked, but never the binding constraint while
+            # an all-models line exists, since that number is what actually gates the subscription.
+            per_model.append((value, resets))
+    if per_model:
+        week_model = max(v for v, _ in per_model)
+    if week is None and per_model:
+        # The all-models line went missing — a qualifier rename ("(all models)" -> "(all)") is
+        # exactly the wording change this module fears. Reading only the session window here would
+        # leave `readable=True`, suppress the ledger fallback, and silently ignore the week the
+        # owner's rule is actually about. So fall back to the WORST per-model line: it is a floor
+        # on the week, and a floor is the safe direction for a spend gate.
+        week, w_reset = max(per_model, key=lambda item: item[0])
     readable = session is not None or week is not None
     return Usage(session_pct=session, week_pct=week, week_model_pct=week_model,
                  session_resets=s_reset, week_resets=w_reset, at=now,
@@ -161,7 +171,10 @@ def cached_usage(cache: str | Path, *, ttl: int = USAGE_TTL,
     if p.is_file():
         try:
             data = json.loads(p.read_text())
-            if now - float(data.get("at") or 0) < ttl:
+            # `isinstance`, not a bare `.get`: valid JSON that is not an object (a truncated write
+            # leaving `null`, a hand-edited file) raises AttributeError, which is NOT in the caught
+            # set — and a corrupt cache is a reason to re-probe, not to crash the scheduler.
+            if isinstance(data, dict) and now - float(data.get("at") or 0) < ttl:
                 return Usage(**{k: v for k, v in data.items() if k in Usage.__annotations__})
         except (OSError, ValueError, TypeError):
             pass  # a corrupt cache is a reason to re-probe, not to fail
@@ -173,7 +186,12 @@ def cached_usage(cache: str | Path, *, ttl: int = USAGE_TTL,
         fresh = Usage(**{**fresh.__dict__, "at": now})
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(fresh.__dict__))
+            # Atomic, like `capacity.heartbeat`: v2 dispatches concurrently, so another scheduler
+            # pass can read this file mid-write. A torn read only costs a re-probe — but a re-probe
+            # is a real subscription run, which is the exact thing this cache exists to avoid.
+            tmp = p.with_name(p.name + ".new")
+            tmp.write_text(json.dumps(fresh.__dict__))
+            tmp.replace(p)
         except OSError as exc:
             LOG.warning("could not cache usage: %s", exc)
     return fresh
@@ -200,8 +218,11 @@ def record(ledger: str | Path, *, mode: str, lane: str, model: str | None,
         "cost_known": (result or {}).get("total_cost_usd") is not None,
     }
     p = Path(ledger)
-    p.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # INSIDE the try: an unwritable ledger directory raises here, and metering must never break
+        # dispatch — this ran outside it, so a read-only volume would have taken down the run it
+        # was only supposed to measure.
+        p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
     except OSError as exc:
@@ -209,12 +230,19 @@ def record(ledger: str | Path, *, mode: str, lane: str, model: str | None,
         LOG.warning("could not record spend: %s", exc)
 
 
-def ledger_cost(ledger: str | Path, *, since: float, lane: str = "claude") -> float:
-    """Total measured cost for one lane since a timestamp."""
+def ledger_summary(ledger: str | Path, *, since: float,
+                   lane: str = "claude") -> tuple[float, int, int]:
+    """Measured cost for one lane since a timestamp, and how much of it is actually KNOWN.
+
+    Returns:
+        `(priced_cost_usd, priced_runs, unpriced_runs)`. The last number is the whole point:
+        `record` deliberately stores a killed run as `cost_known: false` rather than `$0`, so a
+        consumer that only sums `cost_usd` re-introduces the very lie that flag exists to prevent.
+    """
     p = Path(ledger)
+    total, priced, unpriced = 0.0, 0, 0
     if not p.is_file():
-        return 0.0
-    total = 0.0
+        return total, priced, unpriced
     try:
         with p.open() as fh:
             for line in fh:
@@ -225,11 +253,25 @@ def ledger_cost(ledger: str | Path, *, since: float, lane: str = "claude") -> fl
                     row = json.loads(line)
                 except ValueError:
                     continue  # a torn final line must not poison the sum
-                if row.get("lane") == lane and float(row.get("ts") or 0) >= since:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("lane") != lane or float(row.get("ts") or 0) < since:
+                    continue
+                # Absent key means a producer older than `cost_known` — treat as priced, which is
+                # what it meant before the flag existed.
+                if row.get("cost_known", True):
                     total += float(row.get("cost_usd") or 0.0)
+                    priced += 1
+                else:
+                    unpriced += 1
     except OSError as exc:
         LOG.warning("could not read spend ledger: %s", exc)
-    return total
+    return total, priced, unpriced
+
+
+def ledger_cost(ledger: str | Path, *, since: float, lane: str = "claude") -> float:
+    """Total measured cost for one lane since a timestamp."""
+    return ledger_summary(ledger, since=since, lane=lane)[0]
 
 
 def state(*, usage: Usage, ledger: str | Path | None = None,
@@ -260,10 +302,28 @@ def state(*, usage: Usage, ledger: str | Path | None = None,
                           source="usage_probe")
 
     if ledger and weekly_budget_usd > 0:
-        spent = ledger_cost(ledger, since=now - 7 * 86400)
-        pct = 100.0 * spent / weekly_budget_usd
-        level = "exhausted" if pct >= exhaust_at else "conserve" if pct >= conserve_at else "normal"
-        return SpendState(level=level, reason=f"ledger estimate {pct:.0f}% of weekly budget",
+        spent, priced, unpriced = ledger_summary(ledger, since=now - 7 * 86400)
+        if priced:
+            # Charge the runs that died before reporting a cost at the lane's OWN measured mean.
+            # Summing `cost_usd` alone would price them at $0 — the "expensively failing lane looks
+            # free" failure `record`'s `cost_known` flag was written to prevent, and nothing read.
+            estimate = spent + unpriced * (spent / priced)
+            pct = 100.0 * estimate / weekly_budget_usd
+            level = ("exhausted" if pct >= exhaust_at
+                     else "conserve" if pct >= conserve_at else "normal")
+            note = f", {unpriced} unpriced run(s) at the measured mean" if unpriced else ""
+            return SpendState(level=level,
+                              reason=f"ledger estimate {pct:.0f}% of weekly budget{note}",
+                              usage=usage, source="cost_ledger")
+        if unpriced:
+            # Every run in the window died before it could report a cost. That is NOT "$0 spent",
+            # and there is no mean to impute from — so it is no signal, not a reassuring 0%.
+            LOG.warning("spend ledger has %d run(s) but no priced one — treating as no signal",
+                        unpriced)
+            return SpendState(level="normal", reason=f"{unpriced} unpriced run(s), cost unknown",
+                              usage=usage, source="unknown")
+        pct = 0.0
+        return SpendState(level="normal", reason=f"ledger estimate {pct:.0f}% of weekly budget",
                           usage=usage, source="cost_ledger")
 
     # Neither signal available. Do NOT silently conserve: that would route everything to Ollama

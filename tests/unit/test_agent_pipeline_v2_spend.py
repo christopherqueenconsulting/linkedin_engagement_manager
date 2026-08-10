@@ -67,6 +67,22 @@ def test_per_model_line_is_not_the_constraint():
     assert u.worst_pct == 40.0
 
 
+def test_a_missing_all_models_line_falls_back_to_the_worst_per_model_line():
+    """The partial-parse hole: a qualifier rename must not silently drop the WEEK constraint.
+
+    With no line matching "all models", the week used to stay None while the session line kept
+    `readable=True` — so the ledger fallback was suppressed AND the owner's week rule was ignored.
+    A per-model line is a floor on the week, and a floor is the safe direction for a spend gate.
+    """
+    u = spend.parse_usage(
+        "Current session: 10% used\nCurrent week (all): 99% used · resets Aug 13, 6:59pm (UTC)"
+    )
+    assert u.readable is True
+    assert u.week_pct == 99.0
+    assert "Aug 13" in u.week_resets
+    assert spend.state(usage=u).level == "exhausted"
+
+
 # ---------------------------------------------------------------- thresholds
 
 
@@ -155,9 +171,49 @@ def test_unreadable_usage_falls_back_to_the_cost_ledger(tmp_path):
 
 def test_no_signal_at_all_does_not_silently_conserve(caplog):
     """A parse regression must not route everything to Ollama forever in silence."""
-    st = spend.state(usage=spend.Usage(readable=False))
+    with caplog.at_level("WARNING", logger="lemd.spend"):
+        st = spend.state(usage=spend.Usage(readable=False))
     assert st.level == "normal"
     assert st.source == "unknown"
+    # "Logs loudly" is the whole safety story for this branch — silence here is invisible drift.
+    assert any("no usage signal" in r.message for r in caplog.records)
+
+
+def test_unpriced_runs_are_charged_at_the_measured_mean(tmp_path):
+    """`cost_known` was written and never read, so a killed run priced itself at $0.
+
+    Two known $10 runs plus two that died before reporting: summing `cost_usd` says 40% of budget
+    (normal), while the honest estimate is 80% (conserve).
+    """
+    ledger = tmp_path / "spend.ndjson"
+    for _ in range(2):
+        spend.record(ledger, mode="start", lane="claude", model="opus",
+                     result={"total_cost_usd": 10.0}, run_seconds=60, rc=0)
+    for _ in range(2):
+        spend.record(ledger, mode="fix", lane="claude", model="opus", result=None,
+                     run_seconds=2700, rc=-9)
+    assert spend.ledger_summary(ledger, since=0) == (20.0, 2, 2)
+    st = spend.state(usage=spend.Usage(readable=False), ledger=ledger, weekly_budget_usd=50.0)
+    assert st.level == "conserve"  # (20 + 2*10) / 50 = 80%, not 40%
+    assert "unpriced" in st.reason
+
+
+def test_a_window_of_only_unpriced_runs_is_unknown_not_zero_percent(tmp_path):
+    """No priced run means no mean to impute from — that is no signal, not '$0 spent'."""
+    ledger = tmp_path / "spend.ndjson"
+    spend.record(ledger, mode="fix", lane="claude", model="opus", result=None,
+                 run_seconds=2700, rc=-9)
+    st = spend.state(usage=spend.Usage(readable=False), ledger=ledger, weekly_budget_usd=50.0)
+    assert st.source == "unknown"
+    assert "0%" not in st.reason
+
+
+def test_record_never_breaks_dispatch_when_the_ledger_is_unwritable(tmp_path):
+    """Metering is a passenger: an unwritable ledger directory must not kill the run."""
+    blocked = tmp_path / "afile"
+    blocked.write_text("not a directory")
+    spend.record(blocked / "nested" / "spend.ndjson", mode="fix", lane="claude", model="m",
+                 result={"total_cost_usd": 1.0}, run_seconds=1, rc=0)
 
 
 def test_record_marks_unknown_cost_distinctly(tmp_path):
@@ -233,6 +289,23 @@ def test_corrupt_cache_re_probes(tmp_path):
     cache.write_text("{not json")
     got = spend.cached_usage(cache, probe=lambda: spend.parse_usage(REAL_OUTPUT))
     assert got.week_pct == 65.0
+
+
+@pytest.mark.parametrize("content", ["null", "[]", '"nope"', "17"])
+def test_valid_json_that_is_not_an_object_re_probes(content, tmp_path):
+    """These raise AttributeError, which the corrupt-cache handler does not catch."""
+    cache = tmp_path / "usage.json"
+    cache.write_text(content)
+    got = spend.cached_usage(cache, probe=lambda: spend.parse_usage(REAL_OUTPUT))
+    assert got.week_pct == 65.0
+
+
+def test_cache_write_is_atomic(tmp_path):
+    """A concurrent reader must never see a half-written cache: a torn read costs a real probe."""
+    cache = tmp_path / "usage.json"
+    spend.cached_usage(cache, probe=lambda: spend.parse_usage(REAL_OUTPUT))
+    assert json.loads(cache.read_text())["week_pct"] == 65.0
+    assert not (tmp_path / "usage.json.new").exists()  # temp swapped, not left behind
 
 
 # ---------------------------------------------------------------- CLI result parsing
