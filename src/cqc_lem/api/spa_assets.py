@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import Request
 from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
@@ -39,6 +40,84 @@ IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 # SPA falls back on would land on the same broken build. (Cloudflare must respect this; if a
 # "Cache Everything" rule overrides it, the rule needs an HTML bypass.)
 NO_STORE_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
+
+# Crawler-facing files (issue #1298). The SPA catch-all in api/main answers EVERY unclaimed path
+# with index.html, so a file being present in dist/ does NOT mean it is served: without these
+# routes /robots.txt, /sitemap.xml and the Open Graph image all come back as HTML, and a link
+# preview whose og:image resolves to an HTML document renders blank — the exact defect #1298 exists
+# to fix. Values are the content type a crawler must see.
+PUBLIC_ROOT_FILES: Dict[str, str] = {
+    "robots.txt": "text/plain; charset=utf-8",
+    "sitemap.xml": "application/xml",
+    "favicon.svg": "image/svg+xml",
+}
+
+# Vite copies public/ VERBATIM — no env substitution reaches it — but a sitemap `<loc>` and a
+# robots.txt `Sitemap:` line are only valid as ABSOLUTE URLs. So those two files carry this token
+# and the server fills it in at serve time, where the canonical host is actually known.
+BASE_URL_PLACEHOLDER = "%PUBLIC_BASE_URL%"
+TEMPLATED_ROOT_FILES = frozenset({"robots.txt", "sitemap.xml"})
+
+# The build-time twin, in index.html. Vite leaves an UNDEFINED %VITE_*% token untouched, and the
+# image build deliberately unsets an empty VITE_PUBLIC_BASE_URL rather than let Vite bake "" into
+# a relative og:image — so a build made without the repo variable still serves absolute Open Graph
+# URLs, filled from PUBLIC_BASE_URL here.
+VITE_BASE_URL_PLACEHOLDER = "%VITE_PUBLIC_BASE_URL%"
+
+
+def public_base_url(fallback: str = "") -> str:
+    """The absolute origin crawler-facing markup is written against, without a trailing slash.
+
+    `PUBLIC_BASE_URL` is the configured answer — the same env the OAuth redirect and the WebAuthn
+    relying party derive from, so there is one canonical host per deploy. The fallback is the
+    request's own origin, which keeps dev (and any deploy that never set the variable) serving
+    absolute URLs rather than the relative ones LinkedIn's and Twitter's crawlers ignore.
+    """
+    configured = (os.getenv("PUBLIC_BASE_URL", "") or "").strip()
+    return (configured or fallback or "").rstrip("/")
+
+
+def render_base_url(raw: str, base_url: str, placeholder: str = BASE_URL_PLACEHOLDER) -> str:
+    """Substitute the canonical-host token in a text file about to be served."""
+    return raw.replace(placeholder, base_url)
+
+
+def _make_public_file_route(dist_dir: str, file_name: str, media_type: str) -> Any:
+    """Build the handler serving one crawler-facing file out of `dist_dir`."""
+
+    async def _serve_public_file(request: Request) -> Response:
+        """Serve the file, filling the canonical-host token when it carries one."""
+        path = os.path.join(dist_dir, file_name)
+        if not os.path.isfile(path):
+            # An SPA build that shipped without the file: a 404 is the honest answer, and it is
+            # what stops a crawler reading index.html as a robots.txt.
+            raise StarletteHTTPException(status_code=404)
+        if file_name not in TEMPLATED_ROOT_FILES:
+            return FileResponse(path, media_type=media_type)
+        with open(path, encoding="utf-8") as fh:
+            body = render_base_url(fh.read(), public_base_url(str(request.base_url)))
+        return Response(content=body, media_type=media_type)
+
+    return _serve_public_file
+
+
+def register_spa_public_routes(app: Any, dist_dir: str) -> None:
+    """Serve the crawler-facing files of a built SPA, ahead of the HTML catch-all.
+
+    Registration ORDER is the contract: routes match in the order they are added, so every one of
+    these must exist before `/{full_path:path}` or index.html answers for all of them.
+    """
+    for file_name, media_type in PUBLIC_ROOT_FILES.items():
+        app.get(f"/{file_name}", include_in_schema=False)(
+            _make_public_file_route(dist_dir, file_name, media_type)
+        )
+    brand_dir = os.path.join(dist_dir, "brand")
+    if os.path.isdir(brand_dir):
+        # The Open Graph image lives here. Static, public, and referenced by absolute URL from the
+        # shell, so it is mounted rather than routed file by file.
+        app.mount("/brand", StaticFiles(directory=brand_dir), name="spa-brand")
+    else:
+        log_debug("No SPA brand directory to serve", dist_dir=dist_dir)
 
 
 def spa_index_headers() -> Dict[str, str]:
