@@ -124,7 +124,8 @@ class TestTokenLifetime:
         # token is still worth handing out. The skew must be STRICTLY smaller than the timer
         # interval, otherwise the runner could reject a token the timer has not yet refreshed.
         skew = int(re.search(r'GH_APP_TOKEN_SKEW="\$\{GH_APP_TOKEN_SKEW:-(\d+)\}"', LIB).group(1))
-        timer_min = int(re.search(r'OnUnitActiveSec=(\d+)min', (PIPELINE / "systemd" / "lem-gh-token.timer").read_text()).group(1))
+        timer_text = (PIPELINE / "systemd" / "lem-gh-token.timer").read_text()
+        timer_min = int(re.search(r'OnUnitActiveSec=(\d+)min', timer_text).group(1))
         assert skew < timer_min * 60, "skew must be smaller than the timer interval to avoid false gaps"
 
     def test_a_fresh_cached_token_is_reused(self, tmp_path):
