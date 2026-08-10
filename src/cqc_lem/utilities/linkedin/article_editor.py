@@ -281,12 +281,18 @@ def resolve_article_editor_step(
     *,
     user_id: Optional[int] = None,
     visible_only: bool = True,
+    warn_on_miss: bool = True,
 ) -> ResolvedElement:
     """Walk one step's locator ladder and return the first actionable element + route.
 
     Each step contributes at least two independent routes; a route only counts when its
     element is found and, for buttons, enabled. `failed_step` callers log the route id
     so telemetry shows which entry points LinkedIn is rotating.
+
+    ``warn_on_miss=False`` turns the final selector miss into a DEBUG log instead of a
+    WARNING. Use it for controls that are legitimately absent on the screen being read
+    (Publish on the editor screen before Next is clicked) so the log escalation path does
+    not file a defect against correct page behaviour.
     """
     result = ResolvedElement(step=step)
     for route_id, route_locators in locators:
@@ -298,6 +304,7 @@ def resolve_article_editor_step(
             max_try=1,
             visible_only=visible_only,
             user_id=user_id,
+            warn_on_miss=warn_on_miss,
         )
         if element is not None:
             # The visibility filter is what `visible_only=False` turns OFF: the cover's
@@ -377,7 +384,15 @@ def find_article_editor_elements(
     *,
     user_id: Optional[int] = None,
 ) -> ArticleEditorMap:
-    """Resolve all four article-editor steps at once."""
+    """Resolve all four article-editor steps at once.
+
+    Publish is resolved with ``warn_on_miss=False`` because this helper is used
+    on the first editor screen (``/article/new/``), where the Publish button is
+    NOT rendered until after Next is clicked. The caller decides whether a
+    missing Publish is expected (``on_editor_screen=True``) or a real failure
+    (re-resolving after Next in ``fill_article_editor``). A warning here would
+    file a defect against correct LinkedIn behaviour.
+    """
     return ArticleEditorMap(
         title=resolve_article_editor_step(driver, wait, STEP_TITLE, _TITLE_LOCATORS,
                                            user_id=user_id),
@@ -386,7 +401,7 @@ def find_article_editor_elements(
         next_button=resolve_article_editor_step(driver, wait, STEP_NEXT, _NEXT_LOCATORS,
                                                  user_id=user_id),
         publish_button=resolve_article_editor_step(driver, wait, STEP_PUBLISH, _PUBLISH_LOCATORS,
-                                                    user_id=user_id),
+                                                    user_id=user_id, warn_on_miss=False),
     )
 
 

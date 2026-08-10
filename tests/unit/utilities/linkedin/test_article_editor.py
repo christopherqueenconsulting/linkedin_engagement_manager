@@ -607,7 +607,8 @@ class TestFillArticleEditor:
         publish = FakeElement(tag="button")
         publish_missing = ae.ResolvedElement(step=ae.STEP_PUBLISH)
 
-        def patched_resolve(driver, wait, step, locators, *, user_id=None, visible_only=True):
+        def patched_resolve(driver, wait, step, locators, *, user_id=None, visible_only=True,
+                            warn_on_miss=True):
             calls.append(step)
             if step == ae.STEP_PUBLISH and calls.count(ae.STEP_PUBLISH) >= 2:
                 return publish_missing
@@ -630,6 +631,25 @@ class TestFillArticleEditor:
         url, failed = ae.fill_article_editor(driver, wait, "title", "body")
         assert url is None
         assert failed == ae.STEP_PUBLISH
+
+    def test_warn_on_miss_is_false_for_initial_publish_resolution(self, monkeypatch):
+        """The initial `find_article_editor_elements` resolve of Publish happens on the editor
+        screen, before Next is clicked, so a missing Publish is expected and must not warn.
+        The re-resolve after Next still warns so a real selector gap is surfaced.
+        """
+        captured = []
+
+        def patched_resolve(driver, wait, step, locators, *, user_id=None, visible_only=True,
+                            warn_on_miss=True):
+            captured.append((step, warn_on_miss))
+            return ae.ResolvedElement(step=step)
+
+        monkeypatch.setattr(ae, "resolve_article_editor_step", patched_resolve)
+        ae.find_article_editor_elements(FakeDriver(), MagicMock(), user_id=1)
+        initial_publish = [call for call in captured
+                           if call[0] == ae.STEP_PUBLISH]
+        assert len(initial_publish) == 1
+        assert initial_publish[0][1] is False
 
 
 class TestTwoScreenGrading:
