@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Delete orphan and abandoned head branches
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             // Mirror of `scripts/branch_cleanup.py` EXEMPT_RE + 48h cutoff. Keep them in sync.

@@ -133,7 +133,7 @@ jobs:
           [ $rc -eq 5 ] && echo "No integration tests found yet — skipping" && exit 0 || exit $rc
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           flags: integration
