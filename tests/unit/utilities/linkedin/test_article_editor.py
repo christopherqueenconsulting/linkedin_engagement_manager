@@ -633,7 +633,9 @@ class TestFillArticleEditor:
         assert failed == ae.STEP_PUBLISH
 
     def test_warn_on_miss_is_false_for_initial_publish_resolution(self, monkeypatch):
-        """The initial `find_article_editor_elements` resolve of Publish happens on the editor
+        """The first Publish resolve must not warn; the one after Next still must.
+
+        The initial `find_article_editor_elements` resolve of Publish happens on the editor
         screen, before Next is clicked, so a missing Publish is expected and must not warn.
         The re-resolve after Next still warns so a real selector gap is surfaced.
         """
