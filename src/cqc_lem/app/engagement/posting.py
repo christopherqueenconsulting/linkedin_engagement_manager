@@ -177,6 +177,7 @@ from cqc_lem.utilities.observability import (
     track_post_outcome,
     track_selector_evidence,
 )
+from cqc_lem.utilities.profile_skills_window import record_profile_skills_change
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
@@ -743,7 +744,8 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
             response = generate_thread_reply(post_message, comment_text, my_profile,
                                              prefs=prefs,
-                                             profile_synthesis=profile_synthesis)
+                                             profile_synthesis=profile_synthesis,
+                                             user_id=user_id)
         log_debug("AI Generated Response to Comment", user_id=user_id, post_id=post_id, response=response)
         if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
@@ -1048,7 +1050,8 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
             # We are a GUEST replying in someone else's thread — not the post author (issue #478).
             with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
                 response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
-                                                           profile_synthesis=profile_synthesis)
+                                                           profile_synthesis=profile_synthesis,
+                                                           user_id=user_id)
             if response and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id):
                 result["replied"] += 1
                 replies_remaining -= 1
@@ -1846,6 +1849,13 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
         except Exception as e:
             log_warning("Could not refresh profile synthesis after scrape", exc=e, user_id=user_id,
                         task_name="update_stale_profile")
+        # Issue #1075: a forced refresh is exactly when skill reordering happens. Record any change
+        # and open the re-index window so the next posts/comments echo the new top-5 skills.
+        try:
+            record_profile_skills_change(user_id, my_profile)
+        except Exception as e:
+            log_debug("Could not record profile-skills change after refresh", exc=e, user_id=user_id,
+                      task_name="update_stale_profile")
     return "Profile Updated Successfully"
 
 

@@ -2065,7 +2065,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                             post_id=post_id,
                                                             history_directive=history_directive,
                                                             story_directive=story_directive,
-                                                            content_mix=content_mix)
+                                                            content_mix=content_mix,
+                                                            user_id=user_id)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -2127,7 +2128,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                        post_id=post_id,
                                                        history_directive=history_directive,
                                                        story_directive=story_directive,
-                                                       content_mix=content_mix)
+                                                       content_mix=content_mix,
+                                                       user_id=user_id)
     elif post_type == "personal_story":
         final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
@@ -2135,7 +2137,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                         post_id=post_id,
                                                         history_directive=history_directive,
                                                         story_directive=story_directive,
-                                                        content_mix=content_mix)
+                                                        content_mix=content_mix,
+                                                        user_id=user_id)
     else:
         final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
@@ -2143,7 +2146,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                         post_id=post_id,
                                                         history_directive=history_directive,
                                                         story_directive=story_directive,
-                                                        content_mix=content_mix)
+                                                        content_mix=content_mix,
+                                                        user_id=user_id)
 
     # The sanctioned 'comment KEYWORD' ask for THIS post: the refinement passes preserve it, the
     # bait strip exempts it, and the slop lint's bait check must not read it as engagement bait.

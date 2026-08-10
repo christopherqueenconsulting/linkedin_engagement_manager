@@ -21,7 +21,7 @@ def _run(post_id=77, blueprint=None, history=None, lead_magnet=None, stories=Non
 
     def gen(user_profile, stage, prefs=None, profile_synthesis=None, blueprint=None,
             lead_magnet_cta=None, post_id=None, history_directive=None, story_directive=None,
-            content_mix=None):
+            content_mix=None, user_id=None):
         captured["blueprint"] = blueprint
         captured["lead_magnet_cta"] = lead_magnet_cta
         captured["post_id"] = post_id

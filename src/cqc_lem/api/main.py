@@ -430,6 +430,7 @@ _AGENT_SESSION_SURFACE = frozenset({
     "/catchup/touches",
     # read the state that decides whether loading is safe at all
     "/user/engagement-preferences", "/user/automation-status", "/dashboard/stats",
+    "/user/linkedin-profile-skills",
     # create pending work + save drafts for a human to approve
     "/connection_request", "/outreach/target", "/schedule_dm", "/lead_signal", "/lead",
 })
