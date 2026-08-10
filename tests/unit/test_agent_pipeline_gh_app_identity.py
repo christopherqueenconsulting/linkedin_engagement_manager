@@ -28,13 +28,18 @@ TICK_SH = PIPELINE / "tick.sh"
 LIB_SH = PIPELINE / "lib" / "gh_app_token.sh"
 TICK = TICK_SH.read_text(encoding="utf-8")
 LIB = LIB_SH.read_text(encoding="utf-8")
+# The gates moved to lib/guards.sh so v1 and v2 run the same bytes; the allowlists that configure
+# them stay in tick.sh, because they are resolved from config.env and the App identity at run time.
+GUARDS = (PIPELINE / "lib" / "guards.sh").read_text(encoding="utf-8")
 
 
 def _gates() -> str:
     """The trust-boundary block, lifted verbatim so the test runs the shipped code."""
-    block = re.search(r"\nTRUSTED_ASSOCIATIONS=.*?\npr_admissible\(\) \{.*?\n\}\n", TICK, re.S)
-    assert block, "trust-boundary helpers not found in tick.sh"
-    return block.group(0)
+    allowlists = re.search(r"\nTRUSTED_ASSOCIATIONS=.*?\nAGENT_CI_LABEL_ACTORS=[^\n]*\n", TICK, re.S)
+    assert allowlists, "trust allowlists not found in tick.sh"
+    block = re.search(r"\nauthor_trusted\(\) \{.*?\npr_admissible\(\) \{.*?\n\}\n", GUARDS, re.S)
+    assert block, "trust-boundary helpers not found in lib/guards.sh"
+    return allowlists.group(0) + block.group(0)
 
 
 # `gh api repos/../issues/N` -> "<association>\t<login>", the shape author_trusted parses.

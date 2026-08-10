@@ -24,13 +24,22 @@ pytestmark = pytest.mark.unit
 
 TICK_SH = Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline" / "tick.sh"
 SOURCE = TICK_SH.read_text(encoding="utf-8")
+# The gates themselves moved to lib/guards.sh so that v1 (tick.sh) and v2 (v2/actions/*.sh) run the
+# SAME bytes rather than two ports of one intent. The allowlists that configure them stay in
+# tick.sh, because they are resolved from config.env and the App identity at run time — so this
+# harness lifts each half from where it now lives.
+GUARDS_SH = TICK_SH.parent / "lib" / "guards.sh"
+GUARDS = GUARDS_SH.read_text(encoding="utf-8")
 
 
 def _gates() -> str:
     """The trust-boundary helpers, lifted verbatim so the test runs the shipped code."""
-    block = re.search(r"\nTRUSTED_ASSOCIATIONS=.*?\npr_admissible\(\) \{.*?\n\}\n", SOURCE, re.S)
-    assert block, "trust-boundary helpers not found in tick.sh"
-    return block.group(0)
+    allowlists = re.search(r"\nTRUSTED_ASSOCIATIONS=.*?\nAGENT_CI_LABEL_ACTORS=[^\n]*\n",
+                           SOURCE, re.S)
+    assert allowlists, "trust allowlists not found in tick.sh"
+    block = re.search(r"\nauthor_trusted\(\) \{.*?\npr_admissible\(\) \{.*?\n\}\n", GUARDS, re.S)
+    assert block, "trust-boundary helpers not found in lib/guards.sh"
+    return allowlists.group(0) + block.group(0)
 
 
 def _select() -> str:
@@ -399,14 +408,17 @@ class TestTheGatesUseGhCommandsThatExist:
         # `gh issue view --json authorAssociation` and `gh pr view --json authorAssociation` are
         # both invalid. If either reappears, the pipeline silently idles.
         # Comment lines are stripped: the fix's own comment names the broken field to explain it.
-        code = "\n".join(ln for ln in SOURCE.splitlines() if not ln.lstrip().startswith("#"))
+        # Both shipped files: the gates live in guards.sh now, and a reintroduction there would be
+        # just as silent as one in tick.sh.
+        shipped = SOURCE + GUARDS
+        code = "\n".join(ln for ln in shipped.splitlines() if not ln.lstrip().startswith("#"))
         assert "authorAssociation" not in code
 
     def test_the_fields_that_ARE_valid_gh_json_are_still_used_where_correct(self):
         # headRepositoryOwner IS a real `gh pr view --json` field — verified live. Keeping this
         # here records which of the three calls was wrong, so a future reader does not "fix" the
         # working ones too.
-        assert "--json headRepositoryOwner" in SOURCE
+        assert "--json headRepositoryOwner" in SOURCE + GUARDS
 
     def test_label_provenance_uses_the_timeline_REST_endpoint(self):
         assert 'gh api "repos/$SLUG/issues/$n/timeline"' in _gates()
