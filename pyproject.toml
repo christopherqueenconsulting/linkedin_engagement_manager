@@ -27,7 +27,7 @@ celery-once = {git = "https://github.com/gitchrisqueen/celery-once.git"}
 flower = "^2.0.1"
 
 # --- Database ---
-mysql-connector-python = "^9.1"
+mysql-connector-python = ">=9.1,<27.0"
 
 # --- LinkedIn automation ---
 selenium = "^4.25"
