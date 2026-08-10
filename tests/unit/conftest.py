@@ -7,7 +7,7 @@ except-branch finally ran. Nothing under tests/unit/ is allowed to talk to a rea
 endpoint, so the call is failed immediately instead: the code under test takes the exact
 same failure branch it already took in CI, it just gets there without the sleeps.
 
-Tests that need a working LLM/Redis handle still patch it themselves — their patch nests
+Tests that need a working LLM/Redis/Selenium handle still patch it themselves — their patch nests
 inside these fixtures and wins.
 """
 
@@ -60,6 +60,34 @@ def _no_real_redis():
     with patch("redis.Redis.from_url", side_effect=blocked):
         yield
     reset_redis_client()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_selenium():
+    """Fail un-mocked Grid readiness checks instantly instead of polling for the full 60s.
+
+    `selenium_util._wait_for_selenium_ready` polls `selenium-chrome:4444` in a `sleep(2)` loop
+    against a hard-coded 60s deadline before raising. There is no Grid in the unit lane, so every
+    un-mocked `get_docker_driver()` already ended at that `TimeoutError` — it just spent 30 sleeps
+    getting there. One test (`test_dwell_score_persist.py`, whose patch targeted a name the code
+    never reads) was 60s of a 179s suite on its own.
+
+    Same contract as `_no_real_llm_calls`: raise the exception production raises, so the code under
+    test takes the identical branch without the sleeps. The four unit modules that drive
+    `get_docker_driver` for real already patch this symbol themselves; their patch nests inside
+    this one and wins.
+    """
+    from cqc_lem.utilities import selenium_util
+
+    def _blocked(host, port, timeout=60):
+        raise TimeoutError(
+            f"Selenium not ready at http://{host}:{port}/wd/hub/status — blocked by "
+            "tests/unit/conftest.py. Patch _wait_for_selenium_ready or get_docker_driver if "
+            "this test needs a driver."
+        )
+
+    with patch.object(selenium_util, "_wait_for_selenium_ready", side_effect=_blocked):
+        yield
 
 
 @pytest.fixture(autouse=True)

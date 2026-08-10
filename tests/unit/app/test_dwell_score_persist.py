@@ -154,9 +154,15 @@ class TestCarouselSaveWorthyFraming:
         resp = MagicMock()
         resp.choices = [MagicMock(message=MagicMock(
             content='{"post_text": "Hook line.\\n\\nBody line.", "carousel": {}}'))]
+        # generate_carousel_content imports get_user_password_pair_by_id INSIDE the function, off
+        # cqc_lem.utilities.db — so it has to be patched there. Patching it on ai_helper (which is
+        # what this test used to do, with create=True to force the attribute into existence) bound
+        # a name nothing reads: the real lookup ran, returned (None, None) rather than raising, and
+        # the driver call underneath spent the full 60s Grid timeout to reach the same fallback
+        # branch this asserts on.
         with patch.object(ai_helper, "_call_llm", return_value=resp) as call, \
-             patch.object(ai_helper, "get_user_password_pair_by_id", create=True,
-                          side_effect=RuntimeError("no selenium")), \
+             patch("cqc_lem.utilities.db.get_user_password_pair_by_id",
+                   side_effect=RuntimeError("no selenium")), \
              patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None):
             ai_helper.generate_carousel_content(1, "awareness")
         prompt = call.call_args.kwargs["messages"][1]["content"][0]["text"]
