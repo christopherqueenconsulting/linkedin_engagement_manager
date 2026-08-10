@@ -49,7 +49,6 @@ from cqc_lem.utilities.ai.content_alignment import (
     voice_reference as _voice_reference,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
-from cqc_lem.utilities.profile_skills_window import profile_skills_directive as _profile_skills_directive
 from cqc_lem.utilities.ai.tools import search_recent_news
 
 # create_runway_video lives in video_models (model abstraction); re-exported here
@@ -72,6 +71,7 @@ from cqc_lem.utilities.linkedin_formatter import (
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
+from cqc_lem.utilities.profile_skills_window import profile_skills_directive as _profile_skills_directive
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 
 # Load .env file

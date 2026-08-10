@@ -36,7 +36,6 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, mark_approval_timed_out, mark_signed_in
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.profile_skills_window import record_profile_skills_change
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInRateLimited,
     automation_pause_remaining,
@@ -48,6 +47,7 @@ from cqc_lem.utilities.linkedin.rate_limit import (
 )
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.profile_skills_window import record_profile_skills_change
 from cqc_lem.utilities.selenium_util import (
     get_element_wait_retry,
     get_visible_element_wait_retry,
