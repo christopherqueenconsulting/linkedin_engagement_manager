@@ -651,12 +651,16 @@ collect_v2() {
       'SELECT group_concat(state || "=" || n, " ") FROM (SELECT state, COUNT(*) n FROM items GROUP BY state)' 2>/dev/null)"
   fi
   if [ -s "$BASE/state/usage.json" ]; then
+    # The path arrives as argv and every quote is single — an earlier version interpolated $BASE
+    # into the source and escaped quotes inside an f-string, which is a SyntaxError, and the `2>/dev/null`
+    # turned that into an empty string that rendered as "unread". A status tool reporting "no
+    # signal" when the signal is present and fine is worse than one that omits the line.
     V2_USAGE="$(python3 -c '
-import json,sys,time
-d=json.load(open("'"$BASE"'/state/usage.json"))
-age=int(time.time()-float(d.get("at") or 0))
-print(f"week={d.get(\"week_pct\")}% session={d.get(\"session_pct\")}% ({age}s old)")
-' 2>/dev/null)"
+import json, sys, time
+d = json.load(open(sys.argv[1]))
+age = int(time.time() - float(d.get("at") or 0))
+print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_pct"), age))
+' "$BASE/state/usage.json" 2>/dev/null)"
   fi
 
   if [ "$V2_ACTIVE" = 1 ]; then
