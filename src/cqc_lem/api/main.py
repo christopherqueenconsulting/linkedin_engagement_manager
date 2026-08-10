@@ -145,7 +145,7 @@ from cqc_lem.utilities.linkedin.verification_pin import (
     extract_token_from_address,
     submit_pin_by_token,
 )
-from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_critical, log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.observability import (
     capture_exception,
@@ -347,12 +347,38 @@ async def api_token_middleware(request: Request,
 
 COOKIE_SESSION_SENTINEL = "cookie"
 
+# The ContextVars below are MODULE state, and that is exactly why the module may only ever be
+# imported under this one name (issue #1354). `/app` and `/app/src` are both importable, so
+# `src.cqc_lem.api.main` loads this same file a SECOND time as a distinct module object with its own
+# ContextVars. Serve the app from that copy — `uvicorn src.cqc_lem.api.main:app`, which is what the
+# start script used to say — and `session_cookie_middleware` publishes the cookie on one copy's
+# ContextVar while every `api/routers/*.py` handler reads the other's. Cookie auth then returns None
+# for every router-served route while the routes still defined here keep working, so sign-in
+# succeeds and everything after it 401s. Nothing raises; the only signal is this tripwire.
+_CANONICAL_MODULE = "cqc_lem.api.main"
+
+
+def _guard_canonical_module() -> bool:
+    """CRITICAL if this module was imported under any name but `cqc_lem.api.main` (#1354).
+
+    Returns True when the import is canonical, so the check is testable without reading logs.
+    """
+    if __name__ in (_CANONICAL_MODULE, "__main__"):
+        return True
+    log_critical(
+        "api.main imported under a non-canonical module name — cookie auth will not resolve",
+        module_name=__name__, canonical=_CANONICAL_MODULE)
+    return False
+
+
 _request_session_cookie: ContextVar[Optional[str]] = ContextVar("lem_session_cookie", default=None)
 _request_path: ContextVar[Optional[str]] = ContextVar("lem_request_path", default=None)
 _request_object: ContextVar[Optional[Request]] = ContextVar("lem_request", default=None)
 # The scope this request actually resolved on, stamped by the resolver. `/auth/session` reports the
 # enrolment hold off THIS, so the browser is never told something the server would then contradict.
 _request_session_scope: ContextVar[Optional[str]] = ContextVar("lem_session_scope", default=None)
+
+_guard_canonical_module()
 
 
 @app.middleware("http")
