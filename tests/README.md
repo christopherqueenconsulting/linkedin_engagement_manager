@@ -242,13 +242,38 @@ there to verify — do not mock it away:
 | `test_geocoding.py::TestGeocodeCity` (3 tests) | 1.3s | Real `timezonefinder` lat/long→IANA lookups; the assertions are on real timezone output. |
 | `test_carousel_image_selection.py::TestPillowComposition` | 1.5s | Real Pillow slide composition; the assertions inspect the rendered pixels. |
 
-### Parallelism (`pytest-xdist`) — a dependency, but not for this lane
+### Parallelism (`pytest-xdist`) — now on for this lane too
 
-`pytest-xdist` is installed (issue #1185) and the **integration** lane runs on it. The unit lane
-does not, and adding `-n` here would make it slower: `-n auto --dist loadfile` was benchmarked on
-this suite at 12.5s on an 8-core box, but only ~19s at `-n 4` (the width of a GitHub-hosted runner)
-versus ~20s serial. Worker startup and the coverage combine eat the gain at this test size. Re-run
-the benchmark before changing that.
+Both the unit and the **integration** lane run `-n 4 --dist loadfile`.
+
+The unit lane used to be serial, on an issue-#480 benchmark showing `-n 4` at ~19s against ~20s
+serial — worker startup and the coverage combine ate the gain. **That measurement was taken when
+the suite was ~20s and 4,000-odd tests.** It is now 11,728 tests, and re-benchmarked at 11,731
+tests on an 8-core box:
+
+| invocation | wall clock |
+|---|---|
+| serial, `--cov` (what CI used to run) | 139s |
+| `-n 4 --dist loadfile --cov` | **56s** |
+
+The lesson is that the old finding was correct and expired, so keep the numbers with the claim:
+the crossover is suite size, and a 20s suite really does lose to worker startup.
+
+`-n 4` is pinned rather than `auto` because that is the width of a GitHub-hosted runner; the 56s
+above had spare cores, so budget 70-90s in CI. **Do not raise it above 4.**
+
+`--dist loadfile` is not interchangeable with the other modes here. It keeps a whole file on one
+worker, which the 40+ module-scoped `TestClient` fixtures under `tests/unit/api/` depend on —
+`load` scatters individual tests and rebuilds those fixtures per test, and `loadscope` groups
+methods by *class*, so a module-scoped fixture used by two classes gets built twice on two workers.
+
+**Sharding is also a latent-order-dependency detector.** Anything that mutates global state without
+restoring it stops being invisible, because "whatever ran before this test" is no longer one fixed
+order. Two were found and fixed when this landed, both in the same shape — a test seeding or
+consuming the global `random` generator, which decided whether a *production* `random.sample` in
+`blog_source._from_sitemap` visited an unreadable page first, and therefore whether the skip branch
+was covered at all. If a test's coverage or outcome moves under `-n 4`, suspect unrestored global
+state before suspecting xdist.
 
 ### Re-profiling
 
