@@ -71,3 +71,13 @@ touch /home/lem/agent-pipeline/PAUSED       # stops BOTH v1 and v2
 
 The watchdog timer restarts a dead *or wedged* daemon every 15 minutes. If it cannot, v1's failsafe
 cron takes over at v1 cadence — degraded, never stalled.
+
+**Install prerequisite for the watchdog.** It runs as `lem`, and a non-root caller with no login
+session cannot `systemctl restart` a system unit — polkit answers `Interactive authentication
+required`, so the watchdog would detect every failure and recover from none. It calls
+`sudo -n systemctl restart`, which needs a sudoers entry:
+
+```
+# /etc/sudoers.d/lem-agentd-watchdog
+lem ALL=(root) NOPASSWD: /usr/bin/systemctl restart lem-agentd.service
+```

@@ -8,9 +8,9 @@
 #   2. freshness  — the heartbeat file is recent
 #
 # A wedged daemon (deadlocked, stuck on a hung subprocess) satisfies (1) and fails (2), and that is
-# the failure mode a naive `systemctl is-active` check reports as healthy. On failure this
-# restarts once and, if the heartbeat is still stale on the next run, leaves v1's failsafe cron to
-# take over — the pipeline degrades to v1 cadence rather than stalling.
+# the failure mode a naive `systemctl is-active` check reports as healthy. Every unhealthy run
+# attempts a restart; while the heartbeat stays stale v1's failsafe cron keeps the pipeline moving,
+# so a daemon that will not come back degrades to v1 cadence rather than stalling.
 set -uo pipefail
 
 BASE="${BASE:-/home/lem/agent-pipeline}"
@@ -40,7 +40,13 @@ else
   log "daemon active but heartbeat is ${age}s old (stale > ${STALE_AFTER}s) — restarting $UNIT."
 fi
 
-systemctl restart "$UNIT" 2>>"$LOG" || log "restart FAILED — v1's failsafe cron is now the pipeline."
+# `sudo -n`, not a bare `systemctl restart`. This script runs as `lem` (see the .service unit), and
+# a non-root caller with no login session gets polkit's "Interactive authentication required" on
+# `manage-units` — measured on this box, so the bare form would log a failure every 15 minutes and
+# never once recover the daemon. `is-active` above needs no privilege; only the restart does.
+if ! sudo -n systemctl restart "$UNIT" 2>>"$LOG"; then
+  log "restart FAILED (check: lem needs NOPASSWD systemctl restart $UNIT) — v1's failsafe cron is now the pipeline."
+fi
 
 # One PostHog breadcrumb so a restart loop is visible in the same place every other pipeline
 # signal lands. Best-effort: never let telemetry failure change the outcome.

@@ -267,12 +267,19 @@ def dispatchable(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def due_items(conn: sqlite3.Connection, *, now: int | None = None) -> list[sqlite3.Row]:
-    """Wait-state items whose TTL has expired and that must be re-polled once."""
+    """Wait-state items whose TTL has expired and that must be re-polled once.
+
+    Scoped to `WAIT_STATES` on purpose. Nothing clears `wake_at` when an item leaves a wait state,
+    so an unscoped query keeps returning every PR that ever waited — including merged ones — and the
+    TTL sweep grows into exactly the unconditional re-polling v2 exists to remove.
+    """
     now = int(now if now is not None else time.time())
+    placeholders = ",".join("?" * len(WAIT_STATES))
     return list(
         conn.execute(
-            "SELECT * FROM items WHERE wake_at IS NOT NULL AND wake_at <= ? ORDER BY wake_at ASC",
-            (now,),
+            "SELECT * FROM items WHERE wake_at IS NOT NULL AND wake_at <= ? "
+            f"AND state IN ({placeholders}) ORDER BY wake_at ASC",
+            (now, *sorted(WAIT_STATES)),
         ).fetchall()
     )
 

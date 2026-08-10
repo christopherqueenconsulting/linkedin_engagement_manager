@@ -34,7 +34,9 @@ def _in_busy_window(hours: str, tz: str, days: str, at: datetime | None = None) 
 
     Read in the configured ZONE, never a fixed UTC offset: a window written as local wall-clock
     hours must stay on those hours through a DST change, or it silently covers the wrong ones for
-    half the year.
+    half the year. An `at` override is CONVERTED into that zone rather than read as-is — a caller
+    holding a UTC clock (the natural thing for a scheduler) would otherwise compare UTC hours
+    against local window bounds and be wrong by the whole offset.
     """
     if not hours or "-" not in hours:
         return False
@@ -44,9 +46,16 @@ def _in_busy_window(hours: str, tz: str, days: str, at: datetime | None = None) 
     except ValueError:
         return False
     try:
-        now = at or datetime.now(ZoneInfo(tz or "UTC"))
+        zone = ZoneInfo(tz or "UTC")
     except Exception:
-        now = at or datetime.now(ZoneInfo("UTC"))
+        zone = ZoneInfo("UTC")
+    if at is None:
+        now = datetime.now(zone)
+    elif at.tzinfo is None:
+        # Naive means "already local to the window's zone" — the only reading that isn't a guess.
+        now = at.replace(tzinfo=zone)
+    else:
+        now = at.astimezone(zone)
     hour = now.hour
     in_hours = (start <= hour < end) if start <= end else (hour >= start or hour < end)
     if not in_hours:

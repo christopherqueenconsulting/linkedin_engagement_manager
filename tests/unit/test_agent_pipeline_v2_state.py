@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -126,6 +126,21 @@ def test_due_items_returns_only_expired_ttls(conn):
     db.upsert_item(conn, kind="pr", number=41, state=db.STATE_WAIT_QUEUE, wake_at=9_999_999_999)
     db.upsert_item(conn, kind="pr", number=42, state=db.STATE_READY)  # no TTL at all
     assert [r["number"] for r in db.due_items(conn, now=200)] == [40]
+
+
+def test_due_items_drops_an_item_that_left_its_wait_state(conn):
+    """Nothing clears `wake_at` on a transition, so the TTL sweep must be scoped by STATE.
+
+    Without that scope a merged PR keeps its expired `wake_at` forever and is re-polled on every
+    pass — the unconditional re-polling v2 exists to remove, growing by one row per merged PR.
+    """
+    db.upsert_item(conn, kind="pr", number=43, state=db.STATE_WAIT_CI, wake_at=100)
+    db.upsert_item(conn, kind="pr", number=43, state=db.STATE_MERGED)  # wake_at deliberately kept
+    assert db.get_item(conn, "pr", 43)["wake_at"] == 100
+    assert db.due_items(conn, now=200) == []
+    # A ready item carrying a stale TTL is the scheduler's business, not the TTL sweep's.
+    db.upsert_item(conn, kind="pr", number=44, state=db.STATE_READY, wake_at=100)
+    assert db.due_items(conn, now=200) == []
 
 
 # ---------------------------------------------------------------- events
@@ -260,6 +275,31 @@ def test_busy_window_clamps_and_is_zone_aware():
                             busy_hours="10-17", busy_tz="America/New_York", busy_days="1-5",
                             busy_max_agents=2, at=inside)
     assert caps.agents == 2 and caps.busy_window is True
+
+
+def test_busy_window_converts_the_clock_into_the_configured_zone():
+    """The same instant must give the same answer whatever zone the caller's clock carries.
+
+    A scheduler naturally holds a UTC clock; reading its `.hour` against a window written in
+    `America/New_York` wall-clock hours is wrong by the whole offset, and DST makes it wrong by a
+    different amount half the year.
+    """
+    ny_1pm = datetime(2026, 8, 10, 13, 0, tzinfo=ZoneInfo("America/New_York"))  # inside 10-17
+    kw = dict(ready_count=99, max_agents=5, scale_per_issues=8, gh_slots=2,
+              busy_hours="10-17", busy_tz="America/New_York", busy_days="1-5", busy_max_agents=2)
+    assert capacity.compute(**kw, at=ny_1pm).busy_window is True
+    assert capacity.compute(**kw, at=ny_1pm.astimezone(timezone.utc)).busy_window is True
+
+    ny_8am = datetime(2026, 8, 10, 8, 0, tzinfo=ZoneInfo("America/New_York"))  # outside
+    assert capacity.compute(**kw, at=ny_8am).busy_window is False
+    assert capacity.compute(**kw, at=ny_8am.astimezone(timezone.utc)).busy_window is False
+
+
+def test_busy_window_treats_a_naive_clock_as_already_local():
+    caps = capacity.compute(ready_count=99, max_agents=5, scale_per_issues=8, gh_slots=2,
+                            busy_hours="10-17", busy_tz="America/New_York", busy_days="1-5",
+                            at=datetime(2026, 8, 10, 13, 0))
+    assert caps.busy_window is True
 
 
 def test_busy_window_ignores_weekends_when_days_are_set():
