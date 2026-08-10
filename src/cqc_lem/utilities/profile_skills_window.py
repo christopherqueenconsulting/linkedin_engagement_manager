@@ -47,49 +47,6 @@ def _top_skills(profile: "LinkedInProfile") -> list:
     return out
 
 
-def _read_last_recorded_skills(user_id: int) -> list:
-    """The last-recorded top-5 snapshot from the profile row, or [] when none exists.
-
-    Kept in the DB (not Redis) so detection survives Redis restarts and so the profile row remains
-    the single source of truth for "what did we last know about this user's skills".
-    """
-    from cqc_lem.utilities.db import db_cursor
-    try:
-        with db_cursor() as cursor:
-            cursor.execute(
-                "SELECT last_recorded_skills FROM profiles WHERE user_id = %s", (user_id,))
-            row = cursor.fetchone()
-    except Exception as e:
-        log_debug("Could not read last_recorded_skills — treating as empty", exc=e, user_id=user_id)
-        return []
-    if not row:
-        return []
-    raw = row[0] if isinstance(row, tuple) else row.get("last_recorded_skills")
-    if raw is None:
-        return []
-    if isinstance(raw, list):
-        return raw
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, list) else []
-    except (ValueError, TypeError):
-        return []
-
-
-def _write_last_recorded_skills(user_id: int, skills: list) -> bool:
-    """Persist the top-5 snapshot back to the profile row."""
-    from cqc_lem.utilities.db import db_cursor
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE profiles SET last_recorded_skills = %s WHERE user_id = %s",
-                (json.dumps(skills or []), user_id))
-            return cursor.rowcount >= 0
-    except Exception as e:
-        log_debug("Could not write last_recorded_skills", exc=e, user_id=user_id)
-        return False
-
-
 def skills_changed_since_last_recorded(user_id: int, profile: "LinkedInProfile") -> bool:
     """True when the current top-5 skill ordered list differs from the stored snapshot.
 
@@ -97,11 +54,12 @@ def skills_changed_since_last_recorded(user_id: int, profile: "LinkedInProfile")
     returns False after recording the initial snapshot. This avoids opening a spurious re-index
     window for every brand-new account.
     """
+    from cqc_lem.utilities.db import get_last_recorded_skills, set_last_recorded_skills
     current = _top_skills(profile)
-    previous = _read_last_recorded_skills(user_id)
+    previous = get_last_recorded_skills(user_id)
     if current == previous:
         return False
-    _write_last_recorded_skills(user_id, current)
+    set_last_recorded_skills(user_id, current)
     return bool(previous)
 
 

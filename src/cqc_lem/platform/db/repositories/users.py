@@ -5,6 +5,7 @@ secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db
 re-exports every name below, so existing importers and patch targets keep resolving.
 """
 
+import json
 import uuid
 from datetime import (
     datetime,
@@ -510,6 +511,43 @@ def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
         log_error("Could not set profile synthesis", exc=err, user_id=user_id)
         success = False
     return success
+def get_last_recorded_skills(user_id: int) -> list:
+    """The top-5 profile-skill snapshot from the last scrape (issue #1075), [] when there is none.
+
+    Stored as JSON on the profile row so skill-change detection survives a Redis restart. Fails
+    soft: an unreadable row reads as "no snapshot", which makes the next scrape a first scrape
+    rather than a spurious change.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT last_recorded_skills FROM profiles WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not get last recorded skills", exc=err, user_id=user_id)
+        return []
+
+    if not row or row[0] is None:
+        return []
+    raw = row[0]
+    if isinstance(raw, list):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+def set_last_recorded_skills(user_id: int, skills: list) -> bool:
+    """Persist the top-5 skill snapshot as JSON. False when the write failed."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE profiles SET last_recorded_skills = %s WHERE user_id = %s",
+                (json.dumps(skills or []), user_id))
+            return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        log_error("Could not set last recorded skills", exc=err, user_id=user_id)
+        return False
 def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
     """User IDs whose cached profile synthesis is MISSING or older than `stale_days` — the work list
     for the weekly refresh task. Only rows that actually have a profile (user_id NOT NULL) qualify.

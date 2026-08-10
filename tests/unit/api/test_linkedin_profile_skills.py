@@ -6,7 +6,6 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MAIN = "cqc_lem.api.main"
 _USER = "cqc_lem.api.routers.user"
 
 from tests.unit.api.conftest import SESSION_TOKEN  # noqa: E402

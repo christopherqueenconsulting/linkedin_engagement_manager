@@ -5,7 +5,7 @@ composition, and the adopt-skills endpoint round-trip.
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,9 +13,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile, LinkedInSkill
 from cqc_lem.utilities.profile_skills_window import (
     WINDOW_DAYS,
     _key,
-    _read_last_recorded_skills,
     _top_skills,
-    _write_last_recorded_skills,
     close_profile_skills_window,
     get_profile_skills_window,
     open_profile_skills_window,
@@ -78,36 +76,33 @@ class TestTopSkills:
 class TestSkillsChanged:
     def test_first_scrape_records_snapshot_but_is_not_a_change(self):
         profile = _make_profile(["AI Strategy", "Product Growth"])
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (None,)
-            mock_db.return_value.__enter__.return_value = cursor
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills", return_value=[]), \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills") as mock_write:
             assert skills_changed_since_last_recorded(1, profile) is False
-            # Write should have recorded the current skills
-            cursor.execute.assert_called()
+            # The snapshot is still recorded, so the NEXT scrape can be compared against it.
+            mock_write.assert_called_once_with(1, ["ai strategy", "product growth"])
 
     def test_same_skills_no_change(self):
         profile = _make_profile(["AI Strategy", "Product Growth"])
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (["ai strategy", "product growth"],)
-            mock_db.return_value.__enter__.return_value = cursor
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills",
+                   return_value=["ai strategy", "product growth"]), \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills") as mock_write:
             assert skills_changed_since_last_recorded(1, profile) is False
+            mock_write.assert_not_called()
 
     def test_order_change_counts_as_change(self):
         profile = _make_profile(["Product Growth", "AI Strategy"])
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (["ai strategy", "product growth"],)
-            mock_db.return_value.__enter__.return_value = cursor
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills",
+                   return_value=["ai strategy", "product growth"]), \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills") as mock_write:
             assert skills_changed_since_last_recorded(1, profile) is True
+            mock_write.assert_called_once_with(1, ["product growth", "ai strategy"])
 
     def test_new_skill_counts_as_change(self):
         profile = _make_profile(["AI Strategy", "Product Growth", "Leadership"])
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (["ai strategy", "product growth"],)
-            mock_db.return_value.__enter__.return_value = cursor
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills",
+                   return_value=["ai strategy", "product growth"]), \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills"):
             assert skills_changed_since_last_recorded(1, profile) is True
 
 
@@ -142,11 +137,10 @@ class TestRedisWindow:
     def test_record_change_opens_window(self):
         profile = _make_profile(["AI Strategy", "Product Growth"])
         client, store = _redis_client_mock()
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db, \
-             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (["product growth", "ai strategy"],)
-            mock_db.return_value.__enter__.return_value = cursor
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills", return_value=["product growth", "ai strategy"]), \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills"), \
+             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client",
+                   return_value=client):
             result = record_profile_skills_change(1, profile)
             assert result == ["ai strategy", "product growth"]
             assert _key(1) in store
@@ -154,11 +148,10 @@ class TestRedisWindow:
     def test_record_no_change_leaves_window_closed(self):
         profile = _make_profile(["AI Strategy"])
         client, store = _redis_client_mock()
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db, \
-             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (["ai strategy"],)
-            mock_db.return_value.__enter__.return_value = cursor
+        with patch("cqc_lem.utilities.db.get_last_recorded_skills", return_value=["ai strategy"]), \
+             patch("cqc_lem.utilities.db.set_last_recorded_skills"), \
+             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client",
+                   return_value=client):
             assert record_profile_skills_change(1, profile) == []
             assert _key(1) not in store
 
@@ -182,27 +175,49 @@ class TestDirective:
             assert profile_skills_directive(7) == ""
 
 
-class TestReadWriteSnapshot:
-    def test_read_last_recorded_from_dict_row(self):
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = {"last_recorded_skills": ["a", "b"]}
-            mock_db.return_value.__enter__.return_value = cursor
-            assert _read_last_recorded_skills(1) == ["a", "b"]
+class TestRedisFailsOpen:
+    """Redis is steering infrastructure, never a gate — every fault reads as "no window"."""
 
-    def test_read_last_recorded_from_tuple_row(self):
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = (["a", "b"],)
-            mock_db.return_value.__enter__.return_value = cursor
-            assert _read_last_recorded_skills(1) == ["a", "b"]
+    def test_open_window_without_skills_stores_nothing(self):
+        client, store = _redis_client_mock()
+        with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
+            assert open_profile_skills_window(1, _make_profile([])) == []
+            assert store == {}
 
-    def test_write_last_recorded_serializes_json(self):
-        with patch("cqc_lem.utilities.db.db_cursor") as mock_db:
-            cursor = MagicMock()
-            cursor.rowcount = 1
-            mock_db.return_value.__enter__.return_value = cursor
-            assert _write_last_recorded_skills(1, ["a", "b"]) is True
-            call = cursor.execute.call_args
-            assert call.args[0].startswith("UPDATE profiles SET last_recorded_skills")
-            assert call.args[1][0] == json.dumps(["a", "b"])
+    def test_open_window_returns_skills_when_redis_is_gone(self):
+        with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=None):
+            assert open_profile_skills_window(1, _make_profile(["AI Strategy"])) == ["ai strategy"]
+
+    def test_open_window_survives_a_write_error(self):
+        client, _ = _redis_client_mock()
+        with patch.object(client, "setex", side_effect=RuntimeError("redis down")), \
+             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
+            assert open_profile_skills_window(1, _make_profile(["AI Strategy"])) == ["ai strategy"]
+
+    def test_close_window_is_false_when_redis_is_gone(self):
+        with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=None):
+            assert close_profile_skills_window(1) is False
+
+    def test_close_window_is_false_on_a_delete_error(self):
+        client, _ = _redis_client_mock()
+        with patch.object(client, "delete", side_effect=RuntimeError("redis down")), \
+             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
+            assert close_profile_skills_window(1) is False
+
+    def test_read_error_reads_as_no_window(self):
+        client, _ = _redis_client_mock()
+        with patch.object(client, "get", side_effect=RuntimeError("redis down")), \
+             patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
+            assert get_profile_skills_window(1) is None
+
+    def test_unparseable_payload_reads_as_no_window(self):
+        client, store = _redis_client_mock()
+        with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
+            store[_key(1)] = ("{not json", 60)
+            assert get_profile_skills_window(1) is None
+
+    def test_non_list_payload_reads_as_no_window(self):
+        client, store = _redis_client_mock()
+        with patch("cqc_lem.utilities.profile_skills_window.shared_redis_client", return_value=client):
+            store[_key(1)] = (json.dumps({"skills": ["a"]}), 60)
+            assert get_profile_skills_window(1) is None
