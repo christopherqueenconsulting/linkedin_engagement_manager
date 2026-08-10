@@ -52,6 +52,13 @@ files() {
   # --sync refuses a box-edited file instead of overwriting it.
   for f in "$SRC"/lib/*.sh;  do [ -e "$f" ] && echo "lib/$(basename "$f")"; done
   for f in "$SRC"/docs/*.md; do [ -e "$f" ] && echo "docs/$(basename "$f")"; done
+  # mcp/ decides which MCP servers an agent RUN can reach: run_lane.sh passes this file as
+  # `--mcp-config`, which overrides whatever the checkout's own .mcp.json says. It was box-local and
+  # unversioned until 2026-08-10, and it listed only `perplexity` — so every agent ran without a
+  # browser while the repo's .mcp.json advertised playwright and selenium-lem. Nothing failed; runs
+  # just reported that they could not capture a page, and gauntlet-loop audits concluded they had no
+  # visual evidence. A capability this file can silently remove belongs under version control.
+  for f in "$SRC"/mcp/*.json; do [ -e "$f" ] && echo "mcp/$(basename "$f")"; done
   # v2 daemon, shipped by the SAME installer as v1 on purpose: during migration both runners live
   # on this box, and two sync mechanisms is how one of them silently goes stale — the exact drift
   # (an unversioned run_lane.sh, a 900-line status.sh git had never seen) this file was rewritten
@@ -118,7 +125,7 @@ if [ "$SYNC" = 1 ] && [ "$FIRST_INSTALL" = 1 ]; then
 fi
 
 mkdir -p "$DEST/logs" "$DEST/work" "$DEST/lib" "$DEST/docs" "$DEST/state" "$DEST/locks" \
-         "$DEST/v2/actions" "$DEST/v2/lemd" "$DEST/v2/systemd" "$DEST/v2/state"
+         "$DEST/v2/actions" "$DEST/v2/lemd" "$DEST/v2/systemd" "$DEST/v2/state" "$DEST/mcp"
 
 if [ "$SYNC" = 1 ]; then
   updated=0; skipped=(); same=0

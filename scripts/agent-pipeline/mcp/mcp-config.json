@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "perplexity": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "note": "Persistent FastMCP server (lem-mcp-perplexity.service) exposing Perplexity-backed research + fact_check tools. Bound to loopback; only host-side claude instances use it."
+    },
+    "playwright": {
+      "command": "/home/linuxbrew/.linuxbrew/opt/node@24/bin/npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--isolated"
+      ],
+      "note": "Headless, isolated browser for UI work and gauntlet-loop visual critique. The absolute node path is REQUIRED: /usr/bin/npx here is Node 18 and Playwright's MCP server refuses to start below Node 20 -- silently, so an un-pinned command leaves agents with no browser and no error. Touches neither the Selenium pool nor LinkedIn."
+    }
+  }
+}
