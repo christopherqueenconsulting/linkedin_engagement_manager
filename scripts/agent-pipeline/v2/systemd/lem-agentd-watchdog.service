@@ -4,7 +4,10 @@ Documentation=https://github.com/christopherqueenconsulting/linkedin_engagement_
 
 [Service]
 Type=oneshot
-User=lem
+# Root, because this restarts a SYSTEM unit: a non-root `systemctl restart` goes through polkit,
+# which has no agent inside a oneshot service, so it would fail silently and the first rung of the
+# self-heal ladder would never work. Matches the repo's existing lem-watchdog.service.
+User=root
 Environment=BASE=/home/lem/agent-pipeline
 # Deliberately OUTSIDE the daemon: an alert that lives inside the process it watches cannot fire
 # when that process is the thing that died. Checks liveness AND heartbeat freshness, because a

@@ -20,16 +20,19 @@ ExecStart=/usr/bin/python3 -m lemd.daemon
 Restart=on-failure
 RestartSec=10
 
-# Drain, do not kill: SIGTERM stops the daemon claiming new work and lets in-flight agent runs
-# finish. KillMode=mixed sends SIGTERM to the daemon only; children get the stop timeout to land
-# their commits, because a run killed mid-push leaves a branch that the next tick re-dispatches on.
-KillMode=mixed
-TimeoutStopSec=300
+# Drain, do not kill. KillMode=mixed SIGKILLs every remaining process in the cgroup once the stop
+# timeout expires — and agent runs reach 45 minutes, so a 300s timeout would kill up to four agents
+# mid-`git push`, leaving exactly the half-pushed branch this was meant to prevent (budget already
+# charged, next observation re-dispatches). KillMode=process signals only the daemon; agent children
+# are launched into their own transient scopes by the dispatcher so they outlive a daemon restart.
+KillMode=process
+TimeoutStopSec=90
 
 # Shares the ceiling v1's agents already run under, so v2 cannot outbid the prod stack (Selenium
 # grid, celery, MySQL) that lives on this same box.
+# ONE envelope: the slice. A MemoryMax here would be a second, smaller ceiling that the daemon and
+# every agent child share, which is how you get an OOM kill that looks like a mysterious agent crash.
 Slice=lem-agent.slice
-MemoryMax=2G
 
 StandardOutput=append:/home/lem/agent-pipeline/logs/lemd.log
 StandardError=append:/home/lem/agent-pipeline/logs/lemd.log
