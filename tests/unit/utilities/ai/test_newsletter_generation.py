@@ -5,10 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities.ai.content_framework import (
-    NEWSLETTER_BANNED_SCAFFOLDS,
-    POST_BANNED_SCAFFOLDS,
-)
 
 pytestmark = pytest.mark.unit
 
