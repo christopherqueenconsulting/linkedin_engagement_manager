@@ -68,11 +68,19 @@ runs:
           poetry install ${{ inputs.install-args }} --no-interaction
         fi
 
-    # Save only from refs every branch can read back: main, and the merge queue's own refs.
+    # Save from main and NOTHING else. An Actions cache is scoped to the ref that wrote it, with the
+    # default branch as the only fallback every other ref can read — so main's entry is the only one
+    # ever worth writing.
+    #
+    # `merge_group` was allowed here originally and that was wrong: the queue's
+    # `gh-readonly-queue/main/pr-<n>-<sha>` branch is DELETED the moment its entry merges, so a cache
+    # written from one is orphaned on creation. Measured on the first batch after this shipped — six
+    # entries at ~352 MB, ~2.1 GB, none of it readable again. A merge_group run has no need to write:
+    # it already restores main's entry through the default-branch fallback.
     - name: Save Poetry virtual environment
       if: >-
         steps.cache-venv.outputs.cache-hit != 'true' &&
-        (github.ref == 'refs/heads/main' || github.event_name == 'merge_group')
+        github.ref == 'refs/heads/main'
       uses: actions/cache/save@v5
       with:
         path: ${{ inputs.working-directory }}/.venv
