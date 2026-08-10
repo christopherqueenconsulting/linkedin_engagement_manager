@@ -76,6 +76,9 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   FLUX is told what the image must SHOW (an off-topic verdict names the `focal_concept` back). The
   gate reports what is WRONG — "six fingers on the left hand" — and pasting that into a FLUX prompt
   was re-requesting it, inside a two-render budget, on the path every likeness render takes (#1141).
+  Keyed on the backend that **actually rendered** (`_render_with_backend`), never on `IMAGE_BACKEND`:
+  under `auto` gpt-image leads and FLUX catches its failures, so the configured answer is wrong on
+  exactly the runs where gpt-image is down.
 
 Full grading of this engine's output, its per-surface gaps and what is still unmeasurable:
 **`docs/content-quality-audits/image.md`**.

@@ -10,10 +10,11 @@ from unittest.mock import patch
 
 import pytest
 
+from cqc_lem.utilities.ai import image_gen
 from cqc_lem.utilities.ai.image_gen import (
     QualityVerdict,
-    _configured_backend,
     render_avatar_image_gated,
+    render_image_gated,
     repair_directive,
 )
 
@@ -71,11 +72,45 @@ class TestRepairDirective:
         clause = repair_directive(["garbled text", "fused fingers"], "flux")
         assert "plain and unmarked" in clause and "hands relaxed" in clause
 
-    def test_configured_backend_follows_image_backend(self):
-        for value, expected in (("flux", "flux"), ("auto", "gpt-image"),
-                                ("gpt-image", "gpt-image"), ("", "gpt-image")):
-            with patch("cqc_lem.utilities.ai.image_gen.IMAGE_BACKEND", value):
-                assert _configured_backend() == expected
+
+class TestTheGateFollowsTheBackendThatActuallyRendered:
+    """Configuration cannot answer which renderer will read the retry.
+
+    Under the default ``IMAGE_BACKEND=auto`` gpt-image leads and FLUX silently catches its
+    failures, so a config-derived answer names the defect back at FLUX on exactly the runs where
+    gpt-image is down — the bug this whole clause exists to prevent (issue #1141).
+    """
+
+    _REJECTED = ["garbled text on the whiteboard"]
+
+    def test_a_working_gpt_image_render_keeps_the_explicit_prohibition(self):
+        verdicts = [QualityVerdict(acceptable=False, issues=self._REJECTED),
+                    QualityVerdict(acceptable=True)]
+        with patch.object(image_gen, "IMAGE_BACKEND", "auto"), \
+             patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)), \
+             patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 2), \
+             patch.object(image_gen, "_render_via_gpt_image",
+                          return_value="/tmp/g.png") as gpt, \
+             patch.object(image_gen, "_render_via_flux") as flux, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
+            render_image_gated("base prompt", surface="newsletter", focal_concept="a desk")
+        flux.assert_not_called()
+        assert "garbled text on the whiteboard" in gpt.call_args_list[-1][0][0]
+
+    def test_a_fallback_to_flux_gets_the_positive_directive_instead(self):
+        verdicts = [QualityVerdict(acceptable=False, issues=self._REJECTED),
+                    QualityVerdict(acceptable=True)]
+        with patch.object(image_gen, "IMAGE_BACKEND", "auto"), \
+             patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)), \
+             patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 2), \
+             patch.object(image_gen, "_render_via_gpt_image", side_effect=RuntimeError("down")), \
+             patch.object(image_gen, "_render_via_flux",
+                          return_value="/tmp/f.webp") as flux, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
+            render_image_gated("base prompt", surface="newsletter", focal_concept="a desk")
+        retry = flux.call_args_list[-1][0][0]
+        assert "plain and unmarked" in retry
+        assert "garbled" not in retry
 
 
 class TestAvatarRetryUsesFluxPhrasing:

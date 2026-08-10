@@ -123,11 +123,6 @@ def repair_directive(issues: list, backend: str = "gpt-image",
     return "Render this scene again with " + "; ".join(wanted or [_REPAIR_FALLBACK]) + "."
 
 
-def _configured_backend() -> str:
-    """Which backend a render will actually be phrased for. ``auto`` leads with gpt-image."""
-    return "flux" if (IMAGE_BACKEND or "auto").strip().lower() == "flux" else "gpt-image"
-
-
 @dataclass
 class QualityVerdict:
     """Outcome of the vision gate. ``checked=False`` means the gate could not run (fails open)."""
@@ -226,6 +221,37 @@ def _render_via_flux(prompt: str, *, ratio: str, image_model: str,
     return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio)
 
 
+def _render_with_backend(prompt: str, *, ratio: str = "1:1",
+                         quality: Optional[str] = None,
+                         user_id: Optional[int] = None,
+                         post_id: Optional[int] = None,
+                         image_model: str = DEFAULT_IMAGE_MODEL) -> tuple[str, str]:
+    """One render, plus the backend that actually produced it (``gpt-image`` or ``flux``).
+
+    Which backend ran is not answerable from configuration: under the default ``auto`` gpt-image
+    leads and FLUX silently catches its failures. The gate's repair round has to phrase itself
+    for the renderer that will READ it, and a config-derived answer names the defect back at FLUX
+    on exactly the runs where gpt-image is down (issue #1141).
+    """
+    backend = (IMAGE_BACKEND or "auto").strip().lower()
+    if backend not in ("auto", "gpt-image", "flux"):
+        log_warning(f"Unknown IMAGE_BACKEND '{backend}' — using auto")
+        backend = "auto"
+
+    if backend in ("auto", "gpt-image"):
+        try:
+            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image"), ratio=ratio,
+                                         quality=quality, user_id=user_id,
+                                         post_id=post_id), "gpt-image"
+        except Exception as e:
+            if backend == "gpt-image":
+                raise
+            log_warning("gpt-image render failed — falling back to FLUX", exc=e,
+                        user_id=user_id, post_id=post_id, api_provider="openai")
+    return _render_via_flux(with_no_marks(prompt, "flux"), ratio=ratio,
+                            image_model=image_model, user_id=user_id), "flux"
+
+
 def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
                              quality: Optional[str] = None,
                              user_id: Optional[int] = None,
@@ -236,22 +262,8 @@ def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
     Never renders a likeness — callers that may include the author go through
     ``generate_post_image`` so the avatar guardrails stay the single decision point.
     """
-    backend = (IMAGE_BACKEND or "auto").strip().lower()
-    if backend not in ("auto", "gpt-image", "flux"):
-        log_warning(f"Unknown IMAGE_BACKEND '{backend}' — using auto")
-        backend = "auto"
-
-    if backend in ("auto", "gpt-image"):
-        try:
-            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image"), ratio=ratio,
-                                         quality=quality, user_id=user_id, post_id=post_id)
-        except Exception as e:
-            if backend == "gpt-image":
-                raise
-            log_warning("gpt-image render failed — falling back to FLUX", exc=e,
-                        user_id=user_id, post_id=post_id, api_provider="openai")
-    return _render_via_flux(with_no_marks(prompt, "flux"), ratio=ratio,
-                            image_model=image_model, user_id=user_id)
+    return _render_with_backend(prompt, ratio=ratio, quality=quality, user_id=user_id,
+                                post_id=post_id, image_model=image_model)[0]
 
 
 _VISION_GATE_PROMPT = """You are grading ONE AI-generated image intended as professional \
@@ -364,9 +376,11 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
     path: Optional[str] = None
 
     for attempt in range(1, attempts + 1):
-        path = render_image_from_prompt(current_prompt, ratio=ratio, quality=quality,
-                                        user_id=user_id, post_id=post_id,
-                                        image_model=image_model)
+        # The backend that RENDERED, not the one configured: under `auto` a gpt-image failure
+        # falls through to FLUX, and the retry has to be phrased for whichever one answered.
+        path, used_backend = _render_with_backend(current_prompt, ratio=ratio, quality=quality,
+                                                 user_id=user_id, post_id=post_id,
+                                                 image_model=image_model)
         verdict = inspect_render_quality(path, focal_concept or prompt[:200])
         if verdict.acceptable or not verdict.checked:
             return path
@@ -375,5 +389,5 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                  surface=surface, attempt=attempt, issues="; ".join(verdict.issues))
         if not enforced or attempt == attempts:
             break
-        current_prompt = f"{prompt}\n\n{repair_directive(verdict.issues, _configured_backend(), focal_concept)}"
+        current_prompt = f"{prompt}\n\n{repair_directive(verdict.issues, used_backend, focal_concept)}"
     return path

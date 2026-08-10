@@ -79,7 +79,7 @@ it, and the verdict is against what the pipeline actually does today.
 | R3 | **Brand/avatar consistency** — a likeness renders only where the guardrails allow | `avatar/guardrails.resolve_avatar_for`, `apply_subject_clause` | **PASS, untouched.** The avatar is resolved BEFORE the brief is authored on every wired surface, so the declared subject clause leads the prompt (#744). Nothing in this PR reaches the guardrails |
 | R4 | **Not an anonymous stock person** | `_NO_ANONYMOUS_PERSON` | **PASS.** When no likeness is available the brief is explicitly steered off "a confident business professional" and onto an object or environment — the exact stock-photo failure this engine exists to replace |
 | R5 | **Per-surface fit** — a carousel slide is composed differently from a feed image | `_STYLE_PRESETS` + the `ratio` each caller passes | **FAIL → partly fixed here.** Five presets, two surfaces fully wired. `thumbnail` was unreachable (F1); `video` briefed 1:1 and rendered 9:16 (F2); `carousel` reaches the preset but not the gate (F4) |
-| R6 | **Focal-concept clarity** — the render depicts the brief's stated idea | `ImageBrief.focal_concept` → `inspect_render_quality` | **PARTIAL.** Wired on `post_image` and `newsletter`; **dropped** on `carousel`, which authors a `focal_concept` and then discards it (F4, #1290). On the repair round the concept was never named back at the renderer at all — fixed here (F3) |
+| R6 | **Focal-concept clarity** — the render depicts the brief's stated idea | `ImageBrief.focal_concept` → `inspect_render_quality` | **PARTIAL.** Wired on `post_image` and `newsletter`; **dropped** on `carousel` and `thumbnail`, which both author a `focal_concept` and then render through the ungated `render_image_from_prompt` (F4, #1290). On the repair round the concept was never named back at the renderer at all — fixed here (F3) |
 | R7 | **The gate is a safety net, not a quality bar** — it fails open | `render_image_gated`, `QualityVerdict.checked` | **PASS, deliberately.** A vision outage must never take a cover down with it, and for covers the human `pending_review` gate sits behind it. Unchanged by this PR — but see F5: an *unchecked* render is currently indistinguishable from a passed one in telemetry |
 
 ---
@@ -116,6 +116,12 @@ like every other surface, and the preset is rewritten in photography vocabulary.
 and `DEAD_QUALITY_TAGS` are now ONE list that the system prompt names and the tests grep, so the
 writer side and the checking side cannot drift again.
 
+**Not fixed, and it is the same gap as F4:** the thumbnail now *authors* a `focal_concept` and still
+discards it, because `generate_thumbnail` renders through the ungated `render_image_from_prompt`.
+Grading it means a `lem-vision` call on a surface that is not in `IMAGE_QUALITY_GATE_SURFACES`, i.e.
+a render-cost change, which #1141 routes to a separate `risk:*` issue — so it is carried on **#1290**
+alongside `carousel` rather than half-done here.
+
 ### F2 — The video source frame was briefed square and rendered vertical *(fixed in this PR)*
 
 The system prompt composes framing *"phrased to suit the requested aspect ratio"*, so the ratio
@@ -148,18 +154,22 @@ reason, as `with_no_marks`. gpt-image keeps the explicit prohibition; FLUX is to
 must SHOW, and an off-topic verdict names the focal concept back rather than repeating "the stated
 subject".
 
-Residual, stated rather than hidden: under `IMAGE_BACKEND=auto` the repair is phrased for gpt-image
-because that is the backend the retry leads with. If gpt-image is *also* down at that moment, the
-FLUX fallback carries gpt phrasing. That is a narrower exposure than the one being fixed, and
-narrowing it further would mean deciding the backend before the render rather than during it.
+The split is keyed on **the backend that actually rendered, not the one configured** — which is not
+the same question under the default `IMAGE_BACKEND=auto`, where gpt-image leads and FLUX silently
+catches its failures. A config-derived answer would have named the defect back at FLUX on exactly
+the runs where gpt-image is down, i.e. left the fixed bug live on the default configuration. So
+`render_image_from_prompt` is now a thin wrapper over `_render_with_backend`, which reports which
+one answered, and the gate phrases the retry from that.
 
 ### F4 — Carousel slides author a `focal_concept` and throw it away → **#1290**
 
 `_generate_avatar_slide_image` builds a real brief and then hands only `brief.prompt` to
 `generate_post_image`, which renders through the ungated `render_image_from_prompt`. So the one
 format where a bad image repeats across ten slides is the one format the vision gate never sees.
-Not fixed here: routing it through the gate means moving where `resolve_avatar_for` is called, and
-#1141's own scope rule sends avatar-guardrail and render-cost changes to a separate `risk:*` issue.
+`thumbnail` is now in the same position (F1). Not fixed here: routing either through the gate means
+moving where `resolve_avatar_for` is called and adding a `lem-vision` call on a surface outside
+`IMAGE_QUALITY_GATE_SURFACES`, and #1141's own scope rule sends avatar-guardrail and render-cost
+changes to a separate `risk:*` issue.
 
 ### F5 — Image quality has no trend line → **#1291**
 
@@ -222,7 +232,7 @@ Every "after" string below is real output from the merged code.
 |---|---|---|
 | Negations in the prompt (`no text`, `no logos`) | **2** | **0** |
 | Reaches the `thumbnail` preset | ✗ | ✓ |
-| Carries a `focal_concept` for the gate to grade | ✗ | ✓ |
+| Authors a `focal_concept` | ✗ | ✓ (still discarded — the render is ungated, #1290) |
 | Per-content-type prompt helper (CLAUDE.md ban) | yes | no |
 
 ### `video` — the surface briefed for the wrong shape
