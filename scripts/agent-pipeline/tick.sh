@@ -139,6 +139,20 @@ elif [ "${USE_GH_APP:-0}" = "1" ]; then
   log "GH APP: USE_GH_APP=1 but no installation token could be minted — falling back to AGENT_GH_TOKEN. Check $BASE/secrets/github-app.pem and GH_APP_ID."
 fi
 
+# ...and if NEITHER identity resolved, refuse the tick. The fallback is not "no credential", it is
+# the ambient `gh auth login` token in ~/.config/gh/hosts.yml — the OWNER's, carrying `workflow`
+# scope. Every paragraph above exists to keep the agent away from exactly that authority, and with
+# AGENT_GH_TOKEN revoked (#1311 §2) an unmintable App token lands there by default.
+#
+# v1 is the failsafe, so refusing here means the pipeline stops when it cannot prove its identity.
+# That is the intended trade: this runner only wakes at all when the daemon is already dead, and a
+# stopped pipeline is recoverable in a way a workflow rewritten by a prompt-injected agent is not.
+if [ -z "${GH_TOKEN:-}" ]; then
+  log "FATAL: no pipeline credential (no App token, no AGENT_GH_TOKEN). REFUSING this tick rather"
+  log "       than running on the ambient owner login, which carries workflow scope."
+  exit 1
+fi
+
 # A box whose lib/ predates ledger.sh (the window between a tick.sh sync and its lib landing, or
 # a DRY_RUN from a checkout) must degrade to the OLD behavior — unbudgeted but working — never to
 # "command not found" inside a lane. Count 0 = budgets never trip; charge is a no-op.
