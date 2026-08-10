@@ -23,7 +23,14 @@ description: Use when a LinkedIn selector, scrape, or automation flow may have d
 >    refuses too. `--ignore-breaker` exists for the owner and a breaker stuck open; **an agent must
 >    never pass it.**
 > 3. **It cannot take a production Chrome slot.** `--require-debug-node` pins the session to the
->    ninth, watchable Grid node and refuses if it is unavailable. **Agents must always pass it.**
+>    watchable Grid node and refuses if it is unavailable. **Agents must always pass it.** That node
+>    offers 2 sessions (one probe + one MCP browser); a third is refused in about a second rather
+>    than queued, so a refusal is fast and unambiguous. The Selenium MCP browser
+>    (`selenium-lem` in `.mcp.json`) is pinned there too, with no opt-out.
+>
+> **Being off the pool is not being safe.** The debug node reaches the same live LinkedIn on the
+> same real account — it protects production CAPACITY, nothing else. Conditions 1 and 2 are what
+> protect the account, and they apply to everything you drive there, MCP browser included.
 >
 > **A refusal is a WAIT, not a failure.** Exit code **75** with a fenced JSON `refusal` block naming
 > `rate_limit_breaker_open` / `rate_limit_breaker_unreadable` / `debug_node_unavailable` /

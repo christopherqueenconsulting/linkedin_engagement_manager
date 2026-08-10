@@ -142,6 +142,15 @@ Browser capacity is a **fixed pool of Chrome session slots shared by the Celery 
 (`docker-compose.grid.yml`) carries the same invariant with node count as the cap:
 `docs/SELENIUM_GRID.md`, `docs/scaling-plan.md`.
 
+**`selenium-node-debug` is NOT in that sum** — it is a extra node on top of the pool, and since
+#1301 the separation is enforced rather than nominal: it declares `lem:debug=true`, every pool node
+declares `lem:debug=false`, and a production session asks for `false` (never omits it — an absent
+capability matches the debug node too). So a lane can no longer land there, and the ad-hoc
+sessions — the read-only live probe an agent runs, the Selenium MCP browser, both of which now
+REQUIRE it — can no longer take a lane's slot. It offers `DEBUG_NODE_SESSIONS` (2) sessions, and a
+third is refused in about a second rather than queued for 300s. Off the pool ≠ safe for the
+ACCOUNT: the 429 breaker and the probe's write refusal still apply there.
+
 ## Feature Areas
 
 ### Content generation & scheduling (`app/run_content_plan.py`, `app/run_scheduler.py`, `utilities/ai/ai_helper.py`)

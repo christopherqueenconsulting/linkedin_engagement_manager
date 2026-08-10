@@ -15,6 +15,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# Sessions the watchable debug node offers, deliberately OUTSIDE the cap == Σ-lanes arithmetic
+# (issue #1301). Two, because two consumers genuinely overlap: a probe run (the weekly drift sweep
+# is minutes of Chrome) and an agent or the owner opening the Selenium MCP browser. A third is
+# refused immediately rather than queued.
+DEBUG_NODE_SESSIONS = 2
 COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text()
 PROD_OVERLAY = (REPO_ROOT / "docker-compose.prod.yml").read_text()
 GRID_OVERLAY = (REPO_ROOT / "docker-compose.grid.yml").read_text()
@@ -116,12 +122,39 @@ class TestGridOverlay:
         assert pool * sessions_per_node == sum(_lane_concurrencies(COMPOSE).values())
 
     def test_the_debug_node_is_extra_capacity_not_a_borrowed_lane_slot(self):
-        # Owner decision 2026-07-27: debugging must not cost a production slot. The debug node runs
-        # ONE session like any other node, and sits on top of the pool — so the lane invariant above
-        # stays keyed on the pool alone. If someone ever folds it into the pool, that test breaks.
+        # Owner decision 2026-07-27: debugging must not cost a production slot. The debug node sits
+        # ON TOP of the pool, so the lane invariant above stays keyed on the pool alone — the
+        # assertion that matters is that its sessions are NOT in that arithmetic, which is exactly
+        # what `test_default_node_count_equals_the_summed_lane_concurrency` measures (pool replicas,
+        # never this block). If someone ever folds it into the pool, that test breaks.
+        #
+        # #1301 raised it from 1 to DEBUG_NODE_SESSIONS: the probe and the Selenium MCP browser are
+        # now BOTH pinned here, and at one session the Monday drift sweep made every agent browser
+        # request fail for its duration. The count is pinned here so raising it stays a decision
+        # with a resource budget attached (below), not a knob someone nudges.
+        # Comments stripped first: the reasoning above lives in that block and NAMES the pool's
+        # `replicas`, which a raw substring check would read as a redefinition.
+        debug = _config_only(_service_block(GRID_OVERLAY, "selenium-node-debug"))
+        assert int(re.search(r"SE_NODE_MAX_SESSIONS=(\d+)", debug).group(1)) == DEBUG_NODE_SESSIONS
+        assert "replicas" not in debug  # exactly one container, never scaled
+
+    def test_the_debug_nodes_resources_cover_every_session_it_offers(self):
+        # Same rule as the pool (§5b: ~1 vCPU / 1.5 GB + 2 GB shm per concurrent session). A debug
+        # node with 2 sessions on a 1-session budget is the "slow session looks non-human to
+        # LinkedIn" failure, and it would hit the read-only probe — the one session whose whole
+        # job is to report what LinkedIn's DOM does.
         debug = _service_block(GRID_OVERLAY, "selenium-node-debug")
-        assert int(re.search(r"SE_NODE_MAX_SESSIONS=(\d+)", debug).group(1)) == 1
-        assert "replicas" not in debug  # exactly one, never scaled
+        assert float(re.search(r"cpus: '([\d.]+)'", debug).group(1)) >= DEBUG_NODE_SESSIONS
+        assert int(re.search(r"memory: (\d+)m", debug).group(1)) >= 1536 * DEBUG_NODE_SESSIONS
+        assert int(re.search(r"shm_size: (\d+)g", debug).group(1)) >= 2 * DEBUG_NODE_SESSIONS
+
+    def test_the_debug_node_is_not_counted_in_the_lane_arithmetic(self):
+        # The invariant CLAUDE.md states, checked from the other side: the summed lane concurrency
+        # equals the POOL, and stays right even though the box now runs more Chrome slots than that.
+        pool = int(re.search(r"replicas: \$\{SELENIUM_GRID_NODES:-(\d+)\}",
+                             self._node_block()).group(1))
+        assert pool == sum(_lane_concurrencies(COMPOSE).values())
+        assert pool + DEBUG_NODE_SESSIONS > sum(_lane_concurrencies(COMPOSE).values())
 
     def test_the_debug_node_publishes_novnc(self):
         # The whole reason it exists: lemvnc needs a container that actually serves 7900. A debug

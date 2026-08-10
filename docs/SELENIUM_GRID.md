@@ -184,7 +184,12 @@ Clients that want to **watch the exact session**:
 
 * **Live-validation probe:** pinned by DEFAULT since #1301. `--require-debug-node` refuses to run
   at all rather than fall back to a production slot — what an autonomous agent must pass.
-* **Selenium MCP server:** `SELENIUM_DEBUG_NODE=true poetry run python tools/selenium_mcp_server.py`
+* **Selenium MCP server** (`tools/selenium_mcp_server.py`): **always** required, no opt-out and no
+  env var — so `.mcp.json` needs nothing beyond `SE_REMOTE_URL`. It points at the shared hub, and
+  `.mcp.json` pre-enables it for every worktree-isolated agent, so a pooled session here would put
+  an agent's "let me look at the page" browser in direct competition with the commenting it was
+  opened to debug. On the **standalone** topology there is no watchable node, so it refuses to
+  start a browser at all — deliberately, since there is nothing there but the production pool.
 * **Ad-hoc code using `get_docker_driver()`:** `SELENIUM_DEBUG_NODE=true` is read automatically
   when the caller does not pass an explicit `debug=` argument; `debug_required=True` raises
   `DebugNodeUnavailable` instead of falling back.
@@ -193,6 +198,30 @@ When the debug node is busy, absent, or registered WITHOUT the capability (i.e. 
 proven), the helper falls back to the normal pool unless `debug_required` was set — a debugging
 convenience must never block production work, but a caller that may not use the pool must fail
 loudly rather than quietly borrow a slot.
+
+#### How many debug sessions, and what happens when they are gone
+
+`SE_NODE_MAX_SESSIONS=2` on that node (`DEBUG_NODE_SESSIONS` in
+`tests/unit/app/test_selenium_capacity.py` pins it), sized for the two consumers that genuinely
+overlap: a **probe run** — the Monday drift sweep is the long one, minutes of Chrome — and an
+**agent or the owner at the MCP browser**. At one session the sweep made every agent browser
+request fail for its duration, and two agents contended with each other. Resources are 2x the pool
+node's per-session budget (2 vCPU / 3072m / 4g shm) because a starved session runs slowly enough to
+look non-human to LinkedIn, and that applies to a probe as much as to a lane.
+
+A third concurrent debug session is **refused immediately**, not queued: `apply_debug_node` reads
+`/status` for a free slot BEFORE the session request, so the caller gets
+`DebugNodeUnavailable` in about a second instead of sitting in the hub's 300s session queue, which
+reads as a hang. Both the probe and the MCP server surface that as **WAIT and retry**, never as a
+failure to escalate — the same treatment as an open 429 breaker. (The check-then-request gap is a
+real race: two callers can both see the same free slot, and the loser gets the Grid's queue. With
+two slots and at most two habitual consumers this is rare, and the honest fix if it ever bites is a
+shorter `SE_SESSION_REQUEST_TIMEOUT`, which is a hub-wide setting and would affect the lanes too.)
+
+**Isolation is about the POOL, not the ACCOUNT.** This node reaches the same live LinkedIn as
+everything else, on the owner's real session and a 429-lockout history. Being off the pool is what
+makes agent browser use safe for *production capacity*; the 429 breaker gate and the probe's write
+refusal are what make it safe for *the account*, and they apply here unchanged.
 
 To watch the pinned session end-to-end:
 

@@ -77,6 +77,10 @@ what remains in the PR body, and the issue stays open with nothing held.
   slots the engagement lanes need. Read the **linkedin-live-validation** skill first and pass
   `--require-debug-node`. **Exit code 75 is a WAIT, not a failure** — re-run later. Escalate only
   if the breaker stays open across repeated attempts, or the finding needs a write to confirm.
+  The same applies to the `selenium-lem` MCP browser: it runs on that node too and cannot fall back
+  to the pool, so "no debug browser slot" means wait, not escalate. Being off the pool protects
+  production capacity, **not** the LinkedIn account — do not drive a write through the MCP browser
+  either.
 - It requires a **product or policy decision**, an external secret, or account/ToS judgment.
 - A **DB migration is destructive** or ambiguous, or you'd have to weaken a security control.
 - You've made **4+ fix attempts** on CI and it still fails, or you're otherwise stuck.

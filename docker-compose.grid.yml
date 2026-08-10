@@ -145,7 +145,15 @@ services:
     image: selenium/node-chrome:latest
     container_name: selenium-node-debug
     hostname: selenium-node-debug
-    shm_size: 2g
+    # TWO sessions, sized for the two consumers that genuinely overlap (#1301): a probe run — the
+    # weekly drift sweep is the long one, minutes of Chrome — and an agent or the owner opening the
+    # Selenium MCP browser to look at a page. At ONE, the Monday sweep made every agent browser
+    # request fail for the length of it, and two agents contended with each other. A third
+    # concurrent debug session is not a workload this box has; it is refused IMMEDIATELY (the
+    # free-slot check in `apply_debug_node` runs before the session request) rather than sitting in
+    # the hub's 300s queue, which reads as a hang. shm/cpu/memory below are 2x the pool node's
+    # per-session budget to match — see docs/scaling-plan.md §5b.
+    shm_size: 4g
     depends_on:
       selenium-hub:
         condition: service_started
@@ -157,7 +165,10 @@ services:
       - SE_EVENT_BUS_HOST=selenium-hub
       - SE_EVENT_BUS_PUBLISH_PORT=4442
       - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
-      - SE_NODE_MAX_SESSIONS=1
+      # NOT part of the `cap == Σ lane concurrency` invariant — that arithmetic is keyed on the
+      # POOL (`selenium-node-chrome` replicas) alone, and these sessions are on top of it. The
+      # lanes can still only ask for 8, and they can no longer land here at all.
+      - SE_NODE_MAX_SESSIONS=2
       - SE_NODE_OVERRIDE_MAX_SESSIONS=true
       - SE_NODE_SESSION_TIMEOUT=600
       - SE_LOG_LEVEL=WARN
@@ -187,8 +198,12 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1'
-          memory: 1536m
+          # 2x the pool node's per-session budget, because this node runs 2 sessions. A session
+          # that cannot get a core runs slowly enough to look non-human to LinkedIn — the same
+          # reason the pool is sized this way — and that applies to a probe as much as to a lane.
+          # Costs the box +1 vCPU / +1.5 GB against the previous single-session node.
+          cpus: '2'
+          memory: 3072m
 
   # The standalone is retired by this overlay, not deleted: `profiles` keeps it defined (so
   # `docker compose -f ... -f docker-compose.grid.yml --profile standalone up selenium-chrome` can

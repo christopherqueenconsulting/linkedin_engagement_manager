@@ -1,9 +1,12 @@
 """Selenium MCP server for LEM.
 
-Drives the *live* `selenium-chrome` browser over the WebDriver hub so you can
-inspect/debug pages (e.g. LinkedIn login) interactively while watching the same
-session in lemvnc. It deliberately attaches to the remote grid rather than
-spawning a local browser, so what the tools touch is exactly what VNC shows.
+Drives the *live* browser over the WebDriver hub so you can inspect/debug pages (e.g. LinkedIn
+login) interactively while watching the same session in lemvnc. It deliberately attaches to the
+remote grid rather than spawning a local browser, so what the tools touch is exactly what VNC shows.
+
+Every session it opens is pinned to the Grid's **watchable debug node** and it will not start one
+otherwise (#1301) — see `start_browser`. Nothing needs to be configured for that: it is the
+server's only mode, so `.mcp.json` needs no capability env var.
 
 Run (registered in .mcp.json):
     poetry install --with mcp
@@ -23,8 +26,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-from cqc_lem.utilities.env_constants import isTrue
-from cqc_lem.utilities.selenium_util import apply_debug_node
+from cqc_lem.utilities.selenium_util import DebugNodeUnavailable, apply_debug_node
 
 mcp = FastMCP("selenium-lem")
 
@@ -52,16 +54,34 @@ def _driver():
 
 @mcp.tool()
 def start_browser() -> str:
-    """Attach to the live selenium-chrome grid (the browser lemvnc displays)."""
+    """Attach to the live Grid's WATCHABLE debug node (the browser lemvnc displays).
+
+    The debug node is **required**, not preferred (#1301). This server points at the shared hub, so
+    a pooled session here would be one of the eight Chrome slots the engagement lanes are sized
+    for — an agent opening a browser to look at a page would be competing with the commenting it
+    is there to fix. There is no fall-back and no opt-out: when the node is full or absent this
+    raises rather than borrowing a slot, and the caller should WAIT and retry, exactly as it does
+    for the probe's breaker gate.
+
+    Isolation is about the POOL, not the ACCOUNT. This node reaches the same live LinkedIn as
+    everything else — the 429 breaker and the read-only rules still apply to whatever you drive
+    here.
+    """
     if _state["driver"] is not None:
         return f"Session already open at {_driver().current_url}"
     options = Options()
     options.set_capability("se:timeZone", os.getenv("SE_TIMEZONE", "America/New_York"))
-    # Opt-in pin to the watchable debug node; falls back to the pool if the node is busy/absent.
-    apply_debug_node(options, isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False")))
+    try:
+        apply_debug_node(options, debug=True, required=True)
+    except DebugNodeUnavailable as e:
+        raise RuntimeError(
+            f"No debug browser slot right now — WAIT and retry, do not escalate. {e}. "
+            "The watchable node offers a fixed, small number of sessions and this server will "
+            "never fall back to the pool the engagement lanes run on."
+        ) from e
     _state["driver"] = webdriver.Remote(command_executor=_remote_url(), options=options)
     _state["driver"].set_window_size(1920, 1080)
-    return f"Connected to {_remote_url()}"
+    return f"Connected to {_remote_url()} on the watchable debug node"
 
 
 @mcp.tool()
