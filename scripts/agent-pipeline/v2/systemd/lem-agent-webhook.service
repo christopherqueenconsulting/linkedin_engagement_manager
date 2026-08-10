@@ -1,0 +1,43 @@
+[Unit]
+Description=LEM agent-pipeline v2 GitHub webhook receiver
+Documentation=https://github.com/christopherqueenconsulting/linkedin_engagement_manager/blob/main/scripts/agent-pipeline/v2/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lem
+Group=lem
+WorkingDirectory=/home/lem/agent-pipeline/v2
+Environment=BASE=/home/lem/agent-pipeline
+Environment=PYTHONUNBUFFERED=1
+
+# The webhook secret ONLY. This process holds no GitHub credential and does no GitHub work, so a
+# compromise of the one component reachable from outside the box yields the ability to write rows
+# into a queue whose every entry is re-verified against GitHub before anything acts on it.
+# Root-owned 0600; deliberately NOT the pipeline's secrets.env, which carries the App private key.
+EnvironmentFile=/etc/lem/agent-webhook.env
+
+ExecStart=/usr/bin/python3 -m lemd.receiver
+
+Restart=always
+RestartSec=3
+
+# Hardening: this is the internet-adjacent surface (via the tunnel), so it runs with the smallest
+# footprint that still lets it write the queue database.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/home/lem/agent-pipeline/v2/state /home/lem/agent-pipeline/logs
+
+Slice=lem-agent.slice
+MemoryMax=256M
+
+StandardOutput=append:/home/lem/agent-pipeline/logs/webhook.log
+StandardError=append:/home/lem/agent-pipeline/logs/webhook.log
+
+[Install]
+WantedBy=multi-user.target
