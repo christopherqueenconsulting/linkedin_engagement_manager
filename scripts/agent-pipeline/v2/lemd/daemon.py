@@ -87,9 +87,17 @@ class Daemon:
         seen: set[tuple[str, int]] = set()
         for row in rows:
             number = row["number"]
-            if not number:
-                continue
-            target = self._event_target(row["event"], int(number))
+            target = None
+            if number:
+                target = self._event_target(row["event"], int(number))
+            elif row["head_sha"]:
+                # Observed live: merge-queue `check_suite` deliveries carry a head_sha and an EMPTY
+                # pull_requests array, because the suite belongs to a `gh-readonly-queue/...` ref
+                # rather than to the PR branch. Keying only on number silently dropped every one of
+                # them — and check_suite is the CI-green edge, so the wait state it is supposed to
+                # end would have expired on its TTL instead, quietly turning the event architecture
+                # back into polling for exactly the lane that matters most.
+                target = self._target_by_head_sha(row["head_sha"])
             if target is None:
                 continue
             db.mark_dirty(self.conn, *target)
@@ -118,6 +126,20 @@ class Daemon:
             if db.get_item(self.conn, kind, number) is not None:
                 return kind, number
         return None
+
+    def _target_by_head_sha(self, head_sha: str) -> tuple[str, int] | None:
+        """Resolve a numberless delivery by the commit it reports on.
+
+        Only PRs carry a head_sha, so this cannot collide with an issue. Matching the CURRENT head
+        is deliberate: a suite for a superseded commit tells us nothing actionable, and re-observing
+        on it would burn a GitHub read to rediscover the same answer.
+        """
+        row = self.conn.execute(
+            "SELECT kind, number FROM items WHERE head_sha=? AND kind='pr' "
+            "AND state NOT IN (?, ?) LIMIT 1",
+            (head_sha, db.STATE_MERGED, db.STATE_CLOSED),
+        ).fetchone()
+        return (row["kind"], row["number"]) if row else None
 
     def reconcile(self) -> int:
         """Re-derive the queue from GitHub. The backstop that makes missed events harmless.
