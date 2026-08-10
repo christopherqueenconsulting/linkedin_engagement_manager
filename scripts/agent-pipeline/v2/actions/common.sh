@@ -66,10 +66,35 @@ fi
 # private key — lem-gh-token.timer (root) mints a ~1h token into state/gh-app-token and this only
 # reads it. An agent that reads everything this uid can read therefore reaches a credential that
 # expires within the hour, not one that never does.
+# ---------------------------------------------------------------------------- exit vocabulary
+# Distinct codes so the daemon can tell "refused" from "failed" from "the agent ran and lost".
+# Collapsing them would make a trust refusal look like a flaky run and get retried forever.
+EX_TRUST=70        # provenance refused or unreadable — never retry without a human
+EX_BUDGET=71       # this (item, mode) has spent its runs — the daemon parks
+EX_BUSY=72         # another claimant holds the branch (a v1 tick, or another v2 action)
+EX_SETUP=73        # worktree / environment could not be prepared
+export EX_TRUST EX_BUDGET EX_BUSY EX_SETUP
+
 if command -v gh_app_export_token >/dev/null 2>&1 && gh_app_export_token; then
   :
 elif [ -n "${AGENT_GH_TOKEN:-}" ]; then
   export GH_TOKEN="$AGENT_GH_TOKEN"
+else
+  # NO SILENT FALLBACK. Without this branch `GH_TOKEN` was simply never exported, and every `gh`
+  # call in the run used whatever ambient credential the `lem` user holds — and
+  # `~/.config/gh/hosts.yml` on this box holds the OWNER's oauth token, which carries `workflow`
+  # scope. That is the authority CLAUDE.md and docs/contribution-security.md call "the hard
+  # control": the one thing that makes an agent rewriting `.github/workflows/**` impossible rather
+  # than merely reviewable. Since AGENT_GH_TOKEN was revoked (#1311 §2) the fall-through is the
+  # PERMANENT state whenever the App token cannot be minted, so the hole is not hypothetical.
+  #
+  # EX_SETUP, not EX_TRUST: a token that could not be minted is an environment that is not ready,
+  # and the daemon retries that on the next observation. A trust refusal would park the item for
+  # six hours over what is usually a one-minute gap between the mint timer and an expiring token.
+  log "FATAL: no pipeline credential — the App token could not be minted and AGENT_GH_TOKEN is"
+  log "       unset. REFUSING rather than falling through to the ambient owner login, which"
+  log "       carries workflow scope. Check lem-gh-token.timer, GH_APP_ID and the private key."
+  exit "$EX_SETUP"
 fi
 
 # ...and the allowlist entry that identity requires, exactly as tick.sh derives it. This is NOT a
@@ -90,14 +115,6 @@ if [ "${GH_APP_IDENTITY_ACTIVE:-0}" = "1" ] && [ -n "${GH_APP_BOT_LOGIN:-}" ]; t
   esac
 fi
 
-# ---------------------------------------------------------------------------- exit vocabulary
-# Distinct codes so the daemon can tell "refused" from "failed" from "the agent ran and lost".
-# Collapsing them would make a trust refusal look like a flaky run and get retried forever.
-EX_TRUST=70        # provenance refused or unreadable — never retry without a human
-EX_BUDGET=71       # this (item, mode) has spent its runs — the daemon parks
-EX_BUSY=72         # another claimant holds the branch (a v1 tick, or another v2 action)
-EX_SETUP=73        # worktree / environment could not be prepared
-export EX_TRUST EX_BUDGET EX_BUSY EX_SETUP
 
 # v2_trust_ok <kind> <number> [lane-label] -> 0 when this item may be acted on RIGHT NOW.
 #
