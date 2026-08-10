@@ -34,6 +34,13 @@ AGENT_CI_LABEL_ACTORS="${AGENT_CI_LABEL_ACTORS:-github-actions[bot]}"
 DRY_RUN="${DRY_RUN:-0}"
 export BASE REPO SLUG OWNER WORKROOT LOGDIR RUNBOOK DRY_RUN
 
+# The same PATH v1 exports. `claude` lives in ~/.local/bin, which is on the interactive shell's PATH
+# via .bashrc and on cron's only because tick.sh sets it explicitly — and is on a systemd unit's
+# PATH not at all. The daemon spawns these actions, so without this line every agent run reached
+# `claude` and got rc=127: budget charged, worktree built, and nothing to show for it. A missing
+# interpreter is not a lane failure, but it looks exactly like one in the outcome log.
+export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
 mkdir -p "$LOGDIR" "$BASE/locks" "$BASE/state" "$WORKROOT"
 LOG="${LOG:-$LOGDIR/v2-actions-$(date +%Y%m%d).log}"
 _TICK_LOG="$LOG"

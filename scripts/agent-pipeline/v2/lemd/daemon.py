@@ -310,6 +310,7 @@ class Daemon:
                 return 0
             LOG.info("%s v1 tick(s) still draining — gh-only dispatch this pass", busy)
         launched = 0
+        held_by_wip = 0
         wip = db.wip_count(self.conn)
         for row in db.dispatchable(self.conn):
             mode = row["pending_mode"]
@@ -322,8 +323,14 @@ class Daemon:
                 # v1's gate, ported deliberately: new work never outruns merge throughput. Without
                 # it a backlog of 35 ready issues becomes 35 open PRs against a queue that merges
                 # one at a time — and every one of them is a rebase candidate the moment main moves.
-                LOG.info("WIP limit: %s PR(s) in flight >= %s — holding new starts",
-                         wip, self.cfg.max_agents)
+                #
+                # Logged ONCE per pass, not once per held item: a 35-issue backlog printed 35
+                # identical lines every pass, which buries the dispatch lines that matter in a file
+                # an operator reads by tailing it.
+                if not held_by_wip:
+                    LOG.info("WIP limit: %s PR(s) in flight >= %s — holding new starts",
+                             wip, self.cfg.max_agents)
+                held_by_wip += 1
                 continue
             # A cheap local read that saves a doomed spawn. It is NOT the authoritative check —
             # `agent_run.sh` re-checks and charges inside the branch flock, so this being a moment
