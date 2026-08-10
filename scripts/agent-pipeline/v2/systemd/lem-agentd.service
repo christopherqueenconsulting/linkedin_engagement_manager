@@ -11,6 +11,13 @@ Group=lem
 WorkingDirectory=/home/lem/agent-pipeline/v2
 Environment=BASE=/home/lem/agent-pipeline
 Environment=PYTHONUNBUFFERED=1
+# `claude` lives in ~/.local/bin. A systemd unit gets a minimal PATH that does not include it, and
+# the daemon runs the `/usage` probe ITSELF (the actions set their own PATH, which is a different
+# process and did not cover this). Without it the probe fails with ENOENT every 15 minutes, the
+# usage cache is never written, and lane routing silently falls back to the failure-history estimate
+# — the exact blindness the probe exists to remove. Same root cause as the rc=127 agent runs, one
+# level up, and just as quiet.
+Environment=PATH=/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-/home/lem/agent-pipeline/secrets.env
 ExecStart=/usr/bin/python3 -m lemd.daemon
 

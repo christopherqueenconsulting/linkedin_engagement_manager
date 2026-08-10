@@ -170,6 +170,32 @@ def pr_facts(slug: str, pr: int, *, timeout: int = 30) -> dict[str, Any]:
     ) or {}
 
 
+def branch_exists(slug: str, branch: str, *, timeout: int = 30) -> bool | None:
+    """Does this branch exist on the REMOTE?
+
+    Returns:
+        True / False, or None when the answer could not be read.
+
+    Deliberately asks GitHub rather than the local checkout. A `start` run works in its own worktree
+    and the answer that decides whether it accomplished anything is "did the work leave this box" —
+    a local branch proves only that `git checkout -b` ran, which every attempt does before it does
+    anything useful. The three-valued return matters as much: an unreadable answer must not read as
+    "nothing was produced", because that is the reading that re-dispatches a 12-minute run on top of
+    work that already exists.
+    """
+    owner, _, name = slug.partition("/")
+    try:
+        gh_json(["api", f"repos/{owner}/{name}/git/ref/heads/{branch}"], timeout=timeout)
+        return True
+    except GitHubUnavailable as exc:
+        # `gh api` exits non-zero for BOTH "no such ref" and "GitHub is unreachable", and those are
+        # opposite answers here. 404 is a real, readable NO; anything else is a shrug.
+        if "404" in str(exc) or "Not Found" in str(exc):
+            return False
+        LOG.warning("branch %s existence unreadable: %s", branch, exc)
+        return None
+
+
 def merge_queue_state(slug: str, pr: int, *, timeout: int = 30) -> str:
     """The PR's merge-queue entry state, or "" when it holds no entry.
 

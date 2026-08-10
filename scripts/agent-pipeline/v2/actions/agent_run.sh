@@ -119,6 +119,24 @@ export SLOT="${SLOT:-1}" WORKER_ID="${WORKER_ID:-v2}"
 export EXECUTION_ID="${EXECUTION_ID:-lemd-$$-$(date +%s)}"
 export CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-45m}"
 
+# ---- lane policy: the MEASURED answer, when there is one -----------------------------------
+# `dispatch_lane` (called inside run_lane) routes on lane HEALTH — a failure-history estimate that
+# can only discover a ceiling by hitting it. `v2/lane_for.py` answers the better question, "how
+# much of the weekly subscription is left", from the meter the daemon refreshes, and applies the
+# per-mode split plus the owner's 50% weekly flip.
+#
+# It is advisory in exactly one direction: when the meter cannot answer it prints no override and
+# the health routing stands, unchanged. That is the only honest default — preferring Claude would
+# spend a window nobody measured, and preferring Ollama is the failure this was written to fix
+# (30 consecutive dispatches routed `reason=fallback` because four rc=127 runs had poisoned the
+# Claude lane's failure counter).
+LEM_LANE_OVERRIDE=""; LEM_LANE_TIER=""; LEM_LANE_MARKER=""; LEM_LANE_REASON="not_consulted"
+if [ -x "$V2_DIR/lane_for.py" ]; then
+  eval "$(BASE="$BASE" "$V2_DIR/lane_for.py" "$MODE" 2>/dev/null)" || true
+fi
+log "lane policy: mode=$MODE arm=${LEM_LANE_REASON} override=${LEM_LANE_OVERRIDE:-none}"
+export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON
+
 case "$MODE" in
   start)     PROMPT="Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." ;;
   fix)       PROMPT="Read $RUNBOOK and follow MODE=fix. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." ;;

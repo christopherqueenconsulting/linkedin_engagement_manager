@@ -84,6 +84,12 @@ class Config:
     busy_tz: str
     busy_days: str
     busy_max_agents: int
+    #: Hold the START lane only, leaving merge/park/selfreview running so in-flight PRs still
+    #: drain. This is the "hold new work" half of the plan's fleet-burn cap (F4) and of DEGRADED,
+    #: promoted to an operator switch. `PAUSED` stops everything; capping `max_agents` to 0 would
+    #: starve selfreview too — and selfreview is the merge gate's evidence source, so the queue
+    #: would wedge behind the very lane you meant to keep running.
+    hold_starts: bool
     #: Wait-state TTLs (seconds). Sized from measured latencies: PR CI ~3 min, merge queue ~3.8 min.
     ttl_ci: int
     ttl_review: int
@@ -95,6 +101,9 @@ class Config:
     #: polls harder. Generous on purpose: a quiet repo produces no deliveries, and treating quiet as
     #: broken would keep the pipeline permanently degraded on a weekend.
     webhook_stale_seconds: int
+    #: How often the daemon asks the CLI for real subscription usage. A probe is a small `claude -p`
+    #: run, so this is the trade between a fresh meter and the meter costing what it measures.
+    usage_probe_interval: int
     #: How long a SIGTERM waits for in-flight children before giving up on watching them. Rollback
     #: is measured in minutes, so this bounds it — the children keep running either way.
     drain_seconds: int
@@ -136,6 +145,7 @@ def load(base: str | Path | None = None) -> Config:
         busy_tz=_str(env, "BUSY_TZ", "UTC"),
         busy_days=_str(env, "BUSY_DAYS", ""),
         busy_max_agents=_int(env, "BUSY_MAX_AGENTS", 2),
+        hold_starts=_str(env, "LEMD_HOLD_STARTS", "0") not in ("0", "false", "no", ""),
         ttl_ci=_int(env, "LEMD_TTL_CI", 1800),
         ttl_review=_int(env, "FIRST_REVIEW_TIMEOUT_SECONDS", 3600),
         ttl_queue=_int(env, "LEMD_TTL_QUEUE", 900),
@@ -143,6 +153,7 @@ def load(base: str | Path | None = None) -> Config:
         reconcile_interval=_int(env, "LEMD_RECONCILE_INTERVAL", 600),
         reconcile_interval_degraded=_int(env, "LEMD_RECONCILE_INTERVAL_DEGRADED", 120),
         webhook_stale_seconds=_int(env, "LEMD_WEBHOOK_STALE_SECONDS", 1800),
+        usage_probe_interval=_int(env, "LEMD_USAGE_PROBE_INTERVAL", 900),
         drain_seconds=_int(env, "LEMD_DRAIN_SECONDS", 20),
         shadow=_str(env, "LEMD_SHADOW", "1") not in ("0", "false", "no"),
         raw=env,

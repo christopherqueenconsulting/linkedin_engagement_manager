@@ -23,7 +23,7 @@ import signal
 import time
 from typing import Any
 
-from . import capacity, db, dispatch, github, observe, policy
+from . import capacity, db, dispatch, github, observe, policy, spend
 from .config import Config, load
 
 LOG = logging.getLogger("lemd")
@@ -53,6 +53,7 @@ class Daemon:
         self._last_reconcile = 0.0
         self._decisions = 0
         self._degraded = False
+        self._last_usage_probe = 0.0
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -215,7 +216,15 @@ class Daemon:
             ttl_queue=self.cfg.ttl_queue, ttl_parked=self.cfg.ttl_parked,
         )
         self._decisions += 1
-        self._emit(row, snap, decision)
+        # Report the state actually PERSISTED, not the one `decide` names. An ACT_DISPATCH decision
+        # carries `next_state=claimed` as an intent, but observation writes `ready` + a pending mode
+        # and the claim happens later, at dispatch. Logging the intent made every restart look like
+        # 13 `ready -> claimed` transitions in four seconds that never occurred — an operator
+        # debugging churn would have gone looking for a claim storm that was purely a log artefact.
+        persisted = decision.next_state
+        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_PARK):
+            persisted = db.STATE_READY
+        self._emit(row, snap, decision, persisted)
 
         now = int(time.time())
         wake_at = now + decision.wake_in if decision.wake_in else None
@@ -266,13 +275,15 @@ class Daemon:
             branch=snap.branch or row["branch"], dirty=0, pending_mode=None,
         )
 
-    def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision) -> None:
+    def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision,
+              persisted: str | None = None) -> None:
         """One structured line per decision — the shadow phase's entire evidence base."""
         payload = {
             "ts": int(time.time()),
             "shadow": self.cfg.shadow,
             "kind": row["kind"], "number": row["number"],
-            "from_state": row["state"], "to_state": decision.next_state,
+            "from_state": row["state"], "to_state": persisted or decision.next_state,
+            "intent": decision.next_state,
             "action": decision.action, "mode": decision.mode, "reason": decision.reason,
             "wake_in": decision.wake_in, "readable": snap.readable,
             **({"details": decision.details} if decision.details else {}),
@@ -311,10 +322,21 @@ class Daemon:
             LOG.info("%s v1 tick(s) still draining — gh-only dispatch this pass", busy)
         launched = 0
         held_by_wip = 0
+        held_by_switch = 0
         wip = db.wip_count(self.conn)
         for row in db.dispatchable(self.conn):
             mode = row["pending_mode"]
             pool = "gh" if mode in ("merge", "park") else "agent"
+            if mode == "start" and self.cfg.hold_starts:
+                # Checked BEFORE the slot read: an operator holding new work still wants to see
+                # that it is being held, and a full pool would otherwise `continue` first and
+                # report nothing. Logged once per pass, like the WIP gate — a 39-issue backlog
+                # printing 39 identical lines buries the dispatches an operator is tailing for.
+                if not held_by_switch:
+                    LOG.info("LEMD_HOLD_STARTS set — holding new starts; merge/park/selfreview "
+                             "continue so in-flight PRs still drain")
+                held_by_switch += 1
+                continue
             if busy and pool == "agent":
                 continue
             if self.sup.free(pool) <= 0:
@@ -340,6 +362,11 @@ class Daemon:
                          row["number"], mode)
                 self._park(row, f"{mode}_exhausted")
                 continue
+            # The claim is taken AFTER every gate and immediately before the spawn, so an item the
+            # WIP gate or the hold switch refuses is never claimed at all. (The "13 claimed
+            # transitions per restart" seen on 2026-08-10 were a LOGGING artefact, not writes —
+            # `_emit` was reporting `decide`'s nominal next state instead of the state persisted.
+            # Worth stating, because the obvious reading of that log is a claim storm here.)
             if not db.claim_item(self.conn, row["id"]):
                 continue
             child = self._launch(row, mode)
@@ -471,9 +498,40 @@ class Daemon:
         self.drain_events()
         if time.time() - self._last_reconcile >= self.reconcile_interval():
             self.reconcile()
+        self.refresh_usage()
         self.observe_dirty()
         self.sweep_ttls()
         self.act()
+
+    def refresh_usage(self) -> None:
+        """Keep the subscription meter fresh so the dispatch action can read it.
+
+        This is the piece that was specified and never wired: `spend.py` could answer "how much of
+        the weekly window is left" from `claude -p /usage`, and nothing called it — so routing fell
+        back to `lib/capacity.sh`'s failure-history estimate, which can only find a ceiling by
+        hitting it. On 2026-08-10 that sent 30 consecutive runs to Ollama while the subscription sat
+        at 23.5% used.
+
+        The DAEMON probes, never the action. A probe is a real (small) `claude -p` run, so probing
+        per dispatch would spend subscription runs to decide how to spend subscription runs. Failure
+        is silent and harmless by design: a stale cache makes `lane_for.py` answer
+        `probe_unavailable`, which restores exactly the health-based routing that came before.
+        """
+        now = time.time()
+        if now - self._last_usage_probe < self.cfg.usage_probe_interval:
+            return
+        self._last_usage_probe = now
+        cache = self.cfg.base / "state" / "usage.json"
+        try:
+            usage = spend.cached_usage(cache, ttl=self.cfg.usage_probe_interval)
+        except Exception as exc:  # noqa: BLE001 - metering must never break the loop
+            LOG.warning("usage probe failed: %s", exc)
+            return
+        if usage.readable:
+            LOG.info("usage: week=%s%% session=%s%% resets=%s",
+                     usage.week_pct, usage.session_pct, usage.week_resets or "unknown")
+        else:
+            LOG.warning("usage probe unreadable — routing falls back to the health estimate")
 
     def reconcile_interval(self) -> int:
         """How often to re-derive from GitHub — faster when the event path looks broken.

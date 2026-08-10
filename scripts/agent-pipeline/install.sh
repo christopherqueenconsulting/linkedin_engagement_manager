@@ -58,6 +58,12 @@ files() {
   # to stop.
   for f in "$SRC"/v2/*.md;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
   for f in "$SRC"/v2/*.sh;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
+  # Top-level v2 PYTHON — `lane_for.py`, `replay.py`. Missed until 2026-08-10, when the lane-routing
+  # fix was installed, verified in tests, and had no effect on the box: `agent_run.sh` guards its
+  # call with `[ -x ... ]`, so an unshipped decision tool degrades to "no override" and the pipeline
+  # keeps routing on the old estimate while every log line looks normal. The guard is right; the
+  # silence it produced is why this glob exists.
+  for f in "$SRC"/v2/*.py;      do [ -e "$f" ] && echo "v2/$(basename "$f")"; done
   for f in "$SRC"/v2/lemd/*.py; do [ -e "$f" ] && echo "v2/lemd/$(basename "$f")"; done
   # The bash actions are the ONLY thing v2 uses to mutate GitHub or spawn an agent, and they source
   # lib/guards.sh from this same tree — so shipping the daemon without them installs a scheduler

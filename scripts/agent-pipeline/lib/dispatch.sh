@@ -148,6 +148,29 @@ dispatch_lane() {
   local kind="issue"; [ -n "${PR:-}" ] && kind="pr"
   local issue_url=""; [ -n "${ISSUE:-}" ] && issue_url="https://github.com/${SLUG:-christopherqueenconsulting/linkedin_engagement_manager}/issues/$ISSUE"
 
+  # A MEASURED decision outranks this health estimate. v2 sets LEM_LANE_OVERRIDE from real weekly
+  # `/usage` (see v2/lemd/lane.py): the per-mode split, and the owner's rule that at >=50% of the
+  # weekly window the Claude subscription leaves rotation entirely. The estimate below can only
+  # discover a ceiling by hitting it, which is why it routed 30 consecutive runs to Ollama on
+  # 2026-08-10 while the subscription sat at 23.5% used.
+  #
+  # Set ONLY when the meter could answer — an unreadable probe leaves this empty on purpose and the
+  # health routing stands. v1 never sets it, so v1's behaviour is byte-identical.
+  if [ -n "${LEM_LANE_OVERRIDE:-}" ]; then
+    LANE="$LEM_LANE_OVERRIDE"
+    ROUTE_REASON="${LEM_LANE_REASON:-measured}"
+    if [ "$LANE" = "ollama" ]; then
+      AGENT_TIER="${LEM_LANE_TIER:-$(_pick_ollama_tier)}"; AGENT_MODEL="$AGENT_TIER"
+      [ "${CLAUDE_AVAIL:-1}" -eq 0 ] && { FALLBACK_FROM="claude"; FALLBACK_TO="ollama"; }
+    else
+      AGENT_MODEL="$claude_hint"
+    fi
+    export LANE AGENT_MODEL AGENT_TIER ROUTE_REASON FALLBACK_FROM FALLBACK_TO
+    _export_lane_context_window "$LANE" "$AGENT_TIER"
+    echo "[dispatch] MEASURED lane=$LANE reason=$ROUTE_REASON" >> "${_TICK_LOG:-/dev/null}" 2>/dev/null || true
+    return 0
+  fi
+
   if [ "$CLAUDE_AVAIL" -eq 0 ] && [ "$OLLAMA_AVAIL" -eq 0 ]; then
     # Both healthy: slot 1 = Claude primary (highest-priority issue), slot >=2 = Ollama parallel.
     if [ "${SLOT:-1}" -ge 2 ] && [ "$OLLAMA_PARALLEL_ENABLED" = "1" ]; then

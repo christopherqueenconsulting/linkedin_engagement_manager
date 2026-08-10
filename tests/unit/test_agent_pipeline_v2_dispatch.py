@@ -29,6 +29,7 @@ _V2 = _PIPE / "v2"
 sys.path.insert(0, str(_V2))
 
 from lemd import db, dispatch, policy  # noqa: E402
+from lemd.config import load  # noqa: E402
 
 # --------------------------------------------------------------------------- budgets
 
@@ -374,3 +375,48 @@ def test_an_orphaned_run_does_not_hold_its_slot_forever(tmp_path):
     assert open_runs["n"] == 0
     # And the item is handed back for a fresh observation rather than guessed at locally.
     assert db.get_item(conn, "pr", 501)["dirty"] == 1
+
+
+# --------------------------------------------------------------------------- the hold switch
+
+def test_hold_starts_is_a_LANE_hold_not_a_pipeline_stop(tmp_path):
+    """`PAUSED` stops everything; capping agents to 0 starves selfreview.
+
+    selfreview is the merge gate's evidence source, so a cap of 0 wedges the queue behind the very
+    lane you meant to keep running. The switch holds new WORK and leaves the drains open — the
+    operator-facing half of the plan's fleet-burn cap (F4).
+    """
+    (tmp_path / "config.env").write_text(
+        f"LEMD_DB={tmp_path}/queue.db\nLEMD_SHADOW=0\nLEMD_HOLD_STARTS=1\n"
+    )
+    cfg = load(tmp_path)
+    assert cfg.hold_starts is True
+    # And it must not have quietly become a pause.
+    assert cfg.max_agents > 0
+    assert not cfg.is_paused()
+
+
+def test_hold_starts_defaults_off_and_reads_falsey_values_as_off(tmp_path):
+    """An empty or absent value must never latch the hold on."""
+    for raw, expected in (("", False), ("0", False), ("no", False), ("false", False),
+                          ("1", True), ("yes", True)):
+        (tmp_path / "config.env").write_text(
+            f"LEMD_DB={tmp_path}/queue.db\nLEMD_HOLD_STARTS={raw}\n"
+        )
+        assert load(tmp_path).hold_starts is expected, f"LEMD_HOLD_STARTS={raw!r}"
+    (tmp_path / "config.env").write_text(f"LEMD_DB={tmp_path}/queue.db\n")
+    assert load(tmp_path).hold_starts is False
+
+
+def test_the_hold_is_checked_before_the_slot_read():
+    """A full pool would `continue` first and report nothing to an operator who is holding work."""
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    hold = src.index('self.cfg.hold_starts')
+    free = src.index('if self.sup.free(pool) <= 0', hold - 4000)
+    assert hold < free
+
+
+def test_the_hold_only_touches_starts():
+    """merge, park and selfreview must keep draining, or the hold becomes a wedge."""
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    assert 'if mode == "start" and self.cfg.hold_starts:' in src
