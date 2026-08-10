@@ -351,8 +351,10 @@ class TestPlannerEmitsBlueprints:
 
 
 class TestNewsletterMechanicalEdit:
-    """Issue #1079: the final mechanical editor pass is opt-in via the newsletter-editor flag,
-    runs after humanization and before the slop lint, and fails open.
+    """Issue #1079: the final mechanical editor pass.
+
+    Opt-in via the newsletter-editor flag, runs after humanization and before the slop lint,
+    and fails open.
     """
 
     def _profile(self):
