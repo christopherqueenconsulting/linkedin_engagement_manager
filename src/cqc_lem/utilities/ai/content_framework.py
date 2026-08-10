@@ -1677,6 +1677,60 @@ def post_writing_directive() -> str:
     )
 
 
+# Canned newsletter SCAFFOLD phrasing (issue #1142). Throat-clearing openers, generic transitions,
+# and stock closes that paste unchanged under any newsletter edition once a bracket is filled in.
+# Same provenance rule as POST_BANNED_SCAFFOLDS: entries are sampled from LEM's own newsletter
+# drafts/prompt output, never speculative additions. The writer-side directive names the combined
+# list and the checking side later reads it via `banned_scaffolds()`, so the two cannot drift.
+NEWSLETTER_BANNED_SCAFFOLDS: tuple = (
+    "in today's edition",
+    "welcome to this week's",
+    "let's dive in",
+    "let's get into it",
+    "without further ado",
+    "here's what you need to know",
+    "before we begin",
+    "first, a quick reminder",
+    "if you're reading this",
+    "you already know that",
+    "as you may know",
+    "the bottom line is",
+    "long story short",
+)
+
+
+def newsletter_writing_directive() -> str:
+    """Channel-craft rules for LinkedIn NEWSLETTER editions, appended to every newsletter prompt.
+
+    Reuses the shared core and the same banned-scaffold provenance rule as posts: the list the prompt
+    names is the list the linter later checks, so the writer side and checking side cannot drift.
+    """
+    from cqc_lem.utilities.ai.slop_lint import banned_scaffolds
+    from cqc_lem.utilities.linkedin_formatter import PLAIN_PUNCTUATION_DIRECTIVE
+    scaffolds = ", ".join(f"'{p}'" for p in banned_scaffolds())
+    return (
+        "\n\nLinkedIn newsletter craft rules (always apply):\n"
+        "- TITLE + SUBTITLE are the inbox subject line + preview text. The title must OPEN a specific "
+        "curiosity gap; the subtitle must promise a concrete payoff without closing the gap. No "
+        "edition numbers, dates, or generic labels like 'Weekly update'.\n"
+        "- The first ~1500 characters (title + subtitle + hook + first section) feed the cover-image "
+        "brief, so they must describe ONE cohesive, visually representable focal idea. Do not open "
+        "with a list of unrelated items or an abstract manifesto.\n"
+        "- Write for a NOTIFICATION-DRIVEN reader: short paragraphs, plain-text subheads that name the "
+        "payoff of the section, and a short 'What you'll get' scan after the hook when the format allows. "
+        "Never a wall of text.\n"
+        "- When source material from the author's blog is provided, make the edition TRACK it: the "
+        "central claim, example, or framework must come from that source, not drift into generic "
+        "advice. If no source is provided, write from the author's expertise and lived reasoning only.\n"
+        "- NEVER reach for newsletter scaffolding that would paste unchanged under any edition: "
+        f"{scaffolds}. A bracket placeholder is the same defect once a real value fills it.\n"
+        "- CTA: close with ONE open, specific question the reader can answer from this edition, then "
+        "ONE line inviting them to subscribe for the next edition. No feed-post mechanics (likes, "
+        "reposts, saves, 'comment below'), no meeting ask, no lead-magnet keyword mechanic.\n"
+        "- No external links in the body; no markdown; " + PLAIN_PUNCTUATION_DIRECTIVE + "\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # COMMENT QUALITY CONTRACT v2 + comment-side similarity gate (issue #617 / G2). Sampled production
 # comments opened with "I totally agree that...", ran one [validate]+[generic insight]+[question]

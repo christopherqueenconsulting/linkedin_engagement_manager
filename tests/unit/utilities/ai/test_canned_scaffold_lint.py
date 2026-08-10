@@ -79,10 +79,19 @@ class TestScaffoldCheck:
     def test_specific_post_has_no_scaffold_violation(self):
         assert _violation(lint_report(SPECIFIC, "post")) is None
 
-    @pytest.mark.parametrize("surface", ["comment", "newsletter", "dm"])
-    def test_post_only(self, surface):
+    @pytest.mark.parametrize("surface", ["comment", "dm"])
+    def test_non_post_surfaces_skip_post_scaffolds(self, surface):
         # Comments run their own filler-opener contract; the post list was never sampled there.
+        # DMs have their own voice constraints. Both should not flag post scaffolds.
         assert _violation(lint_report(CANNED, surface)) is None
+
+    def test_newsletter_surfaces_newsletter_scaffolds(self):
+        text = "In today's edition I want to talk about content marketing."
+        v = _violation(lint_report(text, "newsletter"))
+        assert v is not None
+        assert "newsletter" in v["detail"]
+        assert "in today's edition" in v["evidence"]
+
 
     def test_severity_is_promotable(self, monkeypatch):
         monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD", "hard")
