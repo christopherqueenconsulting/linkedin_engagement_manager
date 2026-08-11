@@ -19,6 +19,14 @@ class _MondayDatetime(_real_datetime):
         return _real_datetime(2024, 1, 8, 12, 0)  # Monday
 
 
+def _valid_mp4(tmp_path, name: str = "clip.mp4", size: int = 72) -> str:
+    """Write a tiny but probe-passing MP4 file for video-success tests (issue #1280)."""
+    p = tmp_path / name
+    body = b'\x00\x00\x00 ftypisom' + b'\x00' * (size - 16)
+    p.write_bytes(body)
+    return str(p)
+
+
 class TestCarouselSlidesAreRealImages:
     def test_empty_is_not_real(self):
         from cqc_lem.app.run_content_plan import _carousel_slides_are_real_images
@@ -132,8 +140,8 @@ class TestAutoCreateWeeklyContentVideoPath:
     def test_ai_video_saved_signed_and_disclosed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         import cqc_lem.app.run_content_plan as rcp
-        video_file = tmp_path / "clip.mp4"
-        video_file.write_bytes(b"v")
+        # Probe-passing bytes: C2PA only signs a file the probe accepted (issue #1280).
+        video_file = _valid_mp4(tmp_path, "clip.mp4")
         with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
              patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=("Post text", "http://runway/clip.mp4")), \
@@ -223,8 +231,7 @@ class TestRegenerateVideoForPost:
 
     def test_success_signs_ai_video_and_updates_db(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
-        video_file = tmp_path / "new.mp4"
-        video_file.write_bytes(b"v")
+        video_file = _valid_mp4(tmp_path, "new.mp4")
         with patch(f"{_RCP}.get_post_content", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
              patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
@@ -243,8 +250,7 @@ class TestRegenerateVideoForPost:
     def test_heals_planning_post_to_approved_on_success(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
         from cqc_lem.utilities.db import PostStatus
-        video_file = tmp_path / "new.mp4"
-        video_file.write_bytes(b"v")
+        video_file = _valid_mp4(tmp_path, "new.mp4")
         with patch(f"{_RCP}.get_post_content", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
              patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
@@ -261,8 +267,7 @@ class TestRegenerateVideoForPost:
     def test_does_not_reheal_posted_video(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
         from cqc_lem.utilities.db import PostStatus
-        video_file = tmp_path / "new.mp4"
-        video_file.write_bytes(b"v")
+        video_file = _valid_mp4(tmp_path, "new.mp4")
         with patch(f"{_RCP}.get_post_content", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
              patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
@@ -278,8 +283,7 @@ class TestRegenerateVideoForPost:
 
     def test_profile_load_failure_is_non_fatal(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
-        video_file = tmp_path / "new.mp4"
-        video_file.write_bytes(b"v")
+        video_file = _valid_mp4(tmp_path, "new.mp4")
         with patch(f"{_RCP}.get_post_content", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_user_id", side_effect=RuntimeError("db")), \
              patch(f"{_RCP}._generate_video_src", return_value="/local/pexels/new.mp4"), \

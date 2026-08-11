@@ -56,6 +56,193 @@ class TestMissingAssetGuard:
         assert _post_missing_required_asset(4, "text", None) is False
 
 
+class TestVideoAssetProbe:
+    """Issue #1280: presence + parse probe before a video URL is accepted as the post's media."""
+
+    def _make_valid_mp4(self, tmp_path, name="valid.mp4", size=112):
+        p = tmp_path / name
+        p.write_bytes(b'\x00\x00\x00 ftypisom' + b'\x00' * (size - 16))
+        return p
+
+    def test_zero_byte_file_fails(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        ok, reason = _probe_video_file(str(p))
+        assert ok is False
+        assert "zero-byte" in reason
+
+    def test_nonexistent_file_fails(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        ok, reason = _probe_video_file(str(tmp_path / "missing.mp4"))
+        assert ok is False
+        assert "not readable" in reason
+
+    def test_wrong_content_type_fails(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        p = tmp_path / "wrong.bin"
+        p.write_bytes(b"not an mp4 file" * 10)
+        ok, reason = _probe_video_file(str(p))
+        assert ok is False
+        assert "ftyp" in reason
+
+    def test_valid_mp4_head_passes(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        p = self._make_valid_mp4(tmp_path)
+        ok, reason = _probe_video_file(str(p))
+        assert ok is True
+        assert reason == ""
+
+    def test_valid_with_ffprobe_duration_passes(self, tmp_path):
+        from types import SimpleNamespace
+
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        p = self._make_valid_mp4(tmp_path)
+        with patch("shutil.which", return_value="/usr/bin/ffprobe"), \
+             patch("subprocess.run", return_value=SimpleNamespace(returncode=0,
+                                                                   stdout="duration=3.000000\n",
+                                                                   stderr="")):
+            ok, reason = _probe_video_file(str(p))
+        assert ok is True
+        assert reason == ""
+
+    def test_ffprobe_zero_duration_fails(self, tmp_path):
+        from types import SimpleNamespace
+
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        p = self._make_valid_mp4(tmp_path)
+        with patch("shutil.which", return_value="/usr/bin/ffprobe"), \
+             patch("subprocess.run", return_value=SimpleNamespace(returncode=0,
+                                                                   stdout="duration=0.000000\n",
+                                                                   stderr="")):
+            ok, reason = _probe_video_file(str(p))
+        assert ok is False
+        assert "zero" in reason
+
+    def test_ffprobe_unparseable_duration_fails(self, tmp_path):
+        from types import SimpleNamespace
+
+        from cqc_lem.app.run_content_plan import _probe_video_file
+        p = self._make_valid_mp4(tmp_path)
+        with patch("shutil.which", return_value="/usr/bin/ffprobe"), \
+             patch("subprocess.run", return_value=SimpleNamespace(returncode=0,
+                                                                   stdout="garbage\n",
+                                                                   stderr="")):
+            ok, reason = _probe_video_file(str(p))
+        assert ok is False
+        assert "unparseable" in reason
+
+    def test_store_video_asset_rejects_zero_byte_when_flag_on(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _store_video_asset
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        with patch("cqc_lem.app.run_content_plan.VIDEO_PROBE_ENABLED", True), \
+             patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
+             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir", return_value=str(p)), \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe") as track:
+            with pytest.raises(RuntimeError, match="video asset probe failed"):
+                _store_video_asset(9, "http://runway/clip.mp4")
+        assert any(call.kwargs.get("probe_ok") is False for call in track.call_args_list)
+
+    def test_store_video_asset_advisory_when_flag_off(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _store_video_asset
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        with patch("cqc_lem.app.run_content_plan.VIDEO_PROBE_ENABLED", False), \
+             patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
+             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir", return_value=str(p)), \
+             patch("cqc_lem.app.run_content_plan.update_db_post_video_url") as upd, \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe") as track:
+            url = _store_video_asset(9, "http://runway/clip.mp4")
+        assert url is None
+        upd.assert_not_called()
+        assert any(call.kwargs.get("probe_ok") is False for call in track.call_args_list)
+
+    def test_store_video_asset_accepts_valid_mp4(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _store_video_asset
+        p = self._make_valid_mp4(tmp_path, size=112)
+        with patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
+             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir", return_value=str(p)), \
+             patch("cqc_lem.app.run_content_plan.update_db_post_video_url") as upd, \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe") as track:
+            url = _store_video_asset(9, "http://runway/clip.mp4")
+        assert url is not None
+        upd.assert_called_once()
+        assert any(call.kwargs.get("probe_ok") is True for call in track.call_args_list)
+
+
+class TestCreatePathVideoProbe:
+    """The probe has to guard the path where a video post is BORN, not only the healers (#1280).
+
+    `_create_content_for_planned_post` writes posts.video_url with its own inline download, so a
+    probe that only ran inside `_store_video_asset` would never see a first-generation zero-byte
+    file — the one that actually publishes.
+    """
+
+    def _run(self, video_path: str, flag: bool = False):
+        from cqc_lem.app.run_content_plan import _create_content_for_planned_post
+        rcp = "cqc_lem.app.run_content_plan"
+        post = {"id": 9, "user_id": 7, "post_type": "video", "buyer_stage": "awareness",
+                "content_mix": "value", "scheduled_time": None}
+        with patch(f"{rcp}.create_content", return_value=("caption body", "http://runway/clip.mp4")), \
+             patch(f"{rcp}.VIDEO_PROBE_ENABLED", flag), \
+             patch(f"{rcp}.create_folder_if_not_exists"), \
+             patch(f"{rcp}.save_video_url_to_dir", return_value=video_path), \
+             patch(f"{rcp}.track_video_asset_probe") as track, \
+             patch(f"{rcp}._post_used_avatar_media", return_value=False), \
+             patch(f"{rcp}._score_and_persist_dwell"), \
+             patch(f"{rcp}._gate_findings_for_post", return_value=[]) as gate, \
+             patch(f"{rcp}.demoting_findings", return_value=[]), \
+             patch(f"{rcp}._persist_gate_findings"), \
+             patch(f"{rcp}.update_db_post_status"), \
+             patch(f"{rcp}.update_db_post_video_url") as upd, \
+             patch(f"{rcp}.record_post_failed") as failed, \
+             patch(f"{rcp}.record_post_generated"), \
+             patch(f"{rcp}.update_db_post_content") as store:
+            ok = _create_content_for_planned_post(post, {"auto_schedule_posts": True})
+        return {"ok": ok, "upd": upd, "gate": gate, "store": store, "failed": failed,
+                "track": track}
+
+    def test_zero_byte_download_never_becomes_the_posts_video_url(self, tmp_path):
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        r = self._run(str(p))
+        # The caption is kept (a lost download must not cost the generated text), but no URL lands.
+        assert r["ok"] is True
+        r["upd"].assert_not_called()
+        assert any(c.kwargs.get("probe_ok") is False for c in r["track"].call_args_list)
+
+    def test_rejected_file_leaves_the_missing_asset_gate_able_to_hold(self, tmp_path):
+        """The gate reads the video URL passed to it — a rejected file must read as NO media."""
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        r = self._run(str(p))
+        assert r["gate"].call_args[0][4] is None
+
+    def test_rejected_file_is_not_disclosed_as_ai_visuals(self, tmp_path):
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        r = self._run(str(p))
+        assert "Visuals created with AI" not in r["store"].call_args[0][1]
+
+    def test_valid_download_is_persisted_and_disclosed(self, tmp_path):
+        p = tmp_path / "clip.mp4"
+        p.write_bytes(b'\x00\x00\x00 ftypisom' + b'\x00' * 96)
+        r = self._run(str(p))
+        assert r["ok"] is True
+        r["upd"].assert_called_once()
+        assert r["gate"].call_args[0][4] == "http://runway/clip.mp4"
+        assert "Visuals created with AI" in r["store"].call_args[0][1]
+
+    def test_flag_on_fails_the_post_instead_of_storing_broken_media(self, tmp_path):
+        p = tmp_path / "empty.mp4"
+        p.write_text("")
+        r = self._run(str(p), flag=True)
+        assert r["ok"] is False
+        r["upd"].assert_not_called()
+        r["failed"].assert_called_once()
+
+
 class TestBackfillTask:
     def test_enqueues_regen_per_type(self):
         rows = [(6, 1, 'video', 'awareness', 't'),

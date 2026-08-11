@@ -709,6 +709,30 @@ def _write_cost_ledger(**kwargs) -> None:
         log_warning("Could not write cost_ledger entry", exc=e)
 
 
+def track_video_asset_probe(post_id: Optional[int] = None, user_id: Optional[int] = None,
+                            probe_ok: bool = False, reason: Optional[str] = None,
+                            source: Optional[str] = None, **extra) -> None:
+    """Emit one video-asset probe result (issue #1280).
+
+    One row per stored video: `probe_ok`, the failure `reason`, and the `source` (runway/pexels)
+    so the dashboards can distinguish AI-render failures from stock-fallback problems. A missing
+    ffprobe still emits the event with `probe_ok=True` when the head signature passes, so the
+    metric tracks real parseability gaps rather than missing tooling.
+    """
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="video_asset_probe",
+        properties={
+            "post_id": post_id,
+            "user_id": user_id,
+            "probe_ok": bool(probe_ok),
+            "reason": reason,
+            "source": source,
+            **extra,
+        },
+    )
+
+
 def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int] = None,
                      post_id: Optional[int] = None, feature: str = FEATURE_CONTENT,
                      qty: Optional[float] = None, model: Optional[str] = None,

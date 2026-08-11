@@ -26,6 +26,16 @@ def _planned(post_id: int = 42, user_id: int = 1, post_type: str = "text", stage
     return {"user_id": user_id, "id": post_id, "post_type": post_type, "buyer_stage": stage}
 
 
+def _valid_mp4(tmp_path, name: str = "clip.mp4", size: int = 72) -> str:
+    """Write a tiny but probe-passing MP4 file for video-success tests (issue #1280)."""
+    p = tmp_path / name
+    # ISO base media file start: 4-byte big-endian box size (0x20), then 'ftyp', then brand.
+    # The box size must be >=8 and <= file size, and the file must meet VIDEO_PROBE_MIN_SIZE_BYTES.
+    body = b'\x00\x00\x00 ftypisom' + b'\x00' * (size - 16)
+    p.write_bytes(body)
+    return str(p)
+
+
 class TestAutoCreateWeeklyContent:
     """auto_create_weekly_content tops up a BOUNDED rolling buffer of ready posts (issue #544)."""
 
@@ -835,11 +845,11 @@ class TestRegeneratePostAllTypes:
     @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="awareness")
     @patch(f"{_RCP}._generate_video_src", return_value="https://runway.video/xyz.mp4")
     def test_video_post_regenerates_caption_and_video(self, mock_video_src, mock_stage, mock_type,
-                                                    mock_mix, mock_text, base_patches):
+                                                    mock_mix, mock_text, base_patches, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_post
         from cqc_lem.utilities.db import PostStatus
         with patch(f"{_RCP}.create_folder_if_not_exists"), \
-             patch(f"{_RCP}.save_video_url_to_dir", return_value="/fake/path/xyz.mp4"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value=_valid_mp4(tmp_path, "xyz.mp4")), \
              patch(f"{_RCP}.update_db_post_video_url") as mock_update_video, \
              patch(f"{_RCP}.apply_post_guidance", return_value="Guided video caption") as mock_guidance:
             result = regenerate_post(10, guidance="shorter")
@@ -857,13 +867,13 @@ class TestRegeneratePostAllTypes:
     @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.VIDEO)
     @patch(f"{_RCP}._generate_video_src", return_value="https://runway.video/xyz.mp4")
     def test_regenerated_ai_video_is_disclosed(self, mock_video_src, mock_type, mock_mix,
-                                               mock_text, base_patches):
+                                               mock_text, base_patches, tmp_path):
         """Regeneration replaces the whole caption, so the old draft's AI-visuals disclosure went
         with it — the new caption must carry it or the post ships undisclosed (issue #744).
         """
         from cqc_lem.app.run_content_plan import regenerate_post
         with patch(f"{_RCP}.create_folder_if_not_exists"), \
-             patch(f"{_RCP}.save_video_url_to_dir", return_value="/fake/path/xyz.mp4"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value=_valid_mp4(tmp_path, "xyz.mp4")), \
              patch(f"{_RCP}.update_db_post_video_url"), \
              patch(f"{_RCP}.apply_post_guidance", side_effect=lambda c, *a, **k: c), \
              patch(f"{_RCP}._apply_ai_disclosure", side_effect=lambda c: c + " [AI]") as mock_disc, \
