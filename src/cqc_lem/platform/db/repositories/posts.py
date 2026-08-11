@@ -1069,10 +1069,11 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
     One function and one connection for three queries on purpose: the scorer treats posts, comments and
     newsletter editions as one stream of writing, and three separate readers would let a surface drift
     out of the window silently. Each row is
-    ``{surface, ref_id, text, shipped_on, format_key, authenticity_score, reactions, comments,
-    reposts, impressions}`` — the engagement fields are None for a surface that has no per-item stats
-    (comments, newsletters) and for a post whose stats have not been captured yet, which is the normal
-    case the night it ships.
+    ``{surface, ref_id, text, shipped_on, format_key, post_type, video_url, authenticity_score,
+    reactions, comments, reposts, impressions}`` — the engagement fields are None for a surface that
+    has no per-item stats (comments, newsletters) and for a post whose stats have not been captured
+    yet, which is the normal case the night it ships. `post_type` and `video_url` are present only for
+    posts; they are None for comments and newsletters.
     """
     window = max(1, int(days))
     connection = _connection.get_db_connection()
@@ -1082,7 +1083,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
         # LEFT JOIN: a post shipped tonight has no post_stats row yet and must still be scored — its
         # engagement rate simply reports as unmeasured until the daily scrape catches up.
         cursor.execute(
-            "SELECT p.id, p.content, p.archetype, p.authenticity_score, "
+            "SELECT p.id, p.content, p.archetype, p.post_type, p.video_url, p.authenticity_score, "
             "  DATE(p.scheduled_time) AS shipped_on, "
             "  s.reactions, s.comments, s.reposts, s.impressions "
             "FROM posts p LEFT JOIN post_stats s "
@@ -1096,6 +1097,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
             rows.append({
                 "surface": "post", "ref_id": str(r["id"]), "text": r["content"],
                 "shipped_on": r["shipped_on"], "format_key": r.get("archetype"),
+                "post_type": r.get("post_type"), "video_url": r.get("video_url"),
                 "authenticity_score": r.get("authenticity_score"),
                 "reactions": r.get("reactions"), "comments": r.get("comments"),
                 "reposts": r.get("reposts"), "impressions": r.get("impressions"),
@@ -1156,8 +1158,9 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
                 "INSERT INTO content_quality_scores (user_id, surface, ref_id, shipped_on, slop_hard, "
                 "  slop_warn, slop_score, similarity, similarity_measure, authenticity_score, "
                 "  hook_chars, hook_within_budget, engagement_rate, impressions, detector_score, "
-                "  detector_provider, checks) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "  detector_provider, checks, video_render_ok, video_model_tier, "
+                "  video_duration_seconds, video_aspect_ratio, video_asset_probe) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON DUPLICATE KEY UPDATE shipped_on=VALUES(shipped_on), slop_hard=VALUES(slop_hard), "
                 "  slop_warn=VALUES(slop_warn), slop_score=VALUES(slop_score), "
                 "  similarity=VALUES(similarity), similarity_measure=VALUES(similarity_measure), "
@@ -1165,7 +1168,11 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
                 "  hook_within_budget=VALUES(hook_within_budget), "
                 "  engagement_rate=VALUES(engagement_rate), impressions=VALUES(impressions), "
                 "  detector_score=VALUES(detector_score), detector_provider=VALUES(detector_provider), "
-                "  checks=VALUES(checks), scored_at=CURRENT_TIMESTAMP",
+                "  checks=VALUES(checks), video_render_ok=VALUES(video_render_ok), "
+                "  video_model_tier=VALUES(video_model_tier), "
+                "  video_duration_seconds=VALUES(video_duration_seconds), "
+                "  video_aspect_ratio=VALUES(video_aspect_ratio), "
+                "  video_asset_probe=VALUES(video_asset_probe), scored_at=CURRENT_TIMESTAMP",
                 (user_id, str(score.get("surface") or "")[:20], ref_id[:64], score.get("shipped_on"),
                  score.get("slop_hard"), score.get("slop_warn"), score.get("slop_score"),
                  score.get("similarity"),
@@ -1175,7 +1182,13 @@ def record_content_quality_score(user_id: int, score: dict) -> bool:
                   else int(bool(score.get("hook_within_budget")))),
                  score.get("engagement_rate"), score.get("impressions"), score.get("detector_score"),
                  (str(score.get("detector_provider"))[:32] if score.get("detector_provider") else None),
-                 json.dumps(score.get("slop_checks") or [])))
+                 json.dumps(score.get("slop_checks") or []),
+                 (None if score.get("video_render_ok") is None
+                  else int(bool(score.get("video_render_ok")))),
+                 (str(score.get("video_model_tier"))[:16] if score.get("video_model_tier") else None),
+                 score.get("video_duration_seconds"),
+                 (str(score.get("video_aspect_ratio"))[:16] if score.get("video_aspect_ratio") else None),
+                 (str(score.get("video_asset_probe"))[:16] if score.get("video_asset_probe") else None)))
             return True
     except mysql.connector.Error as err:
         log_error("Could not record content quality score", exc=err, user_id=user_id)
@@ -1190,18 +1203,22 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
             cursor.execute(
                 "SELECT surface, ref_id, shipped_on, slop_hard, slop_warn, slop_score, similarity, "
                 "  similarity_measure, authenticity_score, hook_chars, hook_within_budget, "
-                "  engagement_rate, impressions, detector_score, detector_provider, scored_at "
+                "  engagement_rate, impressions, detector_score, detector_provider, "
+                "  video_render_ok, video_model_tier, video_duration_seconds, video_aspect_ratio, "
+                "  video_asset_probe, scored_at "
                 "FROM content_quality_scores "
                 "WHERE user_id=%s AND shipped_on >= (CURDATE() - INTERVAL %s DAY) "
                 "ORDER BY shipped_on DESC, id DESC",
                 (user_id, max(1, int(days))))
+            rows = cursor.fetchall() or []
             return [
                 {**r,
                  "slop_score": float(r["slop_score"]) if r.get("slop_score") is not None else None,
                  "similarity": float(r["similarity"]) if r.get("similarity") is not None else None,
                  "engagement_rate": (float(r["engagement_rate"])
-                                     if r.get("engagement_rate") is not None else None)}
-                for r in (cursor.fetchall() or [])
+                                     if r.get("engagement_rate") is not None else None),
+                 "video_render_ok": bool(r["video_render_ok"]) if r.get("video_render_ok") is not None else None}
+                for r in rows
             ]
     except mysql.connector.Error:
         return []  # table not created yet (or unreadable) — the rollup reports an empty window

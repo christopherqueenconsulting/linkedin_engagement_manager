@@ -6,6 +6,7 @@ split, all three regression alert conditions, and the optional external detector
 no-op behaviour. Nothing here touches the network: the one embedding call is mocked.
 """
 
+import json
 from datetime import date
 from unittest.mock import patch
 
@@ -24,7 +25,10 @@ def _row(**kw):
             "slop_hard": 0, "slop_warn": 0, "slop_score": 0.0, "similarity": 0.2,
             "similarity_measure": cq.MEASURE_EMBEDDING, "authenticity_score": 90,
             "hook_chars": 80, "hook_within_budget": True, "engagement_rate": 0.04,
-            "impressions": 1000, "detector_score": None}
+            "impressions": 1000, "detector_score": None,
+            "video_render_ok": None, "video_model_tier": None,
+            "video_duration_seconds": None, "video_aspect_ratio": None,
+            "video_asset_probe": None}
     base.update(kw)
     return base
 
@@ -69,10 +73,14 @@ class TestScoreItem:
         assert under["hook_budget"] == cq.MOBILE_HOOK_MAX_CHARS
 
     def test_passed_through_measurements_are_recorded(self):
+        video = {"video_render_ok": True, "video_model_tier": "veo3.1",
+                 "video_duration_seconds": 6, "video_aspect_ratio": "9:16",
+                 "video_asset_probe": cq.VIDEO_PROBE_OK}
         score = cq.score_item(surface=cq.SURFACE_POST, ref_id="1", text="A plain sentence.",
                               shipped_on="2026-07-26", authenticity=77,
                               similarity={"score": 0.61, "measure": cq.MEASURE_EMBEDDING},
-                              engagement_rate=0.012, impressions=500, detector=0.9)
+                              engagement_rate=0.012, impressions=500, detector=0.9,
+                              video=video)
         assert score["authenticity_score"] == 77
         assert score["similarity"] == 0.61
         assert score["similarity_measure"] == cq.MEASURE_EMBEDDING
@@ -80,6 +88,11 @@ class TestScoreItem:
         assert score["impressions"] == 500
         assert score["detector_score"] == 0.9
         assert score["detector_provider"] == cq.detector_provider()
+        assert score["video_render_ok"] is True
+        assert score["video_model_tier"] == "veo3.1"
+        assert score["video_duration_seconds"] == 6
+        assert score["video_aspect_ratio"] == "9:16"
+        assert score["video_asset_probe"] == cq.VIDEO_PROBE_OK
 
     def test_unmeasured_dimensions_are_none_not_zero(self):
         score = cq.score_item(surface=cq.SURFACE_COMMENT, ref_id="9", text="A plain comment body.",
@@ -554,3 +567,175 @@ class TestExternalDetector:
                                        "AI_DETECTOR_URL": "https://example.test/score"}):
             with patch("requests.post", return_value=_Resp()):
                 assert cq.detector_score("body") is None
+
+
+class TestVideoAssetScoring:
+    def test_resolve_local_video_path_returns_none_for_missing_or_external_urls(self):
+        assert cq.resolve_local_video_path("") is None
+        assert cq.resolve_local_video_path("https://example.com/vid.mp4") is None
+        assert cq.resolve_local_video_path("/api/assets?file_name=../etc/passwd") is None
+        assert cq.resolve_local_video_path("/api/assets?file_name=image.png") is None
+
+    def test_resolve_local_video_path_maps_asset_url_to_disk(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        videos = tmp_path / "videos" / "runwayml"
+        videos.mkdir(parents=True)
+        expected = str(videos / "clip.mp4")
+        url = "/api/assets?file_name=videos/runwayml/clip.mp4"
+        assert cq.resolve_local_video_path(url) == expected
+
+    def test_resolve_local_video_path_survives_a_mixed_case_or_relative_assets_root(
+            self, tmp_path, monkeypatch):
+        # Comparing an absolute path against a lowercased or relative root rejected every real
+        # asset, and the probe then reported a healthy video as "missing".
+        root = tmp_path / "Assets"
+        (root / "videos" / "runwayml").mkdir(parents=True)
+        monkeypatch.setattr(cq, "assets_dir", str(root))
+        url = "/api/assets?file_name=videos/runwayml/clip.mp4"
+        assert cq.resolve_local_video_path(url) == str(root / "videos" / "runwayml" / "clip.mp4")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cq, "assets_dir", "Assets")
+        assert cq.resolve_local_video_path(url) == str(root / "videos" / "runwayml" / "clip.mp4")
+
+    def test_probe_video_asset_reports_missing_file(self):
+        assert cq.probe_video_asset("/no/such/file.mp4") == {
+            "duration_seconds": None, "aspect_ratio": None,
+            "asset_probe": cq.VIDEO_PROBE_MISSING, "has_video_stream": False}
+
+    def test_probe_video_asset_reports_empty_file(self, tmp_path):
+        path = tmp_path / "empty.mp4"
+        path.write_text("")
+        result = cq.probe_video_asset(str(path))
+        assert result["asset_probe"] == cq.VIDEO_PROBE_EMPTY
+        assert result["has_video_stream"] is False
+
+    def test_probe_video_asset_reports_unreadable_ffprobe_output(self, tmp_path, monkeypatch):
+        path = tmp_path / "bad.mp4"
+        path.write_text("not a video")
+
+        class _Run:
+            returncode = 1
+            stdout = ""
+
+        monkeypatch.setattr(cq.subprocess, "run", lambda *a, **kw: _Run())
+        result = cq.probe_video_asset(str(path))
+        assert result["asset_probe"] == cq.VIDEO_PROBE_UNREADABLE
+        assert result["has_video_stream"] is False
+
+    def test_probe_video_asset_reports_unreadable_when_ffprobe_is_absent(self, tmp_path, monkeypatch):
+        path = tmp_path / "bad.mp4"
+        path.write_text("not a video")
+
+        def _no_ffprobe(*a, **kw):
+            raise FileNotFoundError("ffprobe")
+
+        monkeypatch.setattr(cq.subprocess, "run", _no_ffprobe)
+        assert cq.probe_video_asset(str(path))["asset_probe"] == cq.VIDEO_PROBE_UNREADABLE
+
+    def _ffprobe(self, monkeypatch, tmp_path, sample):
+        path = tmp_path / "dummy.mp4"
+        path.write_text("ignored")
+
+        class _Run:
+            returncode = 0
+            stdout = json.dumps(sample)
+
+        monkeypatch.setattr(cq.subprocess, "run", lambda *a, **kw: _Run())
+        return cq.probe_video_asset(str(path))
+
+    def test_probe_video_asset_parses_duration_and_video_stream(self, tmp_path, monkeypatch):
+        result = self._ffprobe(monkeypatch, tmp_path, {
+            "streams": [{"codec_type": "video", "width": 720, "height": 1280}],
+            "format": {"duration": "4.735"}})
+        assert result["asset_probe"] == cq.VIDEO_PROBE_OK
+        assert result["has_video_stream"] is True
+        assert result["duration_seconds"] == 5
+        assert result["aspect_ratio"] == "9:16"
+
+    def test_probe_video_asset_snaps_an_off_nominal_ratio_to_the_project_vocabulary(
+            self, tmp_path, monkeypatch):
+        # Runway's 9:16 comes back 1088x1920, whose exact reduction is 17:30 — a string that would
+        # differ per render and trend nothing.
+        result = self._ffprobe(monkeypatch, tmp_path, {
+            "streams": [{"codec_type": "video", "width": 1088, "height": 1920}],
+            "format": {"duration": "5.0"}})
+        assert result["aspect_ratio"] == "9:16"
+
+    def test_probe_video_asset_reports_an_unknown_ratio_exactly(self, tmp_path, monkeypatch):
+        result = self._ffprobe(monkeypatch, tmp_path, {
+            "streams": [{"codec_type": "video", "width": 1000, "height": 300}],
+            "format": {"duration": "5.0"}})
+        assert result["aspect_ratio"] == "10:3"
+
+    def test_probe_video_asset_leaves_the_ratio_unmeasured_without_dimensions(
+            self, tmp_path, monkeypatch):
+        result = self._ffprobe(monkeypatch, tmp_path, {
+            "streams": [{"codec_type": "video"}], "format": {"duration": "5.0"}})
+        assert result["aspect_ratio"] is None
+        assert result["asset_probe"] == cq.VIDEO_PROBE_OK
+
+    def test_probe_video_asset_reports_unreadable_without_a_video_stream(self, tmp_path, monkeypatch):
+        result = self._ffprobe(monkeypatch, tmp_path, {
+            "streams": [{"codec_type": "audio"}], "format": {"duration": "5.0"}})
+        assert result["has_video_stream"] is False
+        assert result["asset_probe"] == cq.VIDEO_PROBE_UNREADABLE
+
+    def test_video_model_tier_passes_through_known_model(self):
+        assert cq.video_model_tier("gen4_turbo") == "gen4_turbo"
+        assert cq.video_model_tier("veo3.1") == "veo3.1"
+
+    def test_video_model_tier_falls_back_to_url_path(self):
+        assert cq.video_model_tier(
+            None, "https://host/assets?file_name=videos/pexels/123.mp4") == cq.VIDEO_MODEL_PEXELS
+        assert cq.video_model_tier(
+            None, "https://host/assets?file_name=videos/runwayml/x.mp4") == cq.VIDEO_MODEL_RUNWAY
+        assert cq.video_model_tier(
+            None, "https://host/assets?file_name=videos/other/x.mp4") is None
+
+    def test_stock_video_is_never_recorded_as_a_runway_render(self):
+        # Every stored video_url lives under videos/runwayml/ whatever produced it, so the file
+        # name is the only thing that proves a Pexels stock clip.
+        assert cq.video_model_tier(
+            None,
+            "https://host/api/assets?file_name=videos/runwayml/pexels_8112.mp4",
+        ) == cq.VIDEO_MODEL_PEXELS
+
+    def test_score_video_asset_records_render_ok_when_file_has_video_stream(self, tmp_path, monkeypatch):
+        videos = tmp_path / "videos" / "runwayml"
+        videos.mkdir(parents=True)
+        path = videos / "clip.mp4"
+        path.write_text("fake")
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        monkeypatch.setattr(cq, "probe_video_asset", lambda p: {
+            "duration_seconds": 5, "aspect_ratio": "9:16", "asset_probe": cq.VIDEO_PROBE_OK,
+            "has_video_stream": True})
+        result = cq.score_video_asset(
+            video_url="/api/assets?file_name=videos/runwayml/clip.mp4",
+            model="gen4_turbo", ratio="9:16")
+        assert result["video_render_ok"] is True
+        assert result["video_model_tier"] == "gen4_turbo"
+        assert result["video_duration_seconds"] == 5
+        assert result["video_aspect_ratio"] == "9:16"
+        assert result["video_asset_probe"] == cq.VIDEO_PROBE_OK
+
+    def test_score_video_asset_takes_the_ratio_off_the_file_when_the_caller_has_none(
+            self, tmp_path, monkeypatch):
+        # The nightly beat scores a post that shipped days ago and holds no render request, so a
+        # ratio it cannot pass must still be measured or the column is NULL on every row.
+        videos = tmp_path / "videos" / "runwayml"
+        videos.mkdir(parents=True)
+        (videos / "clip.mp4").write_text("fake")
+        monkeypatch.setattr(cq, "assets_dir", str(tmp_path))
+        monkeypatch.setattr(cq, "probe_video_asset", lambda p: {
+            "duration_seconds": 6, "aspect_ratio": "16:9", "asset_probe": cq.VIDEO_PROBE_OK,
+            "has_video_stream": True})
+        result = cq.score_video_asset(video_url="/api/assets?file_name=videos/runwayml/clip.mp4")
+        assert result["video_aspect_ratio"] == "16:9"
+
+    def test_score_video_asset_reports_missing_asset(self):
+        result = cq.score_video_asset(video_url=None, ratio="9:16")
+        assert result["video_render_ok"] is False
+        assert result["video_model_tier"] is None
+        assert result["video_duration_seconds"] is None
+        assert result["video_aspect_ratio"] == "9:16"
+        assert result["video_asset_probe"] == cq.VIDEO_PROBE_MISSING

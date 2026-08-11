@@ -21,7 +21,18 @@ CQ = "cqc_lem.utilities.content_quality"
 
 def _post(ref_id="1", text="A plain first line.\nAnd a second sentence for the body.", **kw):
     row = {"surface": "post", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
-           "format_key": None, "authenticity_score": 88, "reactions": 10, "comments": 4,
+           "format_key": None, "post_type": "text", "video_url": None,
+           "authenticity_score": 88, "reactions": 10, "comments": 4,
+           "reposts": 1, "impressions": 1000}
+    row.update(kw)
+    return row
+
+
+def _video_post(ref_id="1", text="A plain first line.\nAnd a second sentence for the body.", **kw):
+    row = {"surface": "post", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
+           "format_key": None, "post_type": "video",
+           "video_url": f"/api/assets?file_name=videos/runwayml/{ref_id}.mp4",
+           "authenticity_score": 88, "reactions": 10, "comments": 4,
            "reposts": 1, "impressions": 1000}
     row.update(kw)
     return row
@@ -85,6 +96,34 @@ class TestNightlyContentQuality:
         assert sim.call_count == 2
         histories = [call.args[1] for call in sim.call_args_list]
         assert ["older post"] in histories and ["older comment"] in histories
+
+    def test_video_posts_score_the_rendered_asset(self):
+        with ExitStack() as es:
+            video = es.enter_context(patch(f"{CQ}.score_video_asset",
+                                           return_value={"video_render_ok": True,
+                                                         "video_model_tier": "gen4_turbo",
+                                                         "video_duration_seconds": 5,
+                                                         "video_aspect_ratio": "9:16",
+                                                         "video_asset_probe": "ok"}))
+            _result, record, _track = self._run(es, [_video_post(), _post()])
+        assert video.call_count == 1
+        score = record.call_args_list[0].args[1]
+        assert score["video_render_ok"] is True
+        assert score["video_model_tier"] == "gen4_turbo"
+        # Non-video posts carry no video keys.
+        text_score = record.call_args_list[1].args[1]
+        assert text_score.get("video_render_ok") is None
+
+    def test_video_posts_pass_the_video_url_to_the_scorer(self):
+        with ExitStack() as es:
+            video = es.enter_context(patch(f"{CQ}.score_video_asset",
+                                           return_value={"video_render_ok": False,
+                                                         "video_model_tier": None,
+                                                         "video_duration_seconds": None,
+                                                         "video_aspect_ratio": None,
+                                                         "video_asset_probe": "missing"}))
+            self._run(es, [_video_post(video_url="/api/assets?file_name=videos/runwayml/1.mp4")])
+        assert video.call_args.kwargs["video_url"] == "/api/assets?file_name=videos/runwayml/1.mp4"
 
     def test_the_embedding_spend_is_billed_to_the_user_it_scored(self):
         # similarity_reports is the only LLM spend here, and this task loops over users instead of
@@ -270,7 +309,10 @@ class TestPostHogEvents:
                  "slop_reasons": ["tada_transition: uses ... the user's own sentence"],
                  "similarity": 0.4, "similarity_measure": "embedding", "authenticity_score": 80,
                  "hook_chars": 90, "hook_within_budget": True, "engagement_rate": 0.03,
-                 "impressions": 900, "detector_score": None, "detector_provider": None}
+                 "impressions": 900, "detector_score": None, "detector_provider": None,
+                 "video_render_ok": True, "video_model_tier": "gen4_turbo",
+                 "video_duration_seconds": 5, "video_aspect_ratio": "9:16",
+                 "video_asset_probe": "ok"}
         with patch(f"{OBS}.posthog.capture") as capture:
             track_content_quality(7, score)
         props = capture.call_args.kwargs["properties"]
@@ -278,6 +320,8 @@ class TestPostHogEvents:
         assert capture.call_args.kwargs["distinct_id"] == "7"
         assert props["slop_checks"] == ["tada_transition"]
         assert props["engagement_rate"] == 0.03
+        assert props["video_render_ok"] is True
+        assert props["video_model_tier"] == "gen4_turbo"
         # The lint's reason strings quote the draft, so they must not ride along.
         assert "slop_reasons" not in props
         assert not any("sentence" in str(v) for v in props.values())

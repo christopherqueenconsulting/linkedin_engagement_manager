@@ -109,7 +109,8 @@ the URL string. Filed as **#1280**.
 
 `score_item()` scores text surfaces only. Video posts contribute their caption text, but the video
 asset itself (motion-prompt length, frame presence, aspect ratio, render outcome) is never recorded
-in the nightly telemetry. Filed as **#1281**.
+in the nightly telemetry. Filed as **#1281** — the dimensions, data model and collection path it
+adds are specified in `docs/content-quality-audits/video-telemetry.md`.
 
 ### F6 — Live corpus + exemplar sampling remains blocked on headless access → **#1363**
 
@@ -200,7 +201,7 @@ has, and only the restored contract can see anything wrong with it**.
 | **#1278** — mute autoplay captions/burned text | Render pipeline + schema + cost model decision |
 | **#1279** — avatar-likeness frame check | Avatar-policy work, telemetry-only default |
 | **#1280** — stored video asset probe | Touches the asset-backfill/storage path |
-| **#1281** — video-specific telemetry | Telemetry/schema change |
+| **#1281** — video-specific telemetry (`video-telemetry.md`) | Telemetry/schema change |
 | **#1363** — live corpus + exemplar sampling | Requires production MySQL credentials and/or live LinkedIn/Selenium access |
 
 Existing gates are untouched: `_post_missing_required_asset` still only checks presence; no new hold
