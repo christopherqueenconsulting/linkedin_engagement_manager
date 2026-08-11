@@ -122,6 +122,9 @@ What it costs and what it is bounded by:
   to guess "not an avatar" and a burn over someone's likeness cannot.
 - **Fails open.** No ffmpeg, an unusable hook, a non-zero exit: the post keeps the video it had.
   Schema is `posts.caption_text` / `posts.caption_srt_url`; nothing gates on either.
+- **The sidecar outlives the video.** `purge_post_assets` drops the local MP4 the moment LinkedIn
+  re-hosts it, but never the `.srt`: LinkedIn is never sent that file, so attaching captions by
+  hand is a post-publish action and `posts.caption_srt_url` has to keep resolving.
 
 ### F4 — No deterministic check that the stored video asset is inspectable → **#1280**
 

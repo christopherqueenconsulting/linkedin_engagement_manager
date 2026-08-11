@@ -397,19 +397,12 @@ def purge_post_assets(post_id, video_url=None):
                     # is the class of bug an escalated issue is meant to catch.
                     log_warning("purge_post_assets: could not remove asset file", exc=e,
                                 post_id=post_id)
-            # The caption sidecar shares the video's stem (issue #1278) and is dead weight for the
-            # same reason the video is: LinkedIn re-hosts the burned-in frames at publish time.
-            # Derived from the video's own name rather than taking another argument, so every
-            # existing caller purges it without changing.
-            stem = os.path.splitext(os.path.basename(candidate or ""))[0]
-            sidecar = os.path.join(assets_dir, "videos", "captions", f"{stem}.srt") if stem else None
-            if sidecar and _within_assets(sidecar) and os.path.isfile(sidecar):
-                try:
-                    os.remove(sidecar)
-                    removed.append(sidecar)
-                except OSError as e:
-                    log_warning("purge_post_assets: could not remove caption sidecar", exc=e,
-                                post_id=post_id)
+            # The caption sidecar (issue #1278) shares this video's stem and deliberately SURVIVES
+            # the purge. LinkedIn re-hosts the video, which is why the local copy is dead weight —
+            # but it never receives the `.srt`, so attaching captions on LinkedIn by hand is a
+            # post-publish action and the file has to still be there when the author takes it.
+            # `posts.caption_srt_url` points at it, and that URL must not resolve to a 404. It is a
+            # few hundred bytes against the megabytes this function exists to reclaim.
 
     for media_dir in (os.path.join(assets_dir, "images", "carousel", str(post_id)),
                       os.path.join(assets_dir, "images", "posts", str(post_id))):
