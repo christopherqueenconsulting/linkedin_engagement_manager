@@ -141,7 +141,8 @@ def poll_training_status(training_id: str) -> tuple[str, Optional[str]]:
 
 def generate_image_with_avatar(prompt: str, model_ref: str, *,
                                ratio: str = "1:1",
-                               fallback_prompt: Optional[str] = None) -> tuple[str, bool]:
+                               fallback_prompt: Optional[str] = None,
+                               surface: Optional[str] = None) -> tuple[str, bool]:
     """Run inference on a trained avatar LoRA model. Returns ``(local_file_path, used_avatar)``.
 
     ``ratio`` is threaded through to Replicate's ``aspect_ratio`` — it used to be dropped here, so
@@ -158,7 +159,8 @@ def generate_image_with_avatar(prompt: str, model_ref: str, *,
     """
     from cqc_lem.utilities.ai.ai_helper import get_flux_image_via_replicate
     try:
-        return get_flux_image_via_replicate(prompt, ref=model_ref, aspect_ratio=ratio), True
+        return get_flux_image_via_replicate(prompt, ref=model_ref, aspect_ratio=ratio,
+                                           surface=surface), True
     except Exception as exc:
         log_warning(
             "Avatar inference failed, falling back to base Flux model",
@@ -166,4 +168,5 @@ def generate_image_with_avatar(prompt: str, model_ref: str, *,
             action_type="avatar_inference_fallback",
         )
         from cqc_lem.utilities.ai.ai_helper import generate_flux1_image_from_prompt
-        return generate_flux1_image_from_prompt(fallback_prompt or prompt, ratio=ratio), False
+        return generate_flux1_image_from_prompt(fallback_prompt or prompt, ratio=ratio,
+                                               surface=surface), False

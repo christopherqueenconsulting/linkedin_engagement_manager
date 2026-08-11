@@ -58,7 +58,9 @@ generation never means no image.
 
 Ratios map to the three sizes gpt-image accepts (`1:1`, `16:9`, `9:16`); anything else falls back to
 square. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
-prediction can't stall a Celery worker forever. Cost is attributed via `track_media_cost`.
+prediction can't stall a Celery worker forever. Cost is attributed via `track_media_cost`, with the
+caller's `surface` (post_image / carousel / newsletter / video / thumbnail) threaded into
+`meta.surface` so per-surface spend is queryable.
 
 ### The vision quality gate
 
@@ -79,6 +81,10 @@ grades the rendered file against the brief's `focal_concept` — with bounded re
   Keyed on the backend that **actually rendered** (`_render_with_backend`), never on `IMAGE_BACKEND`:
   under `auto` gpt-image leads and FLUX catches its failures, so the configured answer is wrong on
   exactly the runs where gpt-image is down.
+- **Every gated render emits an `image_gate_verdict` event** in PostHog: `accepted` / `rejected` /
+  `unchecked` (the fail-open case), the surface, the issue categories, attempt count, and whether
+  the gate actually ran (`checked`). This is the image half of content-quality telemetry; it does not
+  change what the gate decides.
 
 Full grading of this engine's output, its per-surface gaps and what is still unmeasurable:
 **`docs/content-quality-audits/image.md`**.
