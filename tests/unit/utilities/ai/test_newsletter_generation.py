@@ -215,6 +215,44 @@ class TestGenerationWritesToBlueprint:
         assert out["opening_line"] == "First body line"
 
 
+class TestNewsletterBlogAlignmentWiring:
+    def _edition(self, body):
+        return _resp(json.dumps({"title": "A specific title", "subtitle": "why to read it",
+                                  "subject": "the subject", "body": body}))
+
+    def test_blog_alignment_triggers_regeneration_when_promoted(self, monkeypatch):
+        from cqc_lem.utilities.ai import ai_helper
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.30")
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_BLOG_ALIGNMENT", "hard")
+        blog = ("We rebuilt the billing importer from the audit log after a Friday deploy took down "
+                "checkout for forty minutes.")
+        bad_body = "Generic leadership advice with no shared terms."
+        clean_body = ("The Friday billing deploy that took down checkout for forty minutes taught us "
+                      "one rule: no pricing change ships after noon on a Friday. We rebuilt the "
+                      "billing importer from the audit log, one row at a time.")
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm",
+                   side_effect=[self._edition(bad_body), self._edition(clean_body)]) as m:
+            out = ai_helper.generate_newsletter_edition(prof, topic="ops", blog_content=blog)
+        assert m.call_count == 2
+        assert out["body"] == clean_body
+
+    def test_blog_content_reaches_slop_lint(self, monkeypatch):
+        from cqc_lem.utilities.ai import ai_helper, slop_lint as _slop
+        monkeypatch.setenv("SLOP_LINT_BLOG_ALIGNMENT_MIN", "0.30")
+        blog = "Specific facts about billing importers."
+        body = "Generic leadership advice with no shared terms."
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm", return_value=self._edition(body)), \
+             patch.object(_slop, "lint_report", wraps=_slop.lint_report) as lint:
+            ai_helper.generate_newsletter_edition(prof, topic="ops", blog_content=blog)
+        assert any(call.kwargs.get("blog_content") == blog for call in lint.call_args_list)
+
+
+class TestPlanNewsletterTopics:
+    def test_returns_distinct_subjects(self):
         from cqc_lem.utilities.ai import ai_helper
         payload = json.dumps({"editions": [
             {"subject": "Content frameworks that scale", "angle": "foundational"},

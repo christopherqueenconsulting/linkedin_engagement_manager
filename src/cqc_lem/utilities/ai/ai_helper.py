@@ -962,7 +962,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     # that still trips the lint is returned anyway (a newsletter is drafted for human review before
     # it publishes) with the patterns named in the log.
     for _ in range(max(0, _slop.slop_max_attempts() - 1)):
-        report = _slop.lint_report(edition["body"], "newsletter")
+        report = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
         if report["passes"]:
             return edition
         retry = _edition(_slop.slop_retry_directive(report["hard"]))
@@ -974,7 +974,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                 edition["body"], content_type="newsletter",
                 profile_synthesis=profile_synthesis, enabled=True,
             ) or edition["body"]
-    final = _slop.lint_report(edition["body"], "newsletter")
+    final = _slop.lint_report(edition["body"], "newsletter", blog_content=blog_content)
     if not final["passes"]:
         log_warning("Newsletter edition still trips the AI-slop lint; keeping it for review: "
                     + "; ".join(_slop.violation_reasons(final["hard"])))
