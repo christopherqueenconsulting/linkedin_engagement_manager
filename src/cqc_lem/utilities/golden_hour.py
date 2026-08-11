@@ -193,7 +193,7 @@ def sweep_retry_countdown(minutes_since_publish: Optional[float], attempt: int =
 
 
 def golden_hour_report(post_id: Optional[int], minutes_since_publish: Optional[float],
-                       comments_found: int = 0, replies_sent: int = 0,
+                       comments_found: Optional[int] = 0, replies_sent: Optional[int] = 0,
                        status: str = "ok", sweep_slot: int = 0,
                        phase: str = PHASE_REPLY_SWEEP) -> dict:
     """One post's golden-hour record: how late we got there, what we found, what we sent. This is

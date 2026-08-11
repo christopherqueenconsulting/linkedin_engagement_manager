@@ -118,6 +118,7 @@ optional = true
 
 [tool.poetry.group.lint.dependencies]
 ruff = ">=0.1.5,<0.17.0"
+mypy = ">=1.11,<3.0"
 
 [tool.poetry.group.mcp]
 optional = true
@@ -226,6 +227,46 @@ combine-as-imports = true
 "src/cqc_lem/aws/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
 "src/cqc_lem/streamlit/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
 
+
+[tool.mypy]
+# ADVISORY, and deliberately narrow (issue #1221). The #1154 audit found ZERO live instances of the
+# `Optional[bool]` truthiness bug, so this is prevention, not a fix — it is only worth having while
+# it stays cheap. It is not a required check and `scripts/mypy_check.sh` always exits 0, so nothing
+# here can ever block a PR. Rationale + how the list grows: docs/typing-guard.md.
+python_version = "3.12"
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+# This tree ships no third-party stubs and the guard is not about them.
+ignore_missing_imports = true
+# Only the files listed below are GRADED; everything they import is read for signatures only, which
+# is what keeps a 12-module check off the whole 400k-line tree.
+follow_imports = "silent"
+# The three settings the guard exists for: None must never reach a non-Optional position, an
+# implicit `x: str = None` is not an Optional declaration, and a path that forgets to return is a
+# missing value, not an implicit None.
+strict_optional = true
+no_implicit_optional = true
+warn_no_return = true
+
+# Scope: modules whose PUBLIC returns are genuinely `Optional`, where None means UNKNOWN and reading
+# it for truth silently answers a different question. Each entry states which contract it protects.
+# Add a module only when it already checks clean — a scope with known errors in it stops being read.
+files = [
+    "src/cqc_lem/utilities/flags.py",                      # resolve_flag: None = unresolvable, falls open to env
+    "src/cqc_lem/utilities/experiments.py",                # unresolvable experiment = CONTROL, never a fallback
+    "src/cqc_lem/utilities/routing_policy.py",             # None = no down-route decision (stdlib-only, also mounted into LiteLLM)
+    "src/cqc_lem/utilities/suppression.py",                # `unknown` on a thin baseline is never actioned
+    "src/cqc_lem/utilities/comment_outcomes.py",           # visible_most_relevant is 1 / 0 / NULL-unreadable
+    "src/cqc_lem/utilities/engagement_window.py",          # None = no marker read, not a spent slot
+    "src/cqc_lem/utilities/auth_rate_limit.py",            # None = budget unreadable, not budget available
+    "src/cqc_lem/utilities/blog_source.py",                # None = nothing readable to repurpose, never blocking
+    "src/cqc_lem/utilities/golden_hour.py",                # unmeasured latency is never on-time
+    "src/cqc_lem/utilities/linkedin/stale_invites.py",     # an unreadable "Sent … ago" is NEVER stale
+    "src/cqc_lem/utilities/linkedin/login_status.py",      # `unknown` = nothing recorded, NOT signed out
+    "src/cqc_lem/utilities/linkedin/message_thread.py",    # ThreadState is three-valued and UNKNOWN SKIPS
+    "src/cqc_lem/utilities/linkedin/token_refresh.py",     # days_remaining is None, never 0, when unreadable
+]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

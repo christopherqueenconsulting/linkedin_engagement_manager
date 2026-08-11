@@ -23,7 +23,7 @@ import hashlib
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
@@ -183,7 +183,7 @@ def get_pre_post_window_stat(post_id: int, task_name: str = PRE_POST_TASK_COMMEN
     if not raw:
         return {}
 
-    stat = {}
+    stat: dict[str, Any] = {}
     for key, value in raw.items():
         name = key.decode("utf-8", "ignore") if isinstance(key, bytes) else str(key)
         text = value.decode("utf-8", "ignore") if isinstance(value, bytes) else str(value)

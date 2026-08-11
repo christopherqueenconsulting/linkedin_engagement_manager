@@ -31,8 +31,9 @@ COMPANY_PAGE_INVITE_SENT_MESSAGE = "Company page invites sent"
 # and `count_invite_withdrawals_today` counts BOTH, because the click already reached LinkedIn and a
 # lane whose verification broke must not be free to click every row on the page.
 STALE_INVITE_WITHDRAWN_MESSAGE = "Stale connection invite withdrawn"
-def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultType, post_id: int = None,
-                   post_url: str = None, message: str = None):
+def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultType,
+                   post_id: Optional[int] = None, post_url: Optional[str] = None,
+                   message: Optional[str] = None):
     """Append one row to `logs`: the durable record that an action was attempted, and its outcome.
 
     These rows are also the ledger the per-day caps and dedup checks count off, so a failed insert —

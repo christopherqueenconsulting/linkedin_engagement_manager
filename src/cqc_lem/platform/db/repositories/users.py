@@ -1192,7 +1192,9 @@ def get_user_token_info(user_id: int) -> Optional[dict]:
 def update_user_access_token(
     user_id: int,
     access_token: str,
-    expires_in: int,
+    # Nullable on purpose: `users.access_token_expires_in` is `INT NULL`, and LinkedIn's refresh
+    # response does not always carry `expires_in` — the renewal beat stores what it got either way.
+    expires_in: Optional[int],
     refresh_token: Optional[str] = None,
     refresh_token_expires_in: Optional[int] = None,
 ) -> bool:

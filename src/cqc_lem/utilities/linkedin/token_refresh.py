@@ -35,7 +35,9 @@ def _to_seconds(value: object) -> Optional[int]:
     if value is None:
         return None
     try:
-        return int(float(value))
+        # `value` is `object` on purpose — a DB row hands back Decimal, the API a str or an int —
+        # so the TypeError arm below, not a pre-check, is what makes the unchecked float() safe.
+        return int(float(value))  # type: ignore[arg-type]
     except (ValueError, TypeError):
         return None
 
