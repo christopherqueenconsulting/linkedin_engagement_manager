@@ -216,24 +216,26 @@ call that live PR stranded.
 | 21 | label `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
 | 22 | label `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
 | 23 | label `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
-| 24 | auto-merge armed | none | `auto_merge_armed` | 15m |
-| 25 | checks unreadable | none | `checks_unknown` | 300s |
-| 26 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
-| 27 | checks pending, or zero checks | none | `ci_running` | 30m |
-| 28 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
-| 29 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
-| 30 | already in the merge queue | none | `in_merge_queue` | 15m |
-| 31 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
+| 24 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
+| 25 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
+| 26 | auto-merge armed | none | `auto_merge_armed` | 15m |
+| 27 | checks unreadable | none | `checks_unknown` | 300s |
+| 28 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
+| 29 | checks pending, or zero checks | none | `ci_running` | 30m |
+| 30 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
+| 31 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
+| 32 | already in the merge queue | none | `in_merge_queue` | 15m |
+| 33 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
 
-Row 24 sits above row 25 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
+Row 26 sits above row 27 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
 of a PR waiting on required checks; without this the ladder fell through to `gate_satisfied` on every
 pass and burned the per-head merge budget in three minutes (measured on #1295).
 
-Row 29's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
+Row 31's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
 wrong in this direction costs one extra selfreview; being wrong in the other merges code no reviewer
 saw. **One exception, and it errs permissive**: when the head's `committedDate` is unreadable,
 `review_state` falls back to "any review counts", however stale — refusing every PR on an unreadable
-date would wedge the gate entirely. Row 27 treats zero checks as pending, not green.
+date would wedge the gate entirely. Row 29 treats zero checks as pending, not green.
 
 ---
 
@@ -246,11 +248,12 @@ behaviour is incidental.
 |---|---|---|
 | `CLEAN` | ✅ | falls through to the checks/review ladder |
 | `DIRTY` | ✅ | row 19 → `rebase` |
-| `BLOCKED` | ⚠️ incidental | falls through. Usually a draft or a missing required check, so the ladder answers correctly — but by accident, not by decision |
-| `UNSTABLE` | ⚠️ incidental | falls through and can reach `gate_satisfied`. Correct — `checks_for` filters to required contexts, so non-required red is mergeable — but never decided |
-| `BEHIND` | ❌ **undefined** | no rebase is dispatched; relies entirely on the merge queue |
-| `UNKNOWN` / `""` | ❌ **undefined and unsafe** | reads as "not DIRTY" and proceeds. GitHub computes mergeability asynchronously, so this is the #1082 shape: an unreadable field treated as a healthy one |
-| `HAS_HOOKS` | ❌ undefined | falls through, untested |
+| `BLOCKED` | ✅ | proceeds; it is the normal state of a PR waiting on a required check, and the ladder reads those directly |
+| `UNSTABLE` | ✅ | proceeds and can reach `gate_satisfied`. Correct **because** `checks_for` filters to required contexts, so non-required red is mergeable — now recorded rather than accidental |
+| `BEHIND` | ✅ | proceeds, deliberately: `main` does not require branches to be up to date (`strict` is false) and the merge queue builds against the queue head, so a rebase would spend a model session on something GitHub does for free |
+| `UNKNOWN` / `""` | ✅ | waits 120s (row 24). Was the #1082 shape — an unreadable field read as a healthy one |
+| `HAS_HOOKS` | ✅ | proceeds, named |
+| anything outside the enum | ✅ | waits 300s (row 25) — the enum is closed, so a new member means the world changed |
 
 **Label combinations**
 
@@ -280,7 +283,7 @@ wait, so a draft is never rebased and an armed draft is never recognised.
 | a stale review | dispatches `selfreview` | same |
 | checks pending | reports `ci_running`, not `in_merge_queue` | an operator reading the state is misled |
 
-Row 30 reads as though queue membership is checked early. It is only checked on the fully-green path.
+Row 32 reads as though queue membership is checked early. It is only checked on the fully-green path.
 
 **Lane labels on the wrong kind**
 
@@ -360,7 +363,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | **`unpark.sh` always routes to `agent:revise`**, and that lane outranks the merge ladder. A PR parked for `selfreview_exhausted` has no owner direction to apply, so it burns 2 `revise` runs on an empty lane and re-parks. Observed on #1289 and #1296 | the un-park treadmill survives the marker fix | #1389 |
 | **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | #1390 |
 | **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | #1391 |
-| **`UNKNOWN` mergeability reads as healthy** (§5) | the #1082 shape, unfixed | #1392 |
 | **Lane-label precedence is incidental**, and `agent:merge-parked` is vestigial (§5) | | #1393 |
 | **A human-drafted PR is unreachable** by automation *and* by an owner reply (§5). Still written as `parked` — the one entrance where that is arguably honest, since it IS stuck and nobody was told | | #1393 |
 | **`collect()`'s `child.mode == "merge"` branch is unreachable** — `dispatch_gh(action="merge_enable")` names the child `merge_enable`. The #1295 protection is dead code, masked today by row 23 | a guarantee the comments claim and the code does not provide | #1394 |

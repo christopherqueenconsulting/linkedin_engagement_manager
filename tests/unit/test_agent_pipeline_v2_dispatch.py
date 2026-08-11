@@ -325,6 +325,7 @@ def test_an_unarmed_green_pr_still_asks_for_the_merge():
     green = observe.Snapshot(
         kind="pr", number=99, labels=frozenset({"agent:working"}), auto_merge=False,
         review_fresh=True, checks=github.ChecksState(failed=0, pending=0, total=3),
+        merge_state="CLEAN",   # explicit since #1392; "" now waits as unreadable
     )
     d = observe.decide(green, ttl_ci=1800, ttl_review=3600, ttl_queue=900, ttl_parked=21600)
     assert d.action == observe.ACT_MERGE
