@@ -26,8 +26,26 @@ V2_ACTION="unpark"
 # shellcheck disable=SC1091
 . "$(dirname "$0")/common.sh"
 
-KIND="${1:-}"; NUMBER="${2:-}"; ANSWER_ID="${3:-}"
-[ -n "$KIND" ] && [ -n "$NUMBER" ] || { echo "usage: unpark.sh <issue|pr> <number> [answer-id]" >&2; exit 2; }
+KIND="${1:-}"; NUMBER="${2:-}"; ANSWER_ID="${3:-}"; PARK_REASON="${4:-}"
+[ -n "$KIND" ] && [ -n "$NUMBER" ] || { echo "usage: unpark.sh <issue|pr> <number> [answer-id] [park-reason]" >&2; exit 2; }
+
+# WHICH LANE the work goes back to depends on WHY it stopped, and getting this wrong is expensive.
+#
+# `agent:revise` outranks the checks/review/merge ladder in `decide()`, so it is only correct when
+# there is genuinely feedback to apply. A PR parked because a budget ran out has none: the un-park's
+# own `ledger_reset` IS the fix. Routing it to revise dispatched an agent to act on instructions
+# that did not exist, which spent the 2-run revise budget on an empty lane and re-parked the PR
+# within the hour — measured on #1289 and #1296, both of which were green with a fresh review the
+# whole time and merged the moment the label came off.
+#
+# So: only a park that ASKED A QUESTION routes to revise. Everything else goes back to
+# `agent:working` and lets the ladder re-decide, which is what it is for. An unknown reason takes
+# the cheap branch deliberately — a wrong `working` costs one observation, a wrong `revise` costs
+# two model sessions and a re-park.
+case "$PARK_REASON" in
+  needs_human) LANE="agent:revise" ;;
+  *)           LANE="agent:working" ;;
+esac
 
 # Resolve BOTH threads once. Which one the owner replied on is not what decides the routing.
 if [ "$KIND" = "pr" ]; then
@@ -64,9 +82,9 @@ if [ -n "$TPR" ]; then
   if ! v2_trust_ok pr "$TPR"; then
     log "TRUST refused un-park of PR #$TPR — leaving it parked."; exit "$EX_TRUST"
   fi
-  log "UN-PARKING PR #$TPR (answered on $KIND #$NUMBER${TISS:+, issue #$TISS}) — routing to revise."
+  log "UN-PARKING PR #$TPR (answered on $KIND #$NUMBER${TISS:+, issue #$TISS}; parked '${PARK_REASON:-unknown}') — routing to $LANE."
   gh pr ready "$TPR" --repo "$SLUG" >/dev/null 2>&1
-  if ! gh pr edit "$TPR" --repo "$SLUG" --add-label "agent:revise" \
+  if ! gh pr edit "$TPR" --repo "$SLUG" --add-label "$LANE" \
         --remove-label "needs-human" --remove-label "agent:blocked" \
         --remove-label "agent:merge-parked" >/dev/null 2>&1; then
     # A failed label write is a FAILURE, not a refusal: the hold is still on and the answer must not

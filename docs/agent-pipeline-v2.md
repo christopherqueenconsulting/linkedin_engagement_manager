@@ -345,7 +345,12 @@ stay parked. An answer is spent once (`items.last_comment_id`), written only aft
 succeeds so a failed action retries.
 
 Un-parking **resets the ledger** — the owner's answer is the statement "the world changed, try
-again". That is also the shape of the pipeline's biggest remaining gap: see §7.
+again" — and routes the work back by WHY it stopped. Only a park that asked a question
+(`needs_human`) goes to `agent:revise`, because that lane outranks the merge ladder and is only
+correct when there is feedback to apply. A budget park goes back to `agent:working`: the ledger
+reset is the fix, and sending it to revise spends two model sessions on an empty lane and re-parks.
+
+The remaining gap is that nothing counts how many times this has happened — see §7.
 
 ---
 
@@ -357,7 +362,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | Gap | Why it matters | Issue |
 |---|---|---|
 | **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
-| **`unpark.sh` always routes to `agent:revise`**, and that lane outranks the merge ladder. A PR parked for `selfreview_exhausted` has no owner direction to apply, so it burns 2 `revise` runs on an empty lane and re-parks. Observed on #1289 and #1296 | the un-park treadmill survives the marker fix | #1389 |
 | **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | #1390 |
 | **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | #1391 |
 | **`UNKNOWN` mergeability reads as healthy** (§5) | the #1082 shape, unfixed | #1392 |

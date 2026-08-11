@@ -517,7 +517,8 @@ class Daemon:
         if mode == "unpark":
             return self.sup.dispatch_gh(
                 action="unpark", kind=kind, number=number,
-                args=[kind, str(number), self._answer_ids.get((kind, number), "")],
+                args=[kind, str(number), self._answer_ids.get((kind, number), ""),
+                      row["parked_reason"] or ""],
                 item_id=row["id"])
         return self.sup.dispatch_agent(mode=mode, kind=kind, number=number,
                                        branch=row["branch"], item_id=row["id"])
