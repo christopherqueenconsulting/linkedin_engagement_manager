@@ -5,6 +5,7 @@ these pin is the wiring, which is where this feature can do damage: the burn has
 PROBED file, BEFORE C2PA signs it (a re-encode after signing strips the credentials), and it must
 never change what `posts.video_url` ends up pointing at.
 """
+from datetime import datetime as _real_datetime
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +14,12 @@ pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
 _CAPTIONS = "cqc_lem.utilities.video_captions"
+
+
+class _MondayDatetime(_real_datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return _real_datetime(2024, 1, 8, 12, 0)  # Monday
 
 
 def _valid_mp4(tmp_path, name: str = "clip.mp4", size: int = 72) -> str:
@@ -32,7 +39,7 @@ class TestCaptionVideoAsset:
     def test_persists_the_sidecar_url_and_burned_text(self, tmp_path):
         from cqc_lem.app.run_content_plan import _caption_video_asset
         video = _valid_mp4(tmp_path)
-        with patch("cqc_lem.utilities.db.post_used_avatar_media", return_value=False), \
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False), \
              patch("cqc_lem.utilities.db.update_db_post_captions") as store, \
              patch(f"{_CAPTIONS}.apply_captions_to_video",
                    return_value=_Result(video, srt_path=str(tmp_path / "clip.srt"),
@@ -44,7 +51,7 @@ class TestCaptionVideoAsset:
     def test_nothing_burned_writes_no_caption_row(self, tmp_path):
         from cqc_lem.app.run_content_plan import _caption_video_asset
         video = _valid_mp4(tmp_path)
-        with patch("cqc_lem.utilities.db.post_used_avatar_media", return_value=False), \
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False), \
              patch("cqc_lem.utilities.db.update_db_post_captions") as store, \
              patch(f"{_CAPTIONS}.apply_captions_to_video",
                    return_value=_Result(video, burned=False)):
@@ -57,7 +64,7 @@ class TestCaptionVideoAsset:
         video = _valid_mp4(tmp_path)
         truncated = str(tmp_path / "truncated.mp4")
         open(truncated, "wb").write(b"not an mp4")
-        with patch("cqc_lem.utilities.db.post_used_avatar_media", return_value=False), \
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False), \
              patch("cqc_lem.utilities.db.update_db_post_captions"), \
              patch(f"{_CAPTIONS}.apply_captions_to_video",
                    return_value=_Result(video, burned=False)) as apply:
@@ -69,17 +76,38 @@ class TestCaptionVideoAsset:
     def test_avatar_led_flag_comes_from_the_post_row(self, tmp_path):
         from cqc_lem.app.run_content_plan import _caption_video_asset
         video = _valid_mp4(tmp_path)
-        with patch("cqc_lem.utilities.db.post_used_avatar_media", return_value=True), \
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=True), \
              patch("cqc_lem.utilities.db.update_db_post_captions"), \
              patch(f"{_CAPTIONS}.apply_captions_to_video",
                    return_value=_Result(video, burned=False)) as apply:
             _caption_video_asset(7, video, "Hook line", user_id=3)
         assert apply.call_args.kwargs["avatar_led"] is True
 
+    def test_an_unreadable_avatar_flag_counts_as_avatar_led(self, tmp_path):
+        """`None` is "could not read it" — and a guess must never paint text over a likeness."""
+        from cqc_lem.app.run_content_plan import _caption_video_asset
+        video = _valid_mp4(tmp_path)
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=None), \
+             patch("cqc_lem.utilities.db.update_db_post_captions"), \
+             patch(f"{_CAPTIONS}.apply_captions_to_video",
+                   return_value=_Result(video, burned=False)) as apply:
+            _caption_video_asset(7, video, "Hook line", user_id=3)
+        assert apply.call_args.kwargs["avatar_led"] is True
+
+    def test_a_readable_non_avatar_post_is_burned_normally(self, tmp_path):
+        from cqc_lem.app.run_content_plan import _caption_video_asset
+        video = _valid_mp4(tmp_path)
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False), \
+             patch("cqc_lem.utilities.db.update_db_post_captions"), \
+             patch(f"{_CAPTIONS}.apply_captions_to_video",
+                   return_value=_Result(video, burned=False)) as apply:
+            _caption_video_asset(7, video, "Hook line", user_id=3)
+        assert apply.call_args.kwargs["avatar_led"] is False
+
     def test_a_raising_captioner_never_reaches_the_caller(self, tmp_path):
         from cqc_lem.app.run_content_plan import _caption_video_asset
         video = _valid_mp4(tmp_path)
-        with patch("cqc_lem.utilities.db.post_used_avatar_media", side_effect=RuntimeError("db")), \
+        with patch("cqc_lem.utilities.db.post_avatar_media_state", side_effect=RuntimeError("db")), \
              patch("cqc_lem.utilities.db.update_db_post_captions") as store:
             _caption_video_asset(7, video, "Hook line", user_id=3)
         store.assert_not_called()
@@ -124,3 +152,61 @@ class TestStoreVideoAsset:
             _store_video_asset(7, "https://runway.test/xyz.mp4", content="Hook line", user_id=3)
         assert caption.call_args.args[2] == "Hook line"
         assert caption.call_args.kwargs["user_id"] == 3
+
+
+class TestBirthPath:
+    """`auto_create_weekly_content` is where a video post is BORN — the ordering matters most here."""
+
+    def test_captions_run_between_the_probe_and_c2pa(self, monkeypatch, tmp_path):
+        import cqc_lem.app.run_content_plan as rcp
+        monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
+        calls: list = []
+        video = _valid_mp4(tmp_path)
+        with patch(f"{_RCP}.get_planned_posts_within_buffer",
+                   return_value=[{"user_id": 1, "id": 42, "post_type": "video",
+                                  "buyer_stage": "awareness"}]), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
+             patch(f"{_RCP}.create_content", return_value=("Hook line", "http://runway/clip.mp4")), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value=video), \
+             patch(f"{_RCP}._accept_probed_video",
+                   side_effect=lambda *a, **k: calls.append("probe") or True), \
+             patch(f"{_RCP}._caption_video_asset",
+                   side_effect=lambda *a, **k: calls.append("caption")) as caption, \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials",
+                   side_effect=lambda *a, **k: calls.append("c2pa")), \
+             patch(f"{_RCP}.update_db_post_video_url") as upd_video, \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}.update_db_post_status"), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
+             patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=None), \
+             patch.object(rcp, "AI_DISCLOSURE_ENABLED", False):
+            rcp.auto_create_weekly_content(user_id=1)
+        assert calls == ["probe", "caption", "c2pa"]
+        # The caption is the POST's own text, and the file captioned is the one the URL points at.
+        assert caption.call_args.args[1] == video
+        assert caption.call_args.args[2] == "Hook line"
+        assert "file_name=videos/runwayml/clip.mp4" in upd_video.call_args[0][1]
+
+    def test_a_rejected_probe_is_never_captioned(self, monkeypatch, tmp_path):
+        import cqc_lem.app.run_content_plan as rcp
+        monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
+        with patch(f"{_RCP}.get_planned_posts_within_buffer",
+                   return_value=[{"user_id": 1, "id": 42, "post_type": "video",
+                                  "buyer_stage": "awareness"}]), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
+             patch(f"{_RCP}.create_content", return_value=("Hook line", "http://runway/clip.mp4")), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value=_valid_mp4(tmp_path)), \
+             patch(f"{_RCP}._accept_probed_video", return_value=False), \
+             patch(f"{_RCP}._caption_video_asset") as caption, \
+             patch(f"{_RCP}.update_db_post_video_url") as upd_video, \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}.update_db_post_status"), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
+             patch(f"{_RCP}._post_missing_required_asset", return_value=True), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=None):
+            rcp.auto_create_weekly_content(user_id=1)
+        caption.assert_not_called()
+        upd_video.assert_not_called()

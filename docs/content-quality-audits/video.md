@@ -117,6 +117,9 @@ What it costs and what it is bounded by:
   `VIDEO_CAPTION_RENDER_COST_PER_MINUTE` (same accrual as the tutorial renderer).
 - **OFF by default** behind `video-captions-enabled`, and an avatar-led video is skipped unless the
   user turns on `users.avatar_caption_overlay` — the sidecar still ships, the frame is untouched.
+  That question is asked three-valued (`post_avatar_media_state`) and answered CLOSED: an
+  **unreadable** `posts.avatar_media` counts as avatar-led, because the disclosure path can afford
+  to guess "not an avatar" and a burn over someone's likeness cannot.
 - **Fails open.** No ffmpeg, an unusable hook, a non-zero exit: the post keeps the video it had.
   Schema is `posts.caption_text` / `posts.caption_srt_url`; nothing gates on either.
 

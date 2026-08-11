@@ -1186,14 +1186,19 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
     Never raises and never changes the stored URL: an off flag, an unusable hook, a missing
     ffmpeg, a failed burn or an output that fails the probe all leave the uncaptioned video
     exactly where it was.
+
+    The avatar question is asked three-valued and answered CLOSED: an unreadable
+    `posts.avatar_media` counts as avatar-led, so the frame gets the sidecar and nothing else. The
+    disclosure path can afford to guess "not an avatar" (it costs a caption line); painting text
+    over someone's likeness on a failed DB read cannot.
     """
-    from cqc_lem.utilities.db import post_used_avatar_media, update_db_post_captions
+    from cqc_lem.utilities.db import post_avatar_media_state, update_db_post_captions
     from cqc_lem.utilities.video_captions import apply_captions_to_video, caption_srt_asset_url
 
     try:
         result = apply_captions_to_video(
             video_file_path, content, post_id=post_id, user_id=user_id,
-            avatar_led=post_used_avatar_media(post_id),
+            avatar_led=post_avatar_media_state(post_id) is not False,
             validate=lambda path: _probe_video_file(path)[0])
     except Exception as e:
         # apply_captions_to_video already fails open; this only catches an import/DB fault.

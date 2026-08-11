@@ -88,6 +88,20 @@ class TestBurn:
              patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="boom")):
             assert vc.burn_captions(video, str(tmp_path / "a.srt"), str(tmp_path / "o.mp4")) is False
 
+    def test_the_failure_warning_stays_a_stable_template(self, video, tmp_path):
+        """The warning message carries no per-file detail.
+
+        A stderr tail in it would keep the recurrence key from ever repeating, so an ffmpeg that
+        fails on EVERY video post would never escalate into a filed defect.
+        """
+        with patch(f"{_MOD}._ffmpeg_bin", return_value="/usr/bin/ffmpeg"), \
+             patch("subprocess.run", return_value=MagicMock(
+                 returncode=1, stderr="frame= 41 /assets/videos/runwayml/abc.mp4: no libass")), \
+             patch(f"{_MOD}.log_warning") as warn:
+            assert vc.burn_captions(video, str(tmp_path / "a.srt"), str(tmp_path / "o.mp4")) is False
+        message = warn.call_args[0][0]
+        assert message == "Caption burn-in failed — shipping the video uncaptioned"
+
     def test_empty_output_is_false(self, video, tmp_path):
         out = tmp_path / "o.mp4"
         out.write_bytes(b"")

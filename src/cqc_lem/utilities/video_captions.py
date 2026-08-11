@@ -17,7 +17,8 @@ Three things this deliberately does NOT do:
 - **It never covers a face it was not invited to cover.** An avatar-led video (the LoRA rendered
   the source frame, `posts.avatar_media`) is skipped unless the user turned on
   `users.avatar_caption_overlay` — the sidecar is still written, so opting out costs the burn-in,
-  not the captions.
+  not the captions. `avatar_led` is the CALLER's answer and the caller owes it fail-CLOSED: an
+  unreadable `posts.avatar_media` has to arrive here as True.
 
 It fails OPEN in every direction: no ffmpeg, an unreadable video, a caption that comes out empty,
 a non-zero exit, an output the caller's probe rejects — the post keeps the video it already had. A
@@ -193,8 +194,14 @@ def burn_captions(video_path: str, srt_path: str, out_path: str, timeout: int = 
         return False
 
     if result.returncode != 0:
-        log_warning("Caption burn-in failed — shipping the video uncaptioned "
-                    f"(ffmpeg: {(result.stderr or '')[-300:]})", task_name=TASK_NAME)
+        # The message stays a fixed template and the ffmpeg tail goes to DEBUG on purpose: the
+        # recurrence key is built from the interpolated string, and a stderr tail (frame counts,
+        # per-file paths) is unbounded in ways the masks do not catch — so interpolating it here
+        # would mean a systematically broken burn (an ffmpeg with no libass, say) never repeats a
+        # key, never escalates, and silently ships every video post uncaptioned forever.
+        log_warning("Caption burn-in failed — shipping the video uncaptioned", task_name=TASK_NAME)
+        log_debug(f"ffmpeg caption burn stderr: {(result.stderr or '')[-300:]}",
+                  task_name=TASK_NAME)
         return False
     try:
         if os.path.getsize(out_path) <= 0:

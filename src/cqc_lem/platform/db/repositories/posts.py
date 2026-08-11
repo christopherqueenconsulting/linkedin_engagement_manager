@@ -1695,11 +1695,14 @@ def mark_post_avatar_media(post_id: Optional[int]) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not mark avatar media", exc=err, post_id=post_id)
         return False
-def post_used_avatar_media(post_id: Optional[int]) -> bool:
-    """Did any generated media on this post come out of the avatar path (issue #744)?
+def post_avatar_media_state(post_id: Optional[int]) -> Optional[bool]:
+    """Three-valued `posts.avatar_media`: True / False / **None when it could not be read**.
 
-    What the AI-disclosure line is applied on. Fail-soft in both directions: a falsy post_id and a read
-    error both return False, so an unreadable flag costs a disclosure rather than the post.
+    Two callers want opposite fail-soft directions from the same fact, so the read has to be able to
+    say "unknown". The AI disclosure treats unknown as False (`post_used_avatar_media` below) —
+    a missed disclosure line. The caption burn treats it as True (issue #1278), because painting
+    text over a real person's likeness on a guess is the one outcome the avatar guardrails exist to
+    prevent. A falsy post_id is a definite False: there is no post, so no avatar media.
     """
     if not post_id:
         return False
@@ -1707,10 +1710,20 @@ def post_used_avatar_media(post_id: Optional[int]) -> bool:
         with db_cursor() as cursor:
             cursor.execute("SELECT avatar_media FROM posts WHERE id = %s", (post_id,))
             row = cursor.fetchone()
-            return bool(row and row[0])
+            if not row:
+                return None
+            return bool(row[0])
     except mysql.connector.Error as err:
         log_error("Could not read avatar_media", exc=err, post_id=post_id)
-        return False
+        return None
+def post_used_avatar_media(post_id: Optional[int]) -> bool:
+    """Did any generated media on this post come out of the avatar path (issue #744)?
+
+    What the AI-disclosure line is applied on. Fail-soft in both directions: a falsy post_id and a read
+    error both return False, so an unreadable flag costs a disclosure rather than the post. Callers
+    that must fail the other way read `post_avatar_media_state` instead.
+    """
+    return bool(post_avatar_media_state(post_id))
 def get_post_quality_rows(start_date, end_date) -> list:
     """Per-post QUALITY observations across all users over [start_date, end_date] — the outcome side
     of the cost-aware routing experiment (docs/cost-performance-margin-plan.md §D.1(1), issue #494):
