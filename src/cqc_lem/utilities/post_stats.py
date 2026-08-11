@@ -8,15 +8,13 @@ from datetime import datetime, timezone, tzinfo
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from cqc_lem.domain.models import PostEngagementRow
+
 _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
-# Column layout of the rows returned by `db.get_post_engagement_rows`.
-_IDX_SCHEDULED = 0
-_IDX_REACTIONS = 1
-_IDX_COMMENTS = 2
-_IDX_REPOSTS = 3
-_IDX_IMPRESSIONS = 9
-ATTRIBUTE_INDEXES = {"archetype": 4, "hook_style": 5, "format": 6, "topic": 7, "buyer_stage": 8}
+# The attribution snapshot columns of a `PostEngagementRow` — which hooks/formats/topics a post was
+# written as. Names, not indexes: the row layout lives in ONE place now (issue #1220).
+ATTRIBUTE_FIELDS = ("archetype", "hook_style", "format", "topic", "buyer_stage")
 
 # Half-life of a post's influence on the recommendation. ~1 month keeps the last few weeks
 # dominant without discarding the older sample entirely.
@@ -66,32 +64,35 @@ def recency_weight(scheduled_time: Optional[datetime], now: Optional[datetime] =
     return 0.5 ** (age_days / half_life_days)
 
 
-def _cell(row: Sequence, index: int) -> Any:
-    return row[index] if len(row) > index else None
+def _named(rows: Iterable[Sequence]) -> list:
+    """Every non-empty row as a `PostEngagementRow`, materialized once.
+
+    `rows` may be a one-shot cursor iterable, and a SHORT row pads to None — the four-column
+    minimum this module documents.
+    """
+    return [PostEngagementRow.from_row(row) for row in rows if row]
 
 
 def _rate_mode(rows: Sequence) -> bool:
     """True only when EVERY row has impressions, so rate and per-post counts are never mixed on
     one ranking (mirrors the same gate in `content_framework.performance_weights`).
     """
-    return bool(rows) and all(int(_cell(r, _IDX_IMPRESSIONS) or 0) > 0 for r in rows)
+    return bool(rows) and all(int(r.impressions or 0) > 0 for r in rows)
 
 
-def _row_metric(row: Sequence, rate_mode: bool) -> float:
-    reactions, comments = _cell(row, _IDX_REACTIONS), _cell(row, _IDX_COMMENTS)
-    reposts = _cell(row, _IDX_REPOSTS)
+def _row_metric(row: PostEngagementRow, rate_mode: bool) -> float:
     if rate_mode:
-        rate = engagement_rate(reactions, comments, reposts, _cell(row, _IDX_IMPRESSIONS))
+        rate = engagement_rate(row.reactions, row.comments, row.reposts, row.impressions)
         if rate is not None:
             return rate
-    return float(engagement_score(reactions, comments, reposts))
+    return float(engagement_score(row.reactions, row.comments, row.reposts))
 
 
 def _round(value: float, rate_mode: bool) -> float:
     return round(value, 5) if rate_mode else round(value, 1)
 
 
-def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[datetime],
+def _group_metrics(rows: Iterable[PostEngagementRow], rate_mode: bool, now: Optional[datetime],
                    half_life_days: float, prior: float = SUPPORT_PRIOR) -> Tuple[float, dict]:
     """Score one group of rows (a time bucket or an attribute value): the recency-weighted mean
     metric, its `support` (sum of recency weights = effective recent sample size) and the ranking
@@ -106,7 +107,7 @@ def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[date
     support = 0.0
     samples = 0
     for row in rows:
-        weight = recency_weight(_cell(row, _IDX_SCHEDULED), now=now, half_life_days=half_life_days)
+        weight = recency_weight(row.scheduled_time, now=now, half_life_days=half_life_days)
         weighted += weight * _row_metric(row, rate_mode)
         support += weight
         samples += 1
@@ -141,7 +142,7 @@ def recommend_post_times(rows: Iterable[Sequence], top_n: int = 3, min_posts: in
     to be converted to UTC for storage, so bucketing the raw UTC hour would shift every
     recommendation by the user's offset twice. Omitted (or unknown) means UTC.
     """
-    usable = [row for row in rows if row and _cell(row, _IDX_SCHEDULED) is not None]
+    usable = [row for row in _named(rows) if row.scheduled_time is not None]
     if len(usable) < min_posts:
         return []
     zone = None
@@ -153,7 +154,7 @@ def recommend_post_times(rows: Iterable[Sequence], top_n: int = 3, min_posts: in
     rate_mode = _rate_mode(usable)
     buckets = defaultdict(list)
     for row in usable:
-        scheduled = _local_wall_clock(row[_IDX_SCHEDULED], zone)
+        scheduled = _local_wall_clock(row.scheduled_time, zone)
         buckets[(scheduled.weekday(), scheduled.hour)].append(row)
     ranked = []
     for (weekday, hour), bucket_rows in buckets.items():
@@ -176,17 +177,16 @@ def rank_content_attributes(rows: Iterable[Sequence], attributes: Optional[Itera
     best-first; attribute values seen fewer than `min_samples` times are dropped, and attributes
     with no qualifying data map to an empty list.
     """
-    names = list(attributes) if attributes else list(ATTRIBUTE_INDEXES)
-    materialized = [row for row in rows if row]  # rows may be a one-shot cursor iterable
+    names = list(attributes) if attributes else list(ATTRIBUTE_FIELDS)
+    materialized = _named(rows)
     result = {}
     for name in names:
-        index = ATTRIBUTE_INDEXES.get(name)
-        if index is None:
+        if name not in ATTRIBUTE_FIELDS:
             result[name] = []
             continue
         groups = defaultdict(list)
         for row in materialized:
-            key = _cell(row, index)
+            key = getattr(row, name)
             if key is not None and key != "":
                 groups[key].append(row)
         groups = {key: group for key, group in groups.items() if len(group) >= min_samples}
@@ -222,14 +222,12 @@ def select_variant_winners(rows: Iterable[Mapping], top_n: Optional[int] = None,
         key = r.get("variant_key")
         if key is None or key == "":
             continue
-        # Rebuild the canonical positional layout so the shared scoring machinery applies.
-        row = [None] * (_IDX_IMPRESSIONS + 1)
-        row[_IDX_SCHEDULED] = r.get("scheduled_time")
-        row[_IDX_REACTIONS] = r.get("reactions")
-        row[_IDX_COMMENTS] = r.get("comments")
-        row[_IDX_REPOSTS] = r.get("reposts")
-        row[_IDX_IMPRESSIONS] = r.get("impressions")
-        groups[key].append(row)
+        # Named-column row so the shared scoring machinery applies; the attribution columns stay
+        # None because a variant outcome carries its own key instead.
+        groups[key].append(PostEngagementRow(
+            scheduled_time=r.get("scheduled_time"), reactions=r.get("reactions"),
+            comments=r.get("comments"), reposts=r.get("reposts"),
+            impressions=r.get("impressions")))
     groups = {key: group for key, group in groups.items() if len(group) >= min_samples}
     # Scale is decided across every variant so their keys stay comparable to each other.
     rate_mode = _rate_mode([row for group in groups.values() for row in group])

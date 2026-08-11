@@ -21,6 +21,7 @@ import statistics
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Mapping, Optional, Sequence
 
+from cqc_lem.domain.models import PostEngagementRow
 from cqc_lem.utilities.env_constants import (
     CAC_USD,
     EXPECTED_LIFETIME_MONTHS,
@@ -55,9 +56,6 @@ DAYS_PER_MONTH = 30.4375
 # Engagement-lift metric labels (mirrors post_stats' rate-mode gate).
 METRIC_RATE = "engagement_rate"
 METRIC_COUNT = "engagement"
-
-# Column layout of `db.get_post_engagement_rows` tuples.
-_IDX_SCHEDULED, _IDX_REACTIONS, _IDX_COMMENTS, _IDX_REPOSTS, _IDX_IMPRESSIONS = 0, 1, 2, 3, 9
 
 
 def tier_mrr_usd(tier: Optional[str]) -> float:
@@ -148,23 +146,18 @@ def ltv_cac_ratio(ltv: float, cac_usd: float) -> Optional[float]:
     return float(ltv or 0.0) / float(cac_usd)
 
 
-def _cell(row: Sequence, index: int):
-    return row[index] if len(row) > index else None
-
-
-def _window_metric(rows: Sequence) -> dict:
+def _window_metric(rows: Sequence[PostEngagementRow]) -> dict:
     """Engagement for one set of post-stat rows: impression-normalized RATE when every row carries
     impressions, else average weighted engagement per post (the same rate-mode gate `post_stats`
     uses, so a partial-impression window is never mixed with a complete one).
     """
     if not rows:
         return {"metric": None, "value": None, "samples": 0}
-    if all(int(_cell(r, _IDX_IMPRESSIONS) or 0) > 0 for r in rows):
-        totals = [sum(int(_cell(r, i) or 0) for r in rows)
-                  for i in (_IDX_REACTIONS, _IDX_COMMENTS, _IDX_REPOSTS, _IDX_IMPRESSIONS)]
+    if all(int(r.impressions or 0) > 0 for r in rows):
+        totals = [sum(int(getattr(r, name) or 0) for r in rows)
+                  for name in ("reactions", "comments", "reposts", "impressions")]
         return {"metric": METRIC_RATE, "value": engagement_rate(*totals), "samples": len(rows)}
-    total = sum(engagement_score(_cell(r, _IDX_REACTIONS), _cell(r, _IDX_COMMENTS),
-                                 _cell(r, _IDX_REPOSTS)) for r in rows)
+    total = sum(engagement_score(r.reactions, r.comments, r.reposts) for r in rows)
     return {"metric": METRIC_COUNT, "value": total / len(rows), "samples": len(rows)}
 
 
@@ -175,8 +168,11 @@ def engagement_lift(rows: Iterable[Sequence], window_start: date) -> dict:
     `lift_pct` is None unless both windows have data on the SAME metric and a positive baseline.
     """
     current, baseline = [], []
-    for row in rows or []:
-        scheduled = _cell(row, _IDX_SCHEDULED) if row else None
+    for raw in rows or []:
+        if not raw:
+            continue
+        row = PostEngagementRow.from_row(raw)
+        scheduled = row.scheduled_time
         day = scheduled.date() if hasattr(scheduled, "date") else None
         if day is None:
             continue

@@ -39,6 +39,9 @@ src/cqc_lem/
 │                    a module path: moving a task RENAMES it. Still correct in
 │                    celeryconfig.task_routes, never "correct" it; test_task_name_stability.py holds
 │                    both halves. Lane-by-lane posture: docs/engagement-automation.md
+├── domain/        Pure types, zero I/O (#1220): PostEngagementRow (the ONE post-stat column layout,
+│                  asserted at the reader, so platform/db stays domain-free) + FeedRunContext /
+│                  PostDraftContext. The audit warranted THESE THREE — add a fourth only on evidence
 ├── utilities/
 │   ├── ai/        LiteLLM helpers (ai_helper.py, client.py) + content_framework/content_research/content_alignment/story_bank/slop_lint
 │   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)

@@ -248,6 +248,32 @@ class TestCreateTextPost:
         assert result == "News post"
         m["website"].assert_not_called()
 
+    def test_the_type_fallback_forwards_every_settled_input_and_stands_the_gates_down(self):
+        """The point of `PostDraftContext` (#1220): a retry cannot quietly drop one of the inputs.
+
+        The fallback tests above only assert which generator answered, so a dropped
+        `story_directive` (or a retry that re-ran the once-per-post gates) would pass all of them.
+        This pins the argument set the retry is dispatched with.
+        """
+        from cqc_lem.app.run_content_plan import _draft_as_other_type
+        from cqc_lem.domain.models import PostDraftContext
+        draft = PostDraftContext(user_id=3, stage="awareness", post_type="blog_summary",
+                                 user_profile="profile", blueprint={"format": "listicle"},
+                                 post_id=42, lead_magnet_cta="comment GUIDE",
+                                 history_directive="avoid X", story_directive="anchor on Y",
+                                 content_mix="value")
+        post_types = ["thought_leadership", "blog_summary"]
+        with patch(f"{_RCP}.create_text_post", return_value="TL post") as create:
+            content, post_type = _draft_as_other_type(draft, post_types, "blog_summary")
+        assert (content, post_type) == ("TL post", "thought_leadership")
+        assert post_types == ["thought_leadership"]  # the exhausted type is off the menu
+        assert create.call_args[0] == (3, "awareness", "thought_leadership", "profile")
+        assert create.call_args[1] == {"refine_final_post": False, "similarity_check": False,
+                                       "blueprint": {"format": "listicle"}, "post_id": 42,
+                                       "lead_magnet_cta": "comment GUIDE",
+                                       "history_directive": "avoid X",
+                                       "story_directive": "anchor on Y", "content_mix": "value"}
+
     def test_random_type_chosen_when_none(self):
         from cqc_lem.app.run_content_plan import create_text_post
         with _TextPostHarness(), \

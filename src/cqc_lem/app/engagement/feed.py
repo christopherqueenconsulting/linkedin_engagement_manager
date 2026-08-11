@@ -62,6 +62,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from cqc_lem.app.engagement.invites import send_roster_connect_invite
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
+from cqc_lem.domain.models import FeedRunContext
 from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.ai.ai_helper import (
@@ -2020,25 +2021,28 @@ def get_feed_funnel(user_id: int) -> "dict | None":
         return None
 
 
-def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, key: str,
-                 content: str, author: str, prefs: dict, profile_synthesis,
-                 used_comment_shapes: list, recent_comments: list = None,
+def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
                  is_group_feed: bool = False) -> bool:
     """Claim, generate, react, and comment on ONE post card.
 
     True only when the comment actually landed. Shared by the roster pass and the feed walk so both
     go through the same at-most-once claim, the same per-run blueprint rotation, and the same
-    react-before-submit ordering.
+    react-before-submit ordering — `ctx` is what makes that literal rather than a convention (issue
+    #1220): both passes read one run's preferences, voice synthesis and dedup state.
 
-    `recent_comments` is the user's own recent comment history (newest first) that the quality gate
-    dedups this draft against; a comment that lands is prepended to it, so two posts in the SAME run
-    can't get near-identical comments either (issue #617).
+    `ctx.recent_comments` is the user's own recent comment history (newest first) that the quality
+    gate dedups this draft against; a comment that lands is prepended to it, so two posts in the
+    SAME run can't get near-identical comments either (issue #617).
 
     `is_group_feed` changes the ORDERING for the group-feed lane only: the comment composer is
     resolved BEFORE the `lem-medium` generation is spent (issue #1084). A miss releases the claim
     and returns False so the caller can count it as a skipped-no-composer post. The roster and home
-    feed keep the original generate-first ordering.
+    feed keep the original generate-first ordering, which is why this stays a per-CARD argument
+    instead of being read off `ctx`: a roster target's activity page is not a group feed even when
+    the run that reached it is one.
     """
+    driver, wait, user_id = ctx.driver, ctx.wait, ctx.user_id
+    prefs, my_profile = ctx.prefs, ctx.my_profile
     if not claim_post_for_comment(user_id, key):
         return False
 
@@ -2063,14 +2067,14 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
             release_post_claim(user_id, key)
             return False
 
-    comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
+    comment_blueprint = select_blueprint("comment", recent_formats=ctx.used_comment_shapes)
     with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
         comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
-                                            profile_synthesis=profile_synthesis,
+                                            profile_synthesis=ctx.profile_synthesis,
                                             blueprint=comment_blueprint,
-                                            recent_comments=recent_comments, user_id=user_id)
+                                            recent_comments=ctx.recent_comments, user_id=user_id)
     if comment_text and comment_blueprint.get("format"):
-        used_comment_shapes.insert(0, comment_blueprint["format"])
+        ctx.used_comment_shapes.insert(0, comment_blueprint["format"])
     if not comment_text:
         release_post_claim(user_id, key)  # no comment generated (or none cleared the quality gate)
         return False
@@ -2116,15 +2120,12 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
     record_action(user_id, ACTION_COMMENT)  # account-level governor (issue #626)
-    if recent_comments is not None:
-        recent_comments.insert(0, comment_text)
+    ctx.recent_comments.insert(0, comment_text)
     time.sleep(random.uniform(6, 14))  # human pacing between comments
     return True
 
 
-def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: int, max_posts: int,
-                            prefs: dict, profile_synthesis, used_comment_shapes: list, seen: set,
-                            deadline_ts: float = None, recent_comments: list = None) -> dict:
+def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
     """Comment on the user's curated engagement roster before the home feed gets a look (issue #616).
 
     Each selected target's recent-activity page is opened, and the first post that clears hard
@@ -2138,7 +2139,12 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
     comments from connections or followers — and it is now counted per target so the roster card can
     tell the user that following or connecting would unlock the account. When they have opted in,
     the same visit also does the paced follow, on the page that is already open.
+
+    `ctx.seen` is the RUN's dedup set, shared with the feed walk that follows this pass, so a post
+    commented on here can never be re-commented from the home feed (issue #1220 moved it onto the
+    context; it was already the same object passed by hand).
     """
+    driver, user_id, prefs, seen = ctx.driver, ctx.user_id, ctx.prefs, ctx.seen
     stats = {"posted": 0, "targets_visited": 0, "examined": 0, "off_topic_skipped": 0,
              "comment_blocked": 0, "followed": 0, "connect_requested": 0,
              "key_sources": {}, "commented_key_sources": {}}
@@ -2159,7 +2165,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
     # would badge every target at once with a confident lie about their accounts.
     blocked_visits: list = []
     for target in select_roster_targets(targets, max_posts):
-        if stats["posted"] >= max_posts or (deadline_ts and time.time() >= deadline_ts):
+        if stats["posted"] >= max_posts or ctx.out_of_time(time.time()):
             break
         profile_url = target.get("profile_url")
         url = _roster_activity_url(profile_url)
@@ -2192,7 +2198,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
         # that offered a way to comment. Only "some of the first, none of the second" is evidence.
         posts_seen, commentable_seen, truncated = 0, 0, False
         for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
-            if deadline_ts and time.time() >= deadline_ts:
+            if ctx.out_of_time(time.time()):
                 # The walk stopped early, so "no card offered a comment affordance" is a statement
                 # about how far we got, not about the author. Tracked so it can't badge them.
                 truncated = True
@@ -2228,8 +2234,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
                          f"user's focus topics", user_id=user_id, action_type="comment",
                          task_name="comment_on_roster_posts")
                 continue
-            if _engage_card(driver, wait, my_profile, user_id, card, key, content, author, prefs,
-                            profile_synthesis, used_comment_shapes, recent_comments):
+            if _engage_card(ctx, card, key, content, author):
                 posted_here += 1
                 stats["posted"] += 1
                 stats["commented_key_sources"][key_source] = \
@@ -2375,13 +2380,18 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         recent_comments = []
 
     posted, seen, scrolls = 0, set(), 0
+    # ONE context for the whole run (issue #1220): the roster pass and the feed walk below both read
+    # it, so they cannot disagree about the preferences, the voice synthesis, or the dedup/rotation
+    # state they are accumulating into.
+    ctx = FeedRunContext(driver=driver, wait=wait, my_profile=my_profile, user_id=user_id,
+                         prefs=prefs, profile_synthesis=profile_synthesis, seen=seen,
+                         used_comment_shapes=used_comment_shapes, recent_comments=recent_comments,
+                         engagers=engagers, deadline_ts=deadline_ts, is_group_feed=is_group_feed)
     # Roster FIRST (issue #616): curated peers / ICP / large creators outrank whatever the home
     # feed happens to serve. An empty roster returns zeros here and the run degrades to the plain
     # feed walk below. `seen` is shared, so a roster post can never be re-commented from the feed.
     # Group feeds have no roster pass, so this call returns zeros immediately.
-    roster_stats = comment_on_roster_posts(driver, wait, my_profile, user_id, max_posts, prefs,
-                                           profile_synthesis, used_comment_shapes, seen,
-                                           deadline_ts=deadline_ts, recent_comments=recent_comments)
+    roster_stats = comment_on_roster_posts(ctx, max_posts)
     posted = roster_stats["posted"]
     off_topic_skipped = 0
     skipped_no_composer = 0  # group-feed lane only (issue #1084)
@@ -2425,7 +2435,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                          + (prefs.get("include_topics") or [])) if f]
     fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
     while posted < max_posts and scrolls < 15:
-        if deadline_ts and time.time() >= deadline_ts:
+        if ctx.out_of_time(time.time()):
             break
         # Gather + score every fresh candidate currently in view (cheap, no-LLM gates).
         candidates = []
@@ -2478,8 +2488,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
                     "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
             hard_keys.add(key)
-            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age,
-                               fps, key_source))
+            candidates.append((_score_feed_post(meta, ctx.prefs, ctx.engagers), key, card, content,
+                               author, age, fps, key_source))
 
         if candidates:
             candidates.sort(key=lambda c: c[0], reverse=True)
@@ -2514,9 +2524,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # one comment per post per user, across the pre-post run, the golden-hour run, and retries.
             # On group feeds the composer is resolved before generation (issue #1084), so a miss is
             # counted separately instead of being folded into "examined but not commented".
-            engaged = _engage_card(driver, wait, my_profile, user_id, card, key, content, author,
-                                 prefs, profile_synthesis, used_comment_shapes, recent_comments,
-                                 is_group_feed=is_group_feed)
+            engaged = _engage_card(ctx, card, key, content, author,
+                                   is_group_feed=ctx.is_group_feed)
             if engaged:
                 posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
                 log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
