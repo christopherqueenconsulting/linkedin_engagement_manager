@@ -271,7 +271,7 @@ class Daemon:
         # 13 `ready -> claimed` transitions in four seconds that never occurred — an operator
         # debugging churn would have gone looking for a claim storm that was purely a log artefact.
         persisted = decision.next_state
-        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_PARK,
+        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE,
                                observe.ACT_UNPARK, observe.ACT_DISARM):
             persisted = db.STATE_READY
         self._emit(row, snap, decision, persisted)
@@ -329,15 +329,6 @@ class Daemon:
             db.upsert_item(
                 self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
                 pending_mode=(decision.mode if decision.action == observe.ACT_DISPATCH else "merge"),
-                head_sha=snap.head_sha or row["head_sha"],
-                branch=snap.branch or row["branch"],
-            )
-            return
-
-        if decision.action == observe.ACT_PARK:
-            db.upsert_item(
-                self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
-                pending_mode="park", parked_reason=decision.park_reason,
                 head_sha=snap.head_sha or row["head_sha"],
                 branch=snap.branch or row["branch"],
             )

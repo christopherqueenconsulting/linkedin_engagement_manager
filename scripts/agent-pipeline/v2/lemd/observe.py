@@ -32,10 +32,15 @@ LOG = logging.getLogger("lemd.observe")
 ACT_NONE = "none"
 ACT_DISPATCH = "dispatch"        # run an agent in some MODE
 ACT_MERGE = "merge"              # gh-only: arm auto-merge
-ACT_PARK = "park"                # gh-only: escalate to the owner
 ACT_UNPARK = "unpark"            # gh-only: the owner answered — release the hold
 ACT_DISARM = "disarm"            # gh-only: a hold appeared on an armed PR — take the arm off
 ACT_CLOSE = "close"              # terminal bookkeeping
+
+# There is deliberately no ACT_PARK. Escalation to the owner is not a decision this function makes —
+# it happens at DISPATCH, when `act()` finds the ledger spent and queues `park.sh` via `_park()`.
+# An `ACT_PARK` constant existed here for months and was never returned, while three branches wrote
+# `state=parked` through ACT_NONE and produced no comment, no label and no disarm. If `decide()`
+# ever needs to escalate, add it back and wire `_observe_one` to it in the same change.
 
 
 @dataclass(frozen=True)
@@ -177,7 +182,11 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
 
     ok, why = admissible(snap)
     if not ok:
-        return Decision(ACT_NONE, db.STATE_PARKED, f"not_admissible:{why}",
+        # IGNORED, not parked. Nobody was asked anything: `decide()` returns ACT_NONE here, so no
+        # action runs, no comment is posted, no label is written and no auto-merge is disarmed.
+        # Writing `parked` claimed an escalation that had not happened — and for a fork or a
+        # release PR the right answer really is silence, since neither is ours to comment on.
+        return Decision(ACT_NONE, db.STATE_IGNORED, f"not_admissible:{why}",
                         park_reason=why, wake_in=None)
 
     # ---- the owner's holds outrank every lane -------------------------------------------------
@@ -256,7 +265,9 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 return _work_in_flight_or_stranded(snap, ttl_review,
                                                    reason="working_claim_has_work")
             return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "working_claim_stranded", mode="start")
-        return Decision(ACT_NONE, db.STATE_PARKED, "issue_not_ready", park_reason="not_ready")
+        # Also IGNORED: an issue carrying neither `agent:ready` nor `agent:working` was never
+        # handed to the pipeline. Silence is correct; pretending it is parked is not.
+        return Decision(ACT_NONE, db.STATE_IGNORED, "issue_not_ready", park_reason="not_ready")
 
     # ---- PR lanes, cheapest-to-unblock first --------------------------------------------------
     if snap.is_draft:

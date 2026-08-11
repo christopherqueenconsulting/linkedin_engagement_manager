@@ -93,7 +93,9 @@ stateDiagram-v2
     ready --> awaiting_ci: decide (ci_running / checks_unknown / any *_unreadable)
     ready --> awaiting_review: decide (work_in_flight)
     ready --> awaiting_queue: decide (auto_merge_armed / in_merge_queue)
-    ready --> parked: decide (human_hold / draft / not_ready)
+    ready --> parked: decide (human_hold / draft)
+    ready --> ignored: decide (not_admissible / not_ready)
+    ignored --> ready: relabelled, then reconciled
     awaiting_ci --> ready: event or TTL
     awaiting_review --> ready: event or TTL
     awaiting_queue --> ready: event or TTL
@@ -119,7 +121,8 @@ rather than merely guarded.
 | `awaiting_ci` | CI running, or checks unreadable | event, or `LEMD_TTL_CI` (1800s) |
 | `awaiting_review` | work in flight elsewhere | event, or `FIRST_REVIEW_TIMEOUT_SECONDS` (3600s) |
 | `awaiting_queue` | auto-merge armed or in the queue | event, or `LEMD_TTL_QUEUE` (900s) |
-| `parked` | the owner's, not the pipeline's | an owner answer, or `LEMD_TTL_PARKED` (21600s) |
+| `parked` | the owner's, not the pipeline's — a question WAS asked | an owner answer, or `LEMD_TTL_PARKED` (21600s) |
+| `ignored` | not the pipeline's business; nobody was asked | a relabel, noticed by `reconcile` |
 | `merged` / `closed` | terminal | — |
 
 ---
@@ -142,7 +145,7 @@ those four are reviewed by eye and are where this table will rot first.
 | 1 | GitHub state `MERGED` | close | `merged` | — |
 | 2 | GitHub state `CLOSED` | close | `closed_unmerged` | — |
 | 3 | any required read failed | none | `github_unreadable` | 300s |
-| 4 | not admissible | none → parked ⚠️ | `not_admissible:{fork_pr,release_pr,no_agent_label}` | **never** |
+| 4 | not admissible | none → **ignored** | `not_admissible:{fork_pr,release_pr,no_agent_label}` | **never** |
 
 **Unreadable is a decision to do NOTHING**, never a decision to proceed — v1 once merged on an
 unreadable state (#1082). Admission is by LABEL and PROVENANCE, never by author: excluding
@@ -150,10 +153,16 @@ unreadable state (#1082). Admission is by LABEL and PROVENANCE, never by author:
 Dependabot PR. `admissible()` also has an `unreadable` branch, but row 3 shadows it, so that reason
 is **unreachable**.
 
-⚠️ **"→ parked" in rows 4, 18 and 19 means the DB row only.** `decide()` never returns `ACT_PARK` —
-it returns `ACT_NONE` with `next_state=parked`, which writes the state and `pending_mode=None`, so
-`park.sh` never runs. No comment, no label, no assignee, no auto-merge disarm. Only budget exhaustion
-reaches the real park. See §7.
+**`ignored` is not `parked`, and the distinction is the point.** `parked` means the pipeline stopped
+and ASKED someone: a Decision Comment, the hold labels, an assignee, auto-merge disarmed. These
+branches did none of that — they returned `ACT_NONE`, so no action ran — yet they wrote `parked`
+anyway, claiming a question nobody had posed. For a fork PR and a release-please PR silence is
+genuinely right; they are not ours to comment on. So they say `ignored` instead. An ignored item is
+not terminal: label it properly and the next observation picks it up.
+
+There is deliberately **no `ACT_PARK`**. Escalation happens at DISPATCH — `act()` finds the ledger
+spent and queues `park.sh`. A constant existed here for months, was never returned, and left a dead
+branch in the daemon; if `decide()` ever needs to escalate, it is re-added and wired in one change.
 
 ### The owner's hold outranks every lane
 
@@ -189,7 +198,7 @@ Friday" reads as `hold` and stays parked.
 | 15 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
 | 16 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
 | 17 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
-| 18 | neither label | none → parked | `issue_not_ready` | never |
+| 18 | neither label | none → **ignored** | `issue_not_ready` | never |
 
 Rows 11–12 are one question asked two ways. "Did anything leave the box" is right for *must I avoid
 forking this*; it is wrong for *will anyone ever finish it*. A branch with an open PR is in flight; a
@@ -347,21 +356,20 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 
 | Gap | Why it matters | Issue |
 |---|---|---|
-| **`decide()` never returns `ACT_PARK`.** Rows 4, 17 and 18 write the DB state and `pending_mode=None`, so `park.sh` never runs and `daemon.py`'s `ACT_PARK` branch is dead code. An inadmissible item, a not-ready issue and a human-drafted PR are parked with **no comment, no label, no assignee and no auto-merge disarm** — invisible in GitHub. Only budget exhaustion reaches a real park | the escalation path this pipeline is built around does not exist for three of its four entrances | TBD |
-| **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | TBD |
-| **`unpark.sh` always routes to `agent:revise`**, and that lane outranks the merge ladder. A PR parked for `selfreview_exhausted` has no owner direction to apply, so it burns 2 `revise` runs on an empty lane and re-parks. Observed on #1289 and #1296 | the un-park treadmill survives the marker fix | TBD |
-| **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | TBD |
-| **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | TBD |
-| **`UNKNOWN` mergeability reads as healthy** (§5) | the #1082 shape, unfixed | TBD |
-| **Lane-label precedence is incidental**, and `agent:merge-parked` is vestigial (§5) | | TBD |
-| **A human-drafted PR is unreachable** by automation *and* by an owner reply (§5) | | TBD |
-| **`collect()`'s `child.mode == "merge"` branch is unreachable** — `dispatch_gh(action="merge_enable")` names the child `merge_enable`. The #1295 protection is dead code, masked today by row 23 | a guarantee the comments claim and the code does not provide | TBD |
-| **`USAGE_PAUSE_MINUTES` never reaches `lane_for.py`** — `config.env` says 120, the bounded self-review wait uses the default 60 | | TBD |
-| **`LEMD_GH_SLOTS` (status.sh) vs `MAX_GH_ACTIONS` (config.py)** — two names, one setting | | TBD |
-| **`status.sh` omits `unpark`** from the gh pool, so an in-flight un-park is charged to the agent pool | | TBD |
-| **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | TBD |
-| **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | TBD |
-| **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | TBD |
+| **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
+| **`unpark.sh` always routes to `agent:revise`**, and that lane outranks the merge ladder. A PR parked for `selfreview_exhausted` has no owner direction to apply, so it burns 2 `revise` runs on an empty lane and re-parks. Observed on #1289 and #1296 | the un-park treadmill survives the marker fix | #1389 |
+| **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | #1390 |
+| **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | #1391 |
+| **`UNKNOWN` mergeability reads as healthy** (§5) | the #1082 shape, unfixed | #1392 |
+| **Lane-label precedence is incidental**, and `agent:merge-parked` is vestigial (§5) | | #1393 |
+| **A human-drafted PR is unreachable** by automation *and* by an owner reply (§5). Still written as `parked` — the one entrance where that is arguably honest, since it IS stuck and nobody was told | | #1393 |
+| **`collect()`'s `child.mode == "merge"` branch is unreachable** — `dispatch_gh(action="merge_enable")` names the child `merge_enable`. The #1295 protection is dead code, masked today by row 23 | a guarantee the comments claim and the code does not provide | #1394 |
+| **`USAGE_PAUSE_MINUTES` never reaches `lane_for.py`** — `config.env` says 120, the bounded self-review wait uses the default 60 | | #1394 |
+| **`LEMD_GH_SLOTS` (status.sh) vs `MAX_GH_ACTIONS` (config.py)** — two names, one setting | | #1394 |
+| **`status.sh` omits `unpark`** from the gh pool, so an in-flight un-park is charged to the agent pool | | #1394 |
+| **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | #1395 |
+| **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
+| **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | #1397, #1398 |
 
 ---
 

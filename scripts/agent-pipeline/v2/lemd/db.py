@@ -40,6 +40,17 @@ STATE_PARKED = "parked"
 STATE_MERGED = "merged"
 STATE_CLOSED = "closed"
 
+#: "Not the pipeline's business." A fork PR, a release-please PR, an item with no `agent:*` label,
+#: an issue with neither `agent:ready` nor `agent:working` — none of these was escalated to anyone,
+#: and none of them should be.
+#:
+#: They used to be written as `parked`, which made the queue claim something false. `parked` means
+#: "the pipeline stopped and ASKED A HUMAN": it carries a Decision Comment, the hold labels, an
+#: assignee and a disarmed auto-merge. These four carry none of that, because `decide()` returned
+#: ACT_NONE and no action ever ran — so an operator reading `parked` saw a question that had never
+#: been posed, and the daemon's own `ACT_PARK` branch was unreachable dead code.
+STATE_IGNORED = "ignored"
+
 TERMINAL_STATES = frozenset({STATE_MERGED, STATE_CLOSED})
 #: States where something already owns the item, so observation must not move it (see upsert_item).
 ACTIVE_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING})
