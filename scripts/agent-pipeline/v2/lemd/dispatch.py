@@ -138,15 +138,26 @@ class Supervisor:
                 adopted += 1
         return live + adopted
 
+    def set_caps(self, caps) -> None:
+        """Adopt the caps this pass computed. `None` restores the flat config ceilings."""
+        self._caps = caps
+
+    def _cap(self, pool: str) -> int:
+        """The ceiling in force for one pool right now."""
+        caps = getattr(self, "_caps", None)
+        if caps is None:
+            return self.cfg.max_agents if pool == "agent" else self.cfg.gh_slots
+        return caps.agents if pool == "agent" else caps.gh
+
     def free(self, pool: str) -> int:
         """Slots left in one pool."""
-        cap = self.cfg.max_agents if pool == "agent" else self.cfg.gh_slots
+        cap = self._cap(pool)
         return max(0, cap - self.in_pool(pool))
 
     @property
     def occupancy(self) -> float:
         """Agent-pool utilisation, 0.0-1.0 — the input to the timeout stretch (M6)."""
-        cap = max(1, self.cfg.max_agents)
+        cap = max(1, self._cap("agent"))
         return min(1.0, self.in_pool("agent") / cap)
 
     # ------------------------------------------------------------------ spawning

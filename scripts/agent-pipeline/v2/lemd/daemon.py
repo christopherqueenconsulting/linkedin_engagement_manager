@@ -223,6 +223,7 @@ class Daemon:
                 ("agent:revise", "pr"),
                 ("agent:depfix", "pr"),
                 ("agent:docfix", "pr"),
+                ("agent:phasefix", "pr"),
                 # The HOLD labels, both kinds, and this is not bookkeeping. `park.sh` strips
                 # `agent:working` when it parks, so a parked item matches none of the queries above:
                 # once it leaves the SQLite queue — a rebuilt database, a cutover, an item parked by
@@ -614,6 +615,37 @@ class Daemon:
         db.upsert_item(self.conn, kind=row["kind"], number=row["number"], state=db.STATE_READY,
                        pending_mode="park", parked_reason=reason, dirty=0, wake_at=None)
 
+    def _apply_caps(self) -> None:
+        """Size the pools for this pass from the backlog and the busy window.
+
+        `capacity.compute()` was written, tested, and called by nothing — the live cap was the flat
+        `LEMD_MAX_AGENTS`. Wiring it restores two behaviours v1 had: concurrency that scales with
+        the backlog rather than sitting at the ceiling, and the owner's busy window, in which they
+        want their box back.
+
+        Note this can LOWER concurrency on a small backlog (`1 + ready // scale_per_issues`), which
+        is the v1 parity being restored rather than a regression — but it is a throughput change,
+        and the reason for the cap is logged so an operator can see which rule is binding.
+        """
+        ready = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM items WHERE kind='issue' AND state=? AND dirty=0",
+            (db.STATE_READY,),
+        ).fetchone()
+        caps = capacity.compute(
+            ready_count=int(ready["n"]) if ready else 0,
+            max_agents=self.cfg.max_agents,
+            scale_per_issues=self.cfg.scale_per_issues,
+            gh_slots=self.cfg.gh_slots,
+            busy_hours=self.cfg.busy_hours,
+            busy_tz=self.cfg.busy_tz,
+            busy_days=self.cfg.busy_days,
+            busy_max_agents=self.cfg.busy_max_agents,
+        )
+        if caps != getattr(self, "_last_caps", None):
+            LOG.info("caps: agents=%s gh=%s (%s)", caps.agents, caps.gh, caps.reason)
+            self._last_caps = caps
+        self.sup.set_caps(caps)
+
     def collect(self) -> int:
         """Fold finished actions back into item state.
 
@@ -716,6 +748,7 @@ class Daemon:
     def tick(self) -> None:
         """One pass of the loop."""
         capacity.heartbeat(self.cfg.heartbeat_file)
+        self._apply_caps()
         # Reaping runs even while PAUSED. A pause stops the pipeline STARTING work; leaving already
         # running children uncollected would hold their claims and their branches for the whole
         # duration of the pause, so the resume would find every branch locked.

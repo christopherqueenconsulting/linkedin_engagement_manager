@@ -183,3 +183,33 @@ def test_the_gap_section_says_something_either_way():
         "§7 lists nothing and does not say the list is empty — a gap table that goes quiet is "
         "indistinguishable from one nobody maintains"
     )
+
+
+def test_the_budget_table_matches_policy():
+    """§6's numbers must be the real budgets and timeouts, not something a renumber walked over.
+
+    They were, briefly: a regex that renumbered §4's decision rows was written unscoped and ran to
+    the end of the file, rewriting the BUDGET column of §6 into row numbers — `start` claimed a
+    budget of 35. Nothing caught it, because every test at the time checked reason strings and the
+    numbers were only prose. They are not prose; they are the contract an operator reads before
+    changing a lane's retry count.
+    """
+    from lemd import policy  # noqa: PLC0415
+
+    table = _DOC.read_text()
+    table = table[table.index("## 6."):table.index("## 7.")]
+    for line in table.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) < 5 or not cells[1].startswith("`"):
+            continue
+        mode = cells[1].strip("`")
+        if mode not in policy.MODE_BUDGET or not cells[3].isdigit():
+            continue
+        assert int(cells[3]) == policy.MODE_BUDGET[mode], (
+            f"§6 says {mode} has a budget of {cells[3]}, policy says {policy.MODE_BUDGET[mode]}"
+        )
+        timeout = cells[4].rstrip("s")
+        if timeout.isdigit() and mode in policy.MODE_TIMEOUT:
+            assert int(timeout) == policy.MODE_TIMEOUT[mode], (
+                f"§6 says {mode} times out at {timeout}s, policy says {policy.MODE_TIMEOUT[mode]}"
+            )

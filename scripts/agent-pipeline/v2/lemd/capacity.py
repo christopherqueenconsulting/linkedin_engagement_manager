@@ -81,9 +81,6 @@ def compute(
     busy_tz: str = "UTC",
     busy_days: str = "",
     busy_max_agents: int = 2,
-    claude_pct: int = 80,
-    ollama_pct: int = 75,
-    threshold: int = 50,
     at: datetime | None = None,
 ) -> Caps:
     """Resolve how much work may run concurrently right now.
@@ -97,14 +94,16 @@ def compute(
         busy_tz: IANA zone the window is expressed in.
         busy_days: `"1-5"`-style ISO weekday range the window applies to.
         busy_max_agents: Agent cap while inside the busy window.
-        claude_pct: Claude lane health estimate; `<= threshold` counts as constrained.
-        ollama_pct: Ollama lane health estimate.
-        threshold: The ">50%" rule's boundary.
         at: Clock override for tests.
 
     Returns:
-        Caps with `degraded` set when BOTH lanes are constrained — in which case new issue starts
-        are held (the scheduler's job) and concurrency drops to 1, matching v1.
+        Caps for this pass. `degraded` is always False — see below.
+
+    The `degraded` arm is gone. It dropped concurrency to 1 when BOTH lanes were constrained, read
+    off `claude_pct`/`ollama_pct` — percentages nothing in v2 can produce, because they were
+    `lib/capacity.sh`'s bash failure-history estimate and v2 never calls it. The two questions it
+    was answering both have owners now: `lane.decide()` owns "which lane", and `LEMD_HOLD_STARTS`
+    owns "hold new work". An arm no caller can trip is how a safety control rots into decoration.
     """
     scale = max(1, scale_per_issues)
     agents = min(max_agents, 1 + ready_count // scale)
@@ -113,12 +112,8 @@ def compute(
     if busy:
         agents = min(agents, busy_max_agents)
         reason = "busy_window"
-    degraded = claude_pct <= threshold and ollama_pct <= threshold
-    if degraded:
-        agents = 1
-        reason = "degraded"
     return Caps(agents=max(1, agents), gh=max(1, gh_slots), busy_window=busy,
-                degraded=degraded, reason=reason)
+                degraded=False, reason=reason)
 
 
 def heartbeat(path, now: float | None = None) -> None:
