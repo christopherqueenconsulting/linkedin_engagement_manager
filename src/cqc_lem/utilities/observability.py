@@ -1403,6 +1403,50 @@ def track_image_gate_verdict(
     )
 
 
+def track_motion_prompt_check(
+    report: Optional[dict] = None,
+    verdict: str = "unchecked",
+    model: Optional[str] = None,
+    attempt: int = 1,
+    enforced: bool = False,
+    user_id: Optional[int] = None,
+    post_id: Optional[int] = None,
+    surface: str = "post_video",
+) -> None:
+    """Emit ONE `motion_prompt_check` event per graded motion prompt (issue #1277).
+
+    What the deterministic linter found before a Runway credit was spent, and what was done about it.
+
+    `enforced` next to `verdict` is the whole point of the event: while the `video-motion-lint-hold`
+    flag is off, this is a measurement of how often the lint WOULD have held a render, which is what
+    the decision to promote it is made on. The prompt body is never sent — only the names of the
+    checks that fired and the banned phrases they matched, both of which come from LEM's own fixed
+    lists rather than from user content.
+    """
+    report = dict(report or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="motion_prompt_check",
+        properties={
+            "user_id": user_id,
+            "post_id": post_id,
+            "surface": surface,
+            "model": model or report.get("model"),
+            "verdict": verdict,
+            "enforced": enforced,
+            "attempt": attempt,
+            "checked": report.get("checked"),
+            "passes": report.get("passes"),
+            "chars": report.get("chars"),
+            "checks": report.get("checks") or [],
+            "hard_count": len(report.get("hard") or []),
+            "warn_count": len(report.get("warnings") or []),
+            "evidence": [e for v in report.get("violations") or []
+                         for e in (v.get("evidence") or [])][:10],
+        },
+    )
+
+
 def track_routing_policy(report: dict) -> None:
     """Emit the weekly cost-aware routing decision (plan §D.1(1)) as one `routing_policy` event, so
     a down-route — and especially an auto-rollback — is queryable next to the cost it was meant to

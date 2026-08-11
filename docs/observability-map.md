@@ -78,6 +78,15 @@ case, distinguishable from a pass), alongside the surface, issue categories, att
 whether the gate actually ran (`checked`). This is the trend line for image quality; it does not
 change the gate's decision or thresholds.
 
+## Motion-prompt lint (issue #1277) — `docs/content-core.md`
+One `motion_prompt_check` event per graded motion prompt, emitted BEFORE a Runway credit is spent:
+`verdict` (`pass` / `warn` / `regenerate` / `hold` / `unchecked`) next to `enforced`, plus the model,
+the attempt number, the names of the checks that fired and the banned phrases they matched. While
+`video-motion-lint-hold` is off, `enforced=false` with hard findings is the measurement the decision
+to promote the lint to a spend gate is made on — how often it WOULD have held a render. The prompt
+body is never sent: `evidence` carries only phrases from LEM's own fixed `MOTION_BANNED_*` lists,
+which is why the opening check (whose only evidence is prompt text) reports none.
+
 ## Feature flags (issue #651) — `docs/feature-flags.md`
 `utilities/flags.py` is the ONE place; **fail open to env var** (no key, disabled, undefined,
 inconclusive, SDK raises → all return the flag's env var). `only_evaluate_locally=True` → ZERO

@@ -62,7 +62,7 @@ from cqc_lem.utilities.ai.video_models import (
 )
 from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
-from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, flag_enabled
+from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, VIDEO_MOTION_LINT_HOLD, flag_enabled
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import (
@@ -78,6 +78,7 @@ from cqc_lem.utilities.observability import (
     current_llm_attribution,
     llm_pipeline,
     llm_step,
+    track_motion_prompt_check,
 )
 from cqc_lem.utilities.profile_skills_window import profile_skills_directive as _profile_skills_directive
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
@@ -3040,23 +3041,15 @@ def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> st
             f"speech must be in {language_name(language)}.")
 
 
-def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
-                                       model: str = DEFAULT_VIDEO_MODEL,
-                                       language: str = DEFAULT_CONTENT_LANGUAGE) -> str:
-    """Generate a motion-first Runway Gen-4 video prompt.
+def _draft_motion_prompt(post_content: str, image_prompt: str, *, audio_note: str,
+                         retry_directive: str = "") -> str:
+    """One `lem-simple` motion-prompt draft, WITHOUT the deterministic audio clause.
 
-    Gen-4 image-to-video uses the IMAGE to define the scene; the text prompt should
-    describe ONLY camera and subject motion, in plain concrete terms. Keyword-stuffed
-    cinematic prompts (the old Gen-3 style) degrade Gen-4 output.
-
-    For audio-capable models the deterministic `_audio_direction()` clause is appended to the
-    model's output — the LLM is told to stay off audio entirely, because the clause it would
-    have to write is made of negatives this system prompt otherwise forbids.
+    Split out of `get_runway_ml_video_prompt_from_ai` so the deterministic lint (#1277) can ask for
+    a steered rewrite without duplicating the system prompt — the retry has to carry the SAME
+    contract, or the second draft fixes one pattern and invents another.
     """
     from cqc_lem.utilities.ai.content_framework import motion_prompt_directive
-    audio_direction = _audio_direction(model, language)
-    audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
-                  "direction is appended automatically." if audio_direction else "")
 
     prompt = f"""Describe the motion for a short video built from this still image.
 
@@ -3092,6 +3085,7 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
 
         Output only the motion prompt — no quotes, no prefix, no explanation.
         {motion_prompt_directive()}
+        {retry_directive}
         """
     }
 
@@ -3115,7 +3109,75 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     )
 
     # Extract and return the model's response
-    content = response.choices[0].message.content.strip()
+    return response.choices[0].message.content.strip()
+
+
+def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
+                                       model: str = DEFAULT_VIDEO_MODEL,
+                                       language: str = DEFAULT_CONTENT_LANGUAGE,
+                                       user_id: Optional[int] = None,
+                                       post_id: Optional[int] = None) -> str:
+    """Generate a motion-first Runway Gen-4 video prompt, graded before a credit is spent.
+
+    Gen-4 image-to-video uses the IMAGE to define the scene; the text prompt should
+    describe ONLY camera and subject motion, in plain concrete terms. Keyword-stuffed
+    cinematic prompts (the old Gen-3 style) degrade Gen-4 output.
+
+    Every finished draft is run through `slop_lint.motion_prompt_report` — the checking half of the
+    #1140 writer contract (issue #1277). WARN-ONLY by default: the report is emitted as telemetry
+    and the prompt is returned exactly as before. Only when the `video-motion-lint-hold` flag is on
+    does a HARD violation buy a steered rewrite and then raise `MotionPromptHeld`, which the video
+    callers already treat as a generation failure (refund the credits, fall back).
+
+    For audio-capable models the deterministic `_audio_direction()` clause is appended to the
+    model's output — the LLM is told to stay off audio entirely, because the clause it would
+    have to write is made of negatives this system prompt otherwise forbids. It is appended AFTER
+    grading, so the lint never reads its own "no voiceover" negatives as a violation.
+
+    Raises:
+        MotionPromptHeld: enforcement is on and the last attempt still violates the contract.
+    """
+    audio_direction = _audio_direction(model, language)
+    audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
+                  "direction is appended automatically." if audio_direction else "")
+
+    # Read at the CALL SITE, never at import — an import-time read can't be flipped without a
+    # deploy, which is the whole point of gating the credit-spend change on a flag.
+    enforced = flag_enabled(VIDEO_MOTION_LINT_HOLD, user_id)
+    attempts = _slop.motion_max_attempts() if enforced else 1
+
+    steer = ""
+    content = ""
+    report: dict = {}
+    verdict = ""
+    for attempt in range(1, attempts + 1):
+        content = _draft_motion_prompt(post_content, image_prompt, audio_note=audio_note,
+                                       retry_directive=steer)
+        report = _slop.motion_prompt_report(content, model=model)
+        verdict = _slop.motion_prompt_verdict(report, enforced=enforced, attempt=attempt,
+                                              max_attempts=attempts)
+        track_motion_prompt_check(report, verdict=verdict, model=model, attempt=attempt,
+                                  enforced=enforced, user_id=user_id, post_id=post_id)
+        if verdict != _slop.MOTION_VERDICT_REGENERATE:
+            break
+        # DEBUG, not WARNING: a regeneration is the mechanism working, and warning on it would file
+        # a defect every time the linter did its job.
+        log_debug(f"Motion prompt regenerating (attempt {attempt}/{attempts}): "
+                  f"{'; '.join(report.get('reasons') or [])}", user_id=user_id, post_id=post_id,
+                  ai_model=model)
+        steer = _slop.motion_retry_directive(report.get("hard"))
+
+    if verdict == _slop.MOTION_VERDICT_HOLD:
+        raise _slop.MotionPromptHeld(
+            "Motion prompt still violates the contract after "
+            f"{attempts} attempt(s): {'; '.join(report.get('reasons') or [])}", report)
+    if report.get("violations"):
+        # Findings that did not hold the render are the expected state until the flag is promoted,
+        # so DEBUG — warning here would file a defect every time the linter did its job.
+        log_debug(f"Motion prompt lint findings ({verdict}): "
+                  f"{'; '.join(report.get('reasons') or [])}", user_id=user_id, post_id=post_id,
+                  ai_model=model)
+
     if audio_direction:
         # Trim the motion half, never the audio direction — callers cap the prompt at
         # MAX_MOTION_PROMPT_CHARS and a truncated clause would re-open issue #548.

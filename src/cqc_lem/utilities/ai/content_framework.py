@@ -1577,26 +1577,87 @@ def dwell_directive() -> str:
     )
 
 
+# The banned motion-prompt patterns, one tuple per failure family (issues #1140 / #1277).
+#
+# These are the SAME lists both sides read: `motion_prompt_directive()` below names them for the
+# writer, and `slop_lint.motion_prompt_report()` greps a finished prompt for them before a Runway
+# credit is spent. That is the POST_BANNED_SCAFFOLDS invariant applied to video — the writer side
+# and the checking side cannot drift, because there is only one list to change.
+#
+# Entries are matched case-insensitively on WORD boundaries, so "4k" does not fire inside a longer
+# token. Keep them phrases a Gen-4 motion prompt has no legitimate reason to carry.
+
+# Family 1 — montage/edit language. Gen-4 image-to-video renders ONE continuous shot; asking for a
+# second shot gets a smeared transition, not an edit.
+MOTION_BANNED_MONTAGE: tuple = (
+    "cut to", "cuts to", "then transition to", "transition to", "b-roll", "b roll",
+    "montage", "next shot", "second shot", "jump cut", "quick cuts", "cross-fade",
+    "crossfade", "split screen", "series of shots", "intercut",
+    # Rule 6's half: a fade is an EDIT, and it spends the closing beat on ambiguity. Only the
+    # explicit editorial forms — "the background fades softly" is a real, renderable motion.
+    "fade out", "fades out", "fade to black", "fades to black", "dissolve to",
+)
+
+# Family 2 — mood, film-stock and render-quality adjectives. The Gen-3-era keyword-stuffing style
+# that degrades Gen-4 output; none of them describes a motion.
+MOTION_BANNED_MOOD: tuple = (
+    "cinematic", "dynamic energy", "epic", "moody", "dramatic lighting", "film grain",
+    "shot on", "35mm", "anamorphic", "award-winning", "breathtaking", "stunning",
+    "hyperrealistic", "ultra-realistic", "photorealistic", "8k", "4k", "atmospheric",
+    "ethereal", "vibrant",
+)
+
+# Family 3 — audio. The audio direction is appended deterministically by `_audio_direction()`
+# (issue #548); anything the writer adds risks a hallucinated voiceover on an audio-capable model
+# and is dead weight on a silent one.
+MOTION_BANNED_AUDIO: tuple = (
+    "voiceover", "voice-over", "voice over", "narration", "narrator", "dialogue",
+    "soundtrack", "music", "sound effect", "sound effects", "singing", "lyrics", "audio",
+)
+
+# Family 4 — the OPENING-WINDOW signal, an allow-list rather than a ban: the first sentence must
+# name a camera move, a subject motion, or an immediacy cue, or the clip has no readable opening
+# inside LinkedIn's muted-autoplay window. Stems, matched as prefixes on word boundaries, so
+# "pushes in" and "push-in" both count.
+MOTION_OPENING_SIGNALS: tuple = (
+    "push-in", "push in", "pushes in", "pull-back", "pull back", "pulls back", "pan", "pans",
+    "tilt", "tilts", "zoom", "zooms", "dolly", "dollies", "track", "tracks", "orbit", "orbits",
+    "drift", "drifts", "rise", "rises", "descend", "descends", "turn", "turns", "look", "looks",
+    "lean", "leans", "step", "steps", "reach", "reaches", "walk", "walks", "opens on",
+    "immediately", "from the first frame", "at once", "right away", "begins", "starts",
+)
+
+
 def motion_prompt_directive() -> str:
     """The WRITER-side motion-prompt contract for Runway Gen-4 / Veo image-to-video.
 
     LinkedIn autoplays native video muted, so the first 1–2 seconds are the entire pitch. This
     directive is appended to the motion-prompt system prompt in `ai_helper.py` so the writer side
     and the checking side stay in one shared core — no parallel video-only helper module.
+
+    Rules 2, 3 and 5 spell out the `MOTION_BANNED_*` tuples verbatim, so the words the writer is
+    told to avoid are exactly the words `slop_lint.motion_prompt_report()` greps the finished
+    prompt for.
     """
+    montage = ", ".join(f"'{p}'" for p in MOTION_BANNED_MONTAGE)
+    mood = ", ".join(f"'{p}'" for p in MOTION_BANNED_MOOD)
+    audio = ", ".join(f"'{p}'" for p in MOTION_BANNED_AUDIO)
     return (
         "\n\nMOTION-PROMPT CONTRACT (violating any of these produces a stock-looking clip):\n"
         "1. OPEN IN THE FIRST 1–2 SECONDS — the key subject or the camera move must be readable "
         "before the viewer scrolls. A 'slow reveal' that resolves at second 4 is too late.\n"
         "2. ONE CONTINUOUS MOTION ONLY — no cuts, no montage, no 'then transition to', no 'b-roll'. "
-        "Gen-4 image-to-video is a single shot, not an edited sequence.\n"
+        "Gen-4 image-to-video is a single shot, not an edited sequence. "
+        f"Never write: {montage}.\n"
         "3. CONCRETE PHYSICAL TERMS ONLY — describe the camera move and what the subject does in plain "
         "words (e.g. 'slow push-in', 'she looks up', 'papers shift'). No mood words, no 'cinematic', "
-        "no 'dynamic energy', no film-stock or lighting adjectives.\n"
+        "no 'dynamic energy', no film-stock or lighting adjectives. "
+        f"Never write: {mood}.\n"
         "4. MATCH THE TIER — standard Gen-4 favors subtle, natural motion; Veo can carry slightly "
         "more camera movement but still one continuous shot.\n"
         "5. NEVER DESCRIBE AUDIO — the system appends an audio direction automatically for audio-"
-        "capable models; adding your own risks inventing voiceovers.\n"
+        "capable models; adding your own risks inventing voiceovers. "
+        f"Never write: {audio}.\n"
         "6. END ON A RESOLVED VISUAL BEAT — the last motion completes, it does not fade out or drift "
         "into ambiguity."
     )

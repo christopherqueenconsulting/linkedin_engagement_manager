@@ -20,6 +20,7 @@ The tier-1 word list is `content_alignment.AI_TELL_WORDS` — the SAME wordbank 
 steers against, so the writer side and the checking side can never drift apart.
 """
 
+import functools
 import os
 import re
 import statistics
@@ -27,6 +28,10 @@ from typing import Optional
 
 from cqc_lem.utilities.ai.content_alignment import AI_TELL_WORDS
 from cqc_lem.utilities.ai.content_framework import (
+    MOTION_BANNED_AUDIO,
+    MOTION_BANNED_MONTAGE,
+    MOTION_BANNED_MOOD,
+    MOTION_OPENING_SIGNALS,
     NEWSLETTER_BANNED_SCAFFOLDS,
     POST_BANNED_SCAFFOLDS,
     content_tokens,
@@ -635,4 +640,255 @@ def slop_retry_directive(violations: Optional[list]) -> str:
         lines.append(f"- It {v['detail']}.")
     lines.append("- Say the plain thing you would say out loud. Do NOT invent facts, numbers, or "
                  "specifics to replace what you cut.")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Motion-prompt lint (issue #1277) — the CHECKING half of the #1140 writer contract.
+#
+# A finished motion prompt is graded here before `create_runway_video` spends a Runway credit, the
+# same way `lint_report` grades a finished post. It reads the SAME `MOTION_BANNED_*` tuples
+# `content_framework.motion_prompt_directive()` hands the writer, so a pattern cannot be banned in
+# the prompt and unchecked here. Still pure regex/string — no LLM, no network, no DB.
+#
+# The severities below are the checker's OPINION; whether a hard violation actually holds a render
+# is the caller's decision, gated on the `video-motion-lint-hold` flag (WARN-only by default). That
+# split is deliberate: promoting this to a spend gate changes the credit profile, so it must be one
+# runtime flip rather than a deploy.
+# ---------------------------------------------------------------------------
+
+MOTION_CHECK_MONTAGE = "motion_montage"
+MOTION_CHECK_MOOD = "motion_mood"
+MOTION_CHECK_AUDIO = "motion_audio"
+MOTION_CHECK_OPENING = "motion_opening"
+
+MOTION_VERDICT_UNCHECKED = "unchecked"
+MOTION_VERDICT_PASS = "pass"
+MOTION_VERDICT_WARN = "warn"
+MOTION_VERDICT_REGENERATE = "regenerate"
+MOTION_VERDICT_HOLD = "hold"
+
+# Three of the four are HARD because every entry in their list is a pattern Gen-4 cannot render as
+# asked (a cut, a film stock, a voiceover) — there is no good prompt that carries one. The opening
+# check is WARN because it is an ALLOW-list heuristic: a legitimate prompt can open on a subject
+# beat this list has no verb for, and grading that as a spend gate would refuse good renders.
+MOTION_DEFAULT_SEVERITIES: dict = {
+    MOTION_CHECK_MONTAGE: SEVERITY_HARD,
+    MOTION_CHECK_MOOD: SEVERITY_HARD,
+    MOTION_CHECK_AUDIO: SEVERITY_HARD,
+    MOTION_CHECK_OPENING: SEVERITY_WARN,
+}
+DEFAULT_SEVERITIES.update(MOTION_DEFAULT_SEVERITIES)
+
+# Prompts one video may spend when enforcement is ON (initial + regenerations). Two on purpose:
+# each regeneration is a `lem-simple` call, and a prompt that still carries a banned pattern after
+# one steered rewrite is not one more retry away from clean.
+MOTION_MAX_ATTEMPTS_DEFAULT = 2
+
+
+class MotionPromptHeld(Exception):
+    """Raised when an enforced motion prompt still violates the contract after its last attempt.
+
+    Carries the report so the caller can log WHICH checks held the render rather than a bare
+    failure — the video path treats this like any other generation failure (refund, fall back).
+    """
+
+    def __init__(self, message: str, report: Optional[dict] = None):
+        """Hold `report` alongside the message so the caller can log which checks held it."""
+        super().__init__(message)
+        self.report = dict(report or {})
+
+
+@functools.lru_cache(maxsize=256)
+def _motion_phrase_re(phrase: str, suffix_tolerant: bool = False) -> "re.Pattern":
+    """Word-boundary matcher for one banned/allowed phrase, whitespace-flexible.
+
+    Boundaries matter here: "4k" must not fire inside a longer token, and a prompt that wraps
+    "then transition to" across a line break is the same violation as one that does not.
+    """
+    body = r"\s+".join(re.escape(part) for part in phrase.split())
+    tail = r"(?:s|es|ing|ed|d)?" if suffix_tolerant else ""
+    return re.compile(rf"(?<![\w-]){body}{tail}(?![\w-])", re.IGNORECASE)
+
+
+def motion_lint_enabled() -> bool:
+    """Whether motion prompts are graded at all (`MOTION_PROMPT_LINT_ENABLED`, default ON).
+
+    Grading is free and, until the hold flag is flipped, changes nothing but telemetry — so this
+    exists as the kill switch for the telemetry itself, not as the enforcement control.
+    """
+    return _env_flag("MOTION_PROMPT_LINT_ENABLED", True)
+
+
+def motion_max_attempts() -> int:
+    """Prompts one video may spend under enforcement (`MOTION_PROMPT_LINT_MAX_ATTEMPTS`)."""
+    return int(_env_number("MOTION_PROMPT_LINT_MAX_ATTEMPTS", MOTION_MAX_ATTEMPTS_DEFAULT, int,
+                           low=1, high=4))
+
+
+def motion_half(prompt: Optional[str]) -> str:
+    """The prompt WITHOUT the deterministic audio clause `_audio_direction()` appends.
+
+    Every check grades this half only. The appended clause legitimately says "no voiceover, no
+    narration" (issue #548), so grading the whole string would make the fix for one defect fire the
+    audio check on every audio-capable render.
+    """
+    from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER
+    return str(prompt or "").split(AUDIO_DIRECTION_MARKER)[0].strip()
+
+
+def find_motion_montage(prompt: Optional[str]) -> list:
+    """Montage/edit language in the motion half, in list order, deduped."""
+    text = motion_half(prompt)
+    return [p for p in MOTION_BANNED_MONTAGE if _motion_phrase_re(p).search(text)]
+
+
+def find_motion_mood(prompt: Optional[str]) -> list:
+    """Mood / film-stock / render-quality adjectives in the motion half."""
+    text = motion_half(prompt)
+    return [p for p in MOTION_BANNED_MOOD if _motion_phrase_re(p).search(text)]
+
+
+def find_motion_audio(prompt: Optional[str]) -> list:
+    """Audio language the WRITER added, on any model — the deterministic clause is excluded."""
+    text = motion_half(prompt)
+    return [p for p in MOTION_BANNED_AUDIO if _motion_phrase_re(p).search(text)]
+
+
+def has_opening_signal(prompt: Optional[str]) -> bool:
+    """Whether the FIRST sentence names a camera move, a subject motion, or an immediacy cue.
+
+    Only the first sentence counts: LinkedIn autoplays muted and the viewer is gone by second 3, so
+    a push-in that is only mentioned in the closing sentence is not an opening.
+    """
+    sents = sentences(motion_half(prompt))
+    if not sents:
+        return False
+    first = sents[0]
+    return any(_motion_phrase_re(p, True).search(first) for p in MOTION_OPENING_SIGNALS)
+
+
+def _check_motion_montage(text: str) -> Optional[dict]:
+    hits = find_motion_montage(text)
+    if not hits:
+        return None
+    return {"detail": ("asks for an edited sequence Gen-4 cannot render as a single shot: "
+                       + ", ".join(f'"{h}"' for h in hits[:5])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
+
+def _check_motion_mood(text: str) -> Optional[dict]:
+    hits = find_motion_mood(text)
+    if not hits:
+        return None
+    return {"detail": ("keyword-stuffs mood/film-stock adjectives instead of describing motion: "
+                       + ", ".join(f'"{h}"' for h in hits[:5])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
+
+def _check_motion_audio(text: str) -> Optional[dict]:
+    hits = find_motion_audio(text)
+    if not hits:
+        return None
+    return {"detail": ("describes audio, which the appended audio direction owns — a self-authored "
+                       "one invents voiceovers on audio-capable models: "
+                       + ", ".join(f'"{h}"' for h in hits[:5])),
+            "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
+
+
+def _check_motion_opening(text: str) -> Optional[dict]:
+    if has_opening_signal(text):
+        return None
+    first = (sentences(motion_half(text)) or [""])[0]
+    # `evidence` stays EMPTY on purpose: it is the one field `track_motion_prompt_check` puts on
+    # the event, and this check's only evidence is prompt text — which can echo the user's post.
+    # The excerpt lives in `detail`, which reaches the logs and the retry steer, never PostHog.
+    return {"detail": ("names no camera move or subject motion in its opening sentence "
+                       f"(\"{_excerpt(first, 80)}\") — nothing is readable inside the muted "
+                       "autoplay window"),
+            "evidence": [], "score": 0.0, "threshold": 1.0}
+
+
+_MOTION_CHECKS: tuple = (
+    (MOTION_CHECK_MONTAGE, _check_motion_montage),
+    (MOTION_CHECK_MOOD, _check_motion_mood),
+    (MOTION_CHECK_AUDIO, _check_motion_audio),
+    (MOTION_CHECK_OPENING, _check_motion_opening),
+)
+
+
+def motion_prompt_report(prompt: Optional[str], model: Optional[str] = None) -> dict:
+    """Grade one FINISHED motion prompt against the #1140 contract. Deterministic, no LLM, no I/O.
+
+    Returns {passes, violations, hard, warnings, reasons, checks, checked, chars, model}. `passes`
+    is False only when a HARD check fired; `checked` is False when the linter is disabled or the
+    prompt is empty, in which case the report is empty and passing — this layer fails OPEN, exactly
+    like `lint_report`.
+
+    `model` is recorded for telemetry only. The audio check runs on every model: the contract tells
+    the writer to say nothing about audio at all, and a silent model simply ignores the words it
+    was charged to generate.
+    """
+    empty = {"passes": True, "violations": [], "hard": [], "warnings": [], "reasons": [],
+             "checks": [], "checked": False, "chars": 0, "model": model}
+    if not prompt or not str(prompt).strip():
+        return empty
+    if not motion_lint_enabled():
+        return empty
+
+    body = motion_half(prompt)
+    violations = []
+    for name, fn in _MOTION_CHECKS:
+        severity = check_severity(name)
+        if severity == SEVERITY_OFF:
+            continue
+        found = fn(prompt)
+        if not found:
+            continue
+        violations.append({"check": name, "severity": severity, **found})
+
+    hard = [v for v in violations if v["severity"] == SEVERITY_HARD]
+    warnings = [v for v in violations if v["severity"] == SEVERITY_WARN]
+    return {"passes": not hard, "violations": violations, "hard": hard, "warnings": warnings,
+            "reasons": [f"{v['check']}: {v['detail']}" for v in violations],
+            "checks": [v["check"] for v in violations], "checked": True,
+            "chars": len(body), "model": model}
+
+
+def motion_prompt_verdict(report: Optional[dict], enforced: bool = False, attempt: int = 1,
+                          max_attempts: Optional[int] = None) -> str:
+    """What to DO about a graded prompt: unchecked, pass, warn, regenerate, or hold.
+
+    `enforced` is the `video-motion-lint-hold` flag, read by the caller — with it off (the default)
+    a hard violation still only reports, so nothing about the credit-spend profile changes until
+    the flag is flipped. With it on, a hard violation buys one steered rewrite per remaining
+    attempt and holds the render on the last one. WARN-severity findings never regenerate and never
+    hold, however many there are.
+    """
+    report = dict(report or {})
+    if not report.get("checked"):
+        return MOTION_VERDICT_UNCHECKED
+    if not report.get("violations"):
+        return MOTION_VERDICT_PASS
+    if not report.get("hard") or not enforced:
+        return MOTION_VERDICT_WARN
+    ceiling = motion_max_attempts() if max_attempts is None else max(1, int(max_attempts))
+    return MOTION_VERDICT_REGENERATE if attempt < ceiling else MOTION_VERDICT_HOLD
+
+
+def motion_retry_directive(violations: Optional[list]) -> str:
+    """The regeneration steer after a motion prompt fails the lint.
+
+    Names each pattern that fired, so the rewrite fixes the construction instead of paraphrasing
+    around it.
+    """
+    reasons = [v for v in (violations or []) if isinstance(v, dict) and v.get("detail")]
+    if not reasons:
+        return ""
+    lines = ["\n\nYOUR PREVIOUS MOTION PROMPT VIOLATED THE CONTRACT. Rewrite it so none of these "
+             "remain — describe the SAME shot, change only how you describe it:"]
+    for v in reasons:
+        lines.append(f"- It {v['detail']}.")
+    lines.append("- One continuous camera move plus what the subject physically does, opening in "
+                 "the first second. Nothing about mood, film stock, edits or audio.")
     return "\n".join(lines) + "\n"

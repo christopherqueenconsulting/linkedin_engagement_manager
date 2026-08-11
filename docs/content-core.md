@@ -167,6 +167,30 @@ hold. The wordbank is `content_alignment.AI_TELL_WORDS`, NOT a second copy. The 
 honours the same lead-magnet `exempt_keyword` `strip_engagement_bait` does, or every "Comment
 YES" CTA would hold its own post.
 
+### Motion-prompt lint (issue #1277)
+
+The same layer for VIDEO. `motion_prompt_report()` (in `slop_lint.py`, not a video-only module)
+grades a FINISHED motion prompt before `create_runway_video` spends a Runway credit, against the
+same `MOTION_BANNED_*` tuples `content_framework.motion_prompt_directive()` hands the writer —
+one list per family, so the writer side and the checking side cannot drift.
+
+| Check | Severity | Fires on |
+|---|---|---|
+| `motion_montage` | HARD | Edit language Gen-4 renders as a smear, not a cut ("cuts to", "b-roll", "montage") |
+| `motion_mood` | HARD | Gen-3-era mood / film-stock / render-quality stuffing ("cinematic", "35mm", "4k") |
+| `motion_audio` | HARD | Audio the WRITER added — the `_audio_direction()` clause (#548) owns audio and is excluded from grading |
+| `motion_opening` | WARN | No camera move, subject motion or immediacy cue in the FIRST sentence |
+
+**Severity is the checker's opinion; the flag decides what happens.** `video-motion-lint-hold` is
+OFF, so a HARD violation is reported (`motion_prompt_check` event, DEBUG log) and the prompt ships
+exactly as before — the credit-spend profile is unchanged until the flag is flipped. ON, a HARD
+violation buys one steered rewrite (`MOTION_PROMPT_LINT_MAX_ATTEMPTS`, default 2 prompts total) and
+then raises `MotionPromptHeld`, which the video path already handles as a generation failure
+(refund the credits, fall back to Pexels). `motion_opening` never regenerates and never holds even
+under enforcement: it is an allow-list heuristic, and a legitimate prompt can open on a beat the
+list has no verb for. `MOTION_PROMPT_LINT_ENABLED=false` turns the grading (and its telemetry) off
+entirely; `SLOP_LINT_SEVERITY_MOTION_<CHECK>` retunes one check per deploy.
+
 **Canned scaffold** is the same one-list rule applied to phrases:
 `content_framework.POST_BANNED_SCAFFOLDS` is what `post_writing_directive()` names in the prompt
 AND what the check greps for, so the writer side and the checking side cannot drift — which is

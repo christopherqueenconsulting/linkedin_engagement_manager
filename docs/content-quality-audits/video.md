@@ -82,12 +82,19 @@ a stock asset.
 - `get_runway_ml_video_prompt_from_ai()` appends it to its system prompt automatically.
 - `tests/unit/utilities/ai/test_motion_prompt_contract.py` is reinstated as the regression guard.
 
-### F2 — The motion-prompt contract still has no deterministic checker → **#1277**
+### F2 — The motion-prompt contract had no deterministic checker → **#1277** *(shipped)*
 
-The contract in F1 is writer-side only. A deterministic linter that greps a finished motion prompt
-for banned patterns would catch a bad prompt before spending a Runway credit. Building it is
-low-risk code but changes the credit-spend profile, so it was filed separately in #1140 and remains
-open.
+The contract in F1 was writer-side only. `slop_lint.motion_prompt_report()` now greps a FINISHED
+motion prompt for the banned patterns — montage/edit language, mood and film-stock adjectives,
+writer-authored audio, and a missing opening-window signal — reading the same
+`content_framework.MOTION_BANNED_*` lists `motion_prompt_directive()` hands the writer, so the two
+sides cannot drift.
+
+Because it changes the credit-spend profile, enforcement is a runtime flag and starts OFF:
+`video-motion-lint-hold` off means a hard violation is reported (`motion_prompt_check` event) and the
+prompt ships unchanged; on, it buys one steered rewrite and then holds the render, which
+`_generate_video_src` already handles as a generation failure (refund, fall back to Pexels).
+Posture: `docs/content-core.md` § Motion-prompt lint.
 
 ### F3 — No caption / burned-text path for muted autoplay → **#1278**
 
