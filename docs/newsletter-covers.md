@@ -73,11 +73,25 @@ filesystem path.
 The render is COPIED into the user's cover dir, never moved, so nothing else that references the
 generated file breaks.
 
+## Keeping the cover in sync with the edition (issue #1287)
+
+A cover is generated from the edition's title, subtitle and opening body. When the author later
+edits the title or subtitle in the review queue (`PUT /user/newsletter-draft`), the cover is
+re-briefed from the updated opening text automatically:
+
+- it only triggers for **AI-generated covers** (`cover_image_source = 'ai'`) — uploaded artwork is
+the author's own choice and is never replaced automatically;
+- only **title or subtitle** edits trigger it — a body edit may be deep in the newsletter and does
+not necessarily change the visual idea, so the author decides whether to regenerate;
+- the old AI cover file is removed, a new `generate_newsletter_cover` task is queued, and the new
+render still lands `pending_review` — the hard-approval gate is unchanged.
+
 ## Cost
 
 Generation costs money per edition, so it is **opt-in twice over**: `cover_image_auto` is off by
 default, and even with it on the result still waits for approval. The per-edition "Generate with
-AI" button is the other entry point. Nothing generates a cover on a publish.
+AI" button is the other entry point. Title/subtitle edits on an AI cover cost one extra generation
+per edit. Nothing generates a cover on a publish.
 
 ## Attaching at publish
 
