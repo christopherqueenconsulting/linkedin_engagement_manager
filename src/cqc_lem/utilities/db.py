@@ -53,6 +53,7 @@ from cqc_lem.platform.db.enums import (
     FeedbackStatus,
     FollowStatus,
     GroupPostDraftStatus,
+    GroupPostMediaType,
     LeadSignalChannel,
     LeadSignalKind,
     LeadSignalSource,
@@ -1040,6 +1041,7 @@ __all__ = [
     "FeedbackStatus",
     "FollowStatus",
     "GroupPostDraftStatus",
+    "GroupPostMediaType",
     "LeadSignalChannel",
     "LeadSignalKind",
     "LeadSignalSource",
@@ -2929,16 +2931,25 @@ def _group_post_draft_row(row: dict) -> dict:
 
 
 
+_GROUP_POST_DRAFT_COLUMNS = ("id, user_id, group_id, group_name, content, media_url, media_type, "
+                             "status, created_at, updated_at, published_at")
+
+
 def get_open_group_post_draft(user_id: int) -> Optional[dict]:
-    """The user's ONE open group-post draft — the row the SPA previews and the weekly publish run
-    consumes. None when nothing is waiting.
+    """The user's ONE open group-post draft, or None when nothing is waiting.
+
+    This is the row the weekly publish run consumes and the one the draft beat checks for before
+    writing another.
+
+    READY only: a SKIPPED draft is not open, so skipping this week lets the next beat draft afresh.
+    The SPA reads `get_current_group_post_draft` instead, because a user who skipped by accident has
+    to be able to see the draft to restore it (issue #1224).
     """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
-                "published_at FROM group_post_drafts WHERE user_id=%s AND status=%s "
-                "ORDER BY id DESC LIMIT 1",
+                f"SELECT {_GROUP_POST_DRAFT_COLUMNS} FROM group_post_drafts "
+                "WHERE user_id=%s AND status=%s ORDER BY id DESC LIMIT 1",
                 (user_id, str(GroupPostDraftStatus.READY)))
             row = cursor.fetchone()
             return _group_post_draft_row(row) if row else None
@@ -2947,13 +2958,37 @@ def get_open_group_post_draft(user_id: int) -> Optional[dict]:
         return None
 
 
+def get_current_group_post_draft(user_id: int) -> Optional[dict]:
+    """The group-post draft the Content Studio shows (issue #1224).
+
+    The user's newest draft that is still THEIRS to decide: READY, or SKIPPED and therefore
+    restorable.
+
+    An open draft always wins over a skipped one, whatever their ids say, so restoring an old skip
+    can never hide the post that is about to ship. PUBLISHED and FAILED rows are history and are
+    never returned — there is nothing left to edit on them.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_GROUP_POST_DRAFT_COLUMNS} FROM group_post_drafts "
+                "WHERE user_id=%s AND status IN (%s, %s) "
+                "ORDER BY status = %s DESC, id DESC LIMIT 1",
+                (user_id, str(GroupPostDraftStatus.READY), str(GroupPostDraftStatus.SKIPPED),
+                 str(GroupPostDraftStatus.READY)))
+            row = cursor.fetchone()
+            return _group_post_draft_row(row) if row else None
+    except mysql.connector.Error as err:
+        log_error("Could not read the current group post draft", exc=err, user_id=user_id)
+        return None
+
+
 def get_group_post_draft(draft_id: int) -> Optional[dict]:
     """One group-post draft by id, normalised for the API, or None when missing or unreadable."""
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
-                "published_at FROM group_post_drafts WHERE id=%s",
+                f"SELECT {_GROUP_POST_DRAFT_COLUMNS} FROM group_post_drafts WHERE id=%s",
                 (draft_id,))
             row = cursor.fetchone()
             return _group_post_draft_row(row) if row else None

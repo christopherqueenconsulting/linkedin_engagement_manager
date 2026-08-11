@@ -73,7 +73,12 @@ export default function GroupsCard() {
       // user typed while the save was in flight.
       if (body.status) setDraftText(null)
       await refetchDraft()
-      setDraftMsg({ ok: true, text: body.status ? 'Skipped — no group post this week.' : 'Saved.' })
+      setDraftMsg({
+        ok: true,
+        text: body.status === 'skipped' ? 'Skipped — no group post this week.'
+          : body.status === 'ready' ? 'Back in the queue for this week.'
+          : 'Saved.',
+      })
       setTimeout(() => setDraftMsg(null), 3000)
     },
     onError: () => {
@@ -120,6 +125,9 @@ export default function GroupsCard() {
   // would let the user walk away — and the text they thought they'd replaced would publish.
   const draftDirty = !!draft && draftText !== null && draftText !== draft.content &&
     !!draftText.trim() && draftText.length <= GROUP_POST_MAX
+  // A skipped draft is still shown here since #1224 — it is restorable until the slot passes — so
+  // this card must not describe it as "what LEM will publish".
+  const draftSkipped = draft?.status === 'skipped'
   useRegisterSaveSection('group-post', 'Next group post', draftDirty,
     async () => { await draftMutation.mutateAsync({ content: draftText as string }); return true })
 
@@ -166,8 +174,11 @@ export default function GroupsCard() {
             Next group post — {draft.group_name || `Group ${draft.group_id}`}
           </h3>
           <p className="text-xs text-gray-600">
-            This exact text is what LEM will publish at the next weekly group slot. Edit it, or skip
-            it and no group post goes out this week.
+            {draftSkipped
+              ? 'Skipped — nothing goes out this week unless you put it back in the queue. '
+                + 'Images and video for a group post live in the Content Studio.'
+              : 'This exact text is what LEM will publish at the next weekly group slot. Edit it, '
+                + 'or skip it and no group post goes out this week.'}
           </p>
           <textarea
             aria-label="Group post text"
@@ -182,10 +193,10 @@ export default function GroupsCard() {
             </span>
             <span className="flex items-center gap-2">
               <button type="button"
-                onClick={() => draftMutation.mutate({ status: 'skipped' })}
+                onClick={() => draftMutation.mutate({ status: draftSkipped ? 'ready' : 'skipped' })}
                 disabled={draftMutation.isPending}
                 className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
-                Skip this week
+                {draftSkipped ? 'Put back in the queue' : 'Skip this week'}
               </button>
               <button type="button"
                 onClick={() => draftMutation.mutate({ content: draftText }, sectionSaveCallbacks('group-post'))}

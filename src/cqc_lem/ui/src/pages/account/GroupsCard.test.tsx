@@ -191,6 +191,23 @@ describe('GroupsCard — group post preview/edit (issue #932)', () => {
     )
   })
 
+  it('offers the way back into the queue on a skipped draft (issue #1224)', async () => {
+    // Since #1224 the API keeps returning a skipped draft so it can be restored — this card must
+    // not describe it as what LEM is about to publish, nor offer a second skip.
+    routeGet([GROUPS], { ...DRAFT, status: 'skipped' })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupsCard />)
+    await waitFor(() => expect(screen.getByLabelText('Group post text')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Skip this week/i })).toBeNull()
+    expect(screen.getByText(/Skipped — nothing goes out this week/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Put back in the queue/i }))
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith('/user/group-post-draft',
+        { session_token: 'tok', status: 'ready' })
+    )
+    expect(screen.getByText(/Back in the queue for this week\./i)).toBeTruthy()
+  })
+
   it('will not save an emptied post — skipping is how you cancel', async () => {
     routeGet([GROUPS], DRAFT)
     harness(<GroupsCard />)

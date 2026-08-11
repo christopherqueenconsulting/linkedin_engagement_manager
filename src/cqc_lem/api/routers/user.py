@@ -41,6 +41,7 @@ from cqc_lem.api.models import (
 )
 from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
+from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY,
     METHOD_TOTP,
@@ -98,6 +99,7 @@ from cqc_lem.utilities.db import (
     AuthAuditEvent,
     CatchupEventType,
     GroupPostDraftStatus,
+    GroupPostMediaType,
     PostStatus,
     add_passkey_factor,
     bulk_update_posts,
@@ -116,6 +118,7 @@ from cqc_lem.utilities.db import (
     get_comment_outcomes,
     get_company_linked_in_url_for_user,
     get_content_mix_counts,
+    get_current_group_post_draft,
     get_daily_action_counts,
     get_dm_templates,
     get_engagement_preferences,
@@ -196,6 +199,8 @@ from cqc_lem.utilities.post_image import (
     PostImageRejected,
     claim_manual_generation,
     generate_image_for_post,
+    owns_post_image_url,
+    post_image_abs_path,
     remove_post_image_file,
     save_post_image_bytes,
 )
@@ -2468,56 +2473,126 @@ def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel[s
 
 
 class GroupPostDraftUpdateRequest(BaseModel):
-    """Body of `PUT /user/group-post-draft` (issue #932).
+    """Body of `PUT /user/group-post-draft` (issues #932, #1224).
 
-    It names no draft id: the handler always edits the caller's OWN open draft, so there is no id a client could
+    It names no draft id: the handler always edits the caller's OWN current draft, so there is no id a client could
     point somewhere else.
     """
 
     session_token: str
     # The user's revision of the drafted text. None = leave it as it is.
     content: Optional[str] = Field(default=None, max_length=_LEN_GROUP_POST)
-    # Only 'skipped' is accepted — the draft's other states belong to the publish run, not the SPA.
+    # 'ready' or 'skipped' — the two ends of the user's own call. 'published'/'failed' are the
+    # publish run's record of what happened and are refused here (GroupPostDraftStatus.user_settable).
     status: Optional[str] = None
+    # A media URL WE issued this user from the post-image surface, attaching an image (or video) to
+    # the group post. Its kind is derived from the stored file, never from this field.
+    media_url: Optional[str] = Field(default=None, max_length=1024)
+    # Detach whatever is attached, so the post goes out as text. Wins over `media_url`.
+    remove_media: bool = False
+
+
+def _resolve_group_media(user_id: int, media_url: str) -> "GroupPostMediaType":
+    """Grade a media URL the SPA wants attached to the group post, or raise the user-facing refusal.
+
+    `owns_post_image_url` is the same gate `/schedule_post/` puts on a compose-time image: the value
+    is caller input on a field the publish run later hands to LinkedIn, so only a preview issued to
+    THIS user resolves. The kind comes off the stored file's extension because that is what the
+    group composer's uploader is actually given.
+    """
+    if not owns_post_image_url(user_id, media_url):
+        raise HTTPException(status_code=400,
+                            detail="Attach media you uploaded or generated here first")
+    stored_path = post_image_abs_path(media_url)
+    if not stored_path:
+        raise HTTPException(status_code=400, detail="That media is no longer available")
+    from cqc_lem.utilities.linkedin.poster import determine_media_type
+    try:
+        # The FILE on disk, never the URL: the extension is what the uploader is judged on, and the
+        # stored name already comes from the decoded format rather than what was uploaded.
+        kind = determine_media_type(stored_path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Use an image or a video")
+    return GroupPostMediaType.VIDEO if kind == "VIDEO" else GroupPostMediaType.IMAGE
 
 
 @router.get("/group-post-draft")
 def get_group_post_draft_endpoint(session_token: str) -> ResponseModel[Optional[dict[str, Any]]]:
     """The group post waiting to be published, so the user can read it before it ships (issue #932).
+
     `detail` is None when nothing is queued — the SPA hides the card rather than inventing one.
+
+    A draft the user SKIPPED is still returned (issue #1224): skipping is reversible until the slot
+    passes, and a draft the studio cannot show is one the user cannot restore.
+
+    The payload carries `best_practices` — the SAME list the drafting prompt is held to — so the
+    guidance the author edits against cannot drift from the guidance the model wrote against.
     """
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_open_group_post_draft(user_id))
+    draft = get_current_group_post_draft(user_id)
+    if draft:
+        draft["best_practices"] = list(GROUP_POST_BEST_PRACTICES)
+    return ResponseModel(status_code=200, detail=draft)
 
 
-@router.put("/group-post-draft")
+@router.put("/group-post-draft", responses={
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 404]},
+    409: {"description": "Another group post is already queued"},
+    422: {"description": "Unsupported status or empty text"},
+    500: {"description": "Server error"},
+})
 def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> ResponseModel[str]:
-    """Save the user's revision of the queued group post, or skip this week's post entirely.
-    Scoped to the caller's OWN open draft — the id is never taken from the request.
+    """Edit the queued group post.
+
+    Revise the text, attach or drop its media, skip it, or put a skipped one back in the queue.
+    Scoped to the caller's OWN current draft — the id is never taken from the request.
     """
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    draft = get_open_group_post_draft(user_id)
+    draft = get_current_group_post_draft(user_id)
     if not draft:
         raise HTTPException(status_code=404, detail="No group post is queued")
     status = None
     if request.status is not None:
-        if request.status != str(GroupPostDraftStatus.SKIPPED):
+        settable = {str(s): s for s in GroupPostDraftStatus.user_settable()}
+        if request.status not in settable:
             raise HTTPException(status_code=422, detail="Unsupported group post draft status")
-        status = GroupPostDraftStatus.SKIPPED
+        status = settable[request.status]
+        if status == GroupPostDraftStatus.READY:
+            # One OPEN draft per user is what stops the weekly beat replacing a post the user is
+            # still editing, so a restore that would make a second one is refused rather than
+            # quietly leaving two rows the publish run could pick between.
+            open_draft = get_open_group_post_draft(user_id)
+            if open_draft and open_draft.get("id") != draft["id"]:
+                raise HTTPException(status_code=409,
+                                    detail="A newer group post is already queued")
     content = request.content
     if content is not None and not content.strip():
         # An empty draft would publish nothing and read as a bug — skipping is the way to cancel.
         raise HTTPException(status_code=422, detail="Group post text cannot be empty")
-    if content is None and status is None:
+
+    media_fields = {}
+    if request.remove_media:
+        media_fields = {"media_url": None, "media_type": None}
+    elif request.media_url:
+        media_fields = {"media_url": request.media_url,
+                        "media_type": _resolve_group_media(user_id, request.media_url)}
+    if content is None and status is None and not media_fields:
         raise HTTPException(status_code=422, detail="Nothing to update")
-    if not update_group_post_draft(draft["id"], content=content, status=status):
+    if not update_group_post_draft(draft["id"], content=content, status=status, **media_fields):
         raise HTTPException(status_code=500, detail="Could not update the group post")
-    return ResponseModel(status_code=200,
-                         detail="Group post skipped" if status else "Group post updated")
+    if media_fields and draft.get("media_url") and draft["media_url"] != media_fields["media_url"]:
+        # The row no longer points at it, so the file it replaced is an orphan under the user's
+        # preview dir — same clean-up `_attach_post_image` does for a post.
+        remove_post_image_file(draft["media_url"])
+    if status == GroupPostDraftStatus.SKIPPED:
+        return ResponseModel(status_code=200, detail="Group post skipped")
+    if status == GroupPostDraftStatus.READY:
+        return ResponseModel(status_code=200, detail="Group post restored")
+    return ResponseModel(status_code=200, detail="Group post updated")
 
 
 @router.get("/post-stats")

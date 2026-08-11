@@ -253,6 +253,30 @@ def hashtag_directive(prefs: Optional[dict] = None) -> str:
             "present in the draft.")
 
 
+# ---------------------------------------------------------------------------
+# LinkedIn GROUP posts (issue #1224). A group post is not a feed post: it is read by a moderated
+# community that penalises distribution behaviour, so the rules that decide whether it lands are
+# different enough to be named once, HERE, and read by both halves of the feature — the prompt that
+# writes the draft (`ai_helper.generate_group_post`) and the Content Studio panel the author edits
+# it in (served on the draft payload). One list, so the guidance the model follows and the guidance
+# the author reads can never say different things. Sourcing + the 2026 evidence behind each line:
+# `docs/group-posts.md`.
+# ---------------------------------------------------------------------------
+GROUP_POST_BEST_PRACTICES: tuple = (
+    "Open with a question or a concrete problem the group actually argues about — group posts are "
+    "ranked by the discussion they start, not by reach.",
+    "Keep it short enough to answer on a phone: one specific insight or lesson, no preamble.",
+    "Stay native. No external links in the post — link-out posts are the lowest-engagement format "
+    "on LinkedIn and the first thing group moderators remove.",
+    "Attach a native image or a short video when it shows something words can't. Media posts "
+    "out-perform text-only; a decorative stock image does not.",
+    "Never promote. Mention what you sell only when it directly answers a question a member asked.",
+    "Close by inviting members to weigh in, then reply to every comment quickly — the thread is "
+    "what the group sees, not the post.",
+    "One genuinely useful post per group per week beats a daily drip.",
+)
+
+
 CTA_STYLES: dict = {
     "reply_question": {
         "label": "Reply-Driving Question",

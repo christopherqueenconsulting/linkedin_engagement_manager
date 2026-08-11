@@ -280,6 +280,12 @@ is now two beats with a review window between them.
   registry (`useRegisterSaveSection('group-post', …)`), so *Save All* writes it and the
   unsaved-changes guard fires on leaving. Without that the page would report a clean save having
   written only the toggles, and the text the user thought they'd replaced is what would publish.
+- **Skipping is reversible, and a group post can carry media** (issue #1224). The studio reads the
+  newest `ready` OR `skipped` draft so a mis-click no longer costs the week; the user owns exactly
+  those two statuses (`GroupPostDraftStatus.user_settable()`) and a restore that would make a SECOND
+  open draft is a 409. Media rides the post-image surface, is gated by `owns_post_image_url`, goes
+  into the composer BEFORE the text, and fails OPEN — text alone beats no post. Full posture,
+  including the best-practice list the prompt and the studio share: **`docs/group-posts.md`**.
 
 ## Roster targets LEM can't comment on + opt-in auto-follow (issue #962)
 

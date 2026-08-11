@@ -88,6 +88,29 @@ class GroupPostDraftStatus(StrEnum):
     PUBLISHED = 'published'  # it shipped into the group
     FAILED = 'failed'        # the run reached the group and the group would not take a member post
 
+    @classmethod
+    def user_settable(cls) -> "tuple[GroupPostDraftStatus, ...]":
+        """The statuses the SPA may write (issue #1224).
+
+        READY and SKIPPED are the two ends of the user's own decision — ship it this week or don't —
+        and either can be undone until the publish run takes the draft. PUBLISHED and FAILED are
+        RECORDS of what the run did, so accepting one from a client would let the queue claim a post
+        that never shipped.
+        """
+        return (cls.READY, cls.SKIPPED)
+
+
+class GroupPostMediaType(StrEnum):
+    """What a group post draft's attached media IS (issue #1224).
+
+    Derived from the stored file's extension when the media is attached, never taken from the
+    client, because it is what tells the publish run whether it is handing LinkedIn's group composer
+    an image or a video. No member for "text": a draft with no media has `media_url IS NULL`, the
+    same way a text post carries no `posts.image_url`.
+    """
+    IMAGE = 'image'
+    VIDEO = 'video'
+
 
 class OutreachStage(StrEnum):
     """Stage of a comment-first outreach funnel target (issue #399)."""

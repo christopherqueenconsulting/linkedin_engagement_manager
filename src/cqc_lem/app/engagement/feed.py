@@ -212,6 +212,7 @@ from cqc_lem.utilities.observability import (
     track_feed_scan,
     track_selector_evidence,
 )
+from cqc_lem.utilities.post_image import post_image_abs_path
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
@@ -3168,6 +3169,76 @@ _GROUP_SHARE_BOX_TEXT_SIGNALS = ("start a post", "start a public post", "create 
 _GROUP_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='textbox']")]
 _GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
 
+# Media on a group post (issue #1224). The file input is tried FIRST and the trigger only when it
+# is absent: LinkedIn renders the hidden `<input type=file>` up front in most variants, and clicking
+# the styled affordance when we did not have to is what opens an overlay we then have to get back
+# out of. The input is never visible, so every lookup here is `visible_only=False`.
+_GROUP_MEDIA_INPUT_LOCATORS = [
+    (By.XPATH, "//input[@type='file' and contains(@accept,'image')]"),
+    (By.XPATH, "//input[@type='file' and contains(@accept,'video')]"),
+    (By.CSS_SELECTOR, "input[type='file']"),
+]
+_GROUP_MEDIA_TRIGGER_LOCATORS = [
+    (By.XPATH,
+     "//*[self::button or @role='button']["
+     f"contains({_X_LOWER_ARIA},'add media') "
+     f"or contains({_X_LOWER_ARIA},'add a photo') "
+     f"or contains({_X_LOWER_ARIA},'add photo') "
+     f"or contains({_X_LOWER_ARIA},'add a video') "
+     f"or contains({_X_LOWER_ARIA},'add video')"
+     "]"),
+]
+# The media overlay's own commit control. It is NOT the share box's Post button — that one is
+# clicked later, after the text goes in.
+_GROUP_MEDIA_CONFIRM_LOCATORS = [
+    (By.XPATH, "//button[normalize-space()='Next']"),
+    (By.XPATH, "//button[normalize-space()='Done']"),
+]
+
+
+def _attach_group_media(driver, wait, media_url: str, user_id: int = None) -> bool:
+    """Hand the draft's image/video to the open group composer. True when the file was uploaded.
+
+    Never raises and never blocks the post: a group post that goes out as text is worth more than
+    no post at all, so every failure here is a warning and the caller carries on — the same
+    fail-open posture `render_image_gated` and the article cover take. The file is written into the
+    hidden `<input type=file>` because clicking the styled control opens the OS file chooser, which
+    Selenium cannot drive; `webdriver.Remote`'s local file detector ships the bytes to the Chrome
+    node, so the worker's own path is the right thing to send.
+    """
+    path = post_image_abs_path(media_url)
+    if not path:
+        log_warning("Group post media is missing on disk — posting the text alone", user_id=user_id,
+                    task_name="auto_post_to_group")
+        return False
+    try:
+        file_input = find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS, "Group media input",
+                                visible_only=False, required=False, warn_on_miss=False, max_try=1)
+        if file_input is None:
+            trigger = click_first(driver, wait, _GROUP_MEDIA_TRIGGER_LOCATORS, "Group media button",
+                                  required=False, warn_on_miss=False, max_try=1)
+            if trigger is not None:
+                time.sleep(random.uniform(1, 2))
+                file_input = find_first(driver, wait, _GROUP_MEDIA_INPUT_LOCATORS,
+                                        "Group media input", visible_only=False, required=False,
+                                        warn_on_miss=False, max_try=1)
+        if file_input is None:
+            log_warning("Group composer media control not found — posting the text alone",
+                        user_id=user_id, task_name="auto_post_to_group")
+            return False
+        file_input.send_keys(path)
+        # LinkedIn transcodes the upload before the overlay will commit; a video takes the longer
+        # end of this, and committing early is what leaves an empty media frame on the post.
+        time.sleep(random.uniform(6, 9))
+        click_first(driver, wait, _GROUP_MEDIA_CONFIRM_LOCATORS, "Group media confirm",
+                    required=False, warn_on_miss=False, max_try=1)
+        time.sleep(random.uniform(1, 2))
+        return True
+    except WebDriverException as e:
+        log_warning("Group post media attach failed — posting the text alone", exc=e,
+                    user_id=user_id, task_name="auto_post_to_group")
+        return False
+
 
 @shared_task.task(name='cqc_lem.app.run_automation.auto_post_to_group',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
@@ -3237,6 +3308,10 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
             return _unpostable("Group share box control drifted" if has_share_signal
                                else "Group share box not found")
         time.sleep(random.uniform(2, 3))
+        # Media goes in BEFORE the text: LinkedIn's uploader takes over the composer while it
+        # transcodes, and text typed first is what the overlay discards.
+        media_attached = bool(draft.get("media_url")) and _attach_group_media(
+            driver, wait, draft["media_url"], user_id=user_id)
         box = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
                          visible_only=True, required=False)
         if box is None:
@@ -3252,6 +3327,8 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
         # next in line rather than skipping its turn.
         record_group_post(user_id, group_id)
         update_group_post_draft(draft["id"], status=GroupPostDraftStatus.PUBLISHED)
+        if media_attached:
+            return f"Posted to group with {draft.get('media_type') or 'media'}"
         return "Posted to group"
     except Exception as e:
         log_error("Group post error", exc=e, user_id=user_id, task_name="auto_post_to_group")
