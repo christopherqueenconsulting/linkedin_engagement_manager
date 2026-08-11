@@ -78,11 +78,16 @@ def _reasons_in_doc() -> set[str]:
     text = _DOC.read_text()
     table = text[text.index("## 4. The decision table"):text.index("## 5. The GitHub field matrix")]
     found: set[str] = set()
-    for cell in re.findall(r"`([a-z_]+(?::\{?[a-z_,{}]+\}?)?)`", table):
-        if cell.startswith(PARAMETERISED):
-            found.add(cell.split(":", 1)[0] + ":")
-        elif re.fullmatch(r"[a-z_]+", cell):
-            found.add(cell)
+    # The REASON COLUMN only — not every backticked token in the section. Scanning the prose swept
+    # up function names (`review_state`) and snapshot fields and reported them as stale rows, which
+    # would have pushed a future author into renaming things to appease the checker instead of
+    # fixing the table. Rows are `| # | Condition | Action | Reason | Wake |`.
+    for line in table.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) < 6 or not cells[1].isdigit():
+            continue
+        for cell in re.findall(r"`([a-z_]+(?::\{?[a-z_,{}]+\}?)?)`", cells[4]):
+            found.add(_family(cell))
     return found
 
 

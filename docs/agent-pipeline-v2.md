@@ -22,17 +22,21 @@ v1 (`tick.sh`) survives only as a heartbeat-gated 15-minute failsafe.
 
 ## 1. Why v2 exists
 
-v1 gave one cron tick to ONE unit of work. Measured over 2,456 recorded ticks:
+v1 gave one cron tick to ONE unit of work. The figures below were measured from v1's
+`tick-outcomes.ndjson` during the v2 design and are quoted from that analysis — **the log is on the
+box, not in this repo, so they are not reproducible from a checkout**:
 
 | Symptom | Measurement |
 |---|---|
-| Ticks spent re-polling GitHub for unchanged answers | **75–84%** (1,103 of 1,464 dispatches) |
+| Ticks spent re-polling GitHub for unchanged answers | **~75%** of dispatches |
 | Hard ceiling on work, regardless of `MAX_AGENTS=5` | 288 units/day (one per 5-min tick) |
 | Concurrency actually used | slot ≥2 on **39 of 2,456** ticks |
 | Worst single incident | one wedged PR consumed **45 of 62** ticks in 6 hours |
 
-The thing being polled is fast: PR CI ~3 min, merge queue median 3.8 min. The pipeline was never
-GitHub-bound, it was tick-bound. v2 keeps every guard v1 earned and changes only *when* work runs.
+Only the 288/day ceiling is derivable from the repo (`capacity.py`); treat the rest as the recorded
+rationale for building v2, not as live metrics. The thing being polled is fast — PR CI ~3 min, merge
+queue ~3.8 min — so the pipeline was never GitHub-bound, it was tick-bound. v2 keeps every guard v1
+earned and changes only *when* work runs.
 
 ---
 
@@ -47,7 +51,7 @@ collect          reap finished runs                 ← runs even while PAUSED, 
                                                       would strand claims and branch locks
 ── if PAUSED: stop here ──
 drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
-reconcile        GitHub labels → the queue          (every 600s, or 120s degraded)
+reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
 refresh_usage    subscription meter → state/usage.json
 observe_dirty    changed items → decide()           (≤25 per pass)
 sweep_ttls       expired waits → decide()           (≤25 per pass)
@@ -63,9 +67,13 @@ candidate for anything until an event marks it dirty or its TTL fires.
    `X-GitHub-Delivery`, writes an event row and `kv:last_webhook_at` in one transaction.
 2. **Reconcile** — re-derives the queue from GitHub labels on a timer, so a missed delivery costs
    latency and never work.
-3. **Watchdog** (`lem-agentd-watchdog.timer`, every 15 min, as root) — restarts the daemon when the
-   unit is dead **or** the heartbeat is older than 600s. Liveness and freshness are separate
-   questions; a wedged process passes the first and fails the second.
+3. **Watchdog** (`lem-agentd-watchdog.timer`, every 15 min) — restarts the daemon when the unit is
+   dead **or** the heartbeat is older than 600s. Liveness and freshness are separate questions; a
+   wedged process passes the first and fails the second.
+
+Degraded reconcile (120s) requires **both** webhook silence past `LEMD_WEBHOOK_STALE_SECONDS` **and**
+drift found by the last reconcile. Silence alone is not evidence: it reads identically for a broken
+event path and a quiet repository, and polling 5× harder on a quiet repo is backwards.
 
 Events never decide anything. They only say *"this item changed, look again"*, which is what makes a
 duplicate or out-of-order delivery harmless.
@@ -79,10 +87,10 @@ stateDiagram-v2
     [*] --> ready: reconcile / webhook
     ready --> claimed: claim_item (atomic, branch-unique)
     claimed --> running: process spawned
-    running --> ready: collect (rc != refusal)
-    running --> awaiting_queue: collect (merge armed)
+    running --> ready: collect (rc 0, EX_BUDGET, EX_BUSY, EX_SETUP, kill)
+    running --> ready: reap adopted orphan (RC_VANISHED)
     running --> parked: collect (EX_TRUST)
-    ready --> awaiting_ci: decide (ci_running / checks_unknown)
+    ready --> awaiting_ci: decide (ci_running / checks_unknown / any *_unreadable)
     ready --> awaiting_review: decide (work_in_flight)
     ready --> awaiting_queue: decide (auto_merge_armed / in_merge_queue)
     ready --> parked: decide (human_hold / draft / not_ready)
@@ -122,8 +130,10 @@ rather than merely guarded.
 `Snapshot`, so every transition is testable exactly, including the ones that only happen when GitHub
 is lying. This table is that function, in evaluation order. Order encodes priority.
 
-`tests/unit/test_agent_pipeline_v2_decision_table.py` asserts this table and the code agree — every
-reason below exists in `observe.py`, and every reason in `observe.py` appears below.
+`tests/unit/test_agent_pipeline_v2_decision_table.py` asserts the **reason strings** here and in
+`observe.py` are the same set, in both directions — a new branch without a row fails, and a row that
+outlived its branch fails. It does **not** yet check the condition, action, order or wake columns, so
+those four are reviewed by eye and are where this table will rot first.
 
 ### Terminal facts, then unreadability, then admission
 
@@ -132,12 +142,18 @@ reason below exists in `observe.py`, and every reason in `observe.py` appears be
 | 1 | GitHub state `MERGED` | close | `merged` | — |
 | 2 | GitHub state `CLOSED` | close | `closed_unmerged` | — |
 | 3 | any required read failed | none | `github_unreadable` | 300s |
-| 4 | not admissible | none → parked | `not_admissible:{fork_pr,release_pr,no_agent_label,unreadable}` | never |
+| 4 | not admissible | none → parked ⚠️ | `not_admissible:{fork_pr,release_pr,no_agent_label}` | **never** |
 
-**Unreadable is a decision to do NOTHING**, never a decision to proceed. v1 merged on an unreadable
-state once (#1082) and re-enqueued 154 times. Admission is by LABEL and PROVENANCE, never by author —
-excluding "Dependabot PRs" by author would retire the depfix lane, which exists to run an agent ON a
-Dependabot PR.
+**Unreadable is a decision to do NOTHING**, never a decision to proceed — v1 once merged on an
+unreadable state (#1082). Admission is by LABEL and PROVENANCE, never by author: excluding
+"Dependabot PRs" by author would retire the depfix lane, which exists to run an agent ON a
+Dependabot PR. `admissible()` also has an `unreadable` branch, but row 3 shadows it, so that reason
+is **unreachable**.
+
+⚠️ **"→ parked" in rows 4, 17 and 18 means the DB row only.** `decide()` never returns `ACT_PARK` —
+it returns `ACT_NONE` with `next_state=parked`, which writes the state and `pending_mode=None`, so
+`park.sh` never runs. No comment, no label, no assignee, no auto-merge disarm. Only budget exhaustion
+reaches the real park. See §7.
 
 ### The owner's hold outranks every lane
 
@@ -160,11 +176,11 @@ Friday" reads as `hold` and stays parked.
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
 | 9 | `agent:ready`, work state unreadable | none | `start_work_state_unreadable` | 600s |
-| 10 | `agent:ready`, work exists, open PR | none | `start_already_produced_work` | 1h |
+| 10 | `agent:ready`, work exists, open PR **or linkage unreadable** | none | `start_already_produced_work` | 1h |
 | 11 | `agent:ready`, work exists, **no PR** | dispatch `start` | `stranded_branch_no_pr` | — |
 | 12 | `agent:ready`, no work | dispatch `start` | `issue_ready` | — |
 | 13 | `agent:working`, unreadable | none | `working_claim_state_unreadable` | 600s |
-| 14 | `agent:working`, work exists, open PR | none | `working_claim_has_work` | 1h |
+| 14 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
 | 15 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
 | 16 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
 | 17 | neither label | none → parked | `issue_not_ready` | never |
@@ -198,9 +214,11 @@ Row 23 sits above row 24 deliberately. An armed PR reporting `BLOCKED` is the no
 of a PR waiting on required checks; without this the ladder fell through to `gate_satisfied` on every
 pass and burned the per-head merge budget in three minutes (measured on #1295).
 
-Row 28's freshness is **stricter than v1's**: a review must be at or after the head commit, full
-stop. Being wrong in this direction costs one extra selfreview; being wrong in the other merges code
-no reviewer saw. Row 26 treats zero checks as pending, not green.
+Row 28's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
+wrong in this direction costs one extra selfreview; being wrong in the other merges code no reviewer
+saw. **One exception, and it errs permissive**: when the head's `committedDate` is unreadable,
+`review_state` falls back to "any review counts", however stale — refusing every PR on an unreadable
+date would wedge the gate entirely. Row 26 treats zero checks as pending, not green.
 
 ---
 
@@ -228,11 +246,34 @@ behaviour is incidental.
 | hold label + lane label | hold wins (row 5-8), lane label inert until un-parked |
 | hold label + **auto-merge armed** | ❌ **the daemon holds and GitHub merges anyway** — see §7 |
 
-**Draft × hold**
+**Draft × everything.** `is_draft` is checked FIRST, above `DIRTY` and above the armed-auto-merge
+wait, so a draft is never rebased and an armed draft is never recognised.
 
 | | Held | Not held |
 |---|---|---|
 | Draft | parked; the answer lane can release it | ❌ parked with no label, no comment, no question — and the answer branch lives *inside* the hold check, so an owner reply cannot reach it |
+| Draft + `DIRTY` | never rebased | never rebased |
+| Draft + armed | hold honoured, arm untouched | arm never recognised |
+
+**Merge queue × everything else — the largest omission.** `queue_state` is read **last**, below
+`fix`, `review` and `selfreview`. So a PR that is *already in the merge queue*:
+
+| Queued PR also has… | What happens | Consequence |
+|---|---|---|
+| a failed required check | dispatches `fix` | the fix **pushes a commit, ejecting it from the queue** |
+| an unresolved Copilot thread | dispatches `review` | same — the reply/resolve pushes |
+| a stale review | dispatches `selfreview` | same |
+| checks pending | reports `ci_running`, not `in_merge_queue` | an operator reading the state is misled |
+
+Row 29 reads as though queue membership is checked early. It is only checked on the fully-green path.
+
+**Lane labels on the wrong kind**
+
+| Combination | Today |
+|---|---|
+| `agent:revise`/`depfix`/`docfix` on an **ISSUE** | never read — those branches are PR-only, so the issue falls to `issue_not_ready`. `reconcile` queries them for PRs only, so it does not even enter the queue |
+| `agent:ready` on a **PR** | inert; it satisfies the `agent:` admission test and nothing else |
+| fork PR / release-please PR | `not_admissible` → DB `parked`, `wake_in=None`, **and no GitHub side effect at all** (see §4 ⚠️). Invisible and permanent |
 
 ---
 
@@ -253,13 +294,20 @@ and never writes.
 | `revise` | agent | 2 | 1500s |
 | `depfix` | agent | 3 | 1200s |
 | `docfix` | agent | 3 | 600s |
-| `merge` | gh | 3, keyed **per head SHA** | 180s |
-| `park` / `unpark` | gh | 3 | 180s |
+| `merge` | gh | **3, but not from this table** — see below | 180s |
+| `park` / `unpark` | gh | **none — they charge no ledger at all** | 180s |
 | `phasefix` | — | 2 | 600s — **never emitted by `decide()`** |
 
-Timeouts stretch up to 1.5× at full pool occupancy. `merge` is the only per-head budget: the merge
-queue judges heads, so a new head is genuinely a new question. Everywhere else a per-head key would
-let an agent refill its own meter by pushing a commit.
+Timeouts stretch up to 1.5× at full pool occupancy.
+
+The merge budget is **three independent 3s that agree by coincidence**, and this is worth knowing
+before changing any of them. `MODE_BUDGET["merge"]` is never read for the merge action — the child is
+dispatched as `merge_enable`, so `budget_for` misses and returns `DEFAULT_BUDGET`. `merge_enable.sh`
+ignores `LEMD_BUDGET` entirely and enforces its own `MERGE_MAX_REQUEUES` (default 3), which is also
+where the per-head keying actually lives. `PER_HEAD_MODES` in `policy.py` has **zero consumers**:
+`policy.exhausted()` is only ever called with the default reset key. The *intent* — a new head is a
+new question for the merge queue, and elsewhere a per-head key would let an agent refill its own
+meter by pushing a commit — is real and correct; the wiring is not.
 
 **Exit codes carry meaning** — collapsing them is how v1 retried a refusal every five minutes:
 
@@ -269,8 +317,8 @@ let an agent refill its own meter by pushing a commit.
 | `EX_BUDGET` 71 | this (item, mode) is spent | park `{mode}_exhausted` |
 | `EX_BUSY` 72 | another claimant holds the branch | retry in 120s |
 | `EX_SETUP` 73 | environment not preparable | ⚠️ treated as a plain failure — no backoff |
-| `RC_KILLED` -9 | we stopped it on its deadline | re-observe |
-| `RC_VANISHED` -99 | its process was already gone | re-observe |
+| `RC_KILLED` -9 | we stopped it on its deadline | falls to the generic branch → re-observe |
+| `RC_VANISHED` -99 | its process was already gone | closed inside `_reap_adopted`, which `collect()` never sees → re-observe |
 
 `RC_KILLED` and `RC_VANISHED` are separate because collapsing them cost a real misdiagnosis: nine
 runs closed `-9` with a ~675s mean read exactly like a timeout problem, and were adopted orphans from
@@ -293,7 +341,10 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 
 | Gap | Why it matters | Issue |
 |---|---|---|
+| **`decide()` never returns `ACT_PARK`.** Rows 4, 17 and 18 write the DB state and `pending_mode=None`, so `park.sh` never runs and `daemon.py`'s `ACT_PARK` branch is dead code. An inadmissible item, a not-ready issue and a human-drafted PR are parked with **no comment, no label, no assignee and no auto-merge disarm** — invisible in GitHub. Only budget exhaustion reaches a real park | the escalation path this pipeline is built around does not exist for three of its four entrances | TBD |
 | **A human hold does not disarm auto-merge.** Only `park.sh` runs `--disable-auto`. A hand-applied `needs-human` on an armed PR is honoured by the daemon and ignored by GitHub, which merges when the gate clears | safety — a merge nobody authorised | TBD |
+| **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | TBD |
+| **`unpark.sh` always routes to `agent:revise`**, and that lane outranks the merge ladder. A PR parked for `selfreview_exhausted` has no owner direction to apply, so it burns 2 `revise` runs on an empty lane and re-parks. Observed on #1289 and #1296 | the un-park treadmill survives the marker fix | TBD |
 | **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | TBD |
 | **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | TBD |
 | **`UNKNOWN` mergeability reads as healthy** (§5) | the #1082 shape, unfixed | TBD |
@@ -303,8 +354,8 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | **`USAGE_PAUSE_MINUTES` never reaches `lane_for.py`** — `config.env` says 120, the bounded self-review wait uses the default 60 | | TBD |
 | **`LEMD_GH_SLOTS` (status.sh) vs `MAX_GH_ACTIONS` (config.py)** — two names, one setting | | TBD |
 | **`status.sh` omits `unpark`** from the gh pool, so an in-flight un-park is charged to the agent pool | | TBD |
-| **Dead code**: `capacity.compute()` and `spend.state()/choose_lane()/record()` have no callers; live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable. `items.issue_number/risk/model_hint` are never written | | TBD |
-| **v2 has no phase guard.** v1 held a PR closing a phased issue whose later phases were untracked (`tick.sh:717-741`); v2 merges it | a shipped issue can silently lose its remaining scope | TBD |
+| **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | TBD |
+| **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | TBD |
 | **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | TBD |
 
 ---
@@ -328,7 +379,7 @@ box-local edit is never silently overwritten.
 |---|---|---|
 | `lem-agentd.service` | `lem` | the scheduler. `KillMode=process` so 45-minute agent children survive a restart |
 | `lem-agent-webhook.service` | `lem` | the receiver, hardened, `MemoryMax=256M`, secret from a root-owned file |
-| `lem-agentd-watchdog.timer` | root | liveness + heartbeat freshness every 15 min |
+| `lem-agentd-watchdog.timer` | root (see note) | liveness + heartbeat freshness every 15 min |
 | `lem-gh-token.timer` | root | mints the App installation token every 45 min; root holds the key |
 | `lem-agent.slice` | — | the CPU/memory envelope (`CPUQuota=300%`, `MemoryMax=3G`). **Box-only — not in the repo** |
 
@@ -341,6 +392,11 @@ sqlite3 v2/state/queue.db 'select kind,number,state,pending_mode from items wher
 touch PAUSED                           # stop everything (shared with v1)
 v2/rollback.sh                         # hand dispatch back to v1
 ```
+
+⚠️ The watchdog unit sets `User=root`, but `watchdog.sh` documents itself as running as `lem` and
+uses `sudo -n systemctl restart` on that basis. One of the two is stale: if the unit is right the
+`sudo -n` path and its failure branch are dead code; if the script is right the unit drifted. Resolve
+before touching either half.
 
 **Pause vs retire.** `PAUSED` stops both runners. `V1_RETIRED` demotes v1 to the failsafe cron and is
 what `cutover.sh` writes — deliberately not `PAUSED`, because `tick.sh` exits unconditionally on
