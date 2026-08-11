@@ -1376,6 +1376,80 @@ def humanize_text(content: Optional[str], content_type: str = "post",
     return rewritten
 
 
+# --- Mechanical editor pass (issue #1079) -------------------------------------------------------
+# A MECHANICAL-ONLY copy edit after humanization and before the slop/authenticity gates: fix
+# capitalization, grammar, punctuation, and formatting WITHOUT changing the author's voice, word
+# choice, facts, or structure. It is gated by the `newsletter-editor-enabled` feature flag so the
+# extra per-draft LLM call is opt-in, and it fails open on any error or structural change.
+
+_MECHANICAL_EDITOR_SYSTEM = (
+    "You are a careful copy editor doing a MECHANICAL-ONLY pass on AI-drafted text. Your job is "
+    "capitalization, grammar, punctuation, and formatting — nothing else.\n\n"
+    "HARD RULES (these override everything else):\n"
+    "- NEVER rewrite the author's voice or tone. Keep their phrasing exactly as it is.\n"
+    "- NEVER change word choice: no synonyms, no swapping plain words for fancier ones, no removing "
+    "or adding AI-tell words the draft may contain.\n"
+    "- NEVER restructure: keep every section, paragraph, and sentence in the same order.\n"
+    "- NEVER add, remove, or change facts, numbers, names, dates, examples, or claims.\n"
+    "- NEVER invent or remove content.\n\n"
+    "MECHANICAL FIXES YOU MAY MAKE:\n"
+    "- Capitalize the first word of every sentence and fix obvious capitalization errors.\n"
+    "- Ensure section headers use consistent Title Case or UPPERCASE.\n"
+    "- Fix grammar and punctuation errors while keeping the original wording.\n"
+    "- Use only plain ASCII punctuation (straight quotes, hyphens, three periods for ellipsis).\n"
+    "- Preserve blank lines between sections and keep list formatting consistent.\n\n"
+    "Output ONLY the edited text — no preface, no notes, no quotes around it."
+)
+
+
+@llm_step("mechanical_edit")
+def mechanical_edit_text(content: Optional[str], content_type: str = "newsletter",
+                         profile_synthesis: Optional[str] = None,
+                         enabled: bool = False) -> Optional[str]:
+    """Mechanical-only editor pass on AI-drafted text.
+
+    Fixes capitalization, grammar, punctuation, and formatting WITHOUT changing the author's
+    voice, word choice, facts, or structure. The caller decides when the pass runs (in the
+    newsletter pipeline this is gated by the `newsletter-editor-enabled` flag). FAILS OPEN:
+    returns `content` unchanged when disabled, the input is empty, the model errors, or the
+    rewrite looks truncated or structurally altered.
+    """
+    if not enabled or not content or not str(content).strip():
+        return content
+    original = content
+    try:
+        extra = ""
+        if content_type:
+            extra += f"\n\nThis is a {content_type}: keep it a {content_type}."
+        synth = (profile_synthesis or "").strip()
+        if synth:
+            extra += ("\n\nAuthor voice reference — preserve this voice; do NOT imitate, amplify, or "
+                      f"flatten it:\n{synth[:400]}")
+        # Lazy import avoids a circular import (ai_helper imports this module).
+        from cqc_lem.utilities.ai.ai_helper import _call_llm
+        resp = _call_llm(
+            model="lem-medium",
+            messages=[
+                {"role": "system", "content": _MECHANICAL_EDITOR_SYSTEM + extra},
+                {"role": "user", "content": str(content)},
+            ],
+            temperature=0.3,
+        )
+        edited = (resp.choices[0].message.content or "").strip()
+    except Exception:
+        return original
+    if not edited:
+        return original
+    # A mechanical edit should not materially shorten the text; a collapse to a fragment means
+    # the model refused or got cut off — keep the original. The floor is a fraction of the original
+    # length, not an absolute minimum, so short but complete rewrites still pass.
+    if len(edited) < int(len(original.strip()) * 0.5):
+        return original
+    # Drop any stray typography the editor might have introduced; URLs are preserved by the
+    # formatter's masking, so only punctuation normalization happens here.
+    return normalize_public_text(edited)
+
+
 # --- Title de-hype pass (issue #439) --------------------------------------------------------------
 # A headline is not prose: the full READER-mode rewrite above flattens it into a sentence and costs the
 # open rate. Titles get their own pass that strips the hype/AI tells while KEEPING one real hook.

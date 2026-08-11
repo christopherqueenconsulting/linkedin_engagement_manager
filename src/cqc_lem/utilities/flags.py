@@ -72,6 +72,7 @@ TUTORIAL_VIDEOS = "tutorial-videos-enabled"
 FEED_FALLBACK_DEFAULT = "feed-fallback-when-empty-default"
 COST_ROUTING = "cost-routing-enabled"
 POSTHOG_SURVEYS = "posthog-surveys-enabled"
+NEWSLETTER_EDITOR = "newsletter-editor-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -122,6 +123,15 @@ FLAGS: Dict[str, FlagSpec] = {
                          "scheduler down, so a user is never prompted twice. The bespoke asks — the "
                          "review that unlocks the extended trial, the per-issue fix CSAT — are "
                          "unaffected either way."),
+        ),
+        FlagSpec(
+            key=NEWSLETTER_EDITOR,
+            env_var="NEWSLETTER_EDITOR_ENABLED",
+            default=False,
+            owner="content",
+            description=("Final mechanical LLM edit pass on newsletter drafts (capitalization, grammar, "
+                         "punctuation, formatting) before slop-lint review. Adds one lem-medium call per "
+                         "draft."),
         ),
     )
 }

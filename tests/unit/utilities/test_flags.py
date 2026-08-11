@@ -35,7 +35,8 @@ def _clean_flag_state(monkeypatch):
     for name in ("POSTHOG_FLAGS_ENABLED", "POSTHOG_API_KEY", "POSTHOG_PERSONAL_API_KEY",
                  "POSTHOG_FLAG_POLL_SECONDS",
                  "COMMENT_RESEARCH_ENABLED", "TUTORIAL_VIDEOS_ENABLED",
-                 "FEED_FALLBACK_WHEN_EMPTY_DEFAULT", "COST_ROUTING_ENABLED"):
+                 "FEED_FALLBACK_WHEN_EMPTY_DEFAULT", "COST_ROUTING_ENABLED",
+                 "NEWSLETTER_EDITOR_ENABLED"):
         monkeypatch.delenv(name, raising=False)
     flags.reset_flag_state()
     yield
@@ -60,7 +61,7 @@ class TestRegistry:
     def test_exported_constants_are_all_registered(self):
         for key in (flags.COMMENT_RESEARCH, flags.TUTORIAL_VIDEOS,
                     flags.FEED_FALLBACK_DEFAULT, flags.COST_ROUTING,
-                    flags.POSTHOG_SURVEYS):
+                    flags.POSTHOG_SURVEYS, flags.NEWSLETTER_EDITOR):
             assert key in flags.FLAGS
 
     def test_safety_controls_are_not_flags(self):
