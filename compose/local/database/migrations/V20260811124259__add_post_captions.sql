@@ -1,10 +1,10 @@
 -- Muted-autoplay video captions (issue #1278, decision 1A: burn the text into the MP4).
 --
 -- The burned card is derived from the post's own opening line, so `caption_text` is the record of
--- what a viewer actually saw on the frame — the caption can no longer be re-derived once the post
--- content is edited or regenerated. `caption_srt_url` is the /api/assets URL of the .srt sidecar
--- that was burned; it is written even when the burn is skipped (an avatar-led video without the
--- overlay opt-in), so the author can attach captions on LinkedIn manually.
+-- the caption this video was given — it can no longer be re-derived once the post content is
+-- edited or regenerated. `caption_srt_url` is the /api/assets URL of the .srt sidecar that was
+-- written; the sidecar exists even when the burn itself is skipped (an avatar-led video without
+-- the overlay opt-in) or fails open, so the author can attach captions on LinkedIn manually.
 --
 -- Both NULL = this post ships uncaptioned, which is the default state: the feature is behind the
 -- `video-captions-enabled` flag and nothing gates on these columns.

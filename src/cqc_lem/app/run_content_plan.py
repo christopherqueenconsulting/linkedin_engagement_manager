@@ -1178,8 +1178,14 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
     signing would strip the credentials) and before `posts.video_url` is persisted — the stored
     URL then points at the video that actually ships.
 
+    In place also means the probed file is REPLACED, so the burn is handed `_probe_video_file` and
+    the re-encoded output has to pass the same check the download did (issue #1280) before it is
+    allowed to become the post's media. Otherwise the only bytes LinkedIn ever receives would be
+    the one version nothing verified.
+
     Never raises and never changes the stored URL: an off flag, an unusable hook, a missing
-    ffmpeg or a failed burn all leave the uncaptioned video exactly where it was.
+    ffmpeg, a failed burn or an output that fails the probe all leave the uncaptioned video
+    exactly where it was.
     """
     from cqc_lem.utilities.db import post_used_avatar_media, update_db_post_captions
     from cqc_lem.utilities.video_captions import apply_captions_to_video, caption_srt_asset_url
@@ -1187,7 +1193,8 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
     try:
         result = apply_captions_to_video(
             video_file_path, content, post_id=post_id, user_id=user_id,
-            avatar_led=post_used_avatar_media(post_id))
+            avatar_led=post_used_avatar_media(post_id),
+            validate=lambda path: _probe_video_file(path)[0])
     except Exception as e:
         # apply_captions_to_video already fails open; this only catches an import/DB fault.
         log_warning("Video captioning step could not run — shipping the video uncaptioned", exc=e,

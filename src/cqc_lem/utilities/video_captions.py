@@ -20,16 +20,16 @@ Three things this deliberately does NOT do:
   not the captions.
 
 It fails OPEN in every direction: no ffmpeg, an unreadable video, a caption that comes out empty,
-a non-zero exit — the post keeps the video it already had. A caption is an enhancement, and the
-gate that decides whether a video post may ship (`_post_missing_required_asset`) is deliberately
-somewhere else.
+a non-zero exit, an output the caller's probe rejects — the post keeps the video it already had. A
+caption is an enhancement, and the gate that decides whether a video post may ship
+(`_post_missing_required_asset`) is deliberately somewhere else.
 """
 import os
 import shutil
 import subprocess
 import textwrap
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from cqc_lem.utilities.env_constants import (
     VIDEO_CAPTION_HOLD_SECONDS,
@@ -208,6 +208,19 @@ def burn_captions(video_path: str, srt_path: str, out_path: str, timeout: int = 
     return True
 
 
+def _discard(path: str) -> None:
+    """Remove a temp render, ignoring a file that was never written.
+
+    Every burn failure leaves whatever ffmpeg had flushed before it gave up. Nothing purges it —
+    `purge_post_assets` only knows the post's own video name — so an unremoved temp accumulates on
+    the shared assets volume once per failed render, forever.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _track_burn_cost(video_path: str, user_id: Optional[int], post_id: Optional[int]) -> None:
     """Attribute the local render minutes the burn spent, mirroring the tutorial renderer."""
     try:
@@ -253,7 +266,8 @@ def caption_srt_asset_url(srt_path: str) -> str:
 
 def apply_captions_to_video(video_path: str, content: Optional[str], *,
                             post_id: Optional[int] = None, user_id: Optional[int] = None,
-                            avatar_led: bool = False) -> CaptionResult:
+                            avatar_led: bool = False,
+                            validate: Optional[Callable[[str], bool]] = None) -> CaptionResult:
     """Caption a just-stored video in place: write the sidecar, then burn it in when allowed.
 
     The burn writes a temp file and only replaces `video_path` once ffmpeg produced something
@@ -267,6 +281,11 @@ def apply_captions_to_video(video_path: str, content: Optional[str], *,
         user_id: the owner, who resolves the feature flag and the avatar opt-in.
         avatar_led: this video was rendered off the user's avatar (`posts.avatar_media`), so the
             burn needs `users.avatar_caption_overlay` on top of the feature flag.
+        validate: the caller's asset probe, run on the BURNED file before it replaces the original.
+            The input was probed (issue #1280); the re-encode makes the shipped file a different
+            one, so without this the bytes that actually reach LinkedIn are the only bytes nothing
+            ever checked. A False verdict keeps the original — ffmpeg exiting 0 is not proof the
+            output is playable.
 
     Returns:
         A `CaptionResult` whose `video_path` is always usable. Callers persist `caption_text` /
@@ -304,8 +323,17 @@ def apply_captions_to_video(video_path: str, content: Optional[str], *,
 
         burned_path = f"{video_path}.captioned.mp4"
         if not burn_captions(video_path, srt_path, burned_path):
+            # No warning here — burn_captions logged the reason where it detected it.
+            _discard(burned_path)
             return CaptionResult(video_path=video_path, srt_path=srt_path,
                                  caption_text=caption_text, skipped_reason="burn_failed")
+
+        if validate is not None and not validate(burned_path):
+            log_warning("The captioned video did not pass the asset probe — shipping the original",
+                        post_id=post_id, user_id=user_id, task_name=TASK_NAME)
+            _discard(burned_path)
+            return CaptionResult(video_path=video_path, srt_path=srt_path,
+                                 caption_text=caption_text, skipped_reason="burn_rejected")
 
         _track_burn_cost(video_path, user_id, post_id)
         # Replace in place so the stored asset URL (and any C2PA signing that follows) applies to

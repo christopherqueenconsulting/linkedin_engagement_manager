@@ -165,6 +165,42 @@ class TestApplyCaptions:
         assert result.burned is False and result.skipped_reason == "burn_failed"
         assert open(video, "rb").read() == original
 
+    def test_failed_burn_leaves_no_temp_render_behind(self, video):
+        """Nothing purges the temp — `purge_post_assets` only knows the post's own video name."""
+        def _half_written(src, srt, out, timeout=600):
+            with open(out, "wb") as f:
+                f.write(b"PARTIAL")
+            return False
+
+        with patch(f"{_MOD}.burn_captions", side_effect=_half_written):
+            vc.apply_captions_to_video(video, "Hook line.", post_id=1, user_id=2)
+        assert not os.path.exists(f"{video}.captioned.mp4")
+
+    def test_a_burn_the_probe_rejects_never_replaces_the_original(self, video):
+        """The input was probed; the re-encode is a DIFFERENT file and has to earn the same pass."""
+        original = open(video, "rb").read()
+        with patch(f"{_MOD}.burn_captions", side_effect=_burn_ok), \
+             patch(f"{_MOD}._track_burn_cost") as cost:
+            result = vc.apply_captions_to_video(video, "Hook line.", post_id=1, user_id=2,
+                                                validate=lambda path: False)
+        assert result.burned is False and result.skipped_reason == "burn_rejected"
+        assert open(video, "rb").read() == original
+        assert not os.path.exists(f"{video}.captioned.mp4")
+        # Nothing shipped, so nothing is billed.
+        cost.assert_not_called()
+
+    def test_a_burn_the_probe_accepts_ships(self, video):
+        seen: list = []
+        with patch(f"{_MOD}.burn_captions", side_effect=_burn_ok), \
+             patch(f"{_MOD}._track_burn_cost"):
+            result = vc.apply_captions_to_video(
+                video, "Hook line.", post_id=1, user_id=2,
+                validate=lambda path: seen.append(path) is None)
+        assert result.burned is True
+        assert open(video, "rb").read() == b"CAPTIONED"
+        # The probe ran on the BURNED temp, not on the original it is about to replace.
+        assert seen == [f"{video}.captioned.mp4"]
+
     def test_any_error_fails_open(self, video):
         with patch(f"{_MOD}.caption_lines", side_effect=RuntimeError("nope")):
             result = vc.apply_captions_to_video(video, "Hook line.", post_id=1, user_id=2)

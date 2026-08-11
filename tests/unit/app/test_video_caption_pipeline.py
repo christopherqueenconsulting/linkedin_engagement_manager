@@ -51,6 +51,21 @@ class TestCaptionVideoAsset:
             _caption_video_asset(7, video, "Hook line", user_id=3)
         store.assert_not_called()
 
+    def test_the_burned_file_is_re_probed_before_it_replaces_the_original(self, tmp_path):
+        """The probe accepted the DOWNLOAD; the re-encode is what LinkedIn actually receives."""
+        from cqc_lem.app.run_content_plan import _caption_video_asset
+        video = _valid_mp4(tmp_path)
+        truncated = str(tmp_path / "truncated.mp4")
+        open(truncated, "wb").write(b"not an mp4")
+        with patch("cqc_lem.utilities.db.post_used_avatar_media", return_value=False), \
+             patch("cqc_lem.utilities.db.update_db_post_captions"), \
+             patch(f"{_CAPTIONS}.apply_captions_to_video",
+                   return_value=_Result(video, burned=False)) as apply:
+            _caption_video_asset(7, video, "Hook line", user_id=3)
+        validate = apply.call_args.kwargs["validate"]
+        assert validate(video) is True
+        assert validate(truncated) is False
+
     def test_avatar_led_flag_comes_from_the_post_row(self, tmp_path):
         from cqc_lem.app.run_content_plan import _caption_video_asset
         video = _valid_mp4(tmp_path)
