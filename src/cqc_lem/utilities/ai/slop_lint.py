@@ -26,7 +26,10 @@ import statistics
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_alignment import AI_TELL_WORDS
-from cqc_lem.utilities.ai.content_framework import POST_BANNED_SCAFFOLDS
+from cqc_lem.utilities.ai.content_framework import (
+    NEWSLETTER_BANNED_SCAFFOLDS,
+    POST_BANNED_SCAFFOLDS,
+)
 from cqc_lem.utilities.linkedin_formatter import contains_engagement_bait
 
 SEVERITY_HARD = "hard"
@@ -274,15 +277,17 @@ def banned_phrases() -> tuple:
 
 
 def banned_scaffolds() -> tuple:
-    """`content_framework.POST_BANNED_SCAFFOLDS`, extended per-deploy via SLOP_LINT_EXTRA_SCAFFOLDS.
+    """The banned-scaffold list, extended per-deploy via `SLOP_LINT_EXTRA_SCAFFOLDS`.
 
-    Never a second list: the shared constant is what the writer-side post directive names, so a
-    phrase can only be banned in the prompt and unchecked here (or the reverse) by editing it away.
+    `content_framework.POST_BANNED_SCAFFOLDS` + `NEWSLETTER_BANNED_SCAFFOLDS`.
+    Never a second list: the shared constants are what the writer-side directives name, so a phrase
+    can only be banned in the prompt and unchecked here (or the reverse) by editing it away.
     """
     extra = [p.strip().lower()
              for p in (os.environ.get("SLOP_LINT_EXTRA_SCAFFOLDS") or "").split(",")]
-    return POST_BANNED_SCAFFOLDS + tuple(p for p in dict.fromkeys(extra)
-                                         if p and p not in POST_BANNED_SCAFFOLDS)
+    base = POST_BANNED_SCAFFOLDS + NEWSLETTER_BANNED_SCAFFOLDS
+    return base + tuple(p for p in dict.fromkeys(extra)
+                        if p and p not in base)
 
 
 # ---------------------------------------------------------------------------
@@ -485,17 +490,18 @@ def find_canned_scaffolds(text: Optional[str]) -> list:
 
 
 def _check_scaffold(text: str, sents: list, ctx: dict) -> Optional[dict]:
-    # POST-only ON PURPOSE. Every phrase in the list was sampled from LEM's own POST system
-    # prompts, and comments already run their own filler-opener contract
+    # POST + NEWSLETTER ON PURPOSE. Every phrase in the list was sampled from LEM's own POST and
+    # NEWSLETTER system prompts; comments already run their own filler-opener contract
     # (content_framework.comment_filler_openers) against a tighter, addressed voice — grading a
-    # comment against the post list would fire a second signal for the same idea on a surface the
-    # evidence never measured.
-    if ctx.get("content_type") != "post":
+    # comment against the post/newsletter list would fire a second signal for the same idea on a
+    # surface the evidence never measured.
+    if ctx.get("content_type") not in ("post", "newsletter"):
         return None
     hits = find_canned_scaffolds(text)
     if not hits:
         return None
-    return {"detail": ("leans on canned scaffolding that would paste unchanged under any post: "
+    surface = ctx.get("content_type", "post")
+    return {"detail": (f"leans on canned scaffolding that would paste unchanged under any {surface}: "
                        + ", ".join(f'"{h}"' for h in hits[:5])),
             "evidence": hits[:5], "score": float(len(hits)), "threshold": 0.0}
 

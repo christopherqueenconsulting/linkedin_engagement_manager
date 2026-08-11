@@ -711,6 +711,14 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
             "- VARIETY OF SHAPE IS MANDATORY: no two consecutive editions may share a format or a "
             "hook_style, and avoid the recently used formats/hook styles the user lists. Assign the "
             "format and hook style that BEST FIT each subject while honoring that rotation.\n"
+            "- TITLE/SUBTITLE PAIRING: each subject must be specific enough to become an inbox-worthy "
+            "title + subtitle that opens a curiosity gap and promises a concrete payoff. Avoid generic "
+            "newsletter labels like 'Weekly update', 'Issue #N', or 'What you missed'.\n"
+            "- CTA FIT: every edition must close with a reply-driving question plus a soft subscribe "
+            "invite; prefer assigning reply_question, share_forward, or teaser_next CTA styles.\n"
+            "- BLOG-READY ANGLES: where possible, choose angles that can be grounded in a single specific "
+            "source (a recent article, a case, a framework) rather than a generic advice roundup, so "
+            "blog alignment has something concrete to track.\n"
             "- Subjects are about the READER'S growth and the newsletter's topic — NOT about the "
             "author's own products. " + _NEWSLETTER_SOFT_PROMO_NOTE + " At most ONE of the planned "
             "subjects may LIGHTLY touch tools/tooling; keep every other subject tool-agnostic.\n\n"
@@ -797,7 +805,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     'format','hook_style','cta_style','opening_line'} or None.
     """
     import json as _json
-    src = f"\n\nSource material to repurpose (from the author's blog):\n{blog_content[:4000]}" if blog_content else ""
+    src = (f"\n\nSOURCE MATERIAL — repurpose this author's blog content. The edition must TRACK its "
+           f"central claim, example, or framework; do not drift into generic advice:\n{blog_content[:4000]}"
+           if blog_content else "")
     topic_line = f"Newsletter overall theme/description: {topic}\n" if topic else ""
     subject_line = (f"THIS edition's specific subject/angle to develop (make the edition about THIS): "
                     f"{subject}\n") if subject else ""
@@ -830,7 +840,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
 
         STRUCTURE (in this order):
         1. A strong 2–4 line HOOK/lede that names a specific pain, tension, or promise and makes the
-           reader want to keep going. No throat-clearing, no "In today's edition...".
+           reader want to keep going. No throat-clearing, no edition-number opens.
         2. 3-5 WELL-DEVELOPED sections. Each section = a plain-text subhead on its own line, then 2-4
            short paragraphs that make ONE point and back it with a concrete example, brief story,
            data point, or step-by-step — NOT a single throwaway line. Depth is the whole job here.
@@ -858,12 +868,15 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
 
         Return ONLY valid JSON with exactly these keys:
         {"title": "...", "subtitle": "...", "subject": "...", "body": "..."}
-        - title: a specific, benefit-driven, scroll-stopping edition title (<= ~90 chars).
-        - subtitle: a <= 150 character description of what THIS edition delivers and why to read it
-          (for LinkedIn's edition-description field). Plain text, no markdown.
+        - title: a specific, curiosity-driven edition title (<= ~90 chars). Write it as an INBOX
+          SUBJECT LINE: open a clear loop the reader needs closed, no edition numbers, no dates.
+        - subtitle: a <= 150 character preview that promises a concrete payoff without closing the
+          title's loop. Think "email preview text", not an H1 summary.
         - subject: a short (<= ~120 char) phrase naming THIS edition's specific subject/angle, for
           internal dedup history (echo the given subject when one is provided).
-        - body: the full plain-text article with real line breaks (\\n) as described above.""" + blueprint_block,
+        - body: the full plain-text article with real line breaks (\\n) as described above."""
+                   + blueprint_block
+                   + _framework.newsletter_writing_directive(),
     }
     user_prompt = {"role": "user",
                    "content": f"Author voice reference (TONE + CREDIBILITY only):\n"

@@ -146,6 +146,27 @@ class TestGenerationWritesToBlueprint:
         assert out["cta_style"] == "debate"
         assert out["opening_line"] == "The opener line."
 
+    def test_newsletter_writing_directive_injected(self):
+        _, system, _ = self._gen(blueprint=self._BLUEPRINT)
+        assert "LinkedIn newsletter craft rules" in system
+        assert "inbox subject line" in system.lower()
+        assert "cover-image brief" in system
+        assert "NOTIFICATION-DRIVEN reader" in system
+
+    def test_system_prompt_carries_no_canned_scaffold(self):
+        from cqc_lem.utilities.ai.slop_lint import find_canned_scaffolds
+        _, system, _ = self._gen(blueprint=self._BLUEPRINT)
+        # The directive itself quotes the banned list, so remove it before grading.
+        directive_only = system.split("LinkedIn newsletter craft rules")[0]
+        assert find_canned_scaffolds(directive_only) == [], (
+            "newsletter system prompt supplies a template the lint flags in the output")
+
+    def test_user_prompt_blog_fidelity_signal(self):
+        _, _, user = self._gen(blog_content="The central framework is X.")
+        assert "SOURCE MATERIAL" in user
+        assert "TRACK its central claim" in user
+        assert "The central framework is X." in user
+
     def test_avoid_openers_injected(self):
         _, _, user = self._gen(avoid_openers=["Most founders treat X like Y.", "It was a Tuesday."])
         assert "Most founders treat X like Y." in user
@@ -194,8 +215,6 @@ class TestGenerationWritesToBlueprint:
         assert out["opening_line"] == "First body line"
 
 
-class TestPlanNewsletterTopics:
-    def test_returns_distinct_subjects(self):
         from cqc_lem.utilities.ai import ai_helper
         payload = json.dumps({"editions": [
             {"subject": "Content frameworks that scale", "angle": "foundational"},
@@ -319,3 +338,13 @@ class TestPlannerEmitsBlueprints:
         system = call.call_args.kwargs["messages"][0]["content"]
         for key in FORMATS:
             assert key in system
+
+    def test_planner_prompt_targets_inbox_and_cta(self):
+        from cqc_lem.utilities.ai import ai_helper
+        payload = json.dumps({"editions": [{"subject": "A", "angle": "1"}]})
+        with patch(f"{_AI}._call_llm", return_value=_resp(payload)) as call:
+            ai_helper.plan_newsletter_topics("v", "d", None, [], 1)
+        system = call.call_args.kwargs["messages"][0]["content"]
+        assert "inbox-worthy title + subtitle" in system
+        assert "reply-driving question" in system
+        assert "blog alignment has something concrete to track" in system
