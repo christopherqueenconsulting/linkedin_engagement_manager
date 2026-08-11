@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.146.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.145.0...v0.146.0) (2026-08-11)
+
+
+### Features
+
+* **api,ui:** public brand showcase endpoint and front-page section (closes [#1299](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1299)) ([#1307](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1307)) ([5d88c9d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5d88c9d0e19b8d523109e9d1618a39a36d284998))
+* **avatars:** telemetry-only likeness probe on video source frames (closes [#1279](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1279)) ([#1431](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1431)) ([ee11ee1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ee11ee15e315c01c0a3e14d79fbd34348db0e0ca))
+* **content_quality:** deterministic motion-prompt linter before a Runway credit is spent (closes [#1277](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1277)) ([#1438](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1438)) ([9631b49](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9631b4950ffce91e0de772a825b0e5b4a73b249c))
+* **content_quality:** extend telemetry to video-specific dimensions (closes [#1281](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1281)) ([#1365](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1365)) ([389ba4b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/389ba4b50a1b5e481d91783ee57136a45bbf023a))
+* **content-quality:** calibrate newsletter canned_scaffold severity to HARD + corpus sampler (closes [#1285](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1285)) ([#1429](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1429)) ([e12cce6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e12cce64e36c0d664dc62e4d1e578c759334bd15))
+* **content-quality:** grade post similarity embedding-first (closes [#1265](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1265)) ([#1440](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1440)) ([30c6250](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/30c6250826435ce60f6498bc6d56d627311f29df))
+* **model-health:** report a CONFIGURED Ollama tag that vanishes from the catalog (closes [#1237](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1237)) ([#1442](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1442)) ([43bdc9e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/43bdc9e0fefe17b9c2a1b29e50889f3a0909c2e9))
+* **newsletter:** re-audit against real editions and a fetched exemplar (closes [#1284](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1284)) ([#1436](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1436)) ([17ac06a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/17ac06ad54047c3d0e0506507104aa365222a275))
+* **observability:** capture feed sort-control DOM evidence as an event (closes [#1270](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1270)) ([#1274](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1274)) ([504a10c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/504a10c2eae11034e9689e4920810a13ebc30112))
+* **ui:** add SEO meta tags, Open Graph, Twitter card, sitemap and robots.txt (closes [#1298](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1298)) ([#1304](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1304)) ([1856c4e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1856c4e2c9c7b60e64bc870a8c5a5c5e61a3574e))
+
+
+### Bug Fixes
+
+* **content_quality:** score authenticity on the draft that ships, not the pre-retry one (closes [#1264](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1264)) ([#1441](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1441)) ([aafbfe9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/aafbfe9031e91c5867c820e90eff469757925b7d))
+* **content_quality:** stop a determiner "one of the…" satisfying the A2 proof slot ([#1439](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1439)) ([ffa3044](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ffa304432c49abec061d957026f1990c3621e01a))
+
 ## [0.145.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.144.0...v0.145.0) (2026-08-11)
 
 
