@@ -121,13 +121,32 @@ gate was being fed by the prompt that defeated it.
 `post_writing_directive()` (the ONE place invariant post rules live — no parallel helper) now names
 the banned scaffolds and requires a closing question answerable only from the post itself.
 
-### F2 — The authenticity score describes a draft that may never ship → **#1264**
+### F2 — The authenticity score describes a draft that may never ship → **#1264** ✅ RESOLVED
 
-`create_text_post` scores authenticity *before* `_review_generated_post`, which can regenerate the
+`create_text_post` scored authenticity *before* `_review_generated_post`, which can regenerate the
 post. The retry re-enters with `similarity_check=False`, which is exactly the flag guarding the
-scoring call — so the stored score is the discarded draft's, and that is what the demote-to-PENDING
-gate and the nightly telemetry read back. Not fixed here: re-scoring changes which posts
-auto-publish and costs a judge call per regenerated post.
+scoring call — so the stored score was the discarded draft's, and that is what the demote-to-PENDING
+gate and the nightly telemetry read back.
+
+**Resolution (#1264):** the scoring call MOVED instead of being repeated. `_score_and_persist_authenticity`
+now runs at the END of `create_text_post` — after the review gate, the dwell reflow, the meeting-ask
+repair and the lead-magnet CTA repair — so the judge grades the text `create_text_post` returns. The
+pipeline order is now `generate -> A2 proof -> humanize -> review -> A1`. The only thing appended
+after that point is the fixed AI-visuals disclosure line (`_apply_ai_disclosure`, on a video/avatar-media
+post) — identical boilerplate on every such post, so it is deliberately not part of what the judge grades. Because the retry re-enters
+with `similarity_check=False`, it still never reaches the scoring line: **exactly one judge call per
+shipped post**, regenerated or not, so the fix carries no extra `lem-complex` spend. What it does
+change is which posts auto-publish — a regenerated draft is now judged on its own merits in both
+directions (a good first draft no longer shields a worse retry; a bad one no longer holds a fixed
+retry at PENDING).
+
+**Dwell-proxy score:** deliberately unchanged — it does not have this shape. All three
+`_score_and_persist_dwell` call sites (`regenerate_post_carousel_task`, `_finish_regenerated_post`,
+`auto_create_weekly_content`) already score the finished caption immediately before
+`update_db_post_content`, i.e. outside `create_text_post` and after every rewrite. It was already
+describing the shipped draft. Confirmed by the owner on PR #1441 (2026-08-11): ship the reorder as-is
+(no keep-the-worse-of-two variant, which would stop the stored number describing the shipped draft),
+and leave dwell alone rather than adding a redundant second write.
 
 ### F3 — The post similarity gate is lexical-only → **#1265** *(FIXED in #1265)*
 

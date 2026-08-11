@@ -2351,22 +2351,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             exempt_keyword=(lead_magnet or {}).get("keyword") if include_cta else None)
         final_content = final_content.strip()
 
-    # Humanization pass (issue #416 — A5): the final anti-AI-tell rewrite, BEFORE the authenticity gate
-    # so A1 scores the humanized text (generate -> A2 proof -> humanize -> A1 -> review). READER mode
-    # only, never fabricates, fails open. Outermost call only (mirrors the A1/review gates). The
-    # lead-magnet CTA mechanic is re-verified/repaired by ensure_lead_magnet_cta below, so a rewrite
-    # that reworded it is recovered deterministically.
+    # Humanization pass (issue #416 — A5): the final anti-AI-tell rewrite, BEFORE the review gate
+    # (generate -> A2 proof -> humanize -> review -> A1). READER mode only, never fabricates, fails
+    # open. Outermost call only (mirrors the A1/review gates). The lead-magnet CTA mechanic is
+    # re-verified/repaired by ensure_lead_magnet_cta below, so a rewrite that reworded it is
+    # recovered deterministically.
     if final_content and refine_final_post and similarity_check:
         final_content = humanize_text(final_content, content_type="post",
                                       profile_synthesis=profile_synthesis, prefs=prefs)
-
-    # Authenticity gate (issue #382 — 360Brew defense): score the finished draft for generic-AI risk
-    # + profile-topic consistency and persist the score BEFORE the similarity gate. The gate itself is
-    # a status demotion (APPROVED -> PENDING) applied by the content-plan status-setter, which reads
-    # the persisted score back — mirroring the deterministic similarity gate's demote-not-block posture.
-    if final_content and refine_final_post and similarity_check and post_id is not None:
-        _score_and_persist_authenticity(user_id, post_id, final_content, user_profile,
-                                        profile_synthesis, prefs)
 
     # Review gate (runs once, in the outermost call): deterministic near-duplicate check against the
     # user's recent posts with ONE avoid-directive retry, plus a cheap focus-alignment check. Never
@@ -2420,6 +2412,19 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
                      post_id=post_id, user_id=user_id, task_name="create_text_post")
             final_content = repaired
+
+    # Authenticity gate (issue #382 — 360Brew defense): score the finished draft for generic-AI risk
+    # + profile-topic consistency and persist the score. Runs LAST here, on the draft this function
+    # returns (issue #1264): the review gate above regenerates the post on a similarity / A2-proof /
+    # fabrication / slop failure, and its retry re-enters with `similarity_check=False` — the same
+    # flag guarding this call — so scoring earlier persisted the score of a draft that was thrown
+    # away. Still exactly ONE judge call per shipped post: the retry never reaches this line. The
+    # gate itself is a status demotion (APPROVED -> PENDING) applied by the content-plan
+    # status-setter, which reads the persisted score back — mirroring the deterministic similarity
+    # gate's demote-not-block posture.
+    if final_content and refine_final_post and similarity_check and post_id is not None:
+        _score_and_persist_authenticity(user_id, post_id, final_content, user_profile,
+                                        profile_synthesis, prefs)
 
     # Count the story-bank entry as used so the NEXT post rotates to different raw material. Only
     # the outermost call (the one that actually selected an entry) writes, and only when a post
