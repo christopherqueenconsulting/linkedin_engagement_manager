@@ -1,10 +1,13 @@
 # Agent Workflow Playbook — Issues, PRs, Labels & Comments
 
 How work flows through this repo's autonomous agent pipeline, and exactly what humans (owner and
-contributors) do at each point. The pipeline runner (`tick.sh` + `RUNBOOK.md`, on the VPS at
-`/home/lem/agent-pipeline/` — not in this repo) polls every 5 minutes, picks up ready issues,
-builds them in isolated worktrees, opens PRs, reviews, merges, and ships them on the release train
-(4x daily: 05/11/17/23 UTC). **Labels are the entire state machine** — this doc is the contract.
+contributors) do at each point. The runner is a long-lived daemon (`lem-agentd`, source in
+`scripts/agent-pipeline/v2/`, installed to `/home/lem/agent-pipeline/` on the VPS). It is woken by
+GitHub webhooks and reconciles on a timer, picks up ready issues, builds them in isolated worktrees,
+opens PRs, reviews, merges, and ships them on the release train (4x daily: 05/11/17/23 UTC).
+v1's `tick.sh` remains only as a heartbeat-gated failsafe. **Labels are the entire state machine** —
+this doc is the contract for them; the daemon's own states and decisions are
+[`agent-pipeline-v2.md`](agent-pipeline-v2.md).
 
 ## TL;DR — who is waiting on whom
 
