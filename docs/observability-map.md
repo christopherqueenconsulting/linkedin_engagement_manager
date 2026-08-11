@@ -8,6 +8,21 @@ Track events via `utilities/observability.py` (`track_llm_call` / `track_task` /
 Plan with the CLAUDE.md table, drill in here, then read the linked doc. Doc paths in the headings
 below are repo-root relative (`docs/llm-analytics.md` is this file's sibling).
 
+## The event registry (issue #1218) — `utilities/observability.py`
+Every server-side capture goes through ONE `_emit()`; what an event CARRIES is declared in `EVENTS`,
+so each `track_*` is a one-liner and its docstring is free to be only about WHY. **Adding an event
+means adding an `EventSpec`, never a new `posthog.capture`** — a capture written outside `_emit`
+skips the coercions and is invisible to the contract below (`test_observability_events.py` fails the
+build on a second call site).
+
+Pick the field constructor deliberately: `count()` is 0 when absent ("none happened"),
+`count_or_none()` stays None because the ABSENCE is the reading, `flag()` is a real boolean, and
+**`label()` is a string a dashboard tile or ALERT filters on**. That last one is the load-bearing
+choice — PostHog matches a property filter against the INGESTED type, so one boolean row makes
+`status = "paused"` match nothing and the alert silently never fires. A numeric property an alert
+COMPARES (`status_code >= 500`) is the opposite case and stays `prop()`. The pairs a provisioned
+alert actually filters on are pinned in `ALERT_FILTERED` in the test, so demoting one fails CI.
+
 ## LLM analytics (issue #647, traces #746) — `docs/llm-analytics.md`
 Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
 `$ai_generation`/`$ai_embedding` (proxy-native, post-fallback, provider-priced — latency/error/

@@ -128,5 +128,12 @@ the PR either way.
   `track_api_call` / `capture_exception`). `capture_exception` takes an explicit `fingerprint=` for
   grouping overrides — `$`-prefixed property keys aren't valid Python identifiers, so it cannot be
   passed through `**context`.
+  Inside that module there is ONE `posthog.capture`, in `_emit()`; an event's property shape is
+  declared in the `EVENTS` registry (#1218), so a new event is an `EventSpec`, never a new capture.
+  **`label()` marks a property a dashboard or ALERT filters on and forces it to a string** — PostHog
+  matches a filter against the ingested type, so one boolean row silently stops the alert firing
+  (`docs/kpi-dashboards.md`). `count()` floors to 0, `count_or_none()` keeps None because the
+  absence is the reading, `flag()` is a genuine boolean nothing filters on, and a number an alert
+  COMPARES stays `prop()`. Full posture: `docs/observability-map.md`.
 - **`human_pacing.py` is the ONE cadence engine**; `linkedin/rate_limit.py` owns the 429 breaker and
   the shared Redis handle (`shared_redis_client()`) that other runtime-state helpers reuse.

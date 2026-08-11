@@ -88,6 +88,13 @@ Three details that are not arbitrary:
   filter that silently matches nothing produces an alert that never fires, which is worse than no
   alert at all.
 
+The emitting half of that last rule is enforced since #1218: a property a tile or alert filters on
+is declared `label()` in `observability.EVENTS` and is coerced to a string on the way out, and every
+pair listed here is pinned in `ALERT_FILTERED` (`tests/unit/utilities/test_observability_events.py`)
+so demoting one fails CI rather than silencing an alert. A number an alert COMPARES
+(`status_code >= 500`) is the opposite case and must stay numeric — see `docs/observability-map.md`.
+**Add a filter here and add its property to that list**, or the guard cannot see it.
+
 Alerts are diffed on bounds, insight, enabled state **and subscribers**. An alert created by a run
 whose key lacked `user:read` has an empty `subscribed_users` and therefore emails nobody; matching
 on bounds alone would call that alert healthy forever, so a later run that can name the owner
