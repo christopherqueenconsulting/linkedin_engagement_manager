@@ -461,6 +461,29 @@ def open_probe_session(get_current_profile: Callable, user_id: int, require_debu
                              "debug_node_pin_supported": supported}
 
 
+# The optional captures a copy of this script carries, keyed to the symbol that implements each.
+# This file is PIPED IN over stdin (`docker exec -i … python - < scripts/linkedin_live_validation.py`),
+# so the code that runs is whichever checkout the shell happened to sit in — and the box's working
+# checkout tracks `main`, not the branch under review. Two live #1270 runs came back with no
+# `feed_sort.selector_evidence` key at all, which reads as "the capture found nothing" when it
+# meant "the script you piped has no capture". A report that names its own captures tells those two
+# apart from the JSON alone, which is the same distinction the capture itself exists to make.
+_PROBE_CAPABILITY_SYMBOLS = {
+    "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
+}
+
+
+def probe_script_reading() -> dict:
+    """Which optional captures the running copy of this script carries.
+
+    Derived from the running module, never hand-declared, so a stale pipe cannot claim a capture it
+    does not have. A capability listed here missing from the report means the PAGE had nothing; a
+    capability absent from this list means the SCRIPT had nothing.
+    """
+    return {"capabilities": sorted(name for name, symbol in _PROBE_CAPABILITY_SYMBOLS.items()
+                                   if symbol in globals())}
+
+
 def emit_refusal(user_id: int, refusal: dict, breaker: dict, guard: dict) -> int:
     """Print a refusal inside the report fences and return the exit code callers key on.
 
@@ -468,7 +491,8 @@ def emit_refusal(user_id: int, refusal: dict, breaker: dict, guard: dict) -> int
     non-zero so a caller that only checks the exit status never mistakes a refusal for a clean run.
     """
     print(REPORT_JSON_BEGIN)
-    print(json.dumps({"user_id": user_id, "refusal": refusal, "breaker": breaker,
+    print(json.dumps({"user_id": user_id, "probe_script": probe_script_reading(),
+                      "refusal": refusal, "breaker": breaker,
                       "read_only_guard": guard}, indent=2))
     print(REPORT_JSON_END)
     print(f"REFUSED: {refusal.get('detail', '')} — {refusal.get('action', '')}", file=sys.stderr)
@@ -4220,7 +4244,8 @@ def main(argv: Optional[list] = None) -> int:
     # whose label commits something.
     install_read_only_guard()
 
-    report = {"user_id": args.user_id, "session": session_reading}
+    report = {"user_id": args.user_id, "probe_script": probe_script_reading(),
+              "session": session_reading}
     try:
         if args.sweep:
             # The sweep IS the report: it replaces the per-probe keys wholesale, so the weekly
@@ -4290,6 +4315,9 @@ def main(argv: Optional[list] = None) -> int:
         quit_gracefully(driver)
 
     report["breaker"] = breaker
+    # `--sweep` replaces the report wholesale, so re-assert the provenance rather than trusting the
+    # copy made before it ran.
+    report.setdefault("probe_script", probe_script_reading())
     # Reported at the END so it covers the whole run: "nothing was refused" is a claim about what
     # happened, not about what was configured.
     report["read_only_guard"] = guard_ledger()

@@ -729,6 +729,62 @@ class TestFeedSortEvidenceScanCopy:
 
 
 @pytest.mark.unit
+class TestProbeScriptProvenance:
+    """The probe is piped in over stdin, so the copy that runs is whichever checkout the shell sat
+    in — the box's working checkout tracks `main`. Two #1270 runs pasted a report with no
+    `selector_evidence` key because the piped script predated the capture, and nothing in the JSON
+    said so. The report names its own captures so that never reads as an empty page again.
+    """
+
+    def test_every_declared_capability_resolves_in_this_script(self):
+        """A rename must break the build, not silently empty the list a reader trusts."""
+        missing = [symbol for symbol in llv._PROBE_CAPABILITY_SYMBOLS.values()
+                   if not hasattr(llv, symbol)]
+        assert missing == []
+
+    @staticmethod
+    def _fenced(capsys) -> dict:
+        out = capsys.readouterr().out
+        return json.loads(out.split(llv.REPORT_JSON_BEGIN)[1].split(llv.REPORT_JSON_END)[0])
+
+    @staticmethod
+    def _session(monkeypatch) -> None:
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+
+    def test_this_script_declares_the_1270_capture(self):
+        assert llv.probe_script_reading()["capabilities"] == ["feed_sort.selector_evidence"]
+
+    def test_a_script_without_the_capture_says_so_rather_than_omitting_it(self, monkeypatch):
+        monkeypatch.setattr(llv, "_PROBE_CAPABILITY_SYMBOLS",
+                            {"feed_sort.selector_evidence": "_a_symbol_that_predates_1270"})
+        assert llv.probe_script_reading() == {"capabilities": []}
+
+    def test_a_completed_run_carries_the_provenance(self, monkeypatch, capsys):
+        self._session(monkeypatch)
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "sort control OK"})
+        assert llv.main(["--feed-sort"]) == 0
+        assert self._fenced(capsys)["probe_script"] == llv.probe_script_reading()
+
+    def test_a_sweep_cannot_drop_the_provenance(self, monkeypatch, capsys):
+        """`--sweep` replaces the report wholesale — the one shape the weekly cron parses."""
+        self._session(monkeypatch)
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "run_sweep", lambda *a, **k: {"user_id": 1})
+        assert llv.main(["--sweep"]) == 0
+        assert self._fenced(capsys)["probe_script"] == llv.probe_script_reading()
+
+    def test_a_refusal_carries_it_too(self, monkeypatch, capsys):
+        monkeypatch.setattr(llv, "breaker_reading",
+                            lambda: {"readable": True, "open": True, "wait_seconds": 900,
+                                     "reason": "the 429 circuit breaker is OPEN for another 900s"})
+        assert llv.main(["--feed-sort"]) == llv.BREAKER_REFUSAL_EXIT_CODE
+        assert self._fenced(capsys)["probe_script"] == llv.probe_script_reading()
+
+
+@pytest.mark.unit
 class TestRecommendationReadCopy:
     """#1007's read is NEW, so the image the probe is piped into does not have it — and grounding a
     rebuilt reader only after it merges is exactly how the ladder it replaces shipped dead. Same
