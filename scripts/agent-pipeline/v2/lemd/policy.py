@@ -94,6 +94,28 @@ def timeout_for(mode: str, *, occupancy: float = 0.0) -> int:
     return int(base * (1.0 + 0.5 * max(0.0, min(1.0, occupancy))))
 
 
+def refundable(rc: int | None) -> bool:
+    """Should a run that ended with this code give its budget charge back?
+
+    **`RC_VANISHED` yes, `RC_KILLED` no**, and the asymmetry is the whole rule.
+
+    A vanished run — an orphan adopted after a daemon restart, or crash recovery — was ended by US.
+    It measured nothing about whether the work converges, and not refunding taxes every in-flight
+    item on every bounce: there were 16 restarts in one night on 2026-08-10, each charging the whole
+    backlog for runs it did not get.
+
+    A deadline kill is the opposite. A run that consumed its entire wall-clock ceiling and produced
+    nothing is precisely what a budget exists to stop repeating; refunding it is an unbounded loop.
+    If deadline kills ever dominate a lane, the answer is a bigger budget for that lane, not a
+    refund — those are different claims and only one of them is bounded.
+
+    The remaining risk, a process that dies early every time, is capped in `lib/ledger.sh`: one
+    refund per (item, mode), ever.
+    """
+    from . import db  # local import: policy is imported by db's consumers, not by db
+    return rc == db.RC_VANISHED
+
+
 def ledger_path(base: str | Path, kind: str, number: int) -> Path:
     """Where `lib/ledger.sh` keeps one item's counters."""
     return Path(base) / "state" / "ledger" / f"{kind}-{number}.tsv"

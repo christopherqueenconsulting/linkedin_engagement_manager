@@ -288,15 +288,40 @@ class Supervisor:
         """
         mine = {c.proc.pid for c in self.children if c.proc is not None}
         for row in self.conn.execute(
-            "SELECT id, item_id, pid, pid_start FROM runs WHERE ended_at IS NULL AND pid IS NOT NULL"
+            "SELECT id, item_id, mode, pid, pid_start FROM runs "
+            "WHERE ended_at IS NULL AND pid IS NOT NULL"
         ).fetchall():
             if row["pid"] in mine or db.pid_alive(int(row["pid"]), row["pid_start"]):
                 continue
             LOG.info("adopting and closing orphaned run %s (pid %s is gone)", row["id"], row["pid"])
             db.finish_run(self.conn, row["id"], db.RC_VANISHED, now=int(now))
+            self._refund(row)
             if row["item_id"] is not None:
                 db.force_state(self.conn, row["item_id"], db.STATE_READY, dirty=1,
                                pending_mode=None, wake_at=None, now=int(now))
+
+    def _refund(self, run_row) -> None:
+        """Give back the budget charged to a run the daemon itself ended.
+
+        Best-effort and synchronous: it is one small bash call, and doing it inline keeps the ledger
+        write ordered with the run row that justifies it. A failure is logged and ignored — losing a
+        refund costs one attempt, while failing the reap over it would strand the item.
+        """
+        item = self.conn.execute(
+            "SELECT kind, number FROM items WHERE id=?", (run_row["item_id"],)
+        ).fetchone() if run_row["item_id"] is not None else None
+        if item is None:
+            return
+        script = self.actions / "refund.sh"
+        if not script.exists():
+            return
+        try:
+            subprocess.run(
+                [str(script), item["kind"], str(item["number"]), run_row["mode"]],
+                cwd=str(self.cfg.base), capture_output=True, timeout=15, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            LOG.warning("refund for %s #%s failed: %s", item["kind"], item["number"], exc)
 
     def _kill(self, child: Child) -> None:
         """Stop an overrunning child and everything it spawned."""
