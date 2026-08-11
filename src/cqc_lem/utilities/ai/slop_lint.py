@@ -75,6 +75,18 @@ DEFAULT_SEVERITIES: dict = {
     CHECK_BLOG_ALIGNMENT: SEVERITY_WARN,
 }
 
+# Per-SURFACE severity, applied on top of DEFAULT_SEVERITIES (issue #1285). A check's false-positive
+# risk is a property of the surface, not only of the check: `canned_scaffold` on a POST can catch a
+# templated opener that carries a real specific, but a NEWSLETTER scaffold ("in today's edition",
+# "without further ado") is pure runway — it says nothing, it is what the model reaches for when the
+# edition has no first line, and there is no legitimate draft that needs it. Newsletters are also the
+# one surface where a HARD verdict costs nothing a human notices: an edition is drafted for review
+# days ahead of its slot, so HARD buys the bounded regeneration (`slop_retry_directive` steers on
+# HARD violations only) and the reasons in the log, and never blocks a publish.
+SURFACE_SEVERITIES: dict = {
+    "newsletter": {CHECK_SCAFFOLD: SEVERITY_HARD},
+}
+
 # How many DISTINCT tier-1 tell words a draft may carry before the lexicon check fires. Not zero on
 # purpose: the rubric's own calibration principle is that any single tell is weak evidence (a real
 # engineer does say "optimize"), while a pileup is the signal. `> LEXICON_MAX` fires, so the default
@@ -217,13 +229,26 @@ def slop_lint_enabled(content_type: Optional[str] = None) -> bool:
     return True
 
 
-def check_severity(check: str) -> str:
-    """This check's severity: 'hard' (regenerate, then block), 'warn' (report only), or 'off'.
-    SLOP_LINT_SEVERITY_<CHECK> overrides the default, e.g. SLOP_LINT_SEVERITY_BURSTINESS=hard.
+def check_severity(check: str, content_type: Optional[str] = None) -> str:
+    """This check's severity on `content_type`: 'hard' (regenerate, then block), 'warn' (report
+    only), or 'off'.
+
+    Resolved most-specific-first, so ops can always overrule a built-in:
+    `SLOP_LINT_SEVERITY_<CHECK>_<SURFACE>` (e.g. SLOP_LINT_SEVERITY_CANNED_SCAFFOLD_NEWSLETTER=warn)
+    beats the surface-wide `SLOP_LINT_SEVERITY_<CHECK>`, which beats `SURFACE_SEVERITIES` and then
+    `DEFAULT_SEVERITIES`. An explicit env value wins over a per-surface DEFAULT on purpose — an ops
+    instruction is newer evidence than a calibration baked into the code.
     """
-    raw = (os.environ.get(f"SLOP_LINT_SEVERITY_{check.upper()}") or "").strip().lower()
-    if raw in (SEVERITY_HARD, SEVERITY_WARN, SEVERITY_OFF):
-        return raw
+    surface = str(content_type or "").strip().lower()
+    names = ([f"SLOP_LINT_SEVERITY_{check.upper()}_{surface.upper()}"] if surface else [])
+    names.append(f"SLOP_LINT_SEVERITY_{check.upper()}")
+    for name in names:
+        raw = (os.environ.get(name) or "").strip().lower()
+        if raw in (SEVERITY_HARD, SEVERITY_WARN, SEVERITY_OFF):
+            return raw
+    per_surface = SURFACE_SEVERITIES.get(surface) or {}
+    if check in per_surface:
+        return per_surface[check]
     return DEFAULT_SEVERITIES.get(check, SEVERITY_WARN)
 
 
@@ -574,8 +599,10 @@ def lint_report(text: Optional[str], content_type: str = "post",
 
     Returns {passes, violations, hard, warnings, reasons, checked}. `passes` is False only when a
     HARD-severity check fired; `warnings` are recorded for the review UI and the logs but never hold
-    a draft. `checked` is False when the linter is disabled for this surface (or the text is empty),
-    in which case the report is empty and passing — this layer fails OPEN, always.
+    a draft. Severity is resolved PER SURFACE (`check_severity`), so the same violation can be a
+    warning on a post and hard on a newsletter. `checked` is False when the linter is disabled for
+    this surface (or the text is empty), in which case the report is empty and passing — this layer
+    fails OPEN, always.
 
     `exempt_keyword` is the user's lead-magnet trigger word: a "Comment YES" CTA is sanctioned, not
     bait, exactly as `strip_engagement_bait` treats it. `blog_content` is the newsletter source
@@ -594,7 +621,7 @@ def lint_report(text: Optional[str], content_type: str = "post",
            "blog_content": blog_content}
     violations = []
     for name, fn in _CHECKS:
-        severity = check_severity(name)
+        severity = check_severity(name, content_type)
         if severity == SEVERITY_OFF:
             continue
         found = fn(body, sents, ctx)

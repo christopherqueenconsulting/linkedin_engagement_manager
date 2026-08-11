@@ -92,7 +92,6 @@ class TestScaffoldCheck:
         assert "newsletter" in v["detail"]
         assert "in today's edition" in v["evidence"]
 
-
     def test_severity_is_promotable(self, monkeypatch):
         monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD", "hard")
         report = lint_report(CANNED, "post")
@@ -108,6 +107,65 @@ class TestScaffoldCheck:
         report = lint_report(CANNED, "post")
         assert report == {"passes": True, "violations": [], "hard": [], "warnings": [],
                           "reasons": [], "checked": False}
+
+
+class TestNewsletterSeverity:
+    """Issue #1285: the check is HARD on newsletters and stays WARN everywhere else."""
+
+    NEWSLETTER = ("In today's edition, without further ado, here's what you need to know about "
+                  "content marketing.")
+
+    def test_a_newsletter_scaffold_holds_the_draft(self):
+        report = lint_report(self.NEWSLETTER, "newsletter")
+        found = _violation(report)
+        assert found["severity"] == "hard"
+        # HARD is what puts the violation in report["hard"], which is the list
+        # `slop_retry_directive` steers the regeneration on — a WARN never reaches it.
+        assert report["passes"] is False
+        assert any(v["check"] == CHECK_SCAFFOLD for v in report["hard"])
+
+    def test_the_same_phrase_on_a_post_is_still_only_a_warning(self):
+        report = lint_report(CANNED, "post")
+        assert _violation(report)["severity"] == "warn"
+        assert report["passes"] is True
+
+    def test_ops_can_demote_the_newsletter_surface_alone(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD_NEWSLETTER", "warn")
+        assert _violation(lint_report(self.NEWSLETTER, "newsletter"))["severity"] == "warn"
+        assert lint_report(self.NEWSLETTER, "newsletter")["passes"] is True
+
+    def test_a_global_override_beats_the_per_surface_default(self, monkeypatch):
+        # An ops instruction is newer evidence than a calibration baked into the code.
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD", "warn")
+        assert _violation(lint_report(self.NEWSLETTER, "newsletter"))["severity"] == "warn"
+
+    def test_the_surface_override_beats_the_global_one(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD", "off")
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD_NEWSLETTER", "hard")
+        assert _violation(lint_report(self.NEWSLETTER, "newsletter"))["severity"] == "hard"
+        assert _violation(lint_report(CANNED, "post")) is None
+
+    def test_no_other_check_changed_severity_on_newsletters(self):
+        from cqc_lem.utilities.ai import slop_lint as sl
+
+        for check in sl.DEFAULT_SEVERITIES:
+            if check == CHECK_SCAFFOLD:
+                continue
+            assert sl.check_severity(check, "newsletter") == sl.DEFAULT_SEVERITIES[check]
+
+    def test_severity_without_a_surface_is_the_plain_default(self):
+        from cqc_lem.utilities.ai import slop_lint as sl
+
+        assert sl.check_severity(CHECK_SCAFFOLD) == sl.SEVERITY_WARN
+        assert sl.check_severity(CHECK_SCAFFOLD, "post") == sl.SEVERITY_WARN
+        assert sl.check_severity(CHECK_SCAFFOLD, "NEWSLETTER") == sl.SEVERITY_HARD
+
+    def test_a_clean_newsletter_is_untouched(self):
+        clean = ("Last March a client's edition landed at 6am and nobody opened it. We moved the "
+                 "send to Tuesday noon and open rate went from 11% to 28%. Same copy, same list.")
+        report = lint_report(clean, "newsletter")
+        assert _violation(report) is None
+        assert report["passes"] is True
 
 
 class TestSharedList:

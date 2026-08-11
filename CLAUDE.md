@@ -326,13 +326,13 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
   to its OWN post, and a miss is a DEBUG no-op. A PERMALINK runs the SAME engine (#966) — the card is picked by the permalink's URN,
   the reaction happens BEFORE the comment, and a comment that doesn't land is a FAILURE row.
 - **Unified content core** (`docs/content-core.md`): newsletters, posts AND comments draw framework,
-  research and alignment from `content_framework.py` / `content_research.py` /
-  `content_alignment.py` — never add a parallel per-content-type prompt helper. Comments carry a
-  quality contract + similarity gate (#617) that SKIPS the post after `COMMENT_GATE_MAX_ATTEMPTS`
-  failed regenerations. **Story bank** (#620) is the FACT half, the **deck reference gate** (#728)
-  the save-worthiness half, **slop lint** (#625) BLOCKS on five HARD checks and advises on five WARN
-  (`canned_scaffold` is #1138's: `POST_BANNED_SCAFFOLDS` is ONE list the post prompt names and the
-  lint greps, so the writer side and the checking side cannot drift — `docs/content-quality-audits/text.md`).
+  research and alignment from `content_{framework,research,alignment}.py` — never add a per-content-type
+  prompt helper. Comments carry a quality contract + similarity gate (#617) that SKIPS the post after
+  `COMMENT_GATE_MAX_ATTEMPTS` failed regenerations. **Story bank** (#620) is the FACT half, the **deck reference
+  gate** (#728) the save-worthiness half, **slop lint** (#625) BLOCKS five HARD checks,
+  WARNs the rest, severity PER SURFACE (`SURFACE_SEVERITIES`): `canned_scaffold` is WARN on a post,
+  HARD on a newsletter (#1285). `{POST,NEWSLETTER}_BANNED_SCAFFOLDS` are ONE list the prompt names and
+  the lint greps, so the two cannot drift — `docs/content-quality-audits/{text,newsletter}.md`.
 - **Content mix (70/20/10)** (same doc): every planned post carries a class in `posts.content_mix` —
   `value` 70% / `authority` 20% / `promo` 10% (forced `case_snapshot`). **A promo CTA is always an
   ARTIFACT** (lead magnet / newsletter); a meeting ask is banned in prompts, repaired
