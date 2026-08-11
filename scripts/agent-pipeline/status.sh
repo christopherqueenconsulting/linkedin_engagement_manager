@@ -705,9 +705,9 @@ collect_v2() {
     # Pool occupancy — v2's real capacity model. Counted from open runs the same way
     # `Supervisor.in_pool` does, including runs this process did not spawn.
     V2_POOL_AGENT="$(sqlite3 "$V2_DB" \
-      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode NOT IN ('merge_enable','park','unpark','disarm')" 2>/dev/null)"
+      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode NOT IN ('merge_enable','park','unpark','disarm','abandon')" 2>/dev/null)"
     V2_POOL_GH="$(sqlite3 "$V2_DB" \
-      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode IN ('merge_enable','park','unpark','disarm')" 2>/dev/null)"
+      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode IN ('merge_enable','park','unpark','disarm','abandon')" 2>/dev/null)"
     case "$V2_POOL_AGENT" in ''|*[!0-9]*) V2_POOL_AGENT=-1 ;; esac
     case "$V2_POOL_GH" in ''|*[!0-9]*) V2_POOL_GH=-1 ;; esac
   fi
@@ -728,6 +728,13 @@ print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_
     [ "$V2_HB_AGE" -ge 0 ] 2>/dev/null || warn "V1_RETIRED is set but the v2 daemon has NO heartbeat — the failsafe cron is carrying the pipeline"
     [ "$V2_HB_AGE" -gt 600 ] 2>/dev/null && warn "v2 heartbeat is ${V2_HB_AGE}s old (>600s) — the failsafe cron has taken over"
     [ "$V2_SHADOW" = "1" ] && warn "V1_RETIRED is set AND LEMD_SHADOW=1 — v2 owns dispatch and is refusing to act. NOTHING is dispatching."
+    # Abandoned items have STOPPED asking, which is the whole point and also the whole risk: an item
+    # that no longer posts Decision Comments is invisible unless something says it exists. Silence is
+    # a worse failure than the treadmill it replaced, so this warns rather than merely counting.
+    V2_ABANDONED="$(sqlite3 "$V2_DB" \
+      "SELECT COUNT(*) FROM items WHERE state='abandoned'" 2>/dev/null)"
+    case "$V2_ABANDONED" in ''|*[!0-9]*) V2_ABANDONED=0 ;; esac
+    [ "$V2_ABANDONED" -gt 0 ] && warn "$V2_ABANDONED item(s) ABANDONED — parked repeatedly for the same reason, so the pipeline stopped asking. They need a decision: remove agent:abandoned to retry, or close them. (gh issue list --label agent:abandoned; gh pr list --label agent:abandoned)"
     [ -z "$V2_USAGE" ] && warn "no v2 usage reading — lane routing is falling back to the failure-history estimate, which cannot see subscription headroom"
   fi
 }

@@ -95,6 +95,8 @@ stateDiagram-v2
     ready --> awaiting_queue: decide (auto_merge_armed / in_merge_queue)
     ready --> parked: decide (human_hold / draft)
     ready --> ignored: decide (not_admissible / not_ready)
+    parked --> abandoned: answer, but laps exhausted
+    abandoned --> ready: agent:abandoned removed
     ignored --> ready: relabelled, then reconciled
     awaiting_ci --> ready: event or TTL
     awaiting_review --> ready: event or TTL
@@ -123,6 +125,7 @@ rather than merely guarded.
 | `awaiting_queue` | auto-merge armed or in the queue | event, or `LEMD_TTL_QUEUE` (900s) |
 | `parked` | the owner's, not the pipeline's — a question WAS asked | an owner answer, or `LEMD_TTL_PARKED` (21600s) |
 | `ignored` | not the pipeline's business; nobody was asked | a relabel, noticed by `reconcile` |
+| `abandoned` | parked for the same reason too many times; the pipeline stopped asking | removing `agent:abandoned` — laps cleared, back on the queue |
 | `merged` / `closed` | terminal | — |
 
 ---
@@ -169,15 +172,28 @@ branch in the daemon; if `decide()` ever needs to escalate, it is re-added and w
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
 | 5 | hold label on a PR with auto-merge **armed** | disarm | `human_hold_armed` | — |
-| 6 | hold label + actionable answer | unpark | `owner_answered` | — |
+| 6 | hold label + actionable answer, **and this reason has parked `LEMD_MAX_PARK_LAPS` times** | abandon | `park_laps_exhausted` | — |
+| 7 | hold label + actionable answer | unpark | `owner_answered` | — |
 | 7 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
-| 8 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
-| 9 | hold label, no answer | none → parked | `human_hold` | 6h |
+| 9 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
+| 10 | hold label, no answer | none → parked | `human_hold` | 6h |
 
 Row 5 sits above the answer deliberately. Only `park.sh` ever ran `--disable-auto`, so a hold a
 HUMAN applied was honoured here and ignored by GitHub, which merged the PR when its gate cleared.
 Un-parking one observation later costs a single pass; leaving an armed hold costs a merge nobody
 authorised, and that cannot be undone.
+
+Row 6 is the pipeline giving up. An item parked for the SAME reason `LEMD_MAX_PARK_LAPS` times
+(default 3) has had that question asked and answered and asked again, and the un-park's ledger reset
+is what starts each next lap — so it is tested at the UN-PARK, where the loop actually turns, not at
+the park. A lap is keyed on (item, reason, head): a re-park at the same head is the same park being
+re-observed, which is why the 6-hourly re-decision does not inflate the counter.
+
+`abandon` is terminal for the PIPELINE and for nothing else. It never closes an issue or a PR — that
+is a judgement about the work, not about the runner's ability to progress it — and removing the
+`agent:abandoned` label revives the item with its lap history cleared. It is surfaced by `status.sh`
+as a warning, because an item that stops asking is a worse failure than one that asks too often if
+nothing says it exists.
 
 `HOLD_LABELS = {needs-human, agent:blocked}`. A held item carrying no `agent:*` label is still
 admitted (row 4 makes an exception) — otherwise an item parked with only `needs-human` would be
@@ -190,15 +206,15 @@ Friday" reads as `hold` and stays parked.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 10 | `agent:ready`, work state unreadable | none | `start_work_state_unreadable` | 600s |
-| 11 | `agent:ready`, work exists, open PR **or linkage unreadable** | none | `start_already_produced_work` | 1h |
-| 12 | `agent:ready`, work exists, **no PR** | dispatch `start` | `stranded_branch_no_pr` | — |
-| 13 | `agent:ready`, no work | dispatch `start` | `issue_ready` | — |
-| 14 | `agent:working`, unreadable | none | `working_claim_state_unreadable` | 600s |
-| 15 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
-| 16 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
-| 17 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
-| 18 | neither label | none → **ignored** | `issue_not_ready` | never |
+| 11 | `agent:ready`, work state unreadable | none | `start_work_state_unreadable` | 600s |
+| 12 | `agent:ready`, work exists, open PR **or linkage unreadable** | none | `start_already_produced_work` | 1h |
+| 13 | `agent:ready`, work exists, **no PR** | dispatch `start` | `stranded_branch_no_pr` | — |
+| 14 | `agent:ready`, no work | dispatch `start` | `issue_ready` | — |
+| 15 | `agent:working`, unreadable | none | `working_claim_state_unreadable` | 600s |
+| 16 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
+| 17 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
+| 18 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
+| 19 | neither label | none → **ignored** | `issue_not_ready` | never |
 
 Rows 11–12 are one question asked two ways. "Did anything leave the box" is right for *must I avoid
 forking this*; it is wrong for *will anyone ever finish it*. A branch with an open PR is in flight; a
@@ -211,21 +227,21 @@ call that live PR stranded.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 19 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
-| 20 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
-| 21 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
-| 22 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
-| 23 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
-| 24 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
-| 25 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
-| 26 | auto-merge armed | none | `auto_merge_armed` | 15m |
-| 27 | checks unreadable | none | `checks_unknown` | 300s |
-| 28 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
-| 29 | checks pending, or zero checks | none | `ci_running` | 30m |
-| 30 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
-| 31 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
-| 32 | already in the merge queue | none | `in_merge_queue` | 15m |
-| 33 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
+| 20 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
+| 21 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
+| 22 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
+| 23 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
+| 24 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
+| 25 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
+| 26 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
+| 27 | auto-merge armed | none | `auto_merge_armed` | 15m |
+| 28 | checks unreadable | none | `checks_unknown` | 300s |
+| 29 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
+| 30 | checks pending, or zero checks | none | `ci_running` | 30m |
+| 31 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
+| 32 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
+| 33 | already in the merge queue | none | `in_merge_queue` | 15m |
+| 34 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
 
 Row 26 sits above row 27 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
 of a PR waiting on required checks; without this the ladder fell through to `gate_satisfied` on every
@@ -304,17 +320,17 @@ and never writes.
 
 | Mode | Pool | Budget | Timeout |
 |---|---|---|---|
-| `start` | agent | 3 | 2700s |
-| `fix` | agent | 5 | 1200s |
-| `review` | agent | 4 | 900s |
-| `selfreview` | agent | 3 | 1200s |
-| `rebase` | agent | 3 | 1200s |
-| `revise` | agent | 3 | 1500s |
-| `depfix` | agent | 4 | 1200s |
-| `docfix` | agent | 4 | 600s |
+| `start` | agent | 35 | 2700s |
+| `fix` | agent | 36 | 1200s |
+| `review` | agent | 37 | 900s |
+| `selfreview` | agent | 38 | 1200s |
+| `rebase` | agent | 39 | 1200s |
+| `revise` | agent | 40 | 1500s |
+| `depfix` | agent | 41 | 1200s |
+| `docfix` | agent | 42 | 600s |
 | `merge` | gh | **3, but not from this table** — see below | 180s |
 | `park` / `unpark` | gh | **none — they charge no ledger at all** | 180s |
-| `phasefix` | — | 3 | 600s — **never emitted by `decide()`** |
+| `phasefix` | — | 43 | 600s — **never emitted by `decide()`** |
 
 Timeouts stretch up to 1.5× at full pool occupancy.
 
@@ -365,7 +381,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | Gap | Why it matters | Issue |
 |---|---|---|
 | **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
-| **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | #1390 |
 | **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | #1395 |
 | **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |

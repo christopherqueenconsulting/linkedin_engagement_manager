@@ -24,10 +24,16 @@ sys.path.insert(0, str(_V2))
 
 from lemd import observe  # noqa: E402
 
-#: Reason strings that are constructed at the dispatch site rather than inside `decide` —
-#: `act()` parks an item as `{mode}_exhausted` when the ledger is spent. They are documented in §6
-#: (the exit-code table) rather than §4, so the table must NOT list them.
-NOT_DECIDE_REASONS = ("_exhausted",)
+#: Reasons constructed at the DISPATCH site rather than inside `decide` — `act()` parks an item as
+#: `{mode}_exhausted` when its ledger is spent. They belong in §6's exit-code table, not §4.
+#:
+#: Spelled out per mode rather than matched on the `_exhausted` suffix: `park_laps_exhausted` IS a
+#: `decide()` reason (#1390) and a suffix match called it a violation. A checker that cannot tell
+#: the two apart teaches people to rename their reasons around it.
+NOT_DECIDE_REASONS = tuple(
+    f"{mode}_exhausted" for mode in
+    ("start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "docfix", "merge")
+)
 
 
 def _reasons_in_code() -> set[str]:
@@ -129,7 +135,7 @@ def test_exhaustion_reasons_are_documented_outside_the_decision_table():
     text = _DOC.read_text()
     table = text[text.index("## 4. The decision table"):text.index("## 5. The GitHub field matrix")]
     for marker in NOT_DECIDE_REASONS:
-        assert marker not in table
+        assert marker not in table, f"§4 lists {marker}, which `decide()` never returns"
     assert "_exhausted" in text, "the exhaustion park must still be documented somewhere"
 
 
@@ -160,8 +166,20 @@ def test_the_doc_records_the_live_status_not_the_skeleton_status():
     assert "LEMD_SHADOW=0" in head
 
 
-def test_the_gap_section_exists_and_is_not_empty():
-    """§7 is what makes the doc honest. An empty gap table means someone deleted the bad news."""
+def test_the_gap_section_says_something_either_way():
+    """§7 is what makes the doc honest, and honesty is not a row count.
+
+    This used to require a minimum number of rows, on the theory that an empty table meant someone
+    had deleted the bad news. But the whole point of the section is to be worked DOWN — it went from
+    thirteen rows to a handful in one night — so the floor started failing the build for the right
+    thing happening. What it must never do is go silent: either it lists gaps, or it says plainly
+    that there are none left.
+    """
     text = _DOC.read_text()
     gaps = text[text.index("## 7. Intended state"):text.index("## 8. Deploy and operate")]
-    assert gaps.count("\n|") >= 8, "the intended-state table lost rows without them being fixed"
+    has_rows = "| **" in gaps
+    says_none = "no known gaps" in gaps.lower()
+    assert has_rows or says_none, (
+        "§7 lists nothing and does not say the list is empty — a gap table that goes quiet is "
+        "indistinguishable from one nobody maintains"
+    )

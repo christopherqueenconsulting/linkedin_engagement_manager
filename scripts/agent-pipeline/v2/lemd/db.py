@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # States. An item in a `wait_*` state costs the scheduler nothing until an event marks it dirty or
 # its TTL fires — that is the whole point of v2, because v1 spent 75-84% of its ticks re-asking
@@ -51,7 +51,15 @@ STATE_CLOSED = "closed"
 #: been posed, and the daemon's own `ACT_PARK` branch was unreachable dead code.
 STATE_IGNORED = "ignored"
 
-TERMINAL_STATES = frozenset({STATE_MERGED, STATE_CLOSED})
+#: The pipeline has stopped asking. Reached when an item has been parked for the SAME reason
+#: `LEMD_MAX_PARK_LAPS` times: the question has been posed and answered and posed again, and a
+#: further identical Decision Comment has never once been the thing that unblocked anything.
+#:
+#: Terminal for the pipeline, NOT for the work. Nothing here closes an issue or a PR — that stays
+#: the owner's call. Removing the `agent:abandoned` label revives the item and clears its history.
+STATE_ABANDONED = "abandoned"
+
+TERMINAL_STATES = frozenset({STATE_MERGED, STATE_CLOSED, STATE_ABANDONED})
 #: States where something already owns the item, so observation must not move it (see upsert_item).
 ACTIVE_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING})
 #: States the scheduler may pick work from. `claimed`/`running` are excluded because something
@@ -133,6 +141,22 @@ CREATE INDEX IF NOT EXISTS runs_open ON runs(ended_at) WHERE ended_at IS NULL;
 -- Four scalars, not a config store: heartbeat, last_webhook_at, missed_event_count, schema_version.
 -- The adversarial review flagged that a general kv table inside a queue DB grows into a second,
 -- undocumented config surface; the daemon reads its knobs from config.env like v1 does.
+CREATE TABLE IF NOT EXISTS park_history (
+  id         INTEGER PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  number     INTEGER NOT NULL,
+  reason     TEXT NOT NULL,
+  head_sha   TEXT NOT NULL DEFAULT '',
+  event      TEXT NOT NULL CHECK (event IN ('park','unpark')),
+  at         INTEGER NOT NULL
+);
+-- One lap per (item, reason, head). The uniqueness is the counting rule, not an optimisation: an
+-- item re-parked at the SAME head for the SAME reason has not gone round again, it is the same
+-- park being re-observed, and `park.sh` already dedupes its comment on exactly that key. Without
+-- this the 6-hourly ttl_parked re-decision would inflate every counter on its own.
+CREATE UNIQUE INDEX IF NOT EXISTS park_history_lap
+  ON park_history(kind, number, reason, head_sha, event);
+
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -551,6 +575,52 @@ RC_VANISHED = -99     #: its process was already gone — an adopted orphan, or 
 
 WIP_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING, STATE_WAIT_CI, STATE_WAIT_REVIEW,
                         STATE_WAIT_QUEUE})
+
+
+def record_park(conn: sqlite3.Connection, kind: str, number: int, reason: str,
+                head_sha: str | None = None, *, now: int | None = None) -> None:
+    """Record that this item was parked for `reason` at this head.
+
+    `INSERT OR IGNORE`: the unique index is the counting rule, so a re-park at the same head for the
+    same reason is silently not a new lap.
+    """
+    conn.execute(
+        "INSERT OR IGNORE INTO park_history (kind, number, reason, head_sha, event, at) "
+        "VALUES (?,?,?,?,'park',?)",
+        (kind, number, reason or "unknown", head_sha or "",
+         int(now if now is not None else time.time())),
+    )
+
+
+def record_unpark(conn: sqlite3.Connection, kind: str, number: int, reason: str,
+                  head_sha: str | None = None, *, now: int | None = None) -> None:
+    """Record that this item was released from a park."""
+    conn.execute(
+        "INSERT OR IGNORE INTO park_history (kind, number, reason, head_sha, event, at) "
+        "VALUES (?,?,?,?,'unpark',?)",
+        (kind, number, reason or "unknown", head_sha or "",
+         int(now if now is not None else time.time())),
+    )
+
+
+def park_laps(conn: sqlite3.Connection, kind: str, number: int, reason: str) -> int:
+    """How many times this item has been parked for this reason, at distinct heads.
+
+    Counting per REASON rather than per item is deliberate: a PR that parks once for a lint failure
+    and once for an exhausted review has not looped, it has had two different problems. A loop is
+    the same question asked again.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM park_history "
+        "WHERE kind=? AND number=? AND reason=? AND event='park'",
+        (kind, number, reason or "unknown"),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def clear_park_history(conn: sqlite3.Connection, kind: str, number: int) -> None:
+    """Forget an item's laps. The owner's escape hatch from `abandoned`."""
+    conn.execute("DELETE FROM park_history WHERE kind=? AND number=?", (kind, number))
 
 
 def wip_count(conn: sqlite3.Connection) -> int:

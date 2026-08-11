@@ -34,6 +34,7 @@ ACT_DISPATCH = "dispatch"        # run an agent in some MODE
 ACT_MERGE = "merge"              # gh-only: arm auto-merge
 ACT_UNPARK = "unpark"            # gh-only: the owner answered — release the hold
 ACT_DISARM = "disarm"            # gh-only: a hold appeared on an armed PR — take the arm off
+ACT_ABANDON = "abandon"          # gh-only: stop asking — this question has been asked enough
 ACT_CLOSE = "close"              # terminal bookkeeping
 
 # There is deliberately no ACT_PARK. Escalation to the owner is not a decision this function makes —
@@ -76,6 +77,11 @@ class Snapshot:
     #: one reply being routed twice: after a successful un-park the labels are gone, but a park that
     #: lands again later must not re-route on the answer to the PREVIOUS question.
     answer_routed: str | None = None
+    #: How many times this item has already been parked for its CURRENT reason — the lap counter
+    #: behind the give-up rule. 0 for anything that has never parked.
+    park_laps: int = 0
+    #: The reason it is parked for, carried so an abandon can name it.
+    parked_reason: str | None = None
     readable: bool = True           # False when any required read failed
 
 
@@ -194,7 +200,7 @@ def _work_in_flight_or_stranded(snap: Snapshot, ttl_review: int,
 
 
 def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
-           ttl_parked: int) -> Decision:
+           ttl_parked: int, max_park_laps: int = 0) -> Decision:
     """Pure state-machine step. No I/O, no clock — every input is in `snap`.
 
     Returns the single next action for this item. Order matters and encodes priority: terminal
@@ -248,6 +254,19 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 return Decision(ACT_NONE, db.STATE_PARKED, f"human_hold:{ans.verdict}",
                                 park_reason="needs_human", wake_in=ttl_parked,
                                 details={"answer": ans.excerpt})
+            if max_park_laps and snap.park_laps >= max_park_laps and ans.actionable:
+                # The owner has answered this same question `max_park_laps` times and the work has
+                # come back each time. Answering it once more has never been the thing that
+                # unblocked anything — un-parking resets the ledger, buys N more runs, and the item
+                # returns.
+                #
+                # Tested at the UN-PARK rather than at the park, because that is where the loop
+                # actually turns: the park is the symptom, the ledger reset is what starts the next
+                # lap. `max_park_laps=0` disables the rule entirely, which is what the default gives
+                # any caller that has not opted in.
+                return Decision(ACT_ABANDON, db.STATE_ABANDONED, "park_laps_exhausted",
+                                mode="abandon", park_reason=snap.parked_reason or "needs_human",
+                                details={"laps": snap.park_laps})
             if ans.comment_id and ans.comment_id == snap.answer_routed:
                 # Already acted on. Reached when an un-park succeeded and the item was parked again
                 # later for a NEW reason: the old reply is still the newest comment in the thread,
