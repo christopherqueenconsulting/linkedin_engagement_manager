@@ -218,6 +218,9 @@ def _discard(path: str) -> None:
     try:
         os.remove(path)
     except OSError:
+        # Nothing to clean up (ffmpeg never created the file, or another sweep took it). The
+        # caller is already on a failure path shipping the uncaptioned video — a temp we could
+        # not delete must not turn that into a second failure.
         pass
 
 
