@@ -58,6 +58,24 @@ class TestEvaluatePostGates:
     def test_similarity_is_skipped_without_history(self):
         assert self._gates(recent_texts=None) == []
 
+    def test_a_semantic_duplicate_is_held_and_the_finding_names_the_measure(self):
+        # Issue #1265. Lexically distinct from _POST, so only the embedding measure can catch it.
+        reworded = ("Frontier pricing on trivial requests is where the money goes.\n\nI moved the "
+                    "easy jobs onto a small model three months ago and watched what we spend drop "
+                    "by more than a third.")
+        vectors = [[1.0, 0.0], [0.9, (1 - 0.81) ** 0.5]]
+        with patch("cqc_lem.utilities.ai.content_framework.embed_comments", return_value=vectors):
+            findings = self._gates(content=reworded, recent_texts=[_POST])
+        assert [f["gate"] for f in findings] == ["similarity"]
+        assert findings[0]["threshold"] == 0.78  # the cosine ceiling, not the 0.55 overlap one
+        assert any("embedding cosine" in d for d in findings[0]["details"])
+
+    def test_the_finding_names_the_lexical_measure_when_embeddings_are_down(self):
+        with patch("cqc_lem.utilities.ai.content_framework.embed_comments", return_value=None):
+            findings = self._gates(content=_NEAR_DUP, recent_texts=[_POST])
+        assert findings[0]["threshold"] == 0.55
+        assert any("token overlap" in d for d in findings[0]["details"])
+
     def test_off_focus_is_advisory_only(self):
         findings = self._gates(engagement_prefs={"focus_topics": ["deep sea fishing"]})
         assert [f["gate"] for f in findings] == ["focus_alignment"]

@@ -41,6 +41,11 @@ GATE_LABELS = {
 AUTHENTICITY_SCORE_MIN_BOUNDS = (0, 100)
 SIMILARITY_MAX_PCT_BOUNDS = (10, 100)
 
+# Mirrors `content_framework.SIMILARITY_MEASURE_EMBEDDING` (issue #1265). Kept as a literal — the
+# same reason that module mirrors the experiment plumbing's variant name — so this pure copy module
+# never imports the content core; tests/unit/utilities/test_quality_gates.py pins the two together.
+SIMILARITY_MEASURE_EMBEDDING = "embedding"
+
 
 def clamp_threshold(value: Any, low: int, high: int) -> Optional[int]:
     """Clamp a user-supplied threshold into [low, high]. None (and anything unparseable) stays None,
@@ -86,20 +91,39 @@ def authenticity_finding(score: int, threshold: int, reasons: Optional[list] = N
 
 
 def similarity_finding(score: float, threshold: float,
-                       matched_excerpt: Optional[str] = None) -> dict:
-    """Deterministic near-duplicate check against the user's own recent posts."""
+                       matched_excerpt: Optional[str] = None,
+                       measure: Optional[str] = None) -> dict:
+    """Near-duplicate check against the user's own recent posts.
+
+    `measure` names WHICH of the two measures fired (issue #1265) — `embedding` cosine, the semantic
+    one, or the deterministic `lexical` token overlap it degrades to when the embedding endpoint is
+    unavailable. The two run on different scales, so a reader comparing this score with the nightly
+    trend line has to be told which one produced it; an omitted measure keeps the original
+    token-overlap wording, which is what every pre-#1265 caller meant.
+    """
     excerpt = (matched_excerpt or "").strip().replace("\n", " ")
     if len(excerpt) > 160:
         excerpt = excerpt[:157].rstrip() + "…"
+    semantic = measure == SIMILARITY_MEASURE_EMBEDDING
+    if semantic:
+        explanation = (f"This draft says the same thing as one of your recent posts — {round(score * 100)}% "
+                       f"semantic match, above your {round(threshold * 100)}% ceiling. Rewording an "
+                       f"earlier take suppresses reach for both.")
+    else:
+        explanation = (f"This draft overlaps {round(score * 100)}% with one of your recent posts — "
+                       f"above your {round(threshold * 100)}% ceiling. Reposting the same take "
+                       f"suppresses reach for both.")
+    details = [f"Closest recent post: “{excerpt}”"] if excerpt else []
+    if measure:
+        details.append("Measured by " + ("embedding cosine (meaning, not wording)" if semantic
+                                         else "token overlap (wording)"))
     return build_finding(
         GATE_SIMILARITY,
-        explanation=(f"This draft overlaps {round(score * 100)}% with one of your recent posts — "
-                     f"above your {round(threshold * 100)}% ceiling. Reposting the same take "
-                     f"suppresses reach for both."),
+        explanation=explanation,
         remediation=("Change the angle, not the words: pick a different example, argue the opposite "
                      "side, or move the post to a new sub-topic."),
         score=round(float(score), 4), threshold=round(float(threshold), 4),
-        details=[f"Closest recent post: “{excerpt}”"] if excerpt else None)
+        details=details or None)
 
 
 def focus_finding(score: float, threshold: float, topics: Optional[list] = None) -> dict:

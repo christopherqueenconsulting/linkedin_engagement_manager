@@ -35,11 +35,42 @@ Must not near-duplicate the user's last 50 posted comments. `COMMENT_SIMILARITY_
 via embedding cosine using `lem-embedding`, with a token-overlap fallback. A failing draft is
 regenerated up to `COMMENT_GATE_MAX_ATTEMPTS` times and then the post is SKIPPED —
 `generate_ai_response` returns `None`, never a failing comment. The post-history uniqueness engine
-(opener/subject avoidance steering + the deterministic `POST_SIMILARITY_MAX` review gate in
+(opener/subject avoidance steering + the `post_similarity_report` review gate in
 `create_text_post`, mirroring the newsletter's V49/V50 dedup) also lives in
 `content_framework.py`. Trend-based post subjects are ANCHORED to the user's `focus_topics`
 (rotated per post_id via `select_focus_topic` in `content_alignment.py`), not just their profile
 industry.
+
+## Post similarity gate (issue #1265)
+
+`post_similarity_report` is the ONE place a post's similarity is decided — the same shape as the
+comment gate above, and the same reason: a REWORDED earlier post scores low on token overlap and
+high on cosine, and semantic sameness is what the 2026 ranking demotes.
+
+| | Measure | Ceiling | When |
+|---|---|---|---|
+| Preferred | `lem-embedding` cosine | `POST_EMBEDDING_SIMILARITY_MAX` (0.78) | always, when the embedding endpoint answers |
+| Degraded | token-set overlap | `POST_SIMILARITY_MAX` (0.55), or the user's `post_similarity_max_pct` | embedding endpoint unavailable |
+
+Load-bearing details:
+
+- **It degrades, it never disarms.** No embedding ⇒ the deterministic overlap gate posts have always
+  had, never "nothing is similar".
+- **0.78 is calibrated, not picked.** Every text post `content_quality` had scored when #1265 shipped
+  (user 1, 5 posts): 0.633 / 0.640 / 0.657 distinct, 0.832 / 0.848 the reworded pair. One account's
+  five posts SIZES the gap; retune as `content_quality_scores` fills out.
+- **The user's `post_similarity_max_pct` setting governs the fallback only.** It is a percentage on
+  the token-overlap scale, where two unrelated posts sit at 0.2-0.4; cosine puts them near 0.5, so
+  applying that percentage to cosine would hold nearly everything.
+- **Over the ceiling is ONE retry, then keep** — the path the lexical gate always took. The
+  `similarity` quality-gate finding then holds the post at PENDING and NAMES the measure that fired,
+  because a cosine score and an overlap score are not readable against each other.
+- **One measure vocabulary.** `SIMILARITY_MEASURE_{EMBEDDING,LEXICAL,NONE}` in `content_framework.py`
+  is what the gate, the comment gate and the nightly telemetry (`content_quality.MEASURE_*`, which
+  aliases them) all name a measure by — so the trend line in `docs/content-quality-telemetry.md` and
+  a hold on the same post can never disagree silently.
+- **Cost:** ONE `lem-embedding` call per generated post (a second only on the retry path), batching
+  the draft with the whole history. Empty history ⇒ no call at all.
 
 ## Story bank (issue #620, `story_bank.py` + the `story_bank` table)
 

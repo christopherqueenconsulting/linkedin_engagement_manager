@@ -56,7 +56,8 @@ What the numbers say on their own, before any rubric:
 - **Length runs short.** Four of five sit at 760–1050 chars against the prompt's own 1300–2000
   target and the 180–400-word dwell band. Not a defect on its own — a tight post beats a padded
   one — but it means the "earn the length with substance" instruction is not landing.
-- **Semantic self-similarity is high** and only ever measured, never gated (finding F3).
+- **Semantic self-similarity is high** and, at audit time, only ever measured, never gated
+  (finding F3 — since fixed in #1265, which calibrated its ceiling on this very column).
 - **Two of five shipped unscored for authenticity** — the gate is skipped, not failed, when
   scoring did not run, and an unscored post auto-approves (`_score_and_persist_authenticity`
   fails open by design).
@@ -80,7 +81,7 @@ it, and the verdict is against what the pipeline actually does today.
 | R5 | **CTA clarity + placement** — artifact CTA, never a meeting ask | `cta_policy_directive`, `contains_meeting_ask` + `replace_meeting_ask_cta`, the `meeting_cta` gate | **PASS, and belt-and-braces.** Banned in the prompt, repaired deterministically, and the gate holds anything that survives |
 | R6 | **Engagement mechanics** — a real point of view, a question worth answering | `slop_lint` bait closer, `strip_engagement_bait`, the blueprint's `cta_style` | **FAIL → fixed here.** The prompts supplied the generic closers themselves, and *none* of them is caught by any existing check (verified: `contains_engagement_bait`, `closing_reflex_ask` and the tier-1 wordbank all return clean on "What experiences have shaped your professional growth?", "How is your organization addressing this shift?", "I'd love to hear your thoughts!", "Share your experiences below!"). See F1 |
 | R7 | **LinkedIn conventions — no link in the body** | `post_to_linkedin`'s #392 split | **PASS, correctly nuanced.** The prompt bans body links; at publish, an off-platform link is held back for the first comment while a `linkedin.com` newsletter link is deliberately left in the body, because the reach penalty is off-platform only |
-| R8 | **No canned sameness** — the post could not paste under any other author | `POST_BANNED_SCAFFOLDS` + `slop_lint.canned_scaffold` (**new, this PR**), similarity gate | **FAIL → partly fixed here.** The prompts were the SOURCE of the sameness (F1). The semantic half of the gate is still missing (F3) |
+| R8 | **No canned sameness** — the post could not paste under any other author | `POST_BANNED_SCAFFOLDS` + `slop_lint.canned_scaffold` (**new, this PR**), similarity gate | **FAIL → partly fixed here.** The prompts were the SOURCE of the sameness (F1). The semantic half of the gate was still missing (F3) — added in #1265 |
 
 ---
 
@@ -128,11 +129,21 @@ scoring call — so the stored score is the discarded draft's, and that is what 
 gate and the nightly telemetry read back. Not fixed here: re-scoring changes which posts
 auto-publish and costs a judge call per regenerated post.
 
-### F3 — The post similarity gate is lexical-only → **#1265**
+### F3 — The post similarity gate is lexical-only → **#1265** *(FIXED in #1265)*
 
-The gate measures token-set overlap at 0.55; the nightly telemetry measures `lem-embedding` cosine
-and reports 0.63–0.85 on every post scored. Comments got the embedding-first gate in #617; posts
-never did. Not fixed here: an embedding call per post plus a new hold condition.
+The gate measured token-set overlap at 0.55; the nightly telemetry measured `lem-embedding` cosine
+and reported 0.63–0.85 on every post scored. Comments got the embedding-first gate in #617; posts
+never did. Not fixed in THIS audit's PR: an embedding call per post plus a new hold condition.
+
+**Fixed in #1265.** `post_similarity_report` (`content_framework.py`) now grades the post gate
+embedding-first against `POST_EMBEDDING_SIMILARITY_MAX` and degrades to today's token overlap when
+the embedding endpoint is unavailable — never to "nothing is similar". The ceiling default, 0.78, is
+calibrated on the scorecard above: 0.657 is the highest score a post nobody calls a duplicate
+reached, 0.832 the lowest of the reworded pair, and the margin is deliberately on the safe side
+because a false positive spends a regeneration AND holds the post at PENDING. Over the ceiling takes
+the same one-retry-then-keep path the lexical gate always took, and the `similarity` finding names
+which measure fired. Five posts from one account SIZES the gap rather than settling the number —
+retune with the env knob as `content_quality_scores` fills out. Posture: `docs/content-core.md`.
 
 ### F4 — The A2 proof detector counts "one of the…" as a specific → **#1266**
 

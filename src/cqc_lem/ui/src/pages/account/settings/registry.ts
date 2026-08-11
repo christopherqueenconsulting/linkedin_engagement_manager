@@ -97,7 +97,8 @@ export const SETTINGS: SettingDescriptor[] = [
     recommended: 'Leave blank to use the platform default.' }),
   D({ key: 'post_similarity_max_pct', section: 'content', label: 'Max. overlap with your recent posts', advanced: true,
     what: 'Word-overlap ceiling against your own recent posts.',
-    why: 'Lower is stricter about near-duplicates; repeats read as automated.',
+    why: 'Lower is stricter about near-duplicates; repeats read as automated. A post that says the '
+      + 'same thing in different words is caught separately, on meaning, whatever you set here.',
     recommended: 'Leave blank to use the platform default.' }),
   D({ key: 'content_buffer_days', section: 'content', label: 'Generate drafts this far ahead', advanced: true,
     what: 'How many days of upcoming posts LEM keeps generated in advance.',
