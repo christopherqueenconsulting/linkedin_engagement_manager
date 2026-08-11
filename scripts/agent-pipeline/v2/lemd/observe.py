@@ -97,6 +97,22 @@ class Decision:
 #: green PR parked with `needs-human` (but still labelled `agent:working`) was merged on the next tick.
 HOLD_LABELS = frozenset({"needs-human", "agent:blocked"})
 
+#: GitHub's `mergeStateStatus`, every value named. Naming them is the point: an unnamed value falls
+#: through to the checks ladder, and for `UNKNOWN` that is the #1082 shape — GitHub computes
+#: mergeability asynchronously, so an unreadable field was being read as a healthy one.
+#:
+#: `BEHIND` proceeds deliberately. `main` does NOT require branches to be up to date
+#: (`required_status_checks.strict` is false, checked 2026-08-11) and the merge queue builds against
+#: the queue head, so being behind is self-healing and dispatching an agent to rebase would spend a
+#: model session on something GitHub does for free. `UNSTABLE` proceeds because `checks_for` filters
+#: to REQUIRED contexts, so a red non-required check is genuinely mergeable. `BLOCKED` proceeds
+#: because it is the normal state of a PR waiting on a required check, and the ladder below reads
+#: those directly.
+MERGE_STATE_PROCEED = frozenset({"CLEAN", "BLOCKED", "UNSTABLE", "BEHIND", "HAS_HOOKS"})
+
+#: Mergeability GitHub has not finished computing. Not a state to act on.
+MERGE_STATE_UNREADABLE = frozenset({"UNKNOWN", ""})
+
 #: Issue labels whose decision turns on "has a previous run left anything behind?". Kept next to
 #: `decide` rather than inside `snapshot_issue` so the two cannot drift: a label added to one
 #: branch of the state machine and not to this set silently gets `work_exists=None`, which reads as
@@ -285,6 +301,21 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "dependabot_ci_failure", mode="depfix")
     if "agent:docfix" in snap.labels:
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "lint_gate_failure", mode="docfix")
+
+    if snap.merge_state in MERGE_STATE_UNREADABLE:
+        # Below the lane labels on purpose: `revise`, `depfix` and `docfix` do not merge anything,
+        # so there is no reason to hold them on a mergeability GitHub is still computing. Everything
+        # from here down is the merge path, and that must not run on a field it cannot read.
+        return Decision(ACT_NONE, db.STATE_WAIT_CI, "merge_state_unknown",
+                        wait_reason="mergeability_computing", wake_in=120)
+
+    if snap.merge_state not in MERGE_STATE_PROCEED:
+        # A value GitHub added, or one gh renamed. The enum is closed and every member of it is
+        # named above, so this means the world changed — wait rather than guess which half of the
+        # ladder it belongs in.
+        return Decision(ACT_NONE, db.STATE_WAIT_CI, "merge_state_unrecognised",
+                        wait_reason="mergeability_computing", wake_in=300,
+                        details={"merge_state": snap.merge_state})
 
     if snap.auto_merge:
         # Already armed. GitHub will enqueue it the moment its gate clears, so there is nothing to

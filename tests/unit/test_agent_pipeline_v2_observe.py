@@ -38,6 +38,10 @@ def pr(**kw) -> observe.Snapshot:
     base = dict(
         kind="pr", number=1, labels=frozenset({"agent:working"}), state="OPEN",
         branch="feature/x", head_sha="abc", checks=GREEN, review_fresh=True,
+        # Explicit since #1392. The default is `""`, which now means "GitHub has not finished
+        # computing mergeability" and waits — these fixtures were reaching the merge gate only
+        # because an unreadable field used to read as a healthy one.
+        merge_state="CLEAN",
     )
     base.update(kw)
     return observe.Snapshot(**base)
