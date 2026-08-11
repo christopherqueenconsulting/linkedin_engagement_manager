@@ -141,7 +141,9 @@ retry at PENDING).
 `_score_and_persist_dwell` call sites (`regenerate_post_carousel_task`, `_finish_regenerated_post`,
 `auto_create_weekly_content`) already score the finished caption immediately before
 `update_db_post_content`, i.e. outside `create_text_post` and after every rewrite. It was already
-describing the shipped draft.
+describing the shipped draft. Confirmed by the owner on PR #1441 (2026-08-11): ship the reorder as-is
+(no keep-the-worse-of-two variant, which would stop the stored number describing the shipped draft),
+and leave dwell alone rather than adding a redundant second write.
 
 ### F3 — The post similarity gate is lexical-only → **#1265**
 
