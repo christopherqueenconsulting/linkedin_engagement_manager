@@ -347,6 +347,54 @@ class TestFirstPersonProofDetector:
         assert fw.has_first_person_proof(self._WITH_PROOF) == fw.has_first_person_proof(self._WITH_PROOF)
 
 
+class TestQuantityIsACountNotADeterminer:
+    """Issue #1266 / audit finding F4 — a spelled quantity proves something only when it COUNTS.
+
+    "one of the biggest challenges" is a determiner, and it was the shape that let a canned template
+    satisfy the A2 proof slot with no lived detail in it.
+    """
+
+    @pytest.mark.parametrize("text", [
+        # The exact sentence the #1138 audit quoted, straight out of the old system prompt.
+        "In my experience as a Solutions Architect, one of the biggest challenges in consulting "
+        "today is scope creep.",
+        "One of my clients asked me the same question about strategy.",
+        "I have watched one of those rollouts stall more than once.",
+        "I keep meeting one of them at every conference I attend.",
+        "Dozens of our customers tell me the same thing.",
+        "Hundreds of the leaders I speak with feel it too.",
+        "I told no one about it at the time.",
+    ])
+    def test_determiner_quantity_is_not_proof(self, text):
+        assert not fw.has_first_person_proof(text)
+
+    @pytest.mark.parametrize("text", [
+        "I onboarded one client that turned the whole quarter around.",
+        "I spent one afternoon rewriting the pipeline by hand.",
+        "I deleted one line of YAML and our build finally went green.",
+        "We talked to dozens of prospects before we changed the pitch.",
+        "I made two of the three calls myself before lunch.",  # "three calls" is a real count
+        "I hired one of the 12 engineers on my team that way.",  # the digit still proves it
+        "My rewrite cut our deploy time by 40%.",
+        "I lost [[DURATION: how long]] to that dead end.",
+    ])
+    def test_a_genuine_count_still_proves(self, text):
+        assert fw.has_first_person_proof(text)
+
+    def test_a_determiner_sentence_with_another_anchor_still_proves(self):
+        # The tightening removes ONE signal, it does not veto the sentence: a time anchor in the
+        # same clause is still a checkable particular.
+        assert fw.has_first_person_proof(
+            "One of my clients called me last Tuesday about the same thing.")
+
+    def test_only_the_determiner_sentence_drops_out(self):
+        draft = ("One of the biggest challenges in consulting is scope creep.\n\n"
+                 "I killed it on one project by writing the change-order rule down.")
+        sentences = fw.first_person_proof_sentences(draft)
+        assert len(sentences) == 1
+        assert sentences[0].startswith("I killed it")
+
+
 class TestPerformanceWeights:
     """Issue #389 / B4 — outcome aggregates become selection weights that down-weight
     under-performing shapes while keeping rotation and exploration intact.

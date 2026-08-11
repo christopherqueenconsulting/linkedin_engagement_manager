@@ -2,9 +2,9 @@
 
 The check exists because LEM's own post system prompts used to hand the writer literal templates
 ("In my experience as a [Job Title]…"). Nothing in the pipeline caught them: they carry no tier-1
-tell word, trip no other slop check, and — because "one" reads as a concrete-specificity signal —
-they even satisfy the A2 first-person proof slot. These tests pin both halves: it fires on the
-sampled scaffolds, and it never HOLDS a draft.
+tell word, trip no other slop check, and — because "one" used to read as a concrete-specificity
+signal — they even satisfied the A2 first-person proof slot (closed separately in #1266). These
+tests pin both halves: it fires on the sampled scaffolds, and it never HOLDS a draft.
 """
 
 import pytest
@@ -199,7 +199,8 @@ class TestSharedList:
 class TestWhyThisCheckWasNeeded:
     def test_the_canned_sentence_slipped_every_other_gate(self):
         # Regression pin for the audit's core finding: before this check, the templated sentence
-        # was invisible to the lint AND counted as the A2 first-person proof slot.
+        # was invisible to the lint. It also satisfied the A2 first-person proof slot, because
+        # "one of the" read as a concrete specific — closed in #1266, so the two checks now agree.
         report = lint_report(CANNED, "post")
         assert [v["check"] for v in report["violations"]] == [CHECK_SCAFFOLD]
-        assert has_first_person_proof(CANNED) is True
+        assert has_first_person_proof(CANNED) is False

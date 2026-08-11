@@ -1161,6 +1161,15 @@ _PROOF_MONTHS = ("january|february|march|april|may|june|july|august|september|oc
                  "december")
 _PROOF_WEEKDAYS = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
 
+# A spelled quantity is only a checkable particular when it COUNTS something. "one of the biggest
+# challenges" is a determiner — the canned-scaffold shape that satisfied this gate while carrying no
+# lived detail at all (issue #1266, audit finding F4) — and "dozens of our customers" is the same
+# hedge with a bigger number. The tail after "of" is what separates them: a determiner/pronoun means
+# the quantity is vague, a bare noun ("dozens of prospects", "one line of YAML") means it is a count.
+_VAGUE_QUANTITY_TAIL = (
+    r"(?!\s+of\s+(?:the|my|our|your|their|his|her|its|these|those|them|us|it|you|we|"
+    r"which|what|whom)\b)")
+
 # Concrete-specificity signals — the "and here is the CHECKABLE particular" half. A number (digit or
 # spelled), a relative-time anchor, or a named day/month grounds the claim in a real moment instead
 # of an abstraction. The gate flags genuinely generic drafts (no number AND no time anchor tied to a
@@ -1170,8 +1179,9 @@ _PROOF_WEEKDAYS = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
 # regeneration.
 _SPECIFICITY_RE = re.compile(
     r"\d"
-    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
-    r"dozens?|hundreds?|thousands?|millions?|billions?)\b"
+    # "no one" is a pronoun, never a count — the same determiner reading from the other side.
+    r"|(?<!\bno\s)\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    rf"dozens?|hundreds?|thousands?|millions?|billions?)\b{_VAGUE_QUANTITY_TAIL}"
     r"|\b(?:years?|months?|weeks?|weekends?|days?|hours?|decades?)\s+ago\b"
     r"|\b(?:last|past|next|first|second|third)\s+"
     r"(?:year|month|week|weekend|quarter|decade|time|day|night|morning)\b"
