@@ -51,7 +51,15 @@ from cqc_lem.api.models import (
     SessionTokenField,
     error_responses,
 )
-from cqc_lem.api.spa_assets import ArchivedStaticFiles, spa_index_headers, sync_build_to_archive
+from cqc_lem.api.spa_assets import (
+    VITE_BASE_URL_PLACEHOLDER,
+    ArchivedStaticFiles,
+    public_base_url,
+    register_spa_public_routes,
+    render_base_url,
+    spa_index_headers,
+    sync_build_to_archive,
+)
 from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
 from cqc_lem.app.engagement.outreach import send_lead_response
@@ -3290,16 +3298,25 @@ if os.path.isdir(_ui_dist):
     # a previously-deployed build. (CDN edge cache is also purged on each deploy via build-and-push.yml.)
     app.mount("/assets", ArchivedStaticFiles(directory=_spa_assets_dir), name="spa-assets")
 
+    # robots.txt, sitemap.xml, favicon.svg and the Open Graph image (issue #1298). MUST come before
+    # the catch-all below, which would otherwise hand a crawler index.html for every one of them.
+    register_spa_public_routes(app, _ui_dist)
+
     @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
-    def serve_spa(full_path: str):
+    def serve_spa(full_path: str, request: Request):
         """The SPA catch-all — any path no route above claimed gets index.html.
 
         That is what makes client-side routing survive a hard refresh, and it is why this is
         registered LAST, after include_router.
         """
         with open(_spa_index) as fh:
-            # spa_index_headers() owns the no-store contract — see the note there.
-            return HTMLResponse(content=fh.read(), headers=spa_index_headers())
+            html = fh.read()
+        # A build that never received VITE_PUBLIC_BASE_URL leaves the token in the shell (Vite only
+        # substitutes a DEFINED env var), so fill it from the server's own canonical host. Without
+        # this a crawler is handed a literal placeholder in og:image/og:url.
+        html = render_base_url(html, public_base_url(str(request.base_url)), VITE_BASE_URL_PLACEHOLDER)
+        # spa_index_headers() owns the no-store contract — see the note there.
+        return HTMLResponse(content=html, headers=spa_index_headers())
 
 
 def send_bytes_range_requests(

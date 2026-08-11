@@ -44,6 +44,11 @@ ARG VITE_POSTHOG_REPLAY=""
 ENV VITE_POSTHOG_REPLAY=${VITE_POSTHOG_REPLAY}
 ARG VITE_POSTHOG_REPLAY_SAMPLE=""
 ENV VITE_POSTHOG_REPLAY_SAMPLE=${VITE_POSTHOG_REPLAY_SAMPLE}
+# Public canonical host for Open Graph / Twitter cards / sitemap (issue #1298).
+# Not a secret: it only names the hostname, and Vite inlines it into the static
+# index.html shell so crawlers see absolute URLs.
+ARG VITE_PUBLIC_BASE_URL=""
+ENV VITE_PUBLIC_BASE_URL=${VITE_PUBLIC_BASE_URL}
 # Source-map upload for error tracking (issue #648). The INJECTED bundle is what must ship — the
 # chunk ids posthog-cli writes into the JS are how a captured stack finds its map — so this runs
 # here, inside the stage that produces dist/, and not as a separate CI build.
@@ -54,7 +59,12 @@ ENV POSTHOG_CLI_HOST=${POSTHOG_CLI_HOST}
 COPY ./src/cqc_lem/ui/package.json ./src/cqc_lem/ui/package-lock.json ./
 RUN npm ci
 COPY ./src/cqc_lem/ui ./
-RUN npm run build
+# An EMPTY VITE_PUBLIC_BASE_URL must not reach Vite: a DEFINED-but-empty %VITE_*% is substituted
+# with "", baking RELATIVE og:image/og:url into the shell — precisely what LinkedIn's crawler
+# ignores. Unset, Vite leaves the token alone and the API fills it from PUBLIC_BASE_URL when it
+# serves index.html (api/spa_assets.public_base_url), so an image built without the repo variable
+# still emits absolute URLs.
+RUN if [ -z "$VITE_PUBLIC_BASE_URL" ]; then unset VITE_PUBLIC_BASE_URL; fi; npm run build
 # Best-effort by construction: no token (dev/local builds) or a failed upload must never fail a
 # release build — it only costs readable stack traces. The .map files are deleted either way, so a
 # build that skips the upload still never serves them.
