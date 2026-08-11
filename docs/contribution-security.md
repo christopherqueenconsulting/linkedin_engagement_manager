@@ -16,7 +16,7 @@ That combination means one thing has to be true, and this document is about keep
 ```
 outsider files an issue   (or POSTs /api/feedback — no auth at all)
   → LLM triage cron  or  the feedback loop applies `agent:ready`   ← neither checked the author
-  → tick.sh selects it within the hour                             ← no author filter
+  → the daemon selects it within the hour                          ← no author filter
   → the attacker-authored issue body IS the agent's prompt
   → agent pushes, self-reviews, auto-merges → release → production
 ```
@@ -32,7 +32,9 @@ Modelled on GitHub's own agentic-workflows framework (`gh-aw`), which LEM previo
 
 ### 1. Integrity filtering — who may hand work to an agent
 
-`scripts/agent-pipeline/tick.sh` checks **two independent things** before any lane acts. Neither
+The runner checks **two independent things** before any lane acts — the shared implementation is
+`scripts/agent-pipeline/lib/guards.sh`, reached from v2's `v2/actions/common.sh` (`v2_trust_ok`) and
+from v1's `tick.sh`. Neither
 implies the other: an outsider's issue can be labelled by a trusted bot, and a trusted author's
 issue can be labelled by anyone with triage.
 
@@ -58,7 +60,7 @@ never carried the contributor's code.
 |---|---|---|
 | `scripts/triage_issues.py` (daily LLM cron) | granted it to any issue | only to `OWNER`/`MEMBER`/`COLLABORATOR` authors; everyone else → `needs-human` |
 | `utilities/feedback/issue_service.py` (auto-filed from `POST /api/feedback`) | granted it on risk-none + confidence ≥ 0.7 | **never grants it** (`FEEDBACK_MAY_GRANT_AGENT_READY = False`) |
-| A human | — | unchanged, and `tick.sh` verifies it was a trusted human |
+| A human | — | unchanged, and the runner verifies it was a trusted human |
 
 The feedback loop is the sharp one: `POST /api/feedback` is deliberately open to logged-out
 visitors, and the per-user daily cap keys on `user_id`, which is `NULL` for all of them. The

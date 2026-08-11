@@ -3,9 +3,14 @@
 Drives GitHub issues (Milestones 7–12) to merged & deployed, using **Claude on your Max
 subscription** (no API cost) as the implementer and **GitHub Copilot** as the free reviewer.
 
-## Flow (one issue at a time)
+> **This describes v1 (`tick.sh`), which is now only the failsafe.** The live runner is the
+> `lem-agentd` daemon — see [`docs/agent-pipeline-v2.md`](../../docs/agent-pipeline-v2.md) for how
+> work actually flows today, and `v2/README.md` for the operator commands. The v1 flow below still
+> documents what the failsafe does when the daemon's heartbeat goes stale.
+
+## Flow — v1 failsafe (one issue at a time)
 ```
-cron (every 15 min) → tick.sh advances the pipeline by ONE step:
+cron (every 15 min) → tick.sh --failsafe advances the pipeline by ONE step:
   • Dependabot PR failing (agent:depfix) → PRIORITY lane: Claude smart-triages the fix
                        (bump-caused → fix on branch; not-the-bump's-fault → main-side fix PR + rebase)
   • in-flight PR is CONFLICTING → Claude rebases it onto main (resolves conflicts, bumps migration #s)

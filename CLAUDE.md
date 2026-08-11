@@ -32,16 +32,13 @@ src/cqc_lem/
 ├── api/           FastAPI app — engagement_preferences, DM template, PIN endpoints
 ├── app/           Celery tasks (run_scheduler, run_content_plan, generate_variants, my_celery);
 │                  run_automation.py is GONE — emptied by #1154, deleted by #1206
-│   └── engagement/  every engagement cluster (#1154): invites (connect rail), newsletter,
-│                    feed (the SDUI feed engine + groups + the roster tail — one graph, one module),
-│                    posting (post_to_linkedin + the post-publish sweeps: replies, comment
-│                    follow-ups, comment outcomes, post/audience stats — publish then measure),
-│                    outreach (DMs + appreciation, profile-viewer walk, connect scan, funnel,
-│                    catch-up — they all end at the same send and follow-up ladder).
-│                    Every task there pins name='cqc_lem.app.run_automation.<fn>' — moving a task
-│                    RENAMES it, so that string is a WIRE IDENTIFIER, not a module path. It is still
-│                    correct in celeryconfig.task_routes and must never be "corrected"; nothing
-│                    imports it, and test_task_name_stability.py holds both halves
+│   └── engagement/  every engagement cluster (#1154), one module per lane: invites, newsletter,
+│                    feed (SDUI feed + groups + roster tail), posting (publish then measure),
+│                    outreach (DMs, appreciation, viewer walk, connect scan, funnel, catch-up).
+│                    Every task pins name='cqc_lem.app.run_automation.<fn>' — a WIRE IDENTIFIER, not
+│                    a module path: moving a task RENAMES it. Still correct in
+│                    celeryconfig.task_routes, never "correct" it; test_task_name_stability.py holds
+│                    both halves. Lane-by-lane posture: docs/engagement-automation.md
 ├── utilities/
 │   ├── ai/        LiteLLM helpers (ai_helper.py, client.py) + content_framework/content_research/content_alignment/story_bank/slop_lint
 │   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)
@@ -82,16 +79,14 @@ compose/local/database/migrations/  Flyway migrations
   calls it directly and never reads the re-export. `tests/unit/platform/db/test_connection_seam.py`
   derives that hazard set per module and fails the build on it.
 - **Secrets:** Never hardcode. Use `.env` with `load_dotenv()`. See `.env.example` for required variables.
-- **Comments & docstrings:** Only add a comment when the WHY is non-obvious — and that is exactly
-  what a docstring is for. Ruff enforces **Google-convention docstrings** (`D`) alongside `E`/`F`/`I`/
-  `T201` in the **Docstring & Lint Gate**; tests are exempt from the *missing*-docstring rules. The
-  tree does not meet the standard yet, so the gate is a **ratchet**: it fails a PR that raises the
-  count in `.ruff-baseline`. Read it with **`scripts/ruff_count.sh`** only — `ruff … | wc -l` is 2
-  high (summary lines) and ratcheting on that leaves exactly that much silent slack. NOT yet
-  required — that flips at 0. Never restate the signature
-  (`Returns: The user id.` under `-> int` is noise) and never invent behaviour to satisfy the
-  linter. A regression routes to the `agent:docfix` lane, not to a human. Standard + examples:
-  **`docs/docstring-standard.md`**.
+- **Comments & docstrings:** Only add a comment when the WHY is non-obvious — that is what a
+  docstring is for. Ruff enforces **Google-convention docstrings** (`D`) alongside `E`/`F`/`I`/`T201`
+  in the **Docstring & Lint Gate**; tests are exempt from the *missing*-docstring rules. The tree
+  does not meet the standard yet, so the gate is a **ratchet**: it fails a PR that raises the count
+  in `.ruff-baseline`. Read it with **`scripts/ruff_count.sh`** only — `ruff … | wc -l` is 2 high and
+  ratcheting on that leaves that much silent slack. NOT yet required — that flips at 0. Never
+  restate the signature and never invent behaviour to satisfy the linter. A regression routes to the
+  `agent:docfix` lane. Standard: **`docs/docstring-standard.md`**.
 
 ## AI Call Pattern
 
@@ -107,21 +102,21 @@ on deploys): ONLY a connection that was never established is retried (`LLM_CONNE
 `LLM_CONNECT_RETRY_BACKOFF_SECONDS`, ~24s default) — nothing was sent, so there is no spend to
 duplicate. A timeout, 4xx or 5xx is the proxy answering, and fails as before.
 
-**Model tier aliases** (defined in `.litellm/config.yaml`):
+**Model tier aliases** (`.litellm/config.yaml`):
 
 | Alias | Use case |
 |---|---|
-| `lem-simple` | Short outputs ≤300 chars: refine, summarize briefly, comma list |
+| `lem-simple` | Short outputs ≤300 chars: refine, summarize, comma list |
 | `lem-medium` | Balanced: comments, post refinement, blog summaries |
 | `lem-complex` | Long-form: thought leadership, personal story, industry news |
 | `lem-image` | Image generation (gpt-image-2, gpt-image-1 in-group fallback) |
-| `lem-vision` | Render quality gate — looks at a generated image (gpt-4o-mini) |
-| `lem-embedding` | Embeddings for feedback dedup/clustering (`client.embeddings.create`) |
+| `lem-vision` | Render quality gate — looks at a generated image |
+| `lem-embedding` | Embeddings for feedback dedup/clustering |
 | `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter` |
 
 **Cost-aware down-routing** (`utilities/routing_policy.py`, `utilities/cost_routing.py`, `docs/cost-performance-margin-plan.md` §D.1.1): the router can route a tier ONE step down for the treatment cohort of an active cost/quality experiment (arm resolved app-side from a PostHog flag, #652, handed over in the policy document's `arms` map; hash stays as fallback). `routing_policy.py` is the shared decision core — the app imports it AND docker-compose mounts that same file into the LiteLLM container — so it must stay **stdlib-only** (no `cqc_lem.*` imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set.
 
-See `ai_helper.py` for the per-function model assignment.
+Per-function assignment: `ai_helper.py`.
 
 **Image stack (ONE engine, two modules, `docs/image-stack.md`):** `utilities/ai/image_brief.py`
 authors every image prompt — a validated `lem-medium` brief (render prompt + `focal_concept`) with
@@ -214,10 +209,10 @@ DEFINES it. The only thing still spelled `cqc_lem.app.run_automation.<fn>` is th
 | **OAuth renewal** (#600) | `resolve_token_status` in `linkedin/token_refresh.py` | The ONE place token state is decided — SPA countdown and renewal beat read the same function. LinkedIn caps auth at 60 days, so the daily 08:30 beat is the only way a token outlives that. `days_remaining` is `None`, never 0, when unreadable | same |
 | **429 / auth-wall** | `linkedin/rate_limit.py` | The breaker is a harder gate than pacing and is never a flag | — |
 | **Secrets at rest** (#745) | `utilities/crypto.py`; `db.py` is the ONE caller | AES-256-GCM per user+column off `LEM_SECRET_KEY`, and the field-name constants are **AAD — renaming one orphans every row**. `ENCRYPTION_REQUIRED=true` in prod since 2026-08-07, so reads FAIL CLOSED; failed decrypt → None | `docs/secrets-at-rest.md` |
-| **Identity + sessions** (#745 2b) | `api/main.get_session_user_id()` | `users.public_uid` is the identity; email is a movable ATTRIBUTE. `sessions.session_token` stores an **UNKEYED** `SHA-256(token)` — a rotated `LEM_SECRET_KEY` must never log everyone out — in an httpOnly cookie. **Since #914 EVERY `/api` route resolves its caller through it**: `require_session_user_id()` is it plus a 401; an `email`/`user_id`/`post_id` is a TARGET to authorise (403 + audited), never the actor; `db.user_owns_posts` FAILS CLOSED; a DB fault is **503**, not 403. **CSRF (#957):** a cookie-authenticated write must send `X-LEM-Client`. `API_ACCESS_TOKENS` is a NON-BROWSER credential since #950 — never in the SPA build | `docs/identity-and-sessions.md` |
+| **Identity + sessions** (#745 2b) | `api/main.get_session_user_id()` | `users.public_uid` is the identity; email is a movable ATTRIBUTE. `sessions.session_token` stores an **UNKEYED** `SHA-256(token)` — a rotated `LEM_SECRET_KEY` must never log everyone out — in an httpOnly cookie. **Since #914 EVERY `/api` route resolves its caller through it**: `require_session_user_id()` is it plus a 401; an `email`/`user_id`/`post_id` is a TARGET to authorise (403 + audited), never the actor; `db.user_owns_posts` FAILS CLOSED; a DB fault is **503**. **CSRF (#957):** a cookie-authenticated write must send `X-LEM-Client`. `API_ACCESS_TOKENS` is NON-BROWSER since #950 — never in the SPA build | `docs/identity-and-sessions.md` |
 | **Docs surface** (#1020) | `_hide_admin_routes_from_schema()` | `/api/docs`, `/api/redoc`, `/api/openapi.json` (old paths 301). Every `/api/admin/*` operation is kept OUT of the published schema, derived from the route table so a new admin route inherits it. **Hidden ≠ gated** — auth is unchanged, Swagger just can't drive them. Unauthenticated `GET /health/deep` returns COUNTS only, `"status":"healthy"` first — a monitor contract | same, `docs/stack-watchdog.md` |
-| **Strong auth + step-up** (#745 2c) | `utilities/auth_factors.py` (ceremonies in `webauthn_util.py`) | Once an account enrols a passkey or TOTP the email PIN is a **bootstrap** only; a passkey login is the only path arriving already stepped up, a recovery code never does. `sessions.last_verified_at` gates every credential-touching write — refusal is **403 `step_up_required`**, never 401. **The FIRST factor is free, every one after it is gated, removing one always is.** Attempts are durable and counted per ACCOUNT: 401 = wrong code, 400 = handle gone, 429 = budget spent | `docs/strong-authentication.md` |
-| **Session scopes are SURFACES** (#905/#1026) | the same resolver | Refusal is 403 + audited. `extension` reaches only the ONE path the extension calls. `enroll` reaches only enrolment, which promotes it to `full` — **a hold is never a lockout**, the PIN still signs you in. **`agent`** is the headless credential: `_AGENT_SESSION_SURFACE` (queueing) only, TTL fixed at mint. It may queue but **NEVER approve** — THREE guards, because a row reaches APPROVED three ways (`action="approve"`, `status="approved"` at create, the `auto_approve` default). Surfaces match on PATH not method, so granting a read grants its writes — hence `PUT /user/engagement-preferences` is separately refused | `docs/identity-and-sessions.md` |
+| **Strong auth + step-up** (#745 2c) | `utilities/auth_factors.py` (ceremonies in `webauthn_util.py`) | Once an account enrols a passkey or TOTP the email PIN is a **bootstrap** only; a passkey login is the only path arriving already stepped up. `sessions.last_verified_at` gates every credential-touching write — refusal is **403 `step_up_required`**, never 401. **The FIRST factor is free, every one after it is gated, removing one always is.** Attempts are durable and counted per ACCOUNT: 401 = wrong code, 400 = handle gone, 429 = budget spent | `docs/strong-authentication.md` |
+| **Session scopes are SURFACES** (#905/#1026) | the same resolver | Refusal is 403 + audited. `extension` reaches only the ONE path the extension calls. `enroll` reaches only enrolment, which promotes it to `full` — **a hold is never a lockout**. **`agent`** is the headless credential: `_AGENT_SESSION_SURFACE` (queueing) only, TTL fixed at mint. It may queue but **NEVER approve** — THREE guards, because a row reaches APPROVED three ways. Surfaces match on PATH not method, so granting a read grants its writes — hence `PUT /user/engagement-preferences` is separately refused | `docs/identity-and-sessions.md` |
 ## Agent Working Method
 
 Three cross-cutting practices wrap `ship-issue`'s branch → build → PR flow — one before code, one
@@ -320,12 +315,11 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
 - **LinkedIn SDUI** (`docs/sdui-selenium-notes.md`, `docs/sdui-probe-coverage.md`): the old `urn:`,
   `feed-shared-*` and `comments-comment-*` anchors are gone — prefer `data-testid` / `aria-label`.
   Three fix invariants (#1013): **success is the OUTCOME being present, never a click having
-  landed**; **never click a control whose label names a different entity than the target** (the #1012
-  rail hazard); **zero items is not "nothing to do" until the page agrees** — cross-check an anchor
-  the walk doesn't use (`_report_zero_walk`). Every surface has a read-only probe flag + a weekly
-  sweep filing ONE issue per drift. The comment composer has NO `<form>`; the sticky nav steals
-  clicks from an unfocused composer; every composer lookup is scoped to its OWN post, and a miss is a
-  DEBUG no-op. A PERMALINK runs the SAME engine (#966) — the card is picked by the permalink's URN,
+  landed**; **never click a control whose label names a different entity than the target** (#1012);
+  **zero items is not "nothing to do" until the page agrees** (`_report_zero_walk`). Every surface
+  has a read-only probe flag + a weekly sweep filing ONE issue per drift. The comment composer has NO
+  `<form>`; the sticky nav steals clicks from an unfocused composer; every composer lookup is scoped
+  to its OWN post, and a miss is a DEBUG no-op. A PERMALINK runs the SAME engine (#966) — the card is picked by the permalink's URN,
   the reaction happens BEFORE the comment, and a comment that doesn't land is a FAILURE row.
 - **Unified content core** (`docs/content-core.md`): newsletters, posts AND comments draw framework,
   research and alignment from `content_framework.py` / `content_research.py` /
@@ -343,27 +337,35 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
   release fetches a chunk hash the new image no longer has. Three layers — asset retention from a
   shared archive volume, a loop-guarded one-shot reload on import failure, and `/api/app-info`
   polling that prompts rather than reloads.
+## Agent pipeline (v2)
+
+The runner is the **`lem-agentd` daemon** (`scripts/agent-pipeline/v2/`), NOT `tick.sh` — v1 is only
+a heartbeat-gated failsafe. State machine, the full `decide()` decision table, the GitHub field
+combinations it is not yet defined for, and the deploy path (the pipeline is **not** in the Docker
+image): **`docs/agent-pipeline-v2.md`**. That table is enforced by
+`test_agent_pipeline_v2_decision_table.py` — a new branch without a documented row fails the build.
+Labels are the human contract: `docs/AGENT_WORKFLOW_PLAYBOOK.md`.
+
 ## Git Safety & Multi-Agent Concurrency Rules
 - **Every agent gets its OWN worktree — always.** `isolation: "worktree"` on the Agent call;
-  `.claude/agents/*.md` frontmatter also carries it (measured). Agents sharing a checkout WILL
-  clobber each other — three once did, one switching the branch under the others inside a minute.
-  `lib/run_lane.sh` enforces it for the pipeline: `cd ""` SUCCEEDS in bash, so an empty worktree
-  path silently runs the agent in the shared tree instead of failing.
+  `.claude/agents/*.md` frontmatter carries it too. Agents sharing a checkout WILL clobber each
+  other — three once did, one switching the branch under the others inside a minute. `lib/run_lane.sh`
+  enforces it for the pipeline: `cd ""` SUCCEEDS in bash, so an empty worktree path silently runs the
+  agent in the shared tree instead of failing.
 - **NEVER put `model:` in an agent definition.** It overrides the CLI `--model`, and a subagent
-  inherits the parent's `ANTHROPIC_BASE_URL` — so on the Ollama lane (~47% of pipeline dispatches,
-  LiteLLM serves only `lem-*`) a pinned `opus` 400s in 7s **while the parent exits rc=0**, which
-  `run_lane` records as a healthy run. Pin tools and `--effort`, never the model:
-  `scripts/agent-pipeline/docs/agent-pipeline-routing.md`.
+  inherits the parent's `ANTHROPIC_BASE_URL` — so on the Ollama lane (LiteLLM serves only `lem-*`) a
+  pinned `opus` 400s in 7s **while the parent exits rc=0**, recorded as a healthy run. Pin tools and
+  `--effort`, never the model: `scripts/agent-pipeline/docs/agent-pipeline-routing.md`.
 - **One venv, many worktrees:** the editable-install `.pth` is mutable and the last `poetry install`
   anywhere wins, so `poetry run python -c "import cqc_lem…"` may read a DIFFERENT worktree. Use
   `PYTHONPATH=src` for standalone scripts and print `__file__` to prove which tree you loaded.
   `pytest` is unaffected (`pythonpath` is rootdir-relative).
 - **Reproduce CI locally** with an empty `.env` and `src/cqc_lem/ui/dist` moved aside. A dev `.env`
-  masks real failures (unset `DB_PORT` → `int(None)` → `TypeError`, which `except
-  mysql.connector.Error` does NOT catch); a built SPA causes a false `test_docs_surface` failure.
+  masks real failures (unset `DB_PORT` → `int(None)` → `TypeError`, uncaught by `except
+  mysql.connector.Error`); a built SPA causes a false `test_docs_surface` failure.
 - **Fresh state:** before generating ANY code edit, run `git status` and read the target file. Never edit from conversation memory — another agent may have changed it under you.
 - **Micro-branching:** never edit a shared branch asynchronously; start each distinct task on its own branch (`git checkout -b feature/claude-<task-name>`).
 - **Atomic commits:** stage + commit each completed sub-task with a clean conventional-commit message.
 - **Conflict avoidance:** if working-tree changes clash with your target files, halt, `git stash`, pull the current state, resolve, then re-apply.
 - **Branch cleanup:** merged feature branches auto-delete (repo setting `delete_branch_on_merge=true`); orphans swept weekly by `.github/workflows/stale-branches.yml`, with a 48-hour grace window protecting active agent work. Full posture: `docs/branch-cleanup.md`.
-- **A label is not an access control** (`docs/contribution-security.md`): this repo is PUBLIC and the agent pipeline runs with the owner's credentials, so `agent:ready` / `release:now` are verified by **provenance, not presence**. `tick.sh` checks TWO independent things — the AUTHOR has standing (`author_trusted`) and the label was applied by an allowlisted actor (`label_actor_trusted`, timeline API) — plus `pr_is_upstream` on PR lanes; an unreadable answer REFUSES. The three writers of `agent:ready` are gated at source: `triage_issues.py` grants it only to trusted authors, and the feedback loop (unauthenticated `POST /api/feedback`) **never** grants it. `.github/CODEOWNERS` guards every control surface, and the pipeline's credential has **no `workflows` permission** — the hard control, since agent and owner currently share one identity.
+- **A label is not an access control** (`docs/contribution-security.md`): this repo is PUBLIC and the agent pipeline runs with the owner's credentials, so `agent:ready` / `release:now` are verified by **provenance, not presence**. the runner checks TWO independent things — the AUTHOR has standing (`author_trusted`) and the label was applied by an allowlisted actor (`label_actor_trusted`, timeline API) — plus `pr_is_upstream` on PR lanes; an unreadable answer REFUSES. The three writers of `agent:ready` are gated at source: `triage_issues.py` grants it only to trusted authors, and the feedback loop (unauthenticated `POST /api/feedback`) **never** grants it. `.github/CODEOWNERS` guards every control surface, and the pipeline's credential has **no `workflows` permission** — the hard control, since agent and owner currently share one identity.

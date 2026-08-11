@@ -1,92 +1,69 @@
-# Agent pipeline v2 — event-driven daemon
+# Agent pipeline v2 — operator card
 
-> **Status: skeleton.** The state layer, config, capacity model and supervision exist and are
-> tested. The scheduler, webhook receiver, `observe()` state machine and agent dispatch land in
-> the PRs that follow. Nothing here dispatches work yet, and `LEMD_SHADOW` defaults to on, so an
-> installed-but-unconfigured daemon observes and never acts.
+This file ships to the box (`install.sh` copies `v2/*.md`), so it is the card you read at the
+console. **The design, the state machine and the decision table live in
+[`docs/agent-pipeline-v2.md`](../../../docs/agent-pipeline-v2.md)** in the repo — read that to
+understand what the daemon does and why. This one is commands.
 
-## Why v2 exists
+**Live since 2026-08-10:** `LEMD_SHADOW=0`, `V1_RETIRED` present, `lem-agentd` enabled. v1
+(`../tick.sh`) runs only as a heartbeat-gated 15-minute failsafe.
 
-v1 (`../tick.sh`) gives one cron tick to ONE unit of work. Measured over 2,456 recorded ticks:
-
-| Symptom | Measurement |
-|---|---|
-| Ticks spent re-polling GitHub for unchanged answers | **75–84%** (1,103 of 1,464 dispatches) |
-| Hard ceiling on work, regardless of `MAX_AGENTS=5` | 288 units/day (one per 5-min tick) |
-| Concurrency actually used | slot ≥2 on **39 of 2,456** ticks |
-| Worst single incident | one wedged PR consumed **45 of 62** ticks in 6 hours |
-
-Meanwhile the thing being polled is fast: PR CI ~3 min, merge queue median 3.8 min. The pipeline
-was never GitHub-bound — it was tick-bound.
-
-v2 keeps every guard v1 earned (trust boundary, worktree isolation, merge gate, RUNBOOK contracts)
-and changes only *when* work runs: a long-lived scheduler with explicit wait states, woken by
-GitHub webhooks, reconciling on a slow timer so a missed delivery is a delay and never a loss.
-
-## Layout
-
-```
-v2/
-  lemd/
-    db.py        SQLite state: items, events, runs, kv. Atomic claims, crash recovery.
-    config.py    Reads the SAME config.env v1 uses (one file, one PAUSED switch).
-    capacity.py  Concurrency caps — v1's CAP arithmetic, plus a separate pool for gh-only work.
-  systemd/       daemon + watchdog units
-  watchdog.sh    liveness AND heartbeat freshness, from outside the daemon
-```
-
-## Design decisions worth knowing
-
-**SQLite, not the app's MySQL.** The pipeline ships the app; coupling its liveness to the app stack
-means a deploy can stall the thing performing the deploy. The DB is disposable — every row is
-re-derivable from GitHub, so corruption is handled by deleting and reconciling.
-
-**Budgets are NOT in this database.** They stay in the TSV ledger (`../lib/ledger.sh`) so v1 and v2
-read the same counters byte-for-byte during migration. Two sources of truth for a budget is how you
-get one PR parked at 2 attempts and another retried forever.
-
-**Claims are an index, not a lock.** `items_active_branch` is a partial unique index over
-`branch WHERE state IN ('claimed','running')`, so "two workers on one branch" is unrepresentable
-rather than merely guarded. v1 needed `flock`s and could still re-arm auto-merge on a PR another
-slot was parking.
-
-**A park has exactly one way out, and the daemon owns both ends.** `actions/park.sh` places the
-hold (`needs-human` + `agent:blocked`); `actions/unpark.sh` is the ONLY thing that lifts it, and it
-runs only when `lemd/answers.py` reads an actionable owner reply to the newest Decision Comment on
-either thread. Three rules make that safe, each ported from v1: ambiguity (`hold`, `question`)
-leaves the work parked; an answer is spent ONCE, recorded in `items.last_comment_id` only after the
-un-park succeeds; and un-parking resets the run ledger, because the budget that caused the park is
-otherwise still exhausted. `reconcile` therefore queries the hold labels too — `park.sh` strips
-`agent:working`, so without that a parked item would leave the queue and never return.
-
-**Wait states are invisible to the scheduler.** An item awaiting CI, review, the merge queue, or a
-human costs zero attention until an event marks it dirty or its TTL fires. This is the entire
-economy change, and it is also what removes head-of-line blocking: a waiting PR is not a candidate,
-so it cannot starve the PRs behind it.
-
-**Shadow-first.** `LEMD_SHADOW=1` (the default) means observe, decide, log — mutate nothing. The
-migration runs here for ≥3 days and is accepted on a replay criterion, not an agreement percentage:
-v1's per-tick observed inputs are replayed through v2's decision function offline, requiring zero
-safety violations and human review of every action v2 would have taken that v1 did not.
-
-## Operating
+## Is it healthy?
 
 ```bash
-sudo systemctl status lem-agentd            # is it running
-tail -f /home/lem/agent-pipeline/logs/lemd.log
-sqlite3 /home/lem/agent-pipeline/v2/state/queue.db 'SELECT state, COUNT(*) FROM items GROUP BY state'
-touch /home/lem/agent-pipeline/PAUSED       # stops BOTH v1 and v2
+systemctl status lem-agentd                     # alive?
+cat state/lemd.heartbeat                        # ...and not wedged (age < 600s)
+../status.sh                                    # the whole picture
+../status.sh --watch                            # ...refreshed
 ```
 
-The watchdog timer restarts a dead *or wedged* daemon every 15 minutes. If it cannot, v1's failsafe
-cron takes over at v1 cadence — degraded, never stalled.
+Liveness and freshness are different questions. A wedged process passes `is-active` and fails the
+heartbeat; `lem-agentd-watchdog.timer` checks both every 15 minutes and restarts on either.
 
-**Install prerequisite for the watchdog.** It runs as `lem`, and a non-root caller with no login
-session cannot `systemctl restart` a system unit — polkit answers `Interactive authentication
-required`, so the watchdog would detect every failure and recover from none. It calls
-`sudo -n systemctl restart`, which needs a sudoers entry:
+## What is it doing?
 
+```bash
+tail -f logs/lemd.log                                   # the loop
+jq -c 'select(.stage=="observe")' logs/lemd-decisions.ndjson | tail -20   # every decision + reason
+jq -c 'select(.stage=="act" and .executed)' logs/lemd-decisions.ndjson | tail
+sqlite3 v2/state/queue.db \
+  'select kind,number,state,pending_mode,parked_reason from items where state not in ("merged","closed")'
 ```
-# /etc/sudoers.d/lem-agentd-watchdog
-lem ALL=(root) NOPASSWD: /usr/bin/systemctl restart lem-agentd.service
+
+Every decision carries a `reason`; the full list and what each means is §4 of the design doc.
+
+## Controls
+
+```bash
+touch ../PAUSED             # stop EVERYTHING (v1 and v2 both honour it)
+rm ../PAUSED                # resume
+sudo systemctl restart lem-agentd
+./rollback.sh               # hand dispatch back to v1 (drains, does not kill children)
+./cutover.sh                # ...and back to v2 (idempotent)
 ```
+
+`LEMD_HOLD_STARTS=1` in `../config.env` holds only the START lane — merge, park and selfreview keep
+running so in-flight PRs still drain. Capping `LEMD_MAX_AGENTS` to 0 would starve selfreview too,
+which is the merge gate's evidence source, so the queue would wedge behind the lane you meant to keep.
+
+**`PAUSED` is not `V1_RETIRED`.** `PAUSED` stops both runners; `V1_RETIRED` demotes v1 to the
+failsafe. `cutover.sh` writes the latter deliberately — `tick.sh` exits unconditionally on `PAUSED`,
+so using it would disable the failsafe as well.
+
+## Deploying a change
+
+The pipeline is **not in the Docker image** and no workflow ships it. From the repo checkout:
+
+```bash
+scripts/agent-pipeline/install.sh --sync     # only files the box has not edited
+sudo systemctl restart lem-agentd            # required for v2/lemd/*.py changes
+```
+
+A file the box has edited is refused, not overwritten; read the printed `diff` before reaching for
+`--sync --force`.
+
+## Prerequisite the watchdog needs
+
+The watchdog runs `sudo -n systemctl restart lem-agentd.service`. The non-login `lem` user cannot
+restart a unit through polkit, so that exact command needs a sudoers rule — without it the watchdog
+detects a dead daemon and cannot do anything about it.
