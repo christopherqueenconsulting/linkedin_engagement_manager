@@ -76,8 +76,8 @@ same posture the article cover and `render_image_gated` take. The warning is wha
 visible: it escalates on repeat and files ONE grouped issue.
 
 Video is supported end to end at the data + publish layer, but the studio can currently only attach
-IMAGES — there is no video upload/validation surface (size, duration, codec) to reuse yet. Tracked
-separately; see the follow-up linked from #1224.
+IMAGES — there is no video upload/validation surface (size, duration, codec) to reuse yet. That
+half is issue #1443.
 
 ## What works in a group (and why the list lives in code)
 
