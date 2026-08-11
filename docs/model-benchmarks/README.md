@@ -383,6 +383,10 @@ serves a build you rejected". Since #1237 the scan treats that as its own re-poi
   library tags page are **different values for the same tag** — only the `/api/tags` one is stored,
   and the two must never be compared. A tag with no published digest keeps the old pair, so a
   snapshot written before digests were captured is a missing baseline rather than a build change.
+- An **empty catalog reports nothing**. `fetch_catalog` returns `None` only when the request raised,
+  so a 200 carrying no models parses to `{}` — and this is the one scan finding with an autonomous
+  consumer (it files `agent:ready`), so a degraded fetch must not put an agent to work re-pointing
+  every tier off a phantom. A vanish is a TRANSITION; an empty catalog is no evidence of one.
 - Still a trigger, never an auto-pin — same posture as #925.
 
 ## Running it

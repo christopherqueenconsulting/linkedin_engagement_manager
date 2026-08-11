@@ -502,6 +502,16 @@ class TestPlanRepoints:
                                  {"deepseek-v4-flash": {"size": 0, "modified_at": ""}},
                                  {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
 
+    def test_a_digest_appearing_for_the_first_time_is_a_missing_baseline_not_a_swap(self):
+        """The week ollama.com starts publishing digests, every configured tag gains one on the live
+        side while the committed snapshot still has none (#1237). Reading that as a build swap would
+        file a re-point issue for the whole roster on a week nothing moved.
+        """
+        assert mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 {"deepseek-v4-flash": {**_OLD_BUILD,
+                                                        "digest": "031ce2a95446"}}) == []
+
     def test_a_non_ollama_deployment_is_never_checked(self):
         deployments = mhc.parse_deployments({"model_list": [
             {"model_name": "lem-medium", "litellm_params": {"model": "openai/deepseek-v4-flash",
@@ -626,6 +636,13 @@ class TestPlanVanished:
                                                             "api_key": "os.environ/OPENAI_API_KEY"}}]})
         assert mhc.plan_vanished(deployments, {"deepseek-v4-flash": dict(_OLD_BUILD)},
                                  self._catalog()) == []
+
+    def test_an_empty_catalog_is_a_degraded_fetch_not_a_roster_wide_vanish(self):
+        """`fetch_catalog` only returns None when the request RAISED — a 200 carrying no models
+        parses to `{}`. Firing here would file an `agent:ready` issue naming every live tier and put
+        an agent to work re-pointing all of them off a phantom.
+        """
+        assert self._vanished({}) == []
 
     def test_every_tier_the_tag_served_is_named_once(self):
         deployments = (_ollama_deployments("deepseek-v4-flash", group="lem-medium")

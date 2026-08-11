@@ -577,7 +577,17 @@ def plan_vanished(deployments: list[dict], snapshot: dict, catalog: dict) -> lis
 
     Siblings sharing the vanished tag's base name are marked `same_base`: those are the direct
     republish candidates, versus a merely same-family neighbour.
+
+    An EMPTY catalog reports nothing. `fetch_catalog` only returns None when the request itself
+    raised, so a 200 carrying `{"models": []}` — or any payload whose shape drifted — parses to `{}`
+    and would otherwise read as "every tag a live tier serves vanished at once". That is the one
+    finding here with an autonomous consumer: it files an `agent:ready` issue, so a degraded fetch
+    would put an agent to work re-pointing every tier off a phantom. A vanish is a TRANSITION and an
+    empty catalog is no evidence of one. (`plan_repoints` is immune for free — it needs a live entry
+    on both sides.)
     """
+    if not catalog:
+        return []
     groups, models = _configured_ollama(deployments)
     out: list[dict] = []
     for bare in sorted(groups):
