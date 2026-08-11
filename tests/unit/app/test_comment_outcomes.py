@@ -223,7 +223,13 @@ class TestDiagnoseSortControlMiss:
         # comment text ships to analytics.
         js = _fn("_SORT_CONTROL_DIAGNOSTIC_JS")
         assert js.count("length>TEXT_MAX) continue;") == 2
-        assert f"TEXT_MAX={_fn('_SORT_CONTROL_OWN_TEXT_MAX')};" in js
+        # The bound lives in `utilities/linkedin/sort_evidence` since #1270 — the ONE scan both the
+        # comment sweep and the feed walk are built from. `posting` carries no alias for it: an
+        # unused re-export is what CodeQL flagged, and reading it here from anywhere but its home
+        # would let the two drift.
+        from cqc_lem.utilities.linkedin.sort_evidence import SORT_CONTROL_OWN_TEXT_MAX
+
+        assert f"TEXT_MAX={SORT_CONTROL_OWN_TEXT_MAX};" in js
         # 'desktop'/'topic' must not read as the 'top' sort keyword.
         assert "|\\btop\\b|" in js
 
