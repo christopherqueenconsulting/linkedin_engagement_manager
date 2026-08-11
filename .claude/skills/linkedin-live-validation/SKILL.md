@@ -29,8 +29,10 @@ description: Use when a LinkedIn selector, scrape, or automation flow may have d
 >    (`selenium-lem` in `.mcp.json`) is pinned there too, with no opt-out.
 >
 > **Being off the pool is not being safe.** The debug node reaches the same live LinkedIn on the
-> same real account — it protects production CAPACITY, nothing else. Conditions 1 and 2 are what
-> protect the account, and they apply to everything you drive there, MCP browser included.
+> same real account — it protects production CAPACITY, nothing else. Conditions 1 and 2 protect the
+> **probe**; the Selenium MCP browser (`selenium-lem`) is pinned to the same node for capacity isolation
+> but is interactive and NOT read-only-guarded, so it must be treated as a live browser you drive by
+> hand. Do not use it to post, comment, send invites/DMs, or change settings.
 >
 > **A refusal is a WAIT, not a failure.** Exit code **75** with a fenced JSON `refusal` block naming
 > `rate_limit_breaker_open` / `rate_limit_breaker_unreadable` / `debug_node_unavailable` /

@@ -64,7 +64,7 @@ log "=== weekly SDUI drift sweep start ==="
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SWEEP="$DIR/sweep-$STAMP.json"
 
-PROBE_ARGS=(--user-id "$USER_ID" --sweep)
+PROBE_ARGS=(--user-id "$USER_ID" --sweep --require-debug-node)
 [ -n "$PROFILE_URL" ] && PROBE_ARGS+=(--sweep-profile-url "$PROFILE_URL")
 
 # `scripts/` is not baked into the image, so the probe is piped in on stdin — the same way the

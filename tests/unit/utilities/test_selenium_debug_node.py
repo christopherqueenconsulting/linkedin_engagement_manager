@@ -206,8 +206,10 @@ class TestGetDockerDriverDebug:
 
 
 class TestComposeDebugStereotype:
-    """The compose half. Every assertion here failed to catch the live bug before #1301: the value
-    was PRESENT and still never reached the node, because it carried literal quotes.
+    """The compose half.
+
+    Every assertion here failed to catch the live bug before #1301: the value was PRESENT and
+    still never reached the node, because it carried literal quotes.
     """
 
     @staticmethod

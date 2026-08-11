@@ -64,8 +64,9 @@ def start_browser() -> str:
     for the probe's breaker gate.
 
     Isolation is about the POOL, not the ACCOUNT. This node reaches the same live LinkedIn as
-    everything else — the 429 breaker and the read-only rules still apply to whatever you drive
-    here.
+    everything else. The probe's read-only guard is NOT installed here: this browser is for
+    interactive inspection and login, so it CAN type and click. Do not use it to post, comment,
+    send invites/DMs, or change settings — a write from this session hits the owner's real account.
     """
     if _state["driver"] is not None:
         return f"Session already open at {_driver().current_url}"
@@ -101,8 +102,10 @@ def current_state() -> str:
 
 @mcp.tool()
 def list_inputs() -> str:
-    """List every <input> with its id/name/type/autocomplete/displayed — the fastest
-    way to see which selectors a redesigned login/form actually exposes."""
+    """List every <input> with its id/name/type/autocomplete/displayed.
+
+    This is the fastest way to see which selectors a redesigned login/form actually exposes.
+    """
     out = []
     for el in _driver().find_elements(By.TAG_NAME, "input"):
         try:
