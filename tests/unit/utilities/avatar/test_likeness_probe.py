@@ -9,7 +9,6 @@ from PIL import Image
 
 pytestmark = pytest.mark.unit
 
-_LIKENESS = "cqc_lem.utilities.avatar.likeness_probe"
 _AVATAR = {"id": 3, "trigger_word": "LEMAVTR1", "model_ref": "owner/lora:v1",
            "status": "succeeded", "approval_status": "approved",
            "gender_presentation": "man", "age_band": "40s"}
