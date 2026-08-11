@@ -17,7 +17,6 @@ from cqc_lem.platform.db.enums import PostStatus
 
 pytestmark = pytest.mark.unit
 
-_M = "cqc_lem.api.main"
 _BRAND = "cqc_lem.utilities.brand_account"
 _FLAGS = "cqc_lem.utilities.flags"
 _REDIS = "cqc_lem.utilities.linkedin.rate_limit"

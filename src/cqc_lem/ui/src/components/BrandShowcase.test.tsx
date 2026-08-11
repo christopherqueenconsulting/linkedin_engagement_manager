@@ -108,7 +108,7 @@ describe('BrandShowcase (issue #1299)', () => {
     render(<BrandShowcase />)
 
     await waitFor(() => expect(screen.getByText('No stats yet.')).toBeTruthy())
-    const dashes = screen.getAllText('—')
+    const dashes = screen.getAllByText('—')
     expect(dashes.length).toBeGreaterThanOrEqual(3)
   })
 
