@@ -38,6 +38,10 @@ _MOD = "cqc_lem.utilities.observability"
 # demoting one to `prop()` is exactly the silent-alert regression this file guards, and nothing
 # else in the tree would notice.
 ALERT_FILTERED = (
+    # The ONE native property filter a provisioned tile actually carries today
+    # (`_event_series("celery_task", properties=[{"key": "state", "value": ["FAILURE"], ...}])`),
+    # and the alert behind it — "Celery failure spike" in docs/kpi-dashboards.md.
+    ("celery_task", "state"),
     # The two the code itself already documented as load-bearing strings.
     ("feed_scan", "feed_sort"),                    # #817 — an unsorted scan must be distinguishable
     ("inbound_parse_email", "verdict"),            # the webhook drops most mail BY DESIGN
@@ -241,6 +245,21 @@ class TestLabelledEventsEndToEnd:
         kwargs = mock_ph.capture.call_args.kwargs
         assert kwargs["properties"] == {"verdict": "comment_accepted"}
         assert kwargs["distinct_id"] == "2"
+
+    def test_celery_task_state_is_a_string_the_failure_alert_can_match(self):
+        # A declared field, NOT one of track_task's `**extra`: extra is applied after the coercions,
+        # so a `state` arriving that way would reach PostHog in whatever shape the caller sent and
+        # the `state = "FAILURE"` filter would quietly stop matching.
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_task("cqc_lem.some_task", 12, success=False, state=False)
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["state"] == "False"
+        assert props["success"] is False
+
+    def test_the_real_postrun_reading_lands_as_the_alert_expects(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            observability.track_task("cqc_lem.some_task", 12, success=False, state="FAILURE")
+        assert mock_ph.capture.call_args.kwargs["properties"]["state"] == "FAILURE"
 
     def test_a_label_declared_on_a_tracker_survives_a_boolean_reading(self):
         # The regression in miniature: a lane hands back a bool where the funnel promised a string.

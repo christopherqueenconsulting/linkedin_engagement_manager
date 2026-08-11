@@ -219,6 +219,10 @@ def _emit(spec: EventSpec, source: Optional[dict] = None, extra: Optional[dict] 
     behaviour every wrapper had when it spread `**extra` at the end of its literal. `event` and
     `distinct_id` are for the trackers whose name or person is decided per call
     (`track_affiliate_event`, `track_funnel_event`).
+
+    Because `extra` lands after the coercions, a property a dashboard or an ALERT FILTERS on must be
+    a declared field fed from `source` — one arriving through `**extra` reaches PostHog untouched
+    and the string contract cannot see it (that is why `track_task` names `state` explicitly).
     """
     data = source if isinstance(source, dict) else {}
     properties = {field.name: field.coerce(_read(data, field.key or field.name))
@@ -369,8 +373,11 @@ EVENTS = {spec.event: spec for spec in (
     ), DISTINCT_SYSTEM),
 
     # --- Platform + infra ---------------------------------------------------------------------
+    # `state` carries the SAME reading as `success` and exists because the failure alert filters on
+    # it: it is the one native property filter the provisioned dashboards use
+    # (`state = "FAILURE"`, exact), so a boolean there would match nothing and the page never fires.
     EventSpec("celery_task", (
-        prop("task", "task_name"), prop("duration_ms"), flag("success"),
+        prop("task", "task_name"), prop("duration_ms"), flag("success"), label("state"),
     )),
     EventSpec("api_call", (
         label("route"), label("method"), prop("status_code"), prop("latency_ms"),
@@ -1921,6 +1928,7 @@ def track_task(
     duration_ms: int,
     success: bool = True,
     user_id: Optional[int] = None,
+    state: Optional[str] = None,
     **extra,
 ) -> None:
     """Emit `celery_task` — one row per task run, however it ended.
@@ -1929,9 +1937,14 @@ def track_task(
     of the queue rather than a sample: capturing it from inside a task as well would double-count
     that task. A task with no user (the scheduler beats) lands on the shared `"system"` person
     instead of being dropped, since an unattributed run still has to show up in the count.
+
+    `state` is a NAMED argument rather than one of `**extra` because the Celery-failure alert is the
+    one provisioned tile that filters on a property value (`state = "FAILURE"`, exact). Only a
+    declared field is coerced to a string; riding in `**extra` it would reach PostHog in whatever
+    shape a caller sent, and a non-string row silences that page (docs/kpi-dashboards.md).
     """
     _emit(EVENTS["celery_task"], {"task_name": task_name, "duration_ms": duration_ms,
-                                  "success": success, "user_id": user_id}, extra)
+                                  "success": success, "state": state, "user_id": user_id}, extra)
 
 
 def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:

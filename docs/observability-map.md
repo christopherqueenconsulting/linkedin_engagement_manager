@@ -22,6 +22,9 @@ choice — PostHog matches a property filter against the INGESTED type, so one b
 `status = "paused"` match nothing and the alert silently never fires. A numeric property an alert
 COMPARES (`status_code >= 500`) is the opposite case and stays `prop()`. The pairs a provisioned
 alert actually filters on are pinned in `ALERT_FILTERED` in the test, so demoting one fails CI.
+A filtered property must also be a DECLARED field: `**extra` is applied after the coercions, so a
+value a call site passes that way reaches PostHog untouched and the contract cannot see it. That is
+why `track_task` names `state` — the Celery-failure alert's filter — as an argument of its own.
 
 ## LLM analytics (issue #647, traces #746) — `docs/llm-analytics.md`
 Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
