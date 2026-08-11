@@ -2488,8 +2488,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
                     "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
             hard_keys.add(key)
-            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age,
-                               fps, key_source))
+            candidates.append((_score_feed_post(meta, ctx.prefs, ctx.engagers), key, card, content,
+                               author, age, fps, key_source))
 
         if candidates:
             candidates.sort(key=lambda c: c[0], reverse=True)
