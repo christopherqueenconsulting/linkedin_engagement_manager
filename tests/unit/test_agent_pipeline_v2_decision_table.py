@@ -52,6 +52,10 @@ def _reasons_in_code() -> set[str]:
     # source-scanning test quietly under-reports: it sees `reason`, not the string.
     found.update(re.findall(r'reason: str = "([a-z_]+)"', body))
     found.update(re.findall(r'\breason="([a-z_]+)"', body))
+    # Reasons that live in a LOOKUP TABLE rather than at the Decision() call. The lane labels moved
+    # into `LANE_LABEL_MODES` when their precedence was made explicit (#1393), and a source scanner
+    # that only understands call sites silently reported all three as undocumented.
+    found.update(re.findall(r'"agent:[a-z]+": \("[a-z]+", "([a-z_]+)"\)', src))
     return {_family(r) for r in found}
 
 

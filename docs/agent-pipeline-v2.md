@@ -211,11 +211,11 @@ call that live PR stranded.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 19 | draft | none → parked | `pr_is_draft` | 6h |
+| 19 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
 | 20 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
-| 21 | label `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
-| 22 | label `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
-| 23 | label `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
+| 21 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
+| 22 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
+| 23 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
 | 24 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
 | 25 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
 | 26 | auto-merge armed | none | `auto_merge_armed` | 15m |
@@ -259,8 +259,8 @@ behaviour is incidental.
 
 | Combination | Today |
 |---|---|
-| two lane labels (e.g. `agent:revise` + `agent:docfix`) | first match wins by source order; undocumented, and the second lane waits for the first to remove its own label |
-| `agent:merge-parked` | removed by `unpark.sh`, **written and read by nothing** in v2 — v1 provenance |
+| two lane labels (e.g. `agent:revise` + `agent:docfix`) | ✅ resolved by `LANE_LABEL_PRIORITY`; the waiting lane is recorded in `details.lanes_pending` and runs once the first clears its own label |
+| `agent:merge-parked` | ✅ decided: `unpark.sh` keeps REMOVING it for rollback parity, and nothing writes it — v2 has no separate merge park, so writing it would add a concept the daemon lacks |
 | hold label + lane label | hold wins (row 5-8), lane label inert until un-parked |
 | hold label + **auto-merge armed** | ❌ **the daemon holds and GitHub merges anyway** — see §7 |
 
@@ -269,7 +269,7 @@ wait, so a draft is never rebased and an armed draft is never recognised.
 
 | | Held | Not held |
 |---|---|---|
-| Draft | parked; the answer lane can release it | ❌ parked with no label, no comment, no question — and the answer branch lives *inside* the hold check, so an owner reply cannot reach it |
+| Draft | parked; the answer lane can release it | ✅ `awaiting_review` with `wait_reason=draft`, released by the `ready_for_review` delivery — it is the human's own state, not a park nobody placed |
 | Draft + `DIRTY` | never rebased | never rebased |
 | Draft + armed | hold honoured, arm untouched | arm never recognised |
 
@@ -367,9 +367,8 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
 | **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | #1390 |
 | **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | #1391 |
-| **Lane-label precedence is incidental**, and `agent:merge-parked` is vestigial (§5) | | #1393 |
-| **A human-drafted PR is unreachable** by automation *and* by an owner reply (§5). Still written as `parked` — the one entrance where that is arguably honest, since it IS stuck and nobody was told | | #1393 |
 | **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | #1395 |
+| **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
 | **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | #1397, #1398 |
 

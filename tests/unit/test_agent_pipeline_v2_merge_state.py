@@ -111,4 +111,5 @@ def test_a_hold_still_outranks_an_unreadable_merge_state():
 
 def test_a_draft_is_still_checked_first():
     """A draft cannot merge however its mergeability reads."""
-    assert d(pr(merge_state="UNKNOWN", is_draft=True)).next_state == db.STATE_PARKED
+    got = d(pr(merge_state="UNKNOWN", is_draft=True))
+    assert (got.action, got.reason) == (observe.ACT_NONE, "pr_is_draft")
