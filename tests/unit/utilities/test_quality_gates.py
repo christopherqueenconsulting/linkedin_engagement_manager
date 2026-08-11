@@ -50,6 +50,24 @@ class TestFindings:
     def test_similarity_without_a_match_has_no_details(self):
         assert similarity_finding(0.9, 0.55, None)["details"] == []
 
+    def test_similarity_names_the_embedding_measure_that_fired(self):
+        # Issue #1265: cosine and token overlap are different scales, so a reader (and the nightly
+        # trend line) has to be told which one produced this score.
+        f = similarity_finding(0.84, 0.78, "Why routing LLM calls by complexity cuts cost",
+                               measure="embedding")
+        assert "semantic" in f["explanation"]
+        assert any("embedding cosine" in d for d in f["details"])
+
+    def test_similarity_names_the_lexical_measure_on_the_degraded_path(self):
+        f = similarity_finding(0.71, 0.55, None, measure="lexical")
+        assert "overlaps 71%" in f["explanation"]
+        assert f["details"] == ["Measured by token overlap (wording)"]
+
+    def test_similarity_without_a_measure_keeps_the_original_wording(self):
+        f = similarity_finding(0.71, 0.55, "an earlier post")
+        assert "overlaps 71%" in f["explanation"]
+        assert not any("Measured by" in d for d in f["details"])
+
     def test_focus_alignment_is_advisory_and_names_the_topics(self):
         f = focus_finding(0.02, 0.15, ["AI adoption", "B2B sales"])
         assert f["gate"] == GATE_FOCUS

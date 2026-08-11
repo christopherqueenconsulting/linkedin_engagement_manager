@@ -58,6 +58,24 @@ class TestEvaluatePostGates:
     def test_similarity_is_skipped_without_history(self):
         assert self._gates(recent_texts=None) == []
 
+    def test_a_semantic_duplicate_is_held_and_the_finding_names_the_measure(self):
+        # Issue #1265. Lexically distinct from _POST, so only the embedding measure can catch it.
+        reworded = ("Frontier pricing on trivial requests is where the money goes.\n\nI moved the "
+                    "easy jobs onto a small model three months ago and watched what we spend drop "
+                    "by more than a third.")
+        vectors = [[1.0, 0.0], [0.9, (1 - 0.81) ** 0.5]]
+        with patch("cqc_lem.utilities.ai.content_framework.embed_comments", return_value=vectors):
+            findings = self._gates(content=reworded, recent_texts=[_POST])
+        assert [f["gate"] for f in findings] == ["similarity"]
+        assert findings[0]["threshold"] == 0.78  # the cosine ceiling, not the 0.55 overlap one
+        assert any("embedding cosine" in d for d in findings[0]["details"])
+
+    def test_the_finding_names_the_lexical_measure_when_embeddings_are_down(self):
+        with patch("cqc_lem.utilities.ai.content_framework.embed_comments", return_value=None):
+            findings = self._gates(content=_NEAR_DUP, recent_texts=[_POST])
+        assert findings[0]["threshold"] == 0.55
+        assert any("token overlap" in d for d in findings[0]["details"])
+
     def test_off_focus_is_advisory_only(self):
         findings = self._gates(engagement_prefs={"focus_topics": ["deep sea fishing"]})
         assert [f["gate"] for f in findings] == ["focus_alignment"]
@@ -146,6 +164,31 @@ class TestStatusSetterRecordsTheReason:
             rcp.auto_create_weekly_content(user_id=1)
         status.assert_called_once_with(42, PostStatus.PENDING)
         assert reason.call_args[0][1][0]["gate"] == "missing_asset"
+
+    def test_generation_never_holds_on_similarity_however_duplicated_the_draft(self):
+        # Pins what #1265 did NOT change: the similarity gate needs the post history, and the only
+        # caller that hands `evaluate_post_gates` one is the edit & re-score endpoint. At generation
+        # a draft that is still too similar after its one retry SHIPS with a warning — it is never
+        # demoted here. Whether it should be is issue #1452; this test is what makes that a
+        # deliberate change rather than a silent one.
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.utilities.db import PostStatus
+        post = [{"user_id": 1, "id": 42, "post_type": "text", "buyer_stage": "awareness"}]
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=post), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
+             patch(f"{_RCP}.create_content", return_value=(_POST, None)), \
+             patch(f"{_RCP}.get_recent_post_texts", return_value=[_POST]), \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}.update_db_post_status") as status, \
+             patch(f"{_RCP}.update_db_post_gate_reason") as reason, \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
+             patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=95):
+            rcp.auto_create_weekly_content(user_id=1)
+        status.assert_called_once_with(42, PostStatus.APPROVED)
+        assert reason.call_args[0][1] == []
 
     def test_a_failed_reason_write_never_fails_the_post(self):
         from cqc_lem.app import run_content_plan as rcp

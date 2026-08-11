@@ -40,6 +40,9 @@ from cqc_lem.utilities.ai import slop_lint
 from cqc_lem.utilities.ai.content_framework import (
     COMMENT_HISTORY_LIMIT,
     MOBILE_HOOK_MAX_CHARS,
+    SIMILARITY_MEASURE_EMBEDDING,
+    SIMILARITY_MEASURE_LEXICAL,
+    SIMILARITY_MEASURE_NONE,
     cosine_similarity,
     embed_comments,
     hook_report,
@@ -51,9 +54,11 @@ SURFACE_COMMENT = "comment"
 SURFACE_NEWSLETTER = "newsletter"
 SURFACES: tuple = (SURFACE_POST, SURFACE_COMMENT, SURFACE_NEWSLETTER)
 
-MEASURE_EMBEDDING = "embedding"
-MEASURE_LEXICAL = "lexical"
-MEASURE_NONE = "none"
+# Aliases, not copies (issue #1265): the generation-time gates grade the SAME post on the same two
+# measures, and the trend line is only readable against a hold if both call the measure by one name.
+MEASURE_EMBEDDING = SIMILARITY_MEASURE_EMBEDDING
+MEASURE_LEXICAL = SIMILARITY_MEASURE_LEXICAL
+MEASURE_NONE = SIMILARITY_MEASURE_NONE
 
 ALERT_SLOP_REGRESSION = "slop_regression"
 ALERT_ENGAGEMENT_FLOOR = "engagement_floor"

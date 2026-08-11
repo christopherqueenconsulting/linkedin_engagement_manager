@@ -1215,10 +1215,38 @@ def has_first_person_proof(text: Optional[str]) -> bool:
 # above enforces for SHAPE — this enforces it for CONTENT.
 # ---------------------------------------------------------------------------
 
+# The measure vocabulary EVERY similarity report in the codebase names — the generation-time gates
+# here and the nightly content-quality telemetry (`content_quality.MEASURE_*`, which aliases these).
+# One vocabulary because the two grade the same post: if the gate said "lexical" where the trend line
+# said "embedding", the trend and the hold could disagree about the same draft and nothing would say
+# so (issue #1265). The two scales are NOT interchangeable, so the name travels with every score.
+SIMILARITY_MEASURE_EMBEDDING = "embedding"
+SIMILARITY_MEASURE_LEXICAL = "lexical"
+SIMILARITY_MEASURE_NONE = "none"
+
 # Default ceiling for the token-set overlap between a new post and any recent post. ~0.55 flags
 # rewordings of the same post (which score 0.6+) while leaving two distinct posts on the same broad
 # theme (which score ~0.2-0.4) alone. Override per-deploy with POST_SIMILARITY_MAX.
 POST_SIMILARITY_MAX_DEFAULT = 0.55
+
+# Embedding-cosine ceiling for a fresh post against the author's recent posts (issue #1265). Same
+# scale problem as COMMENT_SIMILARITY_MAX below: cosine runs hot, so this is deliberately NOT the
+# token-overlap ceiling above.
+#
+# Calibrated against the only real sample there is — every text post `content_quality` has scored to
+# date for user 1 (5 posts, #1138's audit): 0.848, 0.832, 0.657, 0.640, 0.633. The two at 0.83+ are
+# the reworded-earlier-post pair this gate exists to catch; 0.657 is the highest score a post nobody
+# considers a duplicate reached. 0.78 sits between them with the margin on the SAFE side (0.12 above
+# the highest legitimate post, 0.05 below the lowest true near-duplicate), because a false positive
+# here is not free: it spends a regeneration, and on the re-score path it also HOLDS the post at
+# PENDING (the `similarity` gate only runs where `evaluate_post_gates` is handed the post history).
+# Five posts from one account SIZES the gap, it does not settle the number — retune with
+# POST_EMBEDDING_SIMILARITY_MAX as `content_quality_scores` fills out.
+POST_EMBEDDING_SIMILARITY_MAX_DEFAULT = 0.78
+
+# Bound on the batch handed to the embedding call. `get_recent_post_texts` already returns ~20; this
+# only stops an unusually long history from turning one gate into an expensive call.
+POST_HISTORY_LIMIT = 50
 
 
 def post_similarity_max(prefs: dict = None) -> float:
@@ -1238,6 +1266,25 @@ def post_similarity_max(prefs: dict = None) -> float:
         return float(raw) if raw else POST_SIMILARITY_MAX_DEFAULT
     except ValueError:
         return POST_SIMILARITY_MAX_DEFAULT
+
+
+def post_embedding_similarity_max() -> float:
+    """Embedding-cosine ceiling for a fresh post vs the author's recent posts.
+
+    Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can retune
+    POST_EMBEDDING_SIMILARITY_MAX without a restart.
+
+    Deliberately NOT tunable from `engagement_preferences.post_similarity_max_pct`: that setting is a
+    percentage on the TOKEN-OVERLAP scale (10-100, defaulting to 55), and applying it to cosine —
+    where two unrelated professional posts already sit near 0.5 — would reject nearly everything the
+    user writes. The user's setting keeps governing the lexical fallback, where it means what it
+    always meant.
+    """
+    raw = (os.environ.get("POST_EMBEDDING_SIMILARITY_MAX") or "").strip()
+    try:
+        return float(raw) if raw else POST_EMBEDDING_SIMILARITY_MAX_DEFAULT
+    except ValueError:
+        return POST_EMBEDDING_SIMILARITY_MAX_DEFAULT
 
 
 # Minimal English stopword set (incl. the common 2-letter words) — enough to keep function-word
@@ -1318,6 +1365,41 @@ def find_most_similar(text: str, candidates: list) -> tuple:
         if score > best_score:
             best_score, best_match = score, cand
     return best_score, best_match
+
+
+def post_similarity_report(draft: Optional[str], recent_texts: list,
+                           prefs: dict = None) -> dict:
+    """How close a fresh POST sits to the author's own recent posts (issue #1265).
+
+    The post-side twin of `comment_similarity_report`, and deliberately the same function shape:
+    embedding cosine FIRST — it catches an earlier post reworded into different vocabulary, which
+    scores low on token overlap and is exactly the semantic sameness the 2026 ranking demotes — and
+    the deterministic token overlap when the embedding endpoint is unavailable. Each measure is
+    graded against its OWN ceiling, and the degraded path is still the gate posts have always had:
+    never "nothing is similar".
+
+    Empty history ⇒ no API call, so a first-ever post costs nothing.
+    """
+    text = (draft or "").strip()
+    history = [t.strip() for t in (recent_texts or []) if (t or "").strip()][:POST_HISTORY_LIMIT]
+    if not text or not history:
+        return {"score": 0.0, "threshold": post_embedding_similarity_max(), "match": None,
+                "measure": SIMILARITY_MEASURE_NONE, "too_similar": False}
+    # ONE call for the draft plus the whole history — the same batch shape (and the same char cap)
+    # the nightly telemetry embeds posts with, so a gate score and a trend-line score for the same
+    # post are read off the same measurement.
+    vectors = embed_comments([text] + history)
+    if vectors:
+        threshold = post_embedding_similarity_max()
+        scores = [cosine_similarity(vectors[0], v) for v in vectors[1:]]
+        measure = SIMILARITY_MEASURE_EMBEDDING
+    else:
+        threshold = post_similarity_max(prefs)
+        scores = [text_similarity(text, candidate) for candidate in history]
+        measure = SIMILARITY_MEASURE_LEXICAL
+    best = max(range(len(scores)), key=lambda index: scores[index])
+    return {"score": round(scores[best], 4), "threshold": threshold, "match": history[best],
+            "measure": measure, "too_similar": scores[best] > threshold}
 
 
 def opening_line(text: str, max_chars: int = 200) -> str:
@@ -1884,7 +1966,10 @@ COMMENT_GATE_MAX_ATTEMPTS_DEFAULT = 3
 COMMENT_SIMILARITY_MAX_DEFAULT = 0.82
 COMMENT_LEXICAL_SIMILARITY_MAX_DEFAULT = POST_SIMILARITY_MAX_DEFAULT
 COMMENT_EMBEDDING_MODEL = "lem-embedding"
-# Comments are short; this only guards against a pathological log row inflating the embed call.
+# Char cap on ONE item in an embedding batch. Comments are short, so for them this only guards
+# against a pathological log row; a long POST is genuinely truncated here, which is fine because the
+# cap applies to the draft and to every history entry alike — and because the nightly telemetry has
+# always embedded posts through this same cap, so the gate and the trend line measure the same text.
 COMMENT_EMBED_CHARS = 2000
 
 # The validation-filler openers a comment may never start on — the exact tells sampled from
@@ -2082,9 +2167,13 @@ def comment_gate_max_attempts() -> int:
 
 
 def embed_comments(texts: list) -> Optional[list]:
-    """Embed a batch of comment texts in ONE `lem-embedding` call (the draft plus the history it is
-    compared against). Returns None on any failure — the caller then grades with the deterministic
+    """Embed a batch of texts in ONE `lem-embedding` call (the draft plus the history it is compared
+    against). Returns None on any failure — the caller then grades with the deterministic
     token-overlap measure, never with "nothing is similar".
+
+    Named for the comment gate it was written for (#617), but it is the ONE embedding batcher every
+    similarity report shares: the post gate (#1265) and the nightly telemetry (#630) embed posts and
+    newsletter editions through it, on the same char cap, so their scores stay comparable.
     """
     batch = [str(t or "")[:COMMENT_EMBED_CHARS] for t in (texts or [])]
     if not batch or not all(batch):
@@ -2097,7 +2186,7 @@ def embed_comments(texts: list) -> Optional[list]:
         vectors = [as_vector(list(row.embedding)) for row in rows]
     except Exception as exc:
         from cqc_lem.utilities.logger import log_warning
-        log_warning("Comment embedding failed — dedup falls back to token overlap", exc=exc,
+        log_warning("Embedding call failed — similarity falls back to token overlap", exc=exc,
                     ai_model=COMMENT_EMBEDDING_MODEL)
         return None
     if len(vectors) != len(batch) or not all(vectors):
@@ -2116,16 +2205,16 @@ def comment_similarity_report(draft: Optional[str], recent_comments: list) -> di
     history = [c.strip() for c in (recent_comments or []) if (c or "").strip()][:COMMENT_HISTORY_LIMIT]
     if not text or not history:
         return {"score": 0.0, "threshold": comment_similarity_max(), "match": None,
-                "measure": "none", "too_similar": False}
+                "measure": SIMILARITY_MEASURE_NONE, "too_similar": False}
     vectors = embed_comments([text] + history)
     if vectors:
         threshold = comment_similarity_max()
         scores = [cosine_similarity(vectors[0], v) for v in vectors[1:]]
-        measure = "embedding"
+        measure = SIMILARITY_MEASURE_EMBEDDING
     else:
         threshold = comment_lexical_similarity_max()
         scores = [text_similarity(text, c) for c in history]
-        measure = "lexical"
+        measure = SIMILARITY_MEASURE_LEXICAL
     best = max(range(len(scores)), key=lambda i: scores[i])
     return {"score": round(scores[best], 4), "threshold": threshold, "match": history[best],
             "measure": measure, "too_similar": scores[best] > threshold}

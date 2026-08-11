@@ -335,7 +335,11 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
 - **Unified content core** (`docs/content-core.md`): newsletters, posts AND comments draw framework,
   research and alignment from `content_{framework,research,alignment}.py` — never add a per-content-type
   prompt helper. Comments carry a quality contract + similarity gate (#617) that SKIPS the post after
-  `COMMENT_GATE_MAX_ATTEMPTS` failed regenerations. **Story bank** (#620) is the FACT half, the **deck reference
+  `COMMENT_GATE_MAX_ATTEMPTS` failed regenerations; POSTS are graded by the same engine
+  (`post_similarity_report`, #1265) — embedding cosine (`POST_EMBEDDING_SIMILARITY_MAX`) first,
+  degrading to `POST_SIMILARITY_MAX` token overlap, ONE retry then keep, and the `similarity` gate
+  names the measure that fired. One measure vocabulary with the nightly telemetry, never two.
+  **Story bank** (#620) is the FACT half, the **deck reference
   gate** (#728) the save-worthiness half, **slop lint** (#625) BLOCKS five HARD checks,
   WARNs the rest, severity PER SURFACE (`SURFACE_SEVERITIES`): `canned_scaffold` is WARN on a post,
   HARD on a newsletter (#1285). `{POST,NEWSLETTER}_BANNED_SCAFFOLDS` are ONE list the prompt names and

@@ -7,9 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.utilities.ai import content_framework as fw
+
 pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
+_FW = "cqc_lem.utilities.ai.content_framework"
 
 _DISABLED_LM = {"enabled": False, "keyword": None, "message": None}
 
@@ -150,6 +153,61 @@ class TestSimilarityGate:
         out, gen = _run([_NEAR_DUP], recent=[])
         assert out == _NEAR_DUP
         assert gen.call_count == 1
+
+
+class TestEmbeddingFirstSimilarityGate:
+    """Issue #1265: the gate grades MEANING first.
+
+    A rewording that shares almost no vocabulary with the earlier post passes the token-overlap
+    ceiling and must still be caught.
+    """
+
+    # Lexically distinct from _RECENT — the case the pre-#1265 gate could not see.
+    _SEMANTIC_DUP = ("Paying frontier prices on trivial work is the whole overspend.\n\n"
+                     "Last month I sent the easy jobs to a small model and kept the big one for "
+                     "problems that actually need it. The bill halved.")
+
+    def _vectors(self, cosine, count=2):
+        """Draft vector plus `count - 1` history vectors, at a chosen cosine to the draft."""
+        return [[1.0, 0.0]] + [[cosine, (1 - cosine ** 2) ** 0.5]] * (count - 1)
+
+    def test_a_semantic_duplicate_over_the_ceiling_takes_the_one_retry_path(self):
+        assert fw.text_similarity(self._SEMANTIC_DUP, _RECENT) < fw.POST_SIMILARITY_MAX_DEFAULT
+        with patch(f"{_FW}.embed_comments", side_effect=[self._vectors(0.9), self._vectors(0.1)]):
+            out, gen = _run([self._SEMANTIC_DUP, _FRESH], recent=[_RECENT])
+        assert out == _FRESH
+        assert gen.call_count == 2  # exactly one retry, same path the lexical gate has always taken
+        assert "TOO SIMILAR" in gen.call_args_list[1].kwargs["history_directive"]
+
+    def test_under_the_ceiling_ships_untouched_and_costs_one_call(self):
+        with patch(f"{_FW}.embed_comments", return_value=self._vectors(0.5)) as embed:
+            out, gen = _run([_WITH_PROOF], recent=[_RECENT])
+        assert out == _WITH_PROOF
+        assert gen.call_count == 1
+        assert embed.call_count == 1  # a clean draft costs exactly ONE lem-embedding call
+
+    def test_still_similar_after_the_retry_keeps_it_and_names_the_measure(self):
+        log = MagicMock()
+        with patch(f"{_FW}.embed_comments", return_value=self._vectors(0.95)):
+            out, gen = _run([self._SEMANTIC_DUP, self._SEMANTIC_DUP], recent=[_RECENT], log=log)
+        assert out == self._SEMANTIC_DUP  # never loops, never blocks
+        assert gen.call_count == 2
+        warning = next(str(c.args[0]) for c in log.call_args_list if "still similar" in str(c.args[0]))
+        assert "embedding score" in warning
+
+    def test_the_embedding_ceiling_is_the_env_knob(self, monkeypatch):
+        monkeypatch.setenv("POST_EMBEDDING_SIMILARITY_MAX", "0.99")
+        monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the similarity gate
+        with patch(f"{_FW}.embed_comments", return_value=self._vectors(0.9)):
+            out, gen = _run([self._SEMANTIC_DUP], recent=[_RECENT])
+        assert out == self._SEMANTIC_DUP
+        assert gen.call_count == 1  # ceiling raised above the score → no retry
+
+    def test_an_embedding_outage_still_gates_on_token_overlap(self):
+        with patch(f"{_FW}.embed_comments", return_value=None):
+            out, gen = _run([_NEAR_DUP, _FRESH], recent=[_RECENT])
+        assert out == _FRESH
+        assert gen.call_count == 2
 
 
 class TestAlignmentCheck:

@@ -80,11 +80,10 @@ from cqc_lem.utilities.ai.content_framework import (
     fact_anchored_formats,
     fact_grounding_report,
     fact_retry_directive,
-    find_most_similar,
     has_first_person_proof,
     history_avoidance_directive,
     occasion_stage,
-    post_similarity_max,
+    post_similarity_report,
     requires_fact_anchor,
     select_blueprint,
     shape_for_dwell,
@@ -1704,10 +1703,12 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
                                          violation_reasons(slop["warnings"])))
 
     if content and recent_texts:
-        threshold = post_similarity_max(prefs)
-        score, match = find_most_similar(content, recent_texts)
-        if score > threshold:
-            findings.append(similarity_finding(score, threshold, match))
+        # Embedding-first (issue #1265) — the finding carries the measure that fired, because a
+        # cosine score and a token-overlap score are not readable against each other.
+        sim = post_similarity_report(content, recent_texts, prefs)
+        if sim["too_similar"]:
+            findings.append(similarity_finding(sim["score"], sim["threshold"], sim["match"],
+                                               measure=sim["measure"]))
 
     # No-fabrication guard (issue #619 / G4): only the save-targeted archetypes whose value IS the
     # specifics. A draft that invented a number is held; so is one that honestly deferred its
@@ -1937,20 +1938,22 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                            content_mix: Optional[str] = None,
                            cta_keyword: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
-    the finished post against the user's recent posts with the deterministic token-set overlap in
-    content_framework, check the A2 personal-proof slot (a concrete first-person lived detail), AND
+    the finished post against the user's recent posts with `post_similarity_report` — embedding
+    cosine first, token overlap when the embedding endpoint is down (#1265) — check the A2
+    personal-proof slot (a concrete first-person lived detail), AND
     check that every first-person specific traces back to the user's story-bank entry. On a
     fact-anchored archetype (#619) the numbers get a second pass too — any figure the post asserts
-    that NOTHING in the user's verified bank backs. Too similar (> POST_SIMILARITY_MAX),
+    that NOTHING in the user's verified bank backs. Too similar (> POST_EMBEDDING_SIMILARITY_MAX, or
+    > POST_SIMILARITY_MAX on the degraded path),
     missing proof, fabricated specifics, or unverified numbers → regenerate ONCE with an explicit
     avoid/proof/no-invention directive; still failing → log a structured warning and keep the second
     attempt (never loop, never hard-block — the fact-grounding GATE is what holds a still-fabricating
     fact-anchored draft out of auto-publish). Also runs the cheap focus-alignment check on whatever
     content ships.
     """
-    threshold = post_similarity_max(prefs)
-    score, match = find_most_similar(content, recent_texts)
-    too_similar = score > threshold
+    similarity = post_similarity_report(content, recent_texts, prefs)
+    score, threshold, match = similarity["score"], similarity["threshold"], similarity["match"]
+    too_similar = similarity["too_similar"]
     missing_proof = not has_first_person_proof(content)
     proof_regen = missing_proof and _proof_regen_enabled()
     fabricated = _fabricated_specifics(content, story, profile_synthesis, lead_magnet_cta)
@@ -1982,7 +1985,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
 
     reasons = []
     if too_similar:
-        reasons.append(f"too similar to a recent post (score {score:.2f} > max {threshold:.2f})")
+        reasons.append(f"too similar to a recent post ({similarity['measure']} score {score:.2f} "
+                       f"> max {threshold:.2f})")
     if proof_regen:
         reasons.append("missing a concrete first-person lived detail (A2 proof slot)")
     if fabrication_regen:
@@ -2018,10 +2022,13 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
-    second_score, _ = find_most_similar(second, recent_texts)
-    if second_score > threshold:
+    # Re-graded, not re-used: the retry is a different draft, and the second embedding call only
+    # happens on the retry path (a clean first draft still costs exactly one).
+    second_similarity = post_similarity_report(second, recent_texts, prefs)
+    if second_similarity["too_similar"]:
         log_warning(f"Post still similar to a recent post after retry "
-                    f"(score {second_score:.2f} > max {threshold:.2f}); keeping second attempt",
+                    f"({second_similarity['measure']} score {second_similarity['score']:.2f} > "
+                    f"max {second_similarity['threshold']:.2f}); keeping second attempt",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     if not has_first_person_proof(second):
         log_warning("Post still lacks a concrete first-person lived detail after retry "

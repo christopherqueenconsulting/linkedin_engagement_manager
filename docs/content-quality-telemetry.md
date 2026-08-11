@@ -31,7 +31,10 @@ Per shipped piece — surface is `post` / `comment` / `newsletter`:
   `SLOP_WARN_WEIGHT = 1.0`. A HARD violation is what actually blocks a post or drops a comment, so
   it carries most of the weight; WARN checks only move the score enough to show drift.
 - **Self-similarity** — against that surface's OWN recent history (`similarity_reports`), with the
-  measure recorded alongside (`embedding` / `lexical` / `none`).
+  measure recorded alongside (`embedding` / `lexical` / `none`). Those three names are
+  `content_framework.SIMILARITY_MEASURE_*`, which `MEASURE_*` here aliases: the generation-time gates
+  (#617 comments, #1265 posts) grade the same content on the same two measures, so the trend line and
+  a gate hold on one post can never name the measure differently.
 - **Authenticity** — #382's **stored** `posts.authenticity_score`, never a fresh judge call: the
   gate already paid for it at generation and the number cannot have changed. Surfaces with no
   stored score report `None`.
