@@ -98,6 +98,10 @@ class Config:
     ttl_review: int
     ttl_queue: int
     ttl_parked: int
+    #: How many times an item may be parked for the SAME reason before the pipeline stops asking.
+    #: 0 disables the rule. The question has been posed and answered and posed again by then, and a
+    #: further identical Decision Comment has never once been what unblocked anything.
+    max_park_laps: int
     reconcile_interval: int
     reconcile_interval_degraded: int
     #: How stale `last_webhook_at` may get before the daemon assumes the event path is broken and
@@ -154,6 +158,7 @@ def load(base: str | Path | None = None) -> Config:
         ttl_review=_int(env, "FIRST_REVIEW_TIMEOUT_SECONDS", 3600),
         ttl_queue=_int(env, "LEMD_TTL_QUEUE", 900),
         ttl_parked=_int(env, "LEMD_TTL_PARKED", 21600),
+        max_park_laps=_int(env, "LEMD_MAX_PARK_LAPS", 3),
         reconcile_interval=_int(env, "LEMD_RECONCILE_INTERVAL", 600),
         reconcile_interval_degraded=_int(env, "LEMD_RECONCILE_INTERVAL_DEGRADED", 120),
         webhook_stale_seconds=_int(env, "LEMD_WEBHOOK_STALE_SECONDS", 1800),

@@ -217,10 +217,15 @@ def test_the_pool_sets_agree_across_all_three_readers():
     `daemon.act()` routes it, `dispatch.in_pool()` counts it after a restart, and they are edited in
     different files — exactly the drift that already put `unpark` in the wrong pool in `status.sh`.
     """
+    import re as _re
     daemon_src = (_V2 / "lemd" / "daemon.py").read_text()
     dispatch_src = (_V2 / "lemd" / "dispatch.py").read_text()
-    assert '"gh" if mode in ("merge", "park", "unpark", "disarm")' in daemon_src
-    assert '"gh" if row["mode"] in ("merge_enable", "park", "unpark", "disarm")' in dispatch_src
+    # Membership, not the literal tuple. Pinning it made every legitimate new gh mode look like a
+    # regression — `abandon` (#1390) was the second one — which trains people to edit the test
+    # rather than read it. What matters is that `disarm` is classified the same way in both.
+    act = _re.search(r'"gh" if mode in \(([^)]*)\)', daemon_src).group(1)
+    pool = _re.search(r'"gh" if row\["mode"\] in \(([^)]*)\)', dispatch_src).group(1)
+    assert '"disarm"' in act and '"disarm"' in pool
 
 
 def test_the_action_ships_to_the_box():

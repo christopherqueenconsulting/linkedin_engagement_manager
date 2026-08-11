@@ -16,6 +16,7 @@ mis-deciding can be caught while it is still incapable of doing anything.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -233,13 +234,29 @@ class Daemon:
                 ("needs-human", "issue"),
                 ("agent:blocked", "pr"),
                 ("agent:blocked", "issue"),
+                # Abandoned items are still fetched, and that is the escape hatch working: the
+                # owner removes `agent:abandoned`, the next reconcile sees an item whose labels no
+                # longer carry it, and the revive below puts it back on the queue. Without the
+                # query there is nothing to notice the removal.
+                ("agent:abandoned", "pr"),
+                ("agent:abandoned", "issue"),
             ):
                 for obj in github.list_by_label(self.cfg.slug, label, kind):
                     number = obj.get("number")
                     if not number:
                         continue
                     existing = db.get_item(self.conn, kind, number)
-                    labels_json = json.dumps(sorted(github.label_names(obj)))
+                    names = github.label_names(obj)
+                    labels_json = json.dumps(sorted(names))
+                    if (existing and existing["state"] == db.STATE_ABANDONED
+                            and "agent:abandoned" not in names):
+                        # The owner took the label off: restart with a clean slate, which is what
+                        # the abandon comment promises. Clearing the history matters as much as the
+                        # state — leaving the laps would abandon it again on its very next park.
+                        LOG.info("%s #%s revived — agent:abandoned removed", kind, number)
+                        db.clear_park_history(self.conn, kind, number)
+                        db.force_state(self.conn, existing["id"], db.STATE_READY, dirty=1,
+                                       parked_reason=None, wake_at=None)
                     # DRIFT is the evidence that the event path missed something. An item GitHub
                     # reports differently from what we hold is a change nobody delivered to us —
                     # which is exactly the fault the staleness detector is trying to find, and
@@ -302,10 +319,16 @@ class Daemon:
             snap = observe.snapshot_issue(self.cfg.slug, number, owner=self.cfg.assignee,
                                           answer_routed=routed)
 
+        parked_reason = row["parked_reason"]
+        snap = dataclasses.replace(
+            snap, parked_reason=parked_reason,
+            park_laps=db.park_laps(self.conn, kind, number, parked_reason or ""),
+        )
         decision = observe.decide(
             snap,
             ttl_ci=self.cfg.ttl_ci, ttl_review=self.cfg.ttl_review,
             ttl_queue=self.cfg.ttl_queue, ttl_parked=self.cfg.ttl_parked,
+            max_park_laps=self.cfg.max_park_laps,
         )
         self._decisions += 1
         # Report the state actually PERSISTED, not the one `decide` names. An ACT_DISPATCH decision
@@ -314,8 +337,8 @@ class Daemon:
         # 13 `ready -> claimed` transitions in four seconds that never occurred — an operator
         # debugging churn would have gone looking for a claim storm that was purely a log artefact.
         persisted = decision.next_state
-        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE,
-                               observe.ACT_UNPARK, observe.ACT_DISARM):
+        if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_UNPARK,
+                               observe.ACT_DISARM, observe.ACT_ABANDON):
             persisted = db.STATE_READY
         self._emit(row, snap, decision, persisted)
 
@@ -329,6 +352,15 @@ class Daemon:
                 self.conn, kind=kind, number=number, state=row["state"],
                 head_sha=snap.head_sha or row["head_sha"],
                 branch=snap.branch or row["branch"], dirty=0, wake_at=None,
+            )
+            return
+
+        if decision.action == observe.ACT_ABANDON:
+            db.upsert_item(
+                self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
+                pending_mode="abandon", parked_reason=decision.park_reason,
+                head_sha=snap.head_sha or row["head_sha"],
+                branch=snap.branch or row["branch"],
             )
             return
 
@@ -479,7 +511,7 @@ class Daemon:
             # `unpark` is a gh-pool action: four label writes and a ledger reset, no model. It
             # must never queue behind a 20-minute implementation run — the whole complaint it fixes
             # is work sitting parked while the owner waits.
-            pool = "gh" if mode in ("merge", "park", "unpark", "disarm") else "agent"
+            pool = "gh" if mode in ("merge", "park", "unpark", "disarm", "abandon") else "agent"
             if mode == "start" and self.cfg.hold_starts:
                 # Checked BEFORE the slot read: an operator holding new work still wants to see
                 # that it is being held, and a full pool would otherwise `continue` first and
@@ -555,6 +587,10 @@ class Daemon:
             return self.sup.dispatch_gh(
                 action="park", kind=kind, number=number,
                 args=[kind, str(number), row["parked_reason"] or "parked"], item_id=row["id"])
+        if mode == "abandon":
+            return self.sup.dispatch_gh(
+                action="abandon", kind=kind, number=number,
+                args=[kind, str(number), row["parked_reason"] or "unknown"], item_id=row["id"])
         if mode == "disarm":
             return self.sup.dispatch_gh(action="disarm", kind=kind, number=number,
                                         args=[str(number)], item_id=row["id"])
@@ -568,7 +604,13 @@ class Daemon:
                                        branch=row["branch"], item_id=row["id"])
 
     def _park(self, row, reason: str) -> None:
-        """Queue a park for one item (the gh pool performs it)."""
+        """Queue a park for one item (the gh pool performs it), and count the lap.
+
+        Recorded here rather than in the action, because the action is deduped on the head SHA and
+        exits early on a repeat — so a park that `park.sh` declines to re-announce would never be
+        counted, which is exactly the lap that proves a loop.
+        """
+        db.record_park(self.conn, row["kind"], row["number"], reason, row["head_sha"])
         db.upsert_item(self.conn, kind=row["kind"], number=row["number"], state=db.STATE_READY,
                        pending_mode="park", parked_reason=reason, dirty=0, wake_at=None)
 
@@ -586,9 +628,10 @@ class Daemon:
                 continue
             if rc == dispatch.EX_BUDGET:
                 # The action refused under the flock — the authoritative answer. Park.
+                reason = f"{_item_mode(child.mode)}_exhausted"
+                db.record_park(self.conn, child.kind, child.number, reason, item["head_sha"])
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=0, wake_at=None,
-                               pending_mode="park",
-                               parked_reason=f"{_item_mode(child.mode)}_exhausted")
+                               pending_mode="park", parked_reason=reason)
             elif rc == dispatch.EX_TRUST:
                 # Never retried on a timer: a trust refusal is answered by a human re-labelling,
                 # which arrives as an event. The slow TTL is only a safety net against a lost one.
@@ -608,6 +651,8 @@ class Daemon:
                 # the upsert guard exists precisely to stop writes landing on an active item.
                 # Re-observe immediately rather than on a TTL — the labels this action just rewrote
                 # ARE the next decision, and the owner is waiting on it.
+                db.record_unpark(self.conn, child.kind, child.number,
+                                 item["parked_reason"] or "", item["head_sha"])
                 answer_id = self._answer_ids.pop((child.kind, child.number), None)
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=1,
                                pending_mode=None, parked_reason=None, wake_at=None,

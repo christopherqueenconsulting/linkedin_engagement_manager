@@ -133,7 +133,7 @@ class Supervisor:
             # Keep this set in step with `act()`'s pool routing. A gh action counted as an AGENT
             # here would let a restart adopt it against the wrong cap — the agent pool is the
             # scarce one, and mis-attributing a two-second label write to it stalls a real run.
-            row_pool = "gh" if row["mode"] in ("merge_enable", "park", "unpark", "disarm") else "agent"
+            row_pool = "gh" if row["mode"] in ("merge_enable", "park", "unpark", "disarm", "abandon") else "agent"
             if row_pool == pool:
                 adopted += 1
         return live + adopted
