@@ -367,10 +367,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | **`UNKNOWN` mergeability reads as healthy** (§5) | the #1082 shape, unfixed | #1392 |
 | **Lane-label precedence is incidental**, and `agent:merge-parked` is vestigial (§5) | | #1393 |
 | **A human-drafted PR is unreachable** by automation *and* by an owner reply (§5). Still written as `parked` — the one entrance where that is arguably honest, since it IS stuck and nobody was told | | #1393 |
-| **`collect()`'s `child.mode == "merge"` branch is unreachable** — `dispatch_gh(action="merge_enable")` names the child `merge_enable`. The #1295 protection is dead code, masked today by row 23 | a guarantee the comments claim and the code does not provide | #1394 |
-| **`USAGE_PAUSE_MINUTES` never reaches `lane_for.py`** — `config.env` says 120, the bounded self-review wait uses the default 60 | | #1394 |
-| **`LEMD_GH_SLOTS` (status.sh) vs `MAX_GH_ACTIONS` (config.py)** — two names, one setting | | #1394 |
-| **`status.sh` omits `unpark`** from the gh pool, so an in-flight un-park is charged to the agent pool | | #1394 |
 | **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | #1395 |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
 | **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | #1397, #1398 |

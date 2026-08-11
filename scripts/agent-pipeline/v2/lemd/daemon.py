@@ -32,6 +32,15 @@ LOG = logging.getLogger("lemd")
 #: short delay rather than a stall.
 MAX_SLEEP = 60
 
+#: The gh ACTION name for arming auto-merge, which is NOT the item's `pending_mode` for it.
+#: `_launch` dispatches `dispatch_gh(action="merge_enable", ...)` and `_spawn` records `mode=action`,
+#: so a child carries `merge_enable` while the item carried `merge`. `collect()` tested for `merge`
+#: and therefore never took its own success branch: every armed PR fell into the generic tail and
+#: was re-observed with `dirty=1`, which is exactly the re-observation loop the branch was added to
+#: prevent (#1295). Naming it once is the fix; the two spellings are a fact about the dispatch API,
+#: not something to remember.
+GH_MERGE_ACTION = "merge_enable"
+
 #: Events that can only ever mean a PR. `issues` can only mean an issue. Everything else —
 #: `issue_comment` above all — is AMBIGUOUS: GitHub delivers PR comments as `issue_comment` with
 #: only an `issue` object in the payload, so those are resolved against the queue instead.
@@ -39,6 +48,16 @@ PR_ONLY_EVENTS = frozenset({
     "pull_request", "pull_request_review", "pull_request_review_thread",
     "check_suite", "merge_group",
 })
+
+
+def _item_mode(child_mode: str) -> str:
+    """The mode as the ITEM knows it, given the mode a CHILD was spawned with.
+
+    They differ for exactly one action, and only because `dispatch_gh` names children after the
+    script it runs. Without this an exhausted merge parks as `merge_enable_exhausted`, which matches
+    nothing an operator or a budget lookup would search for.
+    """
+    return "merge" if child_mode == GH_MERGE_ACTION else child_mode
 
 
 class Daemon:
@@ -504,7 +523,7 @@ class Daemon:
         """Start the right action for one decided item."""
         kind, number = row["kind"], row["number"]
         if mode == "merge":
-            return self.sup.dispatch_gh(action="merge_enable", kind=kind, number=number,
+            return self.sup.dispatch_gh(action=GH_MERGE_ACTION, kind=kind, number=number,
                                         args=[str(number), row["head_sha"] or ""],
                                         item_id=row["id"])
         if mode == "park":
@@ -543,7 +562,8 @@ class Daemon:
             if rc == dispatch.EX_BUDGET:
                 # The action refused under the flock — the authoritative answer. Park.
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=0, wake_at=None,
-                               pending_mode="park", parked_reason=f"{child.mode}_exhausted")
+                               pending_mode="park",
+                               parked_reason=f"{_item_mode(child.mode)}_exhausted")
             elif rc == dispatch.EX_TRUST:
                 # Never retried on a timer: a trust refusal is answered by a human re-labelling,
                 # which arrives as an event. The slow TTL is only a safety net against a lost one.
@@ -567,7 +587,7 @@ class Daemon:
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=1,
                                pending_mode=None, parked_reason=None, wake_at=None,
                                last_comment_id=answer_id)
-            elif rc == 0 and child.mode == "merge":
+            elif rc == 0 and child.mode == GH_MERGE_ACTION:
                 # A successful arm is a WAIT, not a reason to look again immediately. Re-observing
                 # here is what let #1295 spend its whole per-head merge budget in three minutes:
                 # each pass saw an armed-but-not-yet-enqueued PR, read it as "gate satisfied", and
