@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import BrandShowcase from '../components/BrandShowcase'
 import TutorialVideos from '../components/TutorialVideos'
 import FAQ from './FAQ'
 
@@ -96,6 +97,9 @@ export default function Landing() {
 
       {/* Automated feature tutorials (issue #505) — renders nothing until one is produced */}
       <TutorialVideos />
+
+      {/* Real brand-account showcase (issue #1299) — renders nothing until the flag is on and posts exist */}
+      <BrandShowcase />
 
       {/* Stats */}
       <section className="py-16 px-4 bg-white">

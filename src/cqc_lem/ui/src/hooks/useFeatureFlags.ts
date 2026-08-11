@@ -24,6 +24,7 @@ export const FLAGS = {
   feedFallbackDefault: 'feed-fallback-when-empty-default',
   costRouting: 'cost-routing-enabled',
   posthogSurveys: 'posthog-surveys-enabled',
+  brandShowcase: 'brand-showcase-enabled',
 } as const
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS]
