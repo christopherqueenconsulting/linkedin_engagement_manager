@@ -567,6 +567,34 @@ longer hands a prober the list of paths to aim at, and that Swagger's *Try it ou
 drive them. Use curl or the checked-in Postman collection instead:
 [`TESTING_ENGAGEMENT_API.md`](TESTING_ENGAGEMENT_API.md).
 
+### What the published schema says a route RETURNS (issue #1219)
+
+Every route answers with the same envelope, `ResponseModel` in `api/models.py`. Its `detail` was
+`Any`, which is exactly nothing to a reader of a now-public schema: 130-odd operations all documented
+the same empty object. `ResponseModel` is now generic, and each handler's return annotation names the
+payload it actually produces — `ResponseModel[str]` for a message, `ResponseModel[dict[str, Any]]`
+for an object, `ResponseModel[list[dict[str, Any]]]` for an array, `Optional[...]` where `None` is a
+real answer ("nothing is queued") rather than an error.
+
+Two properties are deliberate:
+
+- **The parameter is a CONTAINER type, never a per-route field model.** FastAPI serializes the
+  response *through* the annotation, so a model with named fields would silently DROP every key it
+  does not declare — a documentation change that quietly deletes data the SPA reads. The container
+  types narrow the schema while leaving the response bytes identical, which is why the OpenAPI diff
+  for #1219 is `$ref` changes and nothing else.
+- **Bare `ResponseModel` is still valid and still means `Any`.** Pydantic treats an unparametrized
+  type variable as `Any`, so nothing had to change at once and a caller constructing the envelope by
+  hand is unaffected. What catches a new un-annotated route is
+  `test_no_operation_still_points_at_the_any_envelope`: the bare component is no longer referenced by
+  any operation, so re-introducing it fails. `ResponseModel[Any]` is the escape hatch — exempted by
+  name in that test file — and it says "this route genuinely has no one shape" on purpose.
+
+The annotation is a runtime contract, not a comment: `ResponseModel[str]` returning a dict is a 500,
+not a lax response. `test_no_literal_return_contradicts_its_annotation` reads the handlers' literal
+`detail=` returns back out of the source, so that drift fails in the unit lane instead of on the
+branch nobody exercised.
+
 The other unauthenticated surface, `GET /health/deep`, was trimmed in the same issue: it returns
 **counts only** — no worker or queue names — and `"status":"healthy"` stays the first key of the
 response, which is a monitor contract. See [`stack-watchdog.md`](stack-watchdog.md).

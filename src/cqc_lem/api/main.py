@@ -1371,7 +1371,7 @@ def health_check_deep():
 
 
 @router.get("/app-info")
-def get_app_info() -> ResponseModel:
+def get_app_info() -> ResponseModel[dict[str, Any]]:
     """Public: the SPA footer reads the running release version + whether to display it."""
     from cqc_lem.utilities.env_constants import SHOW_VERSION_FOOTER, get_app_version
     return ResponseModel(status_code=200, detail={
@@ -1391,7 +1391,7 @@ def _bounded_context(context: Optional[Dict[str, Any]]) -> Optional[dict]:
 
 
 @router.post("/feedback")
-def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
+def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel[dict[str, Any]]:
     """Capture in-app feedback / a bug report (issue #496) — the first capture point of the
     feedback->auto-work loop. A valid session_token attributes the row to that user; without one
     (logged-out visitor) the row is kept anonymously with a NULL user_id.
@@ -1410,7 +1410,7 @@ def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
 
 
 @router.post("/survey/nps")
-def submit_nps_endpoint(request: NpsSurveyRequest) -> ResponseModel:
+def submit_nps_endpoint(request: NpsSurveyRequest) -> ResponseModel[dict[str, Any]]:
     """Capture an NPS response (issue #501) as a `feedback` row with source='nps'. Promoters get
     invited to turn that score into a review, which is what unlocks the extended trial (#499).
     """
@@ -1434,7 +1434,7 @@ def submit_nps_endpoint(request: NpsSurveyRequest) -> ResponseModel:
 
 
 @router.post("/survey/review")
-def submit_review_endpoint(request: ReviewSurveyRequest) -> ResponseModel:
+def submit_review_endpoint(request: ReviewSurveyRequest) -> ResponseModel[dict[str, Any]]:
     """Capture a review (issue #501) as a `feedback` row with source='review'. That row IS the gate
     the extended trial checks (issue #499), so the response reports the unlock.
     """
@@ -1457,7 +1457,7 @@ def submit_review_endpoint(request: ReviewSurveyRequest) -> ResponseModel:
 
 
 @router.post("/survey/dismiss")
-def dismiss_survey_endpoint(request: SurveyDismissRequest) -> ResponseModel:
+def dismiss_survey_endpoint(request: SurveyDismissRequest) -> ResponseModel[dict[str, Any]]:
     """User closed the survey modal without answering — record the ask so neither the modal nor the
     email brings it back (issue #501).
     """
@@ -1471,7 +1471,7 @@ def dismiss_survey_endpoint(request: SurveyDismissRequest) -> ResponseModel:
 
 
 @router.post("/survey/posthog")
-def submit_posthog_survey_endpoint(request: PostHogSurveyRequest) -> ResponseModel:
+def submit_posthog_survey_endpoint(request: PostHogSurveyRequest) -> ResponseModel[dict[str, Any]]:
     """Capture a PostHog Surveys answer (issue #653) as a `feedback` row so it reaches the
     feedback->auto-work loop. The browser has already emitted PostHog's own `survey sent`; this
     handler deliberately does NOT emit the homegrown `survey_response` event, so one answer is
@@ -1502,7 +1502,7 @@ def submit_posthog_survey_endpoint(request: PostHogSurveyRequest) -> ResponseMod
 
 
 @router.get("/flags")
-def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel:
+def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Server-evaluated feature flags for the SPA (issue #651, docs/feature-flags.md).
 
     This is the SPA's flag BOOTSTRAP: values are resolved server-side with PostHog local evaluation
@@ -1519,7 +1519,7 @@ def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel:
 
 
 @router.get("/faq")
-def faq_endpoint() -> ResponseModel:
+def faq_endpoint() -> ResponseModel[dict[str, Any]]:
     """Public: the front-page FAQ (issue #506). Serves only the published entries, in display
     order — the SPA falls back to its built-in copy if this is empty or unreachable.
     """
@@ -1580,7 +1580,7 @@ def _brand_showcase_posts(brand_user_id: int) -> List[dict]:
     200: {"description": "Brand posts returned"},
     503: {"description": "Database unavailable"},
 })
-def brand_showcase_endpoint(request: Request) -> ResponseModel:
+def brand_showcase_endpoint(request: Request) -> ResponseModel[dict[str, Any]]:
     """Public: real posts and stored engagement counts from the LEM brand account (issue #1299).
 
     Returns only posts already published by the brand user and only stats already recorded in
@@ -1642,7 +1642,7 @@ def brand_showcase_endpoint(request: Request) -> ResponseModel:
 
 
 @router.post("/shipped/ack")
-def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseModel:
+def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseModel[dict[str, Any]]:
     """Acknowledge a shipped-fix notice and, when the user answered "did this fix it?", record the
     micro-CSAT (issue #502). A "not fixed" answer lands as a `feedback` row at status `new`, so it
     re-enters the auto-work loop instead of stopping at a metric.
@@ -1679,7 +1679,7 @@ def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseMod
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_dashboard_stats(session_token: Optional[str] = None,
-                        email: Optional[str] = None) -> ResponseModel:
+                        email: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """The dashboard's headline counters.
 
     `email` is a target checked against the session, not an identity — passing someone else's is a 403.
@@ -1706,7 +1706,7 @@ def get_dashboard_stats(session_token: Optional[str] = None,
 })
 def get_planned_tasks_endpoint(session_token: Optional[str] = None,
                                email: Optional[str] = None,
-                               limit: int = Query(default=10, ge=1, le=50)) -> ResponseModel:
+                               limit: int = Query(default=10, ge=1, le=50)) -> ResponseModel[dict[str, Any]]:
     """What LEM is about to do next for this user — the forward half of the dashboard.
 
     Spans every queue, with `kind` saying which. Times go out as explicit-UTC ISO so the browser
@@ -1733,7 +1733,7 @@ def get_planned_tasks_endpoint(session_token: Optional[str] = None,
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_activity(session_token: Optional[str] = None, email: Optional[str] = None,
-                 limit: int = 20) -> ResponseModel:
+                 limit: int = 20) -> ResponseModel[list[dict[str, Any]]]:
     """The activity feed — what LEM already did, newest first.
 
     `post_url` goes through `_public_post_url`, so a home-feed comment (which has no LinkedIn
@@ -1760,7 +1760,7 @@ def get_activity(session_token: Optional[str] = None, email: Optional[str] = Non
 
 
 @router.post("/linkedin/verification-pin/inbound")
-async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
+async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel[str]:
     """SendGrid Inbound Parse webhook: the user's email reply carrying their LinkedIn
     6-digit code. The tokenized Reply-To (pin+<token>@parse-domain) attributes it to the
     paused login; we extract the code and hand it to the waiting task. Always 200 so
@@ -1777,7 +1777,7 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
     return await run_in_threadpool(_handle_inbound_parse, form)
 
 
-def _handle_inbound_parse(form) -> ResponseModel:
+def _handle_inbound_parse(form) -> ResponseModel[str]:
     """The synchronous body of the SendGrid Inbound Parse webhook (see the route above)."""
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
@@ -1853,7 +1853,7 @@ def _record_forwarding_confirmed_by_delivery(user_id: int) -> None:
         log_info("Gmail forwarding confirmed by an arriving LinkedIn notification", user_id=user_id)
 
 
-def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str, html: str) -> ResponseModel:
+def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str, html: str) -> ResponseModel[str]:
     """Auto-confirm the user's Gmail forwarding to our address: click the verify link server-side
     and stash the numeric code + status so the UI can show it as a fallback if the auto-click didn't
     take. Always 200.
@@ -1962,7 +1962,7 @@ def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) ->
         log_debug("Could not track inbound email verdict", exc=e, user_id=user_id)
 
 
-def _process_reply_inbound(form) -> ResponseModel:
+def _process_reply_inbound(form) -> ResponseModel[str]:
     """Handle inbound mail sent to a reply+<token>@parse-domain address: a Gmail forwarding
     confirmation (auto-click the verify link) or a forwarded LinkedIn comment notification (trigger a
     debounced recent-posts reply sweep). Reactions/unknown tokens are ignored. Always 200. Called
@@ -2016,7 +2016,7 @@ def _process_reply_inbound(form) -> ResponseModel:
 
 
 @router.post("/linkedin/comment-notification/inbound")
-async def linkedin_comment_notification_inbound(request: Request) -> ResponseModel:
+async def linkedin_comment_notification_inbound(request: Request) -> ResponseModel[str]:
     """SendGrid Inbound Parse webhook for reply+<token> mail (kept as an explicit path; SendGrid
     actually delivers to the shared parse URL, which also routes here via _process_reply_inbound).
     """
@@ -2038,7 +2038,7 @@ def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[
                                               default=0,
                                               description="Forward index (0-5) to use for future calls",
                                               examples=[0, 1, 2, 3, 4, 5]
-                                          )) -> ResponseModel:
+                                          )) -> ResponseModel[str]:
     """Queue a reply-commenting sweep over one of the caller's OWN posts.
 
     `post_id` is a target, not an identity: it used to name the account the Selenium session ran as,
@@ -2067,7 +2067,7 @@ def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[
     500: {"description": "Session resolved to an account with no address"},
     **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
 })
-def schedule_post(post: PostRequest) -> ResponseModel:
+def schedule_post(post: PostRequest) -> ResponseModel[str]:
     """Create a post row from the composer — draft (`pending`) or queued (`approved`).
 
     Two things the body does NOT get to decide: the row is written against the SESSION's address
@@ -2115,7 +2115,7 @@ def schedule_post(post: PostRequest) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def create_weekly_content(session_token: Optional[str] = None,
-                          user_id: Optional[int] = None) -> ResponseModel:
+                          user_id: Optional[int] = None) -> ResponseModel[str]:
     """Kick off a plan-then-generate chain for the CALLER.
 
     A `queued` progress record is published up front so the SPA has something to poll immediately.
@@ -2158,7 +2158,7 @@ def create_weekly_content(session_token: Optional[str] = None,
     200: {"description": "Content generation progress"},
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
-def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
+def get_content_generation_status_endpoint(session_token: str) -> ResponseModel[Optional[dict[str, Any]]]:
     """Progress of the caller's weekly content-generation run — queued → in_progress (X of N) →
     done/failed. `detail` is None when no run is being tracked (nothing started, or it aged out).
     Scoped by session rather than a user_id query param so one user can't poll another's run.
@@ -2174,7 +2174,7 @@ def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def invite_to_li_company_page(session_token: Optional[str] = None,
-                              user_id: Optional[int] = None) -> ResponseModel:
+                              user_id: Optional[int] = None) -> ResponseModel[str]:
     """Run the company-page invite drip for the CALLER now instead of waiting for the beat.
 
     The endpoint only dispatches — `plan_daily_invites` still decides the allowance from the
@@ -2196,7 +2196,7 @@ def invite_to_li_company_page(session_token: Optional[str] = None,
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def aws_test_get_my_profile(session_token: Optional[str] = None,
-                            user_id: Optional[int] = None) -> ResponseModel:
+                            user_id: Optional[int] = None) -> ResponseModel[str]:
     """Smoke-test the AWS Celery path end to end by fetching the caller's own LinkedIn profile.
 
     Diagnostic only — it proves a task reached a worker and came back. `user_id` is a target to
@@ -2215,7 +2215,7 @@ def aws_test_get_my_profile(session_token: Optional[str] = None,
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_user_id_from_email(session_token: Optional[str] = None,
-                           email: Optional[str] = None) -> ResponseModel:
+                           email: Optional[str] = None) -> ResponseModel[int]:
     """The CALLER's own user id. It was an email→id oracle for any bearer holder (issue #914) —
     which is how an attacker turned a known address into the id the automation routes wanted.
     """
@@ -2240,7 +2240,7 @@ def get_posts_for_email(
     search: Optional[str] = Query(default=None, max_length=500),
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """The Content Studio's paged post list, always scoped to the session's own rows.
 
     `email` is a target checked against the session, never the account queried — the query itself
@@ -2293,7 +2293,7 @@ def get_posts_for_email(
     200: {"description": "Posts updated successfully"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
 })
-def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
+def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]:
     """Restatus and/or reschedule a batch of the caller's posts, all-or-nothing.
 
     Ownership is proved for EVERY id before anything is written, and the update is additionally
@@ -2319,7 +2319,7 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
     200: {"description": "Posts deleted (soft) successfully"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
 })
-def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
+def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel[str]:
     """Soft-delete a batch of the caller's posts, keeping the author's stated reason.
 
     The reason is not bookkeeping: `regenerate_post_endpoint` feeds it back to the model as
@@ -2342,7 +2342,7 @@ def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_post_url(post_id: int, session_token: Optional[str] = None,
-                 email: Optional[str] = None) -> ResponseModel:
+                 email: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """The published LinkedIn permalink for one of the caller's posts, read off the POST log.
 
     `post_url` is None when the post has not been published yet AND when the id belongs to somebody
@@ -2361,7 +2361,7 @@ def get_post_url(post_id: int, session_token: Optional[str] = None,
     200: {"description": "Post updated successfully"},
     **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
 })
-def update_post(post_id: int, post: PostRequest) -> ResponseModel:
+def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     """Edit one of the caller's posts in place.
 
     `use_avatar` is three-valued (issue #744) and is written ONLY when the body states it: omitting
@@ -2681,7 +2681,7 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
 # --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler endpoints ---
 
 @router.post("/schedule_dm")
-def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel:
+def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel[dict[str, Any]]:
     """Create a scheduled 1:1 DM (draft or approved). The beat scanner (auto_check_scheduled_dms)
     sends approved DMs at their scheduled_time via send_scheduled_dm, honoring per-day DM caps.
     """
@@ -2701,7 +2701,7 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel:
 @router.get("/dms")
 def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str] = None,
                                 page: int = 1, page_size: int = 25,
-                                sort_order: str = "asc") -> ResponseModel:
+                                sort_order: str = "asc") -> ResponseModel[dict[str, Any]]:
     """The scheduled-DM review queue, paged and scoped to the caller.
 
     Every datetime is rewritten as explicit-UTC ISO on the way out so the browser does not read a naive value as
@@ -2720,7 +2720,7 @@ def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str]
 
 
 @router.put("/dm")
-def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel:
+def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]:
     """Edit a queued DM, or approve/cancel it.
 
     `approve` is what releases it to be sent, so it is refused for an `agent` session; an empty request (no fields,
@@ -2748,7 +2748,7 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel:
 
 
 @router.delete("/dm")
-def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel:
+def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel[str]:
     """Cancel a scheduled DM (soft — sets status 'canceled' so it won't be sent)."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -2761,7 +2761,7 @@ def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel:
 
 
 @router.post("/connection_request")
-def create_connection_request_endpoint(request: ConnectionRequestCreate) -> ResponseModel:
+def create_connection_request_endpoint(request: ConnectionRequestCreate) -> ResponseModel[dict[str, Any]]:
     """Add a proactive connection-request target (issue #398). If no status is supplied the user's
     connection_request_mode governs it — 'auto_approve' (default) queues the target for the daily-capped
     drip immediately, 'pre_review' holds it as a draft awaiting explicit approval. An explicit status
@@ -2799,7 +2799,7 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
 @router.get("/connection_requests")
 def list_connection_requests_endpoint(session_token: str, status_filter: Optional[str] = None,
                                       page: int = 1, page_size: int = 25,
-                                      sort_order: str = "desc") -> ResponseModel:
+                                      sort_order: str = "desc") -> ResponseModel[dict[str, Any]]:
     """The connection-request queue, paged and scoped to the caller."""
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -2811,7 +2811,7 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
 
 
 @router.put("/connection_request")
-def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> ResponseModel:
+def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> ResponseModel[str]:
     """Edit a queued connection request, or approve/cancel it.
 
     `approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,
@@ -2840,7 +2840,7 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
 
 
 @router.delete("/connection_request")
-def delete_connection_request_endpoint(request: ConnectionRequestDelete) -> ResponseModel:
+def delete_connection_request_endpoint(request: ConnectionRequestDelete) -> ResponseModel[str]:
     """Cancel a connection request (soft — sets status 'canceled' so it won't be sent)."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -2873,7 +2873,7 @@ class LeadSignalUpdate(BaseModel):
 @router.get("/lead_signals")
 def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] = None,
                                page: int = 1, page_size: int = 25,
-                               sort_order: str = "desc") -> ResponseModel:
+                               sort_order: str = "desc") -> ResponseModel[dict[str, Any]]:
     """The leads inbox: detected buying signals with their approval-gated draft responses."""
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -2885,7 +2885,7 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
 
 
 @router.put("/lead_signal")
-def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel:
+def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]:
     """Edit a lead's draft, dismiss the signal, or APPROVE it — approval is the only thing that
     dispatches a response, and it sends exactly the text the operator sees.
     """
@@ -2947,7 +2947,7 @@ class LeadRefreshRequest(BaseModel):
 @router.get("/leads")
 def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
                         include_dismissed: bool = False, page: int = 1,
-                        page_size: int = 100) -> ResponseModel:
+                        page_size: int = 100) -> ResponseModel[dict[str, Any]]:
     """The pipeline board: scored leads hottest first, each with why it scored and what to do next."""
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -2961,7 +2961,7 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
 
 
 @router.put("/lead")
-def update_lead_endpoint(request: LeadUpdate) -> ResponseModel:
+def update_lead_endpoint(request: LeadUpdate) -> ResponseModel[str]:
     """Operator edits: move a lead's stage by hand, keep a note, or dismiss/restore it. The nightly
     re-score never overwrites any of these.
     """
@@ -2986,7 +2986,7 @@ def update_lead_endpoint(request: LeadUpdate) -> ResponseModel:
 
 
 @router.post("/leads/refresh")
-def refresh_leads_endpoint(request: LeadRefreshRequest) -> ResponseModel:
+def refresh_leads_endpoint(request: LeadRefreshRequest) -> ResponseModel[str]:
     """Re-score this user's pipeline now instead of waiting for tonight's rebuild."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -2999,7 +2999,7 @@ def refresh_leads_endpoint(request: LeadRefreshRequest) -> ResponseModel:
 @router.get("/catchup/touches")
 def list_catchup_touches_endpoint(session_token: str, status_filter: Optional[str] = None,
                                   event_type_filter: Optional[str] = None, page: int = 1,
-                                  page_size: int = 25, sort_order: str = "desc") -> ResponseModel:
+                                  page_size: int = 25, sort_order: str = "desc") -> ResponseModel[dict[str, Any]]:
     """Drafted LinkedIn Catch-up congratulations awaiting review (issue #482), highest-scoring first."""
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -3010,7 +3010,7 @@ def list_catchup_touches_endpoint(session_token: str, status_filter: Optional[st
 
 
 @router.put("/catchup/touch")
-def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> ResponseModel:
+def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> ResponseModel[str]:
     """Edit a drafted congratulations, or approve/cancel it. Approving queues it for the daily-capped
     send drip; nothing is sent until a human approves (unless the account opted into auto-approve).
     """
@@ -3041,7 +3041,7 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
 
 
 @router.delete("/catchup/touch")
-def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> ResponseModel:
+def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> ResponseModel[str]:
     """Cancel a drafted catch-up touch (soft — sets status 'canceled' so it won't be sent, and the
     row stays as the dedup tombstone for that milestone).
     """
@@ -3086,7 +3086,7 @@ def download_linkedin_extension() -> StreamingResponse:
     200: {"description": "Extension result (granted or the reason it wasn't)"},
     **{k: v for k, v in error_responses.items() if k in [401, 404]},
 })
-def trial_extend_endpoint(request: TrialExtendRequest) -> ResponseModel:
+def trial_extend_endpoint(request: TrialExtendRequest) -> ResponseModel[dict[str, Any]]:
     """Claim the early-adopter extended trial (issue #499): EARLY_ADOPTER_TRIAL_DAYS instead of the
     standard FREE_TRIAL_DAYS, in exchange for a public review.
 
@@ -3135,7 +3135,7 @@ def trial_extend_endpoint(request: TrialExtendRequest) -> ResponseModel:
     200: {"description": "Video credit balance returned"},
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
-def get_video_credits_endpoint(session_token: str) -> ResponseModel:
+def get_video_credits_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's video credit balance — what premium video renders are charged against."""
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -3147,7 +3147,7 @@ def get_video_credits_endpoint(session_token: str) -> ResponseModel:
     200: {"description": "Stripe checkout URL returned"},
     **{k: v for k, v in error_responses.items() if k in [400, 401]}
 })
-def video_credits_checkout(request: VideoCreditCheckoutRequest) -> ResponseModel:
+def video_credits_checkout(request: VideoCreditCheckoutRequest) -> ResponseModel[dict[str, Any]]:
     """Stripe hand-off for a video-credit package.
 
     Like the avatar twin, the grant happens in the webhook, not here.
@@ -3174,7 +3174,7 @@ def video_credits_checkout(request: VideoCreditCheckoutRequest) -> ResponseModel
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]},
     402: {"description": "Insufficient video credits"},
 })
-def upgrade_video(request: UpgradeVideoRequest) -> ResponseModel:
+def upgrade_video(request: UpgradeVideoRequest) -> ResponseModel[dict[str, Any]]:
     """Upgrade a video post to a premium tier — regenerates the video at premium
     quality (Veo + audio), charging credits at render time (refunded on failure).
     """
@@ -3206,7 +3206,7 @@ def upgrade_video(request: UpgradeVideoRequest) -> ResponseModel:
 
 
 @router.get("/carousel-templates", responses={200: {"description": "Available carousel templates"}})
-def list_carousel_templates() -> ResponseModel:
+def list_carousel_templates() -> ResponseModel[dict[str, Any]]:
     """Return all available carousel visual templates for the UI picker."""
     from cqc_lem.utilities.carousel_creator import CAROUSEL_TEMPLATES
     templates = [
@@ -3221,7 +3221,7 @@ def list_carousel_templates() -> ResponseModel:
     403: {"description": "Forbidden"},
     500: {"description": "Generation failed"},
 })
-def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> ResponseModel:
+def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> ResponseModel[dict[str, Any]]:
     """Generate carousel slide images from AI content + chosen template.
     Returns slide_urls (publicly accessible) and a suggested caption.
     The caller can pass these as carousel_slides when scheduling the post.
@@ -3355,11 +3355,17 @@ def _hide_admin_routes_from_schema() -> int:
     decorators, because the failure mode is silent: a nineteenth admin route added later would
     publish itself and nothing would say so. `test_no_admin_route_appears_in_the_public_schema`
     checks the outcome, and this loop makes the outcome the default.
+
+    Returns how many admin operations the walk MATCHED, not how many flags it flipped. `_walk_routes`
+    descends into the ORIGINAL router objects, which outlive a re-import of this module — so counting
+    flips reports 0 the second time around (a reloaded `app` re-including routers whose routes are
+    already hidden) and reads exactly like the walk matching nothing, which is the one failure this
+    number exists to expose.
     """
     hidden = 0
     for route in _walk_routes(app.routes):
-        if getattr(route, "path", "").startswith("/api/admin") and getattr(
-                route, "include_in_schema", False):
+        if getattr(route, "path", "").startswith("/api/admin") and hasattr(
+                route, "include_in_schema"):
             route.include_in_schema = False
             hidden += 1
     return hidden

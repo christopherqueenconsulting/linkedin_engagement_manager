@@ -965,7 +965,7 @@ class LinkedInCompanyPageRequest(BaseModel):
 
 
 @router.get("/survey")
-def survey_endpoint(session_token: str) -> ResponseModel:
+def survey_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The survey to show in-app right now (day-3 NPS, trial T-3d NPS, or the review that unlocks
     the extended trial), or none (issue #501). With PostHog Surveys on (issue #653) the NPS asks are
     retired from this snapshot — PostHog is asking them.
@@ -979,7 +979,7 @@ def survey_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.get("/shipped")
-def shipped_notices_endpoint(session_token: str) -> ResponseModel:
+def shipped_notices_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The "you asked, we shipped" notices waiting for this user, plus the recent changelog (issue
     #502). A notice only appears once the reporter has had the fix for FEEDBACK_FIX_CSAT_DELAY_HOURS
     — that delay is what schedules the micro-CSAT it carries.
@@ -1005,7 +1005,7 @@ def shipped_notices_endpoint(session_token: str) -> ResponseModel:
     200: {"description": "User settings updated"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]}
 })
-def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel:
+def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel[str]:
     """Save the blog/sitemap URLs.
 
     Sending `new_email` is a 400, LOUDLY: this endpoint used to move the account address on the strength of knowing
@@ -1034,7 +1034,7 @@ def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel:
 
 
 @router.get("/token_status")
-def get_user_token_status(session_token: str) -> ResponseModel:
+def get_user_token_status(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The LinkedIn OAuth token's state for the SPA's reconnect countdown.
 
     `resolve_token_status` is the ONE decision core, shared with the daily renewal beat (issue
@@ -1051,7 +1051,7 @@ def get_user_token_status(session_token: str) -> ResponseModel:
 
 
 @router.get("/linkedin-signin-status")
-def get_linkedin_signin_status(session_token: str) -> ResponseModel:
+def get_linkedin_signin_status(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The last LinkedIn sign-in the automation made, and whether it is waiting on the user's
     device approval (issue #933).
 
@@ -1075,7 +1075,7 @@ def get_linkedin_signin_status(session_token: str) -> ResponseModel:
 
 
 @router.get("/security")
-def get_user_security(session_token: Optional[str] = None) -> ResponseModel:
+def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Everything the account page's Security card shows (issue #745, 2b): the devices signed in,
     the recent auth history, and the state of the email attribute. Never returns a token, a token
     hash or an IP hash.
@@ -1109,7 +1109,7 @@ def get_user_security(session_token: Optional[str] = None) -> ResponseModel:
 
 
 @router.post("/sessions/revoke")
-def revoke_user_session(request: RevokeSessionRequest, http_request: Request = None) -> ResponseModel:
+def revoke_user_session(request: RevokeSessionRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Sign a device out. Revoking the CURRENT session is allowed — it is the same thing as logging
     out — and the caller's next request simply resolves to no user.
     """
@@ -1141,7 +1141,7 @@ def revoke_user_session(request: RevokeSessionRequest, http_request: Request = N
 
 
 @router.post("/extension-token")
-def mint_extension_token(request: ExtensionTokenRequest, http_request: Request = None) -> ResponseModel:
+def mint_extension_token(request: ExtensionTokenRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Mint a session token for the browser extension (issue #745, 2b).
 
     The extension needs a token it can hold; the SPA no longer has one to give it, because the
@@ -1172,7 +1172,7 @@ def mint_extension_token(request: ExtensionTokenRequest, http_request: Request =
 
 
 @router.post("/agent-token")
-def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -> ResponseModel:
+def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Mint a long-lived, narrow session for a headless automation (issue #1026).
 
     Same shape as the extension token and for the same reason: a non-browser client needs a
@@ -1214,7 +1214,7 @@ def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -
 
 @router.post("/email/change/init")
 def user_email_change_init(request: EmailChangeInitRequest,
-                           http_request: Request = None) -> ResponseModel:
+                           http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Start an email change: PIN goes to the NEW address, so control of it has to be proven before
     the account moves. The address is an attribute of the account — the identity is `public_uid`.
     """
@@ -1269,7 +1269,7 @@ def user_email_change_init(request: EmailChangeInitRequest,
 
 @router.post("/email/change/verify")
 def user_email_change_verify(request: EmailChangeVerifyRequest,
-                             http_request: Request = None) -> ResponseModel:
+                             http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Confirm the new address with the PIN sent to it, then move the account. Every OTHER device is
     revoked: an email change is exactly what an attacker does after stealing a session, and the real
     owner has to be able to end those sessions by taking their address back.
@@ -1390,7 +1390,7 @@ def _stamp_enrollment(user_id: int, session_token: Optional[str], kind: str) -> 
 
 
 @router.get("/auth-factors")
-def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
+def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """What the Security card renders: enrolled factors, recovery-code counts, whether this
     deployment can do passkeys at all, and whether the email PIN has been demoted to a bootstrap.
     """
@@ -1423,7 +1423,7 @@ def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
 
 @router.post("/passkeys/register/begin")
 def passkey_register_begin(request: SessionOnlyRequest,
-                           http_request: Request = None) -> ResponseModel:
+                           http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Options for `navigator.credentials.create`. The FIRST factor needs only a session; adding
     another one to an account that already has one is step-up gated, because enrolling stamps the
     session as verified. The lockout case §6.8 worries about — someone who lost the factor they
@@ -1449,7 +1449,7 @@ def passkey_register_begin(request: SessionOnlyRequest,
 
 @router.post("/passkeys/register/complete")
 def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
-                              http_request: Request = None) -> ResponseModel:
+                              http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Verify and store a new passkey. The challenge is claimed exactly once, so a replayed
     registration response finds nothing to verify against.
     """
@@ -1493,7 +1493,7 @@ def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
 
 
 @router.post("/totp/enroll/begin")
-def totp_enroll_begin(request: SessionOnlyRequest, http_request: Request = None) -> ResponseModel:
+def totp_enroll_begin(request: SessionOnlyRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Mint an authenticator-app secret. Returned in the clear exactly once — the row stores it as
     a `lemv1:` envelope bound to this user, so it can never be read back out.
     """
@@ -1519,7 +1519,7 @@ def totp_enroll_begin(request: SessionOnlyRequest, http_request: Request = None)
 
 
 @router.post("/totp/enroll/confirm")
-def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = None) -> ResponseModel:
+def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Turn a pending authenticator secret into a confirmed factor by proving one code.
 
     Gated on BOTH halves of the ceremony like the passkey path: a secret minted before a factor
@@ -1547,7 +1547,7 @@ def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = Non
 
 @router.post("/auth-factors/delete")
 def delete_user_auth_factor(request: AuthFactorDeleteRequest,
-                            http_request: Request = None) -> ResponseModel:
+                            http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Remove a factor — step-up gated, because removing the thing that protects the account is
     exactly what an attacker holding a stolen session would do first.
     """
@@ -1574,7 +1574,7 @@ def delete_user_auth_factor(request: AuthFactorDeleteRequest,
 
 @router.post("/recovery-codes/regenerate")
 def regenerate_recovery_codes(request: SessionOnlyRequest,
-                              http_request: Request = None) -> ResponseModel:
+                              http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """A fresh sheet of single-use codes, shown ONCE. Step-up gated because a new sheet silently
     invalidates the old one — an attacker could otherwise lock the real owner out of their own
     recovery path without ever touching a factor.
@@ -1595,7 +1595,7 @@ def regenerate_recovery_codes(request: SessionOnlyRequest,
 
 
 @router.post("/step-up/begin")
-def step_up_begin(request: SessionOnlyRequest) -> ResponseModel:
+def step_up_begin(request: SessionOnlyRequest) -> ResponseModel[dict[str, Any]]:
     """Start a step-up passkey ceremony for the signed-in account. Scoped to the user's OWN
     credentials — a step-up is "prove you are still you", not "log someone in".
     """
@@ -1616,7 +1616,7 @@ def step_up_begin(request: SessionOnlyRequest) -> ResponseModel:
 
 
 @router.post("/step-up/verify")
-def step_up_verify(request: StepUpVerifyRequest, http_request: Request = None) -> ResponseModel:
+def step_up_verify(request: StepUpVerifyRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Prove a factor and stamp THIS session as freshly verified.
 
     A recovery code is deliberately NOT accepted here (design §6.8): it gets you back INTO the
@@ -1664,7 +1664,7 @@ def step_up_verify(request: StepUpVerifyRequest, http_request: Request = None) -
 
 
 @router.get("/settings")
-def get_user_settings(session_token: str) -> ResponseModel:
+def get_user_settings(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The Account page's snapshot: subscription, preferences, blog/sitemap and company page.
 
     `content_language` and `effective_content_language` are BOTH returned on purpose (issue #548) —
@@ -1711,7 +1711,7 @@ def get_user_settings(session_token: str) -> ResponseModel:
 
 
 @router.put("/settings")
-def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseModel:
+def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseModel[str]:
     """Save the account-level preferences.
 
     Only the fields on `UserPreferencesRequest` are touched — engagement targeting/voice/caps are a separate row and
@@ -1735,7 +1735,7 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
 
 
 @router.get("/linkedin-profile-skills")
-def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel:
+def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Return the cached profile's top-5 skills and their overlap with declared focus topics.
 
     Read-only and best-effort: a missing or unparseable profile returns an empty list, never an
@@ -1760,7 +1760,7 @@ def get_linkedin_profile_skills_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.get("/engagement-preferences")
-def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
+def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The saved engagement preferences, plus the read-only context the Settings hub renders.
 
     That context is the gate defaults, the plan's catch-up ceiling, the forwarding address, and the
@@ -1822,7 +1822,7 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/engagement-preferences")
-def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest) -> ResponseModel:
+def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest) -> ResponseModel[str]:
     """Save targeting, voice and the per-day caps — and refuse an `agent`-scoped token outright.
 
     Scope surfaces match on PATH, so granting the agent the read granted this write with it. This
@@ -1857,7 +1857,7 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
 
 
 @router.get("/newsletter-settings")
-def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel:
+def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's newsletter settings row, defaults filled in by `get_newsletter_settings`."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -1866,7 +1866,7 @@ def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.get("/newsletter-subscribers")
-def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel:
+def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Subscriber-growth time-series for the current user (issue #400): the recorded snapshots plus
     the latest known subscriber count, for charting growth over time.
 
@@ -1891,7 +1891,7 @@ def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/newsletter-settings")
-def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> ResponseModel:
+def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> ResponseModel[str]:
     """Save the newsletter settings and, when the feature is on, top the draft queue up NOW.
 
     The top-up is what makes a raised `max_queued_drafts` visible immediately instead of at the
@@ -1934,7 +1934,7 @@ def _compute_next_publish(user_id: int, anchor=None):
 
 
 @router.get("/newsletter-draft")
-def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
+def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The newsletter review queue.
 
     `next_publish` is the slot AFTER the last edition already queued, so it answers "when would a NEW draft go out",
@@ -1992,7 +1992,7 @@ def _should_rebrief_cover(existing: dict, request: "NewsletterDraftRequest") -> 
 
 
 @router.put("/newsletter-draft")
-def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> ResponseModel:
+def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> ResponseModel[str]:
     """Edit a queued edition, and optionally approve or skip it.
 
     An unrecognised `action` maps to no status change, so it saves the fields rather than
@@ -2037,7 +2037,7 @@ def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> Respons
 
 
 @router.post("/newsletter-draft/regenerate")
-def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -> ResponseModel:
+def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -> ResponseModel[str]:
     """Regenerate a single queued edition. Generation is a slow lem-complex call, so dispatch it to a
     Celery task and let the UI refetch the queue once it lands. Optional free-text `guidance` steers
     the rewrite; empty guidance lets the AI decide a fresh, distinct take.
@@ -2089,7 +2089,7 @@ async def upload_newsletter_cover_endpoint(
     session_token: str = Form(...),
     edition_id: int = Form(...),
     file: UploadFile = File(...),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Attach the author's OWN cover artwork to a queued edition (issue #893).
 
     Their artwork needs no review, so it lands 'approved' and publishes with the edition — this is
@@ -2128,7 +2128,7 @@ async def upload_newsletter_cover_endpoint(
     200: {"description": "Cover generation started"},
     **{k: v for k, v in error_responses.items() if k in [401, 404]}
 })
-def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> ResponseModel:
+def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> ResponseModel[str]:
     """Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a
     Celery task and the result lands 'pending_review' for the author to approve.
     """
@@ -2145,7 +2145,7 @@ def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> Respo
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404]},
     500: {"description": "Server error"}
 })
-def decide_newsletter_cover_endpoint(request: NewsletterCoverDecisionRequest) -> ResponseModel:
+def decide_newsletter_cover_endpoint(request: NewsletterCoverDecisionRequest) -> ResponseModel[dict[str, Any]]:
     """The human half of the cover gate: 'approve' clears a generated cover for publish, 'remove'
     drops it (file included) so the edition publishes with no cover at all.
     """
@@ -2167,7 +2167,7 @@ def decide_newsletter_cover_endpoint(request: NewsletterCoverDecisionRequest) ->
 
 
 @router.post("/post/regenerate")
-def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
+def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel[str]:
     """Regenerate a single pending/approved/rejected post. Generation is a slow lem-complex call,
     so dispatch it to a Celery task; the post resets to 'pending' for re-review. Optional free-text
     `guidance` steers the rewrite while the base regeneration honors the user's saved engagement
@@ -2205,7 +2205,7 @@ OCCASION_DEFAULT_LEAD_HOURS = 24
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403]},
     500: {"description": "Could not create the draft"},
 })
-def create_occasion_post_endpoint(request: OccasionPostRequest) -> ResponseModel:
+def create_occasion_post_endpoint(request: OccasionPostRequest) -> ResponseModel[dict[str, Any]]:
     """Seed ONE occasion/milestone draft for the caller, written to the named archetype.
 
     The row is created up front (so the Content Studio shows it immediately) and marked
@@ -2252,7 +2252,7 @@ def create_occasion_post_endpoint(request: OccasionPostRequest) -> ResponseModel
     409: {"description": "Post does not publish natively, or is already published"},
     500: {"description": "Could not update the post"},
 })
-def mark_post_posted_endpoint(request: PostMarkPostedRequest) -> ResponseModel:
+def mark_post_posted_endpoint(request: PostMarkPostedRequest) -> ResponseModel[str]:
     """Record that the caller published a `manual_publish` draft by hand.
 
     Deliberately narrow: only a native-publish draft can be marked this way, because for every
@@ -2276,7 +2276,7 @@ def mark_post_posted_endpoint(request: PostMarkPostedRequest) -> ResponseModel:
 
 
 @router.post("/post/rescore")
-def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel:
+def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel[dict[str, Any]]:
     """Re-run the quality gates on a pending/approved post's CURRENT content (issue #421) — the
     'edit & re-score' half of the review flow. Save the edit first, then call this: a draft that now
     clears every gate is promoted PENDING -> APPROVED without a full regenerate, and one that still
@@ -2338,7 +2338,7 @@ async def upload_post_image_endpoint(
     session_token: str = Form(...),
     post_id: Optional[int] = Form(default=None),
     file: UploadFile = File(...),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Attach the author's OWN image to a post — or, with no `post_id`, to a draft still being
     composed, which hands back a preview URL to pass to `/schedule_post/`.
 
@@ -2372,7 +2372,7 @@ async def upload_post_image_endpoint(
     429: {"description": "Hourly generation limit reached"},
     502: {"description": "Generation failed upstream"},
 })
-def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseModel:
+def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseModel[dict[str, Any]]:
     """Render an image for a post from its text, through the SAME brief + gated renderer the
     scheduled path uses. Runs inline (one render) so the studio can show the result immediately.
 
@@ -2412,7 +2412,7 @@ def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseM
     409: {"description": "Post is already published"},
     500: {"description": "Server error"},
 })
-def remove_post_image_endpoint(request: PostImageRemoveRequest) -> ResponseModel:
+def remove_post_image_endpoint(request: PostImageRemoveRequest) -> ResponseModel[dict[str, Any]]:
     """Take the image off a post so it publishes as plain text. The file goes with it."""
     user_id = _post_open_to_image_edits(request.session_token, request.post_id)
     previous = get_post_image_url(request.post_id)
@@ -2436,7 +2436,7 @@ class GroupTogglesRequest(BaseModel):
 
 
 @router.get("/groups")
-def get_user_groups_endpoint(session_token: str) -> ResponseModel:
+def get_user_groups_endpoint(session_token: str) -> ResponseModel[list[dict[str, Any]]]:
     """The user's LinkedIn groups and their per-group toggles.
 
     Which group the next weekly group post lands in is marked ON the row (`is_next_post`) rather
@@ -2457,7 +2457,7 @@ def get_user_groups_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/groups")
-def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
+def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel[str]:
     """Save the per-group commenting/posting toggles."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -2482,7 +2482,7 @@ class GroupPostDraftUpdateRequest(BaseModel):
 
 
 @router.get("/group-post-draft")
-def get_group_post_draft_endpoint(session_token: str) -> ResponseModel:
+def get_group_post_draft_endpoint(session_token: str) -> ResponseModel[Optional[dict[str, Any]]]:
     """The group post waiting to be published, so the user can read it before it ships (issue #932).
     `detail` is None when nothing is queued — the SPA hides the card rather than inventing one.
     """
@@ -2493,7 +2493,7 @@ def get_group_post_draft_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/group-post-draft")
-def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> ResponseModel:
+def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> ResponseModel[str]:
     """Save the user's revision of the queued group post, or skip this week's post entirely.
     Scoped to the caller's OWN open draft — the id is never taken from the request.
     """
@@ -2521,7 +2521,7 @@ def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> Re
 
 
 @router.get("/post-stats")
-def get_post_stats_endpoint(session_token: str) -> ResponseModel:
+def get_post_stats_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Personalized best-times-to-post recommendations plus a which-hooks/formats/topics-win
     ranking, both derived from the user's own post stats.
     """
@@ -2542,7 +2542,7 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.get("/engagement-analytics")
-def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> ResponseModel:
+def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> ResponseModel[dict[str, Any]]:
     """Per-post performance table + a daily engagement-rate / impression trend for the analytics
     dashboard (issue #395), derived from the user's captured post_stats, plus the 70/20/10
     content-mix compliance ratio for the same window (issue #618), the comment-outcome quality
@@ -2594,7 +2594,7 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
 
 
 @router.get("/posthog-stats")
-def get_posthog_stats_endpoint(session_token: str) -> ResponseModel:
+def get_posthog_stats_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The in-SPA 'your stats' panel (issue #654), backed by PostHog HogQL Endpoints
     (scripts/posthog_provision.py) instead of a bespoke MySQL reporting layer. A thin server-side
     proxy: the personal API key lives here and never reaches the browser, and every read is scoped
@@ -2650,7 +2650,7 @@ def _suppression_status(user_id: int) -> dict:
 
 
 @router.get("/automation-status")
-def get_automation_status_endpoint(session_token: str) -> ResponseModel:
+def get_automation_status_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Suppression-tripwire + automation-pause state for the Account banner (issue #629)."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -2669,7 +2669,7 @@ class AutomationResumeRequest(BaseModel):
 
 
 @router.post("/automation-resume")
-def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseModel:
+def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseModel[dict[str, Any]]:
     """The manual re-enable path for a suppression trip (issue #629). The tripwire NEVER resumes on
     its own, so this endpoint is the only way back: it clears the stored trip and lifts the pause —
     but only when the pause is the tripwire's own trip for THIS user, so re-enabling here can never
@@ -2744,7 +2744,7 @@ def _affiliate_detail(user_id: int, **extra) -> dict:
     200: {"description": "Affiliate program state for the signed-in user"},
     **{k: v for k, v in error_responses.items() if k in [401]},
 })
-def get_affiliate_endpoint(session_token: str) -> ResponseModel:
+def get_affiliate_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The Account > Affiliate section's whole picture (issue #737): status, referral link, referrals
     driven, trial days earned against the cap, and BOTH toggles with their consent record.
 
@@ -2766,7 +2766,7 @@ def get_affiliate_endpoint(session_token: str) -> ResponseModel:
     200: {"description": "Updated affiliate state"},
     **{k: v for k, v in error_responses.items() if k in [401]},
 })
-def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseModel:
+def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseModel[dict[str, Any]]:
     """Join or leave (A). Takes effect immediately, and the response carries the resulting trial end
     date so the SPA can tell the user their new trial length in the same breath as the change —
     opting out returns them to the standard trial, it does not take away days they EARNED.
@@ -2802,7 +2802,7 @@ def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseMo
     200: {"description": "Updated affiliate state"},
     **{k: v for k, v in error_responses.items() if k in [401, 422]},
 })
-def set_affiliate_promo_consent_endpoint(request: AffiliatePromoConsentRequest) -> ResponseModel:
+def set_affiliate_promo_consent_endpoint(request: AffiliatePromoConsentRequest) -> ResponseModel[dict[str, Any]]:
     """(B) — the separate, explicit opt-IN for LEM publishing promotional content about LEM from the
     user's OWN LinkedIn account. Default OFF, and it can only be turned on by this call, with
     `consent_acknowledged`, which is what makes the stored timestamp mean something.
@@ -2830,7 +2830,7 @@ def set_affiliate_promo_consent_endpoint(request: AffiliatePromoConsentRequest) 
     200: {"description": "Enrollment notice acknowledged"},
     **{k: v for k, v in error_responses.items() if k in [401]},
 })
-def acknowledge_affiliate_notice_endpoint(request: AffiliateNoticeRequest) -> ResponseModel:
+def acknowledge_affiliate_notice_endpoint(request: AffiliateNoticeRequest) -> ResponseModel[dict[str, Any]]:
     """Record that the user has SEEN the enrollment notice. Default enrollment is only fair if the
     notice was actually delivered, so this timestamp is the evidence it was.
     """
@@ -2843,7 +2843,7 @@ def acknowledge_affiliate_notice_endpoint(request: AffiliateNoticeRequest) -> Re
 
 
 @router.get("/audience-growth")
-def get_audience_growth_endpoint(session_token: str, days: int = 90) -> ResponseModel:
+def get_audience_growth_endpoint(session_token: str, days: int = 90) -> ResponseModel[dict[str, Any]]:
     """Follower/audience telemetry for the analytics dashboard's growth panel (issue #627): the
     daily follower series with 7/30-day deltas, the latest profile-view and search-appearance
     readings, and the user's daily posting/commenting activity to overlay on the same window.
@@ -2885,7 +2885,7 @@ class LeadMagnetRequest(BaseModel):
 
 
 @router.get("/lead-magnet")
-def get_lead_magnet_endpoint(session_token: str) -> ResponseModel:
+def get_lead_magnet_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's lead-magnet settings: the trigger keyword and the DM it pays out."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -2894,7 +2894,7 @@ def get_lead_magnet_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/lead-magnet")
-def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
+def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel[str]:
     """Save the lead-magnet settings, refusing a bait-colliding keyword.
 
     The 422 names a workable alternative, because a mechanic that silently never fires is worse
@@ -2918,7 +2918,7 @@ def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
 
 
 @router.get("/dm-templates")
-def get_dm_templates_endpoint(session_token: str) -> ResponseModel:
+def get_dm_templates_endpoint(session_token: str) -> ResponseModel[list[dict[str, Any]]]:
     """The caller's DM template ladders — every event type, every follow-up step."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -2927,7 +2927,7 @@ def get_dm_templates_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/dm-templates")
-def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel:
+def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel[str]:
     """Replace the caller's DM templates with the posted set — a whole-set upsert, not a patch."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -2938,7 +2938,7 @@ def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel:
 
 
 @router.get("/engagement-targets")
-def get_engagement_targets_endpoint(session_token: str) -> ResponseModel:
+def get_engagement_targets_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The user's engagement roster plus seed suggestions for an empty one (issue #616)."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -2950,7 +2950,7 @@ def get_engagement_targets_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/engagement-targets")
-def update_engagement_targets_endpoint(request: EngagementTargetsRequest) -> ResponseModel:
+def update_engagement_targets_endpoint(request: EngagementTargetsRequest) -> ResponseModel[str]:
     """Replace the caller's engagement roster with the posted list."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -2961,7 +2961,7 @@ def update_engagement_targets_endpoint(request: EngagementTargetsRequest) -> Res
 
 
 @router.delete("/engagement-targets")
-def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) -> ResponseModel:
+def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) -> ResponseModel[str]:
     """Drop one person off the caller's roster, matched by profile URL and scoped to their own rows."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -2972,7 +2972,7 @@ def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) ->
 
 
 @router.get("/story-bank")
-def get_story_bank_endpoint(session_token: str) -> ResponseModel:
+def get_story_bank_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The user's story bank plus how many entries a usable bank needs (issue #620)."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -2986,7 +2986,7 @@ def get_story_bank_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/story-bank")
-def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel:
+def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel[str]:
     """Upsert story-bank entries — the FACT half the content core draws on (issue #620)."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -2997,7 +2997,7 @@ def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel:
 
 
 @router.delete("/story-bank")
-def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel:
+def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel[str]:
     """Remove one story-bank entry, scoped to the caller's own rows."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
@@ -3009,7 +3009,7 @@ def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel
 
 @router.put("/linkedin-password", deprecated=True)
 def update_linkedin_password(request: LinkedInPasswordRequest,
-                             http_request: Request = None) -> ResponseModel:
+                             http_request: Request = None) -> ResponseModel[str]:
     """DEPRECATED (issue #745, design decision 2A) — use POST /user/linkedin-cookie instead.
 
     Store the user's LinkedIn password for Selenium-driven automation tasks. The value is
@@ -3049,7 +3049,7 @@ def _scraped_profile_name(user_id: int) -> Optional[str]:
 
 
 @router.get("/linkedin-display-name")
-def get_linkedin_display_name_endpoint(session_token: str) -> ResponseModel:
+def get_linkedin_display_name_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The user's LinkedIn display name (issue #731) plus the name LEM scraped from their profile.
 
     Reply detection compares the last sender in a DM thread against this exact string, so the UI
@@ -3065,7 +3065,7 @@ def get_linkedin_display_name_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/linkedin-display-name")
-def update_linkedin_display_name_endpoint(request: LinkedInDisplayNameRequest) -> ResponseModel:
+def update_linkedin_display_name_endpoint(request: LinkedInDisplayNameRequest) -> ResponseModel[str]:
     """Save the user's LinkedIn display name. Required, and rejected empty: without it every DM
     reply check is UNKNOWN and the follow-up sequencer skips the person entirely (issue #731).
     """
@@ -3084,7 +3084,7 @@ def update_linkedin_display_name_endpoint(request: LinkedInDisplayNameRequest) -
 
 
 @router.get("/timezone")
-def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
+def get_user_timezone_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's IANA timezone — the one scheduling reads, so the SPA shows the same clock."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -3093,7 +3093,7 @@ def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.get("/linkedin-profile")
-def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
+def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's connected LinkedIn profile URL. None when no LinkedIn account is attached yet.
 
     `refresh_available_in_seconds` reports the on-demand re-scrape window (issue #1076) so the SPA
@@ -3113,7 +3113,7 @@ def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
     202: {"description": "Refresh queued, or already claimed for today"},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def refresh_user_linkedin_profile_endpoint(request: SessionOnlyRequest) -> ResponseModel:
+def refresh_user_linkedin_profile_endpoint(request: SessionOnlyRequest) -> ResponseModel[dict[str, Any]]:
     """Re-scrape the caller's OWN LinkedIn profile now and regenerate the voice synthesis from it.
 
     Without this, a profile edit reaches LEM's writing only when the weekly staleness beat
@@ -3146,7 +3146,7 @@ def refresh_user_linkedin_profile_endpoint(request: SessionOnlyRequest) -> Respo
 
 
 @router.put("/timezone")
-def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel:
+def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel[str]:
     """Save the caller's timezone, validated against the live tz database.
 
     Rejected rather than coerced: this zone is what turns a scheduled wall-clock time into a real
@@ -3166,7 +3166,7 @@ def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel:
 
 
 @router.get("/location")
-def get_user_location_endpoint(session_token: str) -> ResponseModel:
+def get_user_location_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The caller's stored Login Location. An empty dict means none is set — not an error."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -3175,7 +3175,7 @@ def get_user_location_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/location")
-def update_user_location_endpoint(request: LocationRequest) -> ResponseModel:
+def update_user_location_endpoint(request: LocationRequest) -> ResponseModel[str]:
     """Save a manually chosen Login Location (`source='manual'`), stored as given.
 
     The two bounds checks are the only validation: coordinates outside the real ranges and a
@@ -3200,7 +3200,8 @@ def update_user_location_endpoint(request: LocationRequest) -> ResponseModel:
 
 
 @router.post("/location/autocapture")
-def autocapture_user_location_endpoint(request: LocationAutocaptureRequest, http_request: Request) -> ResponseModel:
+def autocapture_user_location_endpoint(request: LocationAutocaptureRequest,
+                                       http_request: Request) -> ResponseModel[dict[str, Any]]:
     """Geolocate the caller's real IP and persist it as their login location.
     The app sits behind a Cloudflare tunnel, so the client IP arrives in
     CF-Connecting-IP / X-Forwarded-For — never trust the immediate peer.
@@ -3248,7 +3249,7 @@ def autocapture_user_location_endpoint(request: LocationAutocaptureRequest, http
 
 
 @router.post("/location/by-city")
-def set_user_location_by_city_endpoint(request: LocationByCityRequest) -> ResponseModel:
+def set_user_location_by_city_endpoint(request: LocationByCityRequest) -> ResponseModel[dict[str, Any]]:
     """Geocode a user-selected city/state (free OSM Nominatim) and persist it as their login
     location, so the automation browser's emulated geo/timezone matches where they intend to
     appear. Complementary to /autocapture (IP-based).
@@ -3274,7 +3275,7 @@ def set_user_location_by_city_endpoint(request: LocationByCityRequest) -> Respon
 
 @router.post("/linkedin-cookie")
 def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest,
-                                   http_request: Request = None) -> ResponseModel:
+                                   http_request: Request = None) -> ResponseModel[str]:
     """Store the user's existing LinkedIn session cookie (li_at) so automation resumes
     an already-trusted session instead of doing a fresh password login — which is what
     triggers LinkedIn's "Check your app" new-device challenge. The user captures li_at
@@ -3317,7 +3318,7 @@ def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest,
 
 
 @router.get("/account-readiness")
-def account_readiness_endpoint(session_token: str) -> ResponseModel:
+def account_readiness_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Report whether the account has everything the automation needs (LinkedIn OAuth for
     posting, a session cookie or password for engagement, an active plan; location is
     recommended). The UI uses this to mark required fields and gate automation pages.
@@ -3373,7 +3374,7 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.get("/onboarding")
-def onboarding_endpoint(session_token: str) -> ResponseModel:
+def onboarding_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The activation checklist (issue #500): each step, when it completed, and the next-best nudge
     to show in-app. Reading it also advances the persisted state, so the PostHog activation funnel
     records a step the moment the user finishes it — not a day later when the beat task runs.
@@ -3387,7 +3388,7 @@ def onboarding_endpoint(session_token: str) -> ResponseModel:
 
 
 @router.put("/company-page")
-def update_company_page_endpoint(request: LinkedInCompanyPageRequest) -> ResponseModel:
+def update_company_page_endpoint(request: LinkedInCompanyPageRequest) -> ResponseModel[str]:
     """Save (or clear) the user's LinkedIn company page URL. The monthly invite
     automation (1st of each month) sends connection invites to this page for active
     users; users without one are skipped.

@@ -24,7 +24,7 @@ reached as `_main.<name>`, an attribute resolved at REQUEST time. So
 """
 
 from enum import StrEnum
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from celery import states as celery_states
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -202,7 +202,7 @@ def _require_api_and_admin(
 @router.post("/automation-pause", responses={200: {"description": "Automation paused"},
                                                     403: {"description": "Forbidden"}})
 def admin_pause_automation(hours: float = 24,
-                           x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+                           x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
     """Kill-switch: pause ALL Selenium automation (comments/replies/DMs/stats/invites) for `hours` so
     a 429-rate-limited account/IP can recover. Posting (API) is unaffected. Default 24h.
     """
@@ -215,7 +215,7 @@ def admin_pause_automation(hours: float = 24,
 
 @router.post("/automation-resume", responses={200: {"description": "Automation resumed"},
                                                      403: {"description": "Forbidden"}})
-def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
     """Lift a manual automation pause immediately."""
     _require_admin(x_admin_secret)
     from cqc_lem.utilities.linkedin.rate_limit import resume_automation
@@ -224,7 +224,7 @@ def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)
 
 @router.get("/automation-status", responses={200: {"description": "Automation status"},
                                                    403: {"description": "Forbidden"}})
-def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
     """Current pause + 429-breaker state (seconds remaining on each)."""
     _require_admin(x_admin_secret)
     from cqc_lem.utilities.linkedin.rate_limit import automation_pause_remaining, rate_limit_cooldown_remaining
@@ -243,7 +243,7 @@ def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)
 def admin_fix_video_urls(
     request: AdminFixVideoUrlsRequest,
     x_admin_secret: Optional[str] = Header(default=None),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Rewrite a stale asset host across stored video URLs — the repair for an asset base that moved.
 
     Blind string replacement across rows, so `user_id` is the blast-radius control: omitting it
@@ -264,7 +264,7 @@ def admin_fix_video_urls(
 def admin_set_user_location(
     request: AdminLocationByCityRequest,
     x_admin_secret: Optional[str] = Header(default=None),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Align a user's login location to their purchased proxy's city (admin-only). Geocodes the
     city/state and persists it so the automation browser's geo matches the proxy IP.
     """
@@ -294,7 +294,7 @@ def admin_set_user_location(
 def admin_regenerate_carousel(
     request: AdminRegenerateCarouselRequest,
     x_admin_secret: Optional[str] = Header(default=None),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Re-render a carousel's slides and overwrite the post's content.
 
     DOCUMENT posts are accepted too — a document post is a carousel published as a native PDF, so
@@ -333,7 +333,7 @@ def admin_regenerate_carousel(
 def admin_regenerate_video(
     request: AdminRegenerateVideoRequest,
     x_admin_secret: Optional[str] = Header(default=None),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Regenerate ONLY the video asset for an existing video post (keeps content)."""
     _require_admin(x_admin_secret)
 
@@ -363,7 +363,7 @@ def admin_regenerate_video(
 def admin_generate_media_variants(
     request: GenerateMediaVariantsRequest,
     x_admin_secret: Optional[str] = Header(default=None),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Generate image/video variants for review WITHOUT mutating any post.
 
     Returns public /api/assets URLs + a cost estimate. Defaults to a 3-variant
@@ -396,7 +396,7 @@ def admin_generate_media_variants(
 # bearer API token AND X-Admin-Secret are required (see _require_api_and_admin).
 # ---------------------------------------------------------------------------
 
-def _queued(result, task: str, **detail) -> ResponseModel:
+def _queued(result, task: str, **detail) -> ResponseModel[dict[str, Any]]:
     """Report a QueueOnce dispatch honestly — 409 when nothing was actually queued.
 
     Every task behind these endpoints is a QueueOnce task with `once={'graceful': True}`, and a
@@ -423,7 +423,7 @@ def admin_test_comment(
     loop_for_duration: int = Query(300, ge=10, le=3600,
                                    description="Seconds before the run self-terminates"),
     _: None = Depends(_require_api_and_admin),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Run the feed-commenting automation for a user (comments on posts in their feed)."""
     result = automate_commenting.apply_async(kwargs={
         "user_id": user_id, "loop_for_duration": loop_for_duration,
@@ -445,7 +445,7 @@ def admin_test_reply(
                                    description="Seconds before the run self-terminates"),
     future_forward: int = Query(0, ge=0, le=5, description="Forward index (0-5)"),
     _: None = Depends(_require_api_and_admin),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Run the reply-to-comments automation for a specific (already-posted) post."""
     user_id = get_post_user_id(post_id)
     if not user_id:
@@ -470,7 +470,7 @@ def admin_consolidate_duplicate_comments(
     hours: int = Query(168, ge=1, le=2160,
                        description="Look back this many hours for duplicate-commented posts (default 7 days)"),
     _: None = Depends(_require_api_and_admin),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Keep one comment per post and delete the extras for posts this user commented on more than once.
     Defaults to a DRY RUN (report only) — pass dry_run=false to actually delete.
     """
@@ -493,7 +493,7 @@ def admin_test_dm(
     loop_for_duration: int = Query(300, ge=10, le=3600,
                                    description="Seconds before the run self-terminates"),
     _: None = Depends(_require_api_and_admin),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Run the appreciation-DM automation (DMs people who recently viewed the profile)."""
     result = automate_appreciation_dms_for_user.apply_async(kwargs={
         "user_id": user_id, "loop_for_duration": loop_for_duration,
@@ -514,7 +514,7 @@ def admin_test_dm_direct(
                              examples=["https://www.linkedin.com/in/some-person/"]),
     message: str = Query(..., description="Message body to send", examples=["Hi — testing, please ignore."]),
     _: None = Depends(_require_api_and_admin),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Send ONE direct DM to a specific profile URL — the most deterministic way to
     watch the messaging flow end-to-end in the VNC.
     """
@@ -533,7 +533,7 @@ def admin_test_dm_direct(
 def admin_task_status(
     task_id: str,
     _: None = Depends(_require_api_and_admin),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Poll a queued test task's state (PENDING/STARTED/SUCCESS/FAILURE)."""
     from cqc_lem.app.my_celery import app as celery_app
     res = celery_app.AsyncResult(task_id)
@@ -580,7 +580,7 @@ def admin_feedback_list(
     source: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """List feedback submissions for the admin triage panel."""
     _require_user_admin(session_token)
     rows = get_feedback_list(status=status, source=source, limit=limit, offset=offset)
@@ -620,7 +620,7 @@ def admin_feedback_list(
 def admin_feedback_review(
     feedback_id: int,
     request: FeedbackReviewRequest,
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Approve a feedback row for auto-triage or dismiss it."""
     reviewer_user_id = _require_user_admin(request.session_token)
     from cqc_lem.utilities.feedback.issue_service import IssueAction, file_feedback_issue
@@ -676,7 +676,7 @@ class YouTubeTokenRequest(BaseModel):
     401: {"description": "Invalid or expired session"},
     403: {"description": "Admin access required"},
 })
-def admin_youtube_status(session_token: str, live: bool = False) -> ResponseModel:
+def admin_youtube_status(session_token: str, live: bool = False) -> ResponseModel[dict[str, Any]]:
     """'YouTube publishing: connected / needs re-auth (reason)' for the settings surface (#742).
 
     Reads the last recorded weekly probe by default so opening Settings never spends a round trip on
@@ -693,7 +693,7 @@ def admin_youtube_status(session_token: str, live: bool = False) -> ResponseMode
     422: {"description": "Empty refresh token"},
 })
 def admin_set_youtube_token(request: YouTubeTokenRequest,
-                            x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+                            x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
     """Install a re-minted YouTube refresh token WITHOUT a deploy (issue #742): it lands in
     `app_credentials` and takes precedence over `YOUTUBE_REFRESH_TOKEN` in `.env`. Admin-secret
     gated rather than session gated — this request body carries a live credential. The stored token

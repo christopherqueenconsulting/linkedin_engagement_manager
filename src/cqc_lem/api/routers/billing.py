@@ -10,7 +10,7 @@ moved with the handlers, so a patch aimed at `main` for one of THOSE has to be r
 
 import math
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -88,7 +88,7 @@ def _early_adopter_checkout_extras(user_id: int) -> tuple[Optional[int], Optiona
 
 
 @router.post("/create-checkout-session")
-def billing_create_checkout_session(request: CheckoutSessionRequest) -> ResponseModel:
+def billing_create_checkout_session(request: CheckoutSessionRequest) -> ResponseModel[dict[str, Any]]:
     """Start a Stripe purchase — or, on an already-subscribed account, change the plan in place.
 
     The in-place branch matters: sending an active subscriber through Checkout registers a SECOND
@@ -135,7 +135,7 @@ def billing_create_checkout_session(request: CheckoutSessionRequest) -> Response
 
 
 @router.post("/create-portal-session")
-def billing_create_portal_session(request: PortalSessionRequest) -> ResponseModel:
+def billing_create_portal_session(request: PortalSessionRequest) -> ResponseModel[dict[str, Any]]:
     """A one-time link into Stripe's billing portal, where payment methods and cancellation live.
 
     An account with no Stripe customer record is a 400, not an empty portal — there is nothing for

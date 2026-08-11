@@ -266,7 +266,7 @@ def _start_affiliate_membership(user_id: int, attribution: dict) -> None:
 
 @router.post("/email/init")
 def auth_email_init(request: AuthInitRequest, http_request: Request = None,
-                    response: Response = None) -> ResponseModel:
+                    response: Response = None) -> ResponseModel[dict[str, Any]]:
     """Step one of email sign-in: mail a PIN, or take the no-mail-provider bypass.
 
     The reply is deliberately the same shape whether or not the address has an account — `bypass`
@@ -359,7 +359,7 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
 
 @router.post("/email/verify")
 def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
-                      response: Response = None) -> ResponseModel:
+                      response: Response = None) -> ResponseModel[dict[str, Any]]:
     """Step two: spend the PIN. It creates the account on first successful verify.
 
     Three outcomes, and which one you get is the account's shape, not the request's. A correct PIN
@@ -448,7 +448,7 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
 
 @router.post("/logout")
 def auth_logout(request: LogoutRequest, http_request: Request = None,
-                response: Response = None) -> ResponseModel:
+                response: Response = None) -> ResponseModel[str]:
     """Sign out: delete the session row and clear the cookie. Never 500s.
 
     Order and error handling exist for one reason — whatever happens to the audit trail, the row
@@ -479,7 +479,7 @@ def auth_logout(request: LogoutRequest, http_request: Request = None,
 
 
 @router.get("/session")
-def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
+def auth_check_session(session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Who am I — the boot call every authenticated page makes.
 
     Because it is on every page, several other facts ride along here rather than costing their own
@@ -580,7 +580,7 @@ def _begin_second_factor(user_id: int, email: str, ip: Optional[str], user_agent
 
 @router.post("/passkey/login/begin")
 def passkey_login_begin(request: PasskeyLoginBeginRequest,
-                        http_request: Request = None) -> ResponseModel:
+                        http_request: Request = None) -> ResponseModel[dict[str, Any]]:
     """Username-less passkey sign-in. Public, and it takes no email: the browser offers whatever
     discoverable passkey it holds for this origin, so nothing here can be probed for whether an
     address has an account.
@@ -602,7 +602,7 @@ def passkey_login_begin(request: PasskeyLoginBeginRequest,
 
 @router.post("/passkey/login/complete")
 def passkey_login_complete(request: PasskeyLoginCompleteRequest, http_request: Request = None,
-                           response: Response = None) -> ResponseModel:
+                           response: Response = None) -> ResponseModel[dict[str, Any]]:
     """Finish a passkey sign-in. This is the ONE login path that is phishing-resistant end to end,
     and the only one that mints a session already stepped up — the user proved a strong factor to
     get here, so asking them to prove it again to paste a cookie would be theatre.
@@ -640,7 +640,7 @@ def passkey_login_complete(request: PasskeyLoginCompleteRequest, http_request: R
 
 @router.post("/second-factor/verify")
 def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: Request = None,
-                              response: Response = None) -> ResponseModel:
+                              response: Response = None) -> ResponseModel[dict[str, Any]]:
     """Finish a login the email PIN only bootstrapped (design §4, C demoted to bootstrap-only).
 
     A TOTP code mints a fully verified session. A RECOVERY code mints one that is signed in but NOT

@@ -12,7 +12,7 @@ carries every documented auth invariant. The avatar db functions DID move, so a 
 router; `routers/__init__.py` has the prefix rule and the reasoning.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import (
     APIRouter,  # noqa: E402  — grouped with the router declaration it serves
@@ -94,7 +94,7 @@ class AvatarPreferencesRequest(BaseModel):
     200: {"description": "Credit balance and active avatar returned"},
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
-def get_avatar_credits_endpoint(session_token: str) -> ResponseModel:
+def get_avatar_credits_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """Avatar credit balance plus the currently active avatar.
 
     The SPA needs both together to decide whether to offer training or a render.
@@ -111,7 +111,7 @@ def get_avatar_credits_endpoint(session_token: str) -> ResponseModel:
     200: {"description": "Stripe checkout URL returned"},
     **{k: v for k, v in error_responses.items() if k in [400, 401]}
 })
-def avatar_credits_checkout(request: AvatarCreditCheckoutRequest) -> ResponseModel:
+def avatar_credits_checkout(request: AvatarCreditCheckoutRequest) -> ResponseModel[dict[str, Any]]:
     """Stripe hand-off for an avatar-credit package.
 
     The credits are NOT granted here — the `checkout.session.completed` webhook does that, idempotently on the
@@ -146,7 +146,7 @@ async def start_avatar_training_endpoint(
     session_token: str = Form(...),
     trigger_word: str = Form(...),
     photos: UploadFile = File(...),
-) -> ResponseModel:
+) -> ResponseModel[dict[str, Any]]:
     """Train a LoRA avatar from an uploaded photo ZIP. Costs one avatar credit.
 
     Both size limits guard a zip bomb, which is why the UNCOMPRESSED total is checked as well as
@@ -171,7 +171,7 @@ async def start_avatar_training_endpoint(
     return await run_in_threadpool(_start_avatar_training, user_id, zip_bytes, trigger_word)
 
 
-def _start_avatar_training(user_id: int, zip_bytes: bytes, trigger_word: str) -> ResponseModel:
+def _start_avatar_training(user_id: int, zip_bytes: bytes, trigger_word: str) -> ResponseModel[dict[str, Any]]:
     """Validate the upload, start the Replicate job, then charge for it (see the route above)."""
     _MAX_ZIP_BYTES = 50 * 1024 * 1024  # 50 MB compressed
     _MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB uncompressed guard
@@ -202,7 +202,7 @@ def _start_avatar_training(user_id: int, zip_bytes: bytes, trigger_word: str) ->
     200: {"description": "Avatar trainings listed"},
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
-def list_avatar_trainings(session_token: str) -> ResponseModel:
+def list_avatar_trainings(session_token: str) -> ResponseModel[list[dict[str, Any]]]:
     """Every avatar training this user has started, in whatever state it reached."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -215,7 +215,7 @@ def list_avatar_trainings(session_token: str) -> ResponseModel:
     200: {"description": "Training status synced"},
     **{k: v for k, v in error_responses.items() if k in [401, 404]}
 })
-def sync_avatar_training_status(avatar_db_id: int, session_token: str) -> ResponseModel:
+def sync_avatar_training_status(avatar_db_id: int, session_token: str) -> ResponseModel[dict[str, Any]]:
     """Poll Replicate for a training's state and write it back — the SPA's progress call.
 
     A training already in a terminal state is NOT re-polled, and the sample renders it may trigger
@@ -282,7 +282,7 @@ def _require_own_avatar(user_id: int, avatar_db_id: int) -> dict:
     200: {"description": "Avatar samples returned"},
     **{k: v for k, v in error_responses.items() if k in [401, 404]}
 })
-def get_avatar_samples(avatar_db_id: int, session_token: str) -> ResponseModel:
+def get_avatar_samples(avatar_db_id: int, session_token: str) -> ResponseModel[dict[str, Any]]:
     """The rendered preview set plus everything the approval UI needs to decide."""
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -309,7 +309,7 @@ def get_avatar_samples(avatar_db_id: int, session_token: str) -> ResponseModel:
     200: {"description": "Sample regeneration queued"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404, 429, 500]}
 })
-def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel[str]:
     """Re-roll the preview set. Capped by AVATAR_SAMPLE_REGEN_MAX on top of the credit ledger —
     samples cost inference money but no training credit, so without a cap this is unbounded.
     """
@@ -349,7 +349,7 @@ def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest)
     **{k: v for k, v in error_responses.items() if k in [401, 404, 500]}
 })
 def update_avatar_attributes_endpoint(avatar_db_id: int,
-                                      request: AvatarAttributesRequest) -> ResponseModel:
+                                      request: AvatarAttributesRequest) -> ResponseModel[Optional[dict[str, Any]]]:
     """Store the user's SELF-DECLARED likeness attributes (issue #744, decision 3A).
 
     Nothing here inspects the user's photos — an unrecognized value is stored as NULL, which
@@ -370,7 +370,7 @@ def update_avatar_attributes_endpoint(avatar_db_id: int,
     200: {"description": "Avatar approved"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404, 500]}
 })
-def approve_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+def approve_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel[str]:
     """Approve an avatar for use. Requires samples to exist — approving an avatar nobody has
     seen is the exact blind activation this gate was added to remove.
     """
@@ -394,7 +394,7 @@ def approve_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> Respons
     200: {"description": "Avatar rejected"},
     **{k: v for k, v in error_responses.items() if k in [401, 404, 500]}
 })
-def reject_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+def reject_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel[str]:
     """Reject an avatar. Also deactivates it — leaving a rejected likeness active would keep
     publishing exactly the media the user just rejected.
     """
@@ -412,7 +412,7 @@ def reject_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> Response
     200: {"description": "Avatar guardrail preferences returned"},
     **{k: v for k, v in error_responses.items() if k in [401]}
 })
-def get_avatar_preferences_endpoint(session_token: str) -> ResponseModel:
+def get_avatar_preferences_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The per-user avatar guardrails.
 
     The opt-ins `resolve_avatar_for` reads before any likeness renders, plus the master
@@ -428,7 +428,7 @@ def get_avatar_preferences_endpoint(session_token: str) -> ResponseModel:
     200: {"description": "Avatar guardrail preferences updated"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 500]}
 })
-def update_avatar_preferences_endpoint(request: AvatarPreferencesRequest) -> ResponseModel:
+def update_avatar_preferences_endpoint(request: AvatarPreferencesRequest) -> ResponseModel[dict[str, Any]]:
     """PATCH one or more avatar guardrails.
 
     `exclude_none` is what makes it a patch, so the SPA can send a single toggle without resetting
@@ -450,7 +450,7 @@ def update_avatar_preferences_endpoint(request: AvatarPreferencesRequest) -> Res
     200: {"description": "Avatar activated"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 404]}
 })
-def activate_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+def activate_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel[str]:
     """Make a trained avatar the one that renders.
 
     Both gates are hard: the training must have SUCCEEDED, and the user must have reviewed and APPROVED its preview

@@ -19,7 +19,7 @@ to be re-pointed here. Loud, not silent.
 the prefix rule and the import-order reasoning.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -87,7 +87,7 @@ class OutreachTargetDeleteRequest(BaseModel):
 
 
 @router.post("/target")
-def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseModel:
+def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseModel[dict[str, Any]]:
     """Add a prospect to the comment-first outreach funnel (issue #399). The target starts at the
     'comment' stage; every stage is approval-gated — the funnel processor only acts on APPROVED
     stages and re-drops each fired stage to 'pending', so no step auto-fires at volume.
@@ -117,7 +117,7 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
 @router.get("/targets")
 def list_outreach_targets_endpoint(session_token: str, status_filter: Optional[str] = None,
                                    stage_filter: Optional[str] = None, page: int = 1,
-                                   page_size: int = 25, sort_order: str = "asc") -> ResponseModel:
+                                   page_size: int = 25, sort_order: str = "asc") -> ResponseModel[dict[str, Any]]:
     """The outreach funnel board.
 
     `stage_filter` and `status_filter` are different questions — which STEP a target is on, versus whether that step
@@ -132,7 +132,7 @@ def list_outreach_targets_endpoint(session_token: str, status_filter: Optional[s
 
 
 @router.put("/target")
-def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> ResponseModel:
+def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> ResponseModel[str]:
     """Edit a funnel target's current-stage draft, or approve/cancel it. 'approve' gates the current
     stage for the processor; 'cancel' aborts the whole funnel for this target.
     """
@@ -158,7 +158,7 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
 
 
 @router.delete("/target")
-def delete_outreach_target_endpoint(request: OutreachTargetDeleteRequest) -> ResponseModel:
+def delete_outreach_target_endpoint(request: OutreachTargetDeleteRequest) -> ResponseModel[str]:
     """Cancel a funnel target (soft — sets status 'canceled' so no further stage fires)."""
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
