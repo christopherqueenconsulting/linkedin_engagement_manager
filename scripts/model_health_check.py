@@ -1069,12 +1069,17 @@ def build_catalog_pr_body(plan: dict, catalog: Optional[dict] = None) -> str:
     if configured_gone or repoints:
         lines += ["## ⚠️ Needs a look before merge", ""]
     if configured_gone:
-        lines += ["These tags left the live catalog while `.litellm/config.yaml` still points a "
-                  "deployment at them — merging the snapshot marks them 'known gone', so confirm "
-                  "the tier still answers first. The scan files one `agent:ready` issue per event "
-                  "naming the family siblings the catalog now offers (issue #1237); merging this "
-                  "PR is what re-baselines the snapshot, so that issue is where the decision "
-                  "belongs:", ""]
+        # Written as one local rather than inline in the list: a multi-line string literal sitting
+        # in a list literal reads to CodeQL as a missing comma (py/implicit-string-concatenation).
+        gone_intro = (
+            "These tags left the live catalog while `.litellm/config.yaml` still points a "
+            "deployment at them — merging the snapshot marks them 'known gone', so confirm "
+            "the tier still answers first. The scan files one `agent:ready` issue per event "
+            "naming the family siblings the catalog now offers (issue #1237); merging this "
+            "PR is what re-baselines the snapshot, so that issue is where the decision "
+            "belongs:"
+        )
+        lines += [gone_intro, ""]
         lines += [f"- `{name}`" for name in configured_gone]
         lines.append("")
     if repoints:
