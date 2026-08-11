@@ -388,6 +388,23 @@ class TestCatalogSnapshot:
             "x": {"modified_at": "", "size": 0, "parameter_size": "", "family": ""}}
         assert mhc.parse_catalog(None) == {}
 
+    def test_a_published_digest_is_recorded_as_build_identity(self):
+        """`size`+`modified_at` are a fingerprint by coincidence; the digest IS the build (#1237)."""
+        catalog = mhc.parse_catalog({"models": [{"name": "x", "digest": "031ce2a95446"}]})
+        assert catalog["x"]["digest"] == "031ce2a95446"
+
+    def test_a_missing_digest_leaves_the_key_absent_not_empty(self):
+        """An empty string would read as a build CHANGE against a real digest the week the catalog
+        starts publishing them — and would move every committed snapshot entry for nothing.
+        """
+        assert "digest" not in mhc.parse_catalog({"models": [{"name": "x", "digest": " "}]})["x"]
+        assert "digest" not in mhc.parse_catalog(_tags())["gpt-oss:20b"]
+
+    def test_the_tags_payload_round_trips_a_digest_too(self):
+        catalog = mhc.parse_catalog({"models": [{"name": "x", "digest": "abc123"},
+                                                {"name": "y"}]})
+        assert mhc.parse_catalog(json.loads(mhc.render_tags_payload(catalog))) == catalog
+
     def test_snapshot_round_trip(self):
         catalog = mhc.parse_catalog(_tags())
         assert mhc.load_snapshot_text(mhc.render_snapshot(catalog, "2026-07-27")) == catalog
@@ -448,6 +465,16 @@ class TestPlanRepoints:
                                 {"minimax-m3": {"modified_at": "2026-06-01T00:00:00Z", "size": 0}},
                                 {"minimax-m3": {"modified_at": "2026-08-01T00:00:00Z", "size": 0}})
         assert [c["field"] for c in out[0]["changes"]] == ["modified_at"]
+
+    def test_a_digest_move_is_a_build_swap_and_wins_the_fingerprint(self):
+        """The one field that says "different build" outright, and the only one #1201 could settle
+        the deepseek-v4-flash question from.
+        """
+        out = mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                {"deepseek-v4-flash": {**_OLD_BUILD, "digest": "031ce2a95446"}},
+                                {"deepseek-v4-flash": {**_OLD_BUILD, "digest": "dd3d9b94bae4"}})
+        assert [c["field"] for c in out[0]["changes"]] == ["digest"]
+        assert out[0]["new_fingerprint"] == "dd3d9b94bae4"
 
     def test_an_unreferenced_tags_repoint_stays_silent(self):
         """The catalog carries hundreds of tags LEM does not run — those moves are noise."""
@@ -535,6 +562,132 @@ class TestRepointIssue:
         body = mhc.build_repoint_issue_body([self._repoint()], "2026-08-02")
         assert "--champions" in body
         assert "against itself" in body
+
+
+class TestPlanVanished:
+    """Issue #1237 — the case `plan_repoints` skips by construction: the CONFIGURED name itself is
+    gone from the catalog, which is the loudest re-point there is and used to produce silence.
+    """
+
+    def _catalog(self, **extra):
+        return {"deepseek-v4-flash:preview": {**_NEW_BUILD, "digest": "dd3d9b94bae4"},
+                "deepseek-v4-flash:0731": {**_OLD_BUILD, "digest": "031ce2a95446"},
+                "deepseek-v4-pro": dict(_NEW_BUILD),
+                "minimax-m3": dict(_NEW_BUILD), **extra}
+
+    def _vanished(self, catalog=None):
+        return mhc.plan_vanished(_ollama_deployments("deepseek-v4-flash"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 self._catalog() if catalog is None else catalog)
+
+    def test_a_configured_tag_that_left_the_catalog_is_reported(self):
+        out = self._vanished()
+        assert len(out) == 1
+        assert out[0]["tag"] == "deepseek-v4-flash"
+        assert out[0]["model"] == "openai/deepseek-v4-flash"
+        assert out[0]["groups"] == ["lem-medium"]
+        assert out[0]["last_seen"] == _OLD_BUILD
+
+    def test_the_siblings_the_catalog_still_offers_are_named_closest_first(self):
+        """Where the build WENT is the finding — a bare "gone" line sends the reader back to
+        config.yaml's "use the bare catalog id" note and straight onto whatever replaced it.
+        """
+        siblings = self._vanished()[0]["siblings"]
+        assert [s["name"] for s in siblings] == ["deepseek-v4-flash:0731",
+                                                 "deepseek-v4-flash:preview"]
+        assert all(s["same_base"] for s in siblings)  # deepseek-v4-pro is a different family
+
+    def test_a_family_with_nothing_left_reports_no_siblings(self):
+        assert self._vanished({"minimax-m3": dict(_NEW_BUILD)})[0]["siblings"] == []
+
+    def test_a_same_family_tag_with_a_different_base_still_counts_as_a_sibling(self):
+        siblings = self._vanished({"deepseek-v5-flash": dict(_NEW_BUILD)})[0]["siblings"]
+        assert [(s["name"], s["same_base"]) for s in siblings] == [("deepseek-v5-flash", False)]
+
+    def test_an_unconfigured_tag_leaving_the_catalog_stays_silent(self):
+        """Hundreds of tags LEM never serves come and go — only a name a live tier runs is news."""
+        assert mhc.plan_vanished(_ollama_deployments("minimax-m3"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)}, self._catalog()) == []
+
+    def test_a_tag_still_in_the_catalog_is_not_vanished(self):
+        assert mhc.plan_vanished(_ollama_deployments("minimax-m3"),
+                                 {"minimax-m3": dict(_OLD_BUILD)}, self._catalog()) == []
+
+    def test_a_configured_tag_the_snapshot_never_had_is_not_a_vanish_event(self):
+        """No baseline is no transition. Firing here would report a config/catalog mismatch that
+        has always been true as if it happened this week, every week.
+        """
+        assert mhc.plan_vanished(_ollama_deployments("deepseek-v4-flash"), {},
+                                 self._catalog()) == []
+
+    def test_a_non_ollama_deployment_is_never_checked(self):
+        deployments = mhc.parse_deployments({"model_list": [
+            {"model_name": "lem-medium", "litellm_params": {"model": "openai/deepseek-v4-flash",
+                                                            "api_key": "os.environ/OPENAI_API_KEY"}}]})
+        assert mhc.plan_vanished(deployments, {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 self._catalog()) == []
+
+    def test_every_tier_the_tag_served_is_named_once(self):
+        deployments = (_ollama_deployments("deepseek-v4-flash", group="lem-medium")
+                       + _ollama_deployments("deepseek-v4-flash", group="lem-complex"))
+        out = mhc.plan_vanished(deployments, {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                self._catalog())
+        assert len(out) == 1 and out[0]["groups"] == ["lem-complex", "lem-medium"]
+
+
+class TestVanishedIssue:
+    def _vanished(self, last=None, catalog=None):
+        return mhc.plan_vanished(
+            _ollama_deployments("deepseek-v4-flash"),
+            {"deepseek-v4-flash": {**_OLD_BUILD, **(last or {})}},
+            catalog if catalog is not None else {"deepseek-v4-flash:preview": dict(_NEW_BUILD)})[0]
+
+    def test_marker_carries_the_last_build_not_just_the_tag(self):
+        assert mhc.vanished_marker(self._vanished()) == (
+            "deepseek-v4-flash gone @ 140000000000/2026-04-24T00:00:00Z")
+
+    def test_a_second_disappearance_of_the_same_tag_is_not_deduped_away(self):
+        """The acceptance criterion the tag name alone would fail: a tag can leave, be republished
+        under a fresh build, and leave again — the second event must still reach a human.
+        """
+        first = mhc.vanished_marker(self._vanished())
+        second = mhc.vanished_marker(self._vanished({"modified_at": "2026-09-02T00:00:00Z",
+                                                     "size": 171_000_000_000}))
+        open_issues = [{"number": 31, "title": mhc.VANISHED_TITLE_PREFIX + " deepseek-v4-flash",
+                        "body": f"markers: `{first}`", "comments": []}]
+        assert mhc.plan_issue(open_issues, [first],
+                              title_prefix=mhc.VANISHED_TITLE_PREFIX)["action"] == "none"
+        assert mhc.plan_issue(open_issues, [second],
+                              title_prefix=mhc.VANISHED_TITLE_PREFIX) == {
+            "action": "append", "markers": [second], "number": 31}
+
+    def test_a_digest_baseline_keys_the_marker_on_build_identity(self):
+        marker = mhc.vanished_marker(self._vanished({"digest": "031ce2a95446"}))
+        assert marker == "deepseek-v4-flash gone @ 031ce2a95446"
+
+    def test_title_and_body_name_the_tiers_and_where_the_build_may_have_gone(self):
+        vanished = self._vanished()
+        assert mhc.build_vanished_issue_title([vanished]) == (
+            f"{mhc.VANISHED_TITLE_PREFIX} deepseek-v4-flash")
+        body = mhc.build_vanished_issue_body([vanished], "2026-08-09")
+        assert "`lem-medium`" in body  # a live tier is serving this
+        assert "model: openai/deepseek-v4-flash" in body
+        assert "`deepseek-v4-flash:preview`" in body
+        assert "same base name" in body
+        assert mhc.vanished_marker(vanished) in body  # dedup marker survives into the issue
+        assert "model_upgrades.yaml" in body  # never the retirement map, which auto-swaps
+
+    def test_body_warns_against_restoring_a_bare_id(self):
+        """The exact way #1237 would have been "fixed" wrongly: note 0 in config.yaml says to use
+        the bare catalog id, and the bare id is what got re-pointed onto a declined build.
+        """
+        body = mhc.build_vanished_issue_body([self._vanished()], "2026-08-09")
+        assert "bare" in body and "declined" in body
+
+    def test_body_says_so_when_the_family_is_empty_rather_than_listing_nothing(self):
+        body = mhc.build_vanished_issue_body([self._vanished(catalog={"minimax-m3": {}})],
+                                             "2026-08-09")
+        assert "NO tag in this family" in body
 
 
 class TestParseModelVersion:
@@ -1111,6 +1264,34 @@ class TestCatalogScanCLI:
         plan = json.loads(capsys.readouterr().out)
         assert plan["catalog"]["removed_configured"] == ["gone-model:1b"]
         assert "Needs a look before merge" in plan["pr"]["body"]
+
+    def test_a_configured_tag_leaving_the_catalog_is_reported_and_filed(self, tmp_path, capsys,
+                                                                        monkeypatch):
+        """Issue #1237: the scan used to SKIP this — the one case where the id a live tier serves
+        is gone and the re-point behind it goes unreported.
+        """
+        args = self._workspace(tmp_path, model="deepseek-v4-flash", drop=())
+        snapshot = mhc.parse_catalog(_tags())
+        snapshot["deepseek-v4-flash"] = {"modified_at": "2026-04-24T00:00:00Z",
+                                         "size": 140_000_000_000, "parameter_size": "",
+                                         "family": ""}
+        (tmp_path / "snapshot.json").write_text(mhc.render_snapshot(snapshot, "2026-07-01"))
+        code = mhc.main(["--catalog-scan", *args])
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "VANISHED deepseek-v4-flash [lem-medium]" in out
+        assert "deepseek-v4-flash:0731" in out  # where the build may have gone
+        assert mhc.VANISHED_TITLE_PREFIX in out
+        assert "REPOINTED deepseek-v4-flash" not in out  # reported once, not twice
+
+        mhc.main(["--catalog-json", *args])
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(capsys.readouterr().out)
+        monkeypatch.setattr(mhc, "_catalog_scan", _boom)
+        gh = _FakeGitHub()
+        monkeypatch.setattr(mhc, "GitHubIssues", lambda repo: gh)
+        mhc.main(["--file-issues", f"--plan-file={plan_path}"])
+        assert any(t.startswith(mhc.VANISHED_TITLE_PREFIX) for t, _ in gh.created)
 
     def test_clean_config_is_exit_zero(self, tmp_path, capsys):
         args = self._workspace(tmp_path, model="minimax-m3", drop=())

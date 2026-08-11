@@ -19,6 +19,10 @@ docs.ollama.com/cloud.md and ollama.com/api/tags and reports what is about to ch
     evaluation issue. An unversioned id like `deepseek-v4-flash` follows whatever the catalog's
     moving tag points at, so the build serving a live tier can change with no repo change at all —
     and a tag-NAME diff cannot see that;
+  * a CONFIGURED tag that LEFT the catalog entirely (issue #1237) -> ONE `agent:ready` issue naming
+    the tiers it served and the sibling tags the catalog now offers in its family. The name we serve
+    disappearing is the loudest re-point there is: the build usually did not die, it was republished
+    under a different tag while the bare name was re-pointed at something else;
   * a configured model trailing a newer version of its OWN family (minimax-m2.7 while minimax-m3
     ships) -> ONE consolidated `agent:ready` upgrade issue carrying each candidate's usage level,
     because a version bump that jumps usage tiers costs more quota and is an evaluation, never an
@@ -34,8 +38,8 @@ CLI:
   --report [--json]      Probe + report model health and planned actions. No writes.
   --plan-json            Emit ONLY the machine-readable plan (for the shell orchestrator).
   --apply OUT            Write the swapped config to OUT (reads --config). Prints applied swaps.
-  --catalog-scan         Advance-retirement / new-model / re-pointed-tag / family-version scan.
-                         No writes (dry run).
+  --catalog-scan         Advance-retirement / new-model / re-pointed-tag / vanished-tag /
+                         family-version scan. No writes (dry run).
   --catalog-json         Emit ONLY the machine-readable catalog plan (for the shell orchestrator).
   --catalog-apply        Write the planned map additions + snapshot refresh to --map / --snapshot.
   --file-issues          File (or append to) the GitHub issues the catalog scan planned.
@@ -81,6 +85,7 @@ DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 UPGRADE_TITLE_PREFIX = "Ollama model family upgrades available:"
 EVAL_TITLE_PREFIX = "Evaluate new Ollama Cloud models:"
 REPOINT_TITLE_PREFIX = "Re-pointed Ollama tag serving a live tier:"
+VANISHED_TITLE_PREFIX = "Configured Ollama tag gone from the catalog:"
 ISSUE_LABELS = ("agent:ready", "priority:medium", "infrastructure")
 MAX_TITLE_CHARS = 120
 
@@ -407,8 +412,16 @@ def append_upgrade_mappings(map_text: str, additions: dict, today: str) -> tuple
 # ──────────────── catalog snapshot — ollama.com/api/tags (pure) ──────────────────
 
 def parse_catalog(payload: dict) -> dict:
-    """Normalize /api/tags into {tag: {modified_at, size, parameter_size, family}} — the fields the
-    snapshot diff and the evaluation issue body are built from."""
+    """Normalize /api/tags into {tag: {modified_at, size, parameter_size, family[, digest]}} — the
+    fields the snapshot diff and the evaluation issue body are built from.
+
+    `digest` is build IDENTITY, where `size`+`modified_at` are a fingerprint by coincidence (#1237):
+    two tags sharing a digest are the same build published twice, which is how #1201 settled where
+    `deepseek-v4-flash` went. The value recorded is the one on **ollama.com/api/tags** — the library
+    tags PAGE prints a different digest for the same tag, so the two must never be compared. It is
+    written only when the payload carries one, so a catalog that stops publishing digests (or an
+    offline fixture that never did) leaves the key absent rather than storing an empty string that
+    would read as a build change against a real one."""
     models: dict[str, dict] = {}
     for entry in (payload or {}).get("models") or []:
         if not isinstance(entry, dict):
@@ -417,12 +430,16 @@ def parse_catalog(payload: dict) -> dict:
         if not name:
             continue
         details = entry.get("details") or {}
-        models[name] = {
+        info = {
             "modified_at": str(entry.get("modified_at") or ""),
             "size": int(entry.get("size") or 0),
             "parameter_size": str((details or {}).get("parameter_size") or ""),
             "family": str((details or {}).get("family") or ""),
         }
+        digest = str(entry.get("digest") or "").strip()
+        if digest:
+            info["digest"] = digest
+        models[name] = info
     return models
 
 
@@ -451,17 +468,21 @@ def render_tags_payload(models: dict) -> str:
     The fixture and the snapshot are two views of the SAME fetch, so a run that refreshes only the
     snapshot leaves `tests/unit/fixtures/ollama/tags.json` describing a catalog that no longer
     exists — and the shipped-state guard then fails on every PR this cron opens. Only the fields
-    `parse_catalog` reads are written (the live payload's `digest` is not one of them), so a
-    parse -> render -> parse round trip is the identity."""
-    payload = {"models": [{"name": name,
-                           "model": name,
-                           "modified_at": (models[name] or {}).get("modified_at") or "",
-                           "size": int((models[name] or {}).get("size") or 0),
-                           "details": {"family": (models[name] or {}).get("family") or "",
-                                       "parameter_size": (models[name] or {}).get(
-                                           "parameter_size") or ""}}
-                          for name in sorted(models or {})]}
-    return json.dumps(payload, indent=2) + "\n"
+    `parse_catalog` reads are written, and `digest` is emitted only for a tag that carries one, so a
+    parse -> render -> parse round trip is the identity either way."""
+    entries: list[dict] = []
+    for name in sorted(models or {}):
+        info = models[name] or {}
+        entry = {"name": name,
+                 "model": name,
+                 "modified_at": info.get("modified_at") or "",
+                 "size": int(info.get("size") or 0),
+                 "details": {"family": info.get("family") or "",
+                             "parameter_size": info.get("parameter_size") or ""}}
+        if info.get("digest"):
+            entry["digest"] = str(info["digest"])
+        entries.append(entry)
+    return json.dumps({"models": entries}, indent=2) + "\n"
 
 
 def diff_catalog(snapshot: dict, current: dict) -> dict:
@@ -471,14 +492,23 @@ def diff_catalog(snapshot: dict, current: dict) -> dict:
     return {"added": sorted(new - old), "removed": sorted(old - new)}
 
 
-_BUILD_FIELDS = ("size", "modified_at")
+_BUILD_FIELDS = ("digest", "size", "modified_at")
 
 
 def build_fingerprint(info: dict) -> str:
-    """Identify the BUILD behind a tag. A moving tag keeps its name across a re-point and changes
-    these, so they are what a dedup marker has to carry — otherwise a SECOND re-point of the same
-    tag reads as already filed."""
+    """Identify the BUILD behind a tag.
+
+    A moving tag keeps its name across a re-point and changes these, so they are what a dedup marker
+    has to carry — otherwise a SECOND re-point of the same tag reads as already filed.
+
+    The digest wins when the catalog published one: it IS the build id, where size+modified_at only
+    correlate with it. A snapshot written before digests were captured has none, and then the pair
+    is still the fingerprint — so the marker format changing is exactly the event it should key on.
+    """
     info = info or {}
+    digest = str(info.get("digest") or "")
+    if digest:
+        return digest
     return f"{int(info.get('size') or 0)}/{str(info.get('modified_at') or '')}"
 
 
@@ -495,13 +525,8 @@ def _build_changes(old: dict, new: dict) -> list[dict]:
     return changes
 
 
-def plan_repoints(deployments: list[dict], snapshot: dict, catalog: dict) -> list[dict]:
-    """Tags present in BOTH the snapshot and the live catalog whose build changed underneath.
-
-    Restricted to tags `.litellm/config.yaml` actually runs on Ollama Cloud: the catalog carries
-    hundreds of tags LEM never serves, and a re-point of one of those is noise. For the ones it does
-    serve this is the whole point — an unversioned id follows the vendor's moving tag, so a live
-    tier can adopt an unbenchmarked build with no repo change to review."""
+def _configured_ollama(deployments: list[dict]) -> tuple[dict, dict]:
+    """({bare: [groups]}, {bare: config model id}) for the Ollama Cloud deployments only."""
     groups: dict[str, list[str]] = {}
     models: dict[str, str] = {}
     for d in deployments:
@@ -509,6 +534,20 @@ def plan_repoints(deployments: list[dict], snapshot: dict, catalog: dict) -> lis
             continue
         groups.setdefault(d["bare"], []).append(d["group"])
         models.setdefault(d["bare"], d["model"])
+    return groups, models
+
+
+def plan_repoints(deployments: list[dict], snapshot: dict, catalog: dict) -> list[dict]:
+    """Tags present in BOTH the snapshot and the live catalog whose build changed underneath.
+
+    Restricted to tags `.litellm/config.yaml` actually runs on Ollama Cloud: the catalog carries
+    hundreds of tags LEM never serves, and a re-point of one of those is noise. For the ones it does
+    serve this is the whole point — an unversioned id follows the vendor's moving tag, so a live
+    tier can adopt an unbenchmarked build with no repo change to review.
+
+    A tag missing from either side is NOT skipped as uninteresting — when it is one LEM serves,
+    `plan_vanished` owns it (issue #1237), which is why this function may stay silent there."""
+    groups, models = _configured_ollama(deployments)
     out: list[dict] = []
     for bare in sorted(groups):
         before, after = (snapshot or {}).get(bare), (catalog or {}).get(bare)
@@ -522,6 +561,57 @@ def plan_repoints(deployments: list[dict], snapshot: dict, catalog: dict) -> lis
                     "old_fingerprint": build_fingerprint(before),
                     "new_fingerprint": build_fingerprint(after)})
     return out
+
+
+def plan_vanished(deployments: list[dict], snapshot: dict, catalog: dict) -> list[dict]:
+    """CONFIGURED tags the snapshot had and the live catalog no longer carries (issue #1237).
+
+    For a tag LEM does not run, a name leaving the catalog is housekeeping. For one a live tier
+    serves it is the most consequential move the scan can see, and reporting it as "gone" undersells
+    it: on 2026-08-09 the bare `deepseek-v4-flash` left `/api/tags`, the build behind it was
+    republished as `deepseek-v4-flash:preview`, and the bare name was re-pointed onto the `:0731`
+    build #921 had already declined. So each row carries the SIBLING tags the catalog still offers in
+    that family — that list is where the build actually went, and it is what stops a reader from
+    following `.litellm/config.yaml`'s "use the bare catalog id" note straight back onto a rejected
+    build.
+
+    Siblings sharing the vanished tag's base name are marked `same_base`: those are the direct
+    republish candidates, versus a merely same-family neighbour.
+    """
+    groups, models = _configured_ollama(deployments)
+    out: list[dict] = []
+    for bare in sorted(groups):
+        last_seen = (snapshot or {}).get(bare)
+        if not last_seen or bare in (catalog or {}):
+            continue
+        out.append({"tag": bare, "model": models[bare], "groups": sorted(set(groups[bare])),
+                    "last_seen": dict(last_seen),
+                    "last_fingerprint": build_fingerprint(last_seen),
+                    "siblings": _family_siblings(bare, catalog)})
+    return out
+
+
+def _family_siblings(tag: str, catalog: dict) -> list[dict]:
+    """Live catalog tags in the same family as `tag`, closest relative first.
+
+    "Family" is `parse_model_version`'s key, so `deepseek-v4-flash` and `deepseek-v4-flash:preview`
+    are siblings while `deepseek-v4-pro` is not.
+    """
+    family, _, _ = parse_model_version(tag)
+    base = str(tag or "").split(":", 1)[0]
+    siblings: list[dict] = []
+    for name in sorted(catalog or {}):
+        candidate_family, version, size_tag = parse_model_version(name)
+        if candidate_family != family:
+            continue
+        info = (catalog or {}).get(name) or {}
+        siblings.append({"name": name, "same_base": name.split(":", 1)[0] == base,
+                         "version": version_str(version), "size_tag": size_tag,
+                         "digest": str(info.get("digest") or ""),
+                         "modified_at": info.get("modified_at") or "",
+                         "size": int(info.get("size") or 0)})
+    siblings.sort(key=lambda s: (not s["same_base"], s["name"]))
+    return siblings
 
 
 # ───────────────── family-version scan — "are we a major behind?" (pure) ─────────
@@ -815,6 +905,80 @@ def build_repoint_issue_body(repoints: list[dict], today: str) -> str:
     return "\n".join(lines)
 
 
+def vanished_marker(vanished: dict) -> str:
+    """`tag gone @ <last-seen build>` — the marker carries the LAST BUILD.
+
+    Same reason `repoint_marker` carries the new one: a tag can leave the catalog, come back under a
+    fresh build and leave again, and the second disappearance must not be swallowed by the first
+    one's issue.
+    """
+    return f"{vanished.get('tag')} gone @ {vanished.get('last_fingerprint')}"
+
+
+def build_vanished_issue_title(vanished: list[dict]) -> str:
+    return _titled(VANISHED_TITLE_PREFIX, [str(v.get("tag") or "") for v in vanished])
+
+
+def build_vanished_issue_body(vanished: list[dict], today: str) -> str:
+    lines = ["## Context",
+             f"The weekly model-health check ({today}) found tags that `.litellm/config.yaml` serves "
+             "on Ollama Cloud and that ollama.com/api/tags no longer lists at all. This is a "
+             "re-point-class finding, not housekeeping (issue #1237): the build behind a "
+             "disappearing name is usually not gone, it was republished under a different tag — and "
+             "whatever the bare name resolves to next is a model nobody benchmarked for the tier it "
+             "serves. It is also next week's 410 on a live tier, found early.",
+             "",
+             "## Gone tags", ""]
+    for v in vanished:
+        tiers = ", ".join(f"`{g}`" for g in (v.get("groups") or [])) or "n/a"
+        lines.append(f"- **`{v.get('tag')}`** — serving {tiers} (config `model: {v.get('model')}`)")
+        last = v.get("last_seen") or {}
+        bits = []
+        if last.get("digest"):
+            bits.append(f"digest `{last['digest']}`")
+        if last.get("size"):
+            bits.append(_fmt_build_value("size", last["size"]))
+        if last.get("modified_at"):
+            bits.append(f"published {str(last['modified_at'])[:10]}")
+        lines.append(f"  - last build we recorded: {'; '.join(bits) or 'nothing recorded'}")
+        siblings = v.get("siblings") or []
+        if not siblings:
+            lines.append("  - the catalog offers NO tag in this family — the tier needs a different "
+                         "model, not a different tag")
+            continue
+        lines.append("  - the catalog now offers, in the same family:")
+        for s in siblings:
+            note = " ← same base name, the likeliest home of the old build" if s.get("same_base") else ""
+            detail = "; ".join(bit for bit in (
+                f"digest `{s['digest']}`" if s.get("digest") else "",
+                _fmt_build_value("size", s["size"]) if s.get("size") else "",
+                f"published {str(s['modified_at'])[:10]}" if s.get("modified_at") else "") if bit)
+            lines.append(f"    - `{s['name']}`" + (f" — {detail}" if detail else "") + note)
+    lines += ["",
+              "## Scope",
+              ("- Establish where the build went before changing anything: compare the last recorded "
+               "build above against the siblings (per-tag `digest` on ollama.com/api/tags is build "
+               "identity; the library tags page prints a DIFFERENT digest for the same tag, so do "
+               "not mix the two)."),
+              ("- Point the tier at a specific tag in `.litellm/config.yaml` — this is a deliberate "
+               "config change, never a `.litellm/model_upgrades.yaml` entry (that map is "
+               "retirement-only and auto-swaps)."),
+              ("- Do NOT restore a bare id just because the catalog carries one. A bare name follows "
+               "the vendor's moving tag, and the whole reason this issue exists is that the bare "
+               "name can now resolve to a build the benchmarks already declined."),
+              ("- If no sibling is a fit, the tier needs a new candidate measured with "
+               "`scripts/benchmark_models.py` against the tier contract."),
+              "",
+              "## Acceptance",
+              "- A decision per tag above (which tag each affected tier serves now, and why).",
+              ("- `scripts/weekly_model_check.sh`'s tier smoke test still passes and "
+               "`poetry run pytest tests/unit -q` is green."),
+              "",
+              "Auto-filed by `scripts/model_health_check.py --file-issues` (issue #1237). Dedup "
+              "markers (do not remove): " + ", ".join(f"`{vanished_marker(v)}`" for v in vanished)]
+    return "\n".join(lines)
+
+
 def build_catalog_pr_title(plan: dict) -> str:
     """Title the catalog PR after what the run actually changed.
 
@@ -907,7 +1071,10 @@ def build_catalog_pr_body(plan: dict, catalog: Optional[dict] = None) -> str:
     if configured_gone:
         lines += ["These tags left the live catalog while `.litellm/config.yaml` still points a "
                   "deployment at them — merging the snapshot marks them 'known gone', so confirm "
-                  "the tier still answers first:", ""]
+                  "the tier still answers first. The scan files one `agent:ready` issue per event "
+                  "naming the family siblings the catalog now offers (issue #1237); merging this "
+                  "PR is what re-baselines the snapshot, so that issue is where the decision "
+                  "belongs:", ""]
         lines += [f"- `{name}`" for name in configured_gone]
         lines.append("")
     if repoints:
@@ -1178,6 +1345,7 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
     seeded = not os.path.exists(snapshot_path)
     snapshot = {} if seeded else load_snapshot_text(_read_text(snapshot_path))
     repoints: list[dict] = []
+    vanished: list[dict] = []
     if catalog is None:
         catalog_diff = {"added": [], "removed": []}
         family_upgrades: list[dict] = []
@@ -1185,6 +1353,7 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
         catalog_diff = {"added": [], "removed": []} if seeded else diff_catalog(snapshot, catalog)
         if not seeded:
             repoints = plan_repoints(deployments, snapshot, catalog)
+            vanished = plan_vanished(deployments, snapshot, catalog)
         family_upgrades = plan_family_upgrades(
             deployments, catalog, {r["model"] for r in retirements},
             usage_fn if usage_levels else None)
@@ -1205,6 +1374,7 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
                     "total": len(catalog or {})},
         "upgrades": family_upgrades,
         "repoints": repoints,
+        "vanished": vanished,
         "snapshot_changed": snapshot_changed,
         "repo_changes": bool(additions) or snapshot_changed,
     }
@@ -1223,6 +1393,9 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
         "repoint": {"markers": [repoint_marker(r) for r in repoints],
                     "title": build_repoint_issue_title(repoints) if repoints else "",
                     "body": build_repoint_issue_body(repoints, today) if repoints else ""},
+        "vanished": {"markers": [vanished_marker(v) for v in vanished],
+                     "title": build_vanished_issue_title(vanished) if vanished else "",
+                     "body": build_vanished_issue_body(vanished, today) if vanished else ""},
     }
     plan["_catalog"] = catalog  # consumed by --catalog-apply; stripped from --catalog-json output
     return plan
@@ -1254,12 +1427,16 @@ def _print_catalog_plan(plan: dict) -> None:
         detail = ", ".join(f"{c['field']} {_fmt_build_value(c['field'], c['old'])} -> "
                            f"{_fmt_build_value(c['field'], c['new'])}" for c in r["changes"])
         print(f"  REPOINTED {r['tag']} [{', '.join(r['groups'])}] {detail}")
-    for kind in ("upgrade", "evaluation", "repoint"):
+    for v in plan.get("vanished") or []:
+        siblings = ", ".join(s["name"] for s in (v.get("siblings") or [])) or "no family sibling"
+        print(f"  VANISHED {v['tag']} [{', '.join(v['groups'])}] — catalog now offers: {siblings}")
+    for kind in ("upgrade", "evaluation", "repoint", "vanished"):
         spec = _issue_spec(plan, kind)
         if spec["markers"]:
             print(f"\n--- {kind} issue ---\n{spec['title']}\n\n{spec['body']}\n")
     if not (plan["notices"] or plan["map_additions"] or plan["catalog"]["added"]
-            or plan["catalog"]["removed"] or plan["upgrades"] or plan.get("repoints")):
+            or plan["catalog"]["removed"] or plan["upgrades"] or plan.get("repoints")
+            or plan.get("vanished")):
         print("  nothing to do")
 
 
@@ -1299,7 +1476,7 @@ def _file_issues(plan: dict, github: GitHubIssues) -> int:
     week rather than failing the weekly check."""
     filed = 0
     for kind, prefix in (("upgrade", UPGRADE_TITLE_PREFIX), ("evaluation", EVAL_TITLE_PREFIX),
-                         ("repoint", REPOINT_TITLE_PREFIX)):
+                         ("repoint", REPOINT_TITLE_PREFIX), ("vanished", VANISHED_TITLE_PREFIX)):
         spec = _issue_spec(plan, kind)
         if not spec["markers"]:
             continue
@@ -1371,7 +1548,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if plan["notices"]:
             return 3
         if (plan["repo_changes"] or plan["upgrades"] or plan["catalog"]["added"]
-                or plan.get("repoints")):
+                or plan.get("repoints") or plan.get("vanished")):
             return 2
         return 0
 
