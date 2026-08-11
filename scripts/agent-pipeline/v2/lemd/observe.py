@@ -58,6 +58,11 @@ class Snapshot:
     #: For an ISSUE: has a previous run already produced a branch or a PR? Three-valued, and the
     #: third value is the point — `None` means "could not tell", which must never be read as "no".
     work_exists: bool | None = None
+    #: For an ISSUE whose work exists: is that work an OPEN PR? Three-valued for the same reason as
+    #: `work_exists`. `True` = in flight, leave it alone. `False` = a branch with no PR behind it —
+    #: a run that pushed and then died, which is RESUMABLE, not in flight. `None` = could not tell,
+    #: which waits.
+    has_open_pr: bool | None = None
     #: The owner's newest reply to the latest Decision Comment, when this item is held. Read ONLY
     #: for held items — every other decision is reached without the extra call.
     answer: answers.Answer | None = None
@@ -120,6 +125,34 @@ def admissible(snap: Snapshot) -> tuple[bool, str]:
         if not (snap.labels & HOLD_LABELS):
             return False, "no_agent_label"
     return True, "ok"
+
+
+def _work_in_flight_or_stranded(snap: Snapshot, ttl_review: int,
+                                reason: str = "start_already_produced_work") -> Decision:
+    """An issue that has already produced work: is that work MOVING, or abandoned?
+
+    `work_exists` answers "did anything leave the box", which is the right question for "must I
+    avoid forking this" and the wrong one for "will anyone ever finish it". A branch with an open PR
+    is in flight and the PR carries the item from here. A branch with NO PR is a `start` that pushed
+    and then died before opening one — most often because the run was killed, which every daemon
+    restart can do.
+
+    That second state used to return the same wait as the first, and the wait never ended:
+    `work_exists` re-read the same branch every `ttl_review` and answered True for ever. Measured
+    2026-08-11: issues #1270, #1279, #1282 and #1287 each held a pushed branch, no PR, and no
+    prospect of either — two of them orphaned by daemon restarts earlier that night.
+
+    Re-dispatching `start` RESUMES: the worktree is created on the existing branch, so the agent
+    continues rather than starting over. And it is bounded by the `start` budget like any other
+    dispatch, so a branch that cannot be finished parks and ASKS instead of waiting silently.
+    """
+    if snap.has_open_pr or snap.has_open_pr is None:
+        # In flight, or unreadable. Unreadable waits: re-dispatching onto a live PR forks the work,
+        # and one more TTL costs nothing by comparison.
+        return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, reason,
+                        wait_reason="work_in_flight", wake_in=ttl_review)
+    return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "stranded_branch_no_pr", mode="start",
+                    details={"branch": snap.branch or ""})
 
 
 def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
@@ -189,8 +222,7 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 return Decision(ACT_NONE, db.STATE_WAIT_CI, "start_work_state_unreadable",
                                 wait_reason="unreadable", wake_in=600)
             if snap.work_exists:
-                return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, "start_already_produced_work",
-                                wait_reason="work_in_flight", wake_in=ttl_review)
+                return _work_in_flight_or_stranded(snap, ttl_review)
             return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "issue_ready", mode="start")
         if "agent:working" in snap.labels:
             # A claim with nothing behind it. v1 marked the ISSUE `agent:working` for the duration
@@ -206,10 +238,10 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 return Decision(ACT_NONE, db.STATE_WAIT_CI, "working_claim_state_unreadable",
                                 wait_reason="unreadable", wake_in=600)
             if snap.work_exists:
-                # The branch or PR exists, so the claim is honest and the PR carries the item from
-                # here. Re-dispatching would fork the work.
-                return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, "working_claim_has_work",
-                                wait_reason="work_in_flight", wake_in=ttl_review)
+                # The branch or PR exists, so the claim is honest — but "exists" is two states, and
+                # only one of them is in flight. See `_work_in_flight_or_stranded`.
+                return _work_in_flight_or_stranded(snap, ttl_review,
+                                                   reason="working_claim_has_work")
             return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "working_claim_stranded", mode="start")
         return Decision(ACT_NONE, db.STATE_PARKED, "issue_not_ready", park_reason="not_ready")
 
@@ -350,22 +382,58 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="issue", number=number, readable=False)
     labels = frozenset(github.label_names(facts))
     work = None
+    has_open_pr = None
     if labels & WORK_SENSITIVE_LABELS:
         # Only asked when it can change the answer — this is two API calls, and every other issue
         # decision is reached without them. `agent:working` is in the set because a stranded claim
         # is told from an honest one by exactly this question, and asking it is what stops the
         # recovery path forking a branch that already exists.
         work = _work_exists_for_issue(slug, number)
+        if work:
+            # Only asked when work exists, because it is only then that the answer changes anything.
+            has_open_pr = _open_pr_for_issue(slug, number)
     return Snapshot(
         kind="issue",
         number=number,
         labels=labels,
         state=(facts.get("state") or "OPEN").upper(),
         work_exists=work,
+        has_open_pr=has_open_pr,
         answer=_answer_for(slug, "issue", number, labels, owner),
         answer_routed=answer_routed,
         readable=True,
     )
+
+
+def _open_pr_for_issue(slug: str, number: int) -> bool | None:
+    """Is this issue's existing work an OPEN pull request?
+
+    LINKED PRs are asked FIRST, and that ordering is the whole correctness of this function. The
+    branch-name convention is a fallback, not the definition: PR #1302 carries issue #1301 on
+    `feature/claude-probe-access`, so a convention-only lookup answers "no PR" for an issue whose
+    PR is open and healthy — and this function's `False` is what licenses a re-dispatch. Getting
+    that backwards forks live work, which is the one outcome the wait state exists to prevent.
+
+    Returns:
+        True / False, or None when either read failed.
+    """
+    try:
+        linked = github.gh_json(
+            ["issue", "view", str(number), "--repo", slug, "--json",
+             "closedByPullRequestsReferences"]
+        ) or {}
+    except github.GitHubUnavailable as exc:
+        LOG.warning("issue #%s PR linkage unreadable: %s", number, exc)
+        return None
+    if linked.get("closedByPullRequestsReferences"):
+        # ANY linked PR means "not resumable", and the coarseness is deliberate. GitHub does not
+        # return a `state` on these refs (they carry id/number/repository/url only), so telling an
+        # open PR from a merged or closed one would cost one extra read per issue per observation.
+        # The asymmetry decides it: a merged PR means the work shipped and the issue just needs
+        # closing, a closed-unmerged one is an abandoned approach that a human should judge, and an
+        # open one must never be forked. None of the three wants an automatic restart.
+        return True
+    return github.open_pr_for_branch(slug, f"feature/claude-issue-{number}")
 
 
 def _work_exists_for_issue(slug: str, number: int) -> bool | None:

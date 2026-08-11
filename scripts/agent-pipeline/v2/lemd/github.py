@@ -196,6 +196,30 @@ def branch_exists(slug: str, branch: str, *, timeout: int = 30) -> bool | None:
         return None
 
 
+def open_pr_for_branch(slug: str, branch: str, *, timeout: int = 30) -> bool | None:
+    """Is there an OPEN pull request whose head is this branch?
+
+    The question `_work_exists_for_issue` could not previously ask, and the difference between two
+    states it was collapsing: a branch WITH an open PR is work in flight and re-dispatching would
+    fork it, while a branch with NO PR is a run that pushed and then died before opening one. The
+    second is resumable, and treating it as the first is what left four issues waiting for ever.
+
+    Returns:
+        True / False, or None when the answer could not be read — which must never read as False,
+        because that is the reading that re-dispatches on top of a live PR.
+    """
+    try:
+        rows = gh_json(
+            ["pr", "list", "--repo", slug, "--head", branch, "--state", "open",
+             "--json", "number"],
+            timeout=timeout,
+        )
+    except GitHubUnavailable as exc:
+        LOG.warning("open-PR lookup for %s unreadable: %s", branch, exc)
+        return None
+    return bool(rows)
+
+
 def merge_queue_state(slug: str, pr: int, *, timeout: int = 30) -> str:
     """The PR's merge-queue entry state, or "" when it holds no entry.
 
