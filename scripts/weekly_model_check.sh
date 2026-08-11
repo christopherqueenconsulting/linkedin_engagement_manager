@@ -181,14 +181,14 @@ CAT="$("${PY[@]}" scripts/model_health_check.py --catalog-json --config "$BOX_CF
 if [ -z "$CAT" ]; then
   log "catalog scan produced no output — skipping (410 probe remains the backstop)"
 else
-  read -r NOTICE NEWTAG NUPG NREPOINT REPOCH <<<"$(printf '%s' "$CAT" | python3 -c "
+  read -r NOTICE NEWTAG NUPG NREPOINT NVANISH REPOCH <<<"$(printf '%s' "$CAT" | python3 -c "
 import sys, json
 p = json.load(sys.stdin)
 print(len(p['notices']), len(p['catalog']['added']), len(p['upgrades']),
-      len(p.get('repoints') or []), int(bool(p['repo_changes'])))
-" 2>/dev/null || echo "0 0 0 0 0")"
+      len(p.get('repoints') or []), len(p.get('vanished') or []), int(bool(p['repo_changes'])))
+" 2>/dev/null || echo "0 0 0 0 0 0")"
   log "catalog scan: retirement-notices=$NOTICE new-tags=$NEWTAG family-upgrades=$NUPG" \
-      "re-pointed-tags=$NREPOINT repo-changes=$REPOCH"
+      "re-pointed-tags=$NREPOINT vanished-tags=$NVANISH repo-changes=$REPOCH"
 
   if [ "${NOTICE:-0}" -gt 0 ]; then
     MSG=$(printf '%s' "$CAT" | python3 -c "
@@ -200,9 +200,10 @@ for n in json.load(sys.stdin)['notices']:
     alert "Ollama Cloud retirements scheduled for models we still run:"$'\n'"$MSG"
   fi
 
-  # A configured tag that left the catalog is next week's 410, found early — and the PR below is
-  # the only other place it appears. That PR is opened and merged by the agent pipeline, and
-  # merging it re-baselines the snapshot, so this is the ONE run that can report it: page a human.
+  # A configured tag that left the catalog is next week's 410, found early — and it is also the
+  # loudest re-point there is (#1237), so the scan files an issue for it below. That PR is opened
+  # and merged by the agent pipeline, and merging it re-baselines the snapshot, so this is the ONE
+  # run that can report it: page a human as well.
   GONE_MSG=$(printf '%s' "$CAT" | python3 -c "
 import sys, json
 for name in json.load(sys.stdin)['catalog'].get('removed_configured') or []:
@@ -225,7 +226,8 @@ import sys, json; print((json.load(sys.stdin).get('pr') or {}).get('body') or ''
     open_pr "auto/ollama-catalog" "$CAT_TITLE" "$CAT_BODY" mutate_catalog
   fi
 
-  if [ "${NEWTAG:-0}" -gt 0 ] || [ "${NUPG:-0}" -gt 0 ] || [ "${NREPOINT:-0}" -gt 0 ]; then
+  if [ "${NEWTAG:-0}" -gt 0 ] || [ "${NUPG:-0}" -gt 0 ] || [ "${NREPOINT:-0}" -gt 0 ] \
+     || [ "${NVANISH:-0}" -gt 0 ]; then
     # File from the plan we ALREADY have, not a fresh scan. A second scan re-reads docs.ollama.com
     # and /api/tags, and a transient outage there would file nothing and say nothing — while the
     # snapshot PR opened just above makes those tags no longer "new", so the issue would be lost for

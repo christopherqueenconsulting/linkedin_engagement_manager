@@ -362,12 +362,38 @@ the traffic (the ministral-3:8b failure). Don't write it back to find out. **A v
 only thing that pins a build**; the bare-id rule in `.litellm/config.yaml` is about matching the
 catalog verbatim, and `:preview` matches it verbatim.
 
-One gap this leaves open, filed separately (#1237): the guard that exists for precisely this — the
-#925 re-point scan — skipped it. `plan_repoints` compares a CONFIGURED tag's `size`/`modified_at`
+The gap this left open is now closed (**#1237**). The guard that exists for precisely this — the
+#925 re-point scan — skipped it: `plan_repoints` compares a CONFIGURED tag's `size`/`modified_at`
 against the snapshot and ignores any tag missing from either side, so a re-point that *also* drops
-the name from `/api/tags` is invisible to it. What caught this one was the catalog diff plus the
+the name from `/api/tags` was invisible to it. What caught this one was the catalog diff plus the
 roster test failing CI, which says "your configured id is gone" and not "your configured id now
-serves a build you rejected".
+serves a build you rejected". Since #1237 the scan treats that as its own re-point-class finding:
+
+- `plan_vanished` reports a CONFIGURED tag the snapshot had and the live catalog no longer lists,
+  and files ONE `agent:ready` issue naming the tiers it served **and the sibling tags the catalog
+  still offers in that family** — that sibling list is where the build went, and it is what stops a
+  reader from restoring the bare id per the *use the bare catalog id* rule and landing on `:0731`.
+  The issue says so in words.
+- **Sharing a base name is not enough to be called the likeliest home.** Two siblings are listed as
+  evidence but never recommended: one whose size tag parses as a different parameter count
+  (`gpt-oss:20b` vs `gpt-oss:120b` — both live tiers here, and not the same build under a new name),
+  and one carrying a published retirement date, which `plan_family_upgrades` already refuses to
+  recommend for the same reason. A non-numeric tag (`:preview`, `:0731`) proves nothing about the
+  size and stays a candidate — that is the deepseek case itself.
+- The dedup marker carries the LAST BUILD recorded for the tag (`<tag> gone @ <fingerprint>`), so a
+  tag that leaves, returns under a fresh build and leaves again is not swallowed by the first
+  issue — the same rule as the #925 marker.
+- The snapshot now records the per-tag **`digest`** when `/api/tags` publishes one, and a digest
+  wins the fingerprint: `size`+`modified_at` are a fingerprint by coincidence, the digest is build
+  identity, and it is what settled the question above. The digest on `/api/tags` and the one on the
+  library tags page are **different values for the same tag** — only the `/api/tags` one is stored,
+  and the two must never be compared. A tag with no published digest keeps the old pair, so a
+  snapshot written before digests were captured is a missing baseline rather than a build change.
+- An **empty catalog reports nothing**. `fetch_catalog` returns `None` only when the request raised,
+  so a 200 carrying no models parses to `{}` — and this is the one scan finding with an autonomous
+  consumer (it files `agent:ready`), so a degraded fetch must not put an agent to work re-pointing
+  every tier off a phantom. A vanish is a TRANSITION; an empty catalog is no evidence of one.
+- Still a trigger, never an auto-pin — same posture as #925.
 
 ## Running it
 
