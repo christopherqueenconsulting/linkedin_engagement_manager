@@ -3173,7 +3173,16 @@ _GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
 # is absent: LinkedIn renders the hidden `<input type=file>` up front in most variants, and clicking
 # the styled affordance when we did not have to is what opens an overlay we then have to get back
 # out of. The input is never visible, so every lookup here is `visible_only=False`.
+#
+# The COMPOSER's own input comes first (#1012's rule, applied to an upload): a LinkedIn page carries
+# other `<input type=file>` controls — the messaging overlay's attachment input declares an image
+# `accept` too — and writing the draft's file into one of those uploads the image somewhere the user
+# never asked for, while this run still reports the media as attached. The page-wide chain stays as
+# the last resort, the same shape `article_editor`'s cover ladder uses.
 _GROUP_MEDIA_INPUT_LOCATORS = [
+    (By.XPATH, "//div[@role='dialog']//input[@type='file' and contains(@accept,'image')]"),
+    (By.XPATH, "//div[@role='dialog']//input[@type='file' and contains(@accept,'video')]"),
+    (By.XPATH, "//div[@role='dialog']//input[@type='file']"),
     (By.XPATH, "//input[@type='file' and contains(@accept,'image')]"),
     (By.XPATH, "//input[@type='file' and contains(@accept,'video')]"),
     (By.CSS_SELECTOR, "input[type='file']"),
@@ -3189,8 +3198,11 @@ _GROUP_MEDIA_TRIGGER_LOCATORS = [
      "]"),
 ]
 # The media overlay's own commit control. It is NOT the share box's Post button — that one is
-# clicked later, after the text goes in.
+# clicked later, after the text goes in. Scoped to the open dialog first for the same reason the
+# input is: a bare "Next" anywhere on the page belongs to some other surface.
 _GROUP_MEDIA_CONFIRM_LOCATORS = [
+    (By.XPATH, "//div[@role='dialog']//button[normalize-space()='Next']"),
+    (By.XPATH, "//div[@role='dialog']//button[normalize-space()='Done']"),
     (By.XPATH, "//button[normalize-space()='Next']"),
     (By.XPATH, "//button[normalize-space()='Done']"),
 ]

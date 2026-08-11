@@ -586,6 +586,25 @@ class TestPostToGroup:
             assert auto_post_to_group.run(user_id=1, group_id="123", draft_id=11) == "Posted to group"
         resolved.assert_not_called()
 
+    def test_the_composers_own_upload_control_is_tried_before_any_other_on_the_page(self):
+        """#1012's rule, applied to an upload.
+
+        A group page carries other file inputs — the messaging overlay's declares an image `accept`
+        too — and writing the draft's file into one of those uploads the image somewhere the user
+        never asked for while the run still reports the media as attached.
+        """
+        from cqc_lem.app.engagement.feed import (
+            _GROUP_MEDIA_CONFIRM_LOCATORS,
+            _GROUP_MEDIA_INPUT_LOCATORS,
+        )
+        for chain in (_GROUP_MEDIA_INPUT_LOCATORS, _GROUP_MEDIA_CONFIRM_LOCATORS):
+            scoped = [i for i, (_, value) in enumerate(chain) if "role='dialog'" in value]
+            unscoped = [i for i, (_, value) in enumerate(chain) if "role='dialog'" not in value]
+            assert scoped, chain
+            # Page-wide stays as the last resort (the share box is inline on some variants), but it
+            # can never be reached while a composer-scoped control resolves.
+            assert max(scoped) < min(unscoped)
+
     @pytest.mark.parametrize("draft", [
         None,
         {**_READY_DRAFT, "status": "skipped"},
