@@ -158,15 +158,24 @@ class TestEveryPublishedOperationDocumentsItsPayload:
 
         Hiding is computed from the route table while `app.openapi()` is built, and parametrizing
         the envelope changes what that build produces.
+
+        The count is compared in the unit the hider works in — ROUTES it matched. Summing each
+        route's methods instead only agrees while every admin route carries exactly one, so an
+        `api_route(methods=["GET", "POST"])` added later would fail this for no reason while the
+        hiding it checks still worked.
         """
         from cqc_lem.api.main import _ADMIN_ROUTES_HIDDEN, _walk_routes, app
 
         assert not [p for p in schema["paths"] if p.startswith("/api/admin")]
-        admin_ops = sum(len(getattr(r, "methods", None) or [])
-                        for r in _walk_routes(app.routes)
-                        if getattr(r, "path", "").startswith("/api/admin"))
-        assert _ADMIN_ROUTES_HIDDEN == admin_ops >= 18, (
-            f"{_ADMIN_ROUTES_HIDDEN} operations were hidden but the route table has {admin_ops}"
+        admin_routes = [r for r in _walk_routes(app.routes)
+                        if getattr(r, "path", "").startswith("/api/admin")
+                        and hasattr(r, "include_in_schema")]
+        assert _ADMIN_ROUTES_HIDDEN == len(admin_routes) >= 18, (
+            f"{_ADMIN_ROUTES_HIDDEN} admin routes were hidden but the route table has "
+            f"{len(admin_routes)}"
+        )
+        assert not [r for r in admin_routes if r.include_in_schema], (
+            "an admin route is still flagged for the published schema"
         )
 
     def test_the_count_survives_a_second_pass_over_the_same_routers(self):
