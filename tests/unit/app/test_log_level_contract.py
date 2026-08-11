@@ -373,7 +373,7 @@ class TestFailuresAHumanHasToFixAreErrors:
             lv.only("error")
         assert "exc" not in lv.error.call_args.kwargs
 
-    def test_c2pa_signing_that_raises_warns(self):
+    def test_c2pa_signing_that_raises_warns(self, tmp_path):
         """C2PA signing that RAISES is the best-effort module itself broken, so it warns.
 
         `c2pa_helper` promises it "never raises into the generation pipeline" and logs its own
@@ -382,10 +382,13 @@ class TestFailuresAHumanHasToFixAreErrors:
         from cqc_lem.app.run_content_plan import _create_content_for_planned_post
         post = {"user_id": 7, "id": 42, "post_type": "video", "buyer_stage": "awareness",
                 "content_mix": "value", "scheduled_time": None}
+        # A real probe-passing file, since signing only runs on a file the probe accepted (#1280).
+        video_file = tmp_path / "v.mp4"
+        video_file.write_bytes(b'\x00\x00\x00 ftypisom' + b'\x00' * 96)
         with _Levels(_RCP) as lv, \
                 patch(f"{_RCP}.create_content", return_value=("Body", "https://runway/v.mp4")), \
                 patch(f"{_RCP}.create_folder_if_not_exists"), \
-                patch(f"{_RCP}.save_video_url_to_dir", return_value="/assets/videos/v.mp4"), \
+                patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
                 patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials",
                       side_effect=_boom), \
                 patch(f"{_RCP}.update_db_post_video_url"), \

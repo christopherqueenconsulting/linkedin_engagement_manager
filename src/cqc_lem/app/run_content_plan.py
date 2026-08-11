@@ -1099,6 +1099,30 @@ def _probe_video_file(file_path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
+                         user_id: Optional[int] = None, task_name: str = "") -> bool:
+    """Decide whether a just-downloaded video file may become the post's media (issue #1280).
+
+    The ONE place the probe verdict is enforced, so the initial-generation path and the
+    regenerate/backfill path cannot drift on what counts as usable media. Emits the
+    `video_asset_probe` event for every stored video (pass/fail alike) so the metric has a
+    denominator. Raises when `VIDEO_PROBE_ENABLED` is ON — a malformed asset is then a hard
+    failure; otherwise the probe is advisory and a failure returns False, which every caller treats
+    exactly like a failed render: the URL is not persisted, so the missing-asset gate holds the post
+    and asset backfill can retry it.
+    """
+    probe_ok, probe_reason = _probe_video_file(video_file_path)
+    track_video_asset_probe(post_id=post_id, user_id=user_id, probe_ok=probe_ok, reason=probe_reason,
+                            source="runway" if str(video_src_url).startswith("http") else "pexels")
+    if probe_ok:
+        return True
+    log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
+                user_id=user_id, post_id=post_id, task_name=task_name)
+    if VIDEO_PROBE_ENABLED:
+        raise RuntimeError(f"video asset probe failed: {probe_reason}")
+    return False
+
+
 def _store_video_asset(post_id: int, video_src_url: str) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
@@ -1110,21 +1134,8 @@ def _store_video_asset(post_id: int, video_src_url: str) -> Optional[str]:
     create_folder_if_not_exists(videos_dir)
     video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
 
-    # Probe the downloaded file before accepting it (issue #1280). The probe is fail-open: a failure
-    # is logged/tracked but only treated as a hard failure when VIDEO_PROBE_ENABLED is ON, so the
-    # backfill healer can still recover a post whose first download wrote a corrupt file.
-    probe_ok, probe_reason = _probe_video_file(video_file_path)
-    ai_source = "runway" if str(video_src_url).startswith("http") else "pexels"
-    track_video_asset_probe(post_id=post_id, probe_ok=probe_ok, reason=probe_reason,
-                            source=ai_source)
-    if not probe_ok:
-        log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
-                    post_id=post_id, task_name="regenerate_post_video_task")
-        if VIDEO_PROBE_ENABLED:
-            raise RuntimeError(f"video asset probe failed: {probe_reason}")
-        # Advisory mode: do not persist a broken URL. Returning None lets callers treat this the
-        # same as a failed render — the missing-asset gate holds the post and the backfill healer
-        # can retry it.
+    if not _accept_probed_video(post_id, video_file_path, video_src_url,
+                                task_name="regenerate_post_video_task"):
         return None
 
     # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
@@ -2977,6 +2988,20 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
             create_folder_if_not_exists(videos_dir)
             video_file_path = save_video_url_to_dir(video_url, videos_dir)
             log_info(f"Video from url: {video_url} | Saved to: {video_file_path}")
+            # Probe before this file becomes posts.video_url (issue #1280). This is where a video
+            # post is BORN, so an unprobed zero-byte download here is the one that actually reaches
+            # LinkedIn — the regenerate/backfill paths only ever heal it afterwards.
+            if not _accept_probed_video(post_id, video_file_path, video_url, user_id=user_id,
+                                        task_name="auto_create_weekly_content"):
+                # Advisory failure: keep the caption but store no media, so this is indistinguishable
+                # from a failed render — `_post_missing_required_asset` holds the post PENDING with a
+                # missing_asset finding and asset backfill can retry. `video_url` is cleared for that
+                # reason: the gate below reads it, and a source URL whose FILE was rejected would let
+                # a media-less post auto-approve. ai_video goes False too — an AI-visuals disclosure
+                # for visuals the post does not have is a false claim.
+                video_file_path = None
+                video_url = None
+                ai_video = False
             # Attach AI Content Credentials to AI-generated video only (not stock).
             if ai_video:
                 try:
@@ -2988,15 +3013,17 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                     log_warning("C2PA signing raised — the video ships without content credentials",
                                 exc=e, user_id=user_id, post_id=post_id,
                                 task_name="auto_create_weekly_content")
-            # Get the file name from the video file path
-            video_file_name = os.path.basename(video_file_path)
+            if video_file_path:
+                # Get the file name from the video file path
+                video_file_name = os.path.basename(video_file_path)
 
-            # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
-            api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
-            log_info(f"Video URL: {api_video_url}")
+                # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
+                api_video_url = (f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/"
+                                 f"{video_file_name}")
+                log_info(f"Video URL: {api_video_url}")
 
-            # Update the database with the video url
-            update_db_post_video_url(post_id, api_video_url)
+                # Update the database with the video url
+                update_db_post_video_url(post_id, api_video_url)
 
         # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA).
         # A synthetic likeness of a real person needs the disclosure at least as much as a

@@ -1250,3 +1250,26 @@ class TestTrackFeedScan:
         props = mock_ph.capture.call_args.kwargs["properties"]
         assert props["feed_sort"] is None       # unrecorded is never 'recent'
         assert props["examined"] == 0
+
+
+class TestTrackVideoAssetProbe:
+    """One row per stored video, pass or fail — a failure-only event has no denominator (#1280)."""
+
+    def test_failure_carries_the_reason_and_the_source(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_video_asset_probe
+            track_video_asset_probe(post_id=9, user_id=7, probe_ok=False,
+                                    reason="zero-byte file", source="runway")
+        assert mock_ph.capture.call_args.kwargs["event"] == "video_asset_probe"
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["probe_ok"] is False and props["reason"] == "zero-byte file"
+        assert props["source"] == "runway" and props["post_id"] == 9
+
+    def test_a_pass_emits_too_so_the_failure_rate_has_a_denominator(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_video_asset_probe
+            track_video_asset_probe(post_id=9, probe_ok=True, reason="", source="pexels")
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["probe_ok"] is True
+        # No user resolved: the event still lands, attributed to the system actor.
+        assert mock_ph.capture.call_args.kwargs["distinct_id"] == "system"

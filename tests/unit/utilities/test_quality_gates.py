@@ -13,6 +13,7 @@ from cqc_lem.utilities.quality_gates import (  # noqa: E402
     AUTHENTICITY_SCORE_MIN_BOUNDS,
     GATE_AUTHENTICITY,
     GATE_FOCUS,
+    GATE_MALFORMED_ASSET,
     GATE_MISSING_ASSET,
     GATE_SIMILARITY,
     SIMILARITY_MAX_PCT_BOUNDS,
@@ -20,6 +21,7 @@ from cqc_lem.utilities.quality_gates import (  # noqa: E402
     clamp_threshold,
     demoting_findings,
     focus_finding,
+    malformed_asset_finding,
     missing_asset_finding,
     parse_gate_findings,
     similarity_finding,
@@ -63,9 +65,22 @@ class TestFindings:
         assert expected in f["explanation"]
         assert f["score"] is None and f["threshold"] is None
 
+    def test_malformed_asset_quotes_the_probe_reason(self):
+        """#1280: the review UI has to say WHICH way the file was unusable, not just that it was."""
+        f = malformed_asset_finding("video", "zero-byte file")
+        assert f["gate"] == GATE_MALFORMED_ASSET
+        assert "zero-byte file" in f["explanation"] and f["details"] == ["zero-byte file"]
+        # Demoting by default: whoever wires this onto a post (#1402) is holding it, flag or not.
+        assert f["demoted"] is True
+
+    def test_malformed_asset_reads_without_a_reason(self):
+        f = malformed_asset_finding("video")
+        assert f["details"] == [] and "empty or unparseable" in f["explanation"]
+
     def test_every_finding_has_a_label_and_a_fix(self):
         for f in (authenticity_finding(10, 60), similarity_finding(0.9, 0.55),
-                  focus_finding(0.0, 0.15, []), missing_asset_finding("video")):
+                  focus_finding(0.0, 0.15, []), missing_asset_finding("video"),
+                  malformed_asset_finding("video", "zero-byte file")):
             assert f["label"] and f["explanation"] and f["remediation"]
 
 

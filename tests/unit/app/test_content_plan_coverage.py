@@ -140,8 +140,8 @@ class TestAutoCreateWeeklyContentVideoPath:
     def test_ai_video_saved_signed_and_disclosed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         import cqc_lem.app.run_content_plan as rcp
-        video_file = tmp_path / "clip.mp4"
-        video_file.write_bytes(b"v")
+        # Probe-passing bytes: C2PA only signs a file the probe accepted (issue #1280).
+        video_file = _valid_mp4(tmp_path, "clip.mp4")
         with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
              patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=("Post text", "http://runway/clip.mp4")), \
