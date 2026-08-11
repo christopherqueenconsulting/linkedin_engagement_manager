@@ -116,3 +116,9 @@ API stable, and `test_content_alignment.py` asserts the identity. If you are fix
 aliases carrying the `lgtm` suppression, and — the larger share — strips `print()` calls under `T201`
 from the `selenium_load_test`, `margin`, `cost_alerts` and `maintenance` CLIs, where the printed
 output IS the product.
+
+## The other static check in this tree
+
+`docs/typing-guard.md` — an **advisory** mypy scoped to the modules whose public returns are
+genuinely `Optional`. Different rules, different runner (`scripts/mypy_check.sh`), and unlike this
+ratchet it has no gate at all: it can never fail a PR.

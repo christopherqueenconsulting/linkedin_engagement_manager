@@ -65,21 +65,21 @@ SURFACE_PAGE = "page"
 
 # The visible label is nested in obfuscated-class span/div nodes under the control, so every locator
 # here keys on href / aria-label / TEXT — never on a class name.
-_ANCHOR_LOCATORS = [
+_ANCHOR_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "main a[href*='/messaging/compose/']"),
     (By.CSS_SELECTOR, "a[href*='/messaging/compose/']"),
     (By.CSS_SELECTOR, "a[href*='/messaging/thread/']"),
     (By.XPATH, "//a[normalize-space()='Message']"),
 ]
 
-_BUTTON_LOCATORS = [
+_BUTTON_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "button[aria-label^='Message']"),
     (By.XPATH, "//button[normalize-space()='Message']"),
 ]
 
 # Tag-agnostic: the clickable ancestor of a node whose trimmed text is exactly 'Message'.
 # ancestor-or-self is a REVERSE axis, so [1] is the NEAREST clickable ancestor, not the outermost.
-_TEXT_NODE_LOCATORS = [
+_TEXT_NODE_LOCATORS: list[tuple[str, str]] = [
     (By.XPATH, "//*[normalize-space(text())='Message']"
                "/ancestor-or-self::*[self::a or self::button or @role='button'][1]"),
 ]
@@ -103,20 +103,20 @@ _RECIPIENT_PILL_JS = (
     "\"[class*='msg-connections-typeahead__added-recipients'], [class*='msg-compose__recipients']\");"
     "return box ? box.innerText : null;")
 
-_MORE_LOCATORS = [
+_MORE_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "main button[aria-label^='More actions']"),
     (By.CSS_SELECTOR, "button[aria-label^='More actions']"),
     (By.XPATH, "//button[normalize-space()='More']"),
 ]
 
-_SEARCH_LOCATORS = [
+_SEARCH_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "input[placeholder*='Search messages']"),
     (By.CSS_SELECTOR, "input[aria-label*='Search messages']"),
     (By.CSS_SELECTOR, "#search-conversations"),
     (By.CSS_SELECTOR, "input[type='search']"),
 ]
 
-_CONVERSATION_LOCATORS = [
+_CONVERSATION_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "li.msg-conversation-listitem"),
     (By.CSS_SELECTOR, "[class*='msg-conversations-container'] li"),
     (By.CSS_SELECTOR, "li[class*='msg-conversation']"),
@@ -338,7 +338,7 @@ class ComposerOpen:
 
 
 def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url: str,
-                            person_name: str = None, user_id: int = None,
+                            person_name: Optional[str] = None, user_id: Optional[int] = None,
                             timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> ComposerOpen:
     """Open a composer that is PROVABLY addressed to this person — the one way LEM reaches a DM it is
     about to send (issue #1030).
@@ -517,7 +517,7 @@ def _try_overflow(driver: WebDriver, timeout: float) -> Optional[dict]:
     return None
 
 
-def _try_direct_url(driver: WebDriver, timeout: float, urn: str = None,
+def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None,
                     profile_url: str = "") -> Optional[dict]:
     """The strongest fallback: navigate straight to the compose URL built from the person's URN, so
     nothing depends on a rendered control at all.
@@ -533,7 +533,7 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: str = None,
     return reading if (reading["events"] or reading["composer"]) else None
 
 
-def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: str,
+def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: Optional[str],
                           profile_url: str, timeout: float) -> Optional[dict]:
     """Slowest route, and the only one that works when the profile page offers nothing: open
     /messaging/, search the person by name, and open the matching conversation.
@@ -584,7 +584,7 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: s
 
 
 def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str,
-                        person_name: str = None, user_id: int = None,
+                        person_name: Optional[str] = None, user_id: Optional[int] = None,
                         timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> ThreadOpen:
     """Open this person's 1:1 message thread, walking every known route until one VERIFIABLY works.
 

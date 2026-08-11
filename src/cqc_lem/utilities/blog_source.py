@@ -86,7 +86,7 @@ def _from_sitemap(sitemap_url: str, user_id: int) -> "tuple[str, bool]":
     return "", False
 
 
-def resolve_blog_source(user_id: int, settings: dict = None) -> "str | None":
+def resolve_blog_source(user_id: int, settings: "dict | None" = None) -> "str | None":
     """Source material for ONE newsletter edition, or None when there is nothing to repurpose.
 
     Returns None (never raises) whenever the toggle is off, the user configured no blog/sitemap, or

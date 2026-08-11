@@ -230,9 +230,9 @@ def _comment_signal(comment_quality: Optional[Mapping[str, Any]]) -> dict:
 def _reach_signal(trend: Optional[Iterable[Mapping[str, Any]]], *, ratio: float, run_days: int,
                   window_days: int, min_posts: int) -> dict:
     series = _posting_days(trend)
-    signal = {"name": SIGNAL_REACH, "status": STATUS_UNKNOWN, "reason": "", "metric": None,
-              "baseline": None, "baseline_posts": 0, "baseline_days_sampled": 0,
-              "posting_days": len(series), "recent": [], "max_drop": None}
+    signal: dict[str, Any] = {"name": SIGNAL_REACH, "status": STATUS_UNKNOWN, "reason": "", "metric": None,
+                              "baseline": None, "baseline_posts": 0, "baseline_days_sampled": 0,
+                              "posting_days": len(series), "recent": [], "max_drop": None}
     if len(series) <= run_days:
         signal["reason"] = (f"Only {len(series)} posting day(s) of history — "
                             f"{run_days + 1} needed before reach can be compared")
@@ -254,7 +254,8 @@ def _reach_signal(trend: Optional[Iterable[Mapping[str, Any]]], *, ratio: float,
     signal["metric"] = metric
     baseline_values = [v for v in (_day_value(day, metric) for day in baseline) if v is not None]
     recent_values = [(day, _day_value(day, metric)) for day in recent]
-    if not baseline_values or any(value is None for _, value in recent_values):
+    scored = [(day, value) for day, value in recent_values if value is not None]
+    if not baseline_values or len(scored) != len(recent_values):
         signal["reason"] = "Not enough comparable readings to score reach"
         return signal
     median_value = median(baseline_values)
@@ -266,7 +267,7 @@ def _reach_signal(trend: Optional[Iterable[Mapping[str, Any]]], *, ratio: float,
         return signal
 
     drops = []
-    for day, value in recent_values:
+    for day, value in scored:
         drop = 1.0 - (value / median_value)
         drops.append(drop)
         signal["recent"].append({"date": _date(day), "value": round(value, 4),
