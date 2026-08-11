@@ -51,7 +51,7 @@ description: Use when a LinkedIn selector, scrape, or automation flow may have d
 >     < scripts/linkedin_live_validation.py
 > ```
 
-The probe (`scripts/linkedin_live_validation.py`) is **read-only** — it navigates and reads, posts/comments/changes nothing. `scripts/` is not baked into the image, so pipe it in on stdin:
+The probe (`scripts/linkedin_live_validation.py`) is **read-only** — it navigates and reads, posts/comments/changes nothing. `scripts/` is not baked into the image, so pipe it in on stdin — **from the checkout you are validating**, not whatever directory the shell landed in (`/home/lem/linkedin_engagement_manager` tracks `main`, so a branch's new capture is absent there and its report key never appears). Every report names the piped copy's optional captures in `probe_script.capabilities`: a capability listed there but missing from a surface means the PAGE had nothing, a capability absent from that list means the SCRIPT had nothing.
 
 ```bash
 sudo docker exec -i celery_worker_selenium python - --user-id 1 \

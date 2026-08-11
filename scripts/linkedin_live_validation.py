@@ -461,6 +461,29 @@ def open_probe_session(get_current_profile: Callable, user_id: int, require_debu
                              "debug_node_pin_supported": supported}
 
 
+# The optional captures a copy of this script carries, keyed to the symbol that implements each.
+# This file is PIPED IN over stdin (`docker exec -i … python - < scripts/linkedin_live_validation.py`),
+# so the code that runs is whichever checkout the shell happened to sit in — and the box's working
+# checkout tracks `main`, not the branch under review. Two live #1270 runs came back with no
+# `feed_sort.selector_evidence` key at all, which reads as "the capture found nothing" when it
+# meant "the script you piped has no capture". A report that names its own captures tells those two
+# apart from the JSON alone, which is the same distinction the capture itself exists to make.
+_PROBE_CAPABILITY_SYMBOLS = {
+    "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
+}
+
+
+def probe_script_reading() -> dict:
+    """Which optional captures the running copy of this script carries.
+
+    Derived from the running module, never hand-declared, so a stale pipe cannot claim a capture it
+    does not have. A capability listed here missing from the report means the PAGE had nothing; a
+    capability absent from this list means the SCRIPT had nothing.
+    """
+    return {"capabilities": sorted(name for name, symbol in _PROBE_CAPABILITY_SYMBOLS.items()
+                                   if symbol in globals())}
+
+
 def emit_refusal(user_id: int, refusal: dict, breaker: dict, guard: dict) -> int:
     """Print a refusal inside the report fences and return the exit code callers key on.
 
@@ -468,7 +491,8 @@ def emit_refusal(user_id: int, refusal: dict, breaker: dict, guard: dict) -> int
     non-zero so a caller that only checks the exit status never mistakes a refusal for a clean run.
     """
     print(REPORT_JSON_BEGIN)
-    print(json.dumps({"user_id": user_id, "refusal": refusal, "breaker": breaker,
+    print(json.dumps({"user_id": user_id, "probe_script": probe_script_reading(),
+                      "refusal": refusal, "breaker": breaker,
                       "read_only_guard": guard}, indent=2))
     print(REPORT_JSON_END)
     print(f"REFUSED: {refusal.get('detail', '')} — {refusal.get('action', '')}", file=sys.stderr)
@@ -1029,6 +1053,91 @@ def feed_sort_chains() -> tuple:
     return list(_FEED_SORT_LOCATORS), list(_FEED_RECENT_OPTION_LOCATORS), "image"
 
 
+# The evidence scan is NEW in #1270, so the DEPLOYED image this probe is piped into has no
+# `sort_evidence` module to drive — and an import-guarded scan that silently returns [] on that
+# image is worse than no probe: the run the OWNER asked for came back with the key absent, which
+# reads exactly like "the scan found nothing" (the very confusion #1255 exists to prevent). Same
+# posture as `feed_sort_chains` / `recommendation_read` above: drive the SHIPPED scan when the
+# running image has one, carry an identical copy when it does not, and name which in the reading.
+# `TestFeedSortEvidenceScanCopy` fails the build if either half of the copy drifts.
+FALLBACK_FEED_POST_TEXT_SEL = ("[data-testid='expandable-text-box'], "
+                               ".feed-shared-update-v2 .update-components-text")
+
+FALLBACK_SORT_EVIDENCE_SCAN_JS = (
+    "const root=document.querySelector('main')||document.body;"
+    f'const first=document.querySelector("{FALLBACK_FEED_POST_TEXT_SEL}");'
+    "const CAP=8;const TEXT_MAX=40;"
+    "const out=[];const seen=new Set();"
+    "const own=el=>(el.innerText||'').replace(/\\s+/g,' ').trim();"
+    "const push=(el,reason)=>{"
+    "  if(out.length>=CAP||seen.has(el)) return;"
+    "  seen.add(el);"
+    "  const aria=(el.getAttribute('aria-label')||'');"
+    "  out.push({"
+    "    tag:el.tagName.toLowerCase(),"
+    "    data_testid:el.getAttribute('data-testid')||'',"
+    "    aria_label:aria.slice(0,120),"
+    "    role:el.getAttribute('role')||'',"
+    "    text:own(el).slice(0,80),"
+    "    has_popup:el.getAttribute('aria-haspopup')||'',"
+    "    classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' '),"
+    "    reason:reason"
+    "  });"
+    "};"
+    "const KW=/sort|most relevant|most recent|\\btop\\b|\\bnewest\\b/;"
+    "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
+    "  const text=own(el);"
+    "  if(text.length>TEXT_MAX) continue;"
+    "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
+    "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
+    f'  const inList=(el.closest&&el.closest("{FALLBACK_FEED_POST_TEXT_SEL}"))'
+    f'||(el.querySelector&&el.querySelector("{FALLBACK_FEED_POST_TEXT_SEL}"));'
+    "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
+    "  if(out.length>=CAP) break;"
+    "}"
+    "if(!out.length){"
+    "  for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup]')){"
+    "    if(first){const pos=first.compareDocumentPosition(el);"
+    "      if(!(pos&Node.DOCUMENT_POSITION_PRECEDING)||(pos&Node.DOCUMENT_POSITION_CONTAINS)) continue;}"
+    "    if(own(el).length>TEXT_MAX) continue;"
+    "    push(el,first?'header':'unanchored');"
+    "    if(out.length>=CAP) break;"
+    "  }"
+    "}"
+    "return out;")
+
+
+def feed_sort_evidence_scan_js() -> tuple:
+    """(the two-pass evidence scan JS to run, where it came from)."""
+    try:
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+        from cqc_lem.utilities.linkedin.sort_evidence import build_sort_control_scan_js
+    except ImportError:
+        return FALLBACK_SORT_EVIDENCE_SCAN_JS, "script"
+    return build_sort_control_scan_js(item_selectors=[_FEED_POST_TEXT_SEL],
+                                      prose_container=_FEED_POST_TEXT_SEL), "image"
+
+
+def _feed_sort_evidence_scan(driver) -> tuple:
+    """Run the same two-pass DOM scan production ships as an event, and say where it came from.
+
+    Read-only, and it does NOT call ``track_selector_evidence`` — a live probe never writes to
+    PostHog. Returns ``(candidates, source)`` so a live ``--feed-sort`` run validates the new
+    capture alongside the locator chain, on the CURRENT image as well as on a rebuilt one.
+
+    ``[]`` is a real reading here ("nothing describable above the first card"), which is why the
+    source travels with it: only ``source`` tells a reader whether an empty sample describes the
+    page or describes a probe that could not scan.
+    """
+    scan_js, source = feed_sort_evidence_scan_js()
+    try:
+        result = driver.execute_script(scan_js)
+    except Exception:
+        # A dead scan must never cost the locator grading this probe rode in on.
+        return [], source
+    return [dict(row) for row in (result or []) if isinstance(row, dict)], source
+
+
 def control_sort_state(control) -> str:
     """Which sort a found control reports, or '' when its label is unreadable. '' is load-bearing:
     'we could not tell' must never be recorded as 'recent' — that is the lie #817 exists to stop.
@@ -1235,6 +1344,8 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
     # Before `visible_controls`, not after: the issue body truncates the evidence blob, and the
     # half a re-grounding pass reads must be the half that survives the cut (#1108).
     reading["sort_candidates"] = feed_sort_candidates(driver)
+    reading["selector_evidence"], reading["selector_evidence_source"] = \
+        _feed_sort_evidence_scan(driver)
     reading["visible_controls"] = visible_button_labels(driver) + menu_item_labels(driver)
     return graded(reading, feed_sort_state(reading), feed_sort_verdict(reading))
 
@@ -4134,7 +4245,8 @@ def main(argv: Optional[list] = None) -> int:
     # whose label commits something.
     install_read_only_guard()
 
-    report = {"user_id": args.user_id, "session": session_reading}
+    report = {"user_id": args.user_id, "probe_script": probe_script_reading(),
+              "session": session_reading}
     try:
         if args.sweep:
             # The sweep IS the report: it replaces the per-probe keys wholesale, so the weekly
@@ -4204,6 +4316,9 @@ def main(argv: Optional[list] = None) -> int:
         quit_gracefully(driver)
 
     report["breaker"] = breaker
+    # `--sweep` replaces the report wholesale, so re-assert the provenance rather than trusting the
+    # copy made before it ran.
+    report.setdefault("probe_script", probe_script_reading())
     # Reported at the END so it covers the whole run: "nothing was refused" is a claim about what
     # happened, not about what was configured.
     report["read_only_guard"] = guard_ledger()

@@ -459,6 +459,38 @@ class TestFeedSortProbe:
         assert report["sort_after"] == "unknown"
         assert "session deleted" in report["flip_error"]
 
+    def test_probe_reports_selector_evidence_from_the_new_scan(self, monkeypatch):
+        """#1270: one live ``--feed-sort`` run should validate both the locator chain AND the
+        two-pass DOM sample production now emits as an event."""
+        control = _sort_control("Sort by: Top")
+        recent = _sort_control("Sort by: Recent")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, recent, recent]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+        monkeypatch.setattr(
+            llv, "_feed_sort_evidence_scan",
+            lambda d: ([{"tag": "button", "text": "Sort by", "reason": "header"}], "image"))
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["selector_evidence"] == [{"tag": "button", "text": "Sort by", "reason": "header"}]
+        assert report["selector_evidence_source"] == "image"
+
+    def test_selector_evidence_scan_is_read_only_and_never_raises(self, monkeypatch):
+        """A dead scan must not stop the probe from grading the real locator chain."""
+        control = _sort_control("Sort by: Top")
+        recent = _sort_control("Sort by: Recent")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, recent, recent]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "_feed_sort_evidence_scan", lambda d: ([], "image"))
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["state"] == "ok"
+        assert report["selector_evidence"] == []
+        assert report["selector_evidence_source"] == "image"
+
     def test_a_control_label_naming_both_sorts_is_unreadable_not_recent(self):
         """Production reads a both-sorts label as unknown; a probe that called it 'recent' would
         report the control healthy on exactly the reading that leaves the run unsorted.
@@ -635,6 +667,121 @@ class TestFeedSortChainCopy:
         assert "predates #817" in verdict
         assert "predates" not in llv.feed_sort_verdict({"control_found": True, "sort_after": "recent",
                                                         "chain_source": "image"})
+
+
+@pytest.mark.unit
+class TestFeedSortEvidenceScanCopy:
+    """#1270's evidence scan is NEW, so the image the probe is piped into cannot import it — and the
+    first live run proved why that matters: the report came back with no `selector_evidence` at all,
+    which reads like "the scan found nothing" rather than "the scan never ran". Image first, carried
+    copy otherwise, and the reading names which.
+    """
+
+    def _shipped_js(self) -> str:
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+        from cqc_lem.utilities.linkedin.sort_evidence import build_sort_control_scan_js
+
+        return build_sort_control_scan_js(item_selectors=[_FEED_POST_TEXT_SEL],
+                                          prose_container=_FEED_POST_TEXT_SEL)
+
+    def test_carried_scan_is_identical_to_the_one_the_feed_ships(self):
+        from cqc_lem.app.engagement import feed
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+
+        assert llv.FALLBACK_FEED_POST_TEXT_SEL == _FEED_POST_TEXT_SEL
+        assert llv.FALLBACK_SORT_EVIDENCE_SCAN_JS == self._shipped_js()
+        assert llv.FALLBACK_SORT_EVIDENCE_SCAN_JS == feed._FEED_SORT_CONTROL_SCAN_JS
+
+    def test_the_running_image_wins_when_it_has_the_scan(self):
+        scan_js, source = llv.feed_sort_evidence_scan_js()
+        assert source == "image"
+        assert scan_js == self._shipped_js()
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_1270(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_scan(name, *a, **k):
+            if name == "cqc_lem.utilities.linkedin.sort_evidence":
+                raise ImportError("No module named 'cqc_lem.utilities.linkedin.sort_evidence'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_scan)
+        scan_js, source = llv.feed_sort_evidence_scan_js()
+        assert source == "script"
+        assert scan_js == llv.FALLBACK_SORT_EVIDENCE_SCAN_JS
+
+    def test_an_empty_sample_still_carries_the_source_that_explains_it(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = []
+        assert llv._feed_sort_evidence_scan(driver) == ([], "image")
+
+    def test_a_dead_scan_never_costs_the_locator_grading(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = RuntimeError("javascript error")
+        assert llv._feed_sort_evidence_scan(driver) == ([], "image")
+
+    def test_only_dict_rows_survive_the_read(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = [{"tag": "button"}, "junk", None]
+        rows, source = llv._feed_sort_evidence_scan(driver)
+        assert rows == [{"tag": "button"}] and source == "image"
+
+
+@pytest.mark.unit
+class TestProbeScriptProvenance:
+    """The probe is piped in over stdin, so the copy that runs is whichever checkout the shell sat
+    in — the box's working checkout tracks `main`. Two #1270 runs pasted a report with no
+    `selector_evidence` key because the piped script predated the capture, and nothing in the JSON
+    said so. The report names its own captures so that never reads as an empty page again.
+    """
+
+    def test_every_declared_capability_resolves_in_this_script(self):
+        """A rename must break the build, not silently empty the list a reader trusts."""
+        missing = [symbol for symbol in llv._PROBE_CAPABILITY_SYMBOLS.values()
+                   if not hasattr(llv, symbol)]
+        assert missing == []
+
+    @staticmethod
+    def _fenced(capsys) -> dict:
+        out = capsys.readouterr().out
+        return json.loads(out.split(llv.REPORT_JSON_BEGIN)[1].split(llv.REPORT_JSON_END)[0])
+
+    @staticmethod
+    def _session(monkeypatch) -> None:
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+
+    def test_this_script_declares_the_1270_capture(self):
+        assert llv.probe_script_reading()["capabilities"] == ["feed_sort.selector_evidence"]
+
+    def test_a_script_without_the_capture_says_so_rather_than_omitting_it(self, monkeypatch):
+        monkeypatch.setattr(llv, "_PROBE_CAPABILITY_SYMBOLS",
+                            {"feed_sort.selector_evidence": "_a_symbol_that_predates_1270"})
+        assert llv.probe_script_reading() == {"capabilities": []}
+
+    def test_a_completed_run_carries_the_provenance(self, monkeypatch, capsys):
+        self._session(monkeypatch)
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "sort control OK"})
+        assert llv.main(["--feed-sort"]) == 0
+        assert self._fenced(capsys)["probe_script"] == llv.probe_script_reading()
+
+    def test_a_sweep_cannot_drop_the_provenance(self, monkeypatch, capsys):
+        """`--sweep` replaces the report wholesale — the one shape the weekly cron parses."""
+        self._session(monkeypatch)
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "run_sweep", lambda *a, **k: {"user_id": 1})
+        assert llv.main(["--sweep"]) == 0
+        assert self._fenced(capsys)["probe_script"] == llv.probe_script_reading()
+
+    def test_a_refusal_carries_it_too(self, monkeypatch, capsys):
+        monkeypatch.setattr(llv, "breaker_reading",
+                            lambda: {"readable": True, "open": True, "wait_seconds": 900,
+                                     "reason": "the 429 circuit breaker is OPEN for another 900s"})
+        assert llv.main(["--feed-sort"]) == llv.BREAKER_REFUSAL_EXIT_CODE
+        assert self._fenced(capsys)["probe_script"] == llv.probe_script_reading()
 
 
 @pytest.mark.unit
