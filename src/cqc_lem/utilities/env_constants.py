@@ -109,6 +109,20 @@ PREMIUM_TOP_VIDEO_CREDITS = int(get_constant_from_env('PREMIUM_TOP_VIDEO_CREDITS
 VIDEO_PROBE_ENABLED = isTrue(get_constant_from_env('VIDEO_PROBE_ENABLED', default_value='False'))
 VIDEO_PROBE_MIN_SIZE_BYTES = int(get_constant_from_env('VIDEO_PROBE_MIN_SIZE_BYTES', default_value='64'))
 
+# Muted-autoplay captions (issue #1278). VIDEO_CAPTIONS_ENABLED is the FALLBACK for the
+# `video-captions-enabled` flag (utilities/flags.py) — read at the call site, never here, so the
+# toggle can move without a deploy. The rest shape the burned card: the post's first 1-2 lines,
+# wrapped, held over the window LinkedIn plays muted.
+VIDEO_CAPTIONS_ENABLED = isTrue(get_constant_from_env('VIDEO_CAPTIONS_ENABLED', default_value='False'))
+VIDEO_CAPTION_MAX_LINES = int(get_constant_from_env('VIDEO_CAPTION_MAX_LINES', default_value='2'))
+VIDEO_CAPTION_MAX_CHARS_PER_LINE = int(get_constant_from_env('VIDEO_CAPTION_MAX_CHARS_PER_LINE',
+                                                             default_value='42'))
+VIDEO_CAPTION_HOLD_SECONDS = float(get_constant_from_env('VIDEO_CAPTION_HOLD_SECONDS',
+                                                         default_value='3.0'))
+# Local ffmpeg compute for the burn-in pass, attributed per post like the tutorial renderer's.
+VIDEO_CAPTION_RENDER_COST_PER_MINUTE = float(
+    get_constant_from_env('VIDEO_CAPTION_RENDER_COST_PER_MINUTE', default_value='0.01'))
+
 # --- Carousel content-slide imagery ---
 # Content (middle) carousel slides carry a relevant image so they don't render as
 # text-on-blank. Sourcing is deterministic and cheap-first: Pexels stock (just an

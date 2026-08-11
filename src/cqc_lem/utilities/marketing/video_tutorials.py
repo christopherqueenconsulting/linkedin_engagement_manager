@@ -67,6 +67,7 @@ from cqc_lem.utilities.marketing.attribution import (
 from cqc_lem.utilities.marketing.youtube_auth import mint_access_token, preflight, youtube_configured
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
 from cqc_lem.utilities.utils import create_folder_if_not_exists
+from cqc_lem.utilities.video_captions import srt_timestamp
 
 TASK_NAME = "produce_feature_tutorial"
 
@@ -674,11 +675,8 @@ def _centered(draw, text: str, y: int, font, fill: tuple) -> None:
 
 
 def _srt_timestamp(seconds: float) -> str:
-    total_ms = int(round(max(0.0, seconds) * 1000))
-    hours, rem = divmod(total_ms, 3600000)
-    minutes, rem = divmod(rem, 60000)
-    secs, ms = divmod(rem, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
+    """SRT cue clock. One implementation, shared with the post-video captions (issue #1278)."""
+    return srt_timestamp(seconds)
 
 
 def write_captions(segments: list, out_path: str) -> str:

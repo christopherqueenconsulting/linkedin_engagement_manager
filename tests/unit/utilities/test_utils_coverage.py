@@ -215,6 +215,27 @@ class TestPurgePostAssets:
         assert not carousel_dir.exists()
         assert str(video) in removed and str(carousel_dir) in removed
 
+    def test_removes_the_caption_sidecar_beside_the_video(self, tmp_path):
+        """Issue #1278: the .srt shares the video's stem and is dead weight once LinkedIn re-hosts."""
+        from cqc_lem.utilities.utils import purge_post_assets
+        video, _carousel_dir = self._setup_assets(tmp_path)
+        srt_dir = tmp_path / "videos" / "captions"
+        srt_dir.mkdir(parents=True)
+        srt = srt_dir / "clip.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:03,000\nHook\n")
+        url = "https://api.example.com/api/assets?file_name=videos/runwayml/clip.mp4"
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            removed = purge_post_assets(9, video_url=url)
+        assert not srt.exists() and str(srt) in removed
+
+    def test_a_video_with_no_sidecar_is_still_purged(self, tmp_path):
+        from cqc_lem.utilities.utils import purge_post_assets
+        video, _carousel_dir = self._setup_assets(tmp_path)
+        url = "https://api.example.com/api/assets?file_name=videos/runwayml/clip.mp4"
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            removed = purge_post_assets(9, video_url=url)
+        assert not video.exists() and str(video) in removed
+
     def test_path_traversal_in_file_name_is_ignored(self, tmp_path):
         from cqc_lem.utilities.utils import purge_post_assets
         outside = tmp_path.parent / "outside.mp4"

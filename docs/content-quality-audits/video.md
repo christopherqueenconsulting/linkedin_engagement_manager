@@ -45,7 +45,7 @@ owns it, and the verdict is against what the pipeline does after this PR.
 | # | Rubric row | Owned by | Verdict |
 |---|---|---|---|
 | R1 | **Opening hook is visible in the first 2–3 seconds** — the first frame/motion must carry the post's central image or claim before the scroll | `get_flux_image_prompt_from_ai` (the frame), `get_runway_ml_video_prompt_from_ai` (the motion) | **PARTIAL → restored here.** The image prompt is authored from the post, and the motion prompt again carries the "first 1–2 seconds" rule via the restored contract |
-| R2 | **Captions / on-screen text for mute autoplay** — LinkedIn autoplays muted, so the visual must communicate without audio | `create_video_content` → `_generate_video_src` | **FAIL → not fixed here.** No caption overlay, burned-in opening text, or SRT sidecar exists. Veo premium audio is steered to ambience-only, which only removes a failure mode. Filed as **#1278** |
+| R2 | **Captions / on-screen text for mute autoplay** — LinkedIn autoplays muted, so the visual must communicate without audio | `utilities/video_captions.py`, called from `_caption_video_asset` | **PASS (flagged) since #1278.** The post's opening line is burned into the stored MP4 with ffmpeg and the `.srt` sidecar is kept beside it. Behind `video-captions-enabled`; an avatar-led video needs `users.avatar_caption_overlay` too |
 | R3 | **Avatar fidelity** — when an avatar is active, the first frame must recognizably be the user | `resolve_avatar_for(AVATAR_SURFACE_VIDEO)`, `generate_post_image(..., surface=AVATAR_SURFACE_VIDEO)` | **PASS by construction.** The avatar path is the same LoRA-backed path used for post images; the video surface is explicitly gated. No deterministic likeness probe on the rendered frame yet — **#1279** |
 | R4 | **Pacing / length matches what LinkedIn rewards** — short, 5–10s clips dominate feed engagement; the model default durations are 5s (gen4/seedance) and 6s (Veo) | `video_models.resolve_duration` | **PASS.** Default durations are already inside the 5–10s band |
 | R5 | **Aspect ratio / framing for LinkedIn's feed player** — premium renders 9:16 and standard renders 1:1, both feed-native | `_generate_video_src` | **PASS.** The #1293 fix already briefs and renders one `source_frame_ratio` per tier, so premium no longer frames a square composition for a vertical crop |
@@ -96,14 +96,29 @@ prompt ships unchanged; on, it buys one steered rewrite and then holds the rende
 `_generate_video_src` already handles as a generation failure (refund, fall back to Pexels).
 Posture: `docs/content-core.md` § Motion-prompt lint.
 
-### F3 — No caption / burned-text path for muted autoplay → **#1278**
+### F3 — No caption / burned-text path for muted autoplay → **#1278** *(shipped)*
 
 LinkedIn's feed player starts muted. The post's caption is below the fold on mobile; the video
-itself has to communicate visually in the first 2–3 seconds. LEM does not burn in captions, titles,
-or subtitles. Veo/Gen-4 are not text-reliable, so the right fix is likely a post-generation step
-that overlays the first 1–2 lines of the post as a short text card using `ffmpeg`, or a caption SRT
-sidecar if LinkedIn supports it. Either path touches the asset-pipeline schema and the render cost
-model; filed as **#1278**.
+itself has to communicate visually in the first 2–3 seconds. Veo/Gen-4 are not text-reliable, so
+the fix is a post-generation step rather than a prompt: **#1278 (decision 1A)** burns the post's
+own first 1–2 lines into the rendered MP4 with `ffmpeg`'s `subtitles` filter and writes the `.srt`
+sidecar next to it.
+
+The sidecar-only alternative (LinkedIn's REST Videos API `initializeUpload` with
+`uploadCaptions: true`) was rejected for now: LEM publishes through `/ugcPosts` +
+`assets?action=registerUpload`, so it would mean migrating the upload path, and a native caption
+track is invisible on the muted autoplay this finding is about.
+
+What it costs and what it is bounded by:
+
+- **No LLM spend.** The caption is the post's own hook, wrapped deterministically —
+  `content_framework.py` already owns the words, so nothing is re-authored.
+- **One extra local ffmpeg pass per video post**, attributed through `track_media_cost` at
+  `VIDEO_CAPTION_RENDER_COST_PER_MINUTE` (same accrual as the tutorial renderer).
+- **OFF by default** behind `video-captions-enabled`, and an avatar-led video is skipped unless the
+  user turns on `users.avatar_caption_overlay` — the sidecar still ships, the frame is untouched.
+- **Fails open.** No ffmpeg, an unusable hook, a non-zero exit: the post keeps the video it had.
+  Schema is `posts.caption_text` / `posts.caption_srt_url`; nothing gates on either.
 
 ### F4 — No deterministic check that the stored video asset is inspectable → **#1280**
 
@@ -205,7 +220,6 @@ has, and only the restored contract can see anything wrong with it**.
 | Follow-up | Why it is separate |
 |---|---|
 | **#1277** — motion-prompt deterministic linter | Credit-spend / regeneration behavior change |
-| **#1278** — mute autoplay captions/burned text | Render pipeline + schema + cost model decision |
 | **#1279** — avatar-likeness frame check | Avatar-policy work, telemetry-only default |
 | **#1280** — stored video asset probe | Touches the asset-backfill/storage path |
 | **#1281** — video-specific telemetry (`video-telemetry.md`) | Telemetry/schema change |

@@ -1650,7 +1650,7 @@ def get_avatar_preferences(user_id: int) -> dict:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
                 """SELECT avatar_disabled, avatar_use_post_image, avatar_use_carousel,
-                          avatar_use_video, avatar_use_newsletter
+                          avatar_use_video, avatar_use_newsletter, avatar_caption_overlay
                    FROM users WHERE id = %s""",
                 (user_id,),
             )

@@ -397,6 +397,19 @@ def purge_post_assets(post_id, video_url=None):
                     # is the class of bug an escalated issue is meant to catch.
                     log_warning("purge_post_assets: could not remove asset file", exc=e,
                                 post_id=post_id)
+            # The caption sidecar shares the video's stem (issue #1278) and is dead weight for the
+            # same reason the video is: LinkedIn re-hosts the burned-in frames at publish time.
+            # Derived from the video's own name rather than taking another argument, so every
+            # existing caller purges it without changing.
+            stem = os.path.splitext(os.path.basename(candidate or ""))[0]
+            sidecar = os.path.join(assets_dir, "videos", "captions", f"{stem}.srt") if stem else None
+            if sidecar and _within_assets(sidecar) and os.path.isfile(sidecar):
+                try:
+                    os.remove(sidecar)
+                    removed.append(sidecar)
+                except OSError as e:
+                    log_warning("purge_post_assets: could not remove caption sidecar", exc=e,
+                                post_id=post_id)
 
     for media_dir in (os.path.join(assets_dir, "images", "carousel", str(post_id)),
                       os.path.join(assets_dir, "images", "posts", str(post_id))):

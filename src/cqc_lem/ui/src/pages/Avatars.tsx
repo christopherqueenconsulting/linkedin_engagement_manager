@@ -40,6 +40,7 @@ const GUARDRAILS = [
   { key: 'avatar_use_carousel',   label: 'Carousel slides', hint: 'Slide artwork on personal-story carousels' },
   { key: 'avatar_use_video',      label: 'Video frames',    hint: 'The source frame every generated video is built from' },
   { key: 'avatar_use_newsletter', label: 'Newsletter covers', hint: 'Cover art when an edition is about you or your story' },
+  { key: 'avatar_caption_overlay', label: 'Captions over your avatar', hint: 'Let burned-in video captions sit on frames your avatar appears in' },
 ] as const
 
 type Training = {
@@ -77,6 +78,7 @@ type AvatarPreferences = {
   avatar_use_carousel: boolean
   avatar_use_video: boolean
   avatar_use_newsletter: boolean
+  avatar_caption_overlay: boolean
 }
 
 export default function Avatars() {

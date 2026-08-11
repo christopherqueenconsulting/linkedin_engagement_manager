@@ -184,6 +184,48 @@ def update_db_post_video_url(post_id: int, video_url: str) -> bool:
         log_error("Could not update post video url", exc=e)
 
     return success
+def update_db_post_captions(post_id: int, caption_text: Optional[str],
+                            caption_srt_url: Optional[str]) -> bool:
+    """Record the muted-autoplay caption a video post shipped with (issue #1278).
+
+    `caption_text` is what was burned onto the frame and `caption_srt_url` the sidecar that was
+    written — both nullable, because a post with no usable hook, or one whose burn failed open,
+    legitimately ships uncaptioned.
+
+    False when the write failed or no row matched.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET caption_text = %s, caption_srt_url = %s WHERE id = %s",
+                (caption_text, caption_srt_url, post_id)
+            )
+
+            success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        log_error("Could not update post captions", exc=e, post_id=post_id)
+
+    return success
+def get_post_captions(post_id: int) -> dict:
+    """`{"caption_text", "caption_srt_url"}` for a post — both None when it ships uncaptioned.
+
+    An unreadable row answers the same shape with Nones rather than raising: nothing gates on a
+    caption, so a DB blip must not fail the read that only wants to display one.
+    """
+    empty = {"caption_text": None, "caption_srt_url": None}
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT caption_text, caption_srt_url FROM posts WHERE id = %s", (post_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as e:
+        log_error("Could not get post captions", exc=e, post_id=post_id)
+        return empty
+
+    if not row:
+        return empty
+    return {"caption_text": row.get("caption_text"), "caption_srt_url": row.get("caption_srt_url")}
 def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
     """Move a post to `post_status`.
 
