@@ -27,9 +27,11 @@ evasion target, no score ever rewrites text, and with no API key configured it i
 """
 
 import hashlib
+import json
 import os
 import subprocess
 from datetime import date, datetime, timedelta
+from math import gcd
 from typing import Any, Iterable, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
@@ -60,6 +62,9 @@ ALERT_SIMILARITY_CREEP = "similarity_creep"
 # Video asset vocabulary. Keep these constants in ONE place so the scorer, the DB writer, the
 # nightly beat and the weekly rollup all name the same states.
 VIDEO_MODEL_PEXELS = "pexels"
+# Coarse on purpose: the stored URL proves the asset came out of the Runway path, not WHICH model
+# rendered it — nothing persists that per post (issue #1410).
+VIDEO_MODEL_RUNWAY = "runway"
 VIDEO_PROBE_OK = "ok"
 VIDEO_PROBE_MISSING = "missing"
 VIDEO_PROBE_EMPTY = "empty"
@@ -387,6 +392,46 @@ def detector_score(text: Optional[str]) -> Optional[float]:
     return None
 
 
+def _asset_file_name(video_url: Optional[str]) -> Optional[str]:
+    """The `file_name=` value of a LEM `/api/assets?file_name=...` URL, or None.
+
+    Both the path resolver and the model-tier reader need it, and they must agree: a URL one of
+    them treats as ours while the other does not would score an asset it cannot find.
+    """
+    url = str(video_url or "").strip()
+    if not url:
+        return None
+    query = parse_qs(urlparse(url).query)
+    return (query.get("file_name") or [None])[0] or None
+
+
+def _aspect_ratio_from_dimensions(width: Any, height: Any) -> Optional[str]:
+    """Reduce probed pixel dimensions to the project's friendly ratio vocabulary.
+
+    Renders do not come back at exactly the nominal ratio (Runway's 9:16 lands as 1088x1920, whose
+    exact reduction is 17:30), so a probed ratio is snapped to the nearest `RATIO_ALIASES` key
+    within 2% and only falls back to the exact reduction when nothing matches — otherwise the
+    dimension would report a different string every render and trend nothing.
+    """
+    try:
+        w, h = int(width), int(height)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    # Imported here, not at module scope: video_models pulls in the RunwayML SDK, and this module is
+    # loaded by the nightly beat for text surfaces that never touch video.
+    from cqc_lem.utilities.ai.video_models import RATIO_ALIASES
+
+    measured = w / h
+    for alias in RATIO_ALIASES:
+        aw, ah = alias.split(":")
+        if abs(measured - (int(aw) / int(ah))) <= 0.02 * measured:
+            return alias
+    divisor = gcd(w, h) or 1
+    return f"{w // divisor}:{h // divisor}"[:16]
+
+
 def resolve_local_video_path(video_url: Optional[str]) -> Optional[str]:
     """Turn a LEM `/api/assets?file_name=...` URL into an on-disk path under `assets_dir`.
 
@@ -394,19 +439,18 @@ def resolve_local_video_path(video_url: Optional[str]) -> Optional[str]:
     missing query, path escape) returns None so the probe reports "missing" rather than touching
     arbitrary files. This is a read-only lookup: the file may or may not exist.
     """
-    url = str(video_url or "").strip()
-    if not url:
-        return None
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    file_name = (query.get("file_name") or [None])[0]
+    file_name = _asset_file_name(video_url)
     if not file_name:
         return None
-    # Containment: the stored asset root is `assets_dir`; anything outside it is not ours.
-    local_path = os.path.abspath(os.path.join(assets_dir, file_name))
-    if not local_path.startswith(os.path.abspath(assets_dir) + os.sep):
+    # Containment: the stored asset root is `assets_dir`; anything outside it is not ours. Both
+    # sides are absolute and case-preserving on purpose — comparing an absolute path against a
+    # possibly-relative `assets_dir`, or lowercasing only one side, rejects every real asset and
+    # the probe then reports a healthy video as "missing".
+    root = os.path.abspath(assets_dir)
+    local_path = os.path.abspath(os.path.join(root, file_name))
+    if not local_path.startswith(root + os.sep):
         return None
-    if not local_path.lower().startswith(os.path.join(assets_dir, "videos") + os.sep):
+    if not local_path.startswith(os.path.join(root, "videos") + os.sep):
         return None
     return local_path
 
@@ -414,11 +458,15 @@ def resolve_local_video_path(video_url: Optional[str]) -> Optional[str]:
 def probe_video_asset(path: Optional[str]) -> dict:
     """Probe a local video file for duration and a readable video stream.
 
-    Returns a dict with `duration_seconds`, `asset_probe` and `has_video_stream`. Missing,
-    empty or unreadable files report None for duration and a named probe state rather than
-    raising, because a nightly telemetry pass must not break on one bad file.
+    Returns a dict with `duration_seconds`, `aspect_ratio`, `asset_probe` and `has_video_stream`.
+    The ratio is read from the file rather than from the render request: what LinkedIn autoplays is
+    the asset on disk, and a render that came back at a different ratio than it was asked for is
+    exactly the regression this dimension exists to catch. Missing, empty or unreadable files
+    report None for duration and a named probe state rather than raising, because a nightly
+    telemetry pass must not break on one bad file.
     """
-    result = {"duration_seconds": None, "asset_probe": VIDEO_PROBE_MISSING, "has_video_stream": False}
+    result = {"duration_seconds": None, "aspect_ratio": None,
+              "asset_probe": VIDEO_PROBE_MISSING, "has_video_stream": False}
     file_path = str(path or "").strip()
     if not file_path:
         return result
@@ -430,18 +478,20 @@ def probe_video_asset(path: Optional[str]) -> dict:
     try:
         output = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-show_entries", "stream=codec_type", "-of", "json", file_path],
+             "-show_entries", "stream=codec_type,width,height", "-of", "json", file_path],
             capture_output=True, text=True, check=False, timeout=30,
         )
         if output.returncode != 0:
             result["asset_probe"] = VIDEO_PROBE_UNREADABLE
             return result
         payload = output.stdout or "{}"
-        import json
         data = json.loads(payload)
-        streams = data.get("streams") or []
-        result["has_video_stream"] = any(
-            isinstance(s, dict) and s.get("codec_type") == "video" for s in streams)
+        streams = [s for s in (data.get("streams") or []) if isinstance(s, dict)]
+        video_streams = [s for s in streams if s.get("codec_type") == "video"]
+        result["has_video_stream"] = bool(video_streams)
+        if video_streams:
+            result["aspect_ratio"] = _aspect_ratio_from_dimensions(
+                video_streams[0].get("width"), video_streams[0].get("height"))
         duration = data.get("format", {}).get("duration")
         if duration is not None:
             try:
@@ -462,15 +512,25 @@ def video_model_tier(model: Optional[str], video_url: Optional[str] = None) -> O
     Known Runway keys from `video_models.VIDEO_MODELS` are passed through; Pexels stock is
     named explicitly; an empty/unknown model with no URL is None; an unrecognized model is
     preserved as-is so it is not silently rewritten.
+
+    With no `model` in hand the tier is read off the STORED asset, and the file NAME decides it
+    before the directory does: every stored `posts.video_url` is written under `videos/runwayml/`
+    whatever produced it (`_store_video_asset`), so a stock clip landing there would otherwise be
+    recorded as a Runway render. Only `pexels_*` proves stock, so that check comes first.
+    `VIDEO_MODEL_RUNWAY` is deliberately coarse — which Runway model rendered a post is not
+    persisted anywhere (issue #1410).
     """
     model = str(model or "").strip()
     if model:
         return model
+    file_name = _asset_file_name(video_url) or ""
+    if os.path.basename(file_name).startswith("pexels_"):
+        return VIDEO_MODEL_PEXELS
     url = str(video_url or "").strip()
     if "videos/pexels" in url:
         return VIDEO_MODEL_PEXELS
     if "videos/runwayml" in url:
-        return "runway"
+        return VIDEO_MODEL_RUNWAY
     return None
 
 
@@ -482,11 +542,16 @@ def score_video_asset(*, video_url: Optional[str], model: Optional[str] = None,
     `render_ok` is True only when the post has a reachable video asset with a readable video
     stream; `model_tier`, `duration_seconds`, `aspect_ratio` and `asset_probe` are recorded
     alongside it so a regression in any one of them can be trended.
+
+    `ratio` is the ratio the render was ASKED for, which only a caller holding the render request
+    has; the nightly beat scores a post that shipped days ago and passes none. So the probed ratio
+    is the default and an explicit `ratio` overrides it — without that the dimension would be NULL
+    on every row the beat writes.
     """
     path = resolve_local_video_path(video_url)
     probe = probe_video_asset(path)
     render_ok = bool(path and os.path.exists(path) and probe["has_video_stream"])
-    aspect = (str(ratio or "").strip()[:16]) or None
+    aspect = (str(ratio or "").strip()[:16]) or probe["aspect_ratio"]
     return {
         "video_render_ok": render_ok,
         "video_model_tier": video_model_tier(model, video_url),
