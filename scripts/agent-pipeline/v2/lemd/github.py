@@ -59,6 +59,22 @@ CLAUDE_REVIEW_MARKER = "🔎 Claude adversarial review"
 #: a marker) as evidence the review happened. Leading non-letters are stripped first: exactly the
 #: room the decoration needs (`🔎`, its four U+FFFD, `#`, `**`), none for a word in front of it.
 CLAUDE_REVIEW_MARKER_TEXT = "Claude adversarial review"
+
+#: Every text that counts as this pipeline's own review evidence, undecorated.
+#:
+#: Two entries because the dispatcher and this gate drifted apart and nothing noticed for a day.
+#: `agent_run.sh` prompts MODE=selfreview with `MARKER='🤖 Claude self-review'` whenever
+#: `CLAUDE_REVIEW_MARKER` is unset — and it IS unset, because that variable lives in v1's `tick.sh`
+#: and never reaches a v2 action's environment. So every v2 self-review posted a marker this gate
+#: could not see: `review_fresh` stayed False no matter how many passed, `decide` re-dispatched
+#: selfreview until the budget of 2 was spent, and the PR parked `selfreview_exhausted`. Un-parking
+#: reset the ledger and bought exactly two more runs, so it was a treadmill, not progress — seven
+#: open PRs were on it, one of them holding a PASSING self-review posted 13 seconds after its head.
+#:
+#: The self-review text stays accepted rather than being retired: it IS this pipeline's review
+#: evidence, produced by the lane the gate is asking about, and dropping it would throw away the
+#: markers already sitting on those seven PRs.
+REVIEW_MARKER_TEXTS = (CLAUDE_REVIEW_MARKER_TEXT, "Claude self-review")
 MARKER_DECORATION_RE = re.compile(r"^[^A-Za-z]*")
 
 
@@ -290,7 +306,7 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
     for comment in ((node.get("comments") or {}).get("nodes") or []):
         body = (comment or {}).get("body") or ""
         undecorated = MARKER_DECORATION_RE.sub("", body)
-        if undecorated.startswith(CLAUDE_REVIEW_MARKER_TEXT) and comment.get("createdAt"):
+        if undecorated.startswith(REVIEW_MARKER_TEXTS) and comment.get("createdAt"):
             stamps.append(comment["createdAt"])
     reviewed_at = max(stamps, key=_epoch) if stamps else ""
 
