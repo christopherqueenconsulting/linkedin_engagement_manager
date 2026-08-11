@@ -24,10 +24,6 @@ sys.path.insert(0, str(_V2))
 
 from lemd import observe  # noqa: E402
 
-#: Reasons built with an f-string, so the code carries a prefix and the doc carries the shape.
-#: Matched by prefix on both sides rather than exact text.
-PARAMETERISED = ("human_hold:", "not_admissible:")
-
 #: Reason strings that are constructed at the dispatch site rather than inside `decide` —
 #: `act()` parks an item as `{mode}_exhausted` when the ledger is spent. They are documented in §6
 #: (the exit-code table) rather than §4, so the table must NOT list them.
