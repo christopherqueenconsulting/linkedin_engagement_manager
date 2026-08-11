@@ -1,285 +1,291 @@
 # Content-quality audit — LEM's LinkedIn NEWSLETTERS
 
-Issue #1142. Audited 2026-08-10 against `main` @ `54ae3735`.
+Issues #1142 (desk audit) and **#1284 (this re-run, against real data)**. Re-audited 2026-08-11
+against `main` @ `389ba4b5`, with production data and a live LinkedIn exemplar.
 
 Newsletter editions combine two of the other audited surfaces (body text, cover image) into
 LinkedIn's specific newsletter format. A subscriber digest/notification is a different reading
 context from a feed scroll: the title + subtitle are the subject line + preview text, the cover is
 the only visual asset, and the whole edition competes against other inbox items rather than against
-the next post in a stream. Per `docs/graphs/content-scheduling-quality.md`'s current-state review, the
-cover image already has a hard human-approval gate (`_approved_cover_path`) — this audit is about
-whether the SHIPPED editions (body + cover together) are actually good, not just correctly gated.
+the next post in a stream.
 
 Owning pipeline: `_topup_newsletter_drafts_for_user` → `plan_newsletter_topics` → edition write
 (`src/cqc_lem/app/run_scheduler.py`), `newsletter_cover.py`, `blog_source.py` (`align_with_blog`
 resolution). Owning docs: `docs/newsletter-covers.md`, `docs/content-core.md`.
 
-**Headline:** the newsletter writer-side contract was present in pieces (blueprint rotation, slop
-lint, a cover brief fed from the edition text) but was not pinned to the channel. The title/subtitle
-instructions targeted a generic article H1, the blog-source signal was a soft "repurpose," and the
-CTA was right but not explicitly distinguished from a feed-post close. The result: editions could
-pass every existing gate while still reading like feed posts dropped into a newsletter shell.
-This PR adds a single shared `newsletter_writing_directive()` in the content core, extends the
-scaffold ban to newsletters, and tunes the planner so upstream subject/angle decisions already favor
-inbox-worthy titles, newsletter-native CTAs, and source-anchored angles.
+**Headline:** #1142 ran headless with no bodies and no exemplar, and it graded two rubric rows PASS
+that the real corpus fails. Reading all ten editions LEM has written — five of them published —
+against a live 842,798-subscriber newsletter in the same niche turns three of its judgements over:
+**digest-ability is not a PASS** (9 of 10 editions carry a wall-of-text paragraph, 6 of 10 have no
+list block), **the newsletter CTA is not a PASS** (7 of 10 close by routing the reader to a comments
+box, 2 of 10 invite a subscribe), and **the editions are half the length the prompt asks for**
+(mean 672 words against its own 800 floor; the exemplar runs 1,667–2,364). Two defects only a body
+read could find: **three of the five PUBLISHED editions shipped a bare `CTA` line** — the
+blueprint's own section label, printed for subscribers — and **every edition's self-similarity has
+been recorded as unmeasured** while the real corpus sits at 0.68–0.83 embedding cosine against
+itself. This PR fixes the label leak deterministically, pins the structural floor into the shared
+writer contract, and gives the nightly telemetry the newsletter history reader it never had.
 
 ---
 
-## 1. What could and could not be sampled
+## 1. What was sampled, and how it was obtained
 
-The issue asked for 8–12 recently-published newsletter editions via `db.py` readers, and a real
-high-engagement LinkedIn Newsletter as the reference exemplar. Both were bounded by where this audit
-ran, and the limits are stated here rather than papered over:
+#1284 existed because #1142 could read neither production bodies nor a live newsletter. Both inputs
+were available for this run (the owner authorised prod access on the issue's Decision Comment,
+`1A 2A`), and both were taken through **existing readers only** — no new query path, no write:
 
-| Asked for | What was actually available | Why |
+| Asked for | What this run used | How |
 |---|---|---|
-| 8–12 shipped newsletter editions via `db.py` | **0 bodies.** The scorecard below is built from the `content_quality` PostHog telemetry instead — every newsletter edition LEM has scored since the #630 nightly beat started, which is **1 edition, one account** | The audit runs headless in an agent worktree. Reading edition bodies means production MySQL credentials, and the pipeline runbook forbids touching `.env` / prod secrets. The telemetry is the read path that does not need them |
-| A real, fetched LinkedIn newsletter exemplar | **Not fetched.** Rubric-only assessment, plus an in-repo exemplar for the gauntlet loop (§4) | Fetching one means a live authenticated Selenium session against LinkedIn — a runbook escalation trigger, not something to do headless. The issue's own fallback clause covers this: *"if none can be sourced and fetched, fall back to a rubric-only assessment and say so explicitly"* |
+| 8–12 shipped editions via `db.py` | **10 editions, 5 of them `published`** (ids 1–10, one account — that is every edition LEM has ever written) | `db.get_newsletter_edition(id)`, the shipped per-id reader, looped over ids in the production Celery worker. Read-only |
+| A real, actively-growing LinkedIn newsletter | **AI Frontier** (Steve Nouri) — 842,798 subscribers, published weekly, 161 editions; two full editions read | The read-only live probe on the debug Grid node: `scripts/linkedin_live_validation.py --require-debug-node --newsletter-url … --newsletter-edition …` (new surfaces, §6) |
 
-Both are tracked as **#1284**, to be re-run where those inputs exist.
+**The corpus is one account and it is all PRE-contract.** #1142's writer-side contract shipped in
+PR #1289 and reached production in `v0.145.0` at 06:04 UTC on 2026-08-11 — after every edition here
+was written. So this scorecard is not a verdict on that contract; it is the **baseline it was
+written against**, measured for the first time, plus the gaps that survive it (§4).
 
-**Read the scorecard as sizing, not calibration.** One edition from one account can show that a gap
-exists; it cannot set a threshold. Every recommendation below that would require a calibrated number
-is filed as a follow-up issue with "calibrate it" in its acceptance criteria, never shipped here on
-n=1.
+Deliberate limits, stated rather than papered over: n=10 from one account cannot calibrate a
+threshold, so every recommendation needing a number is filed as a follow-up with "calibrate it" in
+its acceptance criteria. Approved/draft editions are included and marked — they are written by the
+same pipeline, and excluding them would leave n=5.
 
-### Scorecard — every newsletter edition LEM has scored (`content_quality`, 2026-07-29 → 2026-08-09)
+### Scorecard — every newsletter edition LEM has written (2026-07-07 → 2026-09-08 slots)
 
-| ref_id | shipped | chars | words | hook chars (≤210?) | paragraphs | longest para | slop hard / warn | authenticity | self-similarity | impressions | ER |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 12 | 2026-08-02 | 4,847 | 738 | 96 ✅ | 14 | 423 ⚠️ | 0 / 0 | *unscored* | 0.612 | 31 | 3.2% |
+Deterministic graders only (`content_quality.score_item`, `content_framework.dwell_report`,
+`slop_lint.lint_report`, `content_quality.similarity_reports`). Reproducible from the same readers.
 
-What the numbers say on their own, before any rubric:
+| id | status | words | opening line (≤210?) | longest para | list block | bare label line | slop HARD | dwell | self-similarity | cover |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | published | 812 | 119 ✅ | 358 ⚠️ | no | **`CTA`** | 1 | 67 | 0.828 | none |
+| 2 | published | 466 | 269 ❌ | 407 ⚠️ | no | **`CTA`** | 1 | 63 | 0.797 | none |
+| 3 | published | 428 | 288 ❌ | 459 ⚠️ | yes | **`CTA`** | 1 | 72 | 0.812 | none |
+| 4 | published | 473 | 411 ❌ | 645 ⚠️ | no | — | 0 | 48 | 0.768 | none |
+| 5 | published | 670 | 209 ✅ | 210 | no | — | 1 | 81 | 0.828 | pending_review |
+| 6 | approved | 747 | 521 ❌ | 583 ⚠️ | yes | — | 1 | 46 | 0.709 | pending_review |
+| 7 | approved | 511 | 297 ❌ | 568 ⚠️ | no | — | 1 | 60 | 0.800 | pending_review |
+| 8 | approved | 846 | 198 ✅ | 371 ⚠️ | no | — | 0 | 67 | 0.800 | pending_review |
+| 9 | approved | 1,087 | 233 ❌ | 494 ⚠️ | yes | — | 0 | 56 | 0.709 | pending_review |
+| 10 | draft | 677 | 102 ✅ | 401 ⚠️ | yes | — | 1 | 77 | 0.684 | pending_review |
 
-- **Length lands inside the 800–1200 word target** (738 words ≈ 4,847 chars). The prompt's length
-  guidance is already hitting the mark.
-- **Hook is within the 210-char fold budget** because the metric only measures the first line. That
-  does NOT mean it earns an open in a subscriber digest — the rubric addresses that below (R1).
-- **One long paragraph (423 chars) trips the dwell wall-of-text warning.** Scannability is already
-  being measured; the new directive makes it a writer-side rule.
-- **Authenticity was unscored** for this edition, so the gate skipped rather than judged it. Same
-  pattern as text posts; not chased here.
-- **Engagement rate is low (3.2%)** on 31 impressions — too thin to action, but consistent with the
-  newsletter surface underperforming relative to posts in the same telemetry window.
+Totals: **3/10** reach the 800-word floor · **4/10** open inside the 210-char fold · **9/10** carry a
+paragraph over 300 chars · **4/10** carry a numbered/bulleted block · **3/10** printed a structural
+label (all three PUBLISHED) · **7/10** still trip a HARD slop check after the bounded regeneration ·
+**7/10** close by sending the reader to the comments · **2/10** invite a subscribe · self-similarity
+0.684–0.828 (mean 0.77), title similarity 0.372–0.711 (mean 0.60) · **0/10** covers ever approved.
+
+### The exemplar, and its control
+
+| | AI Frontier (Steve Nouri) | Superhuman ― AI Insights (Zain Kahn) | LEM (n=10) |
+|---|---|---|---|
+| Subscribers | 842,798 | 328,285 | not applicable (own newsletter) |
+| Cadence the page states | Published weekly, 161 editions | "Published daily", 3 editions | weekly |
+| Newest edition | 5 days old | ~2 years old | slots through 2026-09-08 |
+| Edition length | 1,667 and 2,364 words | — | 428–1,087 (mean 672) |
+| Longest rendered block | 355 / 289 chars | — | 210–645 (mean 450) |
+| Per-edition engagement | 338–1,378 reactions, 28–65 comments | 197–1,115 reactions | **not captured** — `get_shipped_content_for_quality` records reactions/impressions as None for this surface, so ER is structurally unmeasured for newsletters |
+| Close | a thesis line, no ask; subscribing is the PAGE control | — | 7/10 ask for a comment |
+
+Superhuman is in the table on purpose: it is the **control** proving subscriber count is not the
+signal. A 328k list that last published two years ago is a dead newsletter with a big number on it,
+which is why the exemplar is AI Frontier — 161 editions, weekly, newest five days old.
 
 ---
 
-## 2. The rubric
+## 2. The rubric, re-graded against real editions
 
-Grounded in this repo's own invariants, not generic taste. Each row names the ONE place that owns
-it, and the verdict is against what the pipeline actually does today.
+Same five rows as #1142. The verdicts change where the data disagrees with the desk read.
 
-| # | Rubric row | Owned by | Verdict |
-|---|---|---|---|
-| R1 | **Title/subject-line hook** — title + subtitle earn the open in a subscriber digest/notification | `generate_newsletter_edition` JSON schema title/subtitle lines | **PARTIAL → fixed here.** The prompt said "benefit-driven, scroll-stopping edition title" and "description of what THIS edition delivers" — both describe an article H1, not a subject line. Rewritten to target the inbox (F1) |
-| R2 | **Cover-body cohesion** — the approved cover matches what the body delivers | `build_cover_prompt` (feeds title+subtitle+body[:1500]); `generate_newsletter_edition` structure | **PARTIAL → fixed here.** The cover brief already draws from the edition text, but the prompt did not tell the writer to keep the opening visually representable and cohesive. Added explicit instruction (F1) |
-| R3 | **Digest-ability** — scannable structure for a notification-driven reader | `dwell_directive` / `dwell_report`; newsletter structure prompt | **PASS.** 3–5 sections, subheads, takeaways block, and short paragraphs are already required. The new directive adds the "What you'll get" scan language but does not change the structure gate |
-| R4 | **Blog-alignment fidelity** — when `align_with_blog` resolves a source, the edition tracks it | `resolve_blog_source` + `generate_newsletter_edition` user prompt | **PARTIAL → fixed here.** The source material line said "Source material to repurpose" — too soft. Rewritten to require the edition track the central claim/example/framework (F1) |
-| R5 | **Newsletter-appropriate CTA** — reply question + subscribe invite, never feed-post mechanics | `cta_policy_directive`; newsletter CTA prompt line | **PASS, and clarified.** The prompt already asked for replies + subscribe. The new directive explicitly bans feed-post mechanics and meeting asks so the CTA cannot silently drift |
+| # | Rubric row | Owned by | #1142 verdict | Verdict on the real corpus |
+|---|---|---|---|---|
+| R1 | **Title/subject-line hook** — title + subtitle earn the open | `generate_newsletter_edition` title/subtitle lines | PARTIAL → fixed | **PARTIAL, unresolved.** The title fix shipped, but titles remain templated ACROSS editions: 0.372–0.711 cosine between them, mean 0.60. Six of ten read as topic labels ("The AI Engagement Playbook: Boosting LinkedIn Success") |
+| R2 | **Cover-body cohesion** — the approved cover matches the body | `build_cover_prompt`; `_approved_cover_path` | PARTIAL → fixed | **UNTESTABLE IN PRODUCTION → #1432.** Five editions have a generated cover, all `pending_review`; four published editions had no cover at all. **Zero covers have ever reached LinkedIn**, so cohesion has never been exercised |
+| R3 | **Digest-ability** — scannable in a notification context | `dwell_directive` / `dwell_report` | **PASS** | **FAIL → fixed here.** 9/10 carry a wall-of-text paragraph (to 645 chars), 6/10 have no list block, mean dwell 64. The exemplar's blocks top out at 289–355 chars |
+| R4 | **Blog-alignment fidelity** — the edition tracks its source | `resolve_blog_source` + the prompt | PARTIAL → fixed | **UNGROUNDED.** No edition in the corpus resolved a blog source, so the fidelity wording is still unmeasured against real output. Stands as #1286 |
+| R5 | **Newsletter-appropriate CTA** — reply + subscribe, not feed mechanics | `cta_policy_directive`; the CTA prompt line | **PASS, clarified** | **FAIL → fixed here.** 7/10 close with a comments ask ("Answer in the comments", "Tell me in the comments") — wording the old ban ('comment below') did not catch — and only 2/10 invite a subscribe |
+
+A sixth row the desk audit had no way to see, added here:
+
+| R6 | **The body is the reader's, not the pipeline's** | `_clean_newsletter_body` | — | **FAIL → fixed here.** Three of the five PUBLISHED editions carry a bare `CTA` line, and one also carries `KEY TAKEAWAYS` as its own line above the block. `CTA` is the blueprint's instruction to the writer; it was published to subscribers |
 
 ---
 
 ## 3. Findings
 
-### F1 — The newsletter prompts targeted the wrong channel *(fixed in this PR)*
+### F6 — The blueprint's section labels were published as body text *(fixed in this PR)*
 
-CLAUDE.md states the content-core invariant: *"never add a parallel per-content-type prompt helper,
-add a preset."* `newsletter_writing_directive()` is therefore added to the shared core
-(`content_framework.py`) and appended to the existing newsletter prompt, mirroring how
-`post_writing_directive()` works for feed posts.
+Editions 1, 2 and 3 — three of the five that actually shipped — contain a line reading exactly
+`CTA`, immediately above their closing question. The blueprint hands the writer a structure skeleton
+("hook, problem, example, takeaways, CTA"), the model echoed the label, and nothing downstream
+removed it: `_clean_newsletter_body` only stripped markdown.
 
-The specific prompt drift:
+The fix is deterministic, in the ONE place a newsletter body is cleaned. `_clean_newsletter_body`
+drops any line that is *only* a structural label (`NEWSLETTER_STRUCTURAL_LABELS` — `CTA`, `HOOK`,
+`INTRO`, `BODY`, `CONCLUSION`, `SECTION 2`, decorated or numbered variants), and the writer-side
+directive names the same list, so the writer side and the cleaning side cannot drift. A
+reader-facing heading is deliberately NOT on the list: `KEY TAKEAWAYS` over a takeaways block is
+structure a human editor keeps, and the dwell grader rewards it.
 
-| Element | Pre-#1142 wording | Why it is a defect | New wording |
-|---|---|---|---|
-| Title | "a specific, benefit-driven, scroll-stopping edition title" | Describes an article H1, not a notification subject line | "Write it as an INBOX SUBJECT LINE: open a clear loop the reader needs closed" |
-| Subtitle | "a description of what THIS edition delivers and why to read it" | Describes an H1 summary, not preview text | "Think 'email preview text'... promises a concrete payoff without closing the title's loop" |
-| Cover cohesion | Implicit via `build_cover_prompt` | Writer had no reason to keep the opening visually representable | "The first ~1500 characters... feed the cover-image brief, so they must describe ONE cohesive, visually representable focal idea" |
-| Blog source | "Source material to repurpose" | Could be treated as optional flavor | "The edition must TRACK its central claim, example, or framework; do not drift into generic advice" |
-| CTA | "A soft CTA that invites REPLIES... and invites the reader to subscribe" | Right shape, but feed-post mechanics not explicitly excluded | Explicit ban on likes/reposts/saves/'comment below', meeting asks, and lead-magnet keyword mechanics |
+### F7 — The structural floor was prose, so it was optional *(fixed in this PR)*
 
-Also fixed: the system prompt literally quoted `"In today's edition..."` as an example of what to
-avoid, which meant the prompt itself contained a phrase now on the `NEWSLETTER_BANNED_SCAFFOLDS`
-list. The example is rephrased to "no edition-number opens" so the writer-side directive and the
-checking side stay pinned.
+`generate_newsletter_edition`'s docstring has always said "~800–1200 words … a strong hook", and the
+#1142 directive said "short paragraphs … never a wall of text". Measured, that guidance is not
+holding: 3/10 reach the floor, 4/10 open inside the fold, 9/10 exceed the paragraph ceiling the
+dwell grader already measures, 6/10 offer nothing to scroll back to.
 
-### F2 — Newsletter scaffolds had no checking-side counterpart → **#1285**
+The directive now states the floor as numbers the graders already own —
+`LINKEDIN_FOLD_CHARS` (210), `DWELL_PARAGRAPH_MAX_CHARS` (300), and
+`NEWSLETTER_WORD_FLOOR`/`NEWSLETTER_WORD_CEILING` (800/1200) — plus "at least one numbered or
+bulleted block". Naming the constants rather than repeating literals is what keeps the writer side
+and the measuring side one number.
 
-`POST_BANNED_SCAFFOLDS` was wired into `slop_lint` for posts only. Newsletter equivalents
-("in today's edition", "let's dive in", "here's what you need to know") were not banned anywhere.
-This PR adds `NEWSLETTER_BANNED_SCAFFOLDS` to the shared core and extends the `canned_scaffold`
-check to newsletters (WARN severity, same as posts), so the writer-side ban and the checking side
-read one list. Follow-up #1285: measure whether the severity should be HARD once a corpus exists,
-and whether additional sampled scaffolds need to be added. **Resolved — §8 below: the check is HARD
-on newsletters as of #1285.**
+### F8 — "In the comments" is a feed reflex the ban did not cover *(fixed in this PR)*
 
-### F3 — No deterministic blog-alignment fidelity check → **#1286**
+The #1142 directive banned `'comment below'`. The corpus closes with "Answer in the comments so we
+can compare notes", "Tell me in the comments where…", "Share your approach in the comments" — 7 of
+10 editions, including 4 of the 5 published. In a subscriber digest that is the wrong verb: the
+reader is in an inbox, not under a post. The exemplar does not ask at all — it closes on a thesis
+and lets the page's Subscribe control do the conversion work.
 
-The prompt now requires fidelity, but there is no deterministic gate that compares `blog_content`
-to the generated edition body. A future check (token/keyword overlap, or a small embedding gap)
-could catch drift into generic advice before the edition reaches review. Follow-up #1286: design
-and calibrate a newsletter-specific fidelity gate.
+The CTA rule now bans routing the reader to a comments box **in any wording**, and asks for a REPLY
+to the edition plus the subscribe line. Whether the subscribe invite has a real destination is still
+#1288.
 
-### F4 — Cover-body cohesion is only as good as the opening text → **#1287**
+### F9 — Newsletter self-similarity was structurally unmeasured *(fixed in this PR)*
 
-`build_cover_prompt` reads title+subtitle+body[:1500], but the cover is generated before the title
-and subtitle are finalized and there is no deterministic check that the cover focal concept
-overlaps with the opening vocabulary. Follow-up #1287: either re-brief the cover after final edits,
-or add a deterministic overlap gate between the edition opening and the cover brief's focal
-concept.
+`auto_nightly_content_quality` graded self-similarity for posts and comments only; its own comment
+said newsletters "have no body-history reader, so their similarity reports as unmeasured". Measured
+now, the corpus sits at **0.684–0.828 embedding cosine** against itself (mean 0.77) — on the post
+surface that is regression-alert territory, and the field has been NULL the whole time.
 
-### F5 — Subscribe CTA may read hollow without a public subscribe path → **#1288**
+`get_recent_newsletter_bodies` (newsletter repository, exported through the `db.py` facade) is the
+counterpart of `get_recent_post_texts`, and the nightly pass now reads it into the per-surface
+history map. This ships MEASUREMENT only: no threshold, no gate, nothing paused. Calibrating a
+newsletter similarity ceiling against a corpus bigger than one account is **#1433**.
 
-The new directive tells the writer to invite a subscribe, but not every user has a public LinkedIn
-newsletter page or configured subscribe destination. Follow-up #1288: verify that the subscribe
-invite has a real destination (newsletter page / profile follow) before the line is written, or make
-the CTA conditional.
+### F10 — The HARD slop checks are not clearing on this surface → **#1434**
+
+Seven of ten editions still trip a HARD check after the bounded regeneration (`contrastive_frame`
+×5, `banned_lexicon` ×2), and a newsletter is returned anyway by design — it is drafted for human
+review. That design is right; the number is not. With `SLOP_MAX_ATTEMPTS=2` the writer gets exactly
+ONE retry, and the retry is a full-edition regeneration whose new draft can trip a different check.
+Filed rather than fixed here: raising the attempt budget costs a `lem-complex` call per edition and
+needs the cost/benefit measured, not guessed.
+
+### Findings carried forward from #1142
+
+F1 (prompts targeted the wrong channel), F2 (`NEWSLETTER_BANNED_SCAFFOLDS` → #1285), F3
+(blog-fidelity gate → #1286), F4 (cover-body cohesion gate → #1287), F5 (subscribe destination →
+#1288) all shipped or remain filed as stated there. **F2's follow-up #1285 closed while this audit
+was in flight**: `canned_scaffold` is now HARD on the newsletter surface and WARN everywhere else
+(§7). F2's list was checked against this corpus:
+**zero editions match any banned scaffold**, which is consistent with a WARN-severity list sampled
+from earlier drafts — the sameness in this corpus is structural (0.77 self-similarity), not phrasal.
 
 ---
 
 ## 4. Gauntlet-loop verdict trail
 
-Run per `.claude/skills/gauntlet-loop/SKILL.md`. One piece (the newsletter edition prompt/planning
-quality), one builder and one **fresh-context** critic, blind A/B (labels stripped), capped at 3
-rounds.
+Run per `.claude/skills/gauntlet-loop/SKILL.md`: one piece (the newsletter pipeline's output
+quality), a builder proposal, a fresh critic pass, capped at 3 rounds. Unlike #1142, the reference
+exemplar is REAL and fetched (§1), and the comparison is made against **generated output**, not
+hand-written illustrations: both arms were generated in production, same subject, same blueprint,
+same profile, with only the writer contract swapped.
 
-**Reference exemplar — named and in-repo:** `content_framework.comment_contract_directive()`, the #617
-COMMENT QUALITY CONTRACT. It is this repo's gold standard for a writer-side contract (numbered,
-each rule falsifiable, a banned list shared with the checking side) and it solves *the same problem
-on the sibling surface* — templated sameness on a LinkedIn text surface. Chosen because no real
-LinkedIn newsletter exemplar could be fetched headlessly (§1), and the skill's own rule is that an
-in-repo gold standard beats a hypothetical.
+**Round 1 — builder proposal.** Three changes: strip the blueprint's structural labels
+deterministically (F6), state the structural floor in the writer contract using the graders' own
+constants (F7), and ban the comments-box ask in any wording (F8).
 
-**Stated limitation:** the comparison was label-blind, not indistinguishable — a critic reading a
-comment contract next to a newsletter directive can tell which is which. The verdict below is
-therefore a comparative judgment against the project's invariants, not a true double-blind.
+**Round 1 — critic, against real generation.** Both arms were generated in the production worker:
+same two subjects, same `select_blueprint("newsletter")` shape, same profile and synthesis, same
+models, with ONLY `newsletter_writing_directive()` swapped. Two editions per arm.
 
-| Round | Piece | Builder proposal | Critic verdict (fresh context) | Resolution |
+| measure | control (shipped #1142 contract) | treatment (this PR's contract) | exemplar |
 |---|---|---|---|
-| 1 | **Newsletter writer-side contract + planner tuning** | Add `newsletter_writing_directive()` in the shared core; rewrite title/subtitle instructions for inbox context; strengthen blog-source fidelity; add newsletter scaffolds to the shared banned list; tune `plan_newsletter_topics` for inbox-worthy titles, newsletter CTAs, and blog-ready angles | **Build wins.** *"Output B wins decisively. Its title opens a loop with a specific claim, the body gives one concrete example and an actionable format, the structure is scannable, and it ends with a newsletter-native reply question plus a subscribe CTA. Output A loses on the same rubric rows: a generic summary title, no concrete example, a feed-post 'Share your thoughts below' CTA, and flat digest-ability."* Biggest remaining gap: **cover-body cohesion** — the strongest edition was still text-first and abstract; the next revision should require one imageable moment or prop that the cover brief can own. | Shipped as drafted. The cover-body cohesion gap is addressed by the directive's "first ~1500 characters must describe ONE cohesive, visually representable focal idea" rule. A deterministic follow-up is filed (#1287) because prompt wording alone cannot guarantee visual cohesion without a corpus to calibrate. |
+| words | 446 · 815 | 561 · 760 | 1,667 · 2,364 |
+| longest paragraph | 343 · 313 | **512 · 525** | 355 · 289 |
+| opening line ≤210 | 1 of 2 | 0 of 2 | yes |
+| list block | 1 of 2 | **2 of 2** | yes |
+| slop HARD | 0 · 2 | **0 · 0** | — |
+| bare structural label | 0 · 0 | 0 · 0 | — |
+| close | "What do you think? … I'd love to hear about it" + subscribe | **"reply to this edition with the exact impression count"**, "Reply with your perspective" + subscribe | a thesis line, no ask |
 
-The build won on round 1; no further rounds were needed. Nothing is parked `needs-human`.
+**Critic verdict: the build wins on the CTA and on slop, and LOSES on the structural floor.** The
+treatment's closes are newsletter-native in both editions (a reply ask, not a comments ask, which is
+the corpus's most common defect at 7/10) and neither trips a HARD check. But its paragraphs came
+back *longer* than the control's — 512 and 525 characters against a 300-character rule stated
+explicitly in the prompt it was given. On n=2 per arm that is not a measurement of the rule's
+effect; it is enough to say the rule did not visibly bind.
 
----
+**Biggest remaining gap, and what it changed:** *a writer-side instruction with no checking side does
+not hold.* Everything in this audit that measurably closed, closed because something deterministic
+ran — the label strip, the similarity reader. The floor is kept in the contract (it costs nothing
+and states the target for the human reviewer too), but the honest conclusion is filed as **#1435**:
+grade the finished edition with the `dwell_report()` the tree already has, and feed its failures
+into the SAME bounded regeneration the slop lint already uses, then re-run this A/B with ≥4 editions
+per arm.
 
-## 5. Before / after
+**Found while running the loop — a defect the corpus could not show.** Three of the six production
+title passes in these runs came back as the model addressing the operator rather than writing a
+headline: *"Could you please share the draft headline you'd like me to rewrite?"* `humanize_title`
+guards on length and on hype-word count, and an aside passes both — so it REPLACED the edition's
+real title and would have published as the subject line. `content_alignment.is_assistant_aside()`
+now fails such a rewrite back to the original (fail-open, the same posture as every other guard in
+that function). Round 2 was not needed: the finding is a deterministic fix, not a contract argument.
 
-The pipeline could not be run end to end here (no LLM credentials in the agent worktree), so the
-"before" draft is **written to the old system prompt's own shape** and the "after" draft to the new
-contract. Both are trimmed for readability. Everything in the table is reproducible with the
-deterministic graders in the tree.
-
-**Before** — written to the pre-#1142 prompt:
-
-> The Future of Content Marketing
->
-> How creators can stay ahead in 2026
->
-> In today's edition, I want to talk about content marketing.
->
-> The landscape is changing fast. With recent shifts in algorithms and audience behavior, it's crucial to consider approaches that keep your content visible and valuable.
->
-> Three trends are shaping the future. First, short-form video continues to dominate attention. Second, authentic storytelling is winning over polished production. Third, community-driven distribution matters more than ever.
->
-> So the question is: how will you adapt your strategy this year?
->
-> What do you think? Share your thoughts below.
-
-**After** — written to the shipped contract:
-
-> The quiet shift that cut our content output in half — and doubled leads
->
-> One change to how we package expertise, and why most newsletters still do the opposite
->
-> What you'll get: why one deep edition beat three short posts, the exact format we used, and a question to test your own subject lines.
->
-> Last March we stopped publishing three short posts a week and started sending one 900-word edition. In the next 90 days our output dropped by half and our qualified leads doubled.
->
-> The change wasn't volume. It was packaging. A short post asks for a scroll; a newsletter edition asks for a read. The same expertise, but the reader treats it differently.
->
-> Here's the format we used:
->
-> A one-line hook that opens a loop
-> A short "what you'll get" scan
-> One concrete example from our own work
-> A specific step the reader can run this week
-> A reply-driving question at the end
->
-> If your last three subject lines summarize instead of tease, which one would you rewrite first?
->
-> Subscribe if you want the next edition — I send one of these every Tuesday.
-
-| Measure | Before | After |
-|---|---|---|
-| Inbox loop in title? | No — a generic topic label | Yes — a specific, unresolved claim |
-| Subtitle as preview text? | No — an H1-style summary | Yes — payoff without closing the loop |
-| `NEWSLETTER_BANNED_SCAFFOLDS` phrases | **3** — "in today's edition", "it's crucial to", "what do you think? share your thoughts below" | **0** |
-| Concrete first-person proof | None | Named month, real numbers, named format |
-| Cover brief cohesion | Abstract manifesto ("three trends") | Single focal idea (packaging expertise) |
-| CTA | Feed-post filler | Reply question + subscribe invite |
-| Slop lint HARD | 0 | 0 |
-
-The point of the pairing is not that the second draft is prettier. It is that **the first draft
-was what the old prompt allowed**, it passed the existing slop lint, and only the new contract can
-see what is wrong with it.
+The loop stopped after one round. Nothing is parked `needs-human`.
 
 ---
 
-## 6. What shipped in this PR
+## 5. What shipped in this PR
 
-- `content_framework.NEWSLETTER_BANNED_SCAFFOLDS` — the sampled newsletter scaffold list, provenance
-  rule documented (every entry traceable to LEM's own newsletter drafts/prompt output, extended only
-  on new sampled evidence).
-- `content_framework.newsletter_writing_directive()` — the ONE shared newsletter craft contract,
-  appended to `generate_newsletter_edition`. Addresses all five rubric rows: inbox title/subtitle,
-  cover-body cohesion, digest-ability, blog-source fidelity, and newsletter-native CTA. No parallel
-  newsletter-only helper.
-- `generate_newsletter_edition` title/subtitle instructions rewritten for the inbox, and the
-  directive appended to the system prompt.
-- `generate_newsletter_edition` blog-source line strengthened: "must TRACK its central claim..."
-- `plan_newsletter_topics` planner rules tuned: inbox-worthy title/subtitle pairing, CTA-fit, and
-  blog-ready angles.
-- `slop_lint.banned_scaffolds()` now reads `POST_BANNED_SCAFFOLDS + NEWSLETTER_BANNED_SCAFFOLDS`;
-  `slop_lint._check_scaffold` extended to newsletters (WARN, never a hold).
-- `newsletter_writing_directive()` names the same `banned_scaffolds()` list the linter reads, so the
-  writer side and checking side cannot drift.
-- `tests/unit/utilities/ai/test_newsletter_generation.py` extended to assert the directive is
-  injected, the system prompt carries no scaffold it would later flag, the blog-fidelity signal is
-  present, and the planner targets inbox/CTA/blog-ready angles.
-- `tests/unit/utilities/ai/test_canned_scaffold_lint.py` updated to confirm newsletter scaffolds are
-  surfaced on the newsletter surface and that the writer/checker share one list.
-- `docs/content-quality-audits/newsletter.md` (this doc) with rubric, findings, gauntlet-loop verdict,
-  and before/after example.
+- `content_framework.NEWSLETTER_STRUCTURAL_LABELS` + `NEWSLETTER_WORD_FLOOR` /
+  `NEWSLETTER_WORD_CEILING` — the label list and the length band, named once.
+- `ai_helper._clean_newsletter_body` drops bare structural-label lines (F6), keeping reader-facing
+  headings.
+- `content_alignment.is_assistant_aside()` — a rewritten title that is the assistant talking to the
+  operator falls back to the original (§4).
+- `content_framework.newsletter_writing_directive()` states the structural floor in the graders' own
+  constants (F7) and bans the comments-box ask in any wording (F8).
+- `newsletter.get_recent_newsletter_bodies` + the `db.py` re-export, and
+  `auto_nightly_content_quality` reads it as the newsletter similarity history (F9).
+- `scripts/linkedin_live_validation.py`: `--newsletter-url` grounds
+  `_read_newsletter_subscriber_count` against a page whose count is stated in its own text (the
+  drift that would flatline `newsletter_subscriber_stats`), and `--newsletter-edition` samples a
+  published edition for exemplar evidence. Both read-only, neither in the weekly sweep;
+  `docs/sdui-probe-coverage.md` carries both rows.
+- Tests: label stripping and the directive's floors (`test_newsletter_generation.py`), the history
+  reader (`test_db_newsletter.py`), the per-surface similarity wiring
+  (`test_content_quality_telemetry.py`), the title-aside guard (`test_humanize.py`), and the probe
+  verdicts (`test_linkedin_live_validation.py`).
 
 **What did NOT change:** the cover-approval gate (`_approved_cover_path`), the schema, the API, the
-SPA, cadence math, or the publish flow. Those are out of scope for this PR per the issue; any needed
-changes are filed as separate `risk:*` follow-ups below.
+SPA, cadence math, the publish flow, and any threshold or gate. Nothing new can hold or pause an
+edition.
 
-**Residual caveats (non-blocking, filed as follow-ups):**
-- #1284 — re-run the audit with real shipped edition bodies and a fetched LinkedIn exemplar.
-- #1285 — measure and possibly harden newsletter scaffold severity.
-- #1286 — add a deterministic blog-alignment fidelity check.
-- #1287 — add deterministic cover-body cohesion check or re-brief the cover after edits.
-- #1288 — verify the subscribe CTA has a real public destination.
-
-**Telemetry caveat:** `content_quality.slop_severity_score` weights warnings, and the #630 nightly
-beat re-lints shipped newsletters, so post-merge every newsletter's `slop_warn` / `slop_score` may
-step up with no change to the edition. Read the discontinuity at the merge date as this check
-landing, not as quality moving — it is the trend line, never a gate (`docs/content-quality-telemetry.md`).
+**Telemetry note:** newsletter rows will start carrying a `similarity` value instead of NULL from
+the first nightly run after this merges. Read that as the measurement starting, not as similarity
+appearing — and it is the trend line, never a gate (`docs/content-quality-telemetry.md`).
 
 ---
 
-## 7. Follow-up issues filed
+## 6. Follow-up issues
 
-- **#1284** — Re-run newsletter audit with real shipped editions + fetched LinkedIn exemplar
-- **#1285** — Harden newsletter scaffold check severity after sampling
-- **#1286** — Add deterministic blog-alignment fidelity gate for newsletter editions
-- **#1287** — Add deterministic cover-body cohesion check / re-brief cover after title/subtitle edits
-- **#1288** — Verify newsletter subscribe CTA has a real public destination
+Filed by this audit:
+
+- **#1432** — no newsletter cover has ever been approved, so every shipped edition went out
+  coverless and R2 is untestable in production.
+- **#1433** — calibrate a newsletter self-similarity ceiling now that the dimension is measured.
+- **#1434** — the newsletter slop-lint retry budget clears HARD checks on 3 of 10 editions.
+- **#1435** — give the structural floor a checking side; the A/B above says the wording alone does
+  not bind.
+
+Still open from #1142: **#1286** (blog-alignment fidelity gate), **#1287** (cover-body cohesion
+gate), **#1288** (subscribe destination). **#1285** (scaffold severity) closed while this audit was
+in flight — §7 below.
 
 ---
 
-## 8. Calibrated scaffold severity (#1285)
+## 7. Calibrated scaffold severity (#1285)
 
 **Decision: `canned_scaffold` is HARD on the newsletter surface, WARN everywhere else.**
 
@@ -325,7 +331,14 @@ switched off — cannot read as "no edition would have been held". Adding anythi
 `NEWSLETTER_BANNED_SCAFFOLDS` is a human read of that shortlist, not an automatic step — a phrase
 can repeat because it is the author's real vocabulary, which is the opposite of a scaffold.
 
-**Telemetry discontinuity (second one, same cause as §6's):** the #630 nightly beat re-lints shipped
+**What this re-audit adds to that measurement.** The 10-edition corpus in §1 is the first one big
+enough to look at, and **zero editions match any banned scaffold** (§3, "Findings carried forward").
+So promoting the check to HARD holds nothing on the corpus that exists — the number in F10 is
+unaffected by this severity — and it is still under the sampler's 20-edition `NOT ENOUGH` floor, so
+it neither confirms the phrase list nor retires an entry from it. The sameness this corpus does
+carry is structural (0.77 self-similarity), which is #1433, not a scaffold question.
+
+**Telemetry discontinuity (second one, same cause as §5's):** the #630 nightly beat re-lints shipped
 newsletters, so from the merge date a newsletter scaffold moves from `slop_warn` to `slop_hard`. The
 step is this severity landing, not quality moving. Content-quality telemetry is a trend line and
 never gates anything (`docs/content-quality-telemetry.md`); the newsletter publish flow is unchanged.

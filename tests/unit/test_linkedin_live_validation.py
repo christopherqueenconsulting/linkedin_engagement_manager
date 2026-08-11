@@ -2917,3 +2917,60 @@ class TestProbeSessionPin:
                                 {"refused": True, "reason": "debug_node_unavailable",
                                  "detail": "busy", "action": "re-run later"})))
         assert llv.main(["--feed-sort", "--require-debug-node"]) == llv.BREAKER_REFUSAL_EXIT_CODE
+
+
+@pytest.mark.unit
+class TestNewsletterPageProbe:
+    """#1284: `_read_newsletter_subscriber_count` feeds every `newsletter_subscriber_stats` row, so
+    a page that states a count the reader misses turns the whole growth series into NULLs.
+    """
+
+    def test_a_count_the_page_states_and_the_reader_misses_is_drift(self):
+        reading = {"page_text": "NEWSLETTER AI Frontier Published weekly 842,798 subscribers",
+                   "page_subscriber_token": "842,798 subscriber", "subscriber_count": None,
+                   "edition_titles": ["An edition"]}
+        assert llv.newsletter_page_state(reading) == llv.STATE_DRIFT
+        assert "growth series flatlines" in llv.newsletter_page_verdict(reading)
+
+    def test_a_count_the_reader_resolves_is_ok(self):
+        reading = {"page_text": "842,798 subscribers", "page_subscriber_token": "842,798 subscriber",
+                   "subscriber_count": 842798, "edition_titles": ["An edition"]}
+        assert llv.newsletter_page_state(reading) == llv.STATE_OK
+        assert "842798" in llv.newsletter_page_verdict(reading)
+
+    def test_a_page_that_never_rendered_grounds_nothing(self):
+        assert llv.newsletter_page_state({"page_text": ""}) == llv.STATE_UNKNOWN
+        assert "did not render" in llv.newsletter_page_verdict({"page_text": ""})
+
+    def test_a_rendered_page_with_neither_signal_is_unknown_not_drift(self):
+        # A profile URL passed by mistake renders fine and grounds nothing — never a defect.
+        reading = {"page_text": "Some other page", "page_subscriber_token": None,
+                   "subscriber_count": None, "edition_titles": []}
+        assert llv.newsletter_page_state(reading) == llv.STATE_UNKNOWN
+
+    def test_the_cross_check_regex_reads_what_the_shipped_parser_reads(self):
+        from cqc_lem.app.engagement.newsletter import _parse_subscriber_count
+        for text in ("1,234 subscribers", "3.2K subscribers", "12 subscriber"):
+            assert llv._SUBSCRIBER_TEXT_RE.search(text), text
+            assert _parse_subscriber_count(text) is not None, text
+        assert not llv._SUBSCRIBER_TEXT_RE.search("Published weekly")
+
+
+@pytest.mark.unit
+class TestNewsletterEditionProbe:
+    """#1284: exemplar evidence only. It grounds no production chain, so it never claims drift."""
+
+    def test_a_body_that_rendered_is_ok(self):
+        assert llv.newsletter_edition_state({"body_sample": "A real opening line."}) == llv.STATE_OK
+
+    def test_a_body_that_did_not_render_is_unknown(self):
+        assert llv.newsletter_edition_state({"body_sample": "  "}) == llv.STATE_UNKNOWN
+        assert llv.newsletter_edition_state(None) == llv.STATE_UNKNOWN
+
+    def test_it_is_never_part_of_the_weekly_sweep(self):
+        # The sweep files issues from `drift`; a surface that cannot claim drift would only add
+        # noise to it, and it needs a URL that no sweep has.
+        surfaces = {s["key"]: s for s in llv.SURFACES}
+        assert surfaces["newsletter_edition"]["sweep"] is False
+        assert surfaces["newsletter_page"]["sweep"] is False
+        assert "newsletter_edition" not in llv.SWEEP_ORDER

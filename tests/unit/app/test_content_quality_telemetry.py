@@ -38,6 +38,15 @@ def _video_post(ref_id="1", text="A plain first line.\nAnd a second sentence for
     return row
 
 
+def _newsletter(ref_id="12", text="An opening line.\n\nA developed section with a real example.",
+                **kw):
+    row = {"surface": "newsletter", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
+           "format_key": "deep_dive", "authenticity_score": None, "reactions": None,
+           "comments": None, "reposts": None, "impressions": None}
+    row.update(kw)
+    return row
+
+
 def _comment(ref_id="50", text="A specific point about the index change, and what we saw.", **kw):
     row = {"surface": "comment", "ref_id": ref_id, "text": text, "shipped_on": "2026-07-26",
            "format_key": None, "authenticity_score": None, "reactions": None, "comments": None,
@@ -47,12 +56,15 @@ def _comment(ref_id="50", text="A specific point about the index change, and wha
 
 
 class TestNightlyContentQuality:
-    def _run(self, es, items, users=(1,), post_history=None, comment_history=None, days=None):
+    def _run(self, es, items, users=(1,), post_history=None, comment_history=None,
+             newsletter_history=None, days=None):
         from cqc_lem.app.run_scheduler import auto_nightly_content_quality
         es.enter_context(patch(f"{RS}.get_active_user_ids", return_value=list(users)))
         es.enter_context(patch(f"{DB}.get_shipped_content_for_quality", return_value=items))
         es.enter_context(patch(f"{DB}.get_recent_post_texts", return_value=post_history or []))
         es.enter_context(patch(f"{DB}.get_recent_comment_texts", return_value=comment_history or []))
+        es.enter_context(patch(f"{DB}.get_recent_newsletter_bodies",
+                               return_value=newsletter_history or []))
         es.enter_context(patch(f"{DB}.get_lead_magnet_settings", return_value={"keyword": None}))
         record = es.enter_context(patch(f"{DB}.record_content_quality_score", return_value=True))
         track = es.enter_context(patch(f"{OBS}.track_content_quality"))
@@ -368,3 +380,40 @@ class TestBeatSchedule:
         entry = self._beat()["weekly-content-quality"]
         assert entry["task"] == "cqc_lem.app.run_scheduler.auto_weekly_content_quality"
         assert entry["schedule"].hour == {9} and entry["schedule"].minute == {45}
+
+
+class TestNewsletterSelfSimilarity:
+    """#1284. Newsletter editions had no body-history reader, so their self-similarity was recorded
+    as unmeasured on every run — which reads as "nothing to see" in the rollup. The real corpus sat
+    at 0.68-0.83 embedding cosine against itself while that field was NULL.
+    """
+
+    _run = TestNightlyContentQuality._run
+
+    def test_editions_are_graded_against_the_users_own_editions(self):
+        with ExitStack() as es:
+            sim = es.enter_context(patch(f"{CQ}.similarity_reports",
+                                         return_value=[{"score": 0.81, "measure": "embedding",
+                                                        "match": "older edition"}]))
+            _result, record, _track = self._run(es, [_newsletter()],
+                                                newsletter_history=["older edition"])
+        assert sim.call_count == 1
+        assert sim.call_args.args[1] == ["older edition"]
+        assert record.call_args.args[1]["similarity"] == 0.81
+
+    def test_each_surface_still_reads_only_its_own_history(self):
+        with ExitStack() as es:
+            sim = es.enter_context(patch(f"{CQ}.similarity_reports",
+                                         return_value=[{"score": 0.3, "measure": "embedding",
+                                                        "match": "m"}]))
+            self._run(es, [_post(), _comment(), _newsletter()], post_history=["older post"],
+                      comment_history=["older comment"], newsletter_history=["older edition"])
+        histories = [call.args[1] for call in sim.call_args_list]
+        assert histories.count(["older edition"]) == 1
+        assert ["older post"] in histories and ["older comment"] in histories
+
+    def test_no_edition_history_reports_unmeasured_rather_than_unique(self):
+        with ExitStack() as es:
+            _result, record, _track = self._run(es, [_newsletter()], newsletter_history=[])
+        score = record.call_args.args[1]
+        assert score["similarity"] is None and score["similarity_measure"] == "none"

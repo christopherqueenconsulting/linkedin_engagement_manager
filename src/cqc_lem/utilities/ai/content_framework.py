@@ -1763,6 +1763,26 @@ def post_writing_directive() -> str:
     )
 
 
+# The edition length band the newsletter prompt has always described in prose. Named here (#1284)
+# because the writer-side directive now states it as a measured floor: the ten real editions in the
+# corpus averaged 690 words against this 800 floor, so "aims for ~800-1200" was reading as a
+# suggestion. The exemplar the audit scored against (AI Frontier, 842k subscribers) runs 1,667-2,364.
+NEWSLETTER_WORD_FLOOR = 800
+NEWSLETTER_WORD_CEILING = 1200
+
+# Structural labels the BLUEPRINT hands the writer as section names. They are instructions, and the
+# real corpus shipped them as body text — three of five published editions carried a bare "CTA"
+# line above their closing ask (#1284). `_clean_newsletter_body` strips them; the writer-side
+# directive names the same list, so the writer side and the cleaning side cannot drift.
+#
+# Reader-facing headings are deliberately NOT here: "Key takeaways" over a takeaways block is a
+# heading a human editor would keep, and stripping it would delete structure the dwell grader wants.
+NEWSLETTER_STRUCTURAL_LABELS: tuple = (
+    "cta", "call to action", "hook", "intro", "introduction", "opening", "opener",
+    "body", "main body", "conclusion", "closing", "close", "subhead", "subheading",
+    "title", "subtitle", "subject", "section",
+)
+
 # Canned newsletter SCAFFOLD phrasing (issue #1142). Throat-clearing openers, generic transitions,
 # and stock closes that paste unchanged under any newsletter edition once a bracket is filled in.
 # Same provenance rule as POST_BANNED_SCAFFOLDS: entries are sampled from LEM's own newsletter
@@ -1805,14 +1825,26 @@ def newsletter_writing_directive() -> str:
         "- Write for a NOTIFICATION-DRIVEN reader: short paragraphs, plain-text subheads that name the "
         "payoff of the section, and a short 'What you'll get' scan after the hook when the format allows. "
         "Never a wall of text.\n"
+        f"- HARD structural floor, measured on the finished body: the opening line stands alone in "
+        f"under {LINKEDIN_FOLD_CHARS} characters; NO paragraph runs past "
+        f"{DWELL_PARAGRAPH_MAX_CHARS} characters (break it into two); and at least one numbered or "
+        f"bulleted block the reader can scroll back to. Length is {NEWSLETTER_WORD_FLOOR}-"
+        f"{NEWSLETTER_WORD_CEILING} words of developed argument — an edition that stops short of "
+        "that floor is a feed post in a newsletter shell.\n"
+        "- NEVER write a structural label as a line of the body. The blueprint's section names "
+        "('CTA', 'HOOK', 'INTRO', 'BODY', 'CONCLUSION') are instructions to you, not text the "
+        "subscriber reads. A reader-facing heading ('Key takeaways') is fine; the process label "
+        "above it is not.\n"
         "- When source material from the author's blog is provided, make the edition TRACK it: the "
         "central claim, example, or framework must come from that source, not drift into generic "
         "advice. If no source is provided, write from the author's expertise and lived reasoning only.\n"
         "- NEVER reach for newsletter scaffolding that would paste unchanged under any edition: "
         f"{scaffolds}. A bracket placeholder is the same defect once a real value fills it.\n"
         "- CTA: close with ONE open, specific question the reader can answer from this edition, then "
-        "ONE line inviting them to subscribe for the next edition. No feed-post mechanics (likes, "
-        "reposts, saves, 'comment below'), no meeting ask, no lead-magnet keyword mechanic.\n"
+        "ONE line inviting them to subscribe for the next edition. Ask for a REPLY to the edition — "
+        "never route the reader to a comments box in ANY wording ('in the comments', 'answer below', "
+        "'tell me in the comments'), and no other feed-post mechanic (likes, reposts, saves), no "
+        "meeting ask, no lead-magnet keyword mechanic.\n"
         "- No external links in the body; no markdown; " + PLAIN_PUNCTUATION_DIRECTIVE + "\n"
     )
 

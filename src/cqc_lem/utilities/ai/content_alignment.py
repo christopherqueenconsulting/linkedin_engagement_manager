@@ -1524,6 +1524,44 @@ def _clean_title_line(text: str) -> str:
     return line
 
 
+# The model talking to the OPERATOR instead of rewriting the headline — "Could you please share the
+# draft headline you'd like me to rewrite?", "Sure! Here is the rewritten title", "As an AI...".
+# Found by #1284's audit: three of six production title passes came back as one of these, and every
+# existing guard let them through (they are the right length, and they carry no hype word), so the
+# aside REPLACED a good headline and would have published as the edition's subject line.
+#
+# Every pattern here has to earn its place against the FALSE positive, because a hit discards a
+# perfectly good rewrite: "The 3 numbers I need before I say yes" and "Why I can't ship on Fridays"
+# are headlines, not asides. So the first-person and opener forms are ANCHORED — an aside opens by
+# addressing you — and the phrases that read naturally mid-headline ("ok", "here's the new") are not
+# in the list at all.
+_ASSISTANT_ASIDE_RES: tuple = (
+    re.compile(r"^(?:sure|certainly|of course|absolutely|sorry|apologies)\b[\s,!.:]",
+               re.IGNORECASE),
+    re.compile(r"\b(?:could|can|would)\s+you\s+(?:please\s+)?(?:share|provide|send|paste|give|"
+               r"clarify|confirm)\b", re.IGNORECASE),
+    re.compile(r"\bplease\s+(?:share|provide|send|paste|supply|give)\s+(?:the|your|me)\b",
+               re.IGNORECASE),
+    re.compile(r"^(?:i\s+(?:need|require)|i'?m\s+unable|i\s+cannot|i\s+can'?t)\b", re.IGNORECASE),
+    re.compile(r"\bas\s+an\s+ai\b", re.IGNORECASE),
+    re.compile(r"\bhere(?:'s| is)\s+(?:the|your)\s+(?:rewritten|revised|de-?hyped)\b",
+               re.IGNORECASE),
+    re.compile(r"\b(?:draft|original)\s+headline\s+you'?d?\s+like\b", re.IGNORECASE),
+)
+
+
+def is_assistant_aside(text: Optional[str]) -> bool:
+    """True when a model reply is the assistant ADDRESSING the operator rather than producing copy.
+
+    Used to fail a rewrite back to its original: an aside is the right length and carries no hype
+    word, so every other guard passes it through and it ships as the headline.
+    """
+    line = str(text or "").strip()
+    if not line:
+        return False
+    return any(pattern.search(line) for pattern in _ASSISTANT_ASIDE_RES)
+
+
 def humanize_title(title: Optional[str], content_type: str = "newsletter",
                    profile_synthesis: Optional[str] = None,
                    prefs: Optional[dict] = None, max_chars: int = 255) -> Optional[str]:
@@ -1575,6 +1613,8 @@ def humanize_title(title: Optional[str], content_type: str = "newsletter",
     if len(rewritten) < 12 or len(rewritten) > budget:
         return original
     if len(find_title_slop_words(rewritten)) > len(find_title_slop_words(str(title))):
+        return original
+    if is_assistant_aside(rewritten):
         return original
     return rewritten
 

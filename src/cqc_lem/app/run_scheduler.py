@@ -707,6 +707,7 @@ def auto_nightly_content_quality(self, days: int = None):
     from cqc_lem.utilities.ai.content_framework import COMMENT_HISTORY_LIMIT
     from cqc_lem.utilities.content_quality import (
         SURFACE_COMMENT,
+        SURFACE_NEWSLETTER,
         SURFACE_POST,
         content_quality_enabled,
         detector_daily_max,
@@ -721,6 +722,7 @@ def auto_nightly_content_quality(self, days: int = None):
     from cqc_lem.utilities.db import (
         get_lead_magnet_settings,
         get_recent_comment_texts,
+        get_recent_newsletter_bodies,
         get_recent_post_texts,
         get_shipped_content_for_quality,
         record_content_quality_score,
@@ -749,11 +751,13 @@ def auto_nightly_content_quality(self, days: int = None):
             items = items[:cap]
 
         # Self-similarity is graded WITHIN a surface: a post compared against the user's comments would
-        # score as unique no matter how templated it is. Newsletter editions have no body-history
-        # reader, so their similarity reports as unmeasured rather than against the wrong scale.
+        # score as unique no matter how templated it is. Newsletter editions read their own bodies
+        # (#1284) — before that reader existed this surface reported unmeasured, which read as
+        # "nothing to see" while the real corpus sat at 0.68-0.83 cosine against itself.
         histories = {
             SURFACE_POST: get_recent_post_texts(user_id, limit=COMMENT_HISTORY_LIMIT),
             SURFACE_COMMENT: get_recent_comment_texts(user_id, limit=COMMENT_HISTORY_LIMIT),
+            SURFACE_NEWSLETTER: get_recent_newsletter_bodies(user_id, limit=COMMENT_HISTORY_LIMIT),
         }
         similarity: dict = {}
         # similarity_reports is the ONLY LLM spend in this pass (one lem-embedding call per surface),
