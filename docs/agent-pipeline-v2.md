@@ -227,9 +227,10 @@ call that live PR stranded.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 20 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
-| 21 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
-| 22 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
+| 19 | draft (unheld — a held draft is row 5-9) | none → awaiting_review | `pr_is_draft` | 6h |
+| 20 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
+| 21 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
+| 22 | …then `agent:phasefix` | dispatch `phasefix` | `phase_scope_untracked` | — |
 | 23 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
 | 24 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
 | 25 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
@@ -320,17 +321,17 @@ and never writes.
 
 | Mode | Pool | Budget | Timeout |
 |---|---|---|---|
-| `start` | agent | 35 | 2700s |
-| `fix` | agent | 36 | 1200s |
-| `review` | agent | 37 | 900s |
-| `selfreview` | agent | 38 | 1200s |
-| `rebase` | agent | 39 | 1200s |
-| `revise` | agent | 40 | 1500s |
-| `depfix` | agent | 41 | 1200s |
-| `docfix` | agent | 42 | 600s |
+| `start` | agent | 2 | 2700s |
+| `fix` | agent | 4 | 1200s |
+| `review` | agent | 3 | 900s |
+| `selfreview` | agent | 2 | 1200s |
+| `rebase` | agent | 2 | 1200s |
+| `revise` | agent | 2 | 1500s |
+| `depfix` | agent | 3 | 1200s |
+| `docfix` | agent | 3 | 600s |
 | `merge` | gh | **3, but not from this table** — see below | 180s |
 | `park` / `unpark` | gh | **none — they charge no ledger at all** | 180s |
-| `phasefix` | — | 43 | 600s — **never emitted by `decide()`** |
+| `phasefix` | agent | 2 | 600s |
 
 Timeouts stretch up to 1.5× at full pool occupancy.
 
@@ -381,8 +382,8 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | Gap | Why it matters | Issue |
 |---|---|---|
 | **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
-| **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | #1395 |
 | **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
+| **`PER_HEAD_MODES` and `MODE_BUDGET["merge"]` have no consumers** (§6) — the merge bound lives entirely in `merge_enable.sh` and works | left as-is: moving it would relocate a functioning guard for no behaviour change | — |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
 | **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | #1397, #1398 |
 

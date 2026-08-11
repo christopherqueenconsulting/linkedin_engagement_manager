@@ -150,3 +150,66 @@ def test_merge_parked_is_removal_only_and_says_so():
     assert "v2 has no separate merge park" in unpark
     for py in (_V2 / "lemd").glob("*.py"):
         assert "merge-parked" not in py.read_text(), f"{py.name} started reading a v1-only label"
+
+
+# ---------------------------------------------------------------- dead code (#1395)
+
+
+def test_the_phasefix_lane_is_reachable():
+    """It had a budget, a timeout, an Ollama entry and a RUNBOOK prompt, and nothing emitted it.
+
+    So v1 applied `agent:phasefix` and v2 ignored the label entirely. This makes the LANE reachable —
+    it does not give v2 a phase GUARD, which is #1396 and a separate decision.
+    """
+    assert "agent:phasefix" in observe.LANE_LABEL_PRIORITY
+    assert observe.LANE_LABEL_MODES["agent:phasefix"][0] == "phasefix"
+    got = d(pr(labels=frozenset({"agent:phasefix"})))
+    assert (got.action, got.mode) == (observe.ACT_DISPATCH, "phasefix")
+
+
+def test_reconcile_fetches_the_phasefix_label():
+    """A lane `decide` can route but `reconcile` never fetches is still unreachable in practice."""
+    assert '("agent:phasefix", "pr")' in (_V2 / "lemd" / "daemon.py").read_text()
+
+
+def test_revise_still_outranks_phasefix():
+    """The owner's own instruction stays at the top of the ladder."""
+    got = d(pr(labels=frozenset({"agent:phasefix", "agent:revise"})))
+    assert got.mode == "revise"
+
+
+def test_the_caps_are_computed_rather_than_flat():
+    """`capacity.compute()` was written, tested, and called by nothing.
+
+    The live ceiling was the flat `LEMD_MAX_AGENTS`, so concurrency never scaled with the backlog
+    and the owner's busy window — the hours they want their box back — did nothing at all.
+    """
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    assert "capacity.compute(" in src
+    assert "self.sup.set_caps(caps)" in src
+    dispatch = (_V2 / "lemd" / "dispatch.py").read_text()
+    assert "def _cap(self, pool: str)" in dispatch
+
+
+def test_the_unreachable_degraded_arm_is_gone():
+    """Nothing in v2 could produce the lane percentages it read, so it was always False.
+
+    `lane.decide()` owns "which lane" now and `LEMD_HOLD_STARTS` owns "hold new work".
+    """
+    from lemd import capacity  # noqa: PLC0415
+    caps = capacity.compute(ready_count=99, max_agents=3, scale_per_issues=8, gh_slots=2)
+    assert caps.degraded is False
+
+
+def test_the_cost_ledger_half_of_spend_is_gone():
+    """It had no producer and no plausible one.
+
+    `lib/run_lane.sh` emits `estimated_cost: 0` by design, because the Claude lane is a flat-rate
+    subscription — so the fallback could only ever read $0, call it "normal", and route as if
+    nothing had been spent. A second signal that always agrees is not redundancy.
+    """
+    from lemd import spend  # noqa: PLC0415
+    for gone in ("record", "state", "choose_lane", "ledger_summary", "parse_cli_result"):
+        assert not hasattr(spend, gone), f"spend.{gone} is back without a producer"
+    for kept in ("Usage", "parse_usage", "probe_usage", "cached_usage"):
+        assert hasattr(spend, kept), f"spend.{kept} is live and must stay"

@@ -328,15 +328,19 @@ def test_busy_window_ignores_weekends_when_days_are_set():
     assert caps.busy_window is False and caps.agents == 5
 
 
-def test_degraded_when_both_lanes_constrained():
-    caps = capacity.compute(ready_count=99, max_agents=5, scale_per_issues=8, gh_slots=2,
-                            claude_pct=25, ollama_pct=30)
-    assert caps.degraded is True and caps.agents == 1 and caps.reason == "degraded"
+def test_the_degraded_arm_is_gone_and_cannot_come_back():
+    """It dropped concurrency to 1 when both lanes were constrained — and nothing could trip it.
 
-
-def test_one_healthy_lane_is_not_degraded():
-    caps = capacity.compute(ready_count=99, max_agents=5, scale_per_issues=8, gh_slots=2,
-                            claude_pct=80, ollama_pct=20)
+    The percentages it read were `lib/capacity.sh`'s bash failure-history estimate, which v2 never
+    calls, so `degraded` was always False in production while looking like a live safety control.
+    Both questions it answered have owners now: `lane.decide()` owns "which lane", and
+    `LEMD_HOLD_STARTS` owns "hold new work" (#1395).
+    """
+    import inspect  # noqa: PLC0415
+    sig = inspect.signature(capacity.compute)
+    for gone in ("claude_pct", "ollama_pct", "threshold"):
+        assert gone not in sig.parameters, f"{gone} is back without a caller that can set it"
+    caps = capacity.compute(ready_count=50, max_agents=3, scale_per_issues=8, gh_slots=2)
     assert caps.degraded is False
 
 

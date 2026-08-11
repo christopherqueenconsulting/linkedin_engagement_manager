@@ -121,11 +121,16 @@ HOLD_LABELS = frozenset({"needs-human", "agent:blocked"})
 #: `agent:revise` leads because it carries the owner's own instruction, and the owner outranks CI.
 #: `depfix` before `docfix` because a Dependabot PR whose build is broken cannot usefully be
 #: lint-fixed first.
-LANE_LABEL_PRIORITY = ("agent:revise", "agent:depfix", "agent:docfix")
+LANE_LABEL_PRIORITY = ("agent:revise", "agent:phasefix", "agent:depfix", "agent:docfix")
 
 #: The mode and reason each lane label maps to.
 LANE_LABEL_MODES = {
     "agent:revise": ("revise", "owner_requested_changes"),
+    # Reachable since #1395. The mode had a budget, a timeout, an Ollama eligibility entry and a
+    # RUNBOOK prompt, and `decide()` never emitted it — so v1 applied the label and v2 ignored it.
+    # NOTE this makes the LANE reachable, not the phase GUARD: v2 still has nothing that decides a
+    # PR is closing a phased issue with untracked scope (#1396). Only v1 writes the label today.
+    "agent:phasefix": ("phasefix", "phase_scope_untracked"),
     "agent:depfix": ("depfix", "dependabot_ci_failure"),
     "agent:docfix": ("docfix", "lint_gate_failure"),
 }
