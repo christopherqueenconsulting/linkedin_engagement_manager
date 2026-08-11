@@ -321,6 +321,29 @@ def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
     except mysql.connector.Error as err:
         log_error("Could not get recent newsletter subjects", exc=err, user_id=user_id)
         return []
+def get_recent_newsletter_bodies(user_id: int, limit: int = 20) -> list:
+    """Recent edition BODIES (published + queued draft/approved), most-recent first.
+
+    The newsletter-side dedup history, the exact counterpart of `get_recent_post_texts`.
+
+    Added by #1284 because the nightly content-quality pass had no body reader for this surface, so
+    every newsletter's self-similarity was recorded as unmeasured. Measured against the real corpus
+    it was hiding a lot: ten shipped editions sat at 0.68-0.83 embedding cosine against each other,
+    which on the post surface would be a regression alert.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT body FROM newsletter_editions "
+                "WHERE user_id = %s AND body IS NOT NULL AND body <> '' "
+                "AND status IN ('draft', 'approved', 'published') "
+                "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not get recent newsletter bodies", exc=err, user_id=user_id)
+        return []
+
+
 def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> list:
     """Recent editions' SHAPE history — {subject, format, hook_style, opening_line} dicts, most-recent
     first, across queued/published/skipped editions. Fed to the planner and regenerator so new

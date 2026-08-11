@@ -13,6 +13,7 @@ instead of the tier that was asked for.
 
 import os
 import random
+import re
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -666,9 +667,29 @@ def _clean_newsletter_body(body: str) -> str:
     """Safety net: strip stray markdown the model may slip in (headers, bold, bullet markers) so the
     body typed via Selenium send_keys is clean — LinkedIn's article editor does NOT render markdown.
     Reuses sanitize_for_linkedin (which keeps blank-line spacing between sections intact).
+
+    It also drops any line that is only a BLUEPRINT structural label ("CTA", "HOOK", "Conclusion").
+    Those are the skeleton's instructions to the writer, and #1284's audit of the real corpus found
+    them shipped as body text — three of the five published editions carried a bare "CTA" line above
+    their closing ask, visible to every subscriber. A reader-facing heading ("Key takeaways") is
+    kept: the label list is deliberately narrow (`NEWSLETTER_STRUCTURAL_LABELS`).
     """
+    from cqc_lem.utilities.ai.content_framework import NEWSLETTER_STRUCTURAL_LABELS
     from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
-    return sanitize_for_linkedin(body or "")
+
+    cleaned = sanitize_for_linkedin(body or "")
+    if not cleaned:
+        return cleaned
+    labels = {label.lower() for label in NEWSLETTER_STRUCTURAL_LABELS}
+    kept = []
+    for line in cleaned.split("\n"):
+        # Numbered variants ("Section 2", "CTA:") are the same label with decoration on it.
+        token = re.sub(r"^[\s\-–—•*#>]+|[\s:.\-–—]+$", "", line).strip().lower()
+        token = re.sub(r"\s+\d+$", "", token)
+        if token and token in labels:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, prefs: dict = None,

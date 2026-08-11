@@ -582,6 +582,12 @@ SURFACES = (
     {"key": "article_editor", "surface": "Newsletter/article editor publish steps",
      "code": "article_editor.find_article_editor_elements", "flag": "--article-editor-url",
      "arg": "<editor-url>", "sweep": True},
+    {"key": "newsletter_page", "surface": "Newsletter page (subscriber label + edition list)",
+     "code": "engagement.newsletter._read_newsletter_subscriber_count", "flag": "--newsletter-url",
+     "arg": "<newsletter-url>", "sweep": False},
+    {"key": "newsletter_edition", "surface": "Published newsletter edition (article body)",
+     "code": "n/a — editorial exemplar evidence for docs/content-quality-audits/newsletter.md",
+     "flag": "--newsletter-edition", "arg": "<edition-url>", "sweep": False},
     {"key": "post_stats", "surface": "Own post detail + analytics counts",
      "code": "engagement.posting.auto_scrape_post_stats / cards._post_social_counts",
      "flag": "--post-url", "arg": "<post-url>",
@@ -1838,6 +1844,162 @@ def article_editor_state(verdict: Optional[dict]) -> str:
     if not verdict.get("buttons"):
         return STATE_UNKNOWN
     return STATE_DRIFT
+
+
+# The page's own subscriber label, matched the same way `_parse_subscriber_count` reads it — this
+# is the cross-check, so it must see what the reader sees and nothing narrower.
+_SUBSCRIBER_TEXT_RE = re.compile(r"[\d.,]+\s*[KkMm]?\s*subscriber", re.IGNORECASE)
+
+
+def newsletter_page_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one newsletter-page read.
+
+    The page's own "N subscribers" TEXT is the cross-check: `_read_newsletter_subscriber_count` is
+    what `track_newsletter_subscribers` records growth from, so a page that visibly states a count
+    the reader returns None for is the drift that turns the whole subscriber series into NULLs.
+    """
+    reading = dict(reading or {})
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if reading.get("page_subscriber_token") and reading.get("subscriber_count") is None:
+        return STATE_DRIFT
+    if reading.get("subscriber_count") is None and not reading.get("edition_titles"):
+        return STATE_UNKNOWN
+    return STATE_OK
+
+
+def newsletter_page_verdict(reading: Optional[dict]) -> str:
+    """One sentence naming what this newsletter read proves about the subscriber-count reader."""
+    reading = dict(reading or {})
+    state = newsletter_page_state(reading)
+    if state == STATE_UNKNOWN and not str(reading.get("page_text") or "").strip():
+        return "the newsletter page did not render (auth wall, challenge, or redirect) — re-run"
+    if state == STATE_DRIFT:
+        return (f"the page states '{reading.get('page_subscriber_token')}' but "
+                f"_read_newsletter_subscriber_count returned None — every "
+                f"track_newsletter_subscribers snapshot records NULL and the growth series flatlines")
+    if state == STATE_UNKNOWN:
+        return ("the page rendered but carries neither a subscriber label nor an edition list — "
+                "nothing to ground; re-run against a newsletter URL")
+    return (f"subscriber count {reading.get('subscriber_count')} and "
+            f"{len(reading.get('edition_titles') or [])} edition title(s) read")
+
+
+def probe_newsletter_page(driver, newsletter_url: str, sleep=time.sleep) -> dict:
+    """Read a LinkedIn NEWSLETTER page — ours or a third party's — read-only (#1284).
+
+    It runs the shipped subscriber reader and hands back the exemplar material an editorial audit
+    needs: the newsletter's title, description, cadence label and its recent edition titles.
+
+    Two jobs in one navigation. It grounds `_read_newsletter_subscriber_count`, the reader behind
+    every `newsletter_subscriber_stats` row, against a page whose count is stated in the text. And
+    it is how `docs/content-quality-audits/newsletter.md` names a REAL reference exemplar instead
+    of falling back to a rubric — a third-party newsletter page is a public read, so nothing here
+    touches the account beyond navigating to it.
+    """
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.engagement.newsletter import _read_newsletter_subscriber_count
+
+    wait = WebDriverWait(driver, 10)
+    driver.get(newsletter_url)
+    sleep(6)
+    reading = {"newsletter_url": newsletter_url,
+               "url": getattr(driver, "current_url", newsletter_url),
+               "page_text": page_text_sample(driver, limit=1200)}
+
+    try:
+        reading["subscriber_count"] = _read_newsletter_subscriber_count(driver, wait, newsletter_url)
+    except Exception as e:
+        reading["subscriber_count"] = None
+        reading["reader_error"] = f"{type(e).__name__}: {e}"[:200]
+
+    token = _SUBSCRIBER_TEXT_RE.search(reading["page_text"] or "")
+    reading["page_subscriber_token"] = token.group(0).strip() if token else None
+
+    for key, locator in (("title", (By.TAG_NAME, "h1")),
+                         ("description", (By.CSS_SELECTOR, "p"))):
+        try:
+            elements = driver.find_elements(*locator)
+            reading[key] = next(((e.text or "").strip() for e in elements
+                                 if (e.text or "").strip()), "")
+        except Exception:
+            reading[key] = ""
+
+    try:
+        anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/pulse/']")
+        titles, links, seen = [], [], set()
+        for anchor in anchors:
+            text = " ".join(((anchor.text or "").strip()).split())
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            titles.append(text[:200])
+            href = (anchor.get_attribute("href") or "").split("?")[0]
+            if href and href not in links:
+                links.append(href)
+            if len(titles) >= 12:
+                break
+        reading["edition_titles"] = titles
+        reading["edition_links"] = links[:12]
+    except Exception as e:
+        reading["edition_titles"] = []
+        reading["edition_links"] = []
+        reading["edition_error"] = f"{type(e).__name__}: {e}"[:200]
+
+    return graded(reading, newsletter_page_state(reading), newsletter_page_verdict(reading))
+
+
+def newsletter_edition_state(reading: Optional[dict]) -> str:
+    """Two-state grade: the edition either rendered its article body or it did not.
+
+    There is no production reader to disagree with here, so this surface is never `drift` — it is
+    evidence for an editorial audit, and claiming drift against a page nobody's locator chain reads
+    would be noise in the sweep.
+    """
+    reading = dict(reading or {})
+    return STATE_OK if str(reading.get("body_sample") or "").strip() else STATE_UNKNOWN
+
+
+def probe_newsletter_edition(driver, edition_url: str, sleep=time.sleep) -> dict:
+    """Read ONE published newsletter edition (an article/pulse page), read-only (#1284).
+
+    An audit scores a real exemplar's hook, structure and closing CTA against LEM's own editions.
+
+    Read-only and deliberately shallow — it samples the rendered article text and counts its
+    structural blocks. It grounds no production locator chain (LEM publishes editions, it does not
+    read other people's), so it is not part of the sweep and never files a drift issue.
+    """
+    driver.get(edition_url)
+    sleep(6)
+    reading = {"edition_url": edition_url, "url": getattr(driver, "current_url", edition_url)}
+    try:
+        reading["title"] = next((((e.text or "").strip()) for e in
+                                 driver.find_elements(By.TAG_NAME, "h1")
+                                 if (e.text or "").strip()), "")
+    except Exception:
+        reading["title"] = ""
+    try:
+        article = driver.find_elements(By.TAG_NAME, "article")
+        body = (article[0].text if article else
+                driver.find_element(By.TAG_NAME, "body").text) or ""
+    except Exception as e:
+        body = ""
+        reading["body_error"] = f"{type(e).__name__}: {e}"[:200]
+    paragraphs = [p.strip() for p in body.split("\n") if p.strip()]
+    reading.update({
+        "body_chars": len(body),
+        "body_words": len(re.findall(r"[A-Za-z][A-Za-z'-]*", body)),
+        "paragraphs": len(paragraphs),
+        "longest_paragraph_chars": max((len(p) for p in paragraphs), default=0),
+        "body_sample": body[:1500],
+        "closing_sample": body[-600:],
+    })
+    verdict = ("edition body read: "
+               f"{reading['body_words']} words across {reading['paragraphs']} block(s)"
+               if reading["body_sample"].strip() else
+               "the edition did not render (auth wall, challenge, or redirect) — re-run")
+    return graded(reading, newsletter_edition_state(reading), verdict)
 
 
 def permalink_comment_verdict(reading: dict) -> str:
@@ -4084,6 +4246,15 @@ def build_parser() -> "argparse.ArgumentParser":
                         help="open LinkedIn's article editor and report each publish step's selector "
                              "state (#771/#804); pass a custom URL or use the default. Read-only: "
                              "nothing is typed and no control is clicked, so publish reads UNKNOWN")
+    parser.add_argument("--newsletter-url", metavar="NEWSLETTER_URL", action="append", default=None,
+                        help="a LinkedIn newsletter page URL (ours or a third party's) — grounds "
+                             "the shipped subscriber-count reader and hands back the title, "
+                             "description and recent edition titles an editorial audit needs "
+                             "(#1284). Repeatable. Read-only: nothing is subscribed to or clicked.")
+    parser.add_argument("--newsletter-edition", metavar="EDITION_URL", action="append", default=None,
+                        help="a published newsletter edition URL — samples its rendered article "
+                             "text so an audit can score a real exemplar's hook, structure and CTA "
+                             "(#1284). Repeatable. Read-only.")
     parser.add_argument("--roster-follow", metavar="PROFILE_URL",
                         help="a roster target's profile URL — reports whether the top-card "
                              "Follow/Following control resolves on their activity page (#962). "
@@ -4204,7 +4375,8 @@ def main(argv: Optional[list] = None) -> int:
             or args.profile_scrape or args.profile_experiences or args.catchup_cards
             or args.group_composer or args.group_membership is not None
             or args.group_feed_composer is not None
-            or args.company_invite or args.permalink_comment
+            or args.company_invite or args.permalink_comment or args.newsletter_url
+            or args.newsletter_edition
             or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
@@ -4214,7 +4386,7 @@ def main(argv: Optional[list] = None) -> int:
                      "--company-invite, --reaction-probe, "
                      "--roster-follow, "
                      "--roster-connect, --appreciation-sources, --sent-invites, "
-                     "--permalink-comment and/or "
+                     "--permalink-comment, --newsletter-url, --newsletter-edition and/or "
                      "--probe-composer")
 
     # Decided BEFORE Chrome opens, the same rule `plan_daily_invites` follows — a refusal that has
@@ -4305,6 +4477,14 @@ def main(argv: Optional[list] = None) -> int:
             report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
         if args.permalink_comment:
             report["permalink_comment"] = probe_permalink_comment(driver, args.permalink_comment)
+        if args.newsletter_url:
+            # Repeatable, and reported as a LIST: an exemplar audit reads several newsletters in
+            # one session, and collapsing them onto one key would silently keep only the last.
+            report["newsletter_page"] = [probe_newsletter_page(driver, url)
+                                         for url in args.newsletter_url]
+        if args.newsletter_edition:
+            report["newsletter_edition"] = [probe_newsletter_edition(driver, url)
+                                            for url in args.newsletter_edition]
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:

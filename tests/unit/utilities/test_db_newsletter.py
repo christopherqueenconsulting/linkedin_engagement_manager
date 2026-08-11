@@ -394,6 +394,29 @@ class TestEditions:
         assert "subject IS NOT NULL" in sql
         assert params == (1, 5)
 
+    def test_recent_bodies_are_the_similarity_history(self):
+        # #1284: the nightly quality pass had no body reader for this surface, so every edition's
+        # self-similarity was recorded as unmeasured.
+        conn, cur = _mock_conn(fetch_all=[("Edition two body",), ("Edition one body",)])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_bodies
+            assert get_recent_newsletter_bodies(1, limit=5) == ["Edition two body",
+                                                               "Edition one body"]
+        sql, params = cur.execute.call_args[0]
+        assert "body IS NOT NULL" in sql and "body <> ''" in sql
+        # Queued drafts count as history too — a queued edition is already written.
+        assert "published" in sql and "draft" in sql and "approved" in sql
+        assert "ORDER BY id DESC" in sql
+        assert params == (1, 5)
+
+    def test_recent_bodies_empty_on_error(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_bodies
+            assert get_recent_newsletter_bodies(1) == []
+
     def test_editions_due(self):
         rows = [{"id": 3, "user_id": 1, "title": "T", "subtitle": "S", "body": "B"}]
         conn, cur = _mock_conn(fetch_all=rows)

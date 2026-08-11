@@ -513,3 +513,42 @@ class TestGeneratorsRouteThroughHumanize:
         # path binds the canonical humanize_text, not a stub, so the wiring can't silently no-op.
         from cqc_lem.app import run_content_plan as rcp
         assert rcp.humanize_text is ca.humanize_text
+
+
+class TestTitleRewriteRejectsAnAssistantAside:
+    """#1284. Three of six production title passes came back as the model talking to the operator
+    ("Could you please share the draft headline you'd like me to rewrite?"). Those replies are the
+    right length and carry no hype word, so every existing guard passed them and the aside REPLACED
+    the edition's real title.
+    """
+
+    ASIDES = (
+        "Could you please share the draft headline you'd like me to rewrite?",
+        "Sure! Here is the rewritten title for your newsletter",
+        "Please provide the headline you want me to de-hype",
+        "As an AI language model I cannot rewrite that headline",
+        "I need the original headline before I can help with this",
+    )
+
+    def test_every_sampled_aside_falls_back_to_the_original(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "Why AI-written posts stall at 200 impressions"
+        for aside in self.ASIDES:
+            with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                       return_value=_llm_reply(aside)):
+                assert ca.humanize_title(original, "newsletter") == original, aside
+
+    def test_a_real_headline_that_asks_a_question_still_ships(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        # A headline may legitimately be a question, and may legitimately contain "share".
+        for clean in ("What do your best buyers actually read on a Monday?",
+                      "The one number I share with every new client"):
+            with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                       return_value=_llm_reply(clean)):
+                assert ca.humanize_title("7 Explosive Growth Hacks", "newsletter") == clean
+
+    def test_the_detector_is_exposed_and_ignores_empty_input(self):
+        assert ca.is_assistant_aside("Sure, here's the rewritten title") is True
+        assert ca.is_assistant_aside("A plain headline about reach") is False
+        assert ca.is_assistant_aside("") is False
+        assert ca.is_assistant_aside(None) is False

@@ -455,3 +455,75 @@ class TestNewsletterMechanicalEdit:
             edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
         assert edition is not None
         assert edition["body"] == "raw body."
+
+
+class TestStructuralLabelsStrippedFromBody:
+    """#1284. The blueprint hands the writer section names; three of the five PUBLISHED editions in
+    the real corpus shipped a bare "CTA" line above their closing ask, visible to subscribers.
+    """
+
+    def _body(self, body):
+        from cqc_lem.utilities.ai import ai_helper
+        prof = MagicMock(); prof.model_dump_json.return_value = "{}"
+        payload = json.dumps({"title": "T", "subtitle": "S", "subject": "S", "body": body})
+        with patch(f"{_AI}._call_llm", return_value=_resp(payload)):
+            return ai_helper.generate_newsletter_edition(prof)["body"]
+
+    def test_bare_cta_label_line_is_dropped(self):
+        out = self._body("The opener.\n\nA developed paragraph.\n\nCTA\n\nWhat did you try?")
+        assert "\nCTA" not in out and not out.startswith("CTA")
+        assert "What did you try?" in out
+        assert "A developed paragraph." in out
+
+    def test_decorated_and_numbered_labels_are_dropped(self):
+        out = self._body("Opener.\n\n- HOOK:\n\nReal line.\n\nSection 2\n\nMore.\n\nConclusion\n\nEnd.")
+        lines = [line.strip().lower() for line in out.split("\n") if line.strip()]
+        assert "hook:" not in lines and "section 2" not in lines and "conclusion" not in lines
+        assert "real line." in lines and "end." in lines
+
+    def test_reader_facing_heading_is_kept(self):
+        out = self._body("Opener.\n\nKEY TAKEAWAYS\n\nOne thing worth keeping.")
+        assert "KEY TAKEAWAYS" in out
+
+    def test_a_label_word_inside_a_sentence_survives(self):
+        out = self._body("Opener.\n\nEvery CTA should earn its place in the body.")
+        assert "Every CTA should earn its place in the body." in out
+
+
+class TestNewsletterStructuralFloor:
+    """#1284. The measured gaps in the real corpus: 7/10 editions opened past the fold, 9/10 carried
+    a wall-of-text paragraph, 6/10 had no list block, 7/10 undershot the 800-word floor, and 8/10
+    closed by routing the reader to a comments box.
+    """
+
+    def test_directive_states_the_measured_floors(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            DWELL_PARAGRAPH_MAX_CHARS,
+            LINKEDIN_FOLD_CHARS,
+            NEWSLETTER_WORD_CEILING,
+            NEWSLETTER_WORD_FLOOR,
+            newsletter_writing_directive,
+        )
+        directive = newsletter_writing_directive()
+        assert str(LINKEDIN_FOLD_CHARS) in directive
+        assert str(DWELL_PARAGRAPH_MAX_CHARS) in directive
+        assert f"{NEWSLETTER_WORD_FLOOR}-{NEWSLETTER_WORD_CEILING}" in directive
+        assert "numbered or bulleted block" in directive
+
+    def test_directive_bans_the_comments_box_in_any_wording(self):
+        from cqc_lem.utilities.ai.content_framework import newsletter_writing_directive
+        directive = newsletter_writing_directive().lower()
+        assert "reply" in directive
+        assert "in the comments" in directive and "never route the reader to a comments box" in directive
+
+    def test_directive_names_the_same_labels_the_cleaner_strips(self):
+        from cqc_lem.utilities.ai.content_framework import (
+            NEWSLETTER_STRUCTURAL_LABELS,
+            newsletter_writing_directive,
+        )
+        directive = newsletter_writing_directive()
+        # The writer side and the cleaning side must name one list, the POST_BANNED_SCAFFOLDS rule.
+        for label in ("cta", "hook", "intro", "body", "conclusion"):
+            assert label in NEWSLETTER_STRUCTURAL_LABELS
+            assert label.upper() in directive
+        assert "key takeaways" not in NEWSLETTER_STRUCTURAL_LABELS
