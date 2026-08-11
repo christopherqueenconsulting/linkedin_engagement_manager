@@ -141,7 +141,12 @@ case "$MODE" in
   start)     PROMPT="Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." ;;
   fix)       PROMPT="Read $RUNBOOK and follow MODE=fix. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." ;;
   review)    PROMPT="Read $RUNBOOK and follow MODE=review. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
-  selfreview) PROMPT="Read $RUNBOOK and follow MODE=selfreview. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='${CLAUDE_REVIEW_MARKER:-🤖 Claude self-review}'." ;;
+  # The fallback is the CANONICAL marker, not a friendlier variant. `CLAUDE_REVIEW_MARKER` is
+  # v1's variable and never reaches this environment, so the fallback is what actually ships — and
+  # when it said "Claude self-review" the merge gate, which matches "Claude adversarial review",
+  # could not see a single review this lane produced. `test_agent_pipeline_review_marker.py` now
+  # fails the build if these two halves disagree again.
+  selfreview) PROMPT="Read $RUNBOOK and follow MODE=selfreview. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='${CLAUDE_REVIEW_MARKER:-🔎 Claude adversarial review}'." ;;
   rebase)    PROMPT="Read $RUNBOOK and follow MODE=rebase. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
   revise)    PROMPT="Read $RUNBOOK and follow MODE=revise. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE." ;;
   depfix)    PROMPT="Read $RUNBOOK and follow MODE=depfix. PR=$PR BRANCH=$BRANCH." ;;

@@ -218,3 +218,46 @@ def test_v2_ignores_a_comment_that_only_mentions_the_review(monkeypatch):
     state = github.review_state("o/r", 1)
     assert state.reviewed_at == ""
     assert state.fresh is False
+
+
+# ---------------------------------------------------------------- dispatcher/gate agreement (#1380)
+
+
+def _v2_path(*parts: str) -> Path:
+    """A file under the v2 tree."""
+    return Path(__file__).resolve().parents[2].joinpath("scripts", "agent-pipeline", "v2", *parts)
+
+
+def test_the_marker_the_dispatcher_asks_for_is_one_the_gate_accepts():
+    """The two halves drifted and nothing noticed for a day.
+
+    `agent_run.sh` prompts MODE=selfreview with a MARKER; `review_state` decides freshness by
+    matching the comment's opening text. When the dispatcher's fallback said "Claude self-review"
+    and the gate matched only "Claude adversarial review", every self-review this pipeline produced
+    was invisible to it: `review_fresh` stayed False, `decide` re-dispatched selfreview until the
+    budget of 2 was spent, and the PR parked `selfreview_exhausted`. Seven open PRs were stuck on
+    that treadmill, one holding a PASSING review posted 13 seconds after its own head commit.
+    """
+    import re as _re
+    src = _v2_path("actions", "agent_run.sh").read_text()
+    line = next(ln for ln in src.splitlines() if ln.strip().startswith("selfreview)"))
+    marker = _re.search(r"MARKER='([^']*)'", line).group(1)
+    # Resolve the shell default the same way bash would when CLAUDE_REVIEW_MARKER is unset — which
+    # is always, because that variable belongs to v1's tick.sh and is never exported to a v2 action.
+    default = _re.sub(r"^\$\{[A-Z_]+:-", "", marker).rstrip("}")
+    undecorated = github.MARKER_DECORATION_RE.sub("", default)
+    assert undecorated.startswith(github.REVIEW_MARKER_TEXTS), (
+        f"agent_run.sh asks for {default!r}, which review_state() would not count as a review"
+    )
+
+
+def test_a_self_review_marker_is_still_accepted_evidence():
+    """Historical markers must keep counting — seven parked PRs are holding them right now."""
+    assert github.MARKER_DECORATION_RE.sub("", "🤖 Claude self-review — PASS").startswith(
+        github.REVIEW_MARKER_TEXTS)
+
+
+def test_an_unrelated_comment_is_still_not_review_evidence():
+    """Widening the accepted set must not make every comment a review."""
+    for body in ("Addressed your review direction: rebased", "🛑 Human decision needed", "LGTM"):
+        assert not github.MARKER_DECORATION_RE.sub("", body).startswith(github.REVIEW_MARKER_TEXTS)
