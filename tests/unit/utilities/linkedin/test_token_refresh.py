@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-
 from cqc_lem.utilities.linkedin.token_refresh import (
     attempt_token_refresh,
     days_until_expiry,
