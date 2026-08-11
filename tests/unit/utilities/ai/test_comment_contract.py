@@ -18,6 +18,15 @@ pytestmark = pytest.mark.unit
 _AI = "cqc_lem.utilities.ai.ai_helper"
 _CLIENT = "cqc_lem.utilities.ai.client.client"
 
+
+def _ctx(**kwargs):
+    """A `FeedRunContext` with every collaborator mocked (issue #1220)."""
+    from cqc_lem.domain.models import FeedRunContext
+    kwargs.setdefault("prefs", {})
+    return FeedRunContext(driver=MagicMock(), wait=MagicMock(), my_profile=MagicMock(),
+                          user_id=1, profile_synthesis="synth", **kwargs)
+
+
 # A draft that satisfies every rule against _POST: grounded in its specifics, 3 sentences, a lived
 # first-hand value-add plus a real number, and no validation-filler opener.
 _POST = ("We cut our warehouse pick times by moving the fast movers to the front aisle. "
@@ -341,8 +350,8 @@ class TestEngageCardWiring:
              patch("cqc_lem.app.engagement.feed._author_is_me", return_value=False), \
              patch("cqc_lem.app.engagement.feed.pace_read", return_value=0.0), \
              patch("cqc_lem.app.engagement.feed.time.sleep"):
-            ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
-                                 "feedurn://x", _POST, "Jane", {}, "synthesis", [], recent)
+            ok = ra._engage_card(_ctx(recent_comments=recent), MagicMock(), "feedurn://x",
+                                 _POST, "Jane")
         return ok, gen, release
 
     def test_history_is_passed_in_and_the_landed_comment_is_appended(self):

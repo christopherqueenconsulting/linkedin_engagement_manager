@@ -11,6 +11,15 @@ pytestmark = pytest.mark.unit
 _FEED = "cqc_lem.app.engagement.feed"
 
 
+def _ctx(**kwargs):
+    """A `FeedRunContext` with every collaborator mocked (issue #1220)."""
+    from cqc_lem.domain.models import FeedRunContext
+    kwargs.setdefault("prefs", {})
+    return FeedRunContext(driver=MagicMock(), wait=MagicMock(), my_profile=MagicMock(),
+                          user_id=1, profile_synthesis="synth", **kwargs)
+
+
+
 @pytest.fixture(autouse=True)
 def _no_sleep():
     with patch(f"{_FEED}.time.sleep"):
@@ -732,8 +741,7 @@ class TestEngageCardReactionLogging:
              patch(f"{_FEED}.pace_read", return_value=0.0), \
              patch(f"{_FEED}.log_warning", warn), \
              patch(f"{_FEED}.log_debug", debug):
-            return ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
-                                   "feedurn://x", "a post body", "Jane", {}, "synth", [], [])
+            return ra._engage_card(_ctx(), MagicMock(), "feedurn://x", "a post body", "Jane")
 
     def test_a_failed_reaction_is_debug_not_a_warning(self):
         warn, debug = MagicMock(), MagicMock()

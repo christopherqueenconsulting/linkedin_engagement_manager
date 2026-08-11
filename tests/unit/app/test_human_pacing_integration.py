@@ -21,6 +21,15 @@ _FEED = "cqc_lem.app.engagement.feed"
 _RS = "cqc_lem.app.run_scheduler"
 
 
+def _ctx(**kwargs):
+    """A `FeedRunContext` with every collaborator mocked (issue #1220)."""
+    from cqc_lem.domain.models import FeedRunContext
+    kwargs.setdefault("prefs", {})
+    return FeedRunContext(driver=MagicMock(), wait=MagicMock(), my_profile=MagicMock(),
+                          user_id=1, profile_synthesis="synth", **kwargs)
+
+
+
 @pytest.fixture
 def pacing_on(monkeypatch):
     monkeypatch.setenv("HUMAN_PACING_ENABLED", "true")
@@ -222,8 +231,7 @@ class TestGovernorAccounting:
              patch(f"{_FEED}.pace_read", return_value=0.0), \
              patch(f"{_FEED}.time.sleep"), \
              patch(f"{_FEED}.record_action") as recorded:
-            ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
-                                 "feedurn://x", "a post body", "Jane", {}, "synth", [], [])
+            ok = ra._engage_card(_ctx(), MagicMock(), "feedurn://x", "a post body", "Jane")
         assert ok is True
         recorded.assert_called_once_with(1, ACTION_COMMENT)
 
@@ -234,8 +242,7 @@ class TestGovernorAccounting:
              patch(f"{_FEED}.generate_ai_response", return_value=None), \
              patch(f"{_FEED}.release_post_claim"), \
              patch(f"{_FEED}.record_action") as recorded:
-            ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
-                                 "feedurn://x", "a post body", "Jane", {}, "synth", [], [])
+            ok = ra._engage_card(_ctx(), MagicMock(), "feedurn://x", "a post body", "Jane")
         assert ok is False
         recorded.assert_not_called()
 

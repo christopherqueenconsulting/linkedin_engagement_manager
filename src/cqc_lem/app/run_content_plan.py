@@ -34,6 +34,7 @@ from urllib3 import Retry
 
 from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
+from cqc_lem.domain.models import PostDraftContext
 from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.ai.ai_helper import (
     apply_post_guidance,
@@ -2001,6 +2002,32 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     return second
 
 
+def _draft_as_other_type(ctx: PostDraftContext, post_types: list, unavailable: str) -> tuple:
+    """Re-draft this post as a different type after `unavailable`'s source produced nothing.
+
+    A user with no blog (or no sitemap) still gets their slot filled — as some other archetype, not
+    as an empty post. Returns `(content, post_type)` because the type that actually shipped is what
+    the review gate downstream has to be told about.
+
+    The retry keeps the blueprint, story anchor, CTA and history directive already chosen
+    (`with_post_type`), so this is the SAME planned post written from another source rather than a
+    fresh one — and it stands the once-per-post gates down, which is what stops the outer call and
+    the retry both refining and reviewing one draft. Three copies of that argument list used to sit
+    inline; the type breaking up (issue #1217) replaces the recursion itself with a bounded loop.
+    """
+    post_types.remove(unavailable)
+    retry = ctx.with_post_type(random.choice(post_types))
+    content = create_text_post(retry.user_id, retry.stage, retry.post_type, retry.user_profile,
+                               refine_final_post=retry.refine_final_post,
+                               blueprint=retry.blueprint, post_id=retry.post_id,
+                               lead_magnet_cta=retry.lead_magnet_cta,
+                               history_directive=retry.history_directive,
+                               similarity_check=retry.similarity_check,
+                               story_directive=retry.story_directive,
+                               content_mix=retry.content_mix)
+    return content, retry.post_type
+
+
 @llm_pipeline("post_generation", feature=FEATURE_CONTENT)
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
@@ -2169,6 +2196,16 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                         task_name="create_text_post")
             lead_magnet, include_cta, lead_magnet_cta = None, False, ""
 
+    # Everything this draft is written from, settled (issue #1220). The type-fallback path below is
+    # the one place that needed all of it at once and was repeating the whole argument list.
+    draft = PostDraftContext(user_id=user_id, stage=stage, post_type=post_type,
+                             user_profile=user_profile, prefs=prefs,
+                             profile_synthesis=profile_synthesis, blueprint=blueprint,
+                             post_id=post_id, lead_magnet_cta=lead_magnet_cta,
+                             history_directive=history_directive, story_directive=story_directive,
+                             content_mix=content_mix, refine_final_post=refine_final_post,
+                             similarity_check=similarity_check)
+
     # Generate the post based on the selected type
     log_info(f"Creating text post of type: {post_type} for stage: {stage}")
     if post_type == "thought_leadership":
@@ -2195,14 +2232,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                           content_mix=content_mix)
         else:
             log_info("No blog post found for this user. Generating another post type")
-            # Chose another random post type that is not "blog_summary"
-            post_types.remove("blog_summary")
-            post_type = random.choice(post_types)
-            final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                                             history_directive=history_directive, similarity_check=False,
-                                             story_directive=story_directive,
-                                             content_mix=content_mix)
+            final_content, post_type = _draft_as_other_type(draft, post_types, "blog_summary")
     elif post_type == "website_content":
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
@@ -2217,24 +2247,11 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 final_content = content
             else:
                 log_info("No relevant content found in the sitemap. Generating another post type")
-                # Chose another random post type that is not "website_content"
-                post_types.remove("website_content")
-                post_type = random.choice(post_types)
-                final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                                             history_directive=history_directive, similarity_check=False,
-                                             story_directive=story_directive,
-                                             content_mix=content_mix)
+                final_content, post_type = _draft_as_other_type(draft, post_types,
+                                                                "website_content")
         else:
             log_info("No sitemap found for this user. Generating another post type")
-            # Chose another random post type that is not "website_content"
-            post_types.remove("website_content")
-            post_type = random.choice(post_types)
-            final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                                             history_directive=history_directive, similarity_check=False,
-                                             story_directive=story_directive,
-                                             content_mix=content_mix)
+            final_content, post_type = _draft_as_other_type(draft, post_types, "website_content")
     elif post_type == "industry_news":
         final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
                                                        profile_synthesis=profile_synthesis,

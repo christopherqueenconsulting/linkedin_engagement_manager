@@ -22,6 +22,15 @@ def _no_sleep():
         yield
 
 
+def _ctx(driver, *, prefs=None, seen=None, deadline_ts=None, **kwargs):
+    """The run context the roster pass reads (issue #1220), with the parts it never touches mocked."""
+    from cqc_lem.domain.models import FeedRunContext
+    return FeedRunContext(driver=driver, wait=MagicMock(), my_profile=MagicMock(), user_id=1,
+                          prefs=dict(prefs or {}), profile_synthesis="synthesis",
+                          seen=seen if seen is not None else set(), deadline_ts=deadline_ts,
+                          **kwargs)
+
+
 def _target(url, category="peer", *, last=None, cap=2, used=0, active=True, name=None):
     return {"id": abs(hash(url)) % 10000, "profile_url": url, "name": name or url,
             "category": category, "max_comments_per_week": cap, "active": active,
@@ -196,8 +205,8 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
         p("auto_follow_roster_target", new=follow)
         p("reconcile_roster_follow_state", new=reconcile)
         p("advance_roster_connect", new=connect)
-        stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, max_posts,
-                                           prefs, "synthesis", [], seen, deadline_ts=deadline_ts)
+        stats = ra.comment_on_roster_posts(
+            _ctx(driver, prefs=prefs, seen=seen, deadline_ts=deadline_ts), max_posts)
     return {"stats": stats, "engage": engage_mock, "record": record, "driver": driver, "seen": seen,
             "blocked": blocked, "follow": follow, "reconcile": reconcile, "connect": connect}
 
@@ -257,8 +266,7 @@ class TestCommentOnRosterPosts:
                    return_value=[_target("https://www.linkedin.com/in/jane")]), \
              patch(f"{_FEED}._engage_card") as engage:
             driver = MagicMock()
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
-                                               "synthesis", [], set(), deadline_ts=1.0)
+            stats = ra.comment_on_roster_posts(_ctx(driver, deadline_ts=1.0), 5)
         assert stats["posted"] == 0
         driver.get.assert_not_called()
         engage.assert_not_called()
@@ -273,8 +281,7 @@ class TestCommentOnRosterPosts:
             p("wait_for_ajax")
             p("log_warning")
             engage = es.enter_context(patch(f"{_FEED}._engage_card"))
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
-                                               "synthesis", [], set())
+            stats = ra.comment_on_roster_posts(_ctx(driver), 5)
         assert stats["posted"] == 0 and stats["targets_visited"] == 0
         engage.assert_not_called()
 
@@ -296,8 +303,7 @@ class TestCommentOnRosterPosts:
             warned = p("log_warning")
             info = p("log_info")
             engage = p("_engage_card")
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
-                                               "synthesis", [], set())
+            stats = ra.comment_on_roster_posts(_ctx(driver), 5)
         assert stats["posted"] == 0 and stats["targets_visited"] == 0
         assert driver.get.call_count == 1  # the 2nd target is unreachable on a dead session
         warned.assert_not_called()
@@ -538,8 +544,8 @@ class TestRosterAutoFollow:
              patch(f"{_FEED}._card_for_textbox", return_value=None):
             driver = MagicMock()
             driver.find_elements.return_value = [_box("A roster author's post, long enough.")]
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 3,
-                                               {"roster_auto_follow": True}, "s", [], set())
+            stats = ra.comment_on_roster_posts(
+                _ctx(driver, prefs={"roster_auto_follow": True}), 3)
         assert budget.call_count == 3      # asked again for every target, never cached
         assert follow.call_count == 2      # the third read says the allowance is spent
         assert stats["followed"] == 2
@@ -1109,8 +1115,8 @@ class TestConnectRungBudgetAcrossOneWalk:
             task = p("send_roster_connect_invite")
             driver = MagicMock()
             driver.find_elements.return_value = [_box("A post with no comment affordance at all.")]
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5,
-                                               {"roster_auto_connect": True}, "s", [], set())
+            stats = ra.comment_on_roster_posts(
+                _ctx(driver, prefs={"roster_auto_connect": True}), 5)
         assert task.apply_async.call_count == 2
         assert stats["connect_requested"] == 2
 
@@ -1254,8 +1260,8 @@ class TestALandedCommentStandsTheRungDown:
             driver = MagicMock()
             driver.find_elements.return_value = [_box("A roster author's post, long enough to scan.")]
             driver.execute_script.return_value = None
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5,
-                                               {"roster_auto_connect": True}, "s", [], set())
+            stats = ra.comment_on_roster_posts(
+                _ctx(driver, prefs={"roster_auto_connect": True}), 5)
         return stats, queue, target
 
     def test_a_target_we_just_commented_on_is_never_invited(self):
