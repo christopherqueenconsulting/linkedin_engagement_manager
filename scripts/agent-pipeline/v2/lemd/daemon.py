@@ -50,6 +50,30 @@ PR_ONLY_EVENTS = frozenset({
 })
 
 
+#: What the hold branch reports when an item carries a hold label. True, and less useful than the
+#: reason the item was ACTUALLY parked for.
+GENERIC_PARK_REASON = "needs_human"
+
+
+def _keep_specific_park_reason(existing: str | None, incoming: str | None) -> str | None:
+    """Do not let the generic hold reason overwrite a specific one.
+
+    `park.sh` parks a PR as `selfreview_exhausted` and applies the hold labels. The very next
+    observation sees those labels, takes the hold branch, and reports `needs_human` — which the
+    generic write then stored over the top. By the time an owner answered, the only reason left was
+    the generic one.
+
+    That silently defeated #1389: the un-park routes by park reason, and `needs_human` means "a
+    question was asked, apply the answer" → `agent:revise`. So a budget park still went to the
+    revise lane with no feedback to apply, spent its two runs and re-parked — the exact treadmill
+    that change was written to end, still live because the evidence it routes on had been erased one
+    observation after it was recorded.
+    """
+    if incoming == GENERIC_PARK_REASON and existing:
+        return existing
+    return incoming
+
+
 def _item_mode(child_mode: str) -> str:
     """The mode as the ITEM knows it, given the mode a CHILD was spawned with.
 
@@ -355,7 +379,8 @@ class Daemon:
 
         db.upsert_item(
             self.conn, kind=kind, number=number, state=decision.next_state,
-            wait_reason=decision.wait_reason, parked_reason=decision.park_reason,
+            wait_reason=decision.wait_reason,
+            parked_reason=_keep_specific_park_reason(row["parked_reason"], decision.park_reason),
             wake_at=wake_at, head_sha=snap.head_sha or row["head_sha"],
             branch=snap.branch or row["branch"], dirty=0, pending_mode=None,
         )
