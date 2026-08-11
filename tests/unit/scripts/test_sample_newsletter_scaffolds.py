@@ -58,6 +58,23 @@ class TestSummarize:
         assert summary["editions_with_scaffold"] == 1
         assert summary["hit_rate"] == 0.5
         assert summary["would_hold"] == 1
+        assert summary["held_today"] == 1
+
+    def test_the_hard_counterfactual_survives_a_demoted_severity(self, tool, monkeypatch):
+        # The report's job is to say what HARD would cost. Reading that off the LIVE verdict would
+        # report zero the moment ops demotes the surface — over a corpus full of scaffolds.
+        monkeypatch.setenv("SLOP_LINT_SEVERITY_CANNED_SCAFFOLD_NEWSLETTER", "warn")
+        summary = tool.summarize([_edition("1", SCAFFOLDED), _edition("2", CLEAN)])
+        assert summary["current_severity"] == "warn"
+        assert summary["would_hold"] == 1
+        assert summary["held_today"] == 0
+
+    def test_a_disabled_linter_still_reports_the_scaffolds_it_found(self, tool, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_NEWSLETTER_ENABLED", "off")
+        summary = tool.summarize([_edition("1", SCAFFOLDED)])
+        assert summary["editions_with_scaffold"] == 1
+        assert summary["would_hold"] == 1
+        assert summary["held_today"] == 0
 
     def test_a_small_corpus_is_flagged_as_insufficient(self, tool):
         summary = tool.summarize([_edition("1", SCAFFOLDED)])

@@ -132,6 +132,14 @@ def summarize(editions: Iterable[Mapping[str, Any]], scores: Optional[Iterable[M
     `hit_rate` is the fraction of editions carrying at least one scaffold — the measure #1285 asks
     for. `sufficient` says whether the corpus is big enough to act on; a hit rate over three
     editions is an anecdote, and reporting it without that flag is how a calibration gets made up.
+
+    `would_hold` is the COUNTERFACTUAL — how many editions a HARD verdict would have regenerated —
+    so it counts editions carrying a scaffold, NOT editions the linter graded hard today. Those two
+    only coincide while the check IS hard: read from the live verdict, a run under
+    `SLOP_LINT_SEVERITY_CANNED_SCAFFOLD_NEWSLETTER=warn` (or with the linter off for the surface)
+    would report "0 would be regenerated at HARD" over a corpus full of scaffolds, which is exactly
+    the confidently wrong number this report exists to avoid. `held_today` is the live verdict,
+    reported separately.
     """
     reports = [edition_report(e) for e in editions]
     total = len(reports)
@@ -145,7 +153,8 @@ def summarize(editions: Iterable[Mapping[str, Any]], scores: Optional[Iterable[M
         "sufficient_corpus": total >= MIN_CORPUS,
         "min_corpus": MIN_CORPUS,
         "current_severity": check_severity(CHECK_SCAFFOLD, SURFACE_NEWSLETTER),
-        "would_hold": sum(1 for r in with_hits if r["severity"] == "hard"),
+        "would_hold": len(with_hits),
+        "held_today": sum(1 for r in with_hits if r["severity"] == "hard"),
         "phrase_counts": dict(phrase_counts.most_common()),
         "unused_phrases": [p for p in NEWSLETTER_BANNED_SCAFFOLDS if p not in phrase_counts],
         "telemetry_rows": len(rows),
@@ -166,7 +175,8 @@ def _render(summary: Mapping[str, Any]) -> str:
     lines.append(f"Editions with a scaffold  : {summary['editions_with_scaffold']}"
                  + (f"  ({rate:.0%})" if rate is not None else ""))
     lines.append(f"Severity today (newsletter): {summary['current_severity']}"
-                 f"  — {summary['would_hold']} edition(s) would be regenerated at HARD")
+                 f"  — {summary['would_hold']} edition(s) would be regenerated at HARD"
+                 f", {summary['held_today']} at today's severity")
     lines.append(f"#630 telemetry rows       : {summary['telemetry_rows']} "
                  f"(hard>0: {summary['telemetry_with_hard']}, warn>0: {summary['telemetry_with_warn']})")
     lines.append("")

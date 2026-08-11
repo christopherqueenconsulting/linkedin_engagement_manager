@@ -318,7 +318,10 @@ poetry run python scripts/sample_newsletter_scaffolds.py --days 3650
 ```
 
 It refuses to imply a calibration it cannot support: under 20 editions the report prints
-`NOT ENOUGH`, and an empty corpus reports no hit rate rather than 0%. Adding anything it surfaces to
+`NOT ENOUGH`, and an empty corpus reports no hit rate rather than 0%. It also reports the HARD cost
+as a counterfactual (`would_hold` = editions carrying a scaffold) SEPARATELY from what the linter
+graded on the run (`held_today`), so a run under a demoted severity — or with the surface's linter
+switched off — cannot read as "no edition would have been held". Adding anything it surfaces to
 `NEWSLETTER_BANNED_SCAFFOLDS` is a human read of that shortlist, not an automatic step — a phrase
 can repeat because it is the author's real vocabulary, which is the opposite of a scaffold.
 
