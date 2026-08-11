@@ -1099,10 +1099,12 @@ def _probe_video_file(file_path: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _store_video_asset(post_id: int, video_src_url: str) -> str:
-    """Download a generated video into the shared assets volume, attach C2PA credentials to AI
-    output, persist posts.video_url, and return the public API asset URL. The ONE place a
-    regenerated video is stored — both the asset-only healer and the full post regenerate use it.
+def _store_video_asset(post_id: int, video_src_url: str) -> Optional[str]:
+    """Download a generated video into the shared assets volume, probe it, and attach C2PA
+    credentials to AI output. Persist posts.video_url and return the public API asset URL only when
+    the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
+    the full post regenerate use it. Returns None when the file is empty or unparseable and the
+    probe is advisory, leaving the post for the missing-asset gate / backfill healer.
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
@@ -1120,8 +1122,10 @@ def _store_video_asset(post_id: int, video_src_url: str) -> str:
                     post_id=post_id, task_name="regenerate_post_video_task")
         if VIDEO_PROBE_ENABLED:
             raise RuntimeError(f"video asset probe failed: {probe_reason}")
-        # When the probe is advisory, still warn and continue. The post is left without a usable URL
-        # only if the caller's own flow chooses to hold it; this keeps the existing behavior intact.
+        # Advisory mode: do not persist a broken URL. Returning None lets callers treat this the
+        # same as a failed render — the missing-asset gate holds the post and the backfill healer
+        # can retry it.
+        return None
 
     # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
     if str(video_src_url).startswith("http"):
@@ -1169,7 +1173,15 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     if not video_src_url:
         return None
 
-    api_video_url = _store_video_asset(post_id, video_src_url)
+    try:
+        api_video_url = _store_video_asset(post_id, video_src_url)
+    except Exception as e:
+        # A hard probe failure (or any other storage error) should not strand the post; log it
+        # and let the missing-asset gate hold it for review / backfill.
+        log_warning("Could not store the regenerated video asset", exc=e,
+                    post_id=post_id, task_name="regenerate_post_video_task")
+        return None
+
     # Symmetric with regenerate_post_carousel_task: a real video now exists, so heal a non-terminal
     # post (e.g. one left in 'planning' by asset backfill) to 'approved' so it becomes visible in the
     # Review UI and can post, instead of being stranded despite a correctly-produced video.

@@ -154,8 +154,8 @@ class TestVideoAssetProbe:
              patch("cqc_lem.app.run_content_plan.update_db_post_video_url") as upd, \
              patch("cqc_lem.app.run_content_plan.track_video_asset_probe") as track:
             url = _store_video_asset(9, "http://runway/clip.mp4")
-        assert url is not None
-        upd.assert_called_once()
+        assert url is None
+        upd.assert_not_called()
         assert any(call.kwargs.get("probe_ok") is False for call in track.call_args_list)
 
     def test_store_video_asset_accepts_valid_mp4(self, tmp_path):
