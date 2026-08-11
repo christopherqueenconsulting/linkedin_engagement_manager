@@ -274,7 +274,9 @@ def test_the_unpark_action_exists_and_is_executable():
 def test_the_unpark_action_undrafts_before_it_relabels():
     """#1236's ordering rule: a draft can hold neither auto-merge nor a queue entry."""
     src = (_V2 / "actions" / "unpark.sh").read_text()
-    assert src.index("gh pr ready") < src.index("--add-label \"agent:revise\"")
+    # Keyed on the label WRITE, not on a literal lane name: the lane is now chosen by park reason
+    # (#1389), so pinning `agent:revise` here would break for the right reason and teach nothing.
+    assert src.index("gh pr ready") < src.index('--add-label "$LANE"')
 
 
 def test_the_unpark_action_resets_the_run_ledger():
@@ -404,3 +406,53 @@ def test_the_authorship_check_refuses_an_unreadable_thread():
     body = src[src.index("v2_owner_answered()"):]
     assert 'refusing.' in body
     assert 'return 1' in body
+
+
+# ------------------------------------------------- the lane an un-park routes to (#1389)
+
+
+def test_a_budget_park_goes_back_to_working_not_revise():
+    """`agent:revise` outranks the merge ladder, so it must mean there is feedback to apply.
+
+    A PR parked because a budget ran out has none — the un-park's own `ledger_reset` IS the fix.
+    Routing it to revise dispatched an agent to act on instructions that did not exist: it spent the
+    2-run revise budget on an empty lane and re-parked within the hour. Measured on #1289 and #1296,
+    both green with a fresh review throughout, both of which merged the moment the label came off.
+    """
+    src = (_V2 / "actions" / "unpark.sh").read_text()
+    case = src[src.index('case "$PARK_REASON" in'):src.index("esac", src.index('case "$PARK_REASON" in'))]
+    assert "needs_human) LANE=\"agent:revise\"" in case
+    assert '*)           LANE="agent:working"' in case
+
+
+def test_an_unknown_park_reason_takes_the_cheap_lane():
+    """The default matters more than the named case, because reasons get added.
+
+    A wrong `working` costs one observation; a wrong `revise` costs two model sessions and a
+    re-park. The catch-all must therefore be `working`.
+    """
+    src = (_V2 / "actions" / "unpark.sh").read_text()
+    case = src[src.index('case "$PARK_REASON" in'):src.index("esac", src.index('case "$PARK_REASON" in'))]
+    default = case[case.index("*)"):]
+    assert "agent:working" in default and "agent:revise" not in default
+
+
+def test_the_daemon_passes_the_park_reason_to_the_action():
+    """The action cannot route on a reason it is never given."""
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    launch = src[src.index('if mode == "unpark":'):]
+    launch = launch[:launch.index("if mode ==", 10)] if "if mode ==" in launch[10:] else launch[:400]
+    assert 'row["parked_reason"]' in launch
+
+
+def test_the_label_written_is_the_routed_lane_not_a_literal():
+    """Regression guard: the label in the `gh pr edit` call must be the variable, not `agent:revise`.
+
+    The whole fix is one substitution, and a later edit that hardcodes the label again would restore
+    the treadmill silently.
+    """
+    src = (_V2 / "actions" / "unpark.sh").read_text()
+    edit = src[src.index("gh pr edit \"$TPR\""):]
+    edit = edit[:edit.index("fi")]
+    assert '--add-label "$LANE"' in edit
+    assert '--add-label "agent:revise"' not in edit
