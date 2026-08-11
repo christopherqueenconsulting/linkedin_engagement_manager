@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.145.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.144.0...v0.145.0) (2026-08-11)
+
+
+### Features
+
+* **agents:** the pipeline self-update mechanism, installed but not enabled ([#1413](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1413)) ([e841a72](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e841a72dffeec1fc2f5c365a789097ede8b84590))
+* **agents:** the pipeline self-update mechanism, installed but not enabled (closes [#1398](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1398)) ([e841a72](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e841a72dffeec1fc2f5c365a789097ede8b84590))
+
 ## [0.144.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.143.0...v0.144.0) (2026-08-11)
 
 
