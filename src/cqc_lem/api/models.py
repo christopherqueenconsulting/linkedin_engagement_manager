@@ -13,7 +13,7 @@ imported (last, below the routes) the class is already built — so a value used
 BOTH sides of a split has to live somewhere neither side owns.
 """
 
-from typing import Annotated, Any, Optional
+from typing import Annotated, Generic, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -21,19 +21,31 @@ from pydantic import BaseModel, Field
 # it. `__all__` is the one declaration ruff and CodeQL both understand; without it CodeQL files
 # py/unused-global-variable against `_LEN_DM_TEMPLATE` (a leading underscore reads as private, so an
 # unread one reads as dead), and a per-line ruff directive is invisible to CodeQL.
-__all__ = ["ResponseModel", "SessionTokenField", "_LEN_DM_TEMPLATE", "error_responses"]
+__all__ = ["DetailT", "ResponseModel", "SessionTokenField", "_LEN_DM_TEMPLATE", "error_responses"]
+
+DetailT = TypeVar("DetailT")
 
 
-class ResponseModel(BaseModel):
+class ResponseModel(BaseModel, Generic[DetailT]):
     """The envelope almost every route returns.
 
-    `detail` is deliberately `Any`: a payload dict/list on success, a message string on failure —
-    the same shape FastAPI gives an `HTTPException`, so the SPA reads success and error responses
-    through one code path.
+    Bare `ResponseModel` still means `detail: Any` — pydantic treats an unparametrized type variable
+    as `Any` — so a route that has no single payload shape (or a caller constructing the envelope by
+    hand) is unchanged, on the wire and in the schema.
+
+    Parametrizing it is what the public schema is for (#1219): `/api/openapi.json` has been world-
+    readable since #1020, and an `Any` `detail` documents nothing about what a route returns.
+    `ResponseModel[str]` says "a message", `ResponseModel[dict[str, Any]]` says "an object",
+    `ResponseModel[list[dict[str, Any]]]` says "an array of objects".
+
+    The parameter is deliberately a CONTAINER type, not a per-route field model. FastAPI serializes
+    the response THROUGH this annotation, so a model with named fields would silently drop every key
+    it does not declare — the SPA would lose data to a docs change. The container types below add
+    real information to the schema while leaving the bytes on the wire byte-for-byte identical.
     """
 
     status_code: int
-    detail: Any
+    detail: DetailT
 
 
 # The OpenAPI `responses=` block shared by ~35 routes. Data, no dependencies, so it lives here for
