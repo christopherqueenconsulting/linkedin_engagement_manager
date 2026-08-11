@@ -272,7 +272,7 @@ class Daemon:
         # debugging churn would have gone looking for a claim storm that was purely a log artefact.
         persisted = decision.next_state
         if decision.action in (observe.ACT_DISPATCH, observe.ACT_MERGE, observe.ACT_PARK,
-                               observe.ACT_UNPARK):
+                               observe.ACT_UNPARK, observe.ACT_DISARM):
             persisted = db.STATE_READY
         self._emit(row, snap, decision, persisted)
 
@@ -286,6 +286,17 @@ class Daemon:
                 self.conn, kind=kind, number=number, state=row["state"],
                 head_sha=snap.head_sha or row["head_sha"],
                 branch=snap.branch or row["branch"], dirty=0, wake_at=None,
+            )
+            return
+
+        if decision.action == observe.ACT_DISARM:
+            # Stays `parked` in spirit — the hold is real — but the item must be dispatchable for
+            # one gh action first, so it is persisted READY with a pending mode like any other.
+            db.upsert_item(
+                self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
+                pending_mode="disarm", parked_reason=decision.park_reason,
+                head_sha=snap.head_sha or row["head_sha"],
+                branch=snap.branch or row["branch"],
             )
             return
 
@@ -433,7 +444,7 @@ class Daemon:
             # `unpark` is a gh-pool action: four label writes and a ledger reset, no model. It
             # must never queue behind a 20-minute implementation run — the whole complaint it fixes
             # is work sitting parked while the owner waits.
-            pool = "gh" if mode in ("merge", "park", "unpark") else "agent"
+            pool = "gh" if mode in ("merge", "park", "unpark", "disarm") else "agent"
             if mode == "start" and self.cfg.hold_starts:
                 # Checked BEFORE the slot read: an operator holding new work still wants to see
                 # that it is being held, and a full pool would otherwise `continue` first and
@@ -509,6 +520,9 @@ class Daemon:
             return self.sup.dispatch_gh(
                 action="park", kind=kind, number=number,
                 args=[kind, str(number), row["parked_reason"] or "parked"], item_id=row["id"])
+        if mode == "disarm":
+            return self.sup.dispatch_gh(action="disarm", kind=kind, number=number,
+                                        args=[str(number)], item_id=row["id"])
         if mode == "unpark":
             return self.sup.dispatch_gh(
                 action="unpark", kind=kind, number=number,

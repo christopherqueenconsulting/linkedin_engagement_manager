@@ -43,6 +43,10 @@ MODE_BUDGET: dict[str, int] = {
     "docfix": 3,
     "phasefix": 2,
     "merge": 3,
+    # Bounded because `gh pr merge --disable-auto` exits 0 on a PR that was never armed: without a
+    # meter, a mis-read of `autoMergeRequest` would re-dispatch the action for ever. Keyed on the
+    # head in `disarm.sh`, alongside the merge meter it mirrors.
+    "disarm": 3,
 }
 
 #: Wall-clock ceiling per mode, in seconds. The daemon enforces these with killpg; `run_lane`'s own
