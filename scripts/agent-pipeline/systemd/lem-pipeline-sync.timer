@@ -1,0 +1,13 @@
+[Unit]
+Description=Check main for pipeline changes every few minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Spread the load so a sync never lands exactly on the watchdog's 15-minute tick.
+RandomizedDelaySec=60
+AccuracySec=30s
+Unit=lem-pipeline-sync.service
+
+[Install]
+WantedBy=timers.target

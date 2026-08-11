@@ -385,7 +385,7 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
 | **`PER_HEAD_MODES` and `MODE_BUDGET["merge"]` have no consumers** (§6) — the merge bound lives entirely in `merge_enable.sh` and works | left as-is: moving it would relocate a functioning guard for no behaviour change | — |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
-| **The pipeline has no deploy path.** Not in the Docker image, no workflow — it reaches the VPS only when a human runs `install.sh --sync` | main and the box can diverge silently | #1397, #1398 |
+| **The sync timer is not enabled.** The mechanism is shipped and tested; enabling it needs `pipeline-selfmod-gate` to be a required check first, which is an owner-only branch-protection change | until then, deploys stay manual and `main` can silently outrun the box | #1397, #1398 |
 
 ---
 
@@ -399,7 +399,27 @@ runner — so a merged pipeline change is not live until someone syncs it.
 install.sh              first install (also touches PAUSED)
 install.sh --sync       update only files the box has not edited
 install.sh --sync --force   overwrite box edits, after reading the diff
+
+sudo systemctl restart lem-agentd lem-agent-webhook   # BOTH — see below
 ```
+
+**Restart both units, always.** They both load the `lemd` package, and only `lem-agentd` used to be
+named in this procedure — so the receiver ran 23-hour-old code through nine merged changes before
+anyone noticed (#1412). It surfaced as `kv.schema_version` refusing to advance: the receiver calls
+`db.connect()` per request, so every delivery rewrote the version from its stale module.
+
+**Automated (`scripts/agent-pipeline/sync.sh`, shipped but not enabled).** A `lem`-owned systemd
+timer pulls `main` into a machine mirror at `/home/lem/agent-pipeline-src`, runs `install.sh --sync`,
+restarts both units, and verifies the daemon came back — restoring a snapshot if it did not. Pull
+rather than CI-push because a push needs a standing credential that executes as the uid holding
+`secrets.env`, the App token and every worktree, while a pull needs nothing inbound. `state/SYNC_HOLD`
+stops it; `--force` is never used, because `--sync`'s refusal on a box-edited file means someone is
+mid-debug on that machine.
+
+⚠️ **The timer is deliberately not enabled.** Auto-deploy closes a loop: agents merge their own PRs
+(`required_approving_review_count` is 0), so a merged pipeline change would reach the box unattended.
+`scripts/pipeline_selfmod_gate.py` is the control, and it only works once the workflow calling it is
+a REQUIRED check on `main` — an owner-only branch-protection setting (#1397).
 
 `--sync` refuses a file whose on-box hash differs from both the repo and the recorded manifest — a
 box-local edit is never silently overwritten.

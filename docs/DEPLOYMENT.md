@@ -9,6 +9,23 @@ local dev → PR to main → CI gates → release-please tags vX.Y.Z
    → build-and-push.yml builds image → GHCR → SSH deploy to VPS → migrate + up
 ```
 
+
+## The agent pipeline is deployed separately
+
+`scripts/agent-pipeline/` is **not in the Docker image** and no workflow ships it. The release train
+deploys the *application*; the autonomous runner reaches `/home/lem/agent-pipeline` on the VPS only
+through its own installer:
+
+```bash
+scripts/agent-pipeline/install.sh --sync                  # only files the box has not edited
+sudo systemctl restart lem-agentd lem-agent-webhook       # BOTH load the lemd package
+```
+
+So a merged pipeline change is **not live until someone syncs it**, and `main` can silently outrun
+the box — it did for 23 hours (#1412). `sync.sh` and `lem-pipeline-sync.timer` automate this and are
+installed but **not enabled**, pending the self-modification gate (#1397). Full posture:
+[`agent-pipeline-v2.md`](agent-pipeline-v2.md) §8.
+
 ## Architecture
 
 | Concern | Choice |

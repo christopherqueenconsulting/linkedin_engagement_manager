@@ -1,0 +1,29 @@
+[Unit]
+# Pull the pipeline from main and prove it still runs. See scripts/agent-pipeline/sync.sh.
+Description=LEM agent-pipeline self-update from main
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lem
+Group=lem
+Environment=BASE=/home/lem/agent-pipeline
+Environment=LEM_SYNC_SRC=/home/lem/agent-pipeline-src
+WorkingDirectory=/home/lem/agent-pipeline-src
+
+# The fetch happens HERE, before sync.sh is exec'd, so the script is never rewritten underneath the
+# bash process that is reading it. `reset --hard` because this is a machine mirror with no local
+# work to preserve — anything it has is either from main or a mistake.
+ExecStartPre=/usr/bin/git -C /home/lem/agent-pipeline-src fetch --quiet origin main
+ExecStartPre=/usr/bin/git -C /home/lem/agent-pipeline-src reset --quiet --hard origin/main
+ExecStart=/home/lem/agent-pipeline-src/scripts/agent-pipeline/sync.sh
+
+# A failed sync must not take the box with it: sync.sh already rolled itself back by the time it
+# exits non-zero, so there is nothing for systemd to retry.
+SuccessExitStatus=0 1
+TimeoutStartSec=300
+Slice=lem-agent.slice
+
+[Install]
+WantedBy=multi-user.target
