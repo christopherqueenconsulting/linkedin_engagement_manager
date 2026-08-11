@@ -330,9 +330,12 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
   `content_alignment.py` — never add a parallel per-content-type prompt helper. Comments carry a
   quality contract + similarity gate (#617) that SKIPS the post after `COMMENT_GATE_MAX_ATTEMPTS`
   failed regenerations. **Story bank** (#620) is the FACT half, the **deck reference gate** (#728)
-  the save-worthiness half, **slop lint** (#625) BLOCKS on five HARD checks and advises on five WARN
-  (`canned_scaffold` is #1138's: `POST_BANNED_SCAFFOLDS` is ONE list the post prompt names and the
-  lint greps, so the writer side and the checking side cannot drift — `docs/content-quality-audits/text.md`).
+  the save-worthiness half, **slop lint** (#625) BLOCKS on five HARD checks and advises on the WARN
+  rest — severity is PER SURFACE (`SURFACE_SEVERITIES`), so `canned_scaffold` is WARN on a post and
+  HARD on a newsletter (#1285), where a scaffold is pure runway and a hold only costs a regeneration.
+  `POST_BANNED_SCAFFOLDS` / `NEWSLETTER_BANNED_SCAFFOLDS` are ONE list the prompt names and the lint
+  greps, so the writer side and the checking side cannot drift — `docs/content-quality-audits/text.md`,
+  `docs/content-quality-audits/newsletter.md` §8.
 - **Content mix (70/20/10)** (same doc): every planned post carries a class in `posts.content_mix` —
   `value` 70% / `authority` 20% / `promo` 10% (forced `case_snapshot`). **A promo CTA is always an
   ARTIFACT** (lead magnet / newsletter); a meeting ask is banned in prompts, repaired

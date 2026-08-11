@@ -110,7 +110,8 @@ checking side stay pinned.
 This PR adds `NEWSLETTER_BANNED_SCAFFOLDS` to the shared core and extends the `canned_scaffold`
 check to newsletters (WARN severity, same as posts), so the writer-side ban and the checking side
 read one list. Follow-up #1285: measure whether the severity should be HARD once a corpus exists,
-and whether additional sampled scaffolds need to be added.
+and whether additional sampled scaffolds need to be added. **Resolved — §8 below: the check is HARD
+on newsletters as of #1285.**
 
 ### F3 — No deterministic blog-alignment fidelity check → **#1286**
 
@@ -275,3 +276,53 @@ landing, not as quality moving — it is the trend line, never a gate (`docs/con
 - **#1286** — Add deterministic blog-alignment fidelity gate for newsletter editions
 - **#1287** — Add deterministic cover-body cohesion check / re-brief cover after title/subtitle edits
 - **#1288** — Verify newsletter subscribe CTA has a real public destination
+
+---
+
+## 8. Calibrated scaffold severity (#1285)
+
+**Decision: `canned_scaffold` is HARD on the newsletter surface, WARN everywhere else.**
+
+Severity is now resolved per surface (`slop_lint.SURFACE_SEVERITIES`), not once per check. The
+reason it can differ is that the false-positive risk differs: on a POST the same check can fire on a
+templated opener that carries a real specific ("In my experience as a Solutions Architect, we cut
+deploys to 9 minutes"), which is why #1138 shipped it at WARN. A newsletter scaffold is pure runway
+— "in today's edition", "without further ado", "here's what you need to know" say nothing, and no
+edition needs them.
+
+The newsletter surface is also where a HARD verdict is cheap. An edition is drafted days ahead of
+its slot and always lands in the review queue, so HARD does **not** block a publish. What it buys is
+the bounded regeneration: `slop_retry_directive` steers only on `report["hard"]`, so at WARN a
+scaffold was recorded and then shipped unchanged. At HARD the edition is rewritten once with the
+phrase named, and an edition that still trips the lint is kept for review with the reasons logged —
+the same fail-open behaviour `generate_newsletter_edition` already had.
+
+**Ops knobs** (read at call time, no restart):
+
+| Variable | Effect |
+|---|---|
+| `SLOP_LINT_SEVERITY_CANNED_SCAFFOLD_NEWSLETTER=warn` | Demote newsletters back to advisory, posts unaffected |
+| `SLOP_LINT_SEVERITY_CANNED_SCAFFOLD=hard` | Promote every surface (an explicit env value beats the per-surface default) |
+| `SLOP_LINT_EXTRA_SCAFFOLDS` | Extends BOTH the writer directive and the linter — never one side |
+
+**The measurement is still owed.** The severity call was made on the phrase list's provenance (every
+entry sampled from LEM's own newsletter prompt output) rather than on a hit rate, because the corpus
+the issue asks for does not exist yet — the #1142 audit found ONE shipped edition in the telemetry
+window. `scripts/sample_newsletter_scaffolds.py` is the sampler that produces it: read-only, run
+against a database with real editions, it reports the per-edition hit rate, which phrases actually
+fire, which banned phrases are dead entries, how #630 has been scoring the same editions, and
+candidate phrases repeated across two or more editions that are not yet banned.
+
+```
+poetry run python scripts/sample_newsletter_scaffolds.py --days 3650
+```
+
+It refuses to imply a calibration it cannot support: under 20 editions the report prints
+`NOT ENOUGH`, and an empty corpus reports no hit rate rather than 0%. Adding anything it surfaces to
+`NEWSLETTER_BANNED_SCAFFOLDS` is a human read of that shortlist, not an automatic step — a phrase
+can repeat because it is the author's real vocabulary, which is the opposite of a scaffold.
+
+**Telemetry discontinuity (second one, same cause as §6's):** the #630 nightly beat re-lints shipped
+newsletters, so from the merge date a newsletter scaffold moves from `slop_warn` to `slop_hard`. The
+step is this severity landing, not quality moving. Content-quality telemetry is a trend line and
+never gates anything (`docs/content-quality-telemetry.md`); the newsletter publish flow is unchanged.
