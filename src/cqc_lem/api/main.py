@@ -3355,11 +3355,17 @@ def _hide_admin_routes_from_schema() -> int:
     decorators, because the failure mode is silent: a nineteenth admin route added later would
     publish itself and nothing would say so. `test_no_admin_route_appears_in_the_public_schema`
     checks the outcome, and this loop makes the outcome the default.
+
+    Returns how many admin operations the walk MATCHED, not how many flags it flipped. `_walk_routes`
+    descends into the ORIGINAL router objects, which outlive a re-import of this module — so counting
+    flips reports 0 the second time around (a reloaded `app` re-including routers whose routes are
+    already hidden) and reads exactly like the walk matching nothing, which is the one failure this
+    number exists to expose.
     """
     hidden = 0
     for route in _walk_routes(app.routes):
-        if getattr(route, "path", "").startswith("/api/admin") and getattr(
-                route, "include_in_schema", False):
+        if getattr(route, "path", "").startswith("/api/admin") and hasattr(
+                route, "include_in_schema"):
             route.include_in_schema = False
             hidden += 1
     return hidden

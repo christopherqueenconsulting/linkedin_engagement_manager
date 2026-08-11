@@ -169,6 +169,17 @@ class TestEveryPublishedOperationDocumentsItsPayload:
             f"{_ADMIN_ROUTES_HIDDEN} operations were hidden but the route table has {admin_ops}"
         )
 
+    def test_the_count_survives_a_second_pass_over_the_same_routers(self):
+        """The count reports what the walk MATCHED, so an already-hidden route still counts.
+
+        `_walk_routes` reaches the original router objects, which outlive a re-import of
+        `api.main` — `test_spa_seo_files.py` does exactly that. Counting flips instead would make
+        the second pass report 0, which is indistinguishable from the walk matching nothing.
+        """
+        from cqc_lem.api.main import _ADMIN_ROUTES_HIDDEN, _hide_admin_routes_from_schema
+
+        assert _hide_admin_routes_from_schema() == _ADMIN_ROUTES_HIDDEN
+
 
 class TestAnnotationsMatchWhatHandlersReturn:
     """A handler and its annotation drift apart in the source long before a request proves it.
