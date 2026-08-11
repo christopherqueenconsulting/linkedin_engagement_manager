@@ -450,7 +450,8 @@ class TestRegenerateTaskWrappers:
     def test_regenerate_video_c2pa_failure_is_non_fatal(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
         video_file = tmp_path / "v.mp4"
-        video_file.write_bytes(b"v")
+        # C2PA failure is non-fatal only when the probe has already accepted the file (issue #1280).
+        video_file.write_bytes(b'\x00\x00\x00 ftypisom' + b'\x00' * 56)
         with patch(f"{_RCP}.get_post_content", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
              patch(f"{_RCP}.load_profile_for_user", return_value=None), \
