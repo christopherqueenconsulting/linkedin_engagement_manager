@@ -10,7 +10,8 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _LM = {"enabled": True, "keyword": "AUDIT", "message": "the churn audit checklist"}
-_NEWSLETTER = {"enabled": True, "title": "The Retention Brief"}
+_NEWSLETTER = {"enabled": True, "title": "The Retention Brief",
+                 "newsletter_url": "https://li/newsletter/retention"}
 
 
 class TestAssignContentMix:
