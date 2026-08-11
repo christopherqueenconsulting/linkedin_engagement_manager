@@ -335,8 +335,8 @@ meter by pushing a commit — is real and correct; the wiring is not.
 | `EX_BUDGET` 71 | this (item, mode) is spent | park `{mode}_exhausted` |
 | `EX_BUSY` 72 | another claimant holds the branch | retry in 120s |
 | `EX_SETUP` 73 | environment not preparable | ⚠️ treated as a plain failure — no backoff |
-| `RC_KILLED` -9 | we stopped it on its deadline | falls to the generic branch → re-observe |
-| `RC_VANISHED` -99 | its process was already gone | closed inside `_reap_adopted`, which `collect()` never sees → re-observe |
+| `RC_KILLED` -9 | we stopped it on its deadline | falls to the generic branch → re-observe. **No refund**: a run that used its whole ceiling and produced nothing is what a budget is for |
+| `RC_VANISHED` -99 | its process was already gone | closed inside `_reap_adopted`, which `collect()` never sees → re-observe, **and the charge is refunded** — we ended it, so it measured nothing. Capped at one refund per (item, mode) |
 
 `RC_KILLED` and `RC_VANISHED` are separate because collapsing them cost a real misdiagnosis: nine
 runs closed `-9` with a ~675s mean read exactly like a timeout problem, and were adopted orphans from
@@ -366,7 +366,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 |---|---|---|
 | **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | #1388 |
 | **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | #1390 |
-| **Interrupts charge budget they never used.** A daemon restart during active runs burns `start` budget across the fleet, and a killed `start` that pushed before dying is the only way into the stranded-branch state | restarts tax the whole backlog | #1391 |
 | **Dead code**: `capacity.compute()` has no callers at all; `spend.state()/choose_lane()/record()` have no *production* callers (their tests still exercise them). Live caps are the flat `LEMD_MAX_AGENTS`. `phasefix` is unreachable, as are `PER_HEAD_MODES` and `MODE_BUDGET["merge"]` (§6). `items.issue_number/risk/model_hint` are writable but never written | | #1395 |
 | **An issue whose only linked PR was closed unmerged waits for ever** — `_open_pr_for_issue` returns True for any linked ref, because the API's refs carry no `state` | needs `ACT_PARK` re-added, so split out | #1405 |
 | **v2 has no phase guard.** v1 routed a PR closing a phased issue with untracked later phases to `MODE=phasefix`, escalating to the owner only after repeated attempts (`tick.sh:715-745`); v2 has no equivalent and merges it | a shipped issue can silently lose its remaining scope | #1396 |
