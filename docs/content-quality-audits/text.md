@@ -113,9 +113,10 @@ The sharpest version of the seam, verified in the tree:
 True
 ```
 
-The canned phrase the prompt supplied **satisfies the A2 first-person proof slot** — because "one"
-reads as a concrete-specificity signal — while containing no lived detail whatsoever. The proof
-gate was being fed by the prompt that defeated it.
+The canned phrase the prompt supplied **satisfied the A2 first-person proof slot** — because "one"
+read as a concrete-specificity signal — while containing no lived detail whatsoever. The proof
+gate was being fed by the prompt that defeated it. (The detector half was tightened separately under
+**#1266** — see F4; the same call now returns `False`.)
 
 **Fixed:** every canned template and tier-1 tell word removed from all post prompts;
 `post_writing_directive()` (the ONE place invariant post rules live — no parallel helper) now names
@@ -167,10 +168,29 @@ edit & re-score endpoint). Whether generation should hold too is #1452. Five pos
 SIZES the gap rather than settling the number — retune with the env knob as `content_quality_scores`
 fills out. Posture: `docs/content-core.md`.
 
-### F4 — The A2 proof detector counts "one of the…" as a specific → **#1266**
+### F4 — The A2 proof detector counts "one of the…" as a specific → **#1266** *(detector FIXED; impact measurement still open)*
 
-The loophole behind F1's `has_first_person_proof` result. Not fixed here: tightening it increases
-regenerations, and the detector deliberately errs toward "counts as proof" to bound that cost.
+The loophole behind F1's `has_first_person_proof` result. Not fixed in this audit's PR: tightening
+it increases regenerations, and the detector deliberately errs toward "counts as proof" to bound
+that cost.
+
+**Detector fixed under #1266** — the issue itself stays OPEN until the flip rate is measured on real
+shipped bodies (below), which is its third acceptance criterion. `_SPECIFICITY_RE` now reads a spelled quantity as a checkable particular only
+when it COUNTS something: a quantity followed by `of` + a determiner or pronoun ("one of the biggest
+challenges", "one of my clients", "dozens of our customers") no longer counts, and neither does the
+pronoun "no one". A real count is untouched — "one client", "one afternoon", "one line of YAML",
+"dozens of prospects", and any digit anywhere in the sentence. The tightening removes ONE signal
+from a sentence rather than vetoing it, so "one of my clients called me last Tuesday" still proves
+itself on the time anchor.
+
+The canned sentence quoted above now returns `False`, which puts the `canned_scaffold` WARN check
+and the proof gate on the same side of the same sentence for the first time.
+
+The cost is one extra `lem-complex` generation per draft whose only proof was that shape.
+`scripts/measure_proof_gate_impact.py` measures the flip rate against real shipped bodies
+(read-only, `db.get_shipped_content_for_quality`) — run where production credentials live; the same 0-bodies
+limit recorded in §1 still applies to an agent worktree, and re-running it there is part of
+**#1267**.
 
 ### F5 — Observations recorded, not actioned
 
@@ -254,7 +274,7 @@ graders in the tree.
 | `dwell_report` score | 78 | **85** |
 | Hook within the 140-char mobile budget | ✅ 107 | ✅ 90 |
 | Tier-1 tell words | 0 | 0 |
-| A2 first-person proof | ✅ (falsely — F4) | ✅ (genuinely: a named month, a named event type, real counts) |
+| A2 first-person proof | ✅ (falsely — F4; ❌ since the #1266 detector fix) | ✅ (genuinely: a named month, a named event type, real counts) |
 | Slop lint HARD | 0 | 0 |
 | Lexical similarity of the two drafts | 0.13 — a different post, not a paraphrase | |
 
