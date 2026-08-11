@@ -665,7 +665,11 @@ collect_v2() {
   # stalled" — a warning with no cause attached — when the true answer was one line of config.
   V2_HOLD="$(grep -m1 '^LEMD_HOLD_STARTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
   case "$V2_HOLD" in 0|false|no|"") V2_HOLD="" ;; *) V2_HOLD=1 ;; esac
-  V2_GH_SLOTS="$(grep -m1 '^LEMD_GH_SLOTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  # MAX_GH_ACTIONS is the name the daemon actually reads (lemd/config.py). LEMD_GH_SLOTS was this
+  # script's own invention and matched nothing, so an operator who set it saw the number here change
+  # while the daemon kept its default. Both are accepted, the real one wins.
+  V2_GH_SLOTS="$(grep -m1 '^MAX_GH_ACTIONS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+  [ -n "$V2_GH_SLOTS" ] || V2_GH_SLOTS="$(grep -m1 '^LEMD_GH_SLOTS=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
   [ -n "$V2_GH_SLOTS" ] || V2_GH_SLOTS=2   # the default in v2/lemd/config.py
   # The default lives in v2/lemd/config.py; naming it here as a fallback keeps the report honest
   # when the knob is simply absent rather than printing an empty field.
@@ -701,9 +705,9 @@ collect_v2() {
     # Pool occupancy — v2's real capacity model. Counted from open runs the same way
     # `Supervisor.in_pool` does, including runs this process did not spawn.
     V2_POOL_AGENT="$(sqlite3 "$V2_DB" \
-      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode NOT IN ('merge_enable','park')" 2>/dev/null)"
+      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode NOT IN ('merge_enable','park','unpark','disarm')" 2>/dev/null)"
     V2_POOL_GH="$(sqlite3 "$V2_DB" \
-      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode IN ('merge_enable','park')" 2>/dev/null)"
+      "SELECT COUNT(*) FROM runs WHERE ended_at IS NULL AND mode IN ('merge_enable','park','unpark','disarm')" 2>/dev/null)"
     case "$V2_POOL_AGENT" in ''|*[!0-9]*) V2_POOL_AGENT=-1 ;; esac
     case "$V2_POOL_GH" in ''|*[!0-9]*) V2_POOL_GH=-1 ;; esac
   fi

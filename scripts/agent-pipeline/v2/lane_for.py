@@ -30,6 +30,20 @@ from lemd import lane, spend  # noqa: E402
 MAX_AGE = 3600
 
 
+def _pause_minutes() -> int:
+    """`USAGE_PAUSE_MINUTES`, defaulting when unset, EMPTY, or not a number.
+
+    Empty matters: the caller forwards this out of `config.env`, and `int("")` raises. A crash here
+    would take the whole lane decision down and leave the run unrouted, so an unreadable value falls
+    back to the documented default instead.
+    """
+    raw = (os.environ.get("USAGE_PAUSE_MINUTES") or "").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 60
+
+
 def main(argv: list[str]) -> int:
     """Resolve and print the decision."""
     mode = argv[1] if len(argv) > 1 else ""
@@ -55,7 +69,7 @@ def main(argv: list[str]) -> int:
     try:
         until = float(Path(os.environ.get("CLAUDE_PAUSED_FILE",
                                           str(base / "CLAUDE_PAUSED_UNTIL"))).read_text().strip())
-        minutes = int(os.environ.get("USAGE_PAUSE_MINUTES", "60"))
+        minutes = _pause_minutes()
         started = until - minutes * 60
         if until > time.time():
             paused_seconds = max(0.0, time.time() - started)
@@ -68,7 +82,7 @@ def main(argv: list[str]) -> int:
 
     choice = lane.decide(
         mode, usage, paused_seconds=paused_seconds,
-        usage_pause_minutes=int(os.environ.get("USAGE_PAUSE_MINUTES", "60")),
+        usage_pause_minutes=_pause_minutes(),
     )
     sys.stdout.write(lane.emit_env(choice) + "\n")
     return 0

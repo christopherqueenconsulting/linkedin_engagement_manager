@@ -132,7 +132,12 @@ export CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-45m}"
 # Claude lane's failure counter).
 LEM_LANE_OVERRIDE=""; LEM_LANE_TIER=""; LEM_LANE_MARKER=""; LEM_LANE_REASON="not_consulted"
 if [ -x "$V2_DIR/lane_for.py" ]; then
-  eval "$(BASE="$BASE" "$V2_DIR/lane_for.py" "$MODE" 2>/dev/null)" || true
+  # USAGE_PAUSE_MINUTES must be forwarded EXPLICITLY. `common.sh` sources config.env with a plain
+  # `.`, so its settings are shell variables and not exported — and this invocation sets only BASE.
+  # So the box could say 120 while `lane_for.py` used its own default of 60, and the bounded
+  # self-review wait was computed against the wrong pause length with nothing to show for it.
+  eval "$(BASE="$BASE" ${USAGE_PAUSE_MINUTES:+USAGE_PAUSE_MINUTES="$USAGE_PAUSE_MINUTES"} \
+          "$V2_DIR/lane_for.py" "$MODE" 2>/dev/null)" || true
 fi
 log "lane policy: mode=$MODE arm=${LEM_LANE_REASON} override=${LEM_LANE_OVERRIDE:-none}"
 export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON
