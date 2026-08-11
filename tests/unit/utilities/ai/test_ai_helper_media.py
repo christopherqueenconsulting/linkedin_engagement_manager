@@ -60,7 +60,9 @@ class TestRunwayMotionPrompt:
             get_runway_ml_video_prompt_from_ai("post", "an office scene", model="gen4_turbo")
             sys = _system_text(mock_openai_client.chat.completions.create)
             assert "motion" in sys.lower()
-            assert "audio" not in sys.lower()  # not veo3.1
+            # Gen-4 is not audio-capable, so the *audio instruction line* ("Say NOTHING about audio")
+            # is omitted even though the motion-prompt contract mentions audio in rule 5.
+            assert "Say NOTHING about audio" not in sys
 
     def test_veo_adds_audio_cue(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
