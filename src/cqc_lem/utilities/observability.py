@@ -311,6 +311,12 @@ EVENTS = {spec.event: spec for spec in (
     EventSpec("video_asset_probe", (
         prop("post_id"), prop("user_id"), flag("probe_ok"), label("reason"), label("source"),
     )),
+    # Avatar likeness on a video source frame (issue #1279). `present` is a label() and stays
+    # three-valued: "True"/"False" are the probe's verdict, None means it never ran, and only a
+    # string keeps a breakdown on the verdict working while leaving the unchecked rows out of it.
+    EventSpec("avatar_likeness_probe", (
+        prop("user_id"), prop("post_id"), label("present"), flag("checked"), text("reason"),
+    )),
     EventSpec("image_gate_verdict", (
         label("surface"), label("verdict"), items("issues"), prop("attempt_count"),
         flag("checked"), flag("acceptable"), prop("user_id"), prop("post_id"),
@@ -1071,6 +1077,23 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
                        provider=provider, model_tier=(model or None) and model[:64],
                        qty=qty, post_id=post_id,
                        task_name=_current_task_context()[0])
+
+
+def track_avatar_likeness_probe(
+    user_id: Optional[int],
+    post_id: Optional[int],
+    verdict: Optional[dict],
+    **extra,
+) -> None:
+    """Emit one avatar-likeness probe reading (issue #1279).
+
+    The probe checks whether a generated source frame still depicts the user's declared likeness.
+    Telemetry-only by default; the separate ``AVATAR_LIKENESS_VIDEO_HOLD_ENABLED`` flag controls whether
+    a failed probe may hold the video. Every probe is emitted, including unchecked ones, so false
+    positive/negative rates can be measured before any hold is enabled.
+    """
+    _emit(EVENTS["avatar_likeness_probe"],
+          {**dict(verdict or {}), "user_id": user_id, "post_id": post_id}, extra)
 
 
 def _rollup_field(user_id: Optional[int], feature: Optional[str], model_tier: Optional[str]) -> str:
