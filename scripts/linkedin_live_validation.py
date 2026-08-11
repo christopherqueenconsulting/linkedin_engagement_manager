@@ -1904,9 +1904,13 @@ def probe_newsletter_page(driver, newsletter_url: str, sleep=time.sleep) -> dict
     wait = WebDriverWait(driver, 10)
     driver.get(newsletter_url)
     sleep(6)
+    # The cross-check is only as good as the text it searches: LinkedIn renders the subscriber label
+    # below the header on a narrow viewport, so a 1,200-char sample can miss a count the reader also
+    # missed and grade the drift OK. Search wide, report narrow.
+    full_text = page_text_sample(driver, limit=20000)
     reading = {"newsletter_url": newsletter_url,
                "url": getattr(driver, "current_url", newsletter_url),
-               "page_text": page_text_sample(driver, limit=1200)}
+               "page_text": full_text[:1200]}
 
     try:
         reading["subscriber_count"] = _read_newsletter_subscriber_count(driver, wait, newsletter_url)
@@ -1914,7 +1918,7 @@ def probe_newsletter_page(driver, newsletter_url: str, sleep=time.sleep) -> dict
         reading["subscriber_count"] = None
         reading["reader_error"] = f"{type(e).__name__}: {e}"[:200]
 
-    token = _SUBSCRIBER_TEXT_RE.search(reading["page_text"] or "")
+    token = _SUBSCRIBER_TEXT_RE.search(full_text)
     reading["page_subscriber_token"] = token.group(0).strip() if token else None
 
     for key, locator in (("title", (By.TAG_NAME, "h1")),

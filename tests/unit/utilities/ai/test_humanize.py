@@ -552,3 +552,14 @@ class TestTitleRewriteRejectsAnAssistantAside:
         assert ca.is_assistant_aside("A plain headline about reach") is False
         assert ca.is_assistant_aside("") is False
         assert ca.is_assistant_aside(None) is False
+
+    def test_first_person_and_opener_words_mid_headline_are_not_asides(self):
+        # A hit DISCARDS the rewrite, so a false positive silently ships the hyped original. These
+        # are ordinary headlines; an aside opens by addressing the operator, so the first-person
+        # forms are anchored and the words that read naturally mid-headline are not matched at all.
+        for headline in ("The 3 numbers I need before I say yes",
+                         "Why I can't ship on Fridays",
+                         "OK: the one metric that survived Q3",
+                         "Here's the new playbook we ran for 90 days",
+                         "Close the loop or please give up the deal"):
+            assert ca.is_assistant_aside(headline) is False, headline

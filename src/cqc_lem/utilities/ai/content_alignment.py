@@ -1529,14 +1529,23 @@ def _clean_title_line(text: str) -> str:
 # Found by #1284's audit: three of six production title passes came back as one of these, and every
 # existing guard let them through (they are the right length, and they carry no hype word), so the
 # aside REPLACED a good headline and would have published as the edition's subject line.
+#
+# Every pattern here has to earn its place against the FALSE positive, because a hit discards a
+# perfectly good rewrite: "The 3 numbers I need before I say yes" and "Why I can't ship on Fridays"
+# are headlines, not asides. So the first-person and opener forms are ANCHORED — an aside opens by
+# addressing you — and the phrases that read naturally mid-headline ("ok", "here's the new") are not
+# in the list at all.
 _ASSISTANT_ASIDE_RES: tuple = (
-    re.compile(r"^(?:sure|certainly|of course|absolutely|okay|ok)\b[\s,!.:]", re.IGNORECASE),
+    re.compile(r"^(?:sure|certainly|of course|absolutely|sorry|apologies)\b[\s,!.:]",
+               re.IGNORECASE),
     re.compile(r"\b(?:could|can|would)\s+you\s+(?:please\s+)?(?:share|provide|send|paste|give|"
                r"clarify|confirm)\b", re.IGNORECASE),
-    re.compile(r"\bplease\s+(?:share|provide|send|paste|supply|give)\b", re.IGNORECASE),
-    re.compile(r"\b(?:i\s+(?:need|require)|i'?m\s+unable|i\s+cannot|i\s+can'?t)\b", re.IGNORECASE),
+    re.compile(r"\bplease\s+(?:share|provide|send|paste|supply|give)\s+(?:the|your|me)\b",
+               re.IGNORECASE),
+    re.compile(r"^(?:i\s+(?:need|require)|i'?m\s+unable|i\s+cannot|i\s+can'?t)\b", re.IGNORECASE),
     re.compile(r"\bas\s+an\s+ai\b", re.IGNORECASE),
-    re.compile(r"\bhere(?:'s| is)\s+(?:the|your)\s+(?:rewritten|revised|new)\b", re.IGNORECASE),
+    re.compile(r"\bhere(?:'s| is)\s+(?:the|your)\s+(?:rewritten|revised|de-?hyped)\b",
+               re.IGNORECASE),
     re.compile(r"\b(?:draft|original)\s+headline\s+you'?d?\s+like\b", re.IGNORECASE),
 )
 

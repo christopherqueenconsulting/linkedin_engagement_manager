@@ -681,15 +681,23 @@ def _clean_newsletter_body(body: str) -> str:
     if not cleaned:
         return cleaned
     labels = {label.lower() for label in NEWSLETTER_STRUCTURAL_LABELS}
-    kept = []
+    kept, dropped = [], False
     for line in cleaned.split("\n"):
-        # Numbered variants ("Section 2", "CTA:") are the same label with decoration on it.
-        token = re.sub(r"^[\s\-–—•*#>]+|[\s:.\-–—]+$", "", line).strip().lower()
+        # Numbered variants ("Section 2", "CTA:") are the same label with decoration on it. A
+        # terminal PERIOD is not decoration though — "Intro." and "Close." are sentences a reader
+        # reads, and stripping the period would delete them as labels.
+        token = re.sub(r"^[\s\-–—•*#>]+|[\s:\-–—]+$", "", line).strip().lower()
         token = re.sub(r"\s+\d+$", "", token)
         if token and token in labels:
+            dropped = True
             continue
         kept.append(line)
-    return "\n".join(kept).strip()
+    body_out = "\n".join(kept)
+    if dropped:
+        # A label sat on its own line between two blocks, so removing it leaves a three-newline gap
+        # the article editor renders as an extra empty paragraph.
+        body_out = re.sub(r"\n{3,}", "\n\n", body_out)
+    return body_out.strip()
 
 
 def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, prefs: dict = None,

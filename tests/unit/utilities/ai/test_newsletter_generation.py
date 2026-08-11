@@ -489,6 +489,17 @@ class TestStructuralLabelsStrippedFromBody:
         out = self._body("Opener.\n\nEvery CTA should earn its place in the body.")
         assert "Every CTA should earn its place in the body." in out
 
+    def test_a_one_word_sentence_is_prose_not_a_label(self):
+        # A terminal period says a reader reads this line. Stripping it first turned "Intro." into
+        # the label "intro" and deleted the line from the published edition.
+        out = self._body("Intro.\n\nA developed paragraph.\n\nClose.\n\nWhat did you try?")
+        assert "Intro." in out and "Close." in out
+
+    def test_removing_a_label_does_not_leave_an_empty_paragraph(self):
+        # The article editor renders the extra newline, so the gap the label left is visible.
+        out = self._body("The opener.\n\nA developed paragraph.\n\nCTA\n\nWhat did you try?")
+        assert "\n\n\n" not in out
+
 
 class TestNewsletterStructuralFloor:
     """#1284. The measured gaps in the real corpus: 7/10 editions opened past the fold, 9/10 carried
