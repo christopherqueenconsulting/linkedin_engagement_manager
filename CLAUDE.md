@@ -139,7 +139,11 @@ Use `click_element_wait_retry()` for all click interactions — it handles trans
 Browser capacity is a **fixed pool of Chrome session slots shared by the Celery Selenium lanes**:
 `SE_NODE_MAX_SESSIONS` must always equal the summed `SELENIUM_CONCURRENCY` of those lanes —
 `tests/unit/app/test_selenium_capacity.py` fails the build if they drift. The horizontal path
-(`docker-compose.grid.yml`) carries the same invariant with node count as the cap:
+(`docker-compose.grid.yml`) carries the same invariant with node count as the cap.
+**`selenium-node-debug` is NOT in that sum** — extra capacity, enforced since #1301: it declares
+`lem:debug=true`, pool nodes `false`, and a production session ASKS for `false` (omitting it still
+matches). The probe and the Selenium MCP browser REQUIRE it, so neither takes a lane slot; 2
+sessions, a third refused not queued. Off the pool ≠ safe for the ACCOUNT.
 `docs/SELENIUM_GRID.md`, `docs/scaling-plan.md`.
 
 ## Feature Areas

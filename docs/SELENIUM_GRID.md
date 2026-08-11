@@ -145,11 +145,8 @@ The pool is unwatchable — noVNC lives on the nodes and replicas cannot all pub
 port — so the overlay runs **`selenium-node-debug`**: a ninth, non-replicated node that publishes
 7900 (`SELENIUM_GRID_VNC_BIND`, loopback by default) and is what the `lemvnc` hostname points at.
 It is deliberately ON TOP of the eight the lanes are sized for, so watching a browser never costs a
-production slot. Two caveats:
+production slot. One caveat left:
 
-- Grid routes a session to **any** free matching node, so this is *a spare node you can watch*, not
-  the node your session lands on. Deterministic pinning needs a distinguishing stereotype plus a
-  matching capability request from the client — not done here.
 - The Grid UI's live-view link is built from `SE_NODE_GRID_URL`; set `SELENIUM_GRID_PUBLIC_URL` to
   the tunnel hostname or that link points at a host only Docker can resolve.
 
@@ -160,17 +157,71 @@ Both 4444 and the event bus bind to **loopback** by default (`SELENIUM_GRID_HUB_
 
 #### Pinning a session to the debug node
 
-The debug node advertises a custom capability, `lem:debug`, via `SE_NODE_STEREOTYPE_EXTRA`.
-Clients that want to **watch the exact session** can request that capability:
+The pin is **two-way**, and it has to be. Grid's `DefaultSlotMatcher` compares an extension
+capability only when the node's stereotype **declares** it, so:
 
-* **Live-validation probe:** `python -c "..." < scripts/linkedin_live_validation.py --watch ...`
-* **Selenium MCP server:** `SELENIUM_DEBUG_NODE=true poetry run python tools/selenium_mcp_server.py`
+| Who | Stereotype | Session request | Result |
+|---|---|---|---|
+| `selenium-node-debug` | `lem:debug=true` | — | matched only by a `true` request |
+| the 8 pool nodes | `lem:debug=false` | — | matched only by a `false` request |
+| production (`apply_debug_node(debug=False)`) | — | `lem:debug=False` | can never land on the debug node |
+| a debug caller | — | `lem:debug=True` | can never land on the pool |
+
+Declaring `false` on the pool is not decoration: without it a `true` request matches all eight pool
+nodes as well, because Grid ignores a capability their stereotype does not carry. And an **absent**
+capability on the request side matches the debug node, which is why production sets `False` rather
+than omitting it — omitting it is what let a Celery lane be scheduled onto the watchable node.
+
+> **The quoting trap (#753 → #1301).** `- SE_NODE_STEREOTYPE_EXTRA='{"lem:debug":true}'` puts
+> literal apostrophes in the value — compose does no shell parsing — so the node logs *"Failed to
+> merge SE_NODE_STEREOTYPE_EXTRA … Keep using main stereotype"* and registers ordinary. It shipped
+> that way for weeks: `--watch` matched every node and pinned none. Quote the **whole `KEY=value`
+> pair**: `- 'SE_NODE_STEREOTYPE_EXTRA={"lem:debug":true}'`.
+> `tests/unit/utilities/test_selenium_debug_node.py` `json.loads()` the YAML-resolved value, so the
+> typo cannot come back.
+
+Clients that want to **watch the exact session**:
+
+* **Live-validation probe:** pinned by DEFAULT since #1301. `--require-debug-node` refuses to run
+  at all rather than fall back to a production slot — what an autonomous agent must pass.
+* **Selenium MCP server** (`tools/selenium_mcp_server.py`): **always** required, no opt-out and no
+  env var — so `.mcp.json` needs nothing beyond `SE_REMOTE_URL`. It points at the shared hub, and
+  `.mcp.json` pre-enables it for every worktree-isolated agent, so a pooled session here would put
+  an agent's "let me look at the page" browser in direct competition with the commenting it was
+  opened to debug. On the **standalone** topology there is no watchable node, so it refuses to
+  start a browser at all — deliberately, since there is nothing there but the production pool.
 * **Ad-hoc code using `get_docker_driver()`:** `SELENIUM_DEBUG_NODE=true` is read automatically
-  when the caller does not pass an explicit `debug=` argument.
+  when the caller does not pass an explicit `debug=` argument; `debug_required=True` raises
+  `DebugNodeUnavailable` instead of falling back.
 
-When the debug node is busy or absent, the helper silently falls back to the normal pool —
-a debugging convenience must never block production work. An unflagged session never requests
-`lem:debug`, so normal automation stays on the 8 production nodes.
+When the debug node is busy, absent, or registered WITHOUT the capability (i.e. the pin cannot be
+proven), the helper falls back to the normal pool unless `debug_required` was set — a debugging
+convenience must never block production work, but a caller that may not use the pool must fail
+loudly rather than quietly borrow a slot.
+
+#### How many debug sessions, and what happens when they are gone
+
+`SE_NODE_MAX_SESSIONS=2` on that node (`DEBUG_NODE_SESSIONS` in
+`tests/unit/app/test_selenium_capacity.py` pins it), sized for the two consumers that genuinely
+overlap: a **probe run** — the Monday drift sweep is the long one, minutes of Chrome — and an
+**agent or the owner at the MCP browser**. At one session the sweep made every agent browser
+request fail for its duration, and two agents contended with each other. Resources are 2x the pool
+node's per-session budget (2 vCPU / 3072m / 4g shm) because a starved session runs slowly enough to
+look non-human to LinkedIn, and that applies to a probe as much as to a lane.
+
+A third concurrent debug session is **refused immediately**, not queued: `apply_debug_node` reads
+`/status` for a free slot BEFORE the session request, so the caller gets
+`DebugNodeUnavailable` in about a second instead of sitting in the hub's 300s session queue, which
+reads as a hang. Both the probe and the MCP server surface that as **WAIT and retry**, never as a
+failure to escalate — the same treatment as an open 429 breaker. (The check-then-request gap is a
+real race: two callers can both see the same free slot, and the loser gets the Grid's queue. With
+two slots and at most two habitual consumers this is rare, and the honest fix if it ever bites is a
+shorter `SE_SESSION_REQUEST_TIMEOUT`, which is a hub-wide setting and would affect the lanes too.)
+
+**Isolation is about the POOL, not the ACCOUNT.** This node reaches the same live LinkedIn as
+everything else, on the owner's real session and a 429-lockout history. Being off the pool is what
+makes agent browser use safe for *production capacity*; the 429 breaker gate and the probe's write
+refusal are what make it safe for *the account*, and they apply here unchanged.
 
 To watch the pinned session end-to-end:
 

@@ -42,11 +42,18 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
+# Named explicitly ON TOP of the star import above: these decide which HALF of the Grid a
+# session may run on (`apply_debug_node`) and how long we wait for readiness. The star import
+# leaves ruff unable to prove the binding exists (F405), and the Docstring & Lint Gate is a
+# ratchet — one new F405 fails the PR. Binding them here changes nothing at runtime — same
+# module attribute, so `patch("...selenium_util.SELENIUM_DEBUG_NODE_HOST")` still works.
+from cqc_lem.utilities.env_constants import (  # noqa: F401
+    SELENIUM_DEBUG_NODE_HOST,
+    SELENIUM_HUB_HOST,
+    SELENIUM_HUB_PORT,
+    SELENIUM_READY_TIMEOUT,
+)
 
-# Named explicitly on top of the star import above. The star import leaves ruff unable to prove the
-# binding exists (F405), and the Docstring & Lint Gate is a ratchet — one new F405 fails the PR. The
-# rest of this module's constants predate the baseline; a new one has to come in clean.
-from cqc_lem.utilities.env_constants import SELENIUM_READY_TIMEOUT
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
@@ -183,7 +190,7 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = None) -> None:
 
 def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", coordinates: dict = None,
                       user_id: int = None, lat: float = None, lng: float = None,
-                      debug: bool = None) -> webdriver.Remote:
+                      debug: bool = None, debug_required: bool = False) -> webdriver.Remote:
     """Open a Chrome session on the standalone-chrome container — the ONE way a driver is created.
 
     Everything that makes a session look like the user rather than a datacenter bot is applied here:
@@ -199,9 +206,14 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
 
     `debug` (default: env `SELENIUM_DEBUG_NODE`) asks for the watchable Grid node and falls back to
     the normal pool when it is busy or absent, so debugging never queues behind itself.
+    `debug_required=True` turns that fallback into a `DebugNodeUnavailable` — the live-validation
+    probe must never quietly spend a slot the engagement lanes are sized for (#1301). Not asking
+    for the debug node EXCLUDES it, which is what keeps a Celery lane off the watchable node.
     """
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
+    if debug_required:
+        debug = True
 
     if DEVICE_FARM_PROJECT_ARN and TEST_GRID_PROJECT_ARN:
         remote_url = get_aws_device_farm_url(DEVICE_FARM_PROJECT_ARN, TEST_GRID_PROJECT_ARN)
@@ -261,7 +273,9 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     options.set_capability("se:timeZone", user_timezone)
     options.set_capability("se:screenResolution", "1920x1080")
     options.set_capability("se:name", f"CQC_LEM ({session_name})")
-    apply_debug_node(options, debug)
+    # Before the session request, so a refusal costs nothing: `plan_daily_invites`' rule — decide
+    # the allowance BEFORE Chrome opens.
+    apply_debug_node(options, debug, required=debug_required)
 
     # A free slot answers in seconds; a full pool blocks HERE until one frees up, which is the only
     # direct measurement of the session cap being the binding constraint (capacity_alerts §552).
@@ -376,51 +390,103 @@ def _proxy_label(proxy_url: Optional[str]) -> str:
 SELENIUM_DEBUG_CAPABILITY = "lem:debug"
 
 
-def _debug_node_has_free_slot() -> bool:
-    """True if the Grid's watchable debug node has a free session slot right now."""
+class DebugNodeUnavailable(RuntimeError):
+    """The watchable debug node was REQUIRED and could not be had.
+
+    Raised instead of silently falling back to the pool, for the one caller that must never spend
+    a lane slot: the read-only live-validation probe an autonomous agent runs (#1301).
+    """
+
+
+def debug_node_status() -> dict:
+    """What the Grid currently says about the watchable debug node.
+
+    Three separate answers, because the fallback decision needs all three and they fail
+    differently:
+
+    - ``registered``: the node is in ``/status`` at all.
+    - ``advertised``: its stereotype actually DECLARES ``lem:debug``. Grid's DefaultSlotMatcher only
+      compares an extension capability a stereotype declares, so a node that does not advertise it
+      matches a ``lem:debug=true`` request as readily as the debug node does — i.e. an unadvertised
+      capability is not a pin, it is decoration. Between #753 and #1301 this was live: the compose
+      value carried literal quotes, the node's merge failed, and every `--watch` session went to a
+      random pool node.
+    - ``free_slot``: it has a slot nothing is using.
+
+    An unreachable hub answers all three ``False`` — the caller decides whether that is a fallback
+    or a refusal.
+    """
+    status = {"registered": False, "advertised": False, "free_slot": False,
+              "host": SELENIUM_DEBUG_NODE_HOST}
     if not SELENIUM_DEBUG_NODE_HOST:
-        return False
+        return status
     try:
         url = f"http://{SELENIUM_HUB_HOST}:{SELENIUM_HUB_PORT}/status"
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         nodes = (response.json().get("value") or {}).get("nodes") or []
     except Exception:
-        return False
+        return status
 
     for node in nodes:
         uri = str(node.get("uri") or "")
         if f"//{SELENIUM_DEBUG_NODE_HOST}:" not in uri:
             continue
+        status["registered"] = True
         for slot in node.get("slots") or []:
+            stereotype = slot.get("stereotype") or {}
+            if SELENIUM_DEBUG_CAPABILITY in stereotype:
+                status["advertised"] = True
             if not slot.get("session"):
-                return True
-        return False  # found the node, but every slot is claimed
-    return False  # debug node is not registered
+                status["free_slot"] = True
+        return status
+    return status  # debug node is not registered
 
 
-def apply_debug_node(options: Options, debug: bool = False) -> bool:
-    """Best-effort pin a session to the watchable Grid debug node.
+def apply_debug_node(options: Options, debug: bool = False, required: bool = False) -> bool:
+    """Decide which side of the Grid this session may run on. Returns True if it was pinned.
 
-    Adds the ``lem:debug`` capability only when ``debug`` is requested AND the Grid
-    has a registered ``SELENIUM_DEBUG_NODE_HOST`` with a free slot. Otherwise the
-    caller falls back to the normal pool, so a debugging convenience never blocks
-    real work by queueing on a busy debug node. Returns True if the capability was
-    added.
+    The capability is set either way, and that is the point (#1301). A production session declares
+    ``lem:debug=False``, which the debug node's ``lem:debug=true`` stereotype cannot match — so the
+    ninth, watchable node is structurally excluded from the pool the Celery lanes share, rather
+    than merely being "a spare node nobody happens to ask for". Pool nodes declare
+    ``lem:debug=false``, so the reverse pin is exact too.
+
+    A node that declares nothing is still matched by both requests: Grid ignores an extension
+    capability its stereotype does not carry. That is deliberately fail-OPEN on capacity — a
+    mis-declared pool node keeps taking production work — and is why ``required`` exists.
+
+    ``required=True`` raises `DebugNodeUnavailable` instead of falling back, for a caller whose
+    whole point is not to take a lane slot.
     """
     if not debug:
+        # NOT the absence of the capability: an absent capability matches the debug node too.
+        options.set_capability(SELENIUM_DEBUG_CAPABILITY, False)
         return False
     if not SELENIUM_DEBUG_NODE_HOST:
+        if required:
+            raise DebugNodeUnavailable(
+                "SELENIUM_DEBUG_NODE_HOST is empty, so there is no watchable node to pin to")
         log_warning("Debug node requested but SELENIUM_DEBUG_NODE_HOST is empty; using pool",
                     action_type="login")
         return False
-    if _debug_node_has_free_slot():
+
+    status = debug_node_status()
+    if status["registered"] and status["advertised"] and status["free_slot"]:
         options.set_capability(SELENIUM_DEBUG_CAPABILITY, True)
         log_info(f"Pinning session to debug node {SELENIUM_DEBUG_NODE_HOST}",
                  action_type="login")
         return True
+
+    if required:
+        raise DebugNodeUnavailable(
+            f"debug node {SELENIUM_DEBUG_NODE_HOST} unavailable "
+            f"(registered={status['registered']}, advertises {SELENIUM_DEBUG_CAPABILITY}="
+            f"{status['advertised']}, free_slot={status['free_slot']}) — refusing to take a "
+            "production Chrome slot instead")
     log_warning(f"Debug node {SELENIUM_DEBUG_NODE_HOST} busy or absent; using pool",
                 action_type="login")
+    options.set_capability(SELENIUM_DEBUG_CAPABILITY, False)
     return False
 
 
@@ -930,7 +996,7 @@ def get_driver_wait(driver, wait_time: int = None):
 
 
 def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_retry=3, coordinates: dict = None,
-                         user_id: int = None, debug: bool = None):
+                         user_id: int = None, debug: bool = None, debug_required: bool = False):
     """Create a driver and its matching wait, retrying session creation with exponential backoff.
 
     ONLY SessionNotCreatedException is retried: a full pool clears on its own, while any other
@@ -938,13 +1004,16 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
     seconds, but the LAST attempt re-raises before sleeping — so at the default `max_retry=3` the
     waits are 30s and 60s and the run gives up after two, never three. Returns once the browser
     reports at least one window handle, so the caller never gets a half-started session.
+
+    `debug_required` is NOT retried on purpose: `DebugNodeUnavailable` is not a full pool, it is a
+    caller that may not use the pool at all (#1301).
     """
     # Create the driver. Passing user_id applies that user's geo/timezone/locale spoofing.
     driver = None
     for attempt in range(max_retry):
         try:
             driver = get_docker_driver(headless=headless, session_name=session_name, coordinates=coordinates,
-                                       user_id=user_id, debug=debug)
+                                       user_id=user_id, debug=debug, debug_required=debug_required)
             break  # Exit the loop if successful
         except SessionNotCreatedException as e:
             if attempt == max_retry - 1:

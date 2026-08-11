@@ -22,7 +22,20 @@ Answers, against a REAL logged-in session, the two questions
      read, and from which entity selector? — grounds #970. The whole profile is dumped into the
      voice-synthesis prompt, so a misparse here is not inert: it grounds every comment and DM.
 
-**Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
+**Read-only, and since #1301 that is ENFORCED rather than intended.** `install_read_only_guard`
+patches Selenium the moment the session is established (signing in is the one step that
+legitimately types — credentials, and the emailed PIN — and it is production's own shared login
+path), so for every probe that follows this script cannot type a
+printable character anywhere (every LinkedIn write starts with typed content) and cannot press a
+control whose own label says it commits something — Post, Send, Publish, Connect, Invite,
+Withdraw, Follow, Like, Join — whether through `WebElement.click`, `ActionChains` or
+`arguments[0].click()`. A violation raises `ReadOnlyViolation` and is reported. There is no
+override flag: a write is a human escalation. Two more gates run BEFORE the browser opens — the
+429 breaker / automation pause (fail CLOSED; an unreadable breaker refuses) and the Grid debug-node
+pin, so a probe never spends a Chrome slot the engagement lanes are sized for. A refusal exits
+``75`` and means WAIT, not FAIL.
+
+It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
 attaching or posting anything; ``--permalink-comment`` does the same for a POST's comment composer
@@ -101,7 +114,8 @@ _STATE_RANK = {STATE_OK: 0, STATE_UNKNOWN: 1, STATE_DRIFT: 2}
 
 def worst_state(states) -> str:
     """The most severe of several states — drift beats unknown beats ok. Empty grades `unknown`:
-    a sweep that measured nothing must not read as a clean bill of health."""
+    a sweep that measured nothing must not read as a clean bill of health.
+    """
     ranked = [s for s in (states or []) if s in _STATE_RANK]
     if not ranked:
         return STATE_UNKNOWN
@@ -113,6 +127,372 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
     reading["state"] = state
     reading["verdict"] = verdict
     return reading
+
+
+# ───────────────────────── read-only enforcement (issue #1301) ─────────────────────────
+# Until #1301 "read-only" was a PROPERTY of this file: every probe was written not to submit
+# anything, and a reviewer checked that by reading it. That is what kept autonomous agents out —
+# a headless lane launches with `--dangerously-skip-permissions`, so nothing but the code itself
+# stands between a probe and a post on the owner's real account.
+#
+# So it is a MECHANISM now. Every LinkedIn write needs one of exactly two things:
+#
+#   1. typed content  — a comment, a DM, a post, an invite note. `_guard_send_keys` refuses every
+#      printable character, everywhere, with no exception and no flag. Selenium's control keys live
+#      in the Unicode private-use area (U+E000–U+F8FF), so Escape/Tab/arrows still work and no
+#      sentence can be typed.
+#   2. a commit CLICK — Like, Follow, Connect, Invite, Send, Withdraw, Post, Publish, Join. Those
+#      need no typing at all, so `_guard_click` reads the control's own label and refuses the
+#      submit vocabulary. It is deliberately NOT an allow-list of labels: an allow-list breaks the
+#      moment LinkedIn renames a control, and refusing to click the control this probe exists to
+#      measure would make the probe useless exactly when it matters.
+#
+# Both guards are installed by monkeypatching Selenium itself, not by discipline at the call site,
+# so they also cover the shipped `cqc_lem` helpers the probes call (`click_first` and friends) and
+# any probe added later. `execute_script` goes through the same label gate, because
+# `arguments[0].click()` is the other way to press a button.
+#
+# Escalation to a human remains the ONLY path to a write. There is no override flag.
+
+class ReadOnlyViolation(RuntimeError):
+    """A probe tried to do something that could change LinkedIn state. Never caught internally."""
+
+
+# Selenium's Keys.* constants are private-use-area code points; anything outside that range is a
+# character a human could have typed.
+_PRIVATE_USE = ("\ue000", "\uf8ff")
+
+# The submit vocabulary. Each entry is (regex over the normalised label, what it would have done).
+# Anchored on purpose: "Start a post" is how the composer OPENS and must stay clickable, while a
+# bare "Post" is how it commits.
+_SUBMIT_LABEL_PATTERNS = (
+    (r"^post$", "publish a post"),
+    (r"^post comment\b", "publish a comment"),
+    (r"^publish\b", "publish"),
+    (r"^send\b", "send a message or invitation"),
+    (r"^submit\b", "submit a form"),
+    (r"^reply$", "publish a reply"),
+    (r"^connect$", "send a connection invite"),
+    (r"^invite\b", "send an invite"),
+    (r"\binvite\b.*\bto connect\b", "send a connection invite"),
+    (r"^withdraw\b", "withdraw an invite (one-way, ~3 weeks before a re-invite)"),
+    (r"^(un)?follow(ing)?\b", "follow or unfollow someone"),
+    (r"^like$", "leave a reaction"),
+    (r"^react\b", "leave a reaction"),
+    (r"^(celebrate|support|love|insightful|funny|curious)$", "leave a reaction"),
+    (r"^repost\b", "repost"),
+    (r"^share\b", "share a post"),
+    (r"^accept\b", "accept an invitation"),
+    (r"^(join|leave)\b", "join or leave a group"),
+    (r"^subscribe\b", "subscribe to a newsletter"),
+    (r"^endorse\b", "endorse a skill"),
+    (r"^add a note\b", "add a note to an invite"),
+    (r"^(save|done|next|delete|remove)$", "commit a form step"),
+)
+
+# What the guard actually stopped (and what it let through but could not attribute), so the report
+# says so instead of the run merely not crashing.
+_GUARD_LEDGER = {"installed": False, "refusals": [], "unlabelled_clicks": 0}
+
+
+def guard_ledger() -> dict:
+    """The read-only guard's own report section: what it refused, and what it could not attribute."""
+    return {"installed": _GUARD_LEDGER["installed"],
+            "refusals": list(_GUARD_LEDGER["refusals"]),
+            # A click on a control with no readable label is allowed (a stale element reads the
+            # same way, and refusing would break probes on a non-write) but it is the one gap in
+            # the click half, so it is COUNTED rather than left invisible.
+            "unlabelled_clicks": _GUARD_LEDGER["unlabelled_clicks"]}
+
+
+def normalise_label(text: Optional[str]) -> str:
+    """Lowercase, whitespace-collapsed label text for vocabulary matching."""
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def submit_control_reason(label: Optional[str]) -> Optional[str]:
+    """What clicking a control with this label would COMMIT, or None if it commits nothing."""
+    normalised = normalise_label(label)
+    if not normalised:
+        return None
+    for pattern, consequence in _SUBMIT_LABEL_PATTERNS:
+        if re.search(pattern, normalised):
+            return consequence
+    return None
+
+
+def element_labels(element) -> list:
+    """Every label an element answers to — aria-label, its text, value, title.
+
+    Read defensively: a stale or detached element raises on every one of these, and an unreadable
+    element must not crash a probe whose whole job is to describe broken DOM.
+    """
+    labels = []
+    for source in ("aria-label", "value", "title"):
+        try:
+            labels.append(element.get_attribute(source))
+        except Exception:
+            continue
+    try:
+        labels.append(element.text)
+    except Exception:
+        # Same reason as the attribute loop above: an element that went stale between the find and
+        # this read has no text to offer, and the labels already collected still classify it.
+        pass
+    return [label for label in labels if normalise_label(label)]
+
+
+def typed_characters(keys) -> str:
+    """The printable characters in a send_keys payload — i.e. what a human would have typed.
+
+    Selenium's Keys.* are private-use code points, so Escape and friends contribute nothing here.
+    """
+    typed = []
+    for item in keys:
+        if isinstance(item, (list, tuple)):
+            typed.append(typed_characters(item))
+            continue
+        for char in str(item):
+            if not (_PRIVATE_USE[0] <= char <= _PRIVATE_USE[1]):
+                typed.append(char)
+    return "".join(typed)
+
+
+def script_is_interactive(script: Optional[str]) -> bool:
+    """True if this JS could press or fill something, rather than only read/scroll the page."""
+    body = normalise_label(script).replace(" ", "")
+    return any(token in body for token in
+               (".click(", ".submit(", "dispatchevent(", "innerhtml=", ".value=", ".focus("))
+
+
+def _refuse(action: str, detail: str) -> None:
+    _GUARD_LEDGER["refusals"].append({"action": action, "detail": detail})
+    raise ReadOnlyViolation(
+        f"read-only probe refused to {action}: {detail}. Nothing may be posted to a live LinkedIn "
+        "account from this script — a write is a human escalation, not a flag.")
+
+
+def _guard_element(element, action: str) -> None:
+    """Refuse a press on a control whose own label says it commits something."""
+    labels = element_labels(element)
+    if not labels:
+        _GUARD_LEDGER["unlabelled_clicks"] += 1
+        return
+    for label in labels:
+        reason = submit_control_reason(label)
+        if reason:
+            _refuse(action, f"control labelled {normalise_label(label)!r} would {reason}")
+
+
+def install_read_only_guard() -> dict:
+    """Monkeypatch Selenium so this process cannot type text or press a commit control.
+
+    Installed once, before the browser opens, and never uninstalled. Returns the ledger so a caller
+    can report on it.
+    """
+    if _GUARD_LEDGER["installed"]:
+        return guard_ledger()
+
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.remote.webdriver import WebDriver
+    from selenium.webdriver.remote.webelement import WebElement
+
+    # `submit` and `clear` are deliberately NOT captured: their replacements always refuse, so
+    # there is no original left to call.
+    element_click, element_send_keys = WebElement.click, WebElement.send_keys
+    driver_script = WebDriver.execute_script
+    chain_click, chain_send_keys = ActionChains.click, ActionChains.send_keys
+    chain_send_to = ActionChains.send_keys_to_element
+
+    def click(self, *args, **kwargs):
+        _guard_element(self, "click a control")
+        return element_click(self, *args, **kwargs)
+
+    def send_keys(self, *value):
+        typed = typed_characters(value)
+        if typed:
+            _refuse("type text", f"{len(typed)} printable character(s) into the page — every "
+                                 "LinkedIn write starts here")
+        return element_send_keys(self, *value)
+
+    def submit(self, *args, **kwargs):
+        _refuse("submit a form", "WebElement.submit() commits whatever form it is in")
+
+    def clear(self, *args, **kwargs):
+        _refuse("clear a field", "clearing an input edits page state the probe only reads")
+
+    def execute_script(self, script=None, *args):
+        if script_is_interactive(script):
+            elements = [arg for arg in args if isinstance(arg, WebElement)]
+            if not elements:
+                # An interactive script with no element argument names no target, so there is
+                # nothing to check — and an unattributable press is exactly what must not happen.
+                _refuse("run interactive JavaScript",
+                        "the script presses or fills something but names no element to check")
+            for element in elements:
+                _guard_element(element, "click a control via JavaScript")
+        return driver_script(self, script, *args)
+
+    def chained_click(self, on_element=None):
+        if on_element is not None:
+            _guard_element(on_element, "click a control via ActionChains")
+        return chain_click(self, on_element)
+
+    def chained_send_keys(self, *keys_to_send):
+        typed = typed_characters(keys_to_send)
+        if typed:
+            _refuse("type text", f"{len(typed)} printable character(s) via ActionChains")
+        return chain_send_keys(self, *keys_to_send)
+
+    def chained_send_keys_to_element(self, element, *keys_to_send):
+        typed = typed_characters(keys_to_send)
+        if typed:
+            _refuse("type text", f"{len(typed)} printable character(s) via ActionChains")
+        return chain_send_to(self, element, *keys_to_send)
+
+    WebElement.click, WebElement.send_keys = click, send_keys
+    WebElement.submit, WebElement.clear = submit, clear
+    WebDriver.execute_script = execute_script
+    ActionChains.click, ActionChains.send_keys = chained_click, chained_send_keys
+    ActionChains.send_keys_to_element = chained_send_keys_to_element
+    _GUARD_LEDGER["installed"] = True
+    return guard_ledger()
+
+
+# ───────────────────────── the 429 breaker gate (issue #1301) ─────────────────────────
+# The probe drives the owner's REAL session through the production cookie/proxy stack, on an
+# account with a 429-lockout history that once cost days of engagement. Read-only still spends
+# rate budget, so a probe run while the breaker is open is the doom loop's fuel.
+#
+# The app's own `rate_limit_cooldown_remaining()` fails OPEN (no Redis → 0 seconds) because a
+# broken Redis must never stop production work. A probe is not production work: unreadable state
+# means the probe cannot prove it is safe to run, and it REFUSES. That is why the read is done
+# here against the shared client rather than through that helper.
+BREAKER_REFUSAL_EXIT_CODE = 75  # EX_TEMPFAIL — "wait and retry", never "this task failed"
+_COOLDOWN_KEY_FALLBACK = "linkedin:429_cooldown"
+_PAUSE_KEY_FALLBACK = "linkedin:automation_paused"
+
+
+def breaker_reading() -> dict:
+    """Read the 429 breaker and the manual automation pause, failing CLOSED.
+
+    Returns `{"readable": bool, "open": bool, "wait_seconds": int, "reason": str}`. `readable` is
+    False whenever Redis (or the module that owns the keys) could not be consulted at all — the
+    caller must treat that as "do not run", not as "not paused".
+    """
+    reading = {"readable": False, "open": False, "wait_seconds": 0, "reason": ""}
+    try:
+        from cqc_lem.utilities.linkedin import rate_limit
+        client = rate_limit.shared_redis_client()
+    except Exception as e:
+        reading["reason"] = f"could not load the rate-limit breaker ({type(e).__name__}: {e})"
+        return reading
+    if client is None:
+        reading["reason"] = "Redis is unavailable, so the 429 breaker cannot be read"
+        return reading
+
+    # Read the keys the breaker actually uses. `getattr` with a literal default because the probe
+    # is piped into whatever image is deployed, which may predate any rename.
+    keys = {"429 circuit breaker": getattr(rate_limit, "_COOLDOWN_KEY", _COOLDOWN_KEY_FALLBACK),
+            "manual automation pause": getattr(rate_limit, "_PAUSE_KEY", _PAUSE_KEY_FALLBACK)}
+    try:
+        for label, key in keys.items():
+            ttl = client.ttl(key)
+            if ttl and ttl > 0:
+                reading.update(readable=True, open=True, wait_seconds=int(ttl),
+                               reason=f"the {label} is OPEN for another {int(ttl)}s")
+                return reading
+    except Exception as e:
+        reading["reason"] = f"the breaker state could not be read ({type(e).__name__}: {e})"
+        return reading
+
+    reading.update(readable=True, reason="the 429 breaker and the automation pause are both clear")
+    return reading
+
+
+class ProbeRefused(RuntimeError):
+    """The probe declined to start. Carries the machine-readable refusal for the report."""
+
+    def __init__(self, refusal: dict):
+        super().__init__(refusal.get("detail") or refusal.get("reason", "refused"))
+        self.refusal = refusal
+
+
+def open_probe_session(get_current_profile: Callable, user_id: int, require_debug_node: bool):
+    """Open the probe's session, pinned to the watchable Grid node.
+
+    The pin is the default now (#1301): an ad-hoc probe has no business taking one of the eight
+    Chrome slots the engagement lanes are sized for, and the ninth node exists for exactly this.
+    `require_debug_node` turns "best-effort pin" into "refuse rather than borrow a lane slot",
+    which is what an autonomous agent must run with.
+
+    A deployed image that predates `debug_required` cannot make that guarantee, so requiring the
+    pin against one is a REFUSAL, not a silent downgrade — the probe is piped into whatever image
+    is live, so this is the ordinary case for a few hours after a merge, and "wait for the release"
+    is the honest answer.
+    """
+    import inspect
+
+    kwargs = {"user_id": user_id, "session_name": "Live Validation", "debug": True}
+    supported = "debug_required" in inspect.signature(get_current_profile).parameters
+    if require_debug_node:
+        if not supported:
+            raise ProbeRefused({
+                "refused": True, "reason": "debug_node_pin_unsupported", "wait_seconds": 0,
+                "detail": "the deployed image predates the debug-node pin (#1301), so this run "
+                          "cannot be kept off the production Chrome slots",
+                "action": "wait for the release that ships it, then re-run"})
+        kwargs["debug_required"] = True
+
+    try:
+        driver, _wait, _email, profile = get_current_profile(**kwargs)
+    except Exception as e:
+        # Matched by NAME so this still works against an image whose selenium_util predates the
+        # exception class — the probe is piped into whatever is deployed.
+        if type(e).__name__ != "DebugNodeUnavailable":
+            raise
+        raise ProbeRefused({
+            "refused": True, "reason": "debug_node_unavailable", "wait_seconds": 0,
+            "detail": str(e),
+            "action": "the watchable node is busy or absent; re-run later rather than spending a "
+                      "slot the engagement lanes need"}) from e
+
+    return driver, profile, {"debug_node_pin": "required" if require_debug_node else "best-effort",
+                             "debug_node_pin_supported": supported}
+
+
+def emit_refusal(user_id: int, refusal: dict, breaker: dict, guard: dict) -> int:
+    """Print a refusal inside the report fences and return the exit code callers key on.
+
+    Fenced like any other report so the weekly cron's parser and an agent read the SAME shape, and
+    non-zero so a caller that only checks the exit status never mistakes a refusal for a clean run.
+    """
+    print(REPORT_JSON_BEGIN)
+    print(json.dumps({"user_id": user_id, "refusal": refusal, "breaker": breaker,
+                      "read_only_guard": guard}, indent=2))
+    print(REPORT_JSON_END)
+    print(f"REFUSED: {refusal.get('detail', '')} — {refusal.get('action', '')}", file=sys.stderr)
+    return BREAKER_REFUSAL_EXIT_CODE
+
+
+def breaker_refusal(reading: dict) -> Optional[dict]:
+    """The refusal a caller should print and exit on, or None when the probe may run.
+
+    Both refusals mean WAIT, never FAIL: an open breaker clears on its own, and unreadable state
+    is a stack problem, not a defect in whatever the probe was going to ground.
+    """
+    if reading.get("open"):
+        return {"refused": True, "reason": "rate_limit_breaker_open",
+                "wait_seconds": int(reading.get("wait_seconds") or 0),
+                "detail": reading.get("reason", ""),
+                "action": "wait for the cooldown to expire and re-run; do not escalate yet"}
+    if not reading.get("readable"):
+        return {"refused": True, "reason": "rate_limit_breaker_unreadable",
+                "wait_seconds": 0,
+                "detail": reading.get("reason", ""),
+                "action": "the breaker could not be read, so the probe cannot prove it is safe to "
+                          "run — treat as blocked and escalate if it persists"}
+    return None
 
 
 # ─────────────────────── surface inventory / probe coverage matrix (#1013) ───────────────────
@@ -286,7 +666,8 @@ def classify_media_anchor(anchor: dict) -> str:
 def media_verdict(anchors: Optional[list[dict]]) -> str:
     """Overall render kind. A document post also carries image nodes (the rendered page
     thumbnails), so a single document token decides it; only the absence of one makes it an
-    image share."""
+    image share.
+    """
     kinds = {classify_media_anchor(a) for a in anchors or []}
     if "document" in kinds:
         return "document"
@@ -332,7 +713,8 @@ def _read_main(driver, counts_fn) -> tuple:
 def post_stats_state(reading: Optional[dict]) -> str:
     """Three-state grade for one stats read. The label LINES are the page-native cross-check: a
     signal the parser scored zero while the page renders its label is the parser reading a layout
-    it no longer matches — drift. Neither counts nor labels means the page never rendered."""
+    it no longer matches — drift. Neither counts nor labels means the page never rendered.
+    """
     reading = dict(reading or {})
     signals = (reading.get("signals") or {}).values()
     lines = (reading.get("detail_lines") or []) + (reading.get("analytics_lines") or [])
@@ -375,7 +757,8 @@ def probe_post_stats(driver, post_url: str, counts_fn=_social_counts, sleep=time
 
 def probe_document_render(driver, post_url: str, sleep=time.sleep) -> dict:
     """C1: capture the media anchors a published post renders, so 'native document vs
-    multi-image share' stops being an assumption."""
+    multi-image share' stops being an assumption.
+    """
     driver.get(post_url)
     sleep(5)
     try:
@@ -410,10 +793,12 @@ def _share_box_chains() -> tuple:
 
 def probe_composer(driver, sleep=time.sleep) -> dict:
     """Open the feed composer, capture its attach-control labels (the document-upload anchors
-    LEM has never needed, because documents publish through the API), then close it."""
-    from cqc_lem.utilities.selenium_util import click_first, find_first
+    LEM has never needed, because documents publish through the API), then close it.
+    """
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.utilities.selenium_util import click_first, find_first
 
     wait = WebDriverWait(driver, 10)
     driver.get(FEED_URL)
@@ -491,7 +876,8 @@ def comment_outcome_state(reading: Optional[dict]) -> str:
     """Three-state grade for one comment-outcome read. The rendered comment count is the
     page-native cross-check: a thread that rendered comments but yielded no sort control (or none
     of our own) is a reader that has lost the surface, while a thread that rendered NOTHING never
-    grounded anything."""
+    grounded anything.
+    """
     reading = dict(reading or {})
     rendered = int(reading.get("rendered_comments") or 0)
     if not rendered:
@@ -508,12 +894,19 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
 
     Read-only: it navigates, scrolls, expands and flips the sort control. It posts nothing.
     """
-    from cqc_lem.app.engagement.posting import (_comment_like_count, _comment_sort_label,
-                                                _find_our_comment, _load_comment_thread,
-                                                _post_author_href, _switch_comment_sort,
-                                                _thread_replies, _SORT_MOST_RECENT)
-    from cqc_lem.utilities.linkedin.composer import _comment_items
     from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.engagement.posting import (
+        _SORT_MOST_RECENT,
+        _comment_like_count,
+        _comment_sort_label,
+        _find_our_comment,
+        _load_comment_thread,
+        _post_author_href,
+        _switch_comment_sort,
+        _thread_replies,
+    )
+    from cqc_lem.utilities.linkedin.composer import _comment_items
 
     wait = WebDriverWait(driver, 10)
     driver.get(post_url)
@@ -630,8 +1023,7 @@ SORT_CANDIDATE_SELECTOR = ("main button, main a[href], main select, main [role='
 def feed_sort_chains() -> tuple:
     """(trigger locators, 'Recent' option locators, where they came from)."""
     try:
-        from cqc_lem.app.engagement.feed import (_FEED_RECENT_OPTION_LOCATORS,
-                                                 _FEED_SORT_LOCATORS)
+        from cqc_lem.app.engagement.feed import _FEED_RECENT_OPTION_LOCATORS, _FEED_SORT_LOCATORS
     except ImportError:
         return list(FALLBACK_SORT_LOCATORS), list(FALLBACK_RECENT_OPTION_LOCATORS), "script"
     return list(_FEED_SORT_LOCATORS), list(_FEED_RECENT_OPTION_LOCATORS), "image"
@@ -641,7 +1033,8 @@ def control_sort_state(control) -> str:
     """Which sort a found control reports, or '' when its label is unreadable. '' is load-bearing:
     'we could not tell' must never be recorded as 'recent' — that is the lie #817 exists to stop.
     A label naming BOTH sorts is unreadable too, exactly as `_feed_sort_state` treats it, or the
-    probe would report a control healthy that production reads as unknown."""
+    probe would report a control healthy that production reads as unknown.
+    """
     if control is None:
         return ""
     try:
@@ -711,7 +1104,8 @@ def menu_item_labels(driver, limit: int = 40) -> list:
     comma-joined selector returns DOCUMENT order, and a feed page is full of <li>s (global nav, the
     left rail, every post's action row) that come before an overlay dropdown — so the cap would be
     spent on page furniture and the menu this probe exists to capture could be missing from its own
-    capture."""
+    capture.
+    """
     labels = []
     for selector in ("[role='menuitem'],[role='menuitemradio'],[role='option']", "li"):
         if len(labels) >= limit:
@@ -815,8 +1209,9 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
     `visible_controls` carries button and menu-item LABELS, which is what an OPTION chain is
     written from once the dropdown is open.
     """
-    from cqc_lem.utilities.selenium_util import find_first
     from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.utilities.selenium_util import find_first
 
     sort_locators, option_locators, chain_source = feed_sort_chains()
     wait = WebDriverWait(driver, 10)
@@ -851,9 +1246,13 @@ def probe_profile_viewers(driver, sleep=time.sleep) -> dict:
 
     The production locator is a TEXT discriminator (an /in/ anchor carrying a "Viewed …" line);
     `sample_rows` holds each row's text lines, which is exactly what the next locator gets
-    re-grounded from when this rotates again."""
-    from cqc_lem.app.engagement.outreach import (_PROFILE_VIEWER_ROWS_JS, _PROFILE_VIEWER_SCROLL_JS,
-                                            _PROFILE_VIEWER_STAT_JS)
+    re-grounded from when this rotates again.
+    """
+    from cqc_lem.app.engagement.outreach import (
+        _PROFILE_VIEWER_ROWS_JS,
+        _PROFILE_VIEWER_SCROLL_JS,
+        _PROFILE_VIEWER_STAT_JS,
+    )
 
     driver.get("https://www.linkedin.com/analytics/profile-views/")
     sleep(8)
@@ -911,7 +1310,8 @@ def message_thread_state(reading: Optional[dict]) -> str:
     """Three-state grade for one ladder walk. Six routes are tried, so a walk that opened NOTHING
     while the profile page rendered is drift; a walk that never reached a rendered page is unknown.
     A thread that opened but reads no message events is drift too — that is exactly the reply
-    detection going quiet."""
+    detection going quiet.
+    """
     reading = dict(reading or {})
     if not reading.get("opened"):
         return STATE_DRIFT if reading.get("routes_tried") else STATE_UNKNOWN
@@ -920,7 +1320,8 @@ def message_thread_state(reading: Optional[dict]) -> str:
 
 def element_evidence(element) -> dict:
     """The attributes that prove WHICH control a route resolved to — the provenance a selector row
-    needs. Every read is best-effort: an element that goes stale mid-capture must not lose the run."""
+    needs. Every read is best-effort: an element that goes stale mid-capture must not lose the run.
+    """
     out = {}
     for key, attr in (("tag", None), ("aria_label", "aria-label"), ("placeholder", "placeholder"),
                       ("role", "role"), ("type", "type")):
@@ -944,7 +1345,8 @@ def visible_button_labels(driver, limit: int = 40) -> list:
 
     This is the EVIDENCE half of the publish verdict: 'Publish is UNKNOWN' is only believable
     alongside the list of controls that ARE on the editor screen. If a future run shows a publish
-    control here, the two-screen assumption has changed and the ladder should gate on it again."""
+    control here, the two-screen assumption has changed and the ladder should gate on it again.
+    """
     labels = []
     try:
         for button in driver.find_elements(By.TAG_NAME, "button"):
@@ -969,7 +1371,8 @@ def page_text_sample(driver, limit: int = 600) -> str:
     Control labels alone cannot tell a rendered-but-empty surface apart from one whose anchors
     rotated: both hand back nothing. A page that rendered says so in prose ("No pending
     invitations"), and a page that did not render says nothing at all. Best-effort by design — a
-    probe must not lose its reading because one text read went stale."""
+    probe must not lose its reading because one text read went stale.
+    """
     for selector in ("main", "body"):
         try:
             for element in driver.find_elements(By.CSS_SELECTOR, selector):
@@ -1006,7 +1409,8 @@ def reaction_anchor_kind(evidence: dict) -> str:
     """Which of the three anchors `react_to_post_inline` needs this control could serve as.
 
     Names the ROLE rather than dumping raw attributes, so a run's output is directly comparable to
-    the locator chain it is meant to re-ground (issue #816)."""
+    the locator chain it is meant to re-ground (issue #816).
+    """
     blob = " ".join(str(evidence.get(k, "")) for k in ("aria_label", "text", "testid")).lower()
     if "reaction button state" in blob or "no reaction" in blob:
         return "state"                     # the pre/post-click 'Reaction state' read
@@ -1235,7 +1639,8 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
 def feed_reactions_state(reading: Optional[dict]) -> str:
     """Three-state grade for one feed-card capture. The page's own controls are the cross-check:
     text boxes that resolved but walked to no card is the #964/#1012 shape (the DOM is there, the
-    walk cannot see it), while a feed with no text boxes AND no buttons never rendered."""
+    walk cannot see it), while a feed with no text boxes AND no buttons never rendered.
+    """
     reading = dict(reading or {})
     if reading.get("error"):
         return STATE_UNKNOWN
@@ -1291,10 +1696,11 @@ def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/art
 
     Because nothing is clicked, only the EDITOR screen is ever rendered — so publish is graded
     UNKNOWN rather than MISSING (`on_editor_screen=True`). `buttons` records what WAS on the screen,
-    which is what makes that grading checkable rather than assumed."""
-    from cqc_lem.utilities.linkedin.article_editor import (find_article_editor_elements,
-                                                           article_editor_verdict)
+    which is what makes that grading checkable rather than assumed.
+    """
     from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.utilities.linkedin.article_editor import article_editor_verdict, find_article_editor_elements
 
     wait = WebDriverWait(driver, 10)
     driver.get(editor_url)
@@ -1313,7 +1719,8 @@ def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/art
 def article_editor_state(verdict: Optional[dict]) -> str:
     """Three-state grade for one editor read. The screen's own buttons are the cross-check: an
     editor that rendered controls but resolved none of the publish steps is drift; a screen with no
-    controls at all never rendered."""
+    controls at all never rendered.
+    """
     verdict = dict(verdict or {})
     if verdict.get("editor_ready"):
         return STATE_OK
@@ -1327,7 +1734,8 @@ def permalink_comment_verdict(reading: dict) -> str:
 
     The failure this exists to catch is SILENT: the pre-SDUI composer XPaths could only time out, so
     profile-viewer and outreach-funnel comments died with a log line saying they "might not have
-    worked". Anything short of a resolved composer here means production posts nothing."""
+    worked". Anything short of a resolved composer here means production posts nothing.
+    """
     reading = dict(reading or {})
     if not reading.get("cards_found"):
         return ("no card carrying a comment action rendered — production logs a FAILURE and posts "
@@ -1355,14 +1763,19 @@ def probe_permalink_comment(driver, post_url: str,
     Read-only in the sense `--probe-composer` already is: it clicks the post's own Comment button to
     make the composer mount, describes it, then presses Escape. Nothing is typed and nothing is
     submitted, so no comment is left. It never touches the reaction controls — `--reaction-probe`
-    covers those."""
-    from cqc_lem.app.engagement.feed import (_COMMENT_ACTION_LOCATORS, _permalink_post_card,
-                                             _post_composer_for_card)
-    from cqc_lem.utilities.linkedin.cards import (_FEED_POST_TEXT_SEL, _URN_RE, _card_for_textbox,
-                                                  _feed_post_urn_from_card)
-    from cqc_lem.utilities.selenium_util import click_first, find_first
+    covers those.
+    """
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.engagement.feed import _COMMENT_ACTION_LOCATORS, _permalink_post_card, _post_composer_for_card
+    from cqc_lem.utilities.linkedin.cards import (
+        _FEED_POST_TEXT_SEL,
+        _URN_RE,
+        _card_for_textbox,
+        _feed_post_urn_from_card,
+    )
+    from cqc_lem.utilities.selenium_util import click_first, find_first
 
     wait = WebDriverWait(driver, 10)
     driver.get(post_url)
@@ -1422,7 +1835,8 @@ def roster_follow_verdict(reading: dict) -> str:
 
     'unknown' is the finding that matters: production treats it as "do nothing", so a run that keeps
     reporting unknown on accounts you know you do not follow means the owner-named control has
-    rotated and the lane has gone quiet — not that the roster is fully followed."""
+    rotated and the lane has gone quiet — not that the roster is fully followed.
+    """
     reading = dict(reading or {})
     state = reading.get("follow_state")
     if state == "following":
@@ -1443,7 +1857,8 @@ def roster_follow_verdict(reading: dict) -> str:
 def roster_follow_state(reading: Optional[dict]) -> str:
     """Three-state grade for one activity-page read. The posts on the page are the cross-check: a
     page that rendered the owner's activity but yielded no follow control is drift, while a page
-    that rendered neither posts nor an owner name never loaded."""
+    that rendered neither posts nor an owner name never loaded.
+    """
     reading = dict(reading or {})
     if reading.get("follow_state") in ("following", "not_following"):
         return STATE_OK
@@ -1461,9 +1876,9 @@ def probe_roster_follow(driver, profile_url: str,
 
     STRICTLY read-only — it resolves the control and describes it. Nothing is clicked, so no account
     is followed by running this. That is the point: the clicker must not ship before a live run has
-    shown that this resolver finds the right button on the real page."""
-    from cqc_lem.app.engagement.feed import (_activity_page_owner_name, _resolve_follow_control,
-                                             _roster_activity_url)
+    shown that this resolver finds the right button on the real page.
+    """
+    from cqc_lem.app.engagement.feed import _activity_page_owner_name, _resolve_follow_control, _roster_activity_url
     from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
 
     url = _roster_activity_url(profile_url)
@@ -1542,7 +1957,8 @@ FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS = 5
 
 def _carried_recommendation_reading(driver) -> dict:
     """`_recommendation_reading`'s answer on an image that predates #1007 — same JS, same shape, and
-    the same posture that a read which blows up is an EMPTY read, never a crashed probe."""
+    the same posture that a read which blows up is an EMPTY read, never a crashed probe.
+    """
     empty = {"rows": [], "anchors": 0, "page_dated": False}
     try:
         reading = driver.execute_script(FALLBACK_RECOMMENDATION_ROWS_JS)
@@ -1558,8 +1974,7 @@ def _carried_recommendation_reading(driver) -> dict:
 def recommendation_read() -> tuple:
     """(the read to drive, how many times to re-read an empty page, where both came from)."""
     try:
-        from cqc_lem.app.engagement.outreach import (_RECOMMENDATION_RENDER_ATTEMPTS,
-                                                _recommendation_reading)
+        from cqc_lem.app.engagement.outreach import _RECOMMENDATION_RENDER_ATTEMPTS, _recommendation_reading
     except ImportError:
         return (_carried_recommendation_reading, FALLBACK_RECOMMENDATION_RENDER_ATTEMPTS, "script")
     return (_recommendation_reading, _RECOMMENDATION_RENDER_ATTEMPTS, "image")
@@ -1574,7 +1989,8 @@ def appreciation_verdict(reading: dict) -> str:
 
     `page_dated` (recommendations only) is what finally separates the two zero readings the #1007
     grounding could not tell apart: a page that plainly renders "Month D, YYYY" while nothing
-    resolves around it is drift, not an account nobody has recommended."""
+    resolves around it is drift, not an account nobody has recommended.
+    """
     reading = dict(reading or {})
     cards = int(reading.get("cards") or 0)
     # Which code answered is part of the finding: a green pass driven by the carried copy grounds
@@ -1600,7 +2016,8 @@ def appreciation_verdict(reading: dict) -> str:
 def appreciation_state(reading: Optional[dict]) -> str:
     """Three-state grade for ONE appreciation surface. Cards that resolved but never date is the
     silently-dead trigger this probe exists to catch — drift. No cards at all cannot be told apart
-    from an empty section, so it grades unknown and is never filed as a defect."""
+    from an empty section, so it grades unknown and is never filed as a defect.
+    """
     reading = dict(reading or {})
     if not int(reading.get("cards") or 0):
         return STATE_UNKNOWN
@@ -1616,12 +2033,22 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     OFF by `APPRECIATION_SOURCES_ENABLED` precisely until this probe has grounded them, so the probe
     drives the same card reads (`_recommendation_reading` for recommendations since #1007, the
     mention locator chain for the other) and the same date parsers directly. Nothing is messaged:
-    the ledger is only READ (`has_appreciation_touch`), never claimed."""
-    from cqc_lem.app.engagement.outreach import (_MENTIONS_URL, _MENTION_ACTOR_LOCATORS,
-                                            _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE, _card_person,
-                                            _card_text, _mention_actor_name, _normalize_profile_url,
-                                            _own_profile_url, _parse_recommendation_date,
-                                            _parse_relative_age_days, appreciation_lookback_days)
+    the ledger is only READ (`has_appreciation_touch`), never claimed.
+    """
+    from cqc_lem.app.engagement.outreach import (
+        _MENTION_ACTOR_LOCATORS,
+        _MENTION_CARD_LOCATORS,
+        _MENTION_TEXT_RE,
+        _MENTIONS_URL,
+        _card_person,
+        _card_text,
+        _mention_actor_name,
+        _normalize_profile_url,
+        _own_profile_url,
+        _parse_recommendation_date,
+        _parse_relative_age_days,
+        appreciation_lookback_days,
+    )
     from cqc_lem.utilities.db import has_appreciation_touch
     from cqc_lem.utilities.linkedin.helper import clean_person_name
     from cqc_lem.utilities.selenium_util import find_all_first
@@ -1664,7 +2091,8 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
         """The recommendations half reads its OWN way since #1007: the page has no list items, no
         `<time>` and no `data-view-name`, so production resolves a card by climbing from each `/in/`
         anchor to the block that carries its date line. Drive that same read here — from the running
-        image when it has one, from the carried copy when it predates the rebuild."""
+        image when it has one, from the carried copy when it predates the rebuild.
+        """
         url = f"{own}/details/recommendations/"
         driver.get(url)
         sleep(5)
@@ -1745,7 +2173,8 @@ def sent_invite_empty_state(page_text: Optional[str]) -> Optional[str]:
     """The empty-state phrase the page rendered, or `None`.
 
     `None` is not "the account has invites" — it is "the page never said it was empty", which is
-    exactly the case that must NOT be read as a clean account."""
+    exactly the case that must NOT be read as a clean account.
+    """
     match = _SENT_EMPTY_STATE_RE.search(str(page_text or ""))
     return match.group(0).strip() if match else None
 
@@ -1759,7 +2188,8 @@ def sent_invites_verdict(reading: dict) -> str:
 
     Zero rows has THREE readings and they are not interchangeable — an empty account, rotated
     anchors, and a page that never rendered. The page's own text is what separates them; a report
-    that cannot tell them apart grounds nothing."""
+    that cannot tell them apart grounds nothing.
+    """
     reading = dict(reading or {})
     rows = int(reading.get("rows_seen") or 0)
     if not rows:
@@ -1797,7 +2227,8 @@ def sent_invites_state(reading: Optional[dict]) -> str:
     """Three-state grade for one invitation-manager read. Zero rows has THREE readings and the
     page's own words are what separate them: its rendered empty state means the account really has
     nothing outstanding (ok), no text at all means the page never rendered (unknown), and a page
-    full of prose that yielded no rows is the anchors having moved (drift)."""
+    full of prose that yielded no rows is the anchors having moved (drift).
+    """
     reading = dict(reading or {})
     rows = int(reading.get("rows_seen") or 0)
     if rows:
@@ -1825,9 +2256,14 @@ def probe_sent_invites(driver, threshold_days: Optional[int] = None,
 
     It also samples the page's own text, because zero rows is otherwise undecidable: an account with
     nothing outstanding and a rotated row anchor report the same zero, and only the rendered empty
-    state says which one this run looked at."""
-    from cqc_lem.utilities.linkedin.stale_invites import (SENT_INVITATIONS_URL, _load_more_rows,
-                                                          read_pending_invites, stale_after_days)
+    state says which one this run looked at.
+    """
+    from cqc_lem.utilities.linkedin.stale_invites import (
+        SENT_INVITATIONS_URL,
+        _load_more_rows,
+        read_pending_invites,
+        stale_after_days,
+    )
 
     threshold = int(threshold_days if threshold_days is not None else stale_after_days())
     driver.get(SENT_INVITATIONS_URL)
@@ -1896,7 +2332,8 @@ def rail_invite_hazards(labels, target_name: str = "") -> list:
     """The invite controls that name someone OTHER than the target — the #1012 wrong-person hazard.
 
     With no target name, EVERY invite control is a hazard: a control we cannot attribute is
-    precisely the one production must never click."""
+    precisely the one production must never click.
+    """
     target = _norm_person(target_name)
     hazards = []
     for named in invite_control_names(labels):
@@ -1910,7 +2347,8 @@ def connect_dialog_state(reading: Optional[dict]) -> str:
     """Three-state grade for one connect-dialog read. The page's own words are the cross-check: a
     profile that rendered and offers no dialog is drift UNLESS it says an invite is already pending
     — that profile simply cannot ground this route, and grading it drift would file an issue for
-    working behaviour."""
+    working behaviour.
+    """
     reading = dict(reading or {})
     if reading.get("dialog_present"):
         return STATE_OK
@@ -1953,17 +2391,22 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
 
     STRICTLY read-only — it never clicks Send, never clicks an Invite control, and never opens the
     More menu. That is the whole point: this surface's last drift sent ~20 connection requests to
-    strangers, so the probe that grounds it must be incapable of sending one."""
+    strangers, so the probe that grounds it must be incapable of sending one.
+    """
     # The connect rail moved to `app.engagement.invites` (#1154). The probe deliberately imports the
     # SHIPPED locators rather than restating them, so it reports drift in what production actually
     # uses; importing them from the old module would have made it grade a copy.
-    from cqc_lem.app.engagement.invites import (_CONNECT_BARE_SEND_LOCATORS,
-                                                _CONNECT_DIALOG_LOCATORS, _CONNECT_INVITE_URL,
-                                                _CONNECT_NOTE_BUTTON_LOCATORS,
-                                                _PROFILE_MORE_MENU_LOCATORS)
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.engagement.invites import (
+        _CONNECT_BARE_SEND_LOCATORS,
+        _CONNECT_DIALOG_LOCATORS,
+        _CONNECT_INVITE_URL,
+        _CONNECT_NOTE_BUTTON_LOCATORS,
+        _PROFILE_MORE_MENU_LOCATORS,
+    )
     from cqc_lem.utilities.lead_scoring import profile_slug as _profile_slug
     from cqc_lem.utilities.selenium_util import find_first
-    from selenium.webdriver.support.ui import WebDriverWait
 
     wait = WebDriverWait(driver, 10)
     slug = _profile_slug(profile_url)
@@ -2017,7 +2460,8 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
 
 def _page_owner_name(driver) -> str:
     """The profile's own display name from the <title> — the only thing an Invite control's label
-    can honestly be attributed against."""
+    can honestly be attributed against.
+    """
     try:
         title = str(driver.title or "")
     except Exception:
@@ -2061,7 +2505,8 @@ def profile_scrape_state(reading: Optional[dict]) -> str:
     """Three-state grade for one profile-header read. The page's own degree TEXT is the
     cross-check: a badge the page writes and the locator chain cannot see is exactly the drift that
     made `_profile_is_first_degree` blind (and, through `profile.is_1st_connection`, made every
-    profile viewer look like a non-connection)."""
+    profile viewer look like a non-connection).
+    """
     reading = dict(reading or {})
     if not str(reading.get("page_text") or "").strip():
         return STATE_UNKNOWN
@@ -2101,10 +2546,12 @@ def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
 
     `degree_anchors` is the point: class anchors are gone from the SDUI profile, so this hands back
     the leaf nodes that DO carry the badge today. #1021's chain was written from that reading, and
-    the next rotation gets re-grounded from it the same way."""
+    the next rotation gets re-grounded from it the same way.
+    """
+    from bs4 import BeautifulSoup
+
     from cqc_lem.app.engagement.invites import _PROFILE_DEGREE_LOCATORS
     from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
-    from bs4 import BeautifulSoup
 
     driver.get(profile_url)
     sleep(6)
@@ -2154,7 +2601,8 @@ def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
 def catchup_state(reading: Optional[dict]) -> str:
     """Three-state grade for one catch-up read. The page's own `/in/` anchor count is the
     cross-check, and it is exactly the reading #964 lacked: the chain matched zero cards on a feed
-    visibly showing ten, and `no_moments` was logged daily as if the feed were empty."""
+    visibly showing ten, and `no_moments` was logged daily as if the feed were empty.
+    """
     reading = dict(reading or {})
     if reading.get("cards_matched"):
         return STATE_OK
@@ -2184,11 +2632,11 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
     """#964/#1013: run the SHIPPED `_CATCHUP_CARD_LOCATORS` chain against the real catch-up feed and
     report which locator wins, how many cards each candidate matches, how many classify into a
     milestone, and the page's own profile-anchor count. Read-only — no card is clicked, no
-    composer opened, nothing is sent."""
+    composer opened, nothing is sent.
+    """
     # The production URL, not a copy of it — a probe that reads a different screen than the lane
     # does grounds nothing about the lane (the same reason the card walk is imported, not inlined).
-    from cqc_lem.app.engagement.outreach import (CATCHUP_URL, _CATCHUP_CARD_LOCATORS,
-                                            _classify_catchup_moment)
+    from cqc_lem.app.engagement.outreach import _CATCHUP_CARD_LOCATORS, CATCHUP_URL, _classify_catchup_moment
     from cqc_lem.utilities.selenium_util import find_all_first
 
     driver.get(CATCHUP_URL)
@@ -2239,7 +2687,8 @@ def group_composer_state(reading: Optional[dict]) -> str:
     """Three-state grade for one group-composer read. A share box that opened an editor with a Post
     button is ok. A share box that resolved but produced neither is drift. NO share box at all is
     unknown, deliberately: an announcement / admin-only group legitimately renders none, and
-    production already treats that as 'rotate past this group', not a failure."""
+    production already treats that as 'rotate past this group', not a failure.
+    """
     reading = dict(reading or {})
     if not str(reading.get("page_text") or "").strip():
         return STATE_UNKNOWN
@@ -2271,12 +2720,17 @@ def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
     Read-only in the way that matters: it OPENS the composer (like `--probe-composer` does on the
     feed) because the editor and Post button do not exist until it is open, then closes it with
     Escape. **Nothing is typed and the Post button is never clicked**, so no group post can result
-    from running this."""
-    from cqc_lem.app.engagement.feed import (_GROUP_EDITOR_LOCATORS, _GROUP_POST_BUTTON_LOCATORS,
-                                             _GROUP_SHARE_BOX_LOCATORS)
-    from cqc_lem.utilities.selenium_util import click_first, find_first
+    from running this.
+    """
     from selenium.webdriver import ActionChains
     from selenium.webdriver.support.ui import WebDriverWait
+
+    from cqc_lem.app.engagement.feed import (
+        _GROUP_EDITOR_LOCATORS,
+        _GROUP_POST_BUTTON_LOCATORS,
+        _GROUP_SHARE_BOX_LOCATORS,
+    )
+    from cqc_lem.utilities.selenium_util import click_first, find_first
 
     wait = WebDriverWait(driver, 10)
     url = f"https://www.linkedin.com/groups/{group_id}/"
@@ -2403,7 +2857,8 @@ return out;
 
 def _first_few(values: Optional[list], limit: int = 5) -> str:
     """A verdict lists evidence, so a list it cut short has to say so — the 2026-08-07 run's verdict
-    named 5 of 6 stale ids and read like the whole set."""
+    named 5 of 6 stale ids and read like the whole set.
+    """
     values = [str(v) for v in (values or [])]
     shown = ", ".join(values[:limit])
     return f"{shown}, +{len(values) - limit} more" if len(values) > limit else shown
@@ -2429,7 +2884,8 @@ def _control_labels_matching(labels: Optional[list], markers: tuple) -> list:
     click, and it flips the answer to the one direction that must never be wrong. LinkedIn's real
     membership controls all lead with the verb ("Join", "Request to join", "Leave", "Requested",
     "Withdraw request"), so anchoring at the start keeps every live reading and fails to `unknown`
-    (re-ground it) instead of to a confident wrong answer."""
+    (re-ground it) instead of to a confident wrong answer.
+    """
     out = []
     for label in labels or []:
         text = str(label or "")
@@ -2445,7 +2901,8 @@ def group_membership_signal(header_controls: Optional[list], share_box_present: 
     The 2026-08-07 live run answered `member` for a group whose header carried no membership control
     at all: every marker missed and the share box carried it. Reporting only the word made that read
     as "the header says member", which would have sent the fix looking for a Leave button that this
-    surface does not render."""
+    surface does not render.
+    """
     if _control_labels_matching(header_controls, _GROUP_PENDING_MARKERS):
         return "pending_control"
     if _control_labels_matching(header_controls, _GROUP_MEMBER_MARKERS):
@@ -2464,7 +2921,8 @@ def group_membership_answer(header_controls: Optional[list], share_box_present: 
 
     `unknown` is a real answer and the one that must never be actioned: a page that will not say
     whether we belong is not evidence that we left, so a fix reading `unknown` has to leave the
-    stored membership exactly as it was."""
+    stored membership exactly as it was.
+    """
     return _MEMBERSHIP_BY_SIGNAL[group_membership_signal(header_controls, share_box_present)]
 
 
@@ -2476,7 +2934,8 @@ def group_enumeration_findings(directory: Optional[dict]) -> dict:
     that sits under "Groups you might be interested in" is a membership the DB will invent — and
     LEM will then comment in a group the user never joined, which is #1052 pointing the other way.
     `sections_readable` is what keeps that honest: no attributed section means the question was not
-    answered, never that the answer was no."""
+    answered, never that the answer was no.
+    """
     directory = dict(directory or {})
     anchors = [dict(a or {}) for a in (directory.get("anchors") or [])]
     enumerated = [str(row[0]) for row in (directory.get("enumerated") or []) if row]
@@ -2501,7 +2960,8 @@ def stale_set_grounded(reading: Optional[dict]) -> bool:
     It is a set difference, so it inherits the enumeration's blind spots: if the sync matched none of
     the page's anchors, EVERY enabled group lands in it and the list says the probe couldn't see the
     directory, not that the user left six groups. Same when the DB list was unreadable — an empty
-    enabled set makes an empty difference, which would otherwise read as a clean bill of health."""
+    enabled set makes an empty difference, which would otherwise read as a clean bill of health.
+    """
     reading = dict(reading or {})
     directory = dict(reading.get("directory") or {})
     if not reading.get("enabled_ids_readable", True):
@@ -2518,7 +2978,8 @@ def group_membership_state(reading: Optional[dict]) -> str:
 
     A directory whose anchors could be attributed to NO section is drift for the same reason: this
     surface is swept weekly, and the sweep only ever looks at `drift`, so grading an unanswerable
-    reading `ok` is how the enumeration question stays open forever with a green report over it."""
+    reading `ok` is how the enumeration question stays open forever with a green report over it.
+    """
     reading = dict(reading or {})
     group = dict(reading.get("group_page") or {})
     directory = dict(reading.get("directory") or {})
@@ -2613,7 +3074,8 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
     and reports what its header says about us.
 
     STRICTLY read-only: it navigates and reads. No control is clicked, so nothing is joined, left or
-    posted, and no stored membership is changed."""
+    posted, and no stored membership is changed.
+    """
     if enumerate_groups is None:
         from cqc_lem.app.engagement.feed import _enumerate_joined_groups as enumerate_groups
     # An unreadable DB list is not an empty one: it makes `stored_not_live` empty, which is the exact
@@ -2658,9 +3120,10 @@ def probe_group_membership(driver, user_id: int = 1, group_id: Optional[str] = N
                                 "directory" if live_ids else "none")
     group_page = {"group_id": target}
     if target:
+        from selenium.webdriver.support.ui import WebDriverWait
+
         from cqc_lem.app.engagement.feed import _GROUP_SHARE_BOX_LOCATORS
         from cqc_lem.utilities.selenium_util import find_first
-        from selenium.webdriver.support.ui import WebDriverWait
 
         url = f"https://www.linkedin.com/groups/{target}/"
         driver.get(url)
@@ -3022,7 +3485,8 @@ def company_invite_state(reading: Optional[dict]) -> str:
     """Three-state grade for one company-invite read. The page's own 'credits available' copy is
     the cross-check: credit text the parser could not read, or an invitee list the row locator
     missed on a page that renders one, is drift. A page that never rendered is unknown, and so is
-    a genuinely exhausted credit pool — production stands down for that by design."""
+    a genuinely exhausted credit pool — production stands down for that by design.
+    """
     reading = dict(reading or {})
     if not str(reading.get("page_text") or "").strip():
         return STATE_UNKNOWN
@@ -3058,10 +3522,12 @@ def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time
     """#732/#1013: open the company page's invite panel and report what the invite lane's own
     readers see — the credit counter, the invitee rows, the checkboxes and the modal's Invite
     button. Read-only: **no checkbox is ticked and the Invite button is never clicked**, so no
-    invitation can be sent by running this."""
+    invitation can be sent by running this.
+    """
+    from selenium.webdriver.support.ui import WebDriverWait
+
     from cqc_lem.utilities.db import get_company_linked_in_url_for_user
     from cqc_lem.utilities.linkedin.company_page_inviter import get_available_credits
-    from selenium.webdriver.support.ui import WebDriverWait
 
     wait = WebDriverWait(driver, 10)
     page = (company_url or get_company_linked_in_url_for_user(user_id) or "").rstrip("/")
@@ -3105,7 +3571,8 @@ def roster_connect_verdict(reading: dict) -> str:
     'unknown' is the finding that matters here too, but it fails SAFE in the opposite direction from
     the follow lane: production treats it as "change nothing", so a rotated Pending/Message label
     does not send a duplicate invite — it just leaves the badge saying "connect with this account"
-    after the user already has."""
+    after the user already has.
+    """
     reading = dict(reading or {})
     state = reading.get("state")
     if state == "requested":
@@ -3129,9 +3596,9 @@ def probe_roster_connect(driver, profile_url: str,
 
     STRICTLY read-only, and unlike the follow rung there is no clicker here at all: the invite goes
     out through the existing `invite_to_connect_now` rail on the profile page. This grounds the
-    READING that decides whether a target is still waiting for one."""
-    from cqc_lem.app.engagement.feed import (_activity_page_owner_name, _resolve_connect_state,
-                                             _roster_activity_url)
+    READING that decides whether a target is still waiting for one.
+    """
+    from cqc_lem.app.engagement.feed import _activity_page_owner_name, _resolve_connect_state, _roster_activity_url
 
     url = _roster_activity_url(profile_url)
     driver.get(url)
@@ -3154,7 +3621,8 @@ def profile_experiences_verdict(reading: dict) -> str:
 
     The number that matters is `entities_with_dates`: an experience row is identified by its date
     range, so entities rendered but none dated means the page did not load (or the entity selector
-    is gone), while dated entities that parse to nothing means the line grammar has moved."""
+    is gone), while dated entities that parse to nothing means the line grammar has moved.
+    """
     reading = dict(reading or {})
     parsed = reading.get("experiences") or []
     dated = reading.get("entities_with_dates") or 0
@@ -3200,7 +3668,8 @@ def profile_experiences_state(reading: dict) -> str:
 
     Parsing every role and attributing NONE of them is drift too (#1096): the roles are there, the
     company grouping above them is not being read. SOME blank is not — one unresolvable entry is the
-    honest-blank contract working, and filing that weekly would be noise."""
+    honest-blank contract working, and filing that weekly would be noise.
+    """
     reading = dict(reading or {})
     parsed = reading.get("experiences") or []
     if parsed:
@@ -3221,14 +3690,20 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
     assuming it.
 
     `experiences_without_company` is the #1096 half: a run can parse every role and still attach the
-    company to only one of them, and without the count that reads as a clean run."""
+    company to only one of them, and without the count that reads as a clean run.
+    """
     from bs4 import BeautifulSoup
 
-    from cqc_lem.utilities.linkedin.scrapper import (_DATE_RANGE_RE, _EXPERIENCE_ENTITY_SELECTORS,
-                                                     experience_entity_nodes,
-                                                     get_start_identifier, parse_experience_entity,
-                                                     parse_profile_experiences, source_as_row,
-                                                     visible_lines)
+    from cqc_lem.utilities.linkedin.scrapper import (
+        _DATE_RANGE_RE,
+        _EXPERIENCE_ENTITY_SELECTORS,
+        experience_entity_nodes,
+        get_start_identifier,
+        parse_experience_entity,
+        parse_profile_experiences,
+        source_as_row,
+        visible_lines,
+    )
 
     if not (profile_url or "").strip():
         # The sweep resolves its own target; when it cannot, probing a relative URL would grade the
@@ -3301,13 +3776,27 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     on their own messages? A mismatch reads as UNKNOWN in production and silently stops follow-ups.
 
     Read-only: it opens the thread and reads it. It types nothing into the composer and sends nothing.
+
+    One route of the production ladder is NOT probe-able under the #1301 guard: the last-resort
+    messaging SEARCH types a name into a box and presses Enter, and the guard refuses every
+    printable character precisely because a box that takes text and commits on Enter is
+    indistinguishable, from here, from a composer. That grades `unknown` — the ladder was not fully
+    walked, so this run grounds nothing about it — rather than pretending the route is broken.
     """
-    from cqc_lem.utilities.linkedin.message_thread import (open_message_thread, read_last_sender,
-                                                           profile_urn_from_page)
     from selenium.webdriver.support.ui import WebDriverWait
 
+    from cqc_lem.utilities.linkedin.message_thread import open_message_thread, profile_urn_from_page, read_last_sender
+
     wait = WebDriverWait(driver, 10)
-    opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None)
+    try:
+        opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None)
+    except ReadOnlyViolation as e:
+        return graded({"profile_url": profile_url, "opened": False, "route": None,
+                       "read_only_blocked": str(e)}, STATE_UNKNOWN,
+                      "the ladder reached the messaging-search route, which types a name and "
+                      "presses Enter — the read-only guard refuses that, so this run grounds "
+                      "nothing about the earlier routes either; re-run with a person whose thread "
+                      "one of the direct routes opens")
     reading = {"profile_url": profile_url,
                "opened": opened.opened,
                "route": opened.route,
@@ -3329,7 +3818,8 @@ def _reply_state(reading: dict) -> str:
     skipping this person (unreadable thread, or a saved display name that doesn't match).
 
     It runs the SAME whole-word comparison production uses, or the probe would report a verdict the
-    sequencer never reaches."""
+    sequencer never reaches.
+    """
     from cqc_lem.utilities.linkedin.message_thread import name_matches
 
     last_sender = (reading.get("last_sender") or "").strip()
@@ -3345,7 +3835,8 @@ def sweep_summary(probes: Optional[dict]) -> dict:
 
     `drift` is the only list that becomes GitHub issues. `unknown` is reported and NOT filed — a
     surface whose page never rendered grounds nothing, and filing it would bury the real drift
-    under a weekly re-run of the same non-finding."""
+    under a weekly re-run of the same non-finding.
+    """
     by_state = {STATE_OK: [], STATE_DRIFT: [], STATE_UNKNOWN: []}
     errors = []
     for key, reading in sorted((probes or {}).items()):
@@ -3372,7 +3863,8 @@ def sweep_session_state(driver, sleep=time.sleep) -> str:
     Fails OPEN — only a POSITIVE signed-out signal (a challenge/guest URL, or LinkedIn's own guest
     copy) stands the sweep down. An unreadable page is exactly what `unknown` is for, and the
     per-probe grades handle it; refusing to sweep on an unreadable read would be the same silence
-    this issue exists to end, just one level up."""
+    this issue exists to end, just one level up.
+    """
     try:
         driver.get(FEED_URL)
         sleep(4)
@@ -3400,7 +3892,8 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
 
     A sweep on a signed-out session probes nothing: every surface would grade `drift` off the SAME
     auth wall, and the filer would open an issue per surface for one expired cookie. `unknown` is
-    the honest grade for a page that never rendered, and `unknown` files nothing."""
+    the honest grade for a page that never rendered, and `unknown` files nothing.
+    """
     runners = runners if runners is not None else {
         "feed_sort": lambda: probe_feed_sort(driver),
         "feed_reactions": lambda: probe_feed_reactions(driver),
@@ -3449,7 +3942,8 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
 def _sweep_own_profile(driver, user_id: int) -> str:
     """The user's own profile URL — the one profile a sweep may scrape without a human choosing a
     target. It carries a degree badge of its own ('You'/no badge), so the header/name half is what
-    it grounds; a stranger's profile is what `--profile-scrape <url>` is for."""
+    it grounds; a stranger's profile is what `--profile-scrape <url>` is for.
+    """
     from cqc_lem.app.engagement.outreach import _own_profile_url
     return _own_profile_url(driver, user_id) or ""
 
@@ -3457,7 +3951,8 @@ def _sweep_own_profile(driver, user_id: int) -> str:
 def build_parser() -> "argparse.ArgumentParser":
     """The CLI, built apart from `main` so the coverage matrix can be checked against it without
     running a browser: a `SURFACES` row naming a flag that does not exist is a surface nobody can
-    actually probe (issue #1013)."""
+    actually probe (issue #1013).
+    """
     parser = argparse.ArgumentParser(description="Read-only live LinkedIn validation probe (#404)")
     parser.add_argument("--user-id", type=int, default=1, help="user whose session drives the probe")
     parser.add_argument("--post-url", help="permalink of one of that user's OWN published posts")
@@ -3516,7 +4011,14 @@ def build_parser() -> "argparse.ArgumentParser":
                              "whether the lazy-load scroll grows the list")
     parser.add_argument("--watch", action="store_true",
                         help="request the watchable Grid debug node so the session is visible via "
-                             "noVNC; falls back to the pool if the debug node is busy/absent")
+                             "noVNC; falls back to the pool if the debug node is busy/absent. This "
+                             "is the DEFAULT since #1301 — the flag is kept because it is what "
+                             "everyone types, and because it says out loud where the session went")
+    parser.add_argument("--require-debug-node", action="store_true",
+                        help="refuse to run at all unless the session can be pinned to the "
+                             "watchable debug node. Pipeline agents MUST pass this: it is what "
+                             "guarantees a probe never takes one of the Chrome slots the "
+                             "engagement lanes are sized for.")
     parser.add_argument("--reaction-probe", action="store_true",
                         help="capture the feed cards' reaction controls (issue #816). Read-only: "
                              "it never leaves a reaction.")
@@ -3604,15 +4106,35 @@ def main(argv: Optional[list] = None) -> int:
                      "--permalink-comment and/or "
                      "--probe-composer")
 
-    # `get_current_profile` moved down to `utilities/linkedin/session.py` in #1154; importing it
-    # from the module it LIVES in also keeps the probe off the Celery task graph entirely.
+    # Decided BEFORE Chrome opens, the same rule `plan_daily_invites` follows — a refusal that has
+    # already spent a session is not a refusal.
+    # No override flag exists, deliberately. Agents run with `--dangerously-skip-permissions`, so
+    # a hatch guarded only by "an agent must never pass this" is guarded by nothing. An owner with a
+    # genuinely stuck breaker clears the breaker itself — the state this reads — rather than
+    # teaching the probe to ignore it.
+    breaker = breaker_reading()
+    refusal = breaker_refusal(breaker)
+    if refusal:
+        return emit_refusal(args.user_id, refusal, breaker, guard_ledger())
+
     from cqc_lem.utilities.linkedin.session import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
 
-    driver, _wait, _email, profile = get_current_profile(user_id=args.user_id,
-                                                        session_name="Live Validation",
-                                                        debug=args.watch)
-    report = {"user_id": args.user_id}
+    try:
+        driver, profile, session_reading = open_probe_session(
+            get_current_profile, args.user_id, require_debug_node=args.require_debug_node)
+    except ProbeRefused as refused:
+        return emit_refusal(args.user_id, refused.refusal, breaker, guard_ledger())
+
+    # Armed HERE, not earlier, and this is the one seam worth stating plainly: signing in is the
+    # only thing in this process that legitimately types — the stored credentials, and the emailed
+    # PIN when LinkedIn challenges. That is production's shared login path (`login_to_linkedin`),
+    # it is identical for every Celery task, and it publishes nothing. From this line to the end of
+    # the run — i.e. for every probe — nothing can type a printable character or press a control
+    # whose label commits something.
+    install_read_only_guard()
+
+    report = {"user_id": args.user_id, "session": session_reading}
     try:
         if args.sweep:
             # The sweep IS the report: it replaces the per-probe keys wholesale, so the weekly
@@ -3681,6 +4203,10 @@ def main(argv: Optional[list] = None) -> int:
     finally:
         quit_gracefully(driver)
 
+    report["breaker"] = breaker
+    # Reported at the END so it covers the whole run: "nothing was refused" is a claim about what
+    # happened, not about what was configured.
+    report["read_only_guard"] = guard_ledger()
     print(REPORT_JSON_BEGIN)
     print(json.dumps(report, indent=2))
     print(REPORT_JSON_END)

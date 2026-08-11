@@ -1,6 +1,7 @@
 """Unit tests for the live LinkedIn validation probe (scripts/linkedin_live_validation.py)."""
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -16,6 +17,18 @@ _spec.loader.exec_module(llv)
 # The two layouts the 2026-07-23 owner grab found on /analytics/post-summary/: the Discovery hero
 # stacks value-first, the Engagement breakdown label-first.
 ANALYTICS_TEXT = "Discovery\n72\nImpressions\nEngagement\nReactions\n4\nComments\n1\nReposts\n0\nSaves\n3"
+
+
+def clear_the_breaker(monkeypatch):
+    """Let `main()` past the #1301 breaker gate.
+
+    Every `main()` case has to say this out loud: the gate fails CLOSED, so in a unit environment
+    (no Redis) the probe REFUSES by default. A test that walks through main is asserting what
+    happens after the gate opens, never that the gate is absent.
+    """
+    monkeypatch.setattr(llv, "breaker_reading",
+                        lambda: {"readable": True, "open": False, "wait_seconds": 0,
+                                 "reason": "clear"})
 
 
 def _fake_driver(text: str = "", current_url: str = ""):
@@ -278,6 +291,25 @@ class TestMessageThreadProbe:
     def test_verdict_names_the_winning_route(self):
         assert llv.message_thread_verdict({"opened": True, "route": "anchor", "events": 12,
                                            "self_name": "Christopher Queen"}) == "opened via anchor"
+
+    def test_the_search_route_is_not_probe_able_and_says_so_instead_of_crashing(self, monkeypatch):
+        """The production ladder's last resort types a name and presses Enter.
+
+        The #1301 guard refuses that — a box that takes text and commits on Enter is, from here,
+        indistinguishable from a composer — so the probe must report an UNKNOWN naming the guard,
+        not die mid-run and not read as a broken route.
+        """
+        thread = types.ModuleType("cqc_lem.utilities.linkedin.message_thread")
+        thread.open_message_thread = MagicMock(
+            side_effect=llv.ReadOnlyViolation("refused to type text"))
+        thread.read_last_sender = lambda d: ""
+        thread.profile_urn_from_page = lambda d, u: ""
+        monkeypatch.setitem(sys.modules, "cqc_lem.utilities.linkedin.message_thread", thread)
+
+        reading = llv.probe_message_thread(MagicMock(), "https://www.linkedin.com/in/jane/")
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "messaging-search route" in reading["verdict"]
+        assert reading["read_only_blocked"]
 
     def test_a_readable_thread_with_no_saved_name_is_still_unknown(self):
         # The other half of a live reply check: the ladder can win and the verdict still be UNKNOWN
@@ -676,6 +708,7 @@ class TestMain:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
         monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "sort control OK"})
         assert llv.main(["--feed-sort"]) == 0
 
@@ -703,6 +736,7 @@ class TestAppreciationSourcesProbe:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
         monkeypatch.setattr(llv, "probe_appreciation_sources",
                             lambda d, u, p="": {"mentions": {"verdict": "no cards resolved"}})
         assert llv.main(["--appreciation-sources"]) == 0
@@ -1917,6 +1951,7 @@ class TestGroupFeedComposerProbe:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
         monkeypatch.setattr(llv, "probe_group_feed_composer",
                             lambda d, uid, group_id=None, max_cards=3: {"verdict": "ok"})
         assert llv.main(["--group-feed-composer"]) == 0
@@ -2155,6 +2190,7 @@ class TestPermalinkCommentProbe:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
         monkeypatch.setattr(llv, "probe_permalink_comment",
                             lambda d, url: {"verdict": "composer resolved"})
         assert llv.main(["--permalink-comment", self._URL]) == 0
@@ -2346,6 +2382,391 @@ class TestProfileExperiencesProbe:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
                             lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
         monkeypatch.setattr(llv, "probe_profile_experiences",
                             lambda d, url: {"verdict": "ok"})
         assert llv.main(["--profile-experiences", "https://www.linkedin.com/in/someone/"]) == 0
+
+
+# ─────────────────────── read-only enforcement + the breaker gate (#1301) ───────────────────────
+# These are the tests that let an autonomous agent run this probe at all. Before #1301 "read-only"
+# was a property of the prose; here it is a property of the process.
+
+@pytest.fixture(autouse=True)
+def selenium_unpatched():
+    """Put Selenium back exactly as it was after EVERY test in this module.
+
+    The guard patches Selenium's own classes for the life of the PROCESS, which is right for a
+    probe run and wrong for a test session: any test that walks through `main()` installs it as a
+    side effect, and without this the next install would wrap the wrapper and double-count.
+    Restoring here — rather than exposing an uninstall hook on the script — also leaves the probe
+    with no way to turn its own guard off.
+    """
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.remote.webdriver import WebDriver
+    from selenium.webdriver.remote.webelement import WebElement
+
+    targets = [(WebElement, "click"), (WebElement, "send_keys"), (WebElement, "submit"),
+               (WebElement, "clear"), (WebDriver, "execute_script"), (ActionChains, "click"),
+               (ActionChains, "send_keys"), (ActionChains, "send_keys_to_element")]
+    originals = [(owner, name, getattr(owner, name)) for owner, name in targets]
+    llv._GUARD_LEDGER.update(installed=False, refusals=[], unlabelled_clicks=0)
+    yield
+    for owner, name, original in originals:
+        setattr(owner, name, original)
+    llv._GUARD_LEDGER.update(installed=False, refusals=[], unlabelled_clicks=0)
+
+
+@pytest.fixture
+def selenium_restored(selenium_unpatched):
+    """The guard installed for one test; `selenium_unpatched` takes it back off."""
+    llv.install_read_only_guard()
+
+
+def _element(aria: str = "", text: str = ""):
+    """A real WebElement (so the patched methods are the ones under test) with a stubbed page."""
+    from selenium.webdriver.remote.webelement import WebElement
+
+    class _Stubbed(WebElement):
+        def get_attribute(self, name):
+            return aria if name == "aria-label" else None
+
+        @property
+        def text(self):
+            return text
+
+    parent = MagicMock()
+    # Selenium's real send_keys asks the driver whether each key is a local file path to upload
+    # (the detector answers with a path, or None); a bare MagicMock answers with a Mock and it
+    # tries to zip it.
+    parent.file_detector.is_local_file.return_value = None
+    return _Stubbed(parent, "element-id")
+
+
+def _remote_driver():
+    from selenium.webdriver.remote.webdriver import WebDriver
+
+    driver = WebDriver.__new__(WebDriver)
+    driver.execute = MagicMock(return_value={"value": None})
+    return driver
+
+
+@pytest.mark.unit
+class TestSubmitVocabulary:
+    """The click half. It must catch the controls that commit and leave the ones that only OPEN
+    something alone — a probe that cannot press 'Comment' cannot measure the comment composer.
+    """
+
+    @pytest.mark.parametrize("label", ["Post", "Send", "Send now", "Publish", "Submit",
+                                       "Connect", "Invite Jane Doe to connect", "Withdraw",
+                                       "Follow", "Unfollow", "Following", "Following Jane Doe",
+                                       "Like", "Celebrate", "Repost", "Subscribe", "Join",
+                                       "Accept", "Add a note", "Reply"])
+    def test_a_commit_control_is_named(self, label):
+        assert llv.submit_control_reason(label)
+
+    @pytest.mark.parametrize("label", ["Start a post", "Create a post", "Comment",
+                                       "Comment on Jane Doe's post", "Sort by: Most relevant",
+                                       "Most recent", "Recent", "Load more comments",
+                                       "Show all 24 comments", "Open reactions menu", ""])
+    def test_an_opening_or_reading_control_is_not(self, label):
+        # These are exactly the controls the probes DO click. Refusing them would make the guard
+        # break the measurement it exists to protect.
+        assert llv.submit_control_reason(label) is None
+
+    def test_matching_ignores_case_and_whitespace(self):
+        assert llv.submit_control_reason("  SEND \n now ")
+
+
+@pytest.mark.unit
+class TestTypedCharacters:
+    def test_control_keys_are_not_typing(self):
+        from selenium.webdriver.common.keys import Keys
+
+        assert llv.typed_characters([Keys.ESCAPE, Keys.TAB, Keys.ARROW_DOWN]) == ""
+
+    def test_printable_characters_are_typing(self):
+        assert llv.typed_characters(["Great post!"]) == "Great post!"
+
+    def test_text_hidden_among_control_keys_is_still_typing(self):
+        from selenium.webdriver.common.keys import Keys
+
+        assert llv.typed_characters([Keys.ESCAPE, ["ok"], Keys.ENTER]) == "ok"
+
+
+@pytest.mark.unit
+class TestReadOnlyGuard:
+    def test_typing_is_refused_outright(self, selenium_restored):
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element().send_keys("Great post, Jane!")
+
+    def test_escape_still_closes_a_composer(self, selenium_restored):
+        from selenium.webdriver.common.keys import Keys
+
+        _element().send_keys(Keys.ESCAPE)  # no raise: this is how every probe cleans up
+
+    def test_a_commit_control_cannot_be_clicked(self, selenium_restored):
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Post").click()
+
+    def test_the_controls_the_probes_use_still_click(self, selenium_restored):
+        _element(aria="Comment on Jane Doe's post").click()
+        _element(text="Start a post").click()
+
+    def test_the_element_text_is_read_too_not_just_aria_label(self, selenium_restored):
+        # The live reaction toggle's text is literally "Like".
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(text="Like").click()
+
+    def test_submit_and_clear_are_never_allowed(self, selenium_restored):
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Comment").submit()
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Comment").clear()
+
+    def test_a_javascript_click_goes_through_the_same_gate(self, selenium_restored):
+        # `arguments[0].click()` is how the feed-sort probe presses things, so it is also the
+        # obvious way around a guard that only watched WebElement.click.
+        with pytest.raises(llv.ReadOnlyViolation):
+            _remote_driver().execute_script("arguments[0].click();", _element(aria="Send"))
+
+    def test_a_javascript_click_on_a_reading_control_is_allowed(self, selenium_restored):
+        _remote_driver().execute_script("arguments[0].click();",
+                                        _element(aria="Sort by: Most relevant"))
+
+    def test_an_interactive_script_naming_no_element_is_refused(self, selenium_restored):
+        with pytest.raises(llv.ReadOnlyViolation):
+            _remote_driver().execute_script("document.querySelector('.share-actions').click();")
+
+    def test_reading_and_scrolling_scripts_are_untouched(self, selenium_restored):
+        driver = _remote_driver()
+        driver.execute_script("window.scrollBy(0, 900);")
+        driver.execute_script("return document.querySelectorAll('li').length;")
+
+    def test_action_chains_cannot_type_either(self, selenium_restored):
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        chain = ActionChains.__new__(ActionChains)
+        with pytest.raises(llv.ReadOnlyViolation):
+            chain.send_keys("Great post!")
+        with pytest.raises(llv.ReadOnlyViolation):
+            chain.send_keys_to_element(_element(), "Great post!")
+
+    def test_action_chains_cannot_press_a_commit_control(self, selenium_restored):
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        chain = ActionChains.__new__(ActionChains)
+        with pytest.raises(llv.ReadOnlyViolation):
+            chain.click(_element(aria="Send"))
+
+    def test_the_ledger_records_what_was_refused(self, selenium_restored):
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Follow").click()
+        ledger = llv.guard_ledger()
+        assert ledger["installed"] is True
+        assert ledger["refusals"][0]["action"] == "click a control"
+        assert "follow" in ledger["refusals"][0]["detail"]
+
+    def test_an_unlabelled_click_is_allowed_but_counted(self, selenium_restored):
+        # The one gap in the click half: a control with no readable label cannot be classified,
+        # and refusing it would break probes on stale elements. It must not be invisible.
+        _element().click()
+        assert llv.guard_ledger()["unlabelled_clicks"] == 1
+
+    def test_installing_twice_does_not_stack_wrappers(self, selenium_restored):
+        llv.install_read_only_guard()
+        with pytest.raises(llv.ReadOnlyViolation):
+            _element(aria="Post").click()
+        assert len(llv.guard_ledger()["refusals"]) == 1
+
+
+@pytest.mark.unit
+class TestBreakerReading:
+    """The gate fails CLOSED, which is the opposite of the app's own breaker read: production must
+    keep running when Redis is down, a probe must not run when it cannot prove it is safe to.
+    """
+
+    @staticmethod
+    def _rate_limit(monkeypatch, client):
+        from cqc_lem.utilities.linkedin import rate_limit
+
+        monkeypatch.setattr(rate_limit, "shared_redis_client", lambda: client)
+        return rate_limit
+
+    def test_a_clear_breaker_reads_readable_and_closed(self, monkeypatch):
+        self._rate_limit(monkeypatch, MagicMock(ttl=MagicMock(return_value=-2)))
+        reading = llv.breaker_reading()
+        assert reading["readable"] is True and reading["open"] is False
+        assert llv.breaker_refusal(reading) is None
+
+    def test_an_open_cooldown_is_a_wait_with_the_seconds_attached(self, monkeypatch):
+        self._rate_limit(monkeypatch, MagicMock(ttl=MagicMock(return_value=1800)))
+        refusal = llv.breaker_refusal(llv.breaker_reading())
+        assert refusal["reason"] == "rate_limit_breaker_open"
+        assert refusal["wait_seconds"] == 1800
+        assert "do not escalate" in refusal["action"]
+
+    def test_the_manual_automation_pause_blocks_it_too(self, monkeypatch):
+        # The kill-switch is a harder gate than the breaker, and a probe is Selenium traffic like
+        # any other — "automation is paused" has to include it.
+        ttls = {"linkedin:429_cooldown": -2, "linkedin:automation_paused": 600}
+        self._rate_limit(monkeypatch, MagicMock(ttl=MagicMock(side_effect=lambda k: ttls[k])))
+        refusal = llv.breaker_refusal(llv.breaker_reading())
+        assert refusal["wait_seconds"] == 600
+        assert "manual automation pause" in refusal["detail"]
+
+    def test_no_redis_refuses_rather_than_reading_as_clear(self, monkeypatch):
+        self._rate_limit(monkeypatch, None)
+        refusal = llv.breaker_refusal(llv.breaker_reading())
+        assert refusal["reason"] == "rate_limit_breaker_unreadable"
+
+    def test_a_failing_read_refuses(self, monkeypatch):
+        self._rate_limit(monkeypatch, MagicMock(ttl=MagicMock(side_effect=Exception("boom"))))
+        reading = llv.breaker_reading()
+        assert reading["readable"] is False
+        assert llv.breaker_refusal(reading)["reason"] == "rate_limit_breaker_unreadable"
+
+
+@pytest.mark.unit
+class TestMainRefusals:
+    """What an agent actually keys on: a non-zero exit code and a machine-readable reason."""
+
+    @staticmethod
+    def _no_session(monkeypatch):
+        opened = MagicMock(side_effect=AssertionError("the browser must never open on a refusal"))
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile", opened)
+        return opened
+
+    @staticmethod
+    def _fenced(capsys) -> dict:
+        out = capsys.readouterr().out
+        return json.loads(out.split(llv.REPORT_JSON_BEGIN)[1].split(llv.REPORT_JSON_END)[0])
+
+    def test_an_open_breaker_refuses_before_the_browser_opens(self, monkeypatch, capsys):
+        self._no_session(monkeypatch)
+        monkeypatch.setattr(llv, "breaker_reading",
+                            lambda: {"readable": True, "open": True, "wait_seconds": 900,
+                                     "reason": "the 429 circuit breaker is OPEN for another 900s"})
+        assert llv.main(["--feed-sort"]) == llv.BREAKER_REFUSAL_EXIT_CODE
+        report = self._fenced(capsys)
+        assert report["refusal"]["reason"] == "rate_limit_breaker_open"
+        assert report["refusal"]["wait_seconds"] == 900
+
+    def test_an_unreadable_breaker_refuses(self, monkeypatch):
+        self._no_session(monkeypatch)
+        monkeypatch.setattr(llv, "breaker_reading",
+                            lambda: {"readable": False, "open": False, "wait_seconds": 0,
+                                     "reason": "Redis is unavailable"})
+        assert llv.main(["--feed-sort"]) == llv.BREAKER_REFUSAL_EXIT_CODE
+
+    def test_no_flag_can_bypass_an_open_breaker(self, monkeypatch, capsys):
+        """There is no override, and that is the point.
+
+        The probe drives the owner's real LinkedIn session on an account with a 429-lockout
+        history. A hatch that only an instruction keeps agents away from is not a control, because
+        headless lanes launch with `--dangerously-skip-permissions`.
+        """
+        monkeypatch.setattr(llv, "breaker_reading",
+                            lambda: {"readable": True, "open": True, "wait_seconds": 900,
+                                     "reason": "open"})
+        with pytest.raises(SystemExit):          # argparse rejects it: the flag does not exist
+            llv.main(["--feed-sort", "--ignore-breaker"])
+        assert llv.main(["--feed-sort"]) == 75    # and the breaker still refuses, as a WAIT
+
+    def test_the_guard_is_armed_after_login_and_before_the_first_probe(self, monkeypatch, capsys):
+        """The one seam: signing in types the credentials and the emailed PIN.
+
+        So the guard cannot already be on while the session opens — and it must be on for
+        everything after, or "read-only" is back to being a promise.
+        """
+        seen = {}
+
+        def _login(**kwargs):
+            seen["armed_during_login"] = llv.guard_ledger()["installed"]
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        def _probe(_driver):
+            seen["armed_during_probe"] = llv.guard_ledger()["installed"]
+            return {"verdict": "ok"}
+
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile", _login)
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_feed_sort", _probe)
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--feed-sort"]) == 0
+        assert seen == {"armed_during_login": False, "armed_during_probe": True}
+
+    def test_a_clean_run_reports_the_guard_and_the_breaker(self, monkeypatch, capsys):
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--feed-sort"]) == 0
+        report = self._fenced(capsys)
+        assert report["read_only_guard"]["installed"] is True
+        assert report["breaker"]["readable"] is True
+
+
+@pytest.mark.unit
+class TestProbeSessionPin:
+    """A probe that borrows a lane slot competes with the engagement it exists to measure."""
+
+    def test_the_watchable_node_is_the_default(self):
+        captured = {}
+
+        def _profile(**kwargs):
+            captured.update(kwargs)
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        llv.open_probe_session(_profile, 1, require_debug_node=False)
+        assert captured["debug"] is True
+        assert "debug_required" not in captured
+
+    def test_requiring_the_pin_passes_it_through(self):
+        captured = {}
+
+        def _profile(user_id=None, session_name="", debug=False, debug_required=False):
+            captured.update(user_id=user_id, debug=debug, debug_required=debug_required)
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        _d, _p, reading = llv.open_probe_session(_profile, 7, require_debug_node=True)
+        assert captured == {"user_id": 7, "debug": True, "debug_required": True}
+        assert reading["debug_node_pin"] == "required"
+
+    def test_an_image_that_cannot_pin_refuses_rather_than_downgrading(self):
+        # The probe is piped into whatever image is deployed, so "predates the pin" is an ordinary
+        # state for a few hours after a merge — and a silent fallback there is exactly what this
+        # issue removes.
+        def _old_image(user_id=None, session_name="", debug=False):
+            return MagicMock(), MagicMock(), "a@b.c", MagicMock()
+
+        with pytest.raises(llv.ProbeRefused) as refused:
+            llv.open_probe_session(_old_image, 1, require_debug_node=True)
+        assert refused.value.refusal["reason"] == "debug_node_pin_unsupported"
+
+    def test_a_busy_debug_node_becomes_a_wait_not_a_crash(self):
+        class DebugNodeUnavailable(RuntimeError):
+            pass
+
+        def _profile(user_id=None, session_name="", debug=False, debug_required=False):
+            raise DebugNodeUnavailable("debug node selenium-node-debug unavailable")
+
+        with pytest.raises(llv.ProbeRefused) as refused:
+            llv.open_probe_session(_profile, 1, require_debug_node=True)
+        assert refused.value.refusal["reason"] == "debug_node_unavailable"
+
+    def test_any_other_login_failure_still_surfaces(self):
+        def _profile(**kwargs):
+            raise RuntimeError("LinkedIn login failed")
+
+        with pytest.raises(RuntimeError, match="login failed"):
+            llv.open_probe_session(_profile, 1, require_debug_node=False)
+
+    def test_main_turns_an_unavailable_node_into_the_wait_exit_code(self, monkeypatch):
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "open_probe_session",
+                            MagicMock(side_effect=llv.ProbeRefused(
+                                {"refused": True, "reason": "debug_node_unavailable",
+                                 "detail": "busy", "action": "re-run later"})))
+        assert llv.main(["--feed-sort", "--require-debug-node"]) == llv.BREAKER_REFUSAL_EXIT_CODE

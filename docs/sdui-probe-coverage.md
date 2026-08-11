@@ -114,6 +114,17 @@ The sweep is read-only in the way that matters: it sends no invite, posts nothin
 nothing, ticks no checkbox, and clicks no Send / Post / Invite control. The composer probes open a
 composer and close it with Escape without typing.
 
+Since #1301 that is **enforced, not intended**: `install_read_only_guard()` patches Selenium once
+the session is up, so no probe can type a printable character (every LinkedIn write starts there)
+or press a control whose label commits something — via `WebElement.click`, `ActionChains` or
+`arguments[0].click()` alike. Two gates run before the browser opens: the 429 breaker / automation
+pause, read **fail-CLOSED** (unreadable refuses), and the Grid debug-node pin, so a probe never
+takes one of the eight Chrome slots the lanes are sized for. A refusal exits **75** — a WAIT, which
+the weekly cron logs and does not alert on. That is what lets a pipeline agent run the probe
+itself; the conditions are in the **linkedin-live-validation** skill. One route is deliberately
+un-probeable as a result: the message-thread ladder's messaging-SEARCH fallback types a name and
+presses Enter, so it grades `unknown` naming the guard.
+
 ## Gaps (tracked, not silent)
 
 Every walk in the matrix now carries a production tripwire (#1021 closed the last three). What is

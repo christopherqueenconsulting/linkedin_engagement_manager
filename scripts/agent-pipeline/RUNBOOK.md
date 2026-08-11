@@ -25,6 +25,10 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
   coverage. Lane/marker/fixture selection: the **test-lanes** skill. Run `poetry run pytest tests/unit -q` locally
   before pushing when the environment allows; **CI is the source of truth**.
 - **Never** edit files under `/opt/lem` (that is live prod), never run `docker`, never deploy, never touch secrets/`.env`.
+  **One carve-out (#1301):** piping the read-only live-validation probe into the Selenium worker —
+  `sudo docker exec -i celery_worker_selenium python - --require-debug-node … < scripts/linkedin_live_validation.py`.
+  That exact command and no other: it starts nothing, restarts nothing, changes no container, and
+  the probe itself cannot write to LinkedIn (see the **linkedin-live-validation** skill).
 - Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - You are in a dedicated worktree already on the correct branch. Do not `git checkout main` or switch branches.
 
@@ -64,7 +68,19 @@ one phase of a multi-phase issue is exactly what it looks like: **omit the closi
 what remains in the PR body, and the issue stays open with nothing held.
 
 ## Escalate to a human instead of proceeding when:
-- The issue needs **live LinkedIn interaction / real credentials / a running Selenium session** you can't do headless.
+- The issue needs a **WRITE on LinkedIn** — posting, commenting, sending an invite or a DM,
+  changing an account setting — or **real credentials** you don't have. A write is always a human
+  escalation; no flag makes one possible.
+  **A read-only DOM check is NOT this.** Since #1301 you may run the live-validation probe
+  yourself: it is structurally unable to type or to press a commit control, it refuses to start
+  when the 429 breaker is open or unreadable, and `--require-debug-node` keeps it off the Chrome
+  slots the engagement lanes need. Read the **linkedin-live-validation** skill first and pass
+  `--require-debug-node`. **Exit code 75 is a WAIT, not a failure** — re-run later. Escalate only
+  if the breaker stays open across repeated attempts, or the finding needs a write to confirm.
+  The same applies to the `selenium-lem` MCP browser: it runs on that node too and cannot fall back
+  to the pool, so "no debug browser slot" means wait, not escalate. Being off the pool protects
+  production capacity, **not** the LinkedIn account — do not drive a write through the MCP browser
+  either.
 - It requires a **product or policy decision**, an external secret, or account/ToS judgment.
 - A **DB migration is destructive** or ambiguous, or you'd have to weaken a security control.
 - You've made **4+ fix attempts** on CI and it still fails, or you're otherwise stuck.
