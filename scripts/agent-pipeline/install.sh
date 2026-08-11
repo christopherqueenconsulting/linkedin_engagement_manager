@@ -44,7 +44,10 @@ done
 # stripped checkout, and status.sh only exists from #1238 on).
 files() {
   # status.sh lives next to tick.sh so it is where someone looks when they SSH in.
-  for f in tick.sh RUNBOOK.md status.sh; do [ -e "$SRC/$f" ] && echo "$f"; done
+  # sync.sh is the self-updater. It must ship like anything else, or the box keeps running whatever
+  # version of the updater it was first installed with — which is the same class of staleness the
+  # updater exists to end.
+  for f in tick.sh RUNBOOK.md status.sh sync.sh; do [ -e "$SRC/$f" ] && echo "$f"; done
   # lib/ was NOT copied here until 2026-08-09, so tick.sh shipped while the helpers it sources did
   # not. The box's copies drifted out of the repo's sight: `run_lane.sh` there had gained an export
   # block (the #842 unattended-benchmark vars) that existed nowhere in git, and would have been
@@ -77,6 +80,10 @@ files() {
   # that decides correctly and cannot act, which looks identical to an idle pipeline.
   for f in "$SRC"/v2/actions/*.sh; do [ -e "$f" ] && echo "v2/actions/$(basename "$f")"; done
   for f in "$SRC"/v2/systemd/*; do [ -e "$f" ] && echo "v2/systemd/$(basename "$f")"; done
+  # Top-level systemd/ was never shipped, so `lem-gh-token.*` and the new sync units lived only in
+  # /etc on the box — a rebuild from this installer would silently lose the token timer that mints
+  # the pipeline's credential every 45 minutes.
+  for f in "$SRC"/systemd/*; do [ -e "$f" ] && echo "systemd/$(basename "$f")"; done
 }
 
 sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
