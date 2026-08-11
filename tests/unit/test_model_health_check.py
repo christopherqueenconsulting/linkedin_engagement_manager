@@ -620,6 +620,43 @@ class TestPlanVanished:
     def test_a_family_with_nothing_left_reports_no_siblings(self):
         assert self._vanished({"minimax-m3": dict(_NEW_BUILD)})[0]["siblings"] == []
 
+    def test_a_different_parameter_size_is_never_the_likeliest_home(self):
+        """`gpt-oss:20b` and `gpt-oss:120b` are BOTH live tiers here.
+
+        Sharing a base name is not evidence of a republish when the size tags parse as parameter
+        counts and differ — that is a different model, and offering it as "where the build went"
+        aims whoever picks the issue up at the wrong one.
+        """
+        out = mhc.plan_vanished(_ollama_deployments("gpt-oss:20b"),
+                                {"gpt-oss:20b": dict(_OLD_BUILD)},
+                                {"gpt-oss:120b": dict(_NEW_BUILD)})
+        sibling = out[0]["siblings"][0]
+        assert sibling["name"] == "gpt-oss:120b"  # still listed — it is still evidence
+        assert sibling["same_base"] and sibling["different_size"]
+        assert not sibling["likely_republish"]
+
+    def test_a_non_numeric_size_tag_proves_nothing_and_stays_a_candidate(self):
+        """`:preview` / `:0731` are not parameter counts — the deepseek case must stay likely."""
+        assert all(s["likely_republish"] and not s["different_size"]
+                   for s in self._vanished()[0]["siblings"])
+
+    def test_a_sibling_with_a_published_retirement_date_is_not_offered_as_the_home(self):
+        """`plan_family_upgrades` refuses to name a retiring candidate; so does this.
+
+        Re-pointing a live tier onto a tag with a sunset date buys one week before the retirement
+        half of this same scan pages about it.
+        """
+        out = mhc.plan_vanished(_ollama_deployments("deepseek-v4-flash"),
+                                {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                self._catalog(),
+                                {"deepseek-v4-flash:0731": "2026-10-01"})
+        by_name = {s["name"]: s for s in out[0]["siblings"]}
+        assert by_name["deepseek-v4-flash:0731"]["retiring"] == "2026-10-01"
+        assert not by_name["deepseek-v4-flash:0731"]["likely_republish"]
+        assert by_name["deepseek-v4-flash:preview"]["likely_republish"]
+        # and the one that can still take the traffic is named first
+        assert out[0]["siblings"][0]["name"] == "deepseek-v4-flash:preview"
+
     def test_a_same_family_tag_with_a_different_base_still_counts_as_a_sibling(self):
         siblings = self._vanished({"deepseek-v5-flash": dict(_NEW_BUILD)})[0]["siblings"]
         assert [(s["name"], s["same_base"]) for s in siblings] == [("deepseek-v5-flash", False)]
@@ -666,11 +703,12 @@ class TestPlanVanished:
 
 
 class TestVanishedIssue:
-    def _vanished(self, last=None, catalog=None):
+    def _vanished(self, last=None, catalog=None, retiring=None):
         return mhc.plan_vanished(
             _ollama_deployments("deepseek-v4-flash"),
             {"deepseek-v4-flash": {**_OLD_BUILD, **(last or {})}},
-            catalog if catalog is not None else {"deepseek-v4-flash:preview": dict(_NEW_BUILD)})[0]
+            catalog if catalog is not None else {"deepseek-v4-flash:preview": dict(_NEW_BUILD)},
+            retiring)[0]
 
     def test_marker_carries_the_last_build_not_just_the_tag(self):
         assert mhc.vanished_marker(self._vanished()) == (
@@ -717,6 +755,25 @@ class TestVanishedIssue:
         """
         body = mhc.build_vanished_issue_body([self._vanished()], "2026-08-09")
         assert "bare" in body and "declined" in body
+
+    def test_body_never_points_a_tier_at_a_retiring_sibling(self):
+        """The sibling list is where a human picks the replacement tag from.
+
+        Naming a tag with a published sunset date as "the likeliest home" is the one reading that
+        turns this issue into next month's retirement notice.
+        """
+        body = mhc.build_vanished_issue_body(
+            [self._vanished(retiring={"deepseek-v4-flash:preview": "2026-10-01"})], "2026-08-09")
+        assert "RETIREMENT SCHEDULE (2026-10-01)" in body
+        assert "likeliest home" not in body
+
+    def test_body_calls_out_a_different_parameter_size_instead_of_recommending_it(self):
+        body = mhc.build_vanished_issue_body(
+            [mhc.plan_vanished(_ollama_deployments("gpt-oss:20b"),
+                               {"gpt-oss:20b": dict(_OLD_BUILD)},
+                               {"gpt-oss:120b": dict(_NEW_BUILD)})[0]], "2026-08-09")
+        assert "a different parameter size" in body
+        assert "likeliest home" not in body
 
     def test_body_says_so_when_the_family_is_empty_rather_than_listing_nothing(self):
         body = mhc.build_vanished_issue_body([self._vanished(catalog={"minimax-m3": {}})],

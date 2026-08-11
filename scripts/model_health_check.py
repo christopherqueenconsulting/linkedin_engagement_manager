@@ -563,7 +563,8 @@ def plan_repoints(deployments: list[dict], snapshot: dict, catalog: dict) -> lis
     return out
 
 
-def plan_vanished(deployments: list[dict], snapshot: dict, catalog: dict) -> list[dict]:
+def plan_vanished(deployments: list[dict], snapshot: dict, catalog: dict,
+                  retiring: Optional[dict] = None) -> list[dict]:
     """CONFIGURED tags the snapshot had and the live catalog no longer carries (issue #1237).
 
     For a tag LEM does not run, a name leaving the catalog is housekeeping. For one a live tier
@@ -576,7 +577,9 @@ def plan_vanished(deployments: list[dict], snapshot: dict, catalog: dict) -> lis
     build.
 
     Siblings sharing the vanished tag's base name are marked `same_base`: those are the direct
-    republish candidates, versus a merely same-family neighbour.
+    republish candidates, versus a merely same-family neighbour. `retiring` is the docs' retirement
+    schedule keyed by model id, so a sibling with a published sunset date is never offered as the
+    home of the old build — `plan_family_upgrades` refuses to recommend one for the same reason.
 
     An EMPTY catalog reports nothing. `fetch_catalog` only returns None when the request itself
     raised, so a 200 carrying `{"models": []}` — or any payload whose shape drifted — parses to `{}`
@@ -597,30 +600,55 @@ def plan_vanished(deployments: list[dict], snapshot: dict, catalog: dict) -> lis
         out.append({"tag": bare, "model": models[bare], "groups": sorted(set(groups[bare])),
                     "last_seen": dict(last_seen),
                     "last_fingerprint": build_fingerprint(last_seen),
-                    "siblings": _family_siblings(bare, catalog)})
+                    "siblings": _family_siblings(bare, catalog, retiring)})
     return out
 
 
-def _family_siblings(tag: str, catalog: dict) -> list[dict]:
-    """Live catalog tags in the same family as `tag`, closest relative first.
+_SIZE_TAG_RE = re.compile(r"^\d+(?:\.\d+)?[bm]$")
+
+
+def _family_siblings(tag: str, catalog: dict, retiring: Optional[dict] = None) -> list[dict]:
+    """Live catalog tags in the same family as `tag`, likeliest home of the old build first.
 
     "Family" is `parse_model_version`'s key, so `deepseek-v4-flash` and `deepseek-v4-flash:preview`
     are siblings while `deepseek-v4-pro` is not.
+
+    `likely_republish` is the field the issue body speaks from, and it is NARROWER than sharing a
+    base name, because two things disqualify a sibling that `same_base` alone would recommend:
+
+    * a different PARAMETER SIZE. `gpt-oss:20b` and `gpt-oss:120b` share a base and are both live
+      tiers here, so a bare "same base name" reading would send whoever picks up the vanished-`:20b`
+      issue onto a 120B model. A size tag that parses as a parameter count (`20b`, `1.5b`) and
+      differs is proof of a different build; a non-numeric tag (`preview`, `0731`) proves nothing
+      and is left alone — that is exactly the deepseek case this scan exists for;
+    * a published RETIREMENT date. `plan_family_upgrades` already refuses to name a retiring
+      candidate, and re-pointing a live tier onto one buys a week before the same scan pages about
+      it again.
+
+    Both stay in the list — for the forensic question "where did this build go", a retiring or
+    different-size sibling is still evidence — they are just never called the likeliest home.
     """
-    family, _, _ = parse_model_version(tag)
+    family, _, own_size_tag = parse_model_version(tag)
     base = str(tag or "").split(":", 1)[0]
+    retiring = retiring or {}
     siblings: list[dict] = []
     for name in sorted(catalog or {}):
         candidate_family, version, size_tag = parse_model_version(name)
         if candidate_family != family:
             continue
         info = (catalog or {}).get(name) or {}
-        siblings.append({"name": name, "same_base": name.split(":", 1)[0] == base,
+        same_base = name.split(":", 1)[0] == base
+        different_size = bool(_SIZE_TAG_RE.match(own_size_tag) and _SIZE_TAG_RE.match(size_tag)
+                              and own_size_tag != size_tag)
+        retires_on = str(retiring.get(name) or "")
+        siblings.append({"name": name, "same_base": same_base,
+                         "different_size": different_size, "retiring": retires_on,
+                         "likely_republish": same_base and not different_size and not retires_on,
                          "version": version_str(version), "size_tag": size_tag,
                          "digest": str(info.get("digest") or ""),
                          "modified_at": info.get("modified_at") or "",
                          "size": int(info.get("size") or 0)})
-    siblings.sort(key=lambda s: (not s["same_base"], s["name"]))
+    siblings.sort(key=lambda s: (not s["likely_republish"], not s["same_base"], s["name"]))
     return siblings
 
 
@@ -855,8 +883,13 @@ def build_eval_issue_body(new_tags: list[str], catalog: dict, today: str) -> str
 
 
 def repoint_marker(repoint: dict) -> str:
-    """`tag @ size/modified_at` — the fingerprint is IN the marker on purpose, so a second re-point
-    of the same tag is fresh rather than deduped away against the first one's issue."""
+    """`tag @ <build fingerprint>`.
+
+    The fingerprint is IN the marker on purpose, so a second re-point of the same tag is fresh
+    rather than deduped away against the first one's issue. It is the tag's digest when the catalog
+    published one and `size/modified_at` otherwise (`build_fingerprint`), so the marker's shape
+    follows the catalog rather than any format fixed here.
+    """
     return f"{repoint.get('tag')} @ {repoint.get('new_fingerprint')}"
 
 
@@ -958,7 +991,14 @@ def build_vanished_issue_body(vanished: list[dict], today: str) -> str:
             continue
         lines.append("  - the catalog now offers, in the same family:")
         for s in siblings:
-            note = " ← same base name, the likeliest home of the old build" if s.get("same_base") else ""
+            note = ""
+            if s.get("likely_republish"):
+                note = " ← same base name, the likeliest home of the old build"
+            elif s.get("retiring"):
+                note = (f" ← ON THE RETIREMENT SCHEDULE ({s['retiring']}) — evidence of where the "
+                        "build went, never a tag to point a tier at")
+            elif s.get("different_size"):
+                note = " ← a different parameter size, so not this build under a new name"
             detail = "; ".join(bit for bit in (
                 f"digest `{s['digest']}`" if s.get("digest") else "",
                 _fmt_build_value("size", s["size"]) if s.get("size") else "",
@@ -1368,7 +1408,8 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
         catalog_diff = {"added": [], "removed": []} if seeded else diff_catalog(snapshot, catalog)
         if not seeded:
             repoints = plan_repoints(deployments, snapshot, catalog)
-            vanished = plan_vanished(deployments, snapshot, catalog)
+            vanished = plan_vanished(deployments, snapshot, catalog,
+                                     {r["model"]: r.get("date") for r in retirements})
         family_upgrades = plan_family_upgrades(
             deployments, catalog, {r["model"] for r in retirements},
             usage_fn if usage_levels else None)

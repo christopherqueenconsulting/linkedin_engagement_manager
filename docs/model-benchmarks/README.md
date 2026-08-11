@@ -374,6 +374,12 @@ serves a build you rejected". Since #1237 the scan treats that as its own re-poi
   still offers in that family** — that sibling list is where the build went, and it is what stops a
   reader from restoring the bare id per the *use the bare catalog id* rule and landing on `:0731`.
   The issue says so in words.
+- **Sharing a base name is not enough to be called the likeliest home.** Two siblings are listed as
+  evidence but never recommended: one whose size tag parses as a different parameter count
+  (`gpt-oss:20b` vs `gpt-oss:120b` — both live tiers here, and not the same build under a new name),
+  and one carrying a published retirement date, which `plan_family_upgrades` already refuses to
+  recommend for the same reason. A non-numeric tag (`:preview`, `:0731`) proves nothing about the
+  size and stays a candidate — that is the deepseek case itself.
 - The dedup marker carries the LAST BUILD recorded for the tag (`<tag> gone @ <fingerprint>`), so a
   tag that leaves, returns under a fresh build and leaves again is not swallowed by the first
   issue — the same rule as the #925 marker.
