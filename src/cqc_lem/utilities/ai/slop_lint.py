@@ -732,9 +732,15 @@ def motion_half(prompt: Optional[str]) -> str:
     Every check grades this half only. The appended clause legitimately says "no voiceover, no
     narration" (issue #548), so grading the whole string would make the fix for one defect fire the
     audio check on every audio-capable render.
+
+    Only LEM's OWN clause is cut, matched on `AUDIO_DIRECTION_MARKER` + `AUDIO_DIRECTION_LEAD`
+    together: a writer that ignores the contract answers with the same "Audio:" marker, so cutting
+    on the marker alone would hide the one violation the audio check exists to catch.
     """
-    from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER
-    return str(prompt or "").split(AUDIO_DIRECTION_MARKER)[0].strip()
+    from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_LEAD, AUDIO_DIRECTION_MARKER
+    pattern = re.compile(rf"{re.escape(AUDIO_DIRECTION_MARKER)}\s*{re.escape(AUDIO_DIRECTION_LEAD)}.*$",
+                         re.IGNORECASE | re.DOTALL)
+    return pattern.sub("", str(prompt or "")).strip()
 
 
 def find_motion_montage(prompt: Optional[str]) -> list:

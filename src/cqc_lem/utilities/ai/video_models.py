@@ -57,6 +57,13 @@ DEFAULT_VIDEO_DURATION = 5
 # audio without it, so the defect cannot silently return.
 AUDIO_DIRECTION_MARKER = "Audio:"
 
+# The fixed opening words of that clause, and the ONE thing that tells LEM's own audio direction
+# apart from one the WRITER wrote. The marker alone cannot: a model that ignores the contract and
+# answers "Audio: a warm voiceover" carries the same marker, and the motion-prompt lint (issue
+# #1277) excludes the deterministic clause from grading — so keying that exclusion on the marker
+# would hide exactly the violation the audio check exists to catch.
+AUDIO_DIRECTION_LEAD = "natural ambient sound only"
+
 # Friendly aspect-ratio aliases -> Runway resolution strings.
 RATIO_ALIASES = {
     "1:1": "960:960",

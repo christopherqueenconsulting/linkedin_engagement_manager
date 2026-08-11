@@ -90,11 +90,25 @@ class TestBannedPatterns:
         The deterministic #548 clause legitimately says "no voiceover", so grading it would make the
         fix for one defect fire the audio check on every audio-capable render.
         """
+        from cqc_lem.utilities.ai.ai_helper import _audio_direction
         from cqc_lem.utilities.ai.slop_lint import motion_prompt_report
-        from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER
-        prompt = (f"{CLEAN} {AUDIO_DIRECTION_MARKER} natural ambient sound only. No spoken "
-                  "dialogue, no voiceover, no narration, no singing, no lyrics.")
+        prompt = f"{CLEAN} {_audio_direction('veo3.1')}"
         assert motion_prompt_report(prompt, model="veo3.1")["violations"] == []
+
+    def test_writer_authored_audio_still_fires_under_the_same_marker(self):
+        """A writer that ignores the contract answers with "Audio:" too — and must still be caught.
+
+        Only LEM's own clause (marker + `AUDIO_DIRECTION_LEAD`) is excluded from grading; keying
+        that exclusion on the marker alone hid the exact violation this check exists for.
+        """
+        from cqc_lem.utilities.ai.ai_helper import _audio_direction
+        from cqc_lem.utilities.ai.slop_lint import MOTION_CHECK_AUDIO, motion_prompt_report
+        from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER
+        written = f"{CLEAN} {AUDIO_DIRECTION_MARKER} a warm voiceover narrates over soft music."
+        assert MOTION_CHECK_AUDIO in motion_prompt_report(written, model="veo3.1")["checks"]
+        # ...and it is still caught once the deterministic clause is appended behind it.
+        both = f"{written} {_audio_direction('veo3.1')}"
+        assert MOTION_CHECK_AUDIO in motion_prompt_report(both, model="veo3.1")["checks"]
 
     def test_empty_and_disabled_fail_open(self, monkeypatch):
         from cqc_lem.utilities.ai.slop_lint import motion_prompt_report
@@ -233,6 +247,20 @@ class TestGeneratorWiring:
         retry_system = client.chat.completions.create.call_args[1]["messages"][0]["content"]
         assert "YOUR PREVIOUS MOTION PROMPT VIOLATED THE CONTRACT" in retry_system
         assert [c[1]["verdict"] for c in track.call_args_list] == ["regenerate", "pass"]
+
+    def test_disabled_lint_grades_nothing_and_emits_nothing(self, mock_openai_client, monkeypatch):
+        """The kill switch is the kill switch: no grading, no event, prompt unchanged."""
+        dirty = "A cinematic scene that cuts to the product."
+        client = self._mock_client(mock_openai_client, dirty)
+        monkeypatch.setenv("MOTION_PROMPT_LINT_ENABLED", "false")
+        with patch("cqc_lem.utilities.ai.ai_helper.client", client), \
+             patch("cqc_lem.utilities.ai.ai_helper.flag_enabled", return_value=True), \
+             patch("cqc_lem.utilities.ai.ai_helper.track_motion_prompt_check") as track:
+            from cqc_lem.utilities.ai.ai_helper import get_runway_ml_video_prompt_from_ai
+            out = get_runway_ml_video_prompt_from_ai("post", "an office", model="gen4_turbo")
+        assert out == dirty
+        assert client.chat.completions.create.call_count == 1
+        assert track.call_count == 0
 
     def test_audio_clause_is_appended_after_grading(self, mock_openai_client):
         client = self._mock_client(mock_openai_client, CLEAN)

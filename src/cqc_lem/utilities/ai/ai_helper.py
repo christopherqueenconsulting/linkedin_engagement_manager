@@ -56,6 +56,7 @@ from cqc_lem.utilities.ai.tools import search_recent_news
 # so existing `from ai_helper import create_runway_video` imports keep working.
 # The redundant `as create_runway_video` alias marks it an intentional re-export.
 from cqc_lem.utilities.ai.video_models import (
+    AUDIO_DIRECTION_LEAD,
     AUDIO_DIRECTION_MARKER,
     create_runway_video as create_runway_video,  # noqa: F401
     supports_audio,
@@ -3036,7 +3037,7 @@ def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> st
     """
     if not supports_audio(model):
         return ""
-    return (f"{AUDIO_DIRECTION_MARKER} natural ambient sound only, at low volume. No spoken "
+    return (f"{AUDIO_DIRECTION_MARKER} {AUDIO_DIRECTION_LEAD}, at low volume. No spoken "
             f"dialogue, no voiceover, no narration, no singing, no lyrics. Any incidental "
             f"speech must be in {language_name(language)}.")
 
@@ -3145,6 +3146,9 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     # deploy, which is the whole point of gating the credit-spend change on a flag.
     enforced = flag_enabled(VIDEO_MOTION_LINT_HOLD, user_id)
     attempts = _slop.motion_max_attempts() if enforced else 1
+    # MOTION_PROMPT_LINT_ENABLED=off is the kill switch for the LINT, telemetry included — an
+    # `unchecked` row per render would be a cost with no reader.
+    graded = _slop.motion_lint_enabled()
 
     steer = ""
     content = ""
@@ -3156,8 +3160,9 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
         report = _slop.motion_prompt_report(content, model=model)
         verdict = _slop.motion_prompt_verdict(report, enforced=enforced, attempt=attempt,
                                               max_attempts=attempts)
-        track_motion_prompt_check(report, verdict=verdict, model=model, attempt=attempt,
-                                  enforced=enforced, user_id=user_id, post_id=post_id)
+        if graded:
+            track_motion_prompt_check(report, verdict=verdict, model=model, attempt=attempt,
+                                      enforced=enforced, user_id=user_id, post_id=post_id)
         if verdict != _slop.MOTION_VERDICT_REGENERATE:
             break
         # DEBUG, not WARNING: a regeneration is the mechanism working, and warning on it would file
