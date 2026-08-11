@@ -587,8 +587,8 @@ Two properties are deliberate:
   type variable as `Any`, so nothing had to change at once and a caller constructing the envelope by
   hand is unaffected. What catches a new un-annotated route is
   `test_no_operation_still_points_at_the_any_envelope`: the bare component is no longer referenced by
-  any operation, so re-introducing it fails. `ResponseModel[Any]` is the escape hatch, and it says
-  "this route genuinely has no one shape" on purpose.
+  any operation, so re-introducing it fails. `ResponseModel[Any]` is the escape hatch — exempted by
+  name in that test file — and it says "this route genuinely has no one shape" on purpose.
 
 The annotation is a runtime contract, not a comment: `ResponseModel[str]` returning a dict is a 500,
 not a lax response. `test_no_literal_return_contradicts_its_annotation` reads the handlers' literal

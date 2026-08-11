@@ -16,6 +16,7 @@ The admin-hiding derivation is re-checked from here too: parametrizing the envel
 """
 
 import ast
+import json
 import re
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +27,11 @@ pytestmark = pytest.mark.unit
 
 _API_DIR = Path(__file__).resolve().parents[3] / "src" / "cqc_lem" / "api"
 _API_FILES = [_API_DIR / "main.py", *sorted((_API_DIR / "routers").glob("*.py"))]
+
+# The deliberate opt-out: a route that genuinely has no one payload shape says so with
+# `ResponseModel[Any]`, which pydantic names like this. It is exempt from "document your detail"
+# BECAUSE it is explicit — the thing being ratcheted against is the SILENT bare envelope.
+_EXPLICIT_ANY_ENVELOPE = "ResponseModel_Any_"
 
 
 @pytest.fixture(scope="module")
@@ -54,6 +60,19 @@ def _annotated_handlers():
                     and ann.value.id == "ResponseModel"):
                 continue
             yield path.name, node, ast.unparse(ann.slice)
+
+
+def _own_returns(node):
+    """The `return` statements THIS function owns.
+
+    A nested def's returns answer to its own annotation, not to the enclosing handler's.
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(child, ast.Return):
+            yield child
+        yield from _own_returns(child)
 
 
 class TestTheEnvelopeIsStillTheEnvelope:
@@ -88,7 +107,30 @@ class TestTheEnvelopeIsStillTheEnvelope:
             "status_code": 200, "detail": payload}
 
 
+def _components_referenced_by(paths: dict) -> set[str]:
+    """Every component an operation `$ref`s.
+
+    Read out of `json.dumps`, never `repr`: repr renders strings with `'`, so a double-quoted
+    pattern over it matches nothing and every check built on it passes vacuously.
+    """
+    return set(re.findall(r'"#/components/schemas/([^"]+)"', json.dumps(paths)))
+
+
 class TestEveryPublishedOperationDocumentsItsPayload:
+    def test_the_ratchet_can_actually_see_a_bare_envelope(self):
+        """Anti-vacuity for the ratchet: a schema that DOES publish the bare envelope is detected."""
+        from fastapi import FastAPI
+
+        from cqc_lem.api.models import ResponseModel
+
+        probe = FastAPI()
+
+        @probe.get("/probe")
+        def _probe() -> ResponseModel:
+            return ResponseModel(status_code=200, detail="anything")
+
+        assert "ResponseModel" in _components_referenced_by(probe.openapi()["paths"])
+
     def test_no_operation_still_points_at_the_any_envelope(self, schema):
         """The ratchet.
 
@@ -96,8 +138,9 @@ class TestEveryPublishedOperationDocumentsItsPayload:
         fails here — annotate it (`ResponseModel[Any]` if it genuinely has no one shape, which at
         least says so on purpose).
         """
-        published = re.findall(r'"#/components/schemas/([^"]+)"', repr(schema["paths"]))
-        assert "ResponseModel" not in set(published), (
+        published = _components_referenced_by(schema["paths"])
+        assert published, "no operation references a component at all — the walk found nothing"
+        assert "ResponseModel" not in published, (
             "an operation documents `detail` as an unconstrained Any — the public schema tells a "
             "client nothing about what it returns"
         )
@@ -106,7 +149,7 @@ class TestEveryPublishedOperationDocumentsItsPayload:
         """Anti-vacuity for the test above: it would also pass on a schema with no envelope at all."""
         envelopes = {n for n in schema["components"]["schemas"] if n.startswith("ResponseModel")}
         assert len(envelopes) >= 4, envelopes
-        for name in envelopes:
+        for name in envelopes - {_EXPLICIT_ANY_ENVELOPE}:
             detail = schema["components"]["schemas"][name]["properties"]["detail"]
             assert detail.keys() - {"title"}, f"{name} documents nothing about its detail"
 
@@ -151,9 +194,12 @@ class TestAnnotationsMatchWhatHandlersReturn:
     @staticmethod
     def _accepts(payload_source, kind):
         payload = payload_source.replace(" ", "")
+        head = payload.removeprefix("Optional[").removesuffix("]").split("[")[0]
+        if head == "Any":
+            # The documented opt-out accepts everything, by definition.
+            return True
         if kind == "none":
             return "Optional[" in payload or "None" in payload
-        head = payload.removeprefix("Optional[").split("[")[0]
         return {"str": "str", "int": "int", "float": "float", "bool": "bool",
                 "dict": "dict", "list": "list"}[kind] == head
 
@@ -164,7 +210,7 @@ class TestAnnotationsMatchWhatHandlersReturn:
     def test_no_literal_return_contradicts_its_annotation(self):
         bad = []
         for filename, node, payload in _annotated_handlers():
-            for inner in ast.walk(node):
+            for inner in _own_returns(node):
                 if not (isinstance(inner, ast.Return) and isinstance(inner.value, ast.Call)
                         and isinstance(inner.value.func, ast.Name)
                         and inner.value.func.id == "ResponseModel"):
@@ -178,3 +224,23 @@ class TestAnnotationsMatchWhatHandlersReturn:
             "FastAPI serializes the response through the annotation, so each of these is a 500 on "
             "that branch: " + "; ".join(bad)
         )
+
+    def test_the_documented_escape_hatch_is_not_a_trap(self):
+        """`ResponseModel[Any]` is what the docs tell an author to reach for. It has to pass."""
+        for kind in ("str", "dict", "list", "int", "none"):
+            assert self._accepts("Any", kind), kind
+            assert self._accepts("Optional[Any]", kind), kind
+
+    def test_a_nested_helper_answers_to_its_own_annotation(self):
+        """A closure inside a handler is a different function.
+
+        Judging its returns against the ENCLOSING handler's payload type would fail a PR for code
+        that is correct — the trap this walk is scoped to avoid.
+        """
+        src = ("def outer() -> ResponseModel[str]:\n"
+               "    def inner():\n"
+               "        return ResponseModel(status_code=200, detail={'a': 1})\n"
+               "    return ResponseModel(status_code=200, detail='ok')\n")
+        outer = ast.parse(src).body[0]
+        assert len(list(_own_returns(outer))) == 1
+        assert len([n for n in ast.walk(outer) if isinstance(n, ast.Return)]) == 2
