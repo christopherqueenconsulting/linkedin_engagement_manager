@@ -27,7 +27,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from functools import wraps
-from typing import Iterator, Optional, Tuple
+from typing import Callable, Iterator, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 import posthog
@@ -70,6 +70,343 @@ posthog.enable_exception_autocapture = EXCEPTION_AUTOCAPTURE_ENABLED
 
 # What posthog-js hands out as a session id (uuid v7-ish). Anything else is not linked (#649).
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
+
+
+# --- The declarative event spec (issue #1218) ----------------------------------------------
+# Every server-side capture below goes through ONE `_emit()`, and what an event CARRIES is data
+# rather than code: `EVENTS` is the registry, each `track_*` function a one-liner whose docstring
+# says why the event exists. Thirty-six hand-written capture wrappers had thirty-six chances to get
+# the distinct_id rule, a coercion or a property name subtly wrong, and no way to state a contract
+# that held across all of them.
+#
+# The coercions are the point, not decoration. `label()` marks a property a dashboard or an ALERT
+# filters on and forces it to a string, because PostHog matches a property filter against the
+# INGESTED type: a tile filtering `status = "paused"` matches nothing if the rows carry booleans, and
+# the alert then silently never fires — worse than having no alert (docs/kpi-dashboards.md). That
+# rule used to live as prose in three docstrings and could not be tested; declared per property, one
+# test now proves it for every event at once.
+
+DISTINCT_USER = "user"              # str(user_id or "system")
+DISTINCT_USER_STRICT = "user_strict"  # str(user_id if user_id is not None else "system")
+DISTINCT_REQUIRED = "required"      # str(user_id) — the call site guarantees one
+DISTINCT_ANONYMOUS = "anonymous"    # str(user_id or "anonymous") — public, pre-login surfaces
+DISTINCT_SYSTEM = "system"          # account-wide condition, never one user's
+
+
+def _verbatim(value):
+    return value
+
+
+def _count(value) -> int:
+    return int(value or 0)
+
+
+def _count_or_none(value) -> Optional[int]:
+    return int(value) if value else None
+
+
+def _flag(value) -> bool:
+    return bool(value)
+
+
+def _items(value) -> list:
+    return list(value or [])
+
+
+def _string(value) -> Optional[str]:
+    return None if value is None else str(value)
+
+
+class Field(NamedTuple):
+    """One property on an event: its name, where to read it, and the shape it lands in.
+
+    `key` is a DOTTED path into the reading the tracker was handed, so a nested value
+    (`verdict.status`) needs no unpacking code at the call site.
+    """
+
+    name: str
+    coerce: Callable = _verbatim
+    key: Optional[str] = None
+    filtered: bool = False
+
+
+def prop(name: str, key: Optional[str] = None) -> Field:
+    """A property carried verbatim — the reading is already the shape the dashboards want."""
+    return Field(name, _verbatim, key)
+
+
+def count(name: str, key: Optional[str] = None) -> Field:
+    """A counter that is 0 when absent: for these, "not reported" and "none happened" are the same."""
+    return Field(name, _count, key)
+
+
+def count_or_none(name: str, key: Optional[str] = None) -> Field:
+    """A count whose ABSENCE is the reading (impressions we could not see), so it stays None.
+
+    A 0 here would show up in a growth chart as a real collapse.
+    """
+    return Field(name, _count_or_none, key)
+
+
+def flag(name: str, key: Optional[str] = None) -> Field:
+    """A real boolean — something the event ASSERTS, never something an alert tile filters on."""
+    return Field(name, _flag, key)
+
+
+def items(name: str, key: Optional[str] = None) -> Field:
+    """A list property, empty rather than None so a breakdown never has to handle a null array."""
+    return Field(name, _items, key)
+
+
+def text(name: str, key: Optional[str] = None) -> Field:
+    """A string property no dashboard filters on — a rendered date, a free-text reason."""
+    return Field(name, _string, key)
+
+
+def label(name: str, key: Optional[str] = None) -> Field:
+    """A string a dashboard tile or a PostHog ALERT filters on.
+
+    Forced to a string on the way out: PostHog evaluates a property filter against the ingested
+    type, so one boolean row makes `status = "paused"` match nothing and the alert never fires.
+    A numeric property an alert COMPARES (`status_code >= 500`) is the opposite case — that stays
+    `prop()`, because stringifying it would break the comparison instead of fixing it.
+    """
+    return Field(name, _string, key, True)
+
+
+class EventSpec(NamedTuple):
+    """One PostHog event end to end: its name, the properties it carries, whose person it lands on."""
+
+    event: str
+    fields: Tuple[Field, ...] = ()
+    distinct: str = DISTINCT_USER
+
+
+def _read(source: dict, path: str):
+    """The value at a dotted `path` in a reading, or None as soon as any step is missing."""
+    value = source
+    for part in path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def _distinct_id(rule: str, user_id) -> str:
+    """The person an event lands on.
+
+    An unattributed run still has to appear in the count, so a missing user falls back to a shared
+    `"system"` / `"anonymous"` sentinel rather than the row being dropped.
+    """
+    if rule == DISTINCT_SYSTEM:
+        return "system"
+    if rule == DISTINCT_REQUIRED:
+        return str(user_id)
+    if rule == DISTINCT_ANONYMOUS:
+        return str(user_id or "anonymous")
+    if rule == DISTINCT_USER_STRICT:
+        return str(user_id if user_id is not None else "system")
+    return str(user_id or "system")
+
+
+def _emit(spec: EventSpec, source: Optional[dict] = None, extra: Optional[dict] = None,
+          event: Optional[str] = None, distinct_id: Optional[str] = None) -> None:
+    """Capture ONE event built from `spec` — the single `posthog.capture` every tracker here runs.
+
+    `source` is the reading the tracker was handed (its report dict plus whatever its own arguments
+    add, the arguments last so an explicit one always wins). `extra` is the caller's own `**extra`
+    and is applied LAST, so a call site can still add a property or override a declared one — the
+    behaviour every wrapper had when it spread `**extra` at the end of its literal. `event` and
+    `distinct_id` are for the trackers whose name or person is decided per call
+    (`track_affiliate_event`, `track_funnel_event`).
+
+    Because `extra` lands after the coercions, a property a dashboard or an ALERT FILTERS on must be
+    a declared field fed from `source` — one arriving through `**extra` reaches PostHog untouched
+    and the string contract cannot see it (that is why `track_task` names `state` explicitly).
+    """
+    data = source if isinstance(source, dict) else {}
+    properties = {field.name: field.coerce(_read(data, field.key or field.name))
+                  for field in spec.fields}
+    if extra:
+        properties.update(extra)
+    posthog.capture(
+        distinct_id=distinct_id or _distinct_id(spec.distinct, data.get("user_id")),
+        event=event or spec.event,
+        properties=properties,
+    )
+
+
+EVENTS = {spec.event: spec for spec in (
+    # --- LLM + media cost ---------------------------------------------------------------------
+    EventSpec("llm_call", (
+        label("model"), prop("prompt_tokens"), prop("completion_tokens"), prop("total_tokens"),
+        prop("cost_usd"), prop("latency_ms"), flag("success"), prop("user_id"),
+        label("feature"), text("model_tier"), flag("cached"),
+    )),
+    EventSpec("media_cost", (
+        label("kind"), label("provider"), text("model"), prop("cost_usd"), prop("qty"),
+        prop("user_id"), prop("post_id"), label("feature"),
+    )),
+    EventSpec("cost_alert", (prop("date"),)),
+    # The pipeline-trace skeleton the proxy's $ai_generation events hang off. `$ai_span_name` is
+    # NOT a label(): PostHog's own trace viewer reads these `$ai_*` keys, so their shapes are its
+    # contract rather than ours. Emitted under this name and as `$ai_trace` for the root.
+    EventSpec("$ai_span", (
+        prop("$ai_trace_id"), prop("$ai_span_id"), prop("$ai_span_name"), prop("$ai_latency"),
+        label("feature"), prop("user_id"),
+    ), DISTINCT_USER_STRICT),
+    EventSpec("capacity_alert", (prop("generated_at"),), DISTINCT_SYSTEM),
+    EventSpec("margin_report", (
+        prop("period_start", "period.start"), prop("period_end", "period.end"),
+        prop("period_days", "period.days"), label("basis", "period.basis"),
+        prop("ledger_available"), items("cohorts"),
+    ), DISTINCT_SYSTEM),
+    EventSpec("routing_policy", (
+        prop("date"), prop("enabled", "policy.enabled"), prop("window_days"),
+        prop("observations"), prop("change_count"), prop("rollback_count"),
+        items("changes"), items("buckets"), items("recommendations"),
+    ), DISTINCT_SYSTEM),
+
+    # --- Content + engagement outcomes --------------------------------------------------------
+    EventSpec("post_outcome", (
+        prop("post_id"), text("variant_key"), count("reactions"), count("comments"),
+        count("reposts"), count("saves"), count_or_none("impressions"),
+        prop("engagement"), prop("engagement_rate"),
+    )),
+    EventSpec("audience_snapshot", (
+        prop("user_id"), prop("follower_count"), prop("connection_count"),
+        prop("profile_views"), prop("search_appearances"),
+    )),
+    EventSpec("golden_hour_report", (
+        prop("user_id"), label("phase"), prop("post_id"), prop("sweep_slot"), label("status"),
+        prop("latency_minutes"), flag("within_window"), prop("window_minutes"),
+        count("comments_found"), count("replies_sent"),
+    )),
+    EventSpec("comment_outcome", (
+        prop("user_id"), prop("log_id"), label("status"), label("skip_reason"),
+        flag("author_replied"), count("reply_count"), count("like_count"),
+        # Three-valued on purpose: None means the DOM never gave us a verdict, and excludes the
+        # row from the demotion denominator. A bool() here would invent a confirmed reading.
+        prop("visible_most_relevant"), flag("our_reply_sent"),
+    )),
+    EventSpec("comment_quality", (
+        prop("user_id"), prop("days"), prop("sample_size"), prop("checked"), prop("skipped"),
+        prop("author_reply_rate"), prop("reply_rate"), prop("like_rate"), prop("demotion_rate"),
+        prop("visibility_sample"), prop("unreadable_readings"),
+        label("verdict", "verdict.status"), text("verdict_reason", "verdict.reason"),
+    )),
+    EventSpec("content_quality", (
+        prop("user_id"), label("surface"), prop("ref_id"), text("shipped_on"), prop("chars"),
+        prop("slop_checked"), prop("slop_hard"), prop("slop_warn"), prop("slop_score"),
+        items("slop_checks"), prop("similarity"), prop("similarity_measure"),
+        prop("authenticity_score"), prop("hook_chars"), prop("hook_within_budget"),
+        prop("engagement_rate"), prop("impressions"), prop("detector_score"),
+        prop("detector_provider"), prop("video_render_ok"), prop("video_model_tier"),
+        prop("video_duration_seconds"), prop("video_aspect_ratio"), prop("video_asset_probe"),
+    )),
+    EventSpec("content_quality_rollup", (
+        prop("user_id"), prop("days"), prop("alert_count"), items("alerts"),
+        items("alert_reasons"), prop("by_surface"), prop("config"),
+    )),
+    EventSpec("video_asset_probe", (
+        prop("post_id"), prop("user_id"), flag("probe_ok"), label("reason"), label("source"),
+    )),
+    EventSpec("image_gate_verdict", (
+        label("surface"), label("verdict"), items("issues"), prop("attempt_count"),
+        flag("checked"), flag("acceptable"), prop("user_id"), prop("post_id"),
+    )),
+    EventSpec("motion_prompt_check", (
+        prop("user_id"), prop("post_id"), label("surface"), text("model"), label("verdict"),
+        flag("enforced"), prop("attempt"), prop("checked"), prop("passes"), prop("chars"),
+        items("checks"), prop("hard_count"), prop("warn_count"), items("evidence"),
+    )),
+
+    # --- Engagement lanes ---------------------------------------------------------------------
+    EventSpec("feed_scan", (
+        prop("user_id"), label("feed_sort"), count("examined"), count("passed_filters"),
+        count("matched_topics"), count("commented"), count("roster_commented"),
+        count("feed_commented"),
+        # Roster targets that rendered posts but no comment affordance, and targets followed on this
+        # scan (issue #962). Both are roster-only; a rising blocked count with a flat followed count
+        # is a roster the user has to fix by connecting, not a broken selector.
+        count("roster_comment_blocked"), count("roster_followed"),
+        count("off_topic_skipped"), flag("fallback_used"),
+        # Group-feed lane only (issue #1084): posts whose composer was not reachable before the LLM
+        # generation was spent. Counted on `feed_scan` so the cost saving is measurable.
+        count("skipped_no_composer"),
+    )),
+    EventSpec("pre_post_engagement", (prop("post_id"), prop("user_id"), label("status"))),
+    EventSpec("company_page_invite_run", (
+        prop("user_id"), label("status"), count("invites_sent"), count("budget"), count("cap"),
+        count("sent_today"), prop("credits_remaining"), prop("credit_spread"),
+    )),
+    EventSpec("stale_invite_run", (
+        prop("user_id"), label("status"), count("withdrawn"), count("unverified"),
+        count("budget"), count("cap"), count("withdrawn_today"), prop("threshold_days"),
+        count("rows_seen"), count("stale_seen"), count("unreadable"),
+        # Rows refused because the Withdraw control named somebody the row does not (#1006). A
+        # PARTIAL mismatch is the label drifting by a row — the #1012 hazard — and without this it
+        # is invisible: those rows are dropped before `stale_seen`, so the run reports "nothing old
+        # enough" and looks identical to a healthy account.
+        count("entity_mismatch"), count("expansions"),
+    )),
+    EventSpec("catchup_run", (
+        prop("user_id"), label("phase"), label("status"), count("moments"), count("classified"),
+        count("enabled_type"), count("excluded"), count("duplicate"), count("below_bar"),
+        count("drafted"), flag("auto_approve"), label("message_source"), count("dispatched"),
+        count("capped"), count("inactive"), count("pending"), count("requeued"),
+        prop("touch_id"),
+    )),
+    EventSpec("suppression_check", (
+        prop("user_id"), label("status"), flag("tripped"), label("reason"), flag("paused"),
+        label("reach_status", "reach.status"), prop("reach_metric", "reach.metric"),
+        prop("reach_baseline", "reach.baseline"), prop("reach_max_drop", "reach.max_drop"),
+        prop("baseline_posts", "reach.baseline_posts"), prop("posting_days", "reach.posting_days"),
+        label("comment_status", "comments.status"),
+        prop("comment_demotion_rate", "comments.demotion_rate"),
+    )),
+    EventSpec("sdui_selector_evidence", (
+        label("surface"), prop("user_id"), prop("candidate_count"), items("candidates"),
+    )),
+    EventSpec("rate_limit_trip", (
+        prop("cooldown_seconds"), prop("consecutive_trips"), label("reason"),
+    ), DISTINCT_SYSTEM),
+
+    # --- Platform + infra ---------------------------------------------------------------------
+    # `state` carries the SAME reading as `success` and exists because the failure alert filters on
+    # it: it is the one native property filter the provisioned dashboards use
+    # (`state = "FAILURE"`, exact), so a boolean there would match nothing and the page never fires.
+    EventSpec("celery_task", (
+        prop("task", "task_name"), prop("duration_ms"), flag("success"), label("state"),
+    )),
+    EventSpec("api_call", (
+        label("route"), label("method"), prop("status_code"), prop("latency_ms"),
+    ), DISTINCT_ANONYMOUS),
+    EventSpec("inbound_parse_email", (label("verdict"),), DISTINCT_ANONYMOUS),
+    EventSpec("youtube_token_check", (
+        label("status"), label("reason"), text("error"), text("scope"), prop("checked_at"),
+        prop("http_status"),
+    ), DISTINCT_SYSTEM),
+
+    # --- Experiments, activation, lifecycle ---------------------------------------------------
+    # The event name and the two `$feature_flag*` properties are not ours to rename — PostHog's
+    # experiment engine reads exactly those to decide which variant a person was in.
+    EventSpec("$feature_flag_called", (
+        prop("$feature_flag", "experiment"), prop("$feature_flag_response", "variant"),
+        label("experiment"), label("variant"), prop("user_id"),
+    ), DISTINCT_USER_STRICT),
+    EventSpec("onboarding_step", (
+        label("step"), prop("hours_since_start"),
+    ), DISTINCT_REQUIRED),
+    EventSpec("onboarding_nudge", (label("nudge", "nudge_key"),), DISTINCT_REQUIRED),
+    EventSpec("survey_prompt", (label("survey", "survey_key"),), DISTINCT_REQUIRED),
+    EventSpec("shipped_notice", (prop("issue_number"),), DISTINCT_REQUIRED),
+    EventSpec("survey_response", (label("source"),), DISTINCT_REQUIRED),
+    # Two events whose NAME is chosen per call — the spec carries the shared property shape and
+    # `_emit(..., event=...)` supplies the concrete name from FUNNEL_EVENTS / AFFILIATE_EVENTS.
+    EventSpec("funnel_event", (prop("user_id"),)),
+    EventSpec("affiliate_event", (prop("user_id"),), DISTINCT_USER_STRICT),
+)}
 
 
 # Approximate USD cost per 1K tokens as (input, output). Sources, in precedence order:
@@ -407,28 +744,21 @@ def _capture_ai_span(event: str, trace_id: str, span_id: str, name: str, started
     generate because its telemetry could not be written.
     """
     try:
-        props = {
-            "$ai_trace_id": trace_id,
-            "$ai_span_id": span_id,
-            "$ai_span_name": name,
+        extra = {}
+        if parent_id:
+            extra["$ai_parent_id"] = parent_id
+        if error is not None:
+            extra["$ai_is_error"] = True
+            extra["$ai_error"] = f"{type(error).__name__}: {error}"
+        if properties:
+            extra.update({k: v for k, v in properties.items() if v is not None})
+        _emit(EVENTS["$ai_span"], {
+            "$ai_trace_id": trace_id, "$ai_span_id": span_id, "$ai_span_name": name,
             # PostHog's LLM analytics reads $ai_latency in SECONDS (llm_call's latency_ms is the
             # other convention and the two must not be confused on one chart).
             "$ai_latency": round(max(0.0, time.time() - started), 3),
-            "feature": feature or FEATURE_SYSTEM,
-            "user_id": user_id,
-        }
-        if parent_id:
-            props["$ai_parent_id"] = parent_id
-        if error is not None:
-            props["$ai_is_error"] = True
-            props["$ai_error"] = f"{type(error).__name__}: {error}"
-        if properties:
-            props.update({k: v for k, v in properties.items() if v is not None})
-        posthog.capture(
-            distinct_id=str(user_id if user_id is not None else "system"),
-            event=event,
-            properties=props,
-        )
+            "feature": feature or FEATURE_SYSTEM, "user_id": user_id,
+        }, extra, event=event)
     except Exception as e:
         # DEBUG, not WARNING: a telemetry miss is an expected no-op class, and a repeated warning
         # would file a defect for it (see utilities/CLAUDE.md).
@@ -612,34 +942,21 @@ def track_llm_call(
     """
     resolved_model = serving_model or model
     tier = model_tier or _model_tier(model)
+    # A cache hit never reached the provider, so it cost nothing — keeping it at the estimated rate
+    # would inflate summed spend on every repeated prompt.
     cost_usd = 0.0 if cached else estimate_llm_cost_usd(resolved_model, prompt_tokens, completion_tokens)
     shadow_cost_usd = None if cached else estimate_shadow_cost_usd(resolved_model, prompt_tokens, completion_tokens)
-    properties = {
-        "model": resolved_model,
-        "prompt_tokens": prompt_tokens,
+    _emit(EVENTS["llm_call"], {
+        "model": resolved_model, "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-        # A cache hit never reached the provider, so it cost nothing — keeping it at the
-        # estimated rate would inflate summed spend on every repeated prompt.
-        "cost_usd": cost_usd,
-        "latency_ms": latency_ms,
-        "success": success,
-        "user_id": user_id,
-        # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature`
-        # needs every llm_call to carry one, including direct calls that omit it.
-        "feature": feature or FEATURE_SYSTEM,
-        "model_tier": tier,
-        "cached": bool(cached),
-    }
-    if shadow_cost_usd is not None:
+        "total_tokens": prompt_tokens + completion_tokens, "cost_usd": cost_usd,
+        "latency_ms": latency_ms, "success": success, "user_id": user_id,
+        # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature` needs
+        # every llm_call to carry one, including direct calls that omit it.
+        "feature": feature or FEATURE_SYSTEM, "model_tier": tier, "cached": cached,
         # Shadow cost is a separate decision signal: what the same call would cost if the
         # subscription model were billed at the metered reference. It never enters cost_usd.
-        properties["shadow_cost_usd"] = shadow_cost_usd
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="llm_call",
-        properties=properties,
-    )
+    }, {"shadow_cost_usd": shadow_cost_usd} if shadow_cost_usd is not None else None)
     # One ledger row per call would grow unbounded at LEM's call volume, so spend accumulates in a
     # per-day Redis bucket that the daily rollup task collapses into cost_ledger rows.
     _accrue_llm_cost(cost_usd, (prompt_tokens or 0) + (completion_tokens or 0),
@@ -719,18 +1036,9 @@ def track_video_asset_probe(post_id: Optional[int] = None, user_id: Optional[int
     ffprobe still emits the event with `probe_ok=True` when the head signature passes, so the
     metric tracks real parseability gaps rather than missing tooling.
     """
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="video_asset_probe",
-        properties={
-            "post_id": post_id,
-            "user_id": user_id,
-            "probe_ok": bool(probe_ok),
-            "reason": reason,
-            "source": source,
-            **extra,
-        },
-    )
+    _emit(EVENTS["video_asset_probe"], {"post_id": post_id, "user_id": user_id,
+                                        "probe_ok": probe_ok, "reason": reason,
+                                        "source": source}, extra)
 
 
 def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int] = None,
@@ -754,21 +1062,9 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
     user_id = user_id if user_id is not None else scope_user_id
     feature = feature or scope_feature or FEATURE_CONTENT
 
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="media_cost",
-        properties={
-            "kind": kind,
-            "provider": provider,
-            "model": model,
-            "cost_usd": usd,
-            "qty": qty,
-            "user_id": user_id,
-            "post_id": post_id,
-            "feature": feature,
-            **(meta or {}),
-        },
-    )
+    _emit(EVENTS["media_cost"], {"kind": kind, "provider": provider, "model": model,
+                                 "cost_usd": usd, "qty": qty, "user_id": user_id,
+                                 "post_id": post_id, "feature": feature}, meta)
     # cost_ledger.model_tier is VARCHAR(64); an over-long identifier used to abort the whole
     # ledger write, so the spend vanished rather than being recorded under a truncated name.
     _write_cost_ledger(feature=feature, category="media", usd=usd, user_id=user_id,
@@ -898,24 +1194,16 @@ def track_post_outcome(
     """
     from cqc_lem.utilities.post_stats import engagement_rate, engagement_score
     shipped = extra.pop("variant_key", None)
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="post_outcome",
-        properties={
-            **experiment_props(user_id, keys=(COST_ROUTING_ARM,),
-                               shipped={POST_MEDIA_VARIANT: shipped} if shipped else None),
-            "post_id": post_id,
-            "variant_key": shipped,
-            "reactions": int(reactions or 0),
-            "comments": int(comments or 0),
-            "reposts": int(reposts or 0),
-            "saves": int(saves or 0),
-            "impressions": int(impressions) if impressions else None,
-            "engagement": engagement_score(reactions, comments, reposts),
-            "engagement_rate": engagement_rate(reactions, comments, reposts, impressions),
-            **extra,
-        },
-    )
+    # The `$feature/*` keys can never collide with a declared property, so riding in `extra` puts
+    # them on the event exactly as spreading them first did.
+    _emit(EVENTS["post_outcome"], {
+        "post_id": post_id, "variant_key": shipped, "reactions": reactions,
+        "comments": comments, "reposts": reposts, "saves": saves, "impressions": impressions,
+        "user_id": user_id,
+        "engagement": engagement_score(reactions, comments, reposts),
+        "engagement_rate": engagement_rate(reactions, comments, reposts, impressions),
+    }, {**experiment_props(user_id, keys=(COST_ROUTING_ARM,),
+                           shipped={POST_MEDIA_VARIANT: shipped} if shipped else None), **extra})
 
 
 def track_audience_snapshot(
@@ -930,18 +1218,10 @@ def track_audience_snapshot(
     queryable in PostHog next to the content outcomes that drove them. Unreadable counts stay None
     (not 0) — a zero would read as a real collapse in a growth chart.
     """
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="audience_snapshot",
-        properties={
-            "user_id": user_id,
-            "follower_count": follower_count,
-            "connection_count": connection_count,
-            "profile_views": profile_views,
-            "search_appearances": search_appearances,
-            **extra,
-        },
-    )
+    _emit(EVENTS["audience_snapshot"], {"user_id": user_id, "follower_count": follower_count,
+                                        "connection_count": connection_count,
+                                        "profile_views": profile_views,
+                                        "search_appearances": search_appearances}, extra)
 
 
 def track_golden_hour_report(
@@ -954,24 +1234,7 @@ def track_golden_hour_report(
     log grep. `latency_minutes` stays None when the publish time is unknown, and `within_window` is
     then False: an unmeasured sweep must never count as an on-time one.
     """
-    report = dict(report or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="golden_hour_report",
-        properties={
-            "user_id": user_id,
-            "phase": report.get("phase"),
-            "post_id": report.get("post_id"),
-            "sweep_slot": report.get("sweep_slot"),
-            "status": report.get("status"),
-            "latency_minutes": report.get("latency_minutes"),
-            "within_window": bool(report.get("within_window")),
-            "window_minutes": report.get("window_minutes"),
-            "comments_found": int(report.get("comments_found") or 0),
-            "replies_sent": int(report.get("replies_sent") or 0),
-            **extra,
-        },
-    )
+    _emit(EVENTS["golden_hour_report"], {**dict(report or {}), "user_id": user_id}, extra)
 
 
 def track_comment_outcome(
@@ -990,24 +1253,8 @@ def track_comment_outcome(
     assignment is deterministic per person for the life of the flag, and a per-comment copy would
     still be wrong if the flag were re-rolled — see the attribution caveat in docs/experiments.md.
     """
-    outcome = dict(outcome or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="comment_outcome",
-        properties={
-            **experiment_props(user_id, keys=(COMMENT_CONTRACT_PROMPT,)),
-            "user_id": user_id,
-            "log_id": log_id,
-            "status": outcome.get("status"),
-            "skip_reason": outcome.get("skip_reason"),
-            "author_replied": bool(outcome.get("author_replied")),
-            "reply_count": int(outcome.get("reply_count") or 0),
-            "like_count": int(outcome.get("like_count") or 0),
-            "visible_most_relevant": outcome.get("visible_most_relevant"),
-            "our_reply_sent": bool(outcome.get("our_reply_sent")),
-            **extra,
-        },
-    )
+    _emit(EVENTS["comment_outcome"], {**dict(outcome or {}), "user_id": user_id, "log_id": log_id},
+          {**experiment_props(user_id, keys=(COMMENT_CONTRACT_PROMPT,)), **extra})
 
 
 # A DOM sample is evidence, not a metric: enough rows to recognise a shape, capped so one rotated
@@ -1029,17 +1276,9 @@ def track_selector_evidence(surface: str, candidates: Optional[list] = None,
     that says the capture itself is blind, and suppressing it is how a surface looks un-drifted.
     """
     candidates = list(candidates or [])[:_SELECTOR_EVIDENCE_MAX_CANDIDATES]
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="sdui_selector_evidence",
-        properties={
-            "surface": surface,
-            "user_id": user_id,
-            "candidate_count": len(candidates),
-            "candidates": candidates,
-            **extra,
-        },
-    )
+    _emit(EVENTS["sdui_selector_evidence"], {"surface": surface, "user_id": user_id,
+                                             "candidate_count": len(candidates),
+                                             "candidates": candidates}, extra)
 
 
 def track_suppression_check(user_id: Optional[int], verdict: Optional[dict] = None,
@@ -1050,28 +1289,9 @@ def track_suppression_check(user_id: Optional[int], verdict: Optional[dict] = No
     """
     verdict = dict(verdict or {})
     signals = {s.get("name"): s for s in (verdict.get("signals") or []) if isinstance(s, dict)}
-    reach = signals.get("reach_collapse") or {}
-    comments = signals.get("comment_demotion") or {}
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="suppression_check",
-        properties={
-            "user_id": user_id,
-            "status": verdict.get("status"),
-            "tripped": bool(verdict.get("tripped")),
-            "reason": verdict.get("reason"),
-            "paused": bool(paused),
-            "reach_status": reach.get("status"),
-            "reach_metric": reach.get("metric"),
-            "reach_baseline": reach.get("baseline"),
-            "reach_max_drop": reach.get("max_drop"),
-            "baseline_posts": reach.get("baseline_posts"),
-            "posting_days": reach.get("posting_days"),
-            "comment_status": comments.get("status"),
-            "comment_demotion_rate": comments.get("demotion_rate"),
-            **extra,
-        },
-    )
+    _emit(EVENTS["suppression_check"], {**verdict, "user_id": user_id, "paused": paused,
+                                        "reach": signals.get("reach_collapse") or {},
+                                        "comments": signals.get("comment_demotion") or {}}, extra)
 
 
 def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
@@ -1080,27 +1300,8 @@ def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None,
     is queryable next to the rates that caused it and a PostHog alert can page off it.
     """
     report = dict(report or {})
-    verdict = dict(report.get("verdict") or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="comment_quality",
-        properties={
-            "user_id": user_id,
-            "days": report.get("days"),
-            "sample_size": report.get("sample_size"),
-            "checked": report.get("checked"),
-            "skipped": report.get("skipped"),
-            "author_reply_rate": report.get("author_reply_rate"),
-            "reply_rate": report.get("reply_rate"),
-            "like_rate": report.get("like_rate"),
-            "demotion_rate": report.get("demotion_rate"),
-            "visibility_sample": report.get("visibility_sample"),
-            "unreadable_readings": report.get("unreadable_readings"),
-            "verdict": verdict.get("status"),
-            "verdict_reason": verdict.get("reason"),
-            **extra,
-        },
-    )
+    _emit(EVENTS["comment_quality"], {**report, "user_id": user_id,
+                                      "verdict": dict(report.get("verdict") or {})}, extra)
 
 
 def track_content_quality(user_id: Optional[int], score: Optional[dict] = None, **extra) -> None:
@@ -1113,38 +1314,7 @@ def track_content_quality(user_id: Optional[int], score: Optional[dict] = None, 
     (they are the user's own LinkedIn material, redacted everywhere else too) — only the names of the
     slop checks that fired, which is what makes a regression explainable.
     """
-    score = dict(score or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="content_quality",
-        properties={
-            "user_id": user_id,
-            "surface": score.get("surface"),
-            "ref_id": score.get("ref_id"),
-            "shipped_on": str(score.get("shipped_on")) if score.get("shipped_on") else None,
-            "chars": score.get("chars"),
-            "slop_checked": score.get("slop_checked"),
-            "slop_hard": score.get("slop_hard"),
-            "slop_warn": score.get("slop_warn"),
-            "slop_score": score.get("slop_score"),
-            "slop_checks": score.get("slop_checks") or [],
-            "similarity": score.get("similarity"),
-            "similarity_measure": score.get("similarity_measure"),
-            "authenticity_score": score.get("authenticity_score"),
-            "hook_chars": score.get("hook_chars"),
-            "hook_within_budget": score.get("hook_within_budget"),
-            "engagement_rate": score.get("engagement_rate"),
-            "impressions": score.get("impressions"),
-            "detector_score": score.get("detector_score"),
-            "detector_provider": score.get("detector_provider"),
-            "video_render_ok": score.get("video_render_ok"),
-            "video_model_tier": score.get("video_model_tier"),
-            "video_duration_seconds": score.get("video_duration_seconds"),
-            "video_aspect_ratio": score.get("video_aspect_ratio"),
-            "video_asset_probe": score.get("video_asset_probe"),
-            **extra,
-        },
-    )
+    _emit(EVENTS["content_quality"], {**dict(score or {}), "user_id": user_id}, extra)
 
 
 def track_content_quality_rollup(user_id: Optional[int], rollup: Optional[dict] = None,
@@ -1157,25 +1327,18 @@ def track_content_quality_rollup(user_id: Optional[int], rollup: Optional[dict] 
     rollup = dict(rollup or {})
     current = dict(rollup.get("current") or {})
     prior = dict(rollup.get("prior") or {})
-    deltas = dict(rollup.get("deltas") or {})
     alerts = [a for a in (rollup.get("alerts") or []) if isinstance(a, dict)]
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="content_quality_rollup",
-        properties={
-            "user_id": user_id,
-            "days": rollup.get("days"),
-            "alert_count": len(alerts),
-            "alerts": [a.get("name") for a in alerts],
-            "alert_reasons": [a.get("reason") for a in alerts],
-            **{f"current_{key}": value for key, value in current.items() if key != "by_surface"},
-            **{f"prior_{key}": value for key, value in prior.items() if key != "by_surface"},
-            **{f"delta_{key}": value for key, value in deltas.items()},
-            "by_surface": current.get("by_surface") or {},
-            "config": rollup.get("config") or {},
-            **extra,
-        },
-    )
+    # The period prefixes are the caller's own vocabulary, not a fixed schema, so they ride through
+    # `extra` — which is also what keeps `by_surface`/`config` declared and them not.
+    _emit(EVENTS["content_quality_rollup"], {
+        **rollup, "user_id": user_id, "alert_count": len(alerts),
+        "alerts": [a.get("name") for a in alerts],
+        "alert_reasons": [a.get("reason") for a in alerts],
+        "by_surface": current.get("by_surface") or {}, "config": rollup.get("config") or {},
+    }, {**{f"current_{key}": value for key, value in current.items() if key != "by_surface"},
+        **{f"prior_{key}": value for key, value in prior.items() if key != "by_surface"},
+        **{f"delta_{key}": value for key, value in dict(rollup.get("deltas") or {}).items()},
+        **extra})
 
 
 def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str, **extra) -> None:
@@ -1183,16 +1346,8 @@ def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str,
     the reason) or ran (with the comment count) — so a report can confirm the warm-up before a post
     actually fired instead of inferring it from task logs.
     """
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="pre_post_engagement",
-        properties={
-            "post_id": post_id,
-            "user_id": user_id,
-            "status": status,
-            **extra,
-        },
-    )
+    _emit(EVENTS["pre_post_engagement"],
+          {"post_id": post_id, "user_id": user_id, "status": status}, extra)
 
 
 def track_company_page_invite_run(user_id: Optional[int], report: Optional[dict] = None,
@@ -1202,22 +1357,7 @@ def track_company_page_invite_run(user_id: Optional[int], report: Optional[dict]
     only carried sends could not distinguish "paced down to zero today" from "silently broken", so
     the skip reason (budget_reached / credits_exhausted / paused / disabled) is the point.
     """
-    report = dict(report or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="company_page_invite_run",
-        properties={
-            "user_id": user_id,
-            "status": report.get("status"),
-            "invites_sent": int(report.get("invites_sent") or 0),
-            "budget": int(report.get("budget") or 0),
-            "cap": int(report.get("cap") or 0),
-            "sent_today": int(report.get("sent_today") or 0),
-            "credits_remaining": report.get("credits_remaining"),
-            "credit_spread": report.get("credit_spread"),
-            **extra,
-        },
-    )
+    _emit(EVENTS["company_page_invite_run"], {**dict(report or {}), "user_id": user_id}, extra)
 
 
 def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None,
@@ -1230,31 +1370,7 @@ def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None
     is the tell: zero rows day after day on an account with pending invites means the invitation
     manager's markup moved, not that the account is clean.
     """
-    report = dict(report or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="stale_invite_run",
-        properties={
-            "user_id": user_id,
-            "status": report.get("status"),
-            "withdrawn": int(report.get("withdrawn") or 0),
-            "unverified": int(report.get("unverified") or 0),
-            "budget": int(report.get("budget") or 0),
-            "cap": int(report.get("cap") or 0),
-            "withdrawn_today": int(report.get("withdrawn_today") or 0),
-            "threshold_days": report.get("threshold_days"),
-            "rows_seen": int(report.get("rows_seen") or 0),
-            "stale_seen": int(report.get("stale_seen") or 0),
-            "unreadable": int(report.get("unreadable") or 0),
-            # Rows refused because the Withdraw control named somebody the row does not (#1006). A
-            # PARTIAL mismatch is the label drifting by a row — the #1012 hazard — and without this
-            # it is invisible: those rows are dropped before `stale_seen`, so the run reports
-            # "nothing old enough" and looks identical to a healthy account.
-            "entity_mismatch": int(report.get("entity_mismatch") or 0),
-            "expansions": int(report.get("expansions") or 0),
-            **extra,
-        },
-    )
+    _emit(EVENTS["stale_invite_run"], {**dict(report or {}), "user_id": user_id}, extra)
 
 
 def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
@@ -1272,32 +1388,7 @@ def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **e
     defers goes back to 'approved' and is re-dispatched on the next beat, so only the `deliver` phase
     can tell a lane that sends from one that has looped all day without delivering anything.
     """
-    report = dict(report or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="catchup_run",
-        properties={
-            "user_id": user_id,
-            "phase": report.get("phase"),
-            "status": report.get("status"),
-            "moments": int(report.get("moments") or 0),
-            "classified": int(report.get("classified") or 0),
-            "enabled_type": int(report.get("enabled_type") or 0),
-            "excluded": int(report.get("excluded") or 0),
-            "duplicate": int(report.get("duplicate") or 0),
-            "below_bar": int(report.get("below_bar") or 0),
-            "drafted": int(report.get("drafted") or 0),
-            "auto_approve": bool(report.get("auto_approve")),
-            "message_source": report.get("message_source"),
-            "dispatched": int(report.get("dispatched") or 0),
-            "capped": int(report.get("capped") or 0),
-            "inactive": int(report.get("inactive") or 0),
-            "pending": int(report.get("pending") or 0),
-            "requeued": int(report.get("requeued") or 0),
-            "touch_id": report.get("touch_id"),
-            **extra,
-        },
-    )
+    _emit(EVENTS["catchup_run"], {**dict(report or {}), "user_id": user_id}, extra)
 
 
 def track_feed_scan(user_id: Optional[int], funnel: Optional[dict] = None, **extra) -> None:
@@ -1311,32 +1402,7 @@ def track_feed_scan(user_id: Optional[int], funnel: Optional[dict] = None, **ext
     #622's effect was being measured against a silent mix of the two. It is a STRING (never a
     boolean) so alert tiles can filter on it; `recent` is the only value that means sorted.
     """
-    funnel = dict(funnel or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="feed_scan",
-        properties={
-            "user_id": user_id,
-            "feed_sort": funnel.get("feed_sort"),
-            "examined": int(funnel.get("examined") or 0),
-            "passed_filters": int(funnel.get("passed_filters") or 0),
-            "matched_topics": int(funnel.get("matched_topics") or 0),
-            "commented": int(funnel.get("commented") or 0),
-            "roster_commented": int(funnel.get("roster_commented") or 0),
-            "feed_commented": int(funnel.get("feed_commented") or 0),
-            # Roster targets that rendered posts but no comment affordance, and targets followed on
-            # this scan (issue #962). Both are roster-only; a rising blocked count with a flat
-            # followed count is a roster the user has to fix by connecting, not a broken selector.
-            "roster_comment_blocked": int(funnel.get("roster_comment_blocked") or 0),
-            "roster_followed": int(funnel.get("roster_followed") or 0),
-            "off_topic_skipped": int(funnel.get("off_topic_skipped") or 0),
-            "fallback_used": bool(funnel.get("fallback_used")),
-            # Group-feed lane only (issue #1084): posts whose composer was not reachable before the
-            # LLM generation was spent. Counted on `feed_scan` so the cost saving is measurable.
-            "skipped_no_composer": int(funnel.get("skipped_no_composer") or 0),
-            **extra,
-        },
-    )
+    _emit(EVENTS["feed_scan"], {**dict(funnel or {}), "user_id": user_id}, extra)
 
 
 def track_margin_report(report: dict) -> None:
@@ -1345,23 +1411,11 @@ def track_margin_report(report: dict) -> None:
     financials stay out of the event body — internal-only by policy (plan §E.5) — but the cohort
     aggregates the Margin-by-Cohort dashboard needs ride along.
     """
-    system = dict((report or {}).get("system") or {})
-    unit = dict((report or {}).get("unit_economics") or {})
-    period = dict((report or {}).get("period") or {})
-    posthog.capture(
-        distinct_id="system",
-        event="margin_report",
-        properties={
-            "period_start": period.get("start"),
-            "period_end": period.get("end"),
-            "period_days": period.get("days"),
-            "basis": period.get("basis"),
-            "ledger_available": (report or {}).get("ledger_available"),
-            "cohorts": (report or {}).get("cohorts") or [],
-            **{f"system_{key}": value for key, value in system.items()},
-            **unit,
-        },
-    )
+    report = dict(report or {})
+    system = dict(report.get("system") or {})
+    _emit(EVENTS["margin_report"], report,
+          {**{f"system_{key}": value for key, value in system.items()},
+           **dict(report.get("unit_economics") or {})})
 
 
 def track_image_gate_verdict(
@@ -1387,20 +1441,10 @@ def track_image_gate_verdict(
         post_id: optional post ID
     """
     # Emit as a custom event; will be visible at POSTHOG_LOG_LEVEL=WARNING or lower
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="image_gate_verdict",
-        properties={
-            "surface": surface,
-            "verdict": verdict,
-            "issues": issues,
-            "attempt_count": attempt_count,
-            "checked": checked,
-            "acceptable": acceptable,
-            "user_id": user_id,
-            "post_id": post_id,
-        },
-    )
+    _emit(EVENTS["image_gate_verdict"], {"surface": surface, "verdict": verdict, "issues": issues,
+                                         "attempt_count": attempt_count, "checked": checked,
+                                         "acceptable": acceptable, "user_id": user_id,
+                                         "post_id": post_id})
 
 
 def track_motion_prompt_check(
@@ -1424,27 +1468,14 @@ def track_motion_prompt_check(
     lists rather than from user content.
     """
     report = dict(report or {})
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="motion_prompt_check",
-        properties={
-            "user_id": user_id,
-            "post_id": post_id,
-            "surface": surface,
-            "model": model or report.get("model"),
-            "verdict": verdict,
-            "enforced": enforced,
-            "attempt": attempt,
-            "checked": report.get("checked"),
-            "passes": report.get("passes"),
-            "chars": report.get("chars"),
-            "checks": report.get("checks") or [],
-            "hard_count": len(report.get("hard") or []),
-            "warn_count": len(report.get("warnings") or []),
-            "evidence": [e for v in report.get("violations") or []
-                         for e in (v.get("evidence") or [])][:10],
-        },
-    )
+    _emit(EVENTS["motion_prompt_check"], {
+        **report, "user_id": user_id, "post_id": post_id, "surface": surface,
+        "model": model or report.get("model"), "verdict": verdict, "enforced": enforced,
+        "attempt": attempt, "hard_count": len(report.get("hard") or []),
+        "warn_count": len(report.get("warnings") or []),
+        "evidence": [e for v in report.get("violations") or []
+                     for e in (v.get("evidence") or [])][:10],
+    })
 
 
 def track_routing_policy(report: dict) -> None:
@@ -1454,30 +1485,19 @@ def track_routing_policy(report: dict) -> None:
     the per-bucket verdict and cohort are what a dashboard needs.
     """
     report = dict(report or {})
-    policy = dict(report.get("policy") or {})
-    buckets = policy.get("buckets") or {}
-    posthog.capture(
-        distinct_id="system",
-        event="routing_policy",
-        properties={
-            "date": report.get("date"),
-            "enabled": policy.get("enabled"),
-            "window_days": report.get("window_days"),
-            "observations": report.get("observations"),
-            "change_count": len(report.get("changes") or []),
-            "rollback_count": sum(1 for c in report.get("changes") or []
-                                  if c.get("action") == "rollback"),
-            "changes": [{"bucket": c.get("bucket"), "action": c.get("action"),
-                         "reason": c.get("reason")} for c in report.get("changes") or []],
-            "buckets": [{"bucket": key, "state": b.get("state"), "to_tier": b.get("to_tier"),
-                         "cohort_pct": b.get("cohort_pct"),
-                         "assignment": b.get("assignment")} for key, b in buckets.items()],
-            # Whether the PostHog experiment (issue #652) actually cohorted this run, or the hash
-            # fallback did — a treatment share of None means nobody was enrolled.
-            **{f"cohort_{key}": value for key, value in (report.get("cohort") or {}).items()},
-            "recommendations": report.get("recommendations") or [],
-        },
-    )
+    changes = list(report.get("changes") or [])
+    buckets = (dict(report.get("policy") or {}).get("buckets") or {}).items()
+    _emit(EVENTS["routing_policy"], {
+        **report, "change_count": len(changes),
+        "rollback_count": sum(1 for c in changes if c.get("action") == "rollback"),
+        "changes": [{"bucket": c.get("bucket"), "action": c.get("action"),
+                     "reason": c.get("reason")} for c in changes],
+        "buckets": [{"bucket": key, "state": b.get("state"), "to_tier": b.get("to_tier"),
+                     "cohort_pct": b.get("cohort_pct"),
+                     "assignment": b.get("assignment")} for key, b in buckets],
+        # Whether the PostHog experiment (issue #652) actually cohorted this run, or the hash
+        # fallback did — a treatment share of None means nobody was enrolled.
+    }, {f"cohort_{key}": value for key, value in (report.get("cohort") or {}).items()})
 
 
 def track_experiment_exposure(experiment: str, variant: str, user_id: Optional[int] = None,
@@ -1493,19 +1513,9 @@ def track_experiment_exposure(experiment: str, variant: str, user_id: Optional[i
     Deduping is the CALLER's job (`experiments.track_exposure`) — this stays a dumb emitter like every
     other tracker here.
     """
-    posthog.capture(
-        distinct_id=str(user_id if user_id is not None else "system"),
-        event="$feature_flag_called",
-        properties={
-            "$feature_flag": experiment,
-            "$feature_flag_response": variant,
-            f"$feature/{experiment}": variant,
-            "experiment": experiment,
-            "variant": variant,
-            "user_id": user_id,
-            **extra,
-        },
-    )
+    _emit(EVENTS["$feature_flag_called"],
+          {"experiment": experiment, "variant": variant, "user_id": user_id},
+          {f"$feature/{experiment}": variant, **extra})
 
 
 def experiment_props(user_id: Optional[int] = None, keys: Optional[tuple] = None,
@@ -1529,11 +1539,7 @@ def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
     to that user's distinct_id; system-wide ones to "system".
     """
     alert = dict(alert or {})
-    posthog.capture(
-        distinct_id=str(alert.get("user_id") or "system"),
-        event="cost_alert",
-        properties={"date": day, **alert},
-    )
+    _emit(EVENTS["cost_alert"], {"date": day, "user_id": alert.get("user_id")}, alert)
 
 
 def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> None:
@@ -1541,12 +1547,7 @@ def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> Non
     saturation history is queryable next to the task latency it explains and a PostHog alert can page
     off it. Always system-scoped: a full browser pool is an infra limit, not one user's problem.
     """
-    alert = dict(alert or {})
-    posthog.capture(
-        distinct_id="system",
-        event="capacity_alert",
-        properties={"generated_at": generated_at, **alert},
-    )
+    _emit(EVENTS["capacity_alert"], {"generated_at": generated_at}, dict(alert or {}))
 
 
 def track_youtube_token_check(state: Optional[dict] = None) -> None:
@@ -1556,15 +1557,7 @@ def track_youtube_token_check(state: Optional[dict] = None) -> None:
     "when did publishing actually go bad?" is answerable without grepping a year of logs. Always
     system-scoped: one OAuth grant publishes the whole channel, not one user's.
     """
-    state = dict(state or {})
-    posthog.capture(
-        distinct_id="system",
-        event="youtube_token_check",
-        properties={"status": state.get("status"), "reason": state.get("reason"),
-                    "error": state.get("error"), "scope": state.get("scope"),
-                    "checked_at": state.get("checked_at"),
-                    "http_status": state.get("http_status")},
-    )
+    _emit(EVENTS["youtube_token_check"], dict(state or {}))
 
 
 def track_rate_limit_trip(seconds: int, trips: int, reason: str = "429") -> None:
@@ -1579,12 +1572,9 @@ def track_rate_limit_trip(seconds: int, trips: int, reason: str = "429") -> None
     Never raises: the breaker must open even when analytics is down.
     """
     try:
-        posthog.capture(
-            distinct_id="system",
-            event="rate_limit_trip",
-            properties={"cooldown_seconds": int(seconds), "consecutive_trips": int(trips),
-                        "reason": reason or "429"},
-        )
+        _emit(EVENTS["rate_limit_trip"], {"cooldown_seconds": int(seconds),
+                                          "consecutive_trips": int(trips),
+                                          "reason": reason or "429"})
     except Exception as e:
         log_debug("Could not capture rate-limit trip event", exc=e)
 
@@ -1642,51 +1632,32 @@ def track_onboarding_step(
     """Emit one activation-funnel event per checklist step (issue #500), the first time that step
     completes — so time-to-aha and per-step drop-off are queryable in PostHog.
     """
-    posthog.capture(
-        distinct_id=str(user_id),
-        event="onboarding_step",
-        properties={"step": step, "hours_since_start": hours_since_start, **extra},
-    )
+    _emit(EVENTS["onboarding_step"],
+          {"user_id": user_id, "step": step, "hours_since_start": hours_since_start}, extra)
 
 
 def track_onboarding_nudge(user_id: int, nudge_key: str, **extra) -> None:
     """Emit the stalled-user nudge we sent, so nudge → step-completion is measurable."""
-    posthog.capture(
-        distinct_id=str(user_id),
-        event="onboarding_nudge",
-        properties={"nudge": nudge_key, **extra},
-    )
+    _emit(EVENTS["onboarding_nudge"], {"user_id": user_id, "nudge_key": nudge_key}, extra)
 
 
 def track_survey_prompt(user_id: int, survey_key: str, **extra) -> None:
     """Emit the survey we asked for (issue #501), so ask → response rate is measurable."""
-    posthog.capture(
-        distinct_id=str(user_id),
-        event="survey_prompt",
-        properties={"survey": survey_key, **extra},
-    )
+    _emit(EVENTS["survey_prompt"], {"user_id": user_id, "survey_key": survey_key}, extra)
 
 
 def track_shipped_notice(user_id: int, issue_number: int, **extra) -> None:
     """Emit the "you asked, we shipped" notice we sent (issue #502), so notice → micro-CSAT response
     is measurable against the GA satisfaction gate.
     """
-    posthog.capture(
-        distinct_id=str(user_id),
-        event="shipped_notice",
-        properties={"issue_number": issue_number, **extra},
-    )
+    _emit(EVENTS["shipped_notice"], {"user_id": user_id, "issue_number": issue_number}, extra)
 
 
 def track_survey_response(user_id: int, source: str, **extra) -> None:
     """Emit an NPS/review answer (issue #501) with its score/rating, so NPS and CSAT can be trended
     in PostHog next to the activation funnel.
     """
-    posthog.capture(
-        distinct_id=str(user_id),
-        event="survey_response",
-        properties={"source": source, **extra},
-    )
+    _emit(EVENTS["survey_response"], {"user_id": user_id, "source": source}, extra)
 
 
 # --- Launch funnel (issue #503, docs/launch-and-marketing-plan.md §C.5 / §D.1) -------------------
@@ -1888,15 +1859,14 @@ def track_funnel_event(
         resolved_id = str(user_id) if user_id is not None else (distinct_id or "anonymous")
         if alias_from and alias_from != resolved_id:
             posthog.alias(previous_id=alias_from, distinct_id=resolved_id)
-        posthog.capture(
-            distinct_id=resolved_id,
+        _emit(
+            EVENTS["funnel_event"],
+            {"user_id": user_id},
+            {**attribution_props,
+             "$set_once": {f"initial_{key}": value for key, value in attribution_props.items()},
+             **extra},
             event=event,
-            properties={
-                **attribution_props,
-                "user_id": user_id,
-                "$set_once": {f"initial_{key}": value for key, value in attribution_props.items()},
-                **extra,
-            },
+            distinct_id=resolved_id,
         )
     except Exception as e:
         log_warning(f"Could not track funnel event '{event}'", exc=e, user_id=user_id)
@@ -1948,11 +1918,7 @@ def track_affiliate_event(event: str, user_id: Optional[int] = None, **extra) ->
     try:
         if event not in AFFILIATE_EVENTS:
             log_warning(f"Unknown affiliate event '{event}' — emitting anyway")
-        posthog.capture(
-            distinct_id=str(user_id) if user_id is not None else "system",
-            event=event,
-            properties={"user_id": user_id, **extra},
-        )
+        _emit(EVENTS["affiliate_event"], {"user_id": user_id}, extra, event=event)
     except Exception as e:
         log_warning(f"Could not track affiliate event '{event}'", exc=e, user_id=user_id)
 
@@ -1962,6 +1928,7 @@ def track_task(
     duration_ms: int,
     success: bool = True,
     user_id: Optional[int] = None,
+    state: Optional[str] = None,
     **extra,
 ) -> None:
     """Emit `celery_task` — one row per task run, however it ended.
@@ -1970,12 +1937,14 @@ def track_task(
     of the queue rather than a sample: capturing it from inside a task as well would double-count
     that task. A task with no user (the scheduler beats) lands on the shared `"system"` person
     instead of being dropped, since an unattributed run still has to show up in the count.
+
+    `state` is a NAMED argument rather than one of `**extra` because the Celery-failure alert is the
+    one provisioned tile that filters on a property value (`state = "FAILURE"`, exact). Only a
+    declared field is coerced to a string; riding in `**extra` it would reach PostHog in whatever
+    shape a caller sent, and a non-string row silences that page (docs/kpi-dashboards.md).
     """
-    posthog.capture(
-        distinct_id=str(user_id or "system"),
-        event="celery_task",
-        properties={"task": task_name, "duration_ms": duration_ms, "success": success, **extra},
-    )
+    _emit(EVENTS["celery_task"], {"task_name": task_name, "duration_ms": duration_ms,
+                                  "success": success, "state": state, "user_id": user_id}, extra)
 
 
 def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:
@@ -1985,11 +1954,7 @@ def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:
     traffic left no signal anywhere. `verdict` is a STRING prop so alert tiles can filter on it
     (docs/kpi-dashboards.md).
     """
-    posthog.capture(
-        distinct_id=str(user_id or "anonymous"),
-        event="inbound_parse_email",
-        properties={"verdict": verdict},
-    )
+    _emit(EVENTS["inbound_parse_email"], {"verdict": verdict, "user_id": user_id})
 
 
 def track_api_call(
@@ -2006,16 +1971,8 @@ def track_api_call(
     session land on the shared `"anonymous"` person, which is the only way public-surface traffic
     is visible at all.
     """
-    posthog.capture(
-        distinct_id=str(user_id or "anonymous"),
-        event="api_call",
-        properties={
-            "route": route,
-            "method": method,
-            "status_code": status_code,
-            "latency_ms": latency_ms,
-        },
-    )
+    _emit(EVENTS["api_call"], {"route": route, "method": method, "status_code": status_code,
+                               "latency_ms": latency_ms, "user_id": user_id})
 
 
 def llm_tracked(model_alias: str):

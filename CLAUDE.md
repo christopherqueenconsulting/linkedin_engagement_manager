@@ -255,6 +255,10 @@ during the build, one before the PR:
 ## Observability
 
 Track events via `utilities/observability.py` (`track_llm_call` / `track_task` / `track_api_call`).
+Inside it there is ONE `posthog.capture`, in `_emit()`, and an event's property shape is declared in
+the `EVENTS` registry (#1218) — a new event is an `EventSpec`, never a new capture. `label()` marks
+a property a dashboard/ALERT filters on and forces it to a **string**: PostHog matches a filter on
+the ingested type, so one boolean row silently stops the alert firing.
 One row per surface below: the ONE module and the invariant that bites. The paragraph behind each
 row is `docs/observability-map.md`; the doc in the last column holds rationale, contracts and edge
 cases. Plan with this table, drill in with the doc.
