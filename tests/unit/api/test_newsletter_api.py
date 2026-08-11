@@ -341,6 +341,26 @@ class TestNewsletterDraft:
         task.apply_async.assert_called_once_with(
             kwargs={"edition_id": 4, "use_avatar": None})
 
+    def test_put_title_edit_on_ai_cover_with_no_status_does_not_rebrief(self, client):
+        existing = {
+            "id": 4, "user_id": _USER,
+            "title": "Old Title", "subtitle": "Old Subtitle", "body": "Body",
+            "cover_image_path": None,
+            "cover_image_source": "ai", "cover_image_status": None,
+        }
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value=existing), \
+             patch("cqc_lem.api.routers.user.update_newsletter_edition", return_value=True), \
+             patch("cqc_lem.utilities.db.clear_edition_cover_image") as clear, \
+             patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm, \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": _SESSION, "edition_id": 4, "title": "New Title", "action": "save"})
+        assert resp.status_code == 200
+        clear.assert_not_called()
+        rm.assert_not_called()
+        task.apply_async.assert_not_called()
+
     def test_put_404_when_not_owner(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.routers.user.get_newsletter_edition", return_value={"id": 4, "user_id": 999}):

@@ -1974,7 +1974,9 @@ def _should_rebrief_cover(existing: dict, request: "NewsletterDraftRequest") -> 
     to the author to decide — they may be deep in the newsletter and not change the visual idea.
     Uploads are never re-briefed: the author chose that artwork themselves.
     """
-    if existing.get("cover_image_source") != "ai":
+    from cqc_lem.utilities.newsletter_cover import COVER_SOURCE_AI
+
+    if existing.get("cover_image_source") != COVER_SOURCE_AI:
         return False
     if existing.get("cover_image_status") is None:
         return False
