@@ -74,6 +74,7 @@ COST_ROUTING = "cost-routing-enabled"
 POSTHOG_SURVEYS = "posthog-surveys-enabled"
 NEWSLETTER_EDITOR = "newsletter-editor-enabled"
 BRAND_SHOWCASE = "brand-showcase-enabled"
+VIDEO_MOTION_LINT_HOLD = "video-motion-lint-hold"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -142,6 +143,16 @@ FLAGS: Dict[str, FlagSpec] = {
             description=("Public front-page showcase of the LEM brand account's own published posts "
                          "with their stored engagement counts (issue #1299). OFF by default — it "
                          "exposes a new public /api route and renders a marketing section."),
+        ),
+        FlagSpec(
+            key=VIDEO_MOTION_LINT_HOLD,
+            env_var="VIDEO_MOTION_LINT_HOLD_ENABLED",
+            default=False,
+            owner="content",
+            description=("ENFORCEMENT for the motion-prompt lint (issue #1277). The lint always "
+                         "grades and reports; this decides whether a HARD violation buys a steered "
+                         "rewrite and then holds the render. OFF = warn-only, so the credit-spend "
+                         "profile is unchanged until it is flipped."),
         ),
     )
 }

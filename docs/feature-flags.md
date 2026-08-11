@@ -72,6 +72,7 @@ instead of silently evaluating to `False` inside a Celery task.
 | `cost-routing-enabled` | `COST_ROUTING_ENABLED` | `false` | cost | App side of cost-aware down-routing (`cost_routing.py`) — written into the published routing policy. System-scoped. |
 | `posthog-surveys-enabled` | `POSTHOG_SURVEYS_ENABLED` | `false` | growth | Gates the headless PostHog survey renderer (issue #653, `docs/surveys.md`). Keep OFF until the SPA bundle carries a `VITE_POSTHOG_KEY` and the surveys are launched. |
 | `newsletter-editor-enabled` | `NEWSLETTER_EDITOR_ENABLED` | `false` | content | Final mechanical LLM edit pass on newsletter drafts (capitalization, grammar, punctuation, formatting) before slop-lint review. Adds one `lem-medium` call per draft. |
+| `video-motion-lint-hold` | `VIDEO_MOTION_LINT_HOLD_ENABLED` | `false` | content | ENFORCEMENT for the motion-prompt lint (issue #1277, `docs/content-core.md`). The lint always grades and emits `motion_prompt_check`; this decides whether a HARD violation buys a steered rewrite and then HOLDS the render. OFF = warn-only, so the credit-spend profile is unchanged until it is flipped. Scoped per user. |
 
 ## Provisioning
 

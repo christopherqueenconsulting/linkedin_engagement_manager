@@ -972,7 +972,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         # the lookup entirely.
         language = get_user_content_language(user_id) if supports_audio(model) else DEFAULT_CONTENT_LANGUAGE
         motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model,
-                                                    language=language)[:512]
+                                                    language=language, user_id=user_id,
+                                                    post_id=post_id)[:512]
         if is_premium(model):
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,

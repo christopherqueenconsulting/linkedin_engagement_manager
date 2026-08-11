@@ -188,7 +188,8 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
         language = (get_user_content_language(user_id) if supports_audio(video_model)
                     else DEFAULT_CONTENT_LANGUAGE)
         video_prompt = get_runway_ml_video_prompt_from_ai(
-            source_text, image_prompt, model=video_model, language=language)[:512]
+            source_text, image_prompt, model=video_model, language=language, user_id=user_id,
+            post_id=post_id)[:512]
         result["video_prompt"] = video_prompt
         video_src_url = create_runway_video(
             dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed,
