@@ -62,9 +62,14 @@ Load-bearing details:
 - **The user's `post_similarity_max_pct` setting governs the fallback only.** It is a percentage on
   the token-overlap scale, where two unrelated posts sit at 0.2-0.4; cosine puts them near 0.5, so
   applying that percentage to cosine would hold nearly everything.
-- **Over the ceiling is ONE retry, then keep** — the path the lexical gate always took. The
-  `similarity` quality-gate finding then holds the post at PENDING and NAMES the measure that fired,
-  because a cosine score and an overlap score are not readable against each other.
+- **Over the ceiling is ONE retry, then keep** — the path the lexical gate always took. A draft still
+  over after the retry SHIPS, with a structured warning naming the measure; it is not held. The
+  `similarity` quality-gate finding — which NAMES the measure that fired, because a cosine score and
+  an overlap score are not readable against each other — needs the post history, and the only caller
+  that hands `evaluate_post_gates` a history is the **edit & re-score** endpoint (`rescore_post`,
+  which excludes the post itself). So similarity holds a post at PENDING on re-score only, exactly as
+  the lexical gate did before #1265. Gating it at generation is a separate publishing-behaviour call
+  (**#1452**), not something #1265 changed.
 - **One measure vocabulary.** `SIMILARITY_MEASURE_{EMBEDDING,LEXICAL,NONE}` in `content_framework.py`
   is what the gate, the comment gate and the nightly telemetry (`content_quality.MEASURE_*`, which
   aliases them) all name a measure by — so the trend line in `docs/content-quality-telemetry.md` and

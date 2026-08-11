@@ -165,6 +165,31 @@ class TestStatusSetterRecordsTheReason:
         status.assert_called_once_with(42, PostStatus.PENDING)
         assert reason.call_args[0][1][0]["gate"] == "missing_asset"
 
+    def test_generation_never_holds_on_similarity_however_duplicated_the_draft(self):
+        # Pins what #1265 did NOT change: the similarity gate needs the post history, and the only
+        # caller that hands `evaluate_post_gates` one is the edit & re-score endpoint. At generation
+        # a draft that is still too similar after its one retry SHIPS with a warning — it is never
+        # demoted here. Whether it should be is issue #1452; this test is what makes that a
+        # deliberate change rather than a silent one.
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.utilities.db import PostStatus
+        post = [{"user_id": 1, "id": 42, "post_type": "text", "buyer_stage": "awareness"}]
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=post), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
+             patch(f"{_RCP}.create_content", return_value=(_POST, None)), \
+             patch(f"{_RCP}.get_recent_post_texts", return_value=[_POST]), \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}.update_db_post_status") as status, \
+             patch(f"{_RCP}.update_db_post_gate_reason") as reason, \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
+             patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=95):
+            rcp.auto_create_weekly_content(user_id=1)
+        status.assert_called_once_with(42, PostStatus.APPROVED)
+        assert reason.call_args[0][1] == []
+
     def test_a_failed_reason_write_never_fails_the_post(self):
         from cqc_lem.app import run_content_plan as rcp
         post = [{"user_id": 1, "id": 42, "post_type": "text", "buyer_stage": "awareness"}]

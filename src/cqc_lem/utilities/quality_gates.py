@@ -106,8 +106,10 @@ def similarity_finding(score: float, threshold: float,
         excerpt = excerpt[:157].rstrip() + "…"
     semantic = measure == SIMILARITY_MEASURE_EMBEDDING
     if semantic:
+        # "the", not "your": the cosine ceiling is a deploy-wide knob, while the token-overlap one
+        # below really is the user's own Account setting.
         explanation = (f"This draft says the same thing as one of your recent posts — {round(score * 100)}% "
-                       f"semantic match, above your {round(threshold * 100)}% ceiling. Rewording an "
+                       f"semantic match, above the {round(threshold * 100)}% ceiling. Rewording an "
                        f"earlier take suppresses reach for both.")
     else:
         explanation = (f"This draft overlaps {round(score * 100)}% with one of your recent posts — "

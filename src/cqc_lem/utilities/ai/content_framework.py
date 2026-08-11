@@ -1238,7 +1238,8 @@ POST_SIMILARITY_MAX_DEFAULT = 0.55
 # the reworded-earlier-post pair this gate exists to catch; 0.657 is the highest score a post nobody
 # considers a duplicate reached. 0.78 sits between them with the margin on the SAFE side (0.12 above
 # the highest legitimate post, 0.05 below the lowest true near-duplicate), because a false positive
-# here is not free: it spends a regeneration AND the `similarity` gate holds the post at PENDING.
+# here is not free: it spends a regeneration, and on the re-score path it also HOLDS the post at
+# PENDING (the `similarity` gate only runs where `evaluate_post_gates` is handed the post history).
 # Five posts from one account SIZES the gap, it does not settle the number — retune with
 # POST_EMBEDDING_SIMILARITY_MAX as `content_quality_scores` fills out.
 POST_EMBEDDING_SIMILARITY_MAX_DEFAULT = 0.78
