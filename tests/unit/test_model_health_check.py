@@ -394,7 +394,9 @@ class TestCatalogSnapshot:
         assert catalog["x"]["digest"] == "031ce2a95446"
 
     def test_a_missing_digest_leaves_the_key_absent_not_empty(self):
-        """An empty string would read as a build CHANGE against a real digest the week the catalog
+        """A blank digest is recorded as no digest at all.
+
+        An empty string would read as a build CHANGE against a real digest the week the catalog
         starts publishing them — and would move every committed snapshot entry for nothing.
         """
         assert "digest" not in mhc.parse_catalog({"models": [{"name": "x", "digest": " "}]})["x"]
@@ -467,7 +469,9 @@ class TestPlanRepoints:
         assert [c["field"] for c in out[0]["changes"]] == ["modified_at"]
 
     def test_a_digest_move_is_a_build_swap_and_wins_the_fingerprint(self):
-        """The one field that says "different build" outright, and the only one #1201 could settle
+        """A digest move outranks size and modified_at as the fingerprint.
+
+        The one field that says "different build" outright, and the only one #1201 could settle
         the deepseek-v4-flash question from.
         """
         out = mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
@@ -503,7 +507,9 @@ class TestPlanRepoints:
                                  {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
 
     def test_a_digest_appearing_for_the_first_time_is_a_missing_baseline_not_a_swap(self):
-        """The week ollama.com starts publishing digests, every configured tag gains one on the live
+        """A digest the snapshot never carried is a missing baseline, not a build swap.
+
+        The week ollama.com starts publishing digests, every configured tag gains one on the live
         side while the committed snapshot still has none (#1237). Reading that as a build swap would
         file a re-point issue for the whole roster on a week nothing moved.
         """
@@ -575,8 +581,10 @@ class TestRepointIssue:
 
 
 class TestPlanVanished:
-    """Issue #1237 — the case `plan_repoints` skips by construction: the CONFIGURED name itself is
-    gone from the catalog, which is the loudest re-point there is and used to produce silence.
+    """Issue #1237 — the case `plan_repoints` skips by construction.
+
+    The CONFIGURED name itself is gone from the catalog, which is the loudest re-point there is
+    and used to produce silence.
     """
 
     def _catalog(self, **extra):
@@ -599,8 +607,10 @@ class TestPlanVanished:
         assert out[0]["last_seen"] == _OLD_BUILD
 
     def test_the_siblings_the_catalog_still_offers_are_named_closest_first(self):
-        """Where the build WENT is the finding — a bare "gone" line sends the reader back to
-        config.yaml's "use the bare catalog id" note and straight onto whatever replaced it.
+        """Where the build WENT is the finding.
+
+        A bare "gone" line sends the reader back to config.yaml's "use the bare catalog id" note
+        and straight onto whatever replaced it.
         """
         siblings = self._vanished()[0]["siblings"]
         assert [s["name"] for s in siblings] == ["deepseek-v4-flash:0731",
@@ -624,8 +634,10 @@ class TestPlanVanished:
                                  {"minimax-m3": dict(_OLD_BUILD)}, self._catalog()) == []
 
     def test_a_configured_tag_the_snapshot_never_had_is_not_a_vanish_event(self):
-        """No baseline is no transition. Firing here would report a config/catalog mismatch that
-        has always been true as if it happened this week, every week.
+        """No baseline is no transition.
+
+        Firing here would report a config/catalog mismatch that has always been true as if it
+        happened this week, every week.
         """
         assert mhc.plan_vanished(_ollama_deployments("deepseek-v4-flash"), {},
                                  self._catalog()) == []
@@ -638,9 +650,10 @@ class TestPlanVanished:
                                  self._catalog()) == []
 
     def test_an_empty_catalog_is_a_degraded_fetch_not_a_roster_wide_vanish(self):
-        """`fetch_catalog` only returns None when the request RAISED — a 200 carrying no models
-        parses to `{}`. Firing here would file an `agent:ready` issue naming every live tier and put
-        an agent to work re-pointing all of them off a phantom.
+        """`fetch_catalog` only returns None when the request RAISED.
+
+        A 200 carrying no models parses to `{}`. Firing here would file an `agent:ready` issue
+        naming every live tier and put an agent to work re-pointing all of them off a phantom.
         """
         assert self._vanished({}) == []
 
@@ -664,8 +677,10 @@ class TestVanishedIssue:
             "deepseek-v4-flash gone @ 140000000000/2026-04-24T00:00:00Z")
 
     def test_a_second_disappearance_of_the_same_tag_is_not_deduped_away(self):
-        """The acceptance criterion the tag name alone would fail: a tag can leave, be republished
-        under a fresh build, and leave again — the second event must still reach a human.
+        """The acceptance criterion the tag name alone would fail.
+
+        A tag can leave, be republished under a fresh build, and leave again — the second event
+        must still reach a human.
         """
         first = mhc.vanished_marker(self._vanished())
         second = mhc.vanished_marker(self._vanished({"modified_at": "2026-09-02T00:00:00Z",
@@ -695,8 +710,10 @@ class TestVanishedIssue:
         assert "model_upgrades.yaml" in body  # never the retirement map, which auto-swaps
 
     def test_body_warns_against_restoring_a_bare_id(self):
-        """The exact way #1237 would have been "fixed" wrongly: note 0 in config.yaml says to use
-        the bare catalog id, and the bare id is what got re-pointed onto a declined build.
+        """The exact way #1237 would have been "fixed" wrongly.
+
+        Note 0 in config.yaml says to use the bare catalog id, and the bare id is what got
+        re-pointed onto a declined build.
         """
         body = mhc.build_vanished_issue_body([self._vanished()], "2026-08-09")
         assert "bare" in body and "declined" in body
@@ -1284,8 +1301,10 @@ class TestCatalogScanCLI:
 
     def test_a_configured_tag_leaving_the_catalog_is_reported_and_filed(self, tmp_path, capsys,
                                                                         monkeypatch):
-        """Issue #1237: the scan used to SKIP this — the one case where the id a live tier serves
-        is gone and the re-point behind it goes unreported.
+        """Issue #1237: the scan used to SKIP this.
+
+        The one case where the id a live tier serves is gone and the re-point behind it goes
+        unreported.
         """
         args = self._workspace(tmp_path, model="deepseek-v4-flash", drop=())
         snapshot = mhc.parse_catalog(_tags())
