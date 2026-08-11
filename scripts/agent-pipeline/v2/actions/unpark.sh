@@ -84,6 +84,11 @@ if [ -n "$TPR" ]; then
   fi
   log "UN-PARKING PR #$TPR (answered on $KIND #$NUMBER${TISS:+, issue #$TISS}; parked '${PARK_REASON:-unknown}') — routing to $LANE."
   gh pr ready "$TPR" --repo "$SLUG" >/dev/null 2>&1
+  # `agent:merge-parked` is REMOVED here and written by nothing in v2 — deliberately, and this is
+  # the decision rather than an oversight. v1 used it to mark a PR parked by the merge lane
+  # specifically; v2 has no separate merge park (every park is a budget park, reasoned about through
+  # `parked_reason`), so writing it would add a concept the daemon does not have. The removal stays
+  # because a rollback to v1 must not inherit a label v1 would act on.
   if ! gh pr edit "$TPR" --repo "$SLUG" --add-label "$LANE" \
         --remove-label "needs-human" --remove-label "agent:blocked" \
         --remove-label "agent:merge-parked" >/dev/null 2>&1; then

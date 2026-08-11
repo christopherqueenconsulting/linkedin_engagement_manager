@@ -68,16 +68,16 @@ def test_a_real_hold_is_still_parked():
     assert got.reason == "human_hold"
 
 
-def test_a_draft_is_still_parked_for_now():
-    """Unchanged here deliberately.
+def test_an_unheld_draft_is_not_ignored_either():
+    """A draft is stuck, not "not ours" — so it must not fall into `ignored`.
 
-    A draft is a genuine "stuck and nobody knows" state rather than a "not ours" one, and making it
-    reachable again is #1393. Pinning the current behaviour keeps that a deliberate follow-up rather
-    than something this change quietly altered.
+    This test pinned `parked` while #1393 was pending; that issue has since made an unheld draft an
+    `awaiting_review` wait, released by `ready_for_review`. What matters to THIS change is
+    unchanged: a draft is never `ignored`, because somebody does need to act on it.
     """
     snap = observe.Snapshot(kind="pr", number=6, labels=frozenset({"agent:working"}),
                             is_draft=True)
-    assert d(snap).next_state == db.STATE_PARKED
+    assert d(snap).next_state != db.STATE_IGNORED
 
 
 def test_decide_has_no_park_action_to_return():

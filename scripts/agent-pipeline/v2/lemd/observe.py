@@ -108,6 +108,22 @@ HOLD_LABELS = frozenset({"needs-human", "agent:blocked"})
 #: to REQUIRED contexts, so a red non-required check is genuinely mergeable. `BLOCKED` proceeds
 #: because it is the normal state of a PR waiting on a required check, and the ladder below reads
 #: those directly.
+#: Lane labels in the order `decide()` consults them. Declared, not incidental: these used to be
+#: three sequential `if`s whose precedence was whatever source order happened to be, and a PR
+#: carrying two of them gave no signal that a second lane was waiting.
+#:
+#: `agent:revise` leads because it carries the owner's own instruction, and the owner outranks CI.
+#: `depfix` before `docfix` because a Dependabot PR whose build is broken cannot usefully be
+#: lint-fixed first.
+LANE_LABEL_PRIORITY = ("agent:revise", "agent:depfix", "agent:docfix")
+
+#: The mode and reason each lane label maps to.
+LANE_LABEL_MODES = {
+    "agent:revise": ("revise", "owner_requested_changes"),
+    "agent:depfix": ("depfix", "dependabot_ci_failure"),
+    "agent:docfix": ("docfix", "lint_gate_failure"),
+}
+
 MERGE_STATE_PROCEED = frozenset({"CLEAN", "BLOCKED", "UNSTABLE", "BEHIND", "HAS_HOOKS"})
 
 #: Mergeability GitHub has not finished computing. Not a state to act on.
@@ -289,18 +305,30 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
     if snap.is_draft:
         # A draft cannot enter the queue however green it is. #1236 sat CLEAN with 21 passing
         # checks for hours because nothing noticed it was a draft.
-        return Decision(ACT_NONE, db.STATE_PARKED, "pr_is_draft", park_reason="draft",
+        #
+        # But WHOSE draft it is decides what this means. `park.sh` drafts a PR as step one of
+        # parking, and those always carry a hold label — they are handled above, by the hold branch,
+        # where an owner answer can release them. A draft with NO hold is the human's own state: they
+        # drafted it, nobody asked them anything, and calling it `parked` made it unreachable by
+        # BOTH paths, since the answer lane lives inside the hold check. It is a wait, and the event
+        # that ends it is `ready_for_review`.
+        return Decision(ACT_NONE, db.STATE_WAIT_REVIEW, "pr_is_draft", wait_reason="draft",
                         wake_in=ttl_parked)
 
     if snap.merge_state == "DIRTY":
         return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "conflicts_with_main", mode="rebase")
 
-    if "agent:revise" in snap.labels:
-        return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "owner_requested_changes", mode="revise")
-    if "agent:depfix" in snap.labels:
-        return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "dependabot_ci_failure", mode="depfix")
-    if "agent:docfix" in snap.labels:
-        return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "lint_gate_failure", mode="docfix")
+    lanes = [lb for lb in LANE_LABEL_PRIORITY if lb in snap.labels]
+    if lanes:
+        # FIRST match wins, and the order is now declared rather than incidental. A PR can carry two
+        # lane labels (#1313 had `agent:revise` + `agent:docfix`); the second is not stranded, it is
+        # picked up on the next observation once the first lane's action removes its own label — but
+        # nothing said so, and nothing proved it. `lanes_pending` puts the queue in the decision
+        # ledger so an operator can see the hand-off instead of inferring it.
+        label = lanes[0]
+        mode, reason = LANE_LABEL_MODES[label]
+        details = {"lanes_pending": lanes[1:]} if len(lanes) > 1 else {}
+        return Decision(ACT_DISPATCH, db.STATE_CLAIMED, reason, mode=mode, details=details)
 
     if snap.merge_state in MERGE_STATE_UNREADABLE:
         # Below the lane labels on purpose: `revise`, `depfix` and `docfix` do not merge anything,

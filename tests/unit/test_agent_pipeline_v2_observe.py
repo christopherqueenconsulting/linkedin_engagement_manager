@@ -148,11 +148,17 @@ def test_hold_beats_even_a_failing_lane():
 # ---------------------------------------------------------------- PR lanes, in priority order
 
 
-def test_draft_is_parked_not_merged():
-    """#1236 sat CLEAN with 21 green checks for hours because nothing noticed it was a draft."""
+def test_draft_is_never_merged():
+    """#1236 sat CLEAN with 21 green checks for hours because nothing noticed it was a draft.
+
+    The state it lands in changed with #1393 — an unheld draft is the human's own state and waits
+    for `ready_for_review` rather than being called a park nobody placed. What #1236 is about is
+    unchanged and is what this asserts: a draft never reaches the merge gate.
+    """
     got = d(pr(is_draft=True))
-    assert got.next_state == db.STATE_PARKED
-    assert got.park_reason == "draft"
+    assert got.action == observe.ACT_NONE
+    assert got.reason == "pr_is_draft"
+    assert got.wait_reason == "draft"
 
 
 def test_dirty_goes_to_rebase_before_anything_else():
