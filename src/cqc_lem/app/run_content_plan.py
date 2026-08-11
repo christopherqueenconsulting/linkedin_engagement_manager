@@ -880,20 +880,22 @@ def _check_avatar_likeness(image_path: str, avatar: dict,
     if not AVATAR_LIKENESS_PROBE_ENABLED:
         return
 
-    from cqc_lem.utilities.avatar.likeness_probe import probe_avatar_likeness
+    from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold, probe_avatar_likeness
     from cqc_lem.utilities.observability import track_avatar_likeness_probe
 
     verdict = probe_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
     track_avatar_likeness_probe(user_id, post_id, verdict)
     if AVATAR_LIKENESS_VIDEO_HOLD_ENABLED and verdict.get("checked") and verdict.get("present") is False:
-        log_warning(
-            "Avatar likeness probe did not confirm the source frame — dropping to stock fallback",
+        # INFO, not WARNING: holding a frame the probe declined is the flag doing its job, and a
+        # recurring warning is re-emitted at ERROR and filed as a grouped defect — one per held
+        # video, against working behaviour. The `avatar_likeness_probe` event is the record.
+        log_info(
+            "Avatar likeness probe declined the source frame — dropping to stock fallback",
             user_id=user_id,
             post_id=post_id,
             action_type="avatar_likeness_probe",
-            reason=verdict.get("reason"),
         )
-        raise RuntimeError("Avatar likeness probe declined the source frame")
+        raise AvatarLikenessHold("Avatar likeness probe declined the source frame")
 
 
 def _post_missing_required_asset(post_id: int, post_type, video_url) -> bool:
@@ -960,6 +962,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for
+    from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold
     from cqc_lem.utilities.db import (
         deduct_video_credits,
         get_default_video_quality,
@@ -1041,8 +1044,14 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
         return src
     except Exception as e:
-        log_warning("Video generation failed — refunding any credits and falling back to Pexels",
-                    exc=e, user_id=user_id, post_id=post_id, task_name="create_video_content")
+        # A likeness hold lands here only to reuse the refund + stock-fallback path below; it is a
+        # decision, not a generation failure, so it never warns (issue #1279).
+        if isinstance(e, AvatarLikenessHold):
+            log_info("Avatar likeness hold — refunding any credits and falling back to Pexels",
+                     user_id=user_id, post_id=post_id, task_name="create_video_content")
+        else:
+            log_warning("Video generation failed — refunding any credits and falling back to Pexels",
+                        exc=e, user_id=user_id, post_id=post_id, task_name="create_video_content")
         if deducted and user_id:
             refund_video_credits(user_id, deducted, post_id)
         try:

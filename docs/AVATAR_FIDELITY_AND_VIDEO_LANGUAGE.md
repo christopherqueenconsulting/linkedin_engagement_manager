@@ -299,8 +299,16 @@ that runs on the **stored source frame** before the video model sees it.
   user's own video posts. Turn it on only after the telemetry shows the probe is reliable.
 - **Fails open:** a vision outage, an unreadable image, or an empty declared likeness returns
   `checked=False`; the video still renders. Only a checked, negative verdict can trigger the hold.
+- **It reads the FRAME, not which model made it:** `generate_image_with_avatar` falls back to base
+  Flux when LoRA inference fails (`used_avatar=False`), and that frame legitimately carries no
+  likeness. The probe scores it `checked` / `present=False` exactly like a bad LoRA render, so a
+  raw checked-negative rate mixes the two — split them on `posts.avatar_media`, which only a real
+  LoRA render sets. #1430 owns that measurement, and it has to happen before the hold may default
+  on: with the hold ON today, a LoRA outage costs the user their AI video as well as the likeness.
 - **Escalation path:** if the probe disagrees with human review, disable the hold flag and inspect
-  the `avatar_likeness_probe` event (`present`, `checked`, `reason`) for that `post_id`.
+  the `avatar_likeness_probe` event (`present`, `checked`, `reason`) for that `post_id`. A held
+  frame logs INFO, not a warning — holding is the flag doing its job, and a recurring warning would
+  file a grouped defect per held video. The event is the record.
 
 ---
 

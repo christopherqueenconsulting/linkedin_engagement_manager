@@ -1,4 +1,5 @@
 """Unit tests for the avatar-likeness probe (issue #1279)."""
+import base64
 import json
 import subprocess
 from types import SimpleNamespace
@@ -28,12 +29,26 @@ def _vision_response(present: bool, reason: str = "ok") -> SimpleNamespace:
 
 
 class TestEncodeImage:
-    def test_encodes_real_image_to_png_base64(self, tmp_path):
+    def test_encodes_real_image_to_base64(self, tmp_path):
         from cqc_lem.utilities.avatar.likeness_probe import _encode_image
         path = _make_image(tmp_path)
-        encoded = _encode_image(path)
-        assert isinstance(encoded, str)
-        assert len(encoded) > 0
+        encoded, mime = _encode_image(path)
+        assert base64.b64decode(encoded) == open(path, "rb").read()
+        assert mime == "png"
+
+    def test_stored_bytes_go_out_under_their_own_mime(self, tmp_path):
+        """A webp frame is sent as webp — re-encoding it to PNG only inflates the request body."""
+        from cqc_lem.utilities.avatar.likeness_probe import _encode_image
+        path = str(tmp_path / "frame.webp")
+        Image.new("RGB", (32, 32), color=(1, 2, 3)).save(path)
+        _, mime = _encode_image(path)
+        assert mime == "webp"
+
+    def test_jpg_extension_maps_to_jpeg(self, tmp_path):
+        from cqc_lem.utilities.avatar.likeness_probe import _encode_image
+        path = str(tmp_path / "frame.jpg")
+        Image.new("RGB", (32, 32), color=(1, 2, 3)).save(path)
+        assert _encode_image(path)[1] == "jpeg"
 
 
 class TestProbeAvatarLikeness:

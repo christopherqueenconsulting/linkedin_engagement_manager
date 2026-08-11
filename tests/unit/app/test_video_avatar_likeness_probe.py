@@ -76,6 +76,41 @@ class TestAvatarLikenessProbeInVideoGeneration:
             result = _generate_video_src(post_id=9)
         assert result == "https://runway.video/abc.mp4"
 
+    def test_no_probe_when_flag_disabled(self):
+        with patch(f"{_RCP}.AVATAR_LIKENESS_PROBE_ENABLED", False), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/avatar_frame.webp"), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness") as probe, \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            result = _generate_video_src(post_id=11)
+        assert result == "https://runway.video/abc.mp4"
+        probe.assert_not_called()
+        track.assert_not_called()
+
+    def test_hold_never_warns_it_is_a_decision(self):
+        """A held frame is the flag working; a repeated warning would file a defect per held video."""
+        with patch(f"{_RCP}.AVATAR_LIKENESS_VIDEO_HOLD_ENABLED", True), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/avatar_frame.webp"), \
+             patch(f"{_RCP}.create_runway_video"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": False, "checked": True, "reason": "wrong face"}), \
+             patch(f"{_OBS}.track_avatar_likeness_probe"), \
+             patch(f"{_RCP}.log_warning") as warn:
+            _generate_video_src(post_id=12)
+        assert not [c for c in warn.call_args_list if "Video generation failed" in str(c)]
+
     def test_hold_flag_drops_to_fallback_on_failed_probe(self):
         with patch(f"{_RCP}.AVATAR_LIKENESS_VIDEO_HOLD_ENABLED", True), \
              patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",

@@ -7,15 +7,12 @@ to verify, and the probe reports unchecked rather than guessing.
 """
 
 import base64
-import io
 import json
 import os
 import shutil
 import subprocess
 import tempfile
 from typing import Optional
-
-from PIL import Image
 
 from cqc_lem.utilities.ai.client import client
 from cqc_lem.utilities.avatar.attributes import subject_clause
@@ -34,13 +31,26 @@ frame? Ignore incidental people in the background. Answer ONLY with a JSON objec
 {{"present": true|false, "reason": "<one-sentence explanation>"}}"""
 
 
-def _encode_image(image_path: str) -> str:
-    """Return a base64 PNG data URI for the image at ``image_path``."""
-    with Image.open(image_path) as img:
-        rgb = img.convert("RGB")
-        buf = io.BytesIO()
-        rgb.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+class AvatarLikenessHold(RuntimeError):
+    """A checked probe declined the source frame while the video hold flag was ON.
+
+    Its own type is what keeps the hold readable as a DECISION at the caller: `_generate_video_src`
+    catches every exception as a generation FAILURE and warns with the stack, and a repeated warning
+    files a grouped defect — so a working hold would file one per held video.
+    """
+
+
+def _encode_image(image_path: str) -> tuple[str, str]:
+    """Base64 of the file as stored, plus the image MIME subtype to send it under.
+
+    The stored bytes go out as-is — re-encoding a photographic webp/jpeg frame to PNG multiplied
+    the request body for a `detail: low` look that never sees those pixels.
+    `image_gen.inspect_render_quality` sends the same shape.
+    """
+    with open(image_path, "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+    ext = os.path.splitext(image_path)[1].lstrip(".").lower() or "png"
+    return encoded, ("jpeg" if ext in ("jpg", "jpeg") else ext)
 
 
 def probe_avatar_likeness(
@@ -75,7 +85,7 @@ def probe_avatar_likeness(
         }
 
     try:
-        encoded = _encode_image(image_path)
+        encoded, mime = _encode_image(image_path)
         response = client.chat.completions.create(
             model=AVATAR_LIKENESS_PROBE_MODEL,
             messages=[{
@@ -88,7 +98,7 @@ def probe_avatar_likeness(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{encoded}",
+                            "url": f"data:image/{mime};base64,{encoded}",
                             "detail": "low",
                         },
                     },
