@@ -202,3 +202,45 @@ def test_both_answer_parsers_agree_on_the_same_thread(tmp_path, body, is_answer)
         assert shell_found_owner, "the daemon would dispatch an un-park the action refuses"
     if is_answer:
         assert parsed is not None and shell_found_owner
+
+
+# ------------------------------------------------- the park reason the un-park routes on
+
+
+def test_the_generic_hold_reason_does_not_erase_a_specific_one():
+    """#1389 routes an un-park by park reason, and the evidence was being deleted.
+
+    `park.sh` parks a PR as `selfreview_exhausted` and applies the hold labels. The very next
+    observation sees those labels, takes the hold branch, reports `needs_human`, and the generic
+    write stored that over the top. By the time an owner answered, the only reason left was the
+    generic one — which means "a question was asked, apply the answer" — so a budget park still went
+    to the revise lane with nothing to apply, spent its two runs and re-parked.
+
+    Caught live: PRs #1368 and #1283 both showed `parked_reason='needs_human'` in the queue while
+    their Decision Comments said `selfreview_exhausted`.
+    """
+    assert daemon_mod._keep_specific_park_reason(
+        "selfreview_exhausted", "needs_human") == "selfreview_exhausted"
+
+
+def test_a_specific_reason_still_replaces_another_specific_one():
+    """A genuine change of reason must not be frozen by the guard."""
+    assert daemon_mod._keep_specific_park_reason(
+        "selfreview_exhausted", "revise_exhausted") == "revise_exhausted"
+
+
+def test_the_generic_reason_is_kept_when_there_is_nothing_better():
+    """A hold a human applied by hand has no prior reason, and `needs_human` is the true one."""
+    assert daemon_mod._keep_specific_park_reason(None, "needs_human") == "needs_human"
+    assert daemon_mod._keep_specific_park_reason("", "needs_human") == "needs_human"
+
+
+def test_clearing_the_reason_is_still_possible():
+    """An item leaving a park writes None, and that must not be blocked."""
+    assert daemon_mod._keep_specific_park_reason("selfreview_exhausted", None) is None
+
+
+def test_the_daemon_uses_the_guard_on_the_generic_write():
+    """The guard only helps on the path that was doing the overwriting."""
+    src = (_V2 / "lemd" / "daemon.py").read_text()
+    assert "parked_reason=_keep_specific_park_reason(row[\"parked_reason\"]" in src
