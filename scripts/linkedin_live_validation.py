@@ -1029,29 +1029,88 @@ def feed_sort_chains() -> tuple:
     return list(_FEED_SORT_LOCATORS), list(_FEED_RECENT_OPTION_LOCATORS), "image"
 
 
-def _feed_sort_evidence_scan(driver) -> list[dict]:
-    """Run the same two-pass DOM scan production ships as an event (#1270).
+# The evidence scan is NEW in #1270, so the DEPLOYED image this probe is piped into has no
+# `sort_evidence` module to drive — and an import-guarded scan that silently returns [] on that
+# image is worse than no probe: the run the OWNER asked for came back with the key absent, which
+# reads exactly like "the scan found nothing" (the very confusion #1255 exists to prevent). Same
+# posture as `feed_sort_chains` / `recommendation_read` above: drive the SHIPPED scan when the
+# running image has one, carry an identical copy when it does not, and name which in the reading.
+# `TestFeedSortEvidenceScanCopy` fails the build if either half of the copy drifts.
+FALLBACK_FEED_POST_TEXT_SEL = ("[data-testid='expandable-text-box'], "
+                               ".feed-shared-update-v2 .update-components-text")
 
-    This is read-only and does NOT call ``track_selector_evidence``, so a live probe never writes
-    to PostHog. It returns the bounded candidate descriptors so a live ``--feed-sort`` run can
-    validate the new capture alongside the locator chain.
+FALLBACK_SORT_EVIDENCE_SCAN_JS = (
+    "const root=document.querySelector('main')||document.body;"
+    f'const first=document.querySelector("{FALLBACK_FEED_POST_TEXT_SEL}");'
+    "const CAP=8;const TEXT_MAX=40;"
+    "const out=[];const seen=new Set();"
+    "const own=el=>(el.innerText||'').replace(/\\s+/g,' ').trim();"
+    "const push=(el,reason)=>{"
+    "  if(out.length>=CAP||seen.has(el)) return;"
+    "  seen.add(el);"
+    "  const aria=(el.getAttribute('aria-label')||'');"
+    "  out.push({"
+    "    tag:el.tagName.toLowerCase(),"
+    "    data_testid:el.getAttribute('data-testid')||'',"
+    "    aria_label:aria.slice(0,120),"
+    "    role:el.getAttribute('role')||'',"
+    "    text:own(el).slice(0,80),"
+    "    has_popup:el.getAttribute('aria-haspopup')||'',"
+    "    classes:(el.getAttribute('class')||'').split(/\\s+/).filter(c=>c.length>3).slice(0,6).join(' '),"
+    "    reason:reason"
+    "  });"
+    "};"
+    "const KW=/sort|most relevant|most recent|\\btop\\b|\\bnewest\\b/;"
+    "for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup],div')){"
+    "  const text=own(el);"
+    "  if(text.length>TEXT_MAX) continue;"
+    "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
+    "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
+    f'  const inList=el.closest&&el.closest("{FALLBACK_FEED_POST_TEXT_SEL}");'
+    "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
+    "  if(out.length>=CAP) break;"
+    "}"
+    "if(!out.length){"
+    "  for(const el of root.querySelectorAll('button,[role=\"button\"],select,[aria-haspopup]')){"
+    "    if(first){const pos=first.compareDocumentPosition(el);"
+    "      if(!(pos&Node.DOCUMENT_POSITION_PRECEDING)||(pos&Node.DOCUMENT_POSITION_CONTAINS)) continue;}"
+    "    if(own(el).length>TEXT_MAX) continue;"
+    "    push(el,first?'header':'unanchored');"
+    "    if(out.length>=CAP) break;"
+    "  }"
+    "}"
+    "return out;")
 
-    On an image that predates #1270 the scan builder is not importable; we return an empty list
-    and the caller records why.
-    """
+
+def feed_sort_evidence_scan_js() -> tuple:
+    """(the two-pass evidence scan JS to run, where it came from)."""
     try:
         from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
-        from cqc_lem.utilities.linkedin.sort_evidence import (
-            build_sort_control_scan_js,
-            scan_sort_control_candidates,
-        )
-        scan_js = build_sort_control_scan_js(
-            item_selectors=[_FEED_POST_TEXT_SEL],
-            prose_container=_FEED_POST_TEXT_SEL,
-        )
-        return scan_sort_control_candidates(driver, scan_js)
+        from cqc_lem.utilities.linkedin.sort_evidence import build_sort_control_scan_js
+    except ImportError:
+        return FALLBACK_SORT_EVIDENCE_SCAN_JS, "script"
+    return build_sort_control_scan_js(item_selectors=[_FEED_POST_TEXT_SEL],
+                                      prose_container=_FEED_POST_TEXT_SEL), "image"
+
+
+def _feed_sort_evidence_scan(driver) -> tuple:
+    """Run the same two-pass DOM scan production ships as an event, and say where it came from.
+
+    Read-only, and it does NOT call ``track_selector_evidence`` — a live probe never writes to
+    PostHog. Returns ``(candidates, source)`` so a live ``--feed-sort`` run validates the new
+    capture alongside the locator chain, on the CURRENT image as well as on a rebuilt one.
+
+    ``[]`` is a real reading here ("nothing describable above the first card"), which is why the
+    source travels with it: only ``source`` tells a reader whether an empty sample describes the
+    page or describes a probe that could not scan.
+    """
+    scan_js, source = feed_sort_evidence_scan_js()
+    try:
+        result = driver.execute_script(scan_js)
     except Exception:
-        return []
+        # A dead scan must never cost the locator grading this probe rode in on.
+        return [], source
+    return [dict(row) for row in (result or []) if isinstance(row, dict)], source
 
 
 def control_sort_state(control) -> str:
@@ -1260,7 +1319,8 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
     # Before `visible_controls`, not after: the issue body truncates the evidence blob, and the
     # half a re-grounding pass reads must be the half that survives the cut (#1108).
     reading["sort_candidates"] = feed_sort_candidates(driver)
-    reading["selector_evidence"] = _feed_sort_evidence_scan(driver)
+    reading["selector_evidence"], reading["selector_evidence_source"] = \
+        _feed_sort_evidence_scan(driver)
     reading["visible_controls"] = visible_button_labels(driver) + menu_item_labels(driver)
     return graded(reading, feed_sort_state(reading), feed_sort_verdict(reading))
 

@@ -468,11 +468,13 @@ class TestFeedSortProbe:
                             _find_first_returning([control, recent, recent]))
         monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
         monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
-        monkeypatch.setattr(llv, "_feed_sort_evidence_scan",
-                            lambda d: [{"tag": "button", "text": "Sort by", "reason": "header"}])
+        monkeypatch.setattr(
+            llv, "_feed_sort_evidence_scan",
+            lambda d: ([{"tag": "button", "text": "Sort by", "reason": "header"}], "image"))
 
         report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
         assert report["selector_evidence"] == [{"tag": "button", "text": "Sort by", "reason": "header"}]
+        assert report["selector_evidence_source"] == "image"
 
     def test_selector_evidence_scan_is_read_only_and_never_raises(self, monkeypatch):
         """A dead scan must not stop the probe from grading the real locator chain."""
@@ -482,11 +484,12 @@ class TestFeedSortProbe:
                             _find_first_returning([control, recent, recent]))
         monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
         monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
-        monkeypatch.setattr(llv, "_feed_sort_evidence_scan", lambda d: [])
+        monkeypatch.setattr(llv, "_feed_sort_evidence_scan", lambda d: ([], "image"))
 
         report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
         assert report["state"] == "ok"
         assert report["selector_evidence"] == []
+        assert report["selector_evidence_source"] == "image"
 
     def test_a_control_label_naming_both_sorts_is_unreadable_not_recent(self):
         """Production reads a both-sorts label as unknown; a probe that called it 'recent' would
@@ -664,6 +667,65 @@ class TestFeedSortChainCopy:
         assert "predates #817" in verdict
         assert "predates" not in llv.feed_sort_verdict({"control_found": True, "sort_after": "recent",
                                                         "chain_source": "image"})
+
+
+@pytest.mark.unit
+class TestFeedSortEvidenceScanCopy:
+    """#1270's evidence scan is NEW, so the image the probe is piped into cannot import it — and the
+    first live run proved why that matters: the report came back with no `selector_evidence` at all,
+    which reads like "the scan found nothing" rather than "the scan never ran". Image first, carried
+    copy otherwise, and the reading names which.
+    """
+
+    def _shipped_js(self) -> str:
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+        from cqc_lem.utilities.linkedin.sort_evidence import build_sort_control_scan_js
+
+        return build_sort_control_scan_js(item_selectors=[_FEED_POST_TEXT_SEL],
+                                          prose_container=_FEED_POST_TEXT_SEL)
+
+    def test_carried_scan_is_identical_to_the_one_the_feed_ships(self):
+        from cqc_lem.app.engagement import feed
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+
+        assert llv.FALLBACK_FEED_POST_TEXT_SEL == _FEED_POST_TEXT_SEL
+        assert llv.FALLBACK_SORT_EVIDENCE_SCAN_JS == self._shipped_js()
+        assert llv.FALLBACK_SORT_EVIDENCE_SCAN_JS == feed._FEED_SORT_CONTROL_SCAN_JS
+
+    def test_the_running_image_wins_when_it_has_the_scan(self):
+        scan_js, source = llv.feed_sort_evidence_scan_js()
+        assert source == "image"
+        assert scan_js == self._shipped_js()
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_1270(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_scan(name, *a, **k):
+            if name == "cqc_lem.utilities.linkedin.sort_evidence":
+                raise ImportError("No module named 'cqc_lem.utilities.linkedin.sort_evidence'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_scan)
+        scan_js, source = llv.feed_sort_evidence_scan_js()
+        assert source == "script"
+        assert scan_js == llv.FALLBACK_SORT_EVIDENCE_SCAN_JS
+
+    def test_an_empty_sample_still_carries_the_source_that_explains_it(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = []
+        assert llv._feed_sort_evidence_scan(driver) == ([], "image")
+
+    def test_a_dead_scan_never_costs_the_locator_grading(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = RuntimeError("javascript error")
+        assert llv._feed_sort_evidence_scan(driver) == ([], "image")
+
+    def test_only_dict_rows_survive_the_read(self):
+        driver = MagicMock()
+        driver.execute_script.return_value = [{"tag": "button"}, "junk", None]
+        rows, source = llv._feed_sort_evidence_scan(driver)
+        assert rows == [{"tag": "button"}] and source == "image"
 
 
 @pytest.mark.unit
