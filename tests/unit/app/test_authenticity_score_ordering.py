@@ -37,7 +37,7 @@ _NEUTRAL_BLUEPRINT = {"subject": None, "angle": "", "format": "personal_lesson",
                       "structure": [], "hook_style": "micro_story", "cta_style": "reply_question"}
 
 
-def _run(outputs, recent=None, post_id=77):
+def _run(outputs, recent=None, post_id=77, lead_magnet=None):
     """Drive create_text_post with a generator returning `outputs` in order.
 
     The authenticity judge and its DB write are captured rather than mocked away.
@@ -51,7 +51,7 @@ def _run(outputs, recent=None, post_id=77):
     patches = [
         patch(f"{_RCP}.get_engagement_preferences", return_value={}),
         patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"),
-        patch(f"{_RCP}.get_lead_magnet_settings", return_value=_DISABLED_LM),
+        patch(f"{_RCP}.get_lead_magnet_settings", return_value=lead_magnet or _DISABLED_LM),
         patch(f"{_RCP}.get_recent_post_texts", return_value=list(recent or [])),
         patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]),
         patch(f"{_RCP}._select_post_blueprint", return_value=dict(_NEUTRAL_BLUEPRINT)),
@@ -111,3 +111,18 @@ class TestAuthenticityScoresTheShippedDraft:
         _, gen, scorer, _ = _run([_NEAR_DUP, _FRESH], recent=[_RECENT])
         assert gen.call_count == 2
         assert scorer.call_count == 1
+
+    def test_deterministically_repaired_cta_is_part_of_what_is_scored(self):
+        """The deterministic CTA repair runs after the gate, and the judge must see it.
+
+        No regeneration here: `ensure_lead_magnet_cta` is what rewrites the draft, so scoring
+        before it would grade text that is not what ships.
+        """
+        # post_id 60 is divisible by every plausible 1-in-N rotation, so the CTA is selected.
+        out, gen, scorer, _ = _run([_FRESH], recent=[_RECENT], post_id=60,
+                                   lead_magnet={"enabled": True, "keyword": "GUIDE",
+                                                "message": "the LLM cost checklist"})
+        assert gen.call_count == 1
+        assert "GUIDE" in out and out != _FRESH  # the repair really fired
+        scorer.assert_called_once()
+        assert scorer.call_args.args[0] == out

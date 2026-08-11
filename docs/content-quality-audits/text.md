@@ -129,8 +129,10 @@ gate and the nightly telemetry read back.
 
 **Resolution (#1264):** the scoring call MOVED instead of being repeated. `_score_and_persist_authenticity`
 now runs at the END of `create_text_post` — after the review gate, the dwell reflow, the meeting-ask
-repair and the lead-magnet CTA repair — so the judge grades the exact text that is persisted. The
-pipeline order is now `generate -> A2 proof -> humanize -> review -> A1`. Because the retry re-enters
+repair and the lead-magnet CTA repair — so the judge grades the text `create_text_post` returns. The
+pipeline order is now `generate -> A2 proof -> humanize -> review -> A1`. The only thing appended
+after that point is the fixed AI-visuals disclosure line (`_apply_ai_disclosure`, on a video/avatar-media
+post) — identical boilerplate on every such post, so it is deliberately not part of what the judge grades. Because the retry re-enters
 with `similarity_check=False`, it still never reaches the scoring line: **exactly one judge call per
 shipped post**, regenerated or not, so the fix carries no extra `lem-complex` spend. What it does
 change is which posts auto-publish — a regenerated draft is now judged on its own merits in both

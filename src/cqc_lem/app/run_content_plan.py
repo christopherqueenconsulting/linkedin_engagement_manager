@@ -2347,8 +2347,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             final_content = repaired
 
     # Authenticity gate (issue #382 — 360Brew defense): score the finished draft for generic-AI risk
-    # + profile-topic consistency and persist the score. Runs LAST, on the draft that actually ships
-    # (issue #1264): the review gate above regenerates the post on a similarity / A2-proof /
+    # + profile-topic consistency and persist the score. Runs LAST here, on the draft this function
+    # returns (issue #1264): the review gate above regenerates the post on a similarity / A2-proof /
     # fabrication / slop failure, and its retry re-enters with `similarity_check=False` — the same
     # flag guarding this call — so scoring earlier persisted the score of a draft that was thrown
     # away. Still exactly ONE judge call per shipped post: the retry never reaches this line. The
