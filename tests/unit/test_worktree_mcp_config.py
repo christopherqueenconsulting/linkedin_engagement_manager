@@ -15,8 +15,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -49,16 +47,25 @@ def test_every_enabled_server_is_defined():
     assert enabled <= defined, f"enabled but undefined: {sorted(enabled - defined)}"
 
 
-@pytest.mark.parametrize("name", sorted(json.loads((ROOT / ".mcp.json").read_text())["mcpServers"]))
-def test_server_command_is_not_a_machine_specific_path(name):
-    """A command resolved from PATH survives a different box; an absolute one does not.
+def test_playwright_is_pinned_to_a_node_20_plus_interpreter():
+    """The absolute node path is LOAD-BEARING, not sloppiness. Do not "clean it up".
 
-    The playwright entry pointed at a Homebrew-specific node install
-    (`/home/linuxbrew/.linuxbrew/opt/node@24/bin/npx`), which is now a tracked file every
-    checkout inherits — including CI images and any contributor's machine.
+    This box has Node 18.19.1 at `/usr/bin/npx` and Node 24 under Homebrew. Playwright's MCP
+    server refuses to start on anything below Node 20:
+
+        You are running Node.js 18.19.1.
+        Playwright requires Node.js 20 or higher.
+
+    So rewriting this to a bare `npx` "for portability" resolves it to the one interpreter that
+    cannot run it, and the failure is invisible: the server simply never starts, agents report no
+    browser, and gauntlet-loop runs conclude they cannot capture the page. That regression shipped
+    once already. If a second machine ever needs this, give it its own path — do not un-pin.
     """
-    command = _mcp()["mcpServers"][name]["command"]
-    assert not command.startswith("/"), f"{name}: {command!r} is machine-specific — use PATH"
+    command = _mcp()["mcpServers"]["playwright"]["command"]
+    assert command.startswith("/"), "playwright must name an interpreter, not inherit PATH"
+    assert "node@" in command or "node2" in command, (
+        f"{command!r} does not obviously point at a Node 20+ install"
+    )
 
 
 def test_referenced_local_scripts_are_tracked():
