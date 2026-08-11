@@ -447,6 +447,8 @@ def probe_video_asset(path: Optional[str]) -> dict:
             try:
                 result["duration_seconds"] = round(float(duration))
             except (TypeError, ValueError):
+                # ffprobe reports "N/A" for a container with no readable duration; leave
+                # duration_seconds None so an unmeasured video is never recorded as zero.
                 pass
         result["asset_probe"] = VIDEO_PROBE_OK if result["has_video_stream"] else VIDEO_PROBE_UNREADABLE
     except Exception:

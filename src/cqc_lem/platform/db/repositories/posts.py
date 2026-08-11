@@ -1220,14 +1220,6 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
                  "video_render_ok": bool(r["video_render_ok"]) if r.get("video_render_ok") is not None else None}
                 for r in rows
             ]
-            return [
-                {**r,
-                 "slop_score": float(r["slop_score"]) if r.get("slop_score") is not None else None,
-                 "similarity": float(r["similarity"]) if r.get("similarity") is not None else None,
-                 "engagement_rate": (float(r["engagement_rate"])
-                                     if r.get("engagement_rate") is not None else None)}
-                for r in (cursor.fetchall() or [])
-            ]
     except mysql.connector.Error:
         return []  # table not created yet (or unreadable) — the rollup reports an empty window
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
