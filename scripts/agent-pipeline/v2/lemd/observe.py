@@ -34,6 +34,7 @@ ACT_DISPATCH = "dispatch"        # run an agent in some MODE
 ACT_MERGE = "merge"              # gh-only: arm auto-merge
 ACT_PARK = "park"                # gh-only: escalate to the owner
 ACT_UNPARK = "unpark"            # gh-only: the owner answered — release the hold
+ACT_DISARM = "disarm"            # gh-only: a hold appeared on an armed PR — take the arm off
 ACT_CLOSE = "close"              # terminal bookkeeping
 
 
@@ -185,6 +186,18 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         # Nothing else in v2 clears a hold label, so without this branch every park is permanent:
         # `park.sh` promised un-parking happened "through the existing answer lane" and that lane
         # was never ported off v1, which now stands down whenever the daemon heartbeat is fresh.
+        # SAFETY FIRST, above the answer. Only `park.sh` ever ran `--disable-auto`, so a hold a
+        # HUMAN applied — the natural "stop, I want to look at this" gesture — was honoured by this
+        # function and ignored by GitHub, which merged the PR the moment its gate cleared. The
+        # daemon held and the merge happened anyway.
+        #
+        # This sits above the answer branch deliberately. Un-parking one observation later costs a
+        # single pass; leaving an armed hold costs a merge nobody authorised, and it cannot be
+        # undone. `disarm.sh` re-checks that the hold is still present, so a hold removed in the
+        # meantime is not something we take the arm off for.
+        if snap.kind == "pr" and snap.auto_merge:
+            return Decision(ACT_DISARM, db.STATE_PARKED, "human_hold_armed", mode="disarm",
+                            park_reason="needs_human")
         ans = snap.answer
         if ans is not None:
             if not ans.actionable:

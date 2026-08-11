@@ -150,7 +150,7 @@ unreadable state (#1082). Admission is by LABEL and PROVENANCE, never by author:
 Dependabot PR. `admissible()` also has an `unreadable` branch, but row 3 shadows it, so that reason
 is **unreachable**.
 
-⚠️ **"→ parked" in rows 4, 17 and 18 means the DB row only.** `decide()` never returns `ACT_PARK` —
+⚠️ **"→ parked" in rows 4, 18 and 19 means the DB row only.** `decide()` never returns `ACT_PARK` —
 it returns `ACT_NONE` with `next_state=parked`, which writes the state and `pending_mode=None`, so
 `park.sh` never runs. No comment, no label, no assignee, no auto-merge disarm. Only budget exhaustion
 reaches the real park. See §7.
@@ -159,10 +159,16 @@ reaches the real park. See §7.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 5 | hold label + actionable answer | unpark | `owner_answered` | — |
-| 6 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
-| 7 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
-| 8 | hold label, no answer | none → parked | `human_hold` | 6h |
+| 5 | hold label on a PR with auto-merge **armed** | disarm | `human_hold_armed` | — |
+| 6 | hold label + actionable answer | unpark | `owner_answered` | — |
+| 7 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
+| 8 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
+| 9 | hold label, no answer | none → parked | `human_hold` | 6h |
+
+Row 5 sits above the answer deliberately. Only `park.sh` ever ran `--disable-auto`, so a hold a
+HUMAN applied was honoured here and ignored by GitHub, which merged the PR when its gate cleared.
+Un-parking one observation later costs a single pass; leaving an armed hold costs a merge nobody
+authorised, and that cannot be undone.
 
 `HOLD_LABELS = {needs-human, agent:blocked}`. A held item carrying no `agent:*` label is still
 admitted (row 4 makes an exception) — otherwise an item parked with only `needs-human` would be
@@ -175,17 +181,17 @@ Friday" reads as `hold` and stays parked.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 9 | `agent:ready`, work state unreadable | none | `start_work_state_unreadable` | 600s |
-| 10 | `agent:ready`, work exists, open PR **or linkage unreadable** | none | `start_already_produced_work` | 1h |
-| 11 | `agent:ready`, work exists, **no PR** | dispatch `start` | `stranded_branch_no_pr` | — |
-| 12 | `agent:ready`, no work | dispatch `start` | `issue_ready` | — |
-| 13 | `agent:working`, unreadable | none | `working_claim_state_unreadable` | 600s |
-| 14 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
-| 15 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
-| 16 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
-| 17 | neither label | none → parked | `issue_not_ready` | never |
+| 10 | `agent:ready`, work state unreadable | none | `start_work_state_unreadable` | 600s |
+| 11 | `agent:ready`, work exists, open PR **or linkage unreadable** | none | `start_already_produced_work` | 1h |
+| 12 | `agent:ready`, work exists, **no PR** | dispatch `start` | `stranded_branch_no_pr` | — |
+| 13 | `agent:ready`, no work | dispatch `start` | `issue_ready` | — |
+| 14 | `agent:working`, unreadable | none | `working_claim_state_unreadable` | 600s |
+| 15 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
+| 16 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
+| 17 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
+| 18 | neither label | none → parked | `issue_not_ready` | never |
 
-Rows 10–11 are one question asked two ways. "Did anything leave the box" is right for *must I avoid
+Rows 11–12 are one question asked two ways. "Did anything leave the box" is right for *must I avoid
 forking this*; it is wrong for *will anyone ever finish it*. A branch with an open PR is in flight; a
 branch with no PR is a `start` that pushed and then died — resumable, and re-dispatching it resumes
 on the existing branch. Linked PRs are consulted **before** the `feature/claude-issue-N` convention,
@@ -196,29 +202,29 @@ call that live PR stranded.
 
 | # | Condition | Action | Reason | Wake |
 |---|---|---|---|---|
-| 18 | draft | none → parked | `pr_is_draft` | 6h |
-| 19 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
-| 20 | label `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
-| 21 | label `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
-| 22 | label `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
-| 23 | auto-merge armed | none | `auto_merge_armed` | 15m |
-| 24 | checks unreadable | none | `checks_unknown` | 300s |
-| 25 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
-| 26 | checks pending, or zero checks | none | `ci_running` | 30m |
-| 27 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
-| 28 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
-| 29 | already in the merge queue | none | `in_merge_queue` | 15m |
-| 30 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
+| 19 | draft | none → parked | `pr_is_draft` | 6h |
+| 20 | `mergeStateStatus == DIRTY` | dispatch `rebase` | `conflicts_with_main` | — |
+| 21 | label `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
+| 22 | label `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
+| 23 | label `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
+| 24 | auto-merge armed | none | `auto_merge_armed` | 15m |
+| 25 | checks unreadable | none | `checks_unknown` | 300s |
+| 26 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
+| 27 | checks pending, or zero checks | none | `ci_running` | 30m |
+| 28 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
+| 29 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
+| 30 | already in the merge queue | none | `in_merge_queue` | 15m |
+| 31 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
 
-Row 23 sits above row 24 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
+Row 24 sits above row 25 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
 of a PR waiting on required checks; without this the ladder fell through to `gate_satisfied` on every
 pass and burned the per-head merge budget in three minutes (measured on #1295).
 
-Row 28's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
+Row 29's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
 wrong in this direction costs one extra selfreview; being wrong in the other merges code no reviewer
 saw. **One exception, and it errs permissive**: when the head's `committedDate` is unreadable,
 `review_state` falls back to "any review counts", however stale — refusing every PR on an unreadable
-date would wedge the gate entirely. Row 26 treats zero checks as pending, not green.
+date would wedge the gate entirely. Row 27 treats zero checks as pending, not green.
 
 ---
 
@@ -265,7 +271,7 @@ wait, so a draft is never rebased and an armed draft is never recognised.
 | a stale review | dispatches `selfreview` | same |
 | checks pending | reports `ci_running`, not `in_merge_queue` | an operator reading the state is misled |
 
-Row 29 reads as though queue membership is checked early. It is only checked on the fully-green path.
+Row 30 reads as though queue membership is checked early. It is only checked on the fully-green path.
 
 **Lane labels on the wrong kind**
 
@@ -286,17 +292,17 @@ and never writes.
 
 | Mode | Pool | Budget | Timeout |
 |---|---|---|---|
-| `start` | agent | 2 | 2700s |
-| `fix` | agent | 4 | 1200s |
-| `review` | agent | 3 | 900s |
-| `selfreview` | agent | 2 | 1200s |
-| `rebase` | agent | 2 | 1200s |
-| `revise` | agent | 2 | 1500s |
-| `depfix` | agent | 3 | 1200s |
-| `docfix` | agent | 3 | 600s |
+| `start` | agent | 3 | 2700s |
+| `fix` | agent | 5 | 1200s |
+| `review` | agent | 4 | 900s |
+| `selfreview` | agent | 3 | 1200s |
+| `rebase` | agent | 3 | 1200s |
+| `revise` | agent | 3 | 1500s |
+| `depfix` | agent | 4 | 1200s |
+| `docfix` | agent | 4 | 600s |
 | `merge` | gh | **3, but not from this table** — see below | 180s |
 | `park` / `unpark` | gh | **none — they charge no ledger at all** | 180s |
-| `phasefix` | — | 2 | 600s — **never emitted by `decide()`** |
+| `phasefix` | — | 3 | 600s — **never emitted by `decide()`** |
 
 Timeouts stretch up to 1.5× at full pool occupancy.
 
@@ -342,7 +348,6 @@ issue. It exists so the gaps are visible rather than discovered one incident at 
 | Gap | Why it matters | Issue |
 |---|---|---|
 | **`decide()` never returns `ACT_PARK`.** Rows 4, 17 and 18 write the DB state and `pending_mode=None`, so `park.sh` never runs and `daemon.py`'s `ACT_PARK` branch is dead code. An inadmissible item, a not-ready issue and a human-drafted PR are parked with **no comment, no label, no assignee and no auto-merge disarm** — invisible in GitHub. Only budget exhaustion reaches a real park | the escalation path this pipeline is built around does not exist for three of its four entrances | TBD |
-| **A human hold does not disarm auto-merge.** Only `park.sh` runs `--disable-auto`. A hand-applied `needs-human` on an armed PR is honoured by the daemon and ignored by GitHub, which merges when the gate clears | safety — a merge nobody authorised | TBD |
 | **A queued PR gets pushed out of the queue** by `fix`/`review`/`selfreview`, because `queue_state` is read last (§5) | the queue is re-entered from scratch each time | TBD |
 | **`unpark.sh` always routes to `agent:revise`**, and that lane outranks the merge ladder. A PR parked for `selfreview_exhausted` has no owner direction to apply, so it burns 2 `revise` runs on an empty lane and re-parks. Observed on #1289 and #1296 | the un-park treadmill survives the marker fix | TBD |
 | **There is no terminal state.** Every dead end is "park and ask", forever. Un-parking resets the ledger and buys N more runs; `parked_reason` holds only the latest, so nothing counts laps. A non-converging PR costs one human decision per lap, indefinitely | this is the flow-logic gap | TBD |

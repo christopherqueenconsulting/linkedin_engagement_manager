@@ -246,11 +246,22 @@ def test_reconcile_queries_both_hold_labels_for_both_kinds():
 
 
 def test_unpark_is_a_gh_pool_action_everywhere_it_is_named():
-    """The pool sets in `act()` and in restart adoption must agree, or a restart mis-counts caps."""
+    """The pool sets in `act()` and in restart adoption must agree, or a restart mis-counts caps.
+
+    Asserts MEMBERSHIP, not the exact tuple: pinning the literal made adding a legitimate new gh
+    mode (`disarm`, #1387) look like a regression, which trains people to edit the test rather than
+    read it. What matters is that `unpark` is classified the same way in both places.
+    """
+    import re as _re
     daemon_src = (_V2 / "lemd" / "daemon.py").read_text()
     dispatch_src = (_V2 / "lemd" / "dispatch.py").read_text()
-    assert '"gh" if mode in ("merge", "park", "unpark")' in daemon_src
-    assert '"gh" if row["mode"] in ("merge_enable", "park", "unpark")' in dispatch_src
+    act_modes = _re.search(r'"gh" if mode in \(([^)]*)\)', daemon_src).group(1)
+    pool_modes = _re.search(r'"gh" if row\["mode"\] in \(([^)]*)\)', dispatch_src).group(1)
+    assert '"unpark"' in act_modes and '"unpark"' in pool_modes
+    # ...and the two sets must not diverge on anything except the merge action's two spellings.
+    a = {m.strip(' "') for m in act_modes.split(",")} - {"merge"}
+    b = {m.strip(' "') for m in pool_modes.split(",")} - {"merge_enable"}
+    assert a == b, f"gh-pool sets disagree: act={sorted(a)} in_pool={sorted(b)}"
 
 
 def test_the_unpark_action_exists_and_is_executable():
