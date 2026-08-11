@@ -76,6 +76,25 @@ class TestCollect:
         assert [r["ref_id"] for r in rows] == ["1"]
 
 
+class TestExitCode:
+    def test_an_empty_corpus_exits_non_zero(self, tool, monkeypatch, capsys):
+        # "0 posts / 0.0%" is a well-formed report of nothing. Run without credentials it must not
+        # read as a measured answer.
+        monkeypatch.setattr(tool, "collect", lambda user_ids, days: [])
+        monkeypatch.setattr(tool.sys, "argv", ["measure_proof_gate_impact.py", "--users", "1"])
+        assert tool.main() == 1
+        assert "nothing was measured" in capsys.readouterr().out
+
+    def test_a_real_corpus_exits_zero(self, tool, monkeypatch, capsys):
+        monkeypatch.setattr(tool, "collect", lambda user_ids, days: _rows(_FLIPS, _KEEPS))
+        monkeypatch.setattr(tool.sys, "argv",
+                            ["measure_proof_gate_impact.py", "--users", "1", "--show-flips"])
+        assert tool.main() == 0
+        out = capsys.readouterr().out
+        assert "2 shipped posts read" in out
+        assert _FLIPS[:40] in out
+
+
 class TestLegacyDetector:
     def test_legacy_regex_still_counts_the_determiner(self, tool):
         # If this stops holding, the script compares the new detector against itself and every

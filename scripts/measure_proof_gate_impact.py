@@ -129,7 +129,12 @@ def main() -> int:
             for sentence in flip["was_proof"]:
                 print(f"    - {sentence[:160]}")
     if not result["posts"]:
-        print("No shipped posts read — run this where production credentials are available.")
+        # Exit non-zero: an empty corpus prints a perfectly well-formed "0.0%" that reads like a
+        # measured answer, and the reader who most needs to notice is the one who ran this in the
+        # wrong place (no credentials, or `--users` naming an account with nothing shipped).
+        print("No shipped posts read — nothing was measured. Run this where production credentials "
+              "are available, and check --users/--days.")
+        return 1
     return 0
 
 

@@ -115,7 +115,7 @@ True
 
 The canned phrase the prompt supplied **satisfied the A2 first-person proof slot** — because "one"
 read as a concrete-specificity signal — while containing no lived detail whatsoever. The proof
-gate was being fed by the prompt that defeated it. (The detector half was closed separately in
+gate was being fed by the prompt that defeated it. (The detector half was tightened separately under
 **#1266** — see F4; the same call now returns `False`.)
 
 **Fixed:** every canned template and tier-1 tell word removed from all post prompts;
@@ -168,13 +168,14 @@ edit & re-score endpoint). Whether generation should hold too is #1452. Five pos
 SIZES the gap rather than settling the number — retune with the env knob as `content_quality_scores`
 fills out. Posture: `docs/content-core.md`.
 
-### F4 — The A2 proof detector counts "one of the…" as a specific → **#1266** *(resolved)*
+### F4 — The A2 proof detector counts "one of the…" as a specific → **#1266** *(detector FIXED; impact measurement still open)*
 
 The loophole behind F1's `has_first_person_proof` result. Not fixed in this audit's PR: tightening
 it increases regenerations, and the detector deliberately errs toward "counts as proof" to bound
 that cost.
 
-**Resolved in #1266.** `_SPECIFICITY_RE` now reads a spelled quantity as a checkable particular only
+**Detector fixed under #1266** — the issue itself stays OPEN until the flip rate is measured on real
+shipped bodies (below), which is its third acceptance criterion. `_SPECIFICITY_RE` now reads a spelled quantity as a checkable particular only
 when it COUNTS something: a quantity followed by `of` + a determiner or pronoun ("one of the biggest
 challenges", "one of my clients", "dozens of our customers") no longer counts, and neither does the
 pronoun "no one". A real count is untouched — "one client", "one afternoon", "one line of YAML",
@@ -273,7 +274,7 @@ graders in the tree.
 | `dwell_report` score | 78 | **85** |
 | Hook within the 140-char mobile budget | ✅ 107 | ✅ 90 |
 | Tier-1 tell words | 0 | 0 |
-| A2 first-person proof | ✅ (falsely — F4; ❌ since #1266 closed it) | ✅ (genuinely: a named month, a named event type, real counts) |
+| A2 first-person proof | ✅ (falsely — F4; ❌ since the #1266 detector fix) | ✅ (genuinely: a named month, a named event type, real counts) |
 | Slop lint HARD | 0 | 0 |
 | Lexical similarity of the two drafts | 0.13 — a different post, not a paraphrase | |
 
