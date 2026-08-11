@@ -1844,7 +1844,10 @@ _FEED_RECENT_OPTION_LOCATORS = [
 # keeps only controls rendered above it (the sort control's home, whatever it now calls itself). As
 # the prose container it stops a post BODY from matching the sort keywords: a short post reading
 # 'sort of agree' would otherwise fill the cap with someone's writing and starve the header pass —
-# the only pass that can see a control whose label rotated away from every keyword.
+# the only pass that can see a control whose label rotated away from every keyword. Unlike the
+# comment side's list, this selector is the text node itself, so the guard only holds because the
+# scan reads containment BOTH ways — a card's wrapper divs inherit that same short post text and
+# are ancestors, not descendants, of the container named here.
 _FEED_SORT_CONTROL_SCAN_JS = build_sort_control_scan_js(
     item_selectors=[_FEED_POST_TEXT_SEL],
     prose_container=_FEED_POST_TEXT_SEL,

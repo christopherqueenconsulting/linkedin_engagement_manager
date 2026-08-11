@@ -25,8 +25,11 @@ The invariants that travel with the scan:
   descendant's text, so matching on it describes the page rather than a control: it would fill the
   cap with ancestors, leave the header pass permanently unreached, and ship other people's post or
   comment text to analytics.
-* **Inside the content itself only a LABEL may match.** A post body and a comment body are prose,
-  and one 'sort of agree' would fill the cap with someone's writing and starve the header pass.
+* **Anything holding the content — inside it or wrapped around it — may match on its LABEL only.**
+  A post body and a comment body are prose, and one 'sort of agree' would fill the cap with
+  someone's writing and starve the header pass. A wrapper div inherits that same text, so the rule
+  has to run both ways or a surface whose `prose_container` is the text node itself (the feed) is
+  guarded in name only.
 """
 
 # Bounded on purpose: the event carries the sample, and eight rows is enough to re-ground a locator.
@@ -45,8 +48,13 @@ def build_sort_control_scan_js(*, item_selectors: list[str], prose_container: st
     the whole page. They must be LIVE-GROUNDED selectors: an invented anchor leaves the scan
     unanchored on every real page, which the `reason` field then reports honestly but uselessly.
 
-    `prose_container` is the element whose descendants' visible text is user content. Inside it only
-    an element's LABEL is matched against the sort keywords.
+    `prose_container` is the element whose descendants' visible text is user content. An element
+    that is inside it OR contains one is matched on its LABEL only. Containment is half the rule,
+    not a refinement of it: the comment surface names a LIST that wraps every body, so `closest`
+    alone covers it, but the feed names the post text box ITSELF — its wrapper divs are ANCESTORS,
+    they inherit exactly that post's text, and on `closest` alone a card reading 'Top 3 lessons'
+    ships several rows of somebody's post to analytics and can fill the cap before the header pass
+    (the only pass that can see a rotated label) ever runs.
     """
     first_expr = "||".join(f'document.querySelector("{sel}")' for sel in item_selectors)
     return (
@@ -76,7 +84,8 @@ def build_sort_control_scan_js(*, item_selectors: list[str], prose_container: st
         "  if(text.length>TEXT_MAX) continue;"
         "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
         "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
-        f"  const inList=el.closest&&el.closest(\"{prose_container}\");"
+        f"  const inList=(el.closest&&el.closest(\"{prose_container}\"))"
+        f"||(el.querySelector&&el.querySelector(\"{prose_container}\"));"
         "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
         "  if(out.length>=CAP) break;"
         "}"

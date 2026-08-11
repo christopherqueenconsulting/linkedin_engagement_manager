@@ -392,6 +392,9 @@ class TestFeedSortControlEvidence:
         # …and post PROSE cannot match the sort keywords, or one short post reading 'sort of agree'
         # fills the cap and starves the header pass.
         assert f'el.closest("{_FEED_POST_TEXT_SEL}")' in _FEED_SORT_CONTROL_SCAN_JS
+        # The feed's container IS the text node, so its card wrappers are ancestors that inherit the
+        # same post text — only the containment half of the guard keeps them out of the sample.
+        assert f'el.querySelector("{_FEED_POST_TEXT_SEL}")' in _FEED_SORT_CONTROL_SCAN_JS
 
 
 class TestFeedSortLocators:

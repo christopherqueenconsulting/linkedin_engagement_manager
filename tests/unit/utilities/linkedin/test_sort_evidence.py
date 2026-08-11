@@ -44,6 +44,17 @@ class TestBuildSortControlScanJs:
         assert "el.closest(\"[data-testid='list']\")" in js
         assert "KW.test(inList?label:label+' '+text.toLowerCase())" in js
 
+    def test_an_element_that_wraps_the_prose_is_label_only_too(self):
+        # Containment runs BOTH ways or the guard is empty on any surface whose container is the
+        # text node itself (the feed's `_FEED_POST_TEXT_SEL`): a card's wrapper divs are ANCESTORS
+        # of it and inherit the post's text, so on `closest` alone one post reading 'Top 3 lessons'
+        # ships several rows of somebody's writing and can fill the cap before the header pass —
+        # the only pass that can see a rotated label — ever runs.
+        js = _js(container="[data-testid='list']")
+        assert "el.querySelector(\"[data-testid='list']\")" in js
+        assert ("const inList=(el.closest&&el.closest(\"[data-testid='list']\"))"
+                "||(el.querySelector&&el.querySelector(\"[data-testid='list']\"));") in js
+
     def test_a_second_pass_describes_the_controls_above_the_first_item(self):
         # A keyword pass alone cannot see the drift it exists to describe — a rotated label matches
         # no sort word, which is the exact shape that left #818 with no evidence for a month.

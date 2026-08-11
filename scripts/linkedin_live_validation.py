@@ -1090,7 +1090,8 @@ FALLBACK_SORT_EVIDENCE_SCAN_JS = (
     "  if(text.length>TEXT_MAX) continue;"
     "  const label=((el.getAttribute('aria-label')||'')+' '+(el.getAttribute('data-testid')||'')"
     "    +' '+(el.getAttribute('class')||'')).toLowerCase();"
-    f'  const inList=el.closest&&el.closest("{FALLBACK_FEED_POST_TEXT_SEL}");'
+    f'  const inList=(el.closest&&el.closest("{FALLBACK_FEED_POST_TEXT_SEL}"))'
+    f'||(el.querySelector&&el.querySelector("{FALLBACK_FEED_POST_TEXT_SEL}"));'
     "  if(KW.test(inList?label:label+' '+text.toLowerCase())) push(el,'keyword');"
     "  if(out.length>=CAP) break;"
     "}"
