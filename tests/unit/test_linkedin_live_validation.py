@@ -459,6 +459,35 @@ class TestFeedSortProbe:
         assert report["sort_after"] == "unknown"
         assert "session deleted" in report["flip_error"]
 
+    def test_probe_reports_selector_evidence_from_the_new_scan(self, monkeypatch):
+        """#1270: one live ``--feed-sort`` run should validate both the locator chain AND the
+        two-pass DOM sample production now emits as an event."""
+        control = _sort_control("Sort by: Top")
+        recent = _sort_control("Sort by: Recent")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, recent, recent]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "_feed_sort_evidence_scan",
+                            lambda d: [{"tag": "button", "text": "Sort by", "reason": "header"}])
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["selector_evidence"] == [{"tag": "button", "text": "Sort by", "reason": "header"}]
+
+    def test_selector_evidence_scan_is_read_only_and_never_raises(self, monkeypatch):
+        """A dead scan must not stop the probe from grading the real locator chain."""
+        control = _sort_control("Sort by: Top")
+        recent = _sort_control("Sort by: Recent")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, recent, recent]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "_feed_sort_evidence_scan", lambda d: [])
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["state"] == "ok"
+        assert report["selector_evidence"] == []
+
     def test_a_control_label_naming_both_sorts_is_unreadable_not_recent(self):
         """Production reads a both-sorts label as unknown; a probe that called it 'recent' would
         report the control healthy on exactly the reading that leaves the run unsorted.

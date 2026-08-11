@@ -170,7 +170,6 @@ from cqc_lem.utilities.linkedin.rate_limit import (
 from cqc_lem.utilities.linkedin.session import get_current_profile
 from cqc_lem.utilities.linkedin.sort_evidence import (
     SORT_CANDIDATE_SCAN_CAP,
-    SORT_CONTROL_OWN_TEXT_MAX,
     build_sort_control_scan_js,
     scan_sort_control_candidates,
 )
@@ -1354,7 +1353,6 @@ _SORT_CANDIDATE_SCAN_CAP = SORT_CANDIDATE_SCAN_CAP
 # LABEL may match the sort keywords, because one comment reading 'sort of agree' would otherwise
 # fill the cap with comment text and starve the header pass.
 _COMMENT_LIST_SEL = "[data-testid*='commentList']"
-_SORT_CONTROL_OWN_TEXT_MAX = SORT_CONTROL_OWN_TEXT_MAX
 _SORT_CONTROL_DIAGNOSTIC_JS = build_sort_control_scan_js(
     item_selectors=[f"{_COMMENT_LIST_SEL} [data-testid='expandable-text-box']", _COMMENT_LIST_SEL],
     prose_container=_COMMENT_LIST_SEL,

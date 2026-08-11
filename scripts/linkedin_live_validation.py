@@ -1029,6 +1029,31 @@ def feed_sort_chains() -> tuple:
     return list(_FEED_SORT_LOCATORS), list(_FEED_RECENT_OPTION_LOCATORS), "image"
 
 
+def _feed_sort_evidence_scan(driver) -> list[dict]:
+    """Run the same two-pass DOM scan production ships as an event (#1270).
+
+    This is read-only and does NOT call ``track_selector_evidence``, so a live probe never writes
+    to PostHog. It returns the bounded candidate descriptors so a live ``--feed-sort`` run can
+    validate the new capture alongside the locator chain.
+
+    On an image that predates #1270 the scan builder is not importable; we return an empty list
+    and the caller records why.
+    """
+    try:
+        from cqc_lem.utilities.linkedin.cards import _FEED_POST_TEXT_SEL
+        from cqc_lem.utilities.linkedin.sort_evidence import (
+            build_sort_control_scan_js,
+            scan_sort_control_candidates,
+        )
+        scan_js = build_sort_control_scan_js(
+            item_selectors=[_FEED_POST_TEXT_SEL],
+            prose_container=_FEED_POST_TEXT_SEL,
+        )
+        return scan_sort_control_candidates(driver, scan_js)
+    except Exception:
+        return []
+
+
 def control_sort_state(control) -> str:
     """Which sort a found control reports, or '' when its label is unreadable. '' is load-bearing:
     'we could not tell' must never be recorded as 'recent' — that is the lie #817 exists to stop.
@@ -1235,6 +1260,7 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
     # Before `visible_controls`, not after: the issue body truncates the evidence blob, and the
     # half a re-grounding pass reads must be the half that survives the cut (#1108).
     reading["sort_candidates"] = feed_sort_candidates(driver)
+    reading["selector_evidence"] = _feed_sort_evidence_scan(driver)
     reading["visible_controls"] = visible_button_labels(driver) + menu_item_labels(driver)
     return graded(reading, feed_sort_state(reading), feed_sort_verdict(reading))
 
