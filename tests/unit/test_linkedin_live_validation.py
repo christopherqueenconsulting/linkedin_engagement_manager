@@ -2459,8 +2459,9 @@ class TestSubmitVocabulary:
 
     @pytest.mark.parametrize("label", ["Post", "Send", "Send now", "Publish", "Submit",
                                        "Connect", "Invite Jane Doe to connect", "Withdraw",
-                                       "Follow", "Unfollow", "Like", "Celebrate", "Repost",
-                                       "Subscribe", "Join", "Accept", "Add a note", "Reply"])
+                                       "Follow", "Unfollow", "Following", "Following Jane Doe",
+                                       "Like", "Celebrate", "Repost", "Subscribe", "Join",
+                                       "Accept", "Add a note", "Reply"])
     def test_a_commit_control_is_named(self, label):
         assert llv.submit_control_reason(label)
 

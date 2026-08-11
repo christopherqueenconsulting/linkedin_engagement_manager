@@ -176,7 +176,7 @@ _SUBMIT_LABEL_PATTERNS = (
     (r"^invite\b", "send an invite"),
     (r"\binvite\b.*\bto connect\b", "send a connection invite"),
     (r"^withdraw\b", "withdraw an invite (one-way, ~3 weeks before a re-invite)"),
-    (r"^(un)?follow\b", "follow or unfollow someone"),
+    (r"^(un)?follow(ing)?\b", "follow or unfollow someone"),
     (r"^like$", "leave a reaction"),
     (r"^react\b", "leave a reaction"),
     (r"^(celebrate|support|love|insightful|funny|curious)$", "leave a reaction"),
