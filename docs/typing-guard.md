@@ -87,3 +87,8 @@ scripts/mypy_check.sh
 
 The result is 13 files in a couple of seconds. Anything slower means the scope has grown past what
 this was meant to be.
+
+Because the runner always exits 0, its **output is the only signal**, so read it. A run that exits
+non-zero with no finding lines — mypy not installed, a `files` entry naming a module that moved, a
+typo in a setting — never graded anything, and the script says exactly that rather than printing a
+finding count that would read as a clean sheet.

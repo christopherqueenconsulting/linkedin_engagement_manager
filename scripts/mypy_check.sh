@@ -7,32 +7,46 @@
 # for a class of defect nobody has hit. Scope + rationale: `[tool.mypy]` in pyproject.toml and
 # docs/typing-guard.md.
 #
+# Always exiting 0 means the OUTPUT is the only signal, so it must never read as a clean sheet when
+# mypy never graded anything — a missing install, a `files` entry pointing at a moved module, a
+# typo in a setting. Those all exit non-zero with zero finding lines, and are reported as such.
+#
 # Usage:
 #   scripts/mypy_check.sh                 # the configured scope
 #   scripts/mypy_check.sh path/to/file.py # one module, e.g. to see whether it is ready to join
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
+# Per-run temp file: this repo runs several agents across worktrees at once, and a shared fixed
+# path would have them reading each other's output.
+out=$(mktemp "${TMPDIR:-/tmp}/mypy-check.XXXXXX") || exit 2
+trap 'rm -f "$out"' EXIT
+
 set +e
-poetry run mypy "$@" > /tmp/mypy-check.txt 2>&1
+poetry run mypy "$@" > "$out" 2>&1
 rc=$?
 set -e
 
-cat /tmp/mypy-check.txt
+cat "$out"
 if [ "$rc" -eq 0 ]; then
   exit 0
 fi
 
-# The lint group is optional, so "no mypy" is the common first run — say so instead of reporting it
-# as a clean sheet, which is what a plain finding count would do here.
-if grep -q 'Command not found: mypy' /tmp/mypy-check.txt; then
-  echo
-  echo "mypy is not installed in this environment — run: poetry install --with lint"
+findings=$(grep -cE '^[^ ].*:[0-9]+: error: ' "$out" || true)
+echo
+if [ "$findings" -gt 0 ]; then
+  echo "mypy reported ${findings} finding(s) — ADVISORY, this never fails a build."
+  echo "Fix them in the module, or drop the module from [tool.mypy] files in pyproject.toml."
   exit 0
 fi
 
-findings=$(grep -cE '^[^ ].*:[0-9]+: error: ' /tmp/mypy-check.txt || true)
-echo
-echo "mypy reported ${findings} finding(s) — ADVISORY, this never fails a build."
-echo "Fix them in the module, or drop the module from [tool.mypy] files in pyproject.toml."
+# Non-zero with no graded findings means mypy did not get as far as grading. Printing a finding
+# count here would announce a clean sheet for a run that checked nothing — the one failure mode
+# this script must not have.
+echo "mypy exited ${rc} without grading anything, so this is NOT a clean result — see the output above."
+# The lint group is optional, so "no mypy" is the common first run. Match loosely: the wording is
+# Poetry's and it has changed between versions.
+if grep -qiE 'command not found|not found: mypy|no module named .?mypy' "$out"; then
+  echo "mypy is not installed in this environment — run: poetry install --with lint"
+fi
 exit 0
