@@ -1,31 +1,35 @@
-#!/usr/bin/env python3
 """Measure what tightening the A2 proof detector (issue #1266) costs in regenerations.
 
 The change stops a spelled quantity acting as a determiner ("one of the biggest challenges",
-"dozens of our customers") from counting as concrete specificity. Every post whose ONLY proof was
+"dozens of our customers") from counting as concrete specificity. Every draft whose ONLY proof was
 that shape now fails `has_first_person_proof`, and `_review_generated_post` spends one extra
-`lem-complex` generation on it — so the flip rate IS the cost.
+`lem-complex` generation on it — so the flip rate IS the cost, and this script measures it against
+SHIPPED post bodies instead of assuming it.
 
-This script measures the flip rate against real shipped post bodies instead of assuming it. It is
-READ-ONLY: it reads post content through the existing `db.get_recent_post_texts` reader and writes
-nothing. Run it where production credentials already live (the app container), never from an agent
-worktree::
+Read-only: it opens no browser, writes nothing, and calls no LLM. It re-uses
+`db.get_shipped_content_for_quality` (the #630 nightly scorer's own reader) rather than issuing SQL
+of its own, so it stays inside the repository seam. Run it where a database is reachable — an agent
+worktree has no production credentials, which is the same limit `docs/content-quality-audits/text.md`
+§1 records:
 
-    python scripts/measure_proof_gate_impact.py --limit 50
-    python scripts/measure_proof_gate_impact.py --user-id 1 --show-flips
+    poetry run python scripts/measure_proof_gate_impact.py --days 365
+    poetry run python scripts/measure_proof_gate_impact.py --users 1 --show-flips
 
-Output is a per-user and total count of posts that flip from "has proof" to "no proof", plus (with
-`--show-flips`) the sentence that used to carry the post so a reader can judge whether the old
-verdict was ever real proof.
+Output goes to stdout because the report IS the product of this script.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+from typing import Optional
 
-from cqc_lem.utilities.ai.content_framework import (
+# Runnable from anywhere (the checkout's src/ is not on sys.path for a standalone script).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+
+from cqc_lem.utilities.ai.content_framework import (  # noqa: E402
     _FIRST_PERSON_RE,
     _PROOF_MONTHS,
     _PROOF_SENTENCE_SPLIT,
@@ -33,8 +37,10 @@ from cqc_lem.utilities.ai.content_framework import (
     has_first_person_proof,
 )
 
-# The pre-#1266 specificity regex, kept here (not in the module) so the comparison is against what
-# production actually ran and the shipped module carries only ONE detector.
+SURFACE_POST = "post"
+
+# The pre-#1266 specificity regex, kept here rather than in the module so the shipped detector stays
+# ONE regex and the comparison is against what production actually ran.
 _LEGACY_SPECIFICITY_RE = re.compile(
     r"\d"
     r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
@@ -49,7 +55,7 @@ _LEGACY_SPECIFICITY_RE = re.compile(
     re.IGNORECASE)
 
 
-def legacy_proof_sentences(text: str) -> list:
+def legacy_proof_sentences(text: Optional[str]) -> list:
     """The sentences the PRE-#1266 detector counted as first-person proof."""
     out = []
     for sentence in _PROOF_SENTENCE_SPLIT.split(text or ""):
@@ -59,49 +65,71 @@ def legacy_proof_sentences(text: str) -> list:
     return out
 
 
-def measure(texts: list) -> dict:
-    """Flip counts for one corpus: how many posts had proof before and lose it under the change."""
-    had = [t for t in texts if legacy_proof_sentences(t)]
-    flipped = [t for t in had if not has_first_person_proof(t)]
-    return {"posts": len(texts), "had_proof": len(had), "flipped": len(flipped),
-            "flipped_texts": flipped}
+def measure(posts: list) -> dict:
+    """Flip counts for one corpus of `{ref_id, text}` rows.
+
+    A flip is a post that HAD proof under the old detector and has none under the new one — that is
+    the post that now costs one extra generation. A post that never had proof was already being
+    regenerated and is not part of the change's cost.
+    """
+    rows = [{"ref_id": (p or {}).get("ref_id"), "text": (p or {}).get("text") or ""}
+            for p in posts or []]
+    had = [r for r in rows if legacy_proof_sentences(r["text"])]
+    flipped = [r for r in had if not has_first_person_proof(r["text"])]
+    return {
+        "posts": len(rows),
+        "had_proof": len(had),
+        "flipped": len(flipped),
+        "flip_rate": round(100.0 * len(flipped) / len(had), 1) if had else 0.0,
+        "flips": [{"ref_id": r["ref_id"], "was_proof": legacy_proof_sentences(r["text"])}
+                  for r in flipped],
+    }
 
 
-def _user_ids(explicit: int = None) -> list:
+def collect(user_ids: list, days: int) -> list:
+    """Shipped POST bodies for the given users, newest first, as `{ref_id, text}` rows."""
+    from cqc_lem.utilities.db import get_shipped_content_for_quality
+
+    rows = []
+    for user_id in user_ids:
+        for item in get_shipped_content_for_quality(user_id, days=days) or []:
+            if str(item.get("surface") or "") == SURFACE_POST:
+                rows.append({"ref_id": item.get("ref_id"), "text": item.get("text") or "",
+                             "user_id": user_id})
+    return rows
+
+
+def _user_ids(raw: Optional[str]) -> list:
+    if raw:
+        return [int(part) for part in raw.split(",") if part.strip()]
     from cqc_lem.utilities.db import get_active_user_ids
 
-    return [explicit] if explicit else list(get_active_user_ids() or [])
+    return list(get_active_user_ids() or [])
 
 
 def main() -> int:
-    """Print the flip rate per user and in total; returns a shell exit code."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--user-id", type=int, default=None,
-                        help="Measure one user instead of every active user.")
-    parser.add_argument("--limit", type=int, default=50,
-                        help="Most-recent posts to read per user (default 50).")
+    """Print the flip rate over shipped posts; returns a shell exit code."""
+    parser = argparse.ArgumentParser(description="Measure the #1266 proof-detector flip rate.")
+    parser.add_argument("--users", default=None,
+                        help="Comma-separated user ids (default: every active user).")
+    parser.add_argument("--days", type=int, default=365,
+                        help="How far back to read shipped posts (default 365).")
     parser.add_argument("--show-flips", action="store_true",
                         help="Print the sentence that used to satisfy the gate for each flip.")
     args = parser.parse_args()
 
-    from cqc_lem.utilities.db import get_recent_post_texts
-
-    totals = {"posts": 0, "had_proof": 0, "flipped": 0}
-    for user_id in _user_ids(args.user_id):
-        result = measure(get_recent_post_texts(user_id, limit=args.limit))
-        for key in totals:
-            totals[key] += result[key]
-        print(f"user {user_id}: {result['posts']} posts, {result['had_proof']} had proof, "
-              f"{result['flipped']} flip to NO proof")
-        if args.show_flips:
-            for text in result["flipped_texts"]:
-                for sentence in legacy_proof_sentences(text):
-                    print(f"    - {sentence[:160]}")
-
-    rate = (100.0 * totals["flipped"] / totals["had_proof"]) if totals["had_proof"] else 0.0
-    print(f"TOTAL: {totals['posts']} posts, {totals['had_proof']} had proof, "
-          f"{totals['flipped']} flip ({rate:.1f}% of previously-proven posts) — "
-          f"one extra lem-complex generation each")
+    result = measure(collect(_user_ids(args.users), args.days))
+    print(f"{result['posts']} shipped posts read, {result['had_proof']} had proof under the old "
+          f"detector, {result['flipped']} flip to NO proof "
+          f"({result['flip_rate']}% of previously-proven posts) — one extra lem-complex generation "
+          f"each")
+    if args.show_flips:
+        for flip in result["flips"]:
+            print(f"  post {flip['ref_id']}:")
+            for sentence in flip["was_proof"]:
+                print(f"    - {sentence[:160]}")
+    if not result["posts"]:
+        print("No shipped posts read — run this where production credentials are available.")
     return 0
 
 

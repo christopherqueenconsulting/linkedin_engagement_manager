@@ -187,7 +187,7 @@ and the proof gate on the same side of the same sentence for the first time.
 
 The cost is one extra `lem-complex` generation per draft whose only proof was that shape.
 `scripts/measure_proof_gate_impact.py` measures the flip rate against real shipped bodies
-(read-only, `db.get_recent_post_texts`) — run where production credentials live; the same 0-bodies
+(read-only, `db.get_shipped_content_for_quality`) — run where production credentials live; the same 0-bodies
 limit recorded in §1 still applies to an agent worktree, and re-running it there is part of
 **#1267**.
 
