@@ -1,5 +1,9 @@
 """Coverage tests for run_content_plan pure logic: asset guards, AI disclosure, premium
 tiers, video save pipeline, sitemap/blog scraping helpers.
+
+The pure predicates and mappings are parametrized contract tables (issue #1216) in the
+shape `test_db_coverage_errors.py` established; the generation paths keep one test each,
+because each pins a different sequence of collaborator calls.
 """
 
 from datetime import datetime as _real_datetime
@@ -28,96 +32,80 @@ def _valid_mp4(tmp_path, name: str = "clip.mp4", size: int = 72) -> str:
 
 
 class TestCarouselSlidesAreRealImages:
-    def test_empty_is_not_real(self):
+    # A slide list only counts when it points at rendered images — a list of titles is the
+    # generator's outline, and shipping it as slides is what this guard exists to stop.
+    @pytest.mark.parametrize("case_id,slides,expected", [
+        ("none", None, False),
+        ("empty_list", [], False),
+        ("empty_string", "", False),
+        ("plain_titles", ["Intro", "Point 1", "CTA"], False),
+        ("assets_url", ["https://api/assets?file_name=images/carousel/9/s1.png"], True),
+        ("assets_path", ["/assets/images/1.jpg"], True),
+        ("png_filename", ["slide1.png"], True),
+        ("jpg_filename", ["photo.jpg"], True),
+    ], ids=["none", "empty_list", "empty_string", "plain_titles", "assets_url", "assets_path",
+            "png_filename", "jpg_filename"])
+    def test_only_rendered_images_are_real(self, case_id, slides, expected):
         from cqc_lem.app.run_content_plan import _carousel_slides_are_real_images
-        assert _carousel_slides_are_real_images(None) is False
-        assert _carousel_slides_are_real_images([]) is False
-        assert _carousel_slides_are_real_images("") is False
-
-    def test_plain_titles_are_not_real(self):
-        from cqc_lem.app.run_content_plan import _carousel_slides_are_real_images
-        assert _carousel_slides_are_real_images(["Intro", "Point 1", "CTA"]) is False
-
-    @pytest.mark.parametrize("slides", [
-        ["https://api/assets?file_name=images/carousel/9/s1.png"],
-        ["/assets/images/1.jpg"],
-        ["slide1.png"],
-        ["photo.jpg"],
-    ])
-    def test_url_or_image_markers_are_real(self, slides):
-        from cqc_lem.app.run_content_plan import _carousel_slides_are_real_images
-        assert _carousel_slides_are_real_images(slides) is True
+        assert _carousel_slides_are_real_images(slides) is expected
 
 
 class TestPostMissingRequiredAsset:
-    def test_video_without_url_is_missing(self):
+    # (case id, post type, video_url, carousel slides in the DB or None, is the asset missing)
+    @pytest.mark.parametrize("case_id,post_type,video_url,slides,expected", [
+        ("video_without_url", "video", None, None, True),
+        ("video_with_url", "video", "https://x/v.mp4", None, False),
+        ("carousel_with_real_slides", "carousel", None, '["https://x/s1.png"]', False),
+        ("carousel_with_text_slides", "carousel", None, '["Title only", "Point"]', True),
+        ("text_post", "text", None, None, False),
+    ], ids=["video_without_url", "video_with_url", "carousel_with_real_slides",
+            "carousel_with_text_slides", "text_post"])
+    def test_only_the_types_that_need_an_asset_can_be_missing(self, case_id, post_type,
+                                                              video_url, slides, expected):
         from cqc_lem.app.run_content_plan import _post_missing_required_asset
-        assert _post_missing_required_asset(1, "video", None) is True
-
-    def test_video_with_url_is_fine(self):
-        from cqc_lem.app.run_content_plan import _post_missing_required_asset
-        assert _post_missing_required_asset(1, "video", "https://x/v.mp4") is False
-
-    def test_carousel_with_real_slides_is_fine(self):
-        from cqc_lem.app.run_content_plan import _post_missing_required_asset
-        with patch("cqc_lem.utilities.db.get_post_carousel_slides",
-                   return_value='["https://x/s1.png"]'):
-            assert _post_missing_required_asset(1, "carousel", None) is False
-
-    def test_carousel_with_text_slides_is_missing(self):
-        from cqc_lem.app.run_content_plan import _post_missing_required_asset
-        with patch("cqc_lem.utilities.db.get_post_carousel_slides",
-                   return_value='["Title only", "Point"]'):
-            assert _post_missing_required_asset(1, "carousel", None) is True
-
-    def test_text_post_never_missing(self):
-        from cqc_lem.app.run_content_plan import _post_missing_required_asset
-        assert _post_missing_required_asset(1, "text", None) is False
+        with patch("cqc_lem.utilities.db.get_post_carousel_slides", return_value=slides):
+            assert _post_missing_required_asset(1, post_type, video_url) is expected
 
 
 class TestApplyAiDisclosure:
-    def test_appends_disclosure_when_enabled(self):
+    # (case id, flag, content in, content out)
+    @pytest.mark.parametrize("case_id,enabled,content,expected", [
+        ("appends_when_enabled", True, "My post", "My post\n\nAI-generated visuals."),
+        ("disabled_returns_unchanged", False, "My post", "My post"),
+        ("empty_content_passthrough", True, "", ""),
+    ], ids=["appends_when_enabled", "disabled_returns_unchanged", "empty_content_passthrough"])
+    def test_disclosure_applied_per_flag(self, case_id, enabled, content, expected):
         import cqc_lem.app.run_content_plan as rcp
-        with patch.object(rcp, "AI_DISCLOSURE_ENABLED", True), \
+        with patch.object(rcp, "AI_DISCLOSURE_ENABLED", enabled), \
              patch.object(rcp, "AI_DISCLOSURE_TEXT", "\n\nAI-generated visuals."):
-            assert rcp._apply_ai_disclosure("My post") == "My post\n\nAI-generated visuals."
+            assert rcp._apply_ai_disclosure(content) == expected
 
     def test_idempotent_when_marker_present(self):
+        """A regenerated caption goes through here again — the notice must not stack."""
         import cqc_lem.app.run_content_plan as rcp
         with patch.object(rcp, "AI_DISCLOSURE_ENABLED", True), \
              patch.object(rcp, "AI_DISCLOSURE_TEXT", "\n\nAI-generated visuals."):
             once = rcp._apply_ai_disclosure("My post")
             assert rcp._apply_ai_disclosure(once) == once
 
-    def test_disabled_returns_unchanged(self):
-        import cqc_lem.app.run_content_plan as rcp
-        with patch.object(rcp, "AI_DISCLOSURE_ENABLED", False):
-            assert rcp._apply_ai_disclosure("My post") == "My post"
-
-    def test_empty_content_passthrough(self):
-        import cqc_lem.app.run_content_plan as rcp
-        with patch.object(rcp, "AI_DISCLOSURE_ENABLED", True):
-            assert rcp._apply_ai_disclosure("") == ""
-
 
 class TestPremiumTierForQuality:
-    def test_premium_maps_to_premium_model_with_audio(self):
+    # Only a premium quality buys a premium model, and every premium tier carries audio.
+    @pytest.mark.parametrize("case_id,quality,model_attr,credits_attr", [
+        ("premium", "premium", "PREMIUM_VIDEO_MODEL", "PREMIUM_VIDEO_CREDITS"),
+        ("premium_top", "premium_top", "PREMIUM_TOP_VIDEO_MODEL", "PREMIUM_TOP_VIDEO_CREDITS"),
+        ("standard", "standard", None, None),
+    ], ids=["premium", "premium_top", "standard"])
+    def test_maps_quality_to_tier(self, case_id, quality, model_attr, credits_attr):
         import cqc_lem.app.run_content_plan as rcp
-        model, credits, audio = rcp._premium_tier_for_quality("premium")
-        assert model == rcp.PREMIUM_VIDEO_MODEL
-        assert credits == rcp.PREMIUM_VIDEO_CREDITS
+        tier = rcp._premium_tier_for_quality(quality)
+        if model_attr is None:
+            assert tier is None
+            return
+        model, credits, audio = tier
+        assert model == getattr(rcp, model_attr)
+        assert credits == getattr(rcp, credits_attr)
         assert audio is True
-
-    def test_premium_top(self):
-        import cqc_lem.app.run_content_plan as rcp
-        model, credits, audio = rcp._premium_tier_for_quality("premium_top")
-        assert model == rcp.PREMIUM_TOP_VIDEO_MODEL
-        assert credits == rcp.PREMIUM_TOP_VIDEO_CREDITS
-        assert audio is True
-
-    def test_standard_returns_none(self):
-        import cqc_lem.app.run_content_plan as rcp
-        assert rcp._premium_tier_for_quality("standard") is None
 
 
 class TestSaveContentPlan:
@@ -514,69 +502,53 @@ class TestGenerateWebsiteContentPost:
 
 
 class TestIsBlogPostByMetadata:
-    def test_true_when_author_meta_present(self):
+    # An unreadable page is not a blog post: the check fails CLOSED, so a fetch error can never
+    # promote a random URL into the repurposing pool.
+    @pytest.mark.parametrize("case_id,html,exc,expected", [
+        ("author_meta_present",
+         b'<html><head><meta name="author" content="Jane"></head></html>', None, True),
+        ("no_author_meta", b"<html></html>", None, False),
+        ("fetch_error", None, RuntimeError("net"), False),
+    ], ids=["author_meta_present", "no_author_meta", "fetch_error"])
+    def test_reads_the_author_meta(self, case_id, html, exc, expected):
         from cqc_lem.app.run_content_plan import is_blog_post_by_metadata
-        html = b'<html><head><meta name="author" content="Jane"></head></html>'
-        with patch(f"{_RCP}.fetch_content", return_value=html):
-            assert is_blog_post_by_metadata("https://x.com/p") is True
+        with patch(f"{_RCP}.fetch_content", return_value=html, side_effect=exc):
+            assert is_blog_post_by_metadata("https://x.com/p") is expected
 
-    def test_false_without_author_meta(self):
-        from cqc_lem.app.run_content_plan import is_blog_post_by_metadata
-        with patch(f"{_RCP}.fetch_content", return_value=b"<html></html>"):
-            assert is_blog_post_by_metadata("https://x.com/p") is False
-
-    def test_false_on_fetch_error(self):
-        from cqc_lem.app.run_content_plan import is_blog_post_by_metadata
-        with patch(f"{_RCP}.fetch_content", side_effect=RuntimeError("net")):
-            assert is_blog_post_by_metadata("https://x.com/p") is False
-
-    def test_combined_falls_back_to_metadata(self):
+    # The combined check is an OR — metadata is the fallback when the URL shape says nothing.
+    @pytest.mark.parametrize("case_id,by_metadata,expected", [
+        ("falls_back_to_metadata", True, True),
+        ("false_when_both_fail", False, False),
+    ], ids=["falls_back_to_metadata", "false_when_both_fail"])
+    def test_combined_falls_back_to_metadata(self, case_id, by_metadata, expected):
         from cqc_lem.app.run_content_plan import is_blog_post_combined
         with patch(f"{_RCP}.is_blog_post", return_value=False), \
-             patch(f"{_RCP}.is_blog_post_by_metadata", return_value=True):
-            assert is_blog_post_combined("https://x.com") is True
-
-    def test_combined_false_when_both_fail(self):
-        from cqc_lem.app.run_content_plan import is_blog_post_combined
-        with patch(f"{_RCP}.is_blog_post", return_value=False), \
-             patch(f"{_RCP}.is_blog_post_by_metadata", return_value=False):
-            assert is_blog_post_combined("https://x.com") is False
+             patch(f"{_RCP}.is_blog_post_by_metadata", return_value=by_metadata):
+            assert is_blog_post_combined("https://x.com") is expected
 
 
 class TestGetMainBlogUrlContentParsing:
-    def test_parses_wordpress_rendered_content(self):
+    # WordPress hands `content` back three ways and all three must yield readable body text —
+    # a shape it doesn't recognise is kept verbatim rather than dropped.
+    @pytest.mark.parametrize("case_id,post,expected_url,expected_content", [
+        ("wordpress_rendered_object",
+         {"content": {"rendered": "<p>Body</p>"}, "link": "https://x.com/p/1"},
+         "https://x.com/p/1", "<p>Body</p>"),
+        ("json_string_content",
+         {"content": '{"rendered": "parsed body"}', "link": "https://x.com/p/2"},
+         "https://x.com/p/2", "parsed body"),
+        ("unparseable_string_kept_as_is",
+         {"content": "just plain text", "link": "https://x.com/p/3"},
+         "https://x.com/p/3", "just plain text"),
+    ], ids=["wordpress_rendered_object", "json_string_content", "unparseable_string_kept_as_is"])
+    def test_parses_the_content_field(self, case_id, post, expected_url, expected_content):
         from cqc_lem.app.run_content_plan import get_main_blog_url_content
         resp = MagicMock()
         resp.status_code = 200
-        resp.json.return_value = [{"content": {"rendered": "<p>Body</p>"},
-                                   "link": "https://x.com/p/1"}]
+        resp.json.return_value = [post]
         session = MagicMock()
         session.get.return_value = resp
         with patch(f"{_RCP}.get_session_for_response", return_value=(session, {})):
             url, content = get_main_blog_url_content("https://x.com")
-        assert url == "https://x.com/p/1"
-        assert content == "<p>Body</p>"
-
-    def test_json_string_content_is_parsed(self):
-        from cqc_lem.app.run_content_plan import get_main_blog_url_content
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = [{"content": '{"rendered": "parsed body"}',
-                                   "link": "https://x.com/p/2"}]
-        session = MagicMock()
-        session.get.return_value = resp
-        with patch(f"{_RCP}.get_session_for_response", return_value=(session, {})):
-            url, content = get_main_blog_url_content("https://x.com")
-        assert content == "parsed body"
-
-    def test_unparseable_string_content_kept_as_is(self):
-        from cqc_lem.app.run_content_plan import get_main_blog_url_content
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = [{"content": "just plain text",
-                                   "link": "https://x.com/p/3"}]
-        session = MagicMock()
-        session.get.return_value = resp
-        with patch(f"{_RCP}.get_session_for_response", return_value=(session, {})):
-            url, content = get_main_blog_url_content("https://x.com")
-        assert content == "just plain text"
+        assert url == expected_url
+        assert content == expected_content

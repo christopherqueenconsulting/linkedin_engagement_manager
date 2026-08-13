@@ -1,6 +1,10 @@
 """Deep coverage tests for run_content_plan generation paths: carousel content,
 create_text_post routing/refinement/shape persistence, premium video tiers, and
 regenerate task wrappers.
+
+Most of this file was already collapsed behind the `_run` / `_TextPostHarness` helpers;
+issue #1216 turns the remaining repeated contracts — post-type routing, the
+profile-scrape fallback ladder, the day-type menu, task delegation — into tables.
 """
 
 import os
@@ -177,32 +181,32 @@ class TestCreateTextPost:
                              user_profile=_profile(), post_id=42, day_weekday=3)
         assert m["blueprint"].call_args.kwargs["preferred_formats"] == day_type_formats(3)
 
-    def test_no_day_type_leaves_the_menu_wide_open(self):
+    # No weekday, and a weekday outside the calendar, both leave the menu wide open — a
+    # day-type that narrowed to NOTHING would leave the blueprint with no format to pick.
+    @pytest.mark.parametrize("case_id,day_weekday", [
+        ("no_day_type", None),
+        ("unknown_weekday", 99),
+    ], ids=["no_day_type", "unknown_weekday"])
+    def test_menu_stays_open_without_a_usable_day_type(self, case_id, day_weekday):
         from cqc_lem.app.run_content_plan import create_text_post
+        kwargs = {"day_weekday": day_weekday} if day_weekday is not None else {}
         with _TextPostHarness() as m:
             create_text_post(1, "awareness", post_type="thought_leadership",
-                             user_profile=_profile(), post_id=42)
+                             user_profile=_profile(), post_id=42, **kwargs)
         assert m["blueprint"].call_args.kwargs["preferred_formats"] is None
 
-    def test_unknown_weekday_is_ignored_rather_than_narrowing_to_nothing(self):
+    # (post type asked for, the generator that must answer)
+    @pytest.mark.parametrize("post_type,expected", [
+        ("industry_news", "News post"),
+        ("personal_story", "Story post"),
+        ("engagement_prompt", "Prompt post"),
+    ], ids=["industry_news", "personal_story", "engagement_prompt"])
+    def test_post_type_routes_to_its_generator(self, post_type, expected):
         from cqc_lem.app.run_content_plan import create_text_post
-        with _TextPostHarness() as m:
-            create_text_post(1, "awareness", post_type="thought_leadership",
-                             user_profile=_profile(), post_id=42, day_weekday=99)
-        assert m["blueprint"].call_args.kwargs["preferred_formats"] is None
-
-    def test_industry_news_and_personal_story_and_prompt(self):
-        from cqc_lem.app.run_content_plan import create_text_post
-        with _TextPostHarness() as m:
-            assert create_text_post(1, "decision", post_type="industry_news",
+        with _TextPostHarness():
+            assert create_text_post(1, "decision", post_type=post_type,
                                     user_profile=_profile(),
-                                    refine_final_post=False) == "News post"
-            assert create_text_post(1, "decision", post_type="personal_story",
-                                    user_profile=_profile(),
-                                    refine_final_post=False) == "Story post"
-            assert create_text_post(1, "decision", post_type="engagement_prompt",
-                                    user_profile=_profile(),
-                                    refine_final_post=False) == "Prompt post"
+                                    refine_final_post=False) == expected
 
     def test_blog_summary_with_blog(self):
         from cqc_lem.app.run_content_plan import create_text_post
@@ -298,43 +302,35 @@ class TestCreateTextPost:
         gmp.assert_called_once()
         quit_g.assert_called_once_with(driver)
 
-    def test_profile_scrape_failure_uses_neutral_fallback(self):
-        # Configurability audit: scrape failure first tries the cached DB profile
-        # (load_profile_for_user); only when that's ALSO unavailable does it fall back to a
-        # neutral placeholder — never the old fake "John Doe / ABC Inc." persona, which leaked
-        # into prompts as if it were the user's identity.
+    # Configurability audit: a failed scrape first tries the cached DB profile
+    # (load_profile_for_user); only when that is ALSO unavailable does it fall back to a
+    # neutral placeholder — never the old fake "John Doe / ABC Inc." persona, which leaked into
+    # prompts as if it were the user's identity.
+    #
+    # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a DOM
+    # change makes that the normal failure — so both take the SAME ladder. Without it None
+    # reached the generators and died on model_dump_json().
+    @pytest.mark.parametrize("case_id,scrape", [
+        ("scrape_raises", RuntimeError("selenium down")),
+        ("scrape_returns_none", None),
+    ], ids=["scrape_raises", "scrape_returns_none"])
+    def test_failed_scrape_uses_neutral_fallback(self, case_id, scrape):
         from cqc_lem.app.run_content_plan import create_text_post
         driver, wait = MagicMock(), MagicMock()
+        scrape_patch = patch(f"{_RCP}.get_my_profile",
+                             side_effect=scrape if isinstance(scrape, Exception) else None,
+                             return_value=None)
         with _TextPostHarness() as m, \
              patch(f"{_RCP}.get_user_password_pair_by_id",
                    return_value=("a@x.com", "pw")), \
              patch(f"{_RCP}.get_driver_wait_pair", return_value=(driver, wait)), \
-             patch(f"{_RCP}.get_my_profile", side_effect=RuntimeError("selenium down")), \
+             scrape_patch, \
              patch(f"{_RCP}.load_profile_for_user", return_value=None), \
              patch(f"{_RCP}.quit_gracefully") as quit_g:
             result = create_text_post(1, "awareness", post_type="thought_leadership",
                                       refine_final_post=False)
         assert result == "TL post"
         assert m["tl"].call_args[0][0].full_name == "LinkedIn Member"  # neutral, not a fake persona
-        quit_g.assert_called_once_with(driver)
-
-    def test_profile_scrape_returning_none_uses_the_same_fallback(self):
-        # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a
-        # DOM change makes that the normal failure — so it must take the same ladder as the
-        # exception path. Without it None reached the generators and died on model_dump_json().
-        from cqc_lem.app.run_content_plan import create_text_post
-        driver, wait = MagicMock(), MagicMock()
-        with _TextPostHarness() as m, \
-             patch(f"{_RCP}.get_user_password_pair_by_id",
-                   return_value=("a@x.com", "pw")), \
-             patch(f"{_RCP}.get_driver_wait_pair", return_value=(driver, wait)), \
-             patch(f"{_RCP}.get_my_profile", return_value=None), \
-             patch(f"{_RCP}.load_profile_for_user", return_value=None), \
-             patch(f"{_RCP}.quit_gracefully") as quit_g:
-            result = create_text_post(1, "awareness", post_type="thought_leadership",
-                                      refine_final_post=False)
-        assert result == "TL post"
-        assert m["tl"].call_args[0][0].full_name == "LinkedIn Member"
         quit_g.assert_called_once_with(driver)
 
     def test_profile_scrape_returning_none_prefers_the_cached_profile(self):
@@ -425,17 +421,19 @@ class TestGenerateVideoSrcPremium:
 
 
 class TestRegenerateTaskWrappers:
-    def test_regenerate_post_video_task_delegates(self):
-        from cqc_lem.app.run_content_plan import regenerate_post_video_task
-        with patch(f"{_RCP}.regenerate_video_for_post", return_value="url") as regen:
-            assert regenerate_post_video_task(9) == "url"
-        regen.assert_called_once_with(9)
-
-    def test_regenerate_post_task_delegates_with_guidance(self):
-        from cqc_lem.app.run_content_plan import regenerate_post_task
-        with patch(f"{_RCP}.regenerate_post", return_value="content") as regen:
-            assert regenerate_post_task(9, guidance="shorter") == "content"
-        regen.assert_called_once_with(9, "shorter")
+    # Each Celery wrapper is a pass-through: same return value, same arguments, nothing added.
+    # (case id, task name, task kwargs, delegate name, delegate return, expected delegate args)
+    @pytest.mark.parametrize("case_id,task,kwargs,delegate,returns,expected_args", [
+        ("video", "regenerate_post_video_task", {}, "regenerate_video_for_post", "url", (9,)),
+        ("post_with_guidance", "regenerate_post_task", {"guidance": "shorter"},
+         "regenerate_post", "content", (9, "shorter")),
+    ], ids=["video", "post_with_guidance"])
+    def test_task_delegates_unchanged(self, case_id, task, kwargs, delegate, returns,
+                                      expected_args):
+        import cqc_lem.app.run_content_plan as rcp
+        with patch(f"{_RCP}.{delegate}", return_value=returns) as regen:
+            assert getattr(rcp, task)(9, **kwargs) == returns
+        regen.assert_called_once_with(*expected_args)
 
     def test_regenerate_post_returns_none_when_generation_empty(self):
         from cqc_lem.app.run_content_plan import regenerate_post
