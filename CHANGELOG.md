@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.147.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.146.0...v0.147.0) (2026-08-13)
+
+
+### Features
+
+* **agent-pipeline:** hourly triage fan-out with adversarial review and bounded admission ([#1467](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1467)) ([2ad2458](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2ad2458fd012bf7b76bb80817e36e0edb46291e5))
+* **agent-pipeline:** structured per-issue phase template + closed verification loop ([#1466](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1466)) ([e1e881b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e1e881bf26bb86effe7e3f3b2ba2092e15cf200f))
+
+
+### Bug Fixes
+
+* **content_quality:** make the [#1266](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1266) flip-rate sampler runnable where credentials live ([#1469](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1469)) ([9a6c12f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9a6c12fadebb0ea8859339a6a3c8ae0513c06609))
+
 ## [0.146.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.145.0...v0.146.0) (2026-08-11)
 
 
