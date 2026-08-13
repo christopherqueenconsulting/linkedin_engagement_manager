@@ -1,0 +1,29 @@
+[Unit]
+Description=Hourly LEM triage — planner + adversarial review + bounded fan-out (agent:ready admission)
+Documentation=https://github.com/christopherqueenconsulting/linkedin_engagement_manager/blob/main/docs/AGENT_WORKFLOW_PLAYBOOK.md
+
+[Service]
+Type=oneshot
+User=lem
+Group=lem
+WorkingDirectory=/home/lem/linkedin_engagement_manager
+Environment=BASE=/home/lem/agent-pipeline
+# config.env/secrets.env are the SAME files the daemon and every v1/v2 action read (LITELLM_*,
+# POSTHOG_*, TRIAGE_HOURLY_*, TRUSTED_ASSOCIATIONS, LEMD_MAX_AGENTS) — one set of knobs, not a
+# second copy that can drift from the pipeline's own config.
+EnvironmentFile=-/home/lem/agent-pipeline/config.env
+EnvironmentFile=-/home/lem/agent-pipeline/secrets.env
+
+# The gate lives HERE, in the service, not inside triage_issues.py itself. The script must stay
+# runnable for a manual `--hourly` dry run (no --apply) regardless of this flag — that is exactly
+# how the plan's verification step is meant to be run before the timer is ever enabled:
+#   TRIAGE_HOURLY_ENABLED=0 python3 scripts/triage_issues.py --hourly
+# Gating inside the script would make that verification workflow impossible to run while off.
+ExecStart=/bin/bash -c '[ "${TRIAGE_HOURLY_ENABLED:-0}" = "1" ] || { echo "TRIAGE_HOURLY_ENABLED not set — hourly triage is inert, no-op."; exit 0; }; exec python3 scripts/triage_issues.py --apply --hourly'
+
+# Best-effort telemetry only; a slow/absent PostHog must never fail the unit.
+TimeoutStartSec=300
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

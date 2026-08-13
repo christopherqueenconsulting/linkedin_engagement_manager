@@ -66,6 +66,57 @@ changes, auth/security surface, anything needing a live LinkedIn session, or spe
 `cleanup`, `documentation`, `testing`, `ci-cd` — informational; add what fits (docs/cleanup +
 `priority:low` also auto-downgrades the model tier).
 
+## Hourly triage — bounded fan-out onto `agent:ready`
+
+`scripts/triage_issues.py --hourly` is a lightweight extension of the daily triage sweep
+(`docs/agent-pipeline-v2.md`'s reactive daemon has no periodic backlog sweep of its own). Where the
+daily sweep organizes the WHOLE backlog (milestones, priority reorg, topical labels) via one
+`lem-medium` call, the hourly pass answers a narrower question every hour: **which issues with no
+flow label yet should get `agent:ready` this hour, bounded by config** — never uncapped, never
+`opus`, never `claude-fable-5`.
+
+- **Scope**: only open issues with NO flow label at all. It never re-litigates an issue the daily
+  sweep or a human already gave a flow label to, and it never touches milestone/topical labels —
+  that reorg stays daily-only.
+- **Two independent LLM passes, both `lem-medium`** (never a Claude subscription run): a **planner**
+  call (the same logic the daily sweep uses) proposes priority + flow (`agent:ready`/`needs-human`)
+  per candidate; a second, independently-pinned **adversarial reviewer** call — given the SAME issue
+  text the planner saw, not just its summary — tries to REFUTE each proposed `agent:ready`. The
+  reviewer can only downgrade to `needs-human`, never grant `agent:ready` the planner didn't already
+  propose.
+- **Trust-downgrade BEFORE the cap**: an untrusted author's issue (the same `TRUSTED_ASSOCIATIONS`
+  check the daily sweep uses) is downgraded to `needs-human` before ranking/capping, so it never
+  wastes one of the hour's admission slots.
+- **Bounded fan-out**: of what's left as `agent:ready` after both gates, only the top
+  `N = max(0, min(TRIAGE_HOURLY_MAX_NEW_READY, TRIAGE_HOURLY_TARGET_INFLIGHT - current_inflight))`
+  (sorted priority, then age) are actually admitted this hour. `current_inflight` is read read-only
+  from the daemon's OWN `v2/state/queue.db` (`wip_count()` — PR-only work in flight, the same
+  definition `LEMD_MAX_AGENTS`'s concurrency gate uses), never reimplemented against issue-label
+  counting. Everything eligible but not admitted is left **unlabeled** (not `needs-human`, not
+  dropped) for a later hourly pass or the daily sweep — a per-issue memoization file skips
+  re-planning/re-reviewing an issue that hasn't changed since its last verdict.
+- **Never `agent:model:*`**: the hourly path only ever writes `priority:*` + one flow label. This is
+  also enforced upstream in `select_topical_labels()`/`select_priority_label()`, which strip any
+  `agent:model:*`/`risk:*` value the LLM's JSON output might contain (hallucinated or
+  prompt-injected from the untrusted issue body) — the SAME shared functions the daily sweep uses.
+- **Shared lock**: `--apply` (daily) and `--apply --hourly` hold the SAME `locks/triage.lock`, so a
+  manually-triggered daily run can never race an in-progress hourly tick.
+
+Config (`scripts/agent-pipeline/config.env` on the box — not checked into this repo):
+
+| Var | Default | Meaning |
+|---|---|---|
+| `TRIAGE_HOURLY_ENABLED` | `0` | Read by the **systemd service**, not the script itself — inert until explicitly set to `1` (a manual `--hourly` dry run works regardless, by design). |
+| `TRIAGE_HOURLY_MAX_NEW_READY` | `2` | Hard per-hour ceiling on new `agent:ready` grants. |
+| `TRIAGE_HOURLY_TARGET_INFLIGHT` | `LEMD_MAX_AGENTS` (read LIVE, default `3`) | Target queue depth for the admission cap — never a frozen copy of `LEMD_MAX_AGENTS`, the same duplicated-knob shape that already caused the `MAX_AGENTS`/`LEMD_MAX_AGENTS` silent-drift incident. |
+| `TRUSTED_ASSOCIATIONS` | `OWNER MEMBER COLLABORATOR` | Same var/default `lib/guards.sh` reads — one trust boundary, not two. |
+
+Timer: `scripts/agent-pipeline/systemd/lem-triage-hourly.{service,timer}` (`OnCalendar=hourly`),
+shipped via the existing `install.sh` copy step. Dry-run it first:
+`TRIAGE_HOURLY_ENABLED=0 python3 scripts/triage_issues.py --hourly` (no `--apply`), inspect the
+report in `docs/triage/`, then set `TRIAGE_HOURLY_ENABLED=1` and enable the timer — both explicit
+owner actions.
+
 ## Writing an issue agents can execute
 
 ```markdown
