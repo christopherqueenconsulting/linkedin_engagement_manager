@@ -1,0 +1,13 @@
+[Unit]
+Description=Run LEM hourly triage (planner + adversarial review + bounded fan-out) every hour
+
+[Timer]
+OnCalendar=hourly
+# Spread the load so this never lands exactly on another timer's tick (lem-gh-token, lem-pipeline-sync).
+RandomizedDelaySec=90
+AccuracySec=5min
+Persistent=false
+Unit=lem-triage-hourly.service
+
+[Install]
+WantedBy=timers.target
