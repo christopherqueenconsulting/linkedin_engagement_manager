@@ -38,8 +38,7 @@ src/cqc_lem/
 └── aws/           AWS CDK stacks
 tests/
 ├── unit/          Fast tests — mock all I/O
-├── integration/   Require MySQL + Redis service containers
-└── e2e/           Require selenium/standalone-chrome
+└── integration/   Require MySQL + Redis service containers  (TWO lanes — #1215 deleted tests/e2e/)
 .litellm/
 ├── config.yaml    LiteLLM model aliases and routing config
 └── complexity_router.py  Pre-call hook: routes lem-router by prompt complexity

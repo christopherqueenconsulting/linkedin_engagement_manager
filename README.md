@@ -117,7 +117,9 @@ aliases are defined in `.litellm/config.yaml`:
 
 ## Testing
 
-This project uses pytest for testing with comprehensive unit, integration, and end-to-end tests.
+This project uses pytest, in two lanes: unit (all I/O mocked) and integration (real MySQL + Redis).
+There is no browser lane — a change that needs a real browser is graded by the read-only live probe,
+`scripts/linkedin_live_validation.py`. See `tests/README.md` for why (#1215).
 
 ### Running Tests
 
@@ -160,7 +162,6 @@ This project uses pytest for testing with comprehensive unit, integration, and e
 Tests are organized with the following markers:
 - `unit` — Fast tests with all external I/O mocked
 - `integration` — Require real MySQL + Redis service containers
-- `e2e` — Require `selenium/standalone-chrome` container
 - `slow` — Tests that take longer to execute
 - `requires_openai` — Tests requiring OpenAI API access
 - `requires_database` — Tests requiring a database connection

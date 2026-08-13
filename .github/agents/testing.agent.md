@@ -18,10 +18,12 @@ tests/
 │       ├── linkedin/test_poster.py
 │       ├── linkedin/test_scrapper.py
 │       └── test_db.py
-├── integration/           Require MySQL + Redis service containers
-│   └── test_api.py
-└── e2e/                   Require selenium/standalone-chrome
+└── integration/           Require MySQL + Redis service containers
+    └── test_api.py
 ```
+
+TWO lanes only — #1215 deleted `tests/e2e/`. Nothing in CI drives a browser; Selenium work is graded
+by the read-only live probe, `scripts/linkedin_live_validation.py`.
 
 ## Available Fixtures (conftest.py)
 
