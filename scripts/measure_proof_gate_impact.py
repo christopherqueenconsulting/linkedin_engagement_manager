@@ -15,6 +15,17 @@ worktree has no production credentials, which is the same limit `docs/content-qu
     poetry run python scripts/measure_proof_gate_impact.py --days 365
     poetry run python scripts/measure_proof_gate_impact.py --users 1 --show-flips
 
+On the production VPS the credentials live in the app containers, not on the host, and `scripts/`
+is deliberately NOT baked into the image (`compose/local/Dockerfile` copies `src/` only) — so the
+production run pipes this file into a worker that already has the database environment:
+
+    cd /opt/lem && sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+      exec -T celery_worker python - --days 365 --show-flips \
+      < scripts/measure_proof_gate_impact.py
+
+That is why the `src/` bootstrap below is conditional: read from stdin the interpreter reports
+`__file__` as `<stdin>`, and `cqc_lem` is already installed in the image's venv.
+
 Output goes to stdout because the report IS the product of this script.
 """
 
@@ -26,8 +37,27 @@ import re
 import sys
 from typing import Optional
 
-# Runnable from anywhere (the checkout's src/ is not on sys.path for a standalone script).
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+
+def _bootstrap_src_path(script_path: str) -> Optional[str]:
+    """Put the checkout's `src/` on `sys.path`, and return what was added.
+
+    A standalone script does not get its repository root on `sys.path`. Piped into a container
+    (`python - < scripts/…`) there is no script path at all — `__file__` is `<stdin>` — and the
+    directory that would be derived from it points at nothing, so the guess is skipped rather than
+    inserted: the image installs `cqc_lem` into its venv, and a made-up path is dead weight on
+    `sys.path` at best and shadows that install at worst.
+    """
+    if not script_path or script_path.startswith("<"):
+        return None
+    src = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(script_path)), "..", "src"))
+    if not os.path.isdir(src):
+        return None
+    sys.path.insert(0, src)
+    return src
+
+
+_bootstrap_src_path(globals().get("__file__") or "")
 
 from cqc_lem.utilities.ai.content_framework import (  # noqa: E402
     _FIRST_PERSON_RE,
@@ -100,11 +130,19 @@ def collect(user_ids: list, days: int) -> list:
 
 
 def _user_ids(raw: Optional[str]) -> list:
+    """The users whose shipped posts are read (default: every user who could have shipped one).
+
+    `get_active_user_ids` requires an UNEXPIRED LinkedIn token, which is a question about today and
+    not about the bodies that shipped over the last year — an account whose 60-day authorization
+    lapsed still has the posts this measures. So an empty active set falls back to the token-holder
+    list rather than reporting "nothing was measured" for a reason that has nothing to do with the
+    corpus.
+    """
     if raw:
         return [int(part) for part in raw.split(",") if part.strip()]
-    from cqc_lem.utilities.db import get_active_user_ids
+    from cqc_lem.utilities.db import get_active_user_ids, get_linkedin_token_user_ids
 
-    return list(get_active_user_ids() or [])
+    return list(get_active_user_ids() or []) or list(get_linkedin_token_user_ids() or [])
 
 
 def main() -> int:
