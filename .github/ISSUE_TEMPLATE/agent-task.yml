@@ -47,10 +47,12 @@ body:
         type can't express a variable per-issue list, so this stays a textarea, same as today's
         convention — required on presence only. Whether each box is independently testable is
         still a judgment call the agent makes at planning time, not something this form enforces.
+        Deliberately NO `render:` key — `render` wraps the answer in a code block, which would make
+        every `- [ ]` here inert text instead of a tickable checkbox, and both the "tick the boxes
+        you satisfied" rule and `phase_guard_ok`'s unchecked-box count depend on them being real.
       placeholder: |
         - [ ] `poetry run pytest tests/unit/test_foo.py -q` passes
         - [ ] `GET /api/foo` returns 404 for an unowned id
-      render: markdown
     validations:
       required: true
   - type: textarea

@@ -134,6 +134,35 @@ def test_structured_single_phase_still_reports_unchecked_boxes():
     assert _leftover(body) == "boxes: 1 unchecked"
 
 
+def test_first_phase_of_a_staged_build_still_flags():
+    """`phase 1 of 3` is multi-phase: M, not N, is what says work remains (the #548 failure)."""
+    body = "### Phase\n\nphase 1 of 3\n\n### Acceptance\n\n- [x] done\n"
+    assert _leftover(body).startswith('phase: "phase 1 of 3"')
+
+
+def test_double_digit_total_is_not_read_as_single_phase():
+    body = "### Phase\n\nphase 2 of 10\n\n### Acceptance\n\n- [x] done\n"
+    assert _leftover(body).startswith('phase: "phase 2 of 10"')
+
+
+def test_phase_1_of_1_is_a_single_phase_declaration():
+    body = "### Phase\n\nphase 1 of 1\n\n### Acceptance\n\n- [x] done\n"
+    assert _leftover(body) == ""
+
+
+def test_unparseable_structured_answer_falls_back_to_the_prose_scan():
+    """An answer in neither shape declares nothing — it must not be able to silence the guard."""
+    body = "### Phase\n\ndunno\n\n### Context\n\nThe rest is deferred to a follow-up PR.\n"
+    assert _leftover(body).startswith("phase:")
+
+
+def test_crlf_body_still_reads_the_structured_field():
+    """Web-submitted bodies arrive CRLF-terminated; an exact header match must survive it."""
+    body = "### Phase\r\n\r\nphase 2 of 3\r\n\r\n### Context\r\n\r\nwhy\r\n"
+    assert _field_value(body, "Phase") == "phase 2 of 3"
+    assert _leftover(body).startswith('phase: "phase 2 of 3"')
+
+
 def test_structured_field_wins_over_unrelated_prose_elsewhere_in_the_body():
     """A structured 'single-phase' answer must not be re-flagged by prose the regex would catch."""
     body = (
@@ -214,6 +243,13 @@ def test_template_acceptance_field_is_free_text_not_structured_checkboxes():
     assert fields["acceptance"]["type"] == "textarea"
 
 
+def test_template_acceptance_field_does_not_set_render():
+    """`render:` wraps the answer in a code block, making every `- [ ]` an inert, unclickable line."""
+    doc = _load_template()
+    fields = {item["id"]: item for item in doc.get("body", []) if isinstance(item, dict) and "id" in item}
+    assert "render" not in fields["acceptance"]["attributes"]
+
+
 # --------------------------------------------------------------------------- RUNBOOK.md prose gate
 
 
@@ -232,6 +268,14 @@ def test_mode_start_gate_is_explicitly_label_scoped():
     assert "label absent" in MODE_START.lower()
     # The regression-avoidance guarantee itself must be spelled out, not just implied.
     assert "no-op" in MODE_START.lower()
+
+
+def test_mode_start_gate_parks_with_a_decision_comment_and_an_assignee():
+    """A park with no Decision Comment is permanent — `answers.parse` finds no reply to read."""
+    gate = MODE_START[MODE_START.index("Structured-template gate"):]
+    gate = gate[: gate.index("Implement the smallest correct change")]
+    assert "Decision Comment" in gate
+    assert "--add-assignee gitchrisqueen" in gate
 
 
 def test_mode_start_still_implements_the_smallest_correct_change_unmodified():

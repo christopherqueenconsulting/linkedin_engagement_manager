@@ -182,9 +182,15 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    against the named `Verifier`** — a check you could actually run today (a named test, a command, a
    lane), not "looks right to me." **If it is NOT independently testable, STOP here, before writing any
    code**:
-   - Post `Uncertain: <one-line reason>` as a comment on #$ISSUE (same format `spec-first` already uses
-     for this exact situation).
-   - `gh issue edit $ISSUE --add-label needs-human --remove-label agent:ready`.
+   - Post a **Decision Comment** on #$ISSUE (see "Decision Comment" above — lettered options + an
+     explicit recommendation), and open its what/why line with the literal
+     `Uncertain: <one-line reason>` (`spec-first`'s grep-able residue). Prose alone is NOT enough and
+     this is not a style preference: the un-park lane only reads owner replies posted **after** a
+     comment containing "human decision needed" (`scripts/agent-pipeline/v2/lemd/answers.py`), so an
+     issue parked without one can never be un-parked by an answer — measured as a permanent park on
+     #1313.
+   - `gh issue edit $ISSUE --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:ready`
+     (the same escalation shape as "Escalate to a human" above — assignee included).
    - Do **not** proceed to step 3 — no worktree change, no commit.
    If `Acceptance` IS testable against `Verifier`, proceed to step 3 exactly as on any other issue; this
    gate's only job is the STOP-before-code decision, not how you implement once past it.

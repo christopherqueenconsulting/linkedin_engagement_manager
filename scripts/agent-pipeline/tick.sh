@@ -671,7 +671,11 @@ PHASE_GUARD_MARKER="🧩 phase-guard"
 # it never weakens the FAIL-OPEN contract two paragraphs up.
 phase_field_value() {  # $1=body $2=field-label -> echoes the field's answer, or nothing
   local out
-  out="$(printf '%s\n' "$1" | awk -v want="### $2" '
+  # `tr -d '\r'`: a body submitted through the GitHub web UI arrives CRLF-terminated, and the exact
+  # header match below would then compare "### Phase\r" against "### Phase" and silently find
+  # nothing — the whole structured path inert with no signal. `answers.py` strips \r for the same
+  # reason.
+  out="$(printf '%s\n' "$1" | tr -d '\r' | awk -v want="### $2" '
     $0 == want { found=1; next }
     found && /^### / { exit }
     found && NF { print; exit }
@@ -688,18 +692,29 @@ phase_leftover() {  # $1=issue -> echoes "phase: <marker>" / "boxes: <n>" / noth
   [ -n "$body" ] || return 0
   structured="$(phase_field_value "$body" "Phase")"
   if [ -n "$structured" ]; then
-    if printf '%s' "$structured" | grep -qiE 'phase[[:space:]]+[2-9][[:space:]]+of[[:space:]]+[2-9]'; then
+    # "phase N of M" is multi-phase whenever M > 1 -- INCLUDING "phase 1 of 3". Reading N instead
+    # (the prose regex's "phase [2-9]" shape) would clear the guard on the FIRST phase of a staged
+    # build, i.e. exactly the #548 failure this guard exists to catch, and M is read as [0-9]+ so
+    # "phase 2 of 10" is not silently single-phase either.
+    total="$(printf '%s' "$structured" \
+      | grep -oiE 'phase[[:space:]]+[0-9]+[[:space:]]+of[[:space:]]+[0-9]+' | head -1 \
+      | grep -oE '[0-9]+$')"
+    if [ -n "$total" ] && [ "$total" -gt 1 ]; then
       remaining="$(phase_field_value "$body" "Remaining phases (only if multi-phase)")"
       echo "phase: \"$structured\"${remaining:+ — $remaining}"
       return 0
     fi
-    # A structured answer that ISN'T "phase N of M" (i.e. "single-phase") is the filer's own
-    # declaration that nothing later is planned. Authoritative -- do not also run the prose regex
-    # below, which would defeat the point of a structured field by re-flagging unrelated "part 2 of
-    # 3" phrasing elsewhere in the body. Unchecked boxes still count either way.
-    boxes="$(printf '%s' "$body" | grep -cE '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]')"
-    [ "${boxes:-0}" -gt 0 ] && echo "boxes: $boxes unchecked"
-    return 0
+    if [ -n "$total" ] || printf '%s' "$structured" | grep -qiE 'single[[:space:]_-]*phase'; then
+      # A RECOGNISED single declaration ("single-phase", or "phase 1 of 1") is the filer's own
+      # statement that nothing later is planned. Authoritative -- do not also run the prose regex
+      # below, which would defeat the point of a structured field by re-flagging unrelated "part 2
+      # of 3" phrasing elsewhere in the body. Unchecked boxes still count either way.
+      boxes="$(printf '%s' "$body" | grep -cE '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]')"
+      [ "${boxes:-0}" -gt 0 ] && echo "boxes: $boxes unchecked"
+      return 0
+    fi
+    # An answer in neither shape declares nothing. Fall through to the prose scan below: an
+    # unparseable field must not be able to silence the guard.
   fi
   mark="$(printf '%s' "$body" | grep -oiE 'phase [2-9]|part [2-9]|next phase|later phase|follow-up (pr|issue)|land[s]? in a follow-up|deferred to|out of scope for this issue|will be handled in|tracked separately' | head -1)"
   [ -n "$mark" ] && { echo "phase: \"$mark\""; return 0; }
