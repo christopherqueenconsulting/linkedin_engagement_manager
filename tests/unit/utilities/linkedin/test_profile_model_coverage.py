@@ -1,4 +1,9 @@
-"""Coverage tests for the LinkedInProfile pydantic model and message generation."""
+"""Coverage tests for the LinkedInProfile pydantic model and message generation.
+
+Validation and the derived properties are input→output contracts, so they are
+parametrized tables (issue #1216); the message-body assertions stay plain where each
+names a different fragment of the copy.
+"""
 
 from datetime import datetime
 
@@ -16,14 +21,15 @@ def _profile(**kw):
 
 
 class TestValidators:
-    def test_full_name_required(self):
-        from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+    # A profile is only usable if it names someone and, when it carries a URL, that URL is
+    # actually LinkedIn — an off-site URL would be scraped as if it were a member page.
+    @pytest.mark.parametrize("case_id,fields", [
+        ("blank_full_name", {"full_name": ""}),
+        ("non_linkedin_profile_url", {"profile_url": "https://evil.example.com/in/jane"}),
+    ], ids=["blank_full_name", "non_linkedin_profile_url"])
+    def test_rejected_fields(self, case_id, fields):
         with pytest.raises(ValidationError):
-            LinkedInProfile(full_name="")
-
-    def test_profile_url_must_be_linkedin(self):
-        with pytest.raises(ValidationError):
-            _profile(profile_url="https://evil.example.com/in/jane")
+            _profile(**fields)
 
     def test_valid_linkedin_url_accepted(self):
         p = _profile(profile_url="https://www.linkedin.com/in/jane/")
@@ -36,10 +42,15 @@ class TestProperties:
         assert p.first_name == "Jane"
         assert p.last_name == "Doe"
 
-    def test_is_1st_connection(self):
-        assert _profile(connection="1st").is_1st_connection is True
-        assert _profile(connection="2nd").is_1st_connection is False
-        assert _profile().is_1st_connection is False
+    # (case id, the connection degree LinkedIn showed, whether it counts as 1st)
+    @pytest.mark.parametrize("case_id,connection,expected", [
+        ("first_degree", "1st", True),
+        ("second_degree", "2nd", False),
+        ("unknown_degree", None, False),
+    ], ids=["first_degree", "second_degree", "unknown_degree"])
+    def test_is_1st_connection(self, case_id, connection, expected):
+        kwargs = {"connection": connection} if connection else {}
+        assert _profile(**kwargs).is_1st_connection is expected
 
     def test_profile_summary_full(self):
         p = _profile(job_title="CTO", company_name="Acme", industry="Tech")
@@ -70,19 +81,17 @@ class TestGeneratePersonalizedMessage:
         msg = _profile().generate_personalized_message()
         assert ("found it insightful" in msg) or ("professional background" in msg)
 
-    def test_single_mutual_connection(self):
-        p = _profile(mutual_connections=["Bob Smith"])
-        msg = p.generate_personalized_message()
-        assert "mutual connection to Bob Smith" in msg
-
-    def test_multiple_mutual_connections_counts_others(self):
-        p = _profile(mutual_connections=["Bob", "Carol", "Dave"])
-        msg = p.generate_personalized_message()
-        assert "mutual connections like" in msg
-        assert "and 1 others" in msg
-
-    def test_mutual_connection_profile_objects_use_full_name(self):
-        friend = _profile(full_name="Bob Smith")
-        p = _profile(mutual_connections=[friend])
-        msg = p.generate_personalized_message()
-        assert "Bob Smith" in msg
+    # (case id, the mutual connections known, the phrasing that must appear)
+    @pytest.mark.parametrize("case_id,mutuals,fragment", [
+        ("single", ["Bob Smith"], "mutual connection to Bob Smith"),
+        ("multiple_counts_the_rest", ["Bob", "Carol", "Dave"], "and 1 others"),
+        # A mutual may arrive as a whole profile rather than a name string.
+        ("profile_objects_use_full_name", "<profiles>", "Bob Smith"),
+    ], ids=["single", "multiple_counts_the_rest", "profile_objects_use_full_name"])
+    def test_mutual_connections_phrasing(self, case_id, mutuals, fragment):
+        if mutuals == "<profiles>":
+            mutuals = [_profile(full_name="Bob Smith")]
+        msg = _profile(mutual_connections=mutuals).generate_personalized_message()
+        assert fragment in msg
+        if case_id == "multiple_counts_the_rest":
+            assert "mutual connections like" in msg

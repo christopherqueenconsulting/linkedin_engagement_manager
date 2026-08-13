@@ -1,4 +1,8 @@
-"""Coverage tests for LinkedIn poster media upload and share routing."""
+"""Coverage tests for LinkedIn poster media upload and share routing.
+
+Share routing is one contract with four inputs — what the caller attached decides the
+share category and the media block — so it is a parametrized table (issue #1216).
+"""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -69,18 +73,31 @@ class TestUploadMedia:
 
 
 class TestDetermineMediaType:
-    def test_image(self):
+    @pytest.mark.parametrize("path,expected", [
+        ("/a/pic.png", "IMAGE"),
+        ("/a/clip.mp4", "VIDEO"),
+    ], ids=["image", "video"])
+    def test_maps_extension_to_type(self, path, expected):
         from cqc_lem.utilities.linkedin.poster import determine_media_type
-        assert determine_media_type("/a/pic.png") == "IMAGE"
-
-    def test_video(self):
-        from cqc_lem.utilities.linkedin.poster import determine_media_type
-        assert determine_media_type("/a/clip.mp4") == "VIDEO"
+        assert determine_media_type(path) == expected
 
     def test_unsupported_raises(self):
         from cqc_lem.utilities.linkedin.poster import determine_media_type
         with pytest.raises(ValueError, match="Unsupported media type"):
             determine_media_type("/a/file.txt")
+
+
+# (case id, share kwargs, what upload_media returns, expected shareMediaCategory,
+#  expected media block, expected upload_media args or None)
+_SHARE_ROUTES = [
+    ("video", {"media_path": "/a/clip.mp4"}, "urn:li:asset:v1", "VIDEO",
+     [{"media": "urn:li:asset:v1"}], ("tok", "SUB1", "/a/clip.mp4", "VIDEO")),
+    ("image", {"media_path": "/a/pic.png"}, "urn:li:asset:i1", "IMAGE",
+     [{"media": "urn:li:asset:i1"}], ("tok", "SUB1", "/a/pic.png", "IMAGE")),
+    ("article", {"article_url": "https://blog.example.com/p"}, None, "ARTICLE",
+     [{"originalUrl": "https://blog.example.com/p"}], None),
+    ("text_only", {}, None, "NONE", [], None),
+]
 
 
 class TestShareOnLinkedIn:
@@ -96,57 +113,30 @@ class TestShareOnLinkedIn:
              patch(f"{_P}.get_user_access_token", return_value=None):
             assert share_on_linkedin(1, "hello") is None
 
-    def test_video_media_sets_video_category(self):
+    @pytest.mark.parametrize("case_id,kwargs,upload_return,category,media,upload_args",
+                             _SHARE_ROUTES, ids=[c[0] for c in _SHARE_ROUTES])
+    def test_attachment_decides_the_share_category(self, case_id, kwargs, upload_return,
+                                                   category, media, upload_args):
         from cqc_lem.utilities.linkedin.poster import share_on_linkedin
         restli = self._restli()
         with patch(f"{_P}.RestliClient", return_value=restli), \
              patch(f"{_P}.get_user_linked_sub_id", return_value="SUB1"), \
              patch(f"{_P}.get_user_access_token", return_value="tok"), \
-             patch(f"{_P}.upload_media", return_value="urn:li:asset:v1") as up:
-            urn = share_on_linkedin(1, "caption", media_path="/a/clip.mp4")
+             patch(f"{_P}.upload_media", return_value=upload_return) as up:
+            urn = share_on_linkedin(1, "caption", **kwargs)
         assert urn == "urn:li:share:1"
-        up.assert_called_once_with("tok", "SUB1", "/a/clip.mp4", "VIDEO")
         entity = restli.create.call_args[1]["entity"]
         share = entity["specificContent"]["com.linkedin.ugc.ShareContent"]
-        assert share["shareMediaCategory"] == "VIDEO"
-        assert share["media"][0]["media"] == "urn:li:asset:v1"
+        assert share["shareMediaCategory"] == category
+        for expected_block, actual in zip(media, share["media"]):
+            for key, value in expected_block.items():
+                assert actual[key] == value
+        assert len(share["media"]) == len(media)
         assert entity["author"] == "urn:li:person:SUB1"
-
-    def test_image_media_sets_image_category(self):
-        from cqc_lem.utilities.linkedin.poster import share_on_linkedin
-        restli = self._restli()
-        with patch(f"{_P}.RestliClient", return_value=restli), \
-             patch(f"{_P}.get_user_linked_sub_id", return_value="SUB1"), \
-             patch(f"{_P}.get_user_access_token", return_value="tok"), \
-             patch(f"{_P}.upload_media", return_value="urn:li:asset:i1"):
-            share_on_linkedin(1, "caption", media_path="/a/pic.png")
-        share = restli.create.call_args[1]["entity"][
-            "specificContent"]["com.linkedin.ugc.ShareContent"]
-        assert share["shareMediaCategory"] == "IMAGE"
-
-    def test_article_url_sets_article_category(self):
-        from cqc_lem.utilities.linkedin.poster import share_on_linkedin
-        restli = self._restli()
-        with patch(f"{_P}.RestliClient", return_value=restli), \
-             patch(f"{_P}.get_user_linked_sub_id", return_value="SUB1"), \
-             patch(f"{_P}.get_user_access_token", return_value="tok"):
-            share_on_linkedin(1, "caption", article_url="https://blog.example.com/p")
-        share = restli.create.call_args[1]["entity"][
-            "specificContent"]["com.linkedin.ugc.ShareContent"]
-        assert share["shareMediaCategory"] == "ARTICLE"
-        assert share["media"][0]["originalUrl"] == "https://blog.example.com/p"
-
-    def test_text_only_share_has_no_media(self):
-        from cqc_lem.utilities.linkedin.poster import share_on_linkedin
-        restli = self._restli()
-        with patch(f"{_P}.RestliClient", return_value=restli), \
-             patch(f"{_P}.get_user_linked_sub_id", return_value="SUB1"), \
-             patch(f"{_P}.get_user_access_token", return_value="tok"):
-            share_on_linkedin(1, "just text")
-        share = restli.create.call_args[1]["entity"][
-            "specificContent"]["com.linkedin.ugc.ShareContent"]
-        assert share["shareMediaCategory"] == "NONE"
-        assert share["media"] == []
+        if upload_args:
+            up.assert_called_once_with(*upload_args)
+        else:
+            up.assert_not_called()
 
 
 class TestDownloadMedia:
