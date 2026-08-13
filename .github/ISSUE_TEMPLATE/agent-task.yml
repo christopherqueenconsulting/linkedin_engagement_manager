@@ -1,0 +1,92 @@
+name: Agent Task
+description: >-
+  A structured task for the autonomous agent pipeline — Context / Scope / Acceptance / Verifier /
+  Phase. Filing through this form auto-applies the `template:agent-task` label, which gates a
+  stricter MODE=start check (docs/AGENT_WORKFLOW_PLAYBOOK.md) and gives `phase_guard_ok` a
+  structured field to read instead of guessing from prose.
+title: "[Agent Task]: "
+labels:
+  - template:agent-task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill every section in as a **spec**, not a summary — `MODE=start` reads exactly what you
+        write here to decide whether to build or stop and ask a human. See the
+        **agent-task-template** skill (`.claude/skills/agent-task-template/SKILL.md`) and
+        `docs/spec-verifier-environment.md` before filing. For the older free-form convention this
+        form replaces, see `docs/AGENT_WORKFLOW_PLAYBOOK.md`.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: >-
+        Why this matters, with evidence (link data, PRs, docs). Agents only know what's written
+        here.
+      placeholder: |
+        e.g. "PostHog shows N users hitting X" or "Follow-up of #1234, closes the gap found there."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: >-
+        Concrete changes, named files/modules where known. State explicitly what is OUT of scope.
+      placeholder: |
+        - Touches `src/cqc_lem/...`
+        - Does NOT touch `...` — that is a separate issue
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: >-
+        Testable criteria as free-text `- [ ]` checkboxes. GitHub's structured `checkboxes` field
+        type can't express a variable per-issue list, so this stays a textarea, same as today's
+        convention — required on presence only. Whether each box is independently testable is
+        still a judgment call the agent makes at planning time, not something this form enforces.
+      placeholder: |
+        - [ ] `poetry run pytest tests/unit/test_foo.py -q` passes
+        - [ ] `GET /api/foo` returns 404 for an unowned id
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: verifier
+    attributes:
+      label: Verifier
+      description: >-
+        The specific check that proves EACH acceptance box, per docs/spec-verifier-environment.md
+        — a named test file/lane, a coverage number, a skill's checklist, or (for `risk:*` work) "a
+        human via the Decision Comment." Not "looks right to me."
+      placeholder: |
+        - Box 1: tests/unit/test_foo.py::test_returns_404_for_unowned_id
+        - Box 2: manual check documented in the PR body
+    validations:
+      required: true
+  - type: input
+    id: phase
+    attributes:
+      label: Phase
+      description: >-
+        `single-phase` if this issue is the whole piece of work, or `phase N of M` (e.g.
+        `phase 2 of 3`) if it is one step of a staged build. See "Phased work" in
+        docs/AGENT_WORKFLOW_PLAYBOOK.md — `phase_guard_ok` reads this field first before falling
+        back to scanning the body for phase-like prose.
+      placeholder: single-phase
+    validations:
+      required: true
+  - type: textarea
+    id: remaining_phases
+    attributes:
+      label: Remaining phases (only if multi-phase)
+      description: >-
+        Free text describing what phase(s) remain after this one. Leave blank for `single-phase`.
+        This does NOT substitute for filing the follow-up issue when this phase closes — see
+        "Phased work" in docs/AGENT_WORKFLOW_PLAYBOOK.md.
+      placeholder: |
+        Phase 3 will add ... (to be filed as its own issue once phase 2 lands)
+    validations:
+      required: false

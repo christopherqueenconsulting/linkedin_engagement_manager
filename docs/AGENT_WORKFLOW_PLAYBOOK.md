@@ -87,6 +87,31 @@ branch `feature/claude-issue-<N>`, PR titled `…(closes #N)`, adversarial revie
 Conventions agents follow (so don't fight them in the issue): migrations are timestamp-versioned
 (`V<YYYYMMDDHHMMSS>__name.sql`), ≥80% patch coverage, all repo rules in `CLAUDE.md`.
 
+### Structured template — `.github/ISSUE_TEMPLATE/agent-task.yml`
+
+The Context/Scope/Acceptance convention above is free-form prose — GitHub never enforced it, and
+`MODE=start` only ever read it as a soft judgment call. `.github/ISSUE_TEMPLATE/agent-task.yml` is
+a GitHub issue **form** that structures the same convention into named fields (`Context`, `Scope`,
+`Acceptance`, `Verifier`, `Phase`, `Remaining phases`) and auto-applies the `template:agent-task`
+label to every issue filed through it. Filing this way is optional, not a replacement for the
+prose convention — but it is what makes two checks load-bearing instead of advisory:
+
+- **`MODE=start`** hard-STOPs before writing any code on a `template:agent-task` issue whose
+  `Acceptance` isn't independently testable against its `Verifier` field — posting `Uncertain:
+  <reason>` + `needs-human` instead of guessing. **This gate is completely inert on any issue
+  WITHOUT the label** — i.e. the entire pre-template backlog — which keeps `MODE=start`'s existing
+  behavior on that backlog unchanged.
+- **`MODE=selfreview`** additionally walks the `Acceptance` checklist item-by-item against the
+  diff+tests on a template issue, layered on top of its usual general defect-hunting pass; it still
+  only ever fixes findings in place or escalates, exactly as it does today.
+- **`phase_guard_ok`** (the `tick.sh` merge-time failsafe, see "Phased work" just below) reads the
+  form's `Phase` field FIRST, before falling back to its existing prose-regex scan — giving the
+  field one real, working consumer today. **This is v1's failsafe getting a structured field to
+  read, not v2-native phase enforcement** — `lem-agentd` (v2) has no phase guard at all yet, tracked
+  and explicitly out of scope here as `#1396`.
+
+Walkthrough of every field: the **agent-task-template** skill.
+
 ## Phased work — one phase, one issue
 
 Staged work (research → implementation, or a `2a → 2b → 2c` build order) is normal here. What is
@@ -128,6 +153,12 @@ PR back to the merge loop — filing the follow-up is mechanical, not a human de
 assigned (`needs-human` + `agent:blocked`) only after two failed phasefix passes. Unchecked boxes
 alone only produce a warning comment — so tick the boxes you actually satisfied, and don't leave a
 phase living in prose.
+
+This detection is a prose regex over the issue body ("Phase 2", "deferred to", …), which is exactly
+what the **structured template's** `Phase` field (see above) gives a real value to read instead of
+guess from: `phase_guard_ok` checks `Phase: phase N of M` first and only falls back to the regex
+when that field is absent. Still v1's failsafe, still prose-adjacent under the hood — full v2-native
+phase enforcement in `lem-agentd` remains tracked and blocked on `#1396`.
 
 Clearing the hold is a two-part manual step — the guard **strips `agent:working`**, and a PR without
 it is invisible to the merge loop no matter how you fixed the scope. So do one of the two above,

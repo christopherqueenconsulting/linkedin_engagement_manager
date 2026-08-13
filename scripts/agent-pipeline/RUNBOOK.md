@@ -167,12 +167,33 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    an off-menu answer wins over the options that were offered, and a side-instruction ("also open an issue
    for X") becomes a linked issue rather than extra scope in this PR. If their answer changes the shape of
    the work, say so in the PR body.
-2. Implement the smallest correct change that satisfies the acceptance criteria, following `CLAUDE.md`.
+2. **Structured-template gate — reads the labels you already fetched in step 1.**
+   **THIS STEP ONLY APPLIES WHEN THE ISSUE CARRIES THE `template:agent-task` LABEL.** That label is
+   auto-applied ONLY by `.github/ISSUE_TEMPLATE/agent-task.yml` — no issue filed the old, free-form way
+   (`## Context` / `## Scope` / `## Acceptance` prose — effectively the entire backlog that predates
+   this template) will ever carry it. **So: label absent → this step is a no-op, go straight to step 3,
+   and follow today's UNCHANGED, softer `spec-first` judgment call** (STOP only if `## Acceptance` is
+   genuinely untestable; a missing `Verifier` is derived by you, not an auto-STOP). Nothing below this
+   line applies to a non-template issue — that is the regression guarantee this step exists to keep.
+
+   When the label IS present, the issue was filed through the structured form, so its body renders
+   literal `### Context` / `### Scope` / `### Acceptance` / `### Verifier` / `### Phase` sections — read
+   them as filed, not the free-form convention. Check whether `Acceptance` is **independently testable
+   against the named `Verifier`** — a check you could actually run today (a named test, a command, a
+   lane), not "looks right to me." **If it is NOT independently testable, STOP here, before writing any
+   code**:
+   - Post `Uncertain: <one-line reason>` as a comment on #$ISSUE (same format `spec-first` already uses
+     for this exact situation).
+   - `gh issue edit $ISSUE --add-label needs-human --remove-label agent:ready`.
+   - Do **not** proceed to step 3 — no worktree change, no commit.
+   If `Acceptance` IS testable against `Verifier`, proceed to step 3 exactly as on any other issue; this
+   gate's only job is the STOP-before-code decision, not how you implement once past it.
+3. Implement the smallest correct change that satisfies the acceptance criteria, following `CLAUDE.md`.
    Reuse existing utilities named in the issue; don't invent parallel helpers.
-3. Add/extend tests. Run unit tests locally if you can.
-4. Commit atomically with a clear conventional-commit message.
-5. `git push -u origin $BRANCH`.
-6. **Scope check BEFORE you claim the close** (see "Phased work" above). Re-read issue #$ISSUE: does this
+4. Add/extend tests. Run unit tests locally if you can.
+5. Commit atomically with a clear conventional-commit message.
+6. `git push -u origin $BRANCH`.
+7. **Scope check BEFORE you claim the close** (see "Phased work" above). Re-read issue #$ISSUE: does this
    PR satisfy **every** acceptance criterion? If any remains — an unchecked box you did not implement, or
    an explicit later phase ("Phase 2", "lands in a follow-up PR", "deferred to") — do one of:
    - **(a)** File the follow-up issue now — `<original title> — Phase N (follow-up of #$ISSUE)`, quoting
@@ -182,11 +203,14 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    - **(b)** Omit `Closes #$ISSUE` from the PR body, state "Remaining on #$ISSUE: …", leave it open.
 
    Never leave the remainder in prose only — the merge gate (`phase_guard_ok`) holds the PR if you do.
-7. Open the PR:
+   On a `template:agent-task` issue, check its `### Phase` field first: a `phase N of M` declaration IS
+   the "explicit later phase" case above, and its `### Remaining phases` text is the scope to quote into
+   the follow-up issue.
+8. Open the PR:
    `gh pr create --base main --head $BRANCH --title "<type>(<scope>): <summary> (closes #$ISSUE)"
     --body "<what & why, testing notes, 'Closes #$ISSUE'>" --label agent:working`
    End the PR body with: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-8. **Do NOT enable auto-merge.** Merge is controlled by the runner (`tick.sh`), which merges only after
+9. **Do NOT enable auto-merge.** Merge is controlled by the runner (`tick.sh`), which merges only after
    CI is green AND one fresh review exists (the runner's Claude adversarial review — or Copilot's,
    which the runner requests ONLY on `risk:*`/`review:copilot` PRs since Copilot credits are metered)
    AND every Copilot review thread (if any) is resolved. Do NOT request Copilot review yourself.
@@ -196,7 +220,7 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
      a recommendation, NOT just prose** — then **park it** so the serial pipeline proceeds:
      `gh pr edit <pr> --add-label agent:blocked --remove-label agent:working` and
      `gh issue edit <ISSUE> --add-label agent:blocked --remove-label agent:working`. The human owns it.
-9. STOP. (CI + review happen asynchronously; later ticks handle fix/review/selfreview/merge.)
+10. STOP. (CI + review happen asynchronously; later ticks handle fix/review/selfreview/merge.)
 
 ## MODE=fix  (env: PR, ISSUE, WORKTREE, BRANCH, ATTEMPTS)
 Required CI checks are failing on PR #$PR (attempt #$ATTEMPTS). The worktree is on `$BRANCH`.
@@ -323,6 +347,14 @@ Your review is only worth running if it would catch what the author missed — h
    gaps, CLAUDE.md convention violations (logger, db.py-only SQL, enums, tier aliases, get_docker_driver),
    security/injection issues, test gaps on changed behavior, and silent failure modes. Style nits are NOT
    findings — flag only what you would block a human PR for.
+   **If issue #$ISSUE carries the `template:agent-task` label** (`gh issue view $ISSUE --json labels`),
+   its body has a structured `### Acceptance` section — walk it **item-by-item** against the diff+tests:
+   for each `- [ ]` line, decide whether the diff actually satisfies it and whether a test proves that
+   (its `### Verifier` section names the check to look for). Treat an unaddressed box exactly like any
+   other real finding in step 3 below. **On any issue WITHOUT that label** (i.e. everything today), skip
+   this item-by-item walk and keep the general defect-hunting above exactly as written — this is a
+   strictly ADDITIVE scope on template issues, not a replacement, and it changes nothing about how
+   selfreview behaves on the rest of the backlog.
    **Also check the close is honest:** if the PR says `Closes #N`, confirm the diff covers every acceptance
    criterion and that no later phase is left untracked (see "Phased work"). A PR that closes an issue while
    leaving scope behind IS a finding — fix it by filing + linking the follow-up, or by dropping the closing

@@ -659,10 +659,48 @@ review_wait_expired() {  # $1=head-commit-iso-date -> 0 when the no-review fallb
 PHASE_GUARD="${PHASE_GUARD:-1}"
 PHASE_GUARD_MARKER="🧩 phase-guard"
 
+# --- Structured Phase field (agent-task template, 2026-08) -------------------------------------
+# .github/ISSUE_TEMPLATE/agent-task.yml renders a literal "### Phase" section into the issue body
+# — GitHub issue forms render every field's label as an H3 header followed by its answer, same as
+# every other form field, so this needs no new gh/jq call: the body is already fetched below.
+# When that section is present it is the FILER'S OWN EXPLICIT DECLARATION, so it is checked FIRST
+# and, when found, used INSTEAD of the prose regex — a "single-phase" answer must not still get
+# flagged by the regex noticing an unrelated "part 2 of 3" phrase elsewhere in the body. Absent
+# (every issue filed before this template existed, and any issue never filed through it) falls
+# back to the prose scan below, unchanged. This is pure string parsing on data already in hand, so
+# it never weakens the FAIL-OPEN contract two paragraphs up.
+phase_field_value() {  # $1=body $2=field-label -> echoes the field's answer, or nothing
+  local out
+  out="$(printf '%s\n' "$1" | awk -v want="### $2" '
+    $0 == want { found=1; next }
+    found && /^### / { exit }
+    found && NF { print; exit }
+  ')"
+  # GitHub renders an unanswered optional field as a literal "_No response_" line -- that is an
+  # ABSENT answer, not a value, so it must read the same as the field never having been filled in.
+  [ "$out" = "_No response_" ] && out=""
+  printf '%s' "$out"
+}
+
 phase_leftover() {  # $1=issue -> echoes "phase: <marker>" / "boxes: <n>" / nothing
-  local N="$1" body mark boxes
+  local N="$1" body mark boxes structured remaining
   body="$(gh issue view "$N" --repo "$SLUG" --json body --jq '.body // ""' 2>/dev/null)" || return 0
   [ -n "$body" ] || return 0
+  structured="$(phase_field_value "$body" "Phase")"
+  if [ -n "$structured" ]; then
+    if printf '%s' "$structured" | grep -qiE 'phase[[:space:]]+[2-9][[:space:]]+of[[:space:]]+[2-9]'; then
+      remaining="$(phase_field_value "$body" "Remaining phases (only if multi-phase)")"
+      echo "phase: \"$structured\"${remaining:+ — $remaining}"
+      return 0
+    fi
+    # A structured answer that ISN'T "phase N of M" (i.e. "single-phase") is the filer's own
+    # declaration that nothing later is planned. Authoritative -- do not also run the prose regex
+    # below, which would defeat the point of a structured field by re-flagging unrelated "part 2 of
+    # 3" phrasing elsewhere in the body. Unchecked boxes still count either way.
+    boxes="$(printf '%s' "$body" | grep -cE '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]')"
+    [ "${boxes:-0}" -gt 0 ] && echo "boxes: $boxes unchecked"
+    return 0
+  fi
   mark="$(printf '%s' "$body" | grep -oiE 'phase [2-9]|part [2-9]|next phase|later phase|follow-up (pr|issue)|land[s]? in a follow-up|deferred to|out of scope for this issue|will be handled in|tracked separately' | head -1)"
   [ -n "$mark" ] && { echo "phase: \"$mark\""; return 0; }
   boxes="$(printf '%s' "$body" | grep -cE '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\]')"
