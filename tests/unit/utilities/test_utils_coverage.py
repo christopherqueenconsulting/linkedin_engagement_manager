@@ -1,5 +1,9 @@
 """Coverage tests for cqc_lem.utilities.utils helpers (debug wrapper, prompts, file/AWS
 helpers, asset purging).
+
+The pure input→output helpers (the confirm prompt, extension parsing) are parametrized
+tables (issue #1216); the download, AWS and purge paths stay plain because each asserts a
+different side effect.
 """
 
 from unittest.mock import MagicMock, patch
@@ -47,25 +51,17 @@ class TestDebugFunction:
 
 
 class TestAreYouSatisfied:
-    def test_yes_selection_returns_true(self):
+    # (case id, what the operator typed — a list means one entry per re-prompt, expected answer)
+    @pytest.mark.parametrize("case_id,typed,expected", [
+        ("yes", ["1"], True),
+        ("no", ["0"], False),
+        ("empty_defaults_to_yes", [""], True),
+        ("invalid_reprompts", ["9", "1"], True),
+    ], ids=["yes", "no", "empty_defaults_to_yes", "invalid_reprompts"])
+    def test_reads_the_confirmation(self, case_id, typed, expected):
         from cqc_lem.utilities.utils import are_you_satisfied
-        with patch("builtins.input", return_value="1"):
-            assert are_you_satisfied() is True
-
-    def test_no_selection_returns_false(self):
-        from cqc_lem.utilities.utils import are_you_satisfied
-        with patch("builtins.input", return_value="0"):
-            assert are_you_satisfied() is False
-
-    def test_empty_input_defaults_to_yes(self):
-        from cqc_lem.utilities.utils import are_you_satisfied
-        with patch("builtins.input", return_value=""):
-            assert are_you_satisfied() is True
-
-    def test_invalid_selection_reprompts(self):
-        from cqc_lem.utilities.utils import are_you_satisfied
-        with patch("builtins.input", side_effect=["9", "1"]):
-            assert are_you_satisfied() is True
+        with patch("builtins.input", side_effect=typed):
+            assert are_you_satisfied() is expected
 
 
 class TestCreateFolderIfNotExists:
@@ -117,37 +113,36 @@ class TestSaveVideoUrlToDir:
         assert rget.call_args.kwargs["timeout"] == DOWNLOAD_TIMEOUT
         assert rget.call_args.kwargs["stream"] is True
 
-    def test_an_interrupted_download_leaves_no_file_at_all(self, tmp_path):
-        """The documented invariant: never leave a truncated file later stages read as media."""
+    # The documented invariant: never leave a truncated file later stages read as media. Both
+    # ways a download can die must raise AND leave the directory untouched.
+    @pytest.mark.parametrize("case_id,exc", [
+        ("interrupted_mid_stream", OSError("connection reset")),
+        ("non_2xx_response", RuntimeError("404")),
+    ], ids=["interrupted_mid_stream", "non_2xx_response"])
+    def test_a_failed_download_leaves_no_file_at_all(self, tmp_path, case_id, exc):
         from cqc_lem.utilities.utils import save_video_url_to_dir
-        resp = self._response([b"partial"], raise_on=OSError("connection reset"))
+        if case_id == "interrupted_mid_stream":
+            resp = self._response([b"partial"], raise_on=exc)
+        else:
+            resp = self._response([])
+            resp.raise_for_status.side_effect = exc
         with patch(f"{_U}.requests.get", return_value=resp):
-            with pytest.raises(OSError):
-                save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
-        assert list(tmp_path.iterdir()) == []
-
-    def test_a_non_2xx_response_writes_nothing(self, tmp_path):
-        from cqc_lem.utilities.utils import save_video_url_to_dir
-        resp = self._response([])
-        resp.raise_for_status.side_effect = RuntimeError("404")
-        with patch(f"{_U}.requests.get", return_value=resp):
-            with pytest.raises(RuntimeError):
+            with pytest.raises(type(exc)):
                 save_video_url_to_dir("https://cdn.example.com/clip.mp4", str(tmp_path))
         assert list(tmp_path.iterdir()) == []
 
 
 class TestFileExtension:
-    def test_lowercases_extension(self):
+    # (case id, path, kwargs, extension) — always lower-cased, so a .MP4 upload and a .mp4 one
+    # take the same downstream branch.
+    @pytest.mark.parametrize("case_id,path,kwargs,expected", [
+        ("lowercases", "/a/b/Video.MP4", {}, ".mp4"),
+        ("removes_leading_dot", "/a/b/c.PNG", {"remove_leading_dot": True}, "png"),
+        ("no_extension", "/a/b/Makefile", {}, ""),
+    ], ids=["lowercases", "removes_leading_dot", "no_extension"])
+    def test_reads_the_extension(self, case_id, path, kwargs, expected):
         from cqc_lem.utilities.utils import get_file_extension_from_filepath
-        assert get_file_extension_from_filepath("/a/b/Video.MP4") == ".mp4"
-
-    def test_removes_leading_dot(self):
-        from cqc_lem.utilities.utils import get_file_extension_from_filepath
-        assert get_file_extension_from_filepath("/a/b/c.PNG", remove_leading_dot=True) == "png"
-
-    def test_no_extension(self):
-        from cqc_lem.utilities.utils import get_file_extension_from_filepath
-        assert get_file_extension_from_filepath("/a/b/Makefile") == ""
+        assert get_file_extension_from_filepath(path, **kwargs) == expected
 
 
 class TestAwsHelpers:
@@ -230,11 +225,17 @@ class TestPurgePostAssets:
         assert outside.exists()
         assert removed == []
 
-    def test_missing_assets_are_tolerated(self, tmp_path):
+    # Nothing to remove is never an error: a purge runs on posts whose assets were already
+    # gone, and on rows whose video_url was never an assets URL at all.
+    @pytest.mark.parametrize("case_id,post_id,video_url", [
+        ("missing_asset", 123,
+         "https://api.example.com/api/assets?file_name=videos/none.mp4"),
+        ("unparseable_video_url", 9, "https://x.com/no-query"),
+    ], ids=["missing_asset", "unparseable_video_url"])
+    def test_nothing_to_remove_is_tolerated(self, tmp_path, case_id, post_id, video_url):
         from cqc_lem.utilities.utils import purge_post_assets
-        url = "https://api.example.com/api/assets?file_name=videos/none.mp4"
         with patch("cqc_lem.assets_dir", str(tmp_path)):
-            assert purge_post_assets(123, video_url=url) == []
+            assert purge_post_assets(post_id, video_url=video_url) == []
 
     def test_no_video_url_only_purges_carousel(self, tmp_path):
         from cqc_lem.utilities.utils import purge_post_assets
@@ -243,11 +244,6 @@ class TestPurgePostAssets:
             removed = purge_post_assets(9)
         assert removed == [str(carousel_dir)]
         assert not carousel_dir.exists()
-
-    def test_unparseable_video_url_is_tolerated(self, tmp_path):
-        from cqc_lem.utilities.utils import purge_post_assets
-        with patch("cqc_lem.assets_dir", str(tmp_path)):
-            assert purge_post_assets(9, video_url="https://x.com/no-query") == []
 
 
 class TestGetPostTime:

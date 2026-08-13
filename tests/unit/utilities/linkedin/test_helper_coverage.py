@@ -1,4 +1,9 @@
-"""Coverage tests for linkedin/helper.py: Arkose solver, text clicking, profile fetch/caching."""
+"""Coverage tests for linkedin/helper.py: Arkose solver, text clicking, profile fetch/caching.
+
+The two refusal contracts — every way the Arkose solve gives up, every way a text click
+fails to land — are parametrized tables (issue #1216). The login and profile-cache paths
+stay plain: each pins a different sequence of collaborator calls.
+"""
 
 import sys
 import types
@@ -16,20 +21,54 @@ def _profile_json():
     return ('{"full_name": "Jane Doe", "job_title": "CTO", "company_name": "Acme"}',)
 
 
-class TestSolveArkoseChallenge:
-    def test_no_api_key_returns_false(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
-        monkeypatch.delenv("CAPSOLVER_API_KEY", raising=False)
-        assert solve_arkose_challenge(MagicMock(), MagicMock()) is False
+# Every way the solve gives up answers the same way — False, and nothing typed into the
+# challenge. (case id, API key, iframe src, page source, what capsolver.solve does,
+# whether solve should have been called at all)
+_ARKOSE_REFUSALS = [
+    ("no_api_key", None, None, None, None, False),
+    # The host must BE arkoselabs, not merely mention it in a query string.
+    ("iframe_is_not_arkose", "key", "https://evil.com/?arkoselabs.com", None, None, False),
+    ("empty_token", "key", "https://client-api.arkoselabs.com/fc/api?pk=PUBKEY123", None,
+     {"token": ""}, True),
+    ("no_public_key_anywhere", "key", "https://client-api.arkoselabs.com/fc/api",
+     "<html>nothing here</html>", {"token": "tok"}, False),
+    ("solver_exception", "key", "https://client-api.arkoselabs.com/fc/api?pk=PUBKEY123", None,
+     RuntimeError("api down"), True),
+]
 
-    def test_no_arkose_iframe_returns_false(self, monkeypatch):
+
+class TestSolveArkoseChallenge:
+    @pytest.mark.parametrize("case_id,api_key,frame_src,page_source,solve,solve_called",
+                             _ARKOSE_REFUSALS, ids=[c[0] for c in _ARKOSE_REFUSALS])
+    def test_refusals_return_false(self, monkeypatch, case_id, api_key, frame_src, page_source,
+                                   solve, solve_called):
         from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
-        monkeypatch.setenv("CAPSOLVER_API_KEY", "key")
+        if api_key:
+            monkeypatch.setenv("CAPSOLVER_API_KEY", api_key)
+        else:
+            monkeypatch.delenv("CAPSOLVER_API_KEY", raising=False)
         driver = MagicMock()
-        frame = MagicMock()
-        frame.get_attribute.return_value = "https://evil.com/?arkoselabs.com"
-        driver.find_elements.return_value = [frame]
-        assert solve_arkose_challenge(driver, MagicMock()) is False
+        if frame_src:
+            frame = MagicMock()
+            frame.get_attribute.return_value = frame_src
+            driver.find_elements.return_value = [frame]
+            driver.current_url = "https://www.linkedin.com/checkpoint/challenge"
+        if page_source is not None:
+            driver.page_source = page_source
+        fake_capsolver = types.ModuleType("capsolver")
+        fake_capsolver.solve = MagicMock(
+            side_effect=solve if isinstance(solve, Exception) else None,
+            return_value=solve if not isinstance(solve, Exception) else None)
+        with patch.dict(sys.modules, {"capsolver": fake_capsolver}), \
+             patch(f"{_H}.time.sleep"):
+            assert solve_arkose_challenge(driver, MagicMock()) is False
+        if solve_called:
+            # These two cases exist to pin what the SOLVER answered, so they are only worth
+            # anything while the solver is still reached — a pk-parsing regression would
+            # otherwise turn them into duplicates of the refuse-before-solving cases.
+            fake_capsolver.solve.assert_called_once()
+        else:
+            fake_capsolver.solve.assert_not_called()
 
     def _driver_with_arkose(self):
         driver = MagicMock()
@@ -56,14 +95,6 @@ class TestSolveArkoseChallenge:
         assert task["websitePublicKey"] == "PUBKEY123"
         submit.click.assert_called_once()
 
-    def test_empty_token_returns_false(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
-        monkeypatch.setenv("CAPSOLVER_API_KEY", "key")
-        fake_capsolver = types.ModuleType("capsolver")
-        fake_capsolver.solve = MagicMock(return_value={"token": ""})
-        with patch.dict(sys.modules, {"capsolver": fake_capsolver}):
-            assert solve_arkose_challenge(self._driver_with_arkose(), MagicMock()) is False
-
     def test_missing_public_key_falls_back_to_page_source(self, monkeypatch):
         from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
         monkeypatch.setenv("CAPSOLVER_API_KEY", "key")
@@ -79,28 +110,6 @@ class TestSolveArkoseChallenge:
              patch(f"{_H}.time.sleep"):
             solve_arkose_challenge(driver, MagicMock())
         assert fake_capsolver.solve.call_args[0][0]["websitePublicKey"] == "FROMPAGE"
-
-    def test_no_public_key_anywhere_returns_false(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
-        monkeypatch.setenv("CAPSOLVER_API_KEY", "key")
-        fake_capsolver = types.ModuleType("capsolver")
-        fake_capsolver.solve = MagicMock()
-        driver = MagicMock()
-        frame = MagicMock()
-        frame.get_attribute.return_value = "https://client-api.arkoselabs.com/fc/api"
-        driver.find_elements.return_value = [frame]
-        driver.page_source = "<html>nothing here</html>"
-        with patch.dict(sys.modules, {"capsolver": fake_capsolver}):
-            assert solve_arkose_challenge(driver, MagicMock()) is False
-        fake_capsolver.solve.assert_not_called()
-
-    def test_solver_exception_returns_false(self, monkeypatch):
-        from cqc_lem.utilities.linkedin.helper import solve_arkose_challenge
-        monkeypatch.setenv("CAPSOLVER_API_KEY", "key")
-        fake_capsolver = types.ModuleType("capsolver")
-        fake_capsolver.solve = MagicMock(side_effect=RuntimeError("api down"))
-        with patch.dict(sys.modules, {"capsolver": fake_capsolver}):
-            assert solve_arkose_challenge(self._driver_with_arkose(), MagicMock()) is False
 
 
 def _element(text="", click_exc=None):
@@ -131,26 +140,20 @@ class TestClickByText:
         assert _click_by_text(driver, ["verify"]) is True
         driver.execute_script.assert_called_once()
 
-    def test_skips_stale_elements(self):
+    # Success is the click LANDING, so every way it doesn't reads False rather than
+    # "we tried". (case id, the element on the page, keywords, whether the JS fallback fails)
+    @pytest.mark.parametrize("case_id,text,click_exc,keywords,js_fails", [
+        ("stale_element", WebDriverException("stale"), None, ["verify"], False),
+        ("js_click_also_fails", "Verify", WebDriverException("obscured"), ["verify"], True),
+        ("no_matching_text", "Cancel", None, ["submit"], False),
+    ], ids=["stale_element", "js_click_also_fails", "no_matching_text"])
+    def test_unlanded_clicks_return_false(self, case_id, text, click_exc, keywords, js_fails):
         from cqc_lem.utilities.linkedin.helper import _click_by_text
         driver = MagicMock()
-        stale = _element(WebDriverException("stale"))
-        driver.find_elements.return_value = [stale]
-        assert _click_by_text(driver, ["verify"]) is False
-
-    def test_js_click_failure_continues(self):
-        from cqc_lem.utilities.linkedin.helper import _click_by_text
-        driver = MagicMock()
-        el = _element("Verify", click_exc=WebDriverException("obscured"))
-        driver.find_elements.return_value = [el]
-        driver.execute_script.side_effect = WebDriverException("js fail")
-        assert _click_by_text(driver, ["verify"]) is False
-
-    def test_no_match_returns_false(self):
-        from cqc_lem.utilities.linkedin.helper import _click_by_text
-        driver = MagicMock()
-        driver.find_elements.return_value = [_element("Cancel")]
-        assert _click_by_text(driver, ["submit"]) is False
+        driver.find_elements.return_value = [_element(text, click_exc=click_exc)]
+        if js_fails:
+            driver.execute_script.side_effect = WebDriverException("js fail")
+        assert _click_by_text(driver, keywords) is False
 
 
 class TestGetMyProfile:

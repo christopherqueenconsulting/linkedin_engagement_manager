@@ -1,5 +1,8 @@
 """Coverage tests for Celery infra helpers: celeryconfig SQS setup, my_celery signal
 handlers/queue metrics, and the AWS test task.
+
+The queue-depth reads share one contract — anything but a live datapoint is zero — so they
+are a parametrized table (issue #1216); the rest assert one-of-a-kind wiring and stay plain.
 """
 
 from datetime import datetime
@@ -51,37 +54,35 @@ class TestSetupAwsSqsConfig:
         assert "Error getting AWS session" in capsys.readouterr().out
 
 
+_DATAPOINTS = [
+    {"Timestamp": datetime(2026, 7, 6, 12, 0), "Maximum": 3},
+    {"Timestamp": datetime(2026, 7, 6, 12, 5), "Maximum": 9},
+]
+
+# Every way of not getting a reading is the same reading: zero. Only a live datapoint is a
+# depth, so the metric can never scale workers off a CloudWatch outage.
+# (case id, AWS_REGION, what get_cloudwatch_client does, expected depth)
+_QUEUE_METRIC_CASES = [
+    ("no_region", None, None, 0),
+    ("latest_datapoint", "us-east-1", {"Datapoints": _DATAPOINTS}, 9),
+    ("no_datapoints", "us-east-1", {"Datapoints": []}, 0),
+    ("cloudwatch_error", "us-east-1", RuntimeError("denied"), 0),
+]
+
+
 class TestGetQueueMetric:
-    def test_returns_zero_without_region(self):
+    @pytest.mark.parametrize("case_id,region,statistics,expected",
+                             _QUEUE_METRIC_CASES, ids=[c[0] for c in _QUEUE_METRIC_CASES])
+    def test_reads_the_depth_or_zero(self, case_id, region, statistics, expected):
         import cqc_lem.app.my_celery as mc
-        with patch.object(mc, "AWS_REGION", None):
-            assert mc.get_queue_metric() == 0
-
-    def test_returns_latest_datapoint(self):
-        import cqc_lem.app.my_celery as mc
-        cw = MagicMock()
-        cw.get_metric_statistics.return_value = {"Datapoints": [
-            {"Timestamp": datetime(2026, 7, 6, 12, 0), "Maximum": 3},
-            {"Timestamp": datetime(2026, 7, 6, 12, 5), "Maximum": 9},
-        ]}
-        with patch.object(mc, "AWS_REGION", "us-east-1"), \
-             patch.object(mc, "get_cloudwatch_client", return_value=cw):
-            assert mc.get_queue_metric() == 9
-
-    def test_returns_zero_without_datapoints(self):
-        import cqc_lem.app.my_celery as mc
-        cw = MagicMock()
-        cw.get_metric_statistics.return_value = {"Datapoints": []}
-        with patch.object(mc, "AWS_REGION", "us-east-1"), \
-             patch.object(mc, "get_cloudwatch_client", return_value=cw):
-            assert mc.get_queue_metric() == 0
-
-    def test_returns_zero_on_error(self):
-        import cqc_lem.app.my_celery as mc
-        with patch.object(mc, "AWS_REGION", "us-east-1"), \
-             patch.object(mc, "get_cloudwatch_client",
-                          side_effect=RuntimeError("denied")):
-            assert mc.get_queue_metric() == 0
+        if isinstance(statistics, Exception):
+            client = patch.object(mc, "get_cloudwatch_client", side_effect=statistics)
+        else:
+            cw = MagicMock()
+            cw.get_metric_statistics.return_value = statistics
+            client = patch.object(mc, "get_cloudwatch_client", return_value=cw)
+        with patch.object(mc, "AWS_REGION", region), client:
+            assert mc.get_queue_metric() == expected
 
 
 class TestCelerySignalHandlers:

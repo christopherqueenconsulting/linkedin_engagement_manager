@@ -1,4 +1,11 @@
-"""Coverage tests for log-query, user-settings and token DB helpers (db.py)."""
+"""Coverage tests for log-query, user-settings and token DB helpers (db.py).
+
+Shaped as parametrized contract tables (issue #1216) in the style of
+`test_db_coverage_errors.py`: the helpers here share four contracts — read one scalar
+off one row, read a row list, execute one exact statement, fall back on
+`mysql.connector.Error` — so each is one table, and only the genuinely one-of-a-kind
+cases stay as plain tests.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +14,6 @@ import pytest
 from mysql.connector import errorcode
 
 pytestmark = pytest.mark.unit
-
 
 
 def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
@@ -19,6 +25,140 @@ def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
     cur.lastrowid = lastrowid
     conn.cursor.return_value = cur
     return conn, cur
+
+
+def _err_conn():
+    conn, cur = _conn()
+    cur.execute.side_effect = mysql.connector.Error("boom")
+    return conn
+
+
+# (case id, function name, args, row the cursor returns, expected return,
+#  expected execute params or None, SQL fragment that must appear or None)
+_SCALAR_READS = [
+    ("has_user_commented_true", "has_user_commented_on_post_url", (1, "https://li.com/p/1"),
+     (2,), True, (1, "https://li.com/p/1", "comment", "success"), None),
+    ("has_user_commented_false", "has_user_commented_on_post_url", (1, "u"),
+     (0,), False, None, None),
+    ("post_url_from_log", "get_post_url_from_log_for_user", (1, 9),
+     ("https://li.com/posted",), "https://li.com/posted", (1, 9, "post", "success"), None),
+    ("post_message_from_log", "get_post_message_from_log_for_user", (1, 9),
+     ("my post text",), "my post text", None, None),
+    ("engaged_within_days", "has_engaged_url_with_x_days", (1, "u", 7),
+     (1,), True, (1, "u", "engaged", "success", 7), None),
+    ("post_status", "get_post_status", (5,), ("approved",), "approved", None, None),
+    ("post_status_no_row", "get_post_status", (5,), None, None, None, None),
+    ("company_url", "get_company_linked_in_url_for_user", (1,),
+     ("https://li.com/company/acme",), "https://li.com/company/acme", None, None),
+    ("company_url_no_row", "get_company_linked_in_url_for_user", (1,), None, None, None, None),
+    ("display_name", "get_user_linkedin_display_name", (1,),
+     ("  Christopher Queen  ",), "Christopher Queen", None, None),
+    # A blank string must read as "not set", or the required field would look satisfied and
+    # every reply check would compare against '' (issue #731).
+    ("display_name_blank_is_none", "get_user_linkedin_display_name", (1,),
+     ("   ",), None, None, None),
+    ("display_name_no_row", "get_user_linkedin_display_name", (99,), None, None, None, None),
+    ("user_email", "get_user_email", (1,), {"email": "a@x.com"}, "a@x.com", None, None),
+    ("user_email_no_row", "get_user_email", (1,), None, None, None, None),
+    # The row is handed back with the decrypted `refresh_token` filled in — absent in the raw
+    # row, so a caller reading it never sees a KeyError.
+    ("token_info", "get_user_token_info", (1,),
+     {"access_token": "tok", "access_token_expires_in": 3600},
+     {"access_token": "tok", "access_token_expires_in": 3600, "refresh_token": None},
+     None, "refresh_token"),
+    ("user_by_stripe_customer", "get_user_by_stripe_customer_id", ("cus_9",),
+     {"id": 3, "stripe_customer_id": "cus_9"}, {"id": 3, "stripe_customer_id": "cus_9"},
+     ("cus_9",), None),
+]
+
+
+class TestScalarReads:
+    @pytest.mark.parametrize("case_id,fname,args,row,expected,params,sql_fragment",
+                             _SCALAR_READS, ids=[c[0] for c in _SCALAR_READS])
+    def test_reads_one_value_off_one_row(self, case_id, fname, args, row, expected, params,
+                                         sql_fragment):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn(fetch_one=row)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args) == expected
+        if params is not None:
+            assert cur.execute.call_args[0][1] == params
+        if sql_fragment:
+            assert sql_fragment in cur.execute.call_args[0][0]
+
+
+# (case id, function name, args, rows the cursor returns, expected return,
+#  expected execute params or None, SQL fragment or None)
+_ROW_LIST_READS = [
+    ("recent_logs", "get_recent_logs", (1,), {"limit": 5},
+     [{"id": 1, "action_type": "comment"}], [{"id": 1, "action_type": "comment"}],
+     (1, 5), None),
+    ("stripe_subscriptions", "get_users_with_stripe_subscriptions", (), {},
+     [{"id": 1, "stripe_customer_id": "cus_1"}], [{"id": 1, "stripe_customer_id": "cus_1"}],
+     None, "stripe_subscription_id IS NOT NULL"),
+]
+
+
+class TestRowListReads:
+    @pytest.mark.parametrize("case_id,fname,args,kwargs,rows,expected,params,sql_fragment",
+                             _ROW_LIST_READS, ids=[c[0] for c in _ROW_LIST_READS])
+    def test_returns_the_row_list(self, case_id, fname, args, kwargs, rows, expected, params,
+                                  sql_fragment):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn(fetch_all=rows)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args, **kwargs) == expected
+        if params is not None:
+            assert cur.execute.call_args[0][1] == params
+        if sql_fragment:
+            assert sql_fragment in cur.execute.call_args[0][0]
+
+
+# (case id, function name, args, kwargs, the exact (sql, params) executed)
+_WRITE_STATEMENTS = [
+    ("linkedin_password", "update_user_linkedin_password", (1, "dummy-test-value"), {},
+     ("UPDATE users SET password = %s WHERE id = %s", ("dummy-test-value", 1))),
+    ("display_name", "update_user_linkedin_display_name", (1, " Christopher Queen "), {},
+     ("UPDATE users SET linkedin_display_name = %s WHERE id = %s", ("Christopher Queen", 1))),
+    # A whitespace-only name CLEARS the column rather than storing '' (issue #731).
+    ("display_name_cleared", "update_user_linkedin_display_name", (1, "   "), {},
+     ("UPDATE users SET linkedin_display_name = %s WHERE id = %s", (None, 1))),
+]
+
+
+class TestExactWriteStatements:
+    @pytest.mark.parametrize("case_id,fname,args,kwargs,statement",
+                             _WRITE_STATEMENTS, ids=[c[0] for c in _WRITE_STATEMENTS])
+    def test_writes_and_commits(self, case_id, fname, args, kwargs, statement):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args, **kwargs) is True
+        assert cur.execute.call_args[0] == statement
+        conn.commit.assert_called_once()
+
+    def test_update_user_settings_binds_both_urls(self):
+        conn, cur = _conn(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user_settings
+            assert update_user_settings(1, blog_url="b", sitemap_url="s") is True
+        assert cur.execute.call_args[0][1] == ("b", "s", 1)
+
+
+# (function name, args, expected fallback on mysql.connector.Error)
+_ERROR_CASES = [
+    ("get_user_linkedin_display_name", (1,), None),
+    ("update_user_linkedin_display_name", (1, "Jordan"), False),
+]
+
+
+class TestMysqlErrorFallbacks:
+    @pytest.mark.parametrize("fname,args,expected",
+                             _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
+    def test_error_returns_documented_fallback(self, fname, args, expected):
+        import cqc_lem.utilities.db as db
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+            assert getattr(db, fname)(*args) == expected
 
 
 class TestInsertNewLog:
@@ -40,40 +180,7 @@ class TestInsertNewLog:
             assert insert_new_log(1, LogActionType.DM, LogResultType.FAILURE) is False
 
 
-class TestLogLookups:
-    def test_has_user_commented_true(self):
-        conn, cur = _conn(fetch_one=(2,))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_user_commented_on_post_url
-            assert has_user_commented_on_post_url(1, "https://li.com/p/1") is True
-        assert cur.execute.call_args[0][1] == (1, "https://li.com/p/1", "comment", "success")
-
-    def test_has_user_commented_false(self):
-        conn, _ = _conn(fetch_one=(0,))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_user_commented_on_post_url
-            assert has_user_commented_on_post_url(1, "u") is False
-
-    def test_get_post_url_from_log(self):
-        conn, cur = _conn(fetch_one=("https://li.com/posted",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_post_url_from_log_for_user
-            assert get_post_url_from_log_for_user(1, 9) == "https://li.com/posted"
-        assert cur.execute.call_args[0][1] == (1, 9, "post", "success")
-
-    def test_get_post_message_from_log(self):
-        conn, _ = _conn(fetch_one=("my post text",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_post_message_from_log_for_user
-            assert get_post_message_from_log_for_user(1, 9) == "my post text"
-
-    def test_has_engaged_url_within_days(self):
-        conn, cur = _conn(fetch_one=(1,))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import has_engaged_url_with_x_days
-            assert has_engaged_url_with_x_days(1, "u", 7) is True
-        assert cur.execute.call_args[0][1] == (1, "u", "engaged", "success", 7)
-
+class TestLogAggregates:
     def test_dm_history_filters_empty_messages(self):
         conn, cur = _conn(fetch_all=[("hello",), (None,), ("follow-up",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
@@ -81,14 +188,6 @@ class TestLogLookups:
             msgs = get_dm_history_for_profile(1, "https://li.com/in/jane")
         assert msgs == ["hello", "follow-up"]
         assert cur.execute.call_args[0][1] == (1, "https://li.com/in/jane", "dm")
-
-    def test_get_recent_logs(self):
-        rows = [{"id": 1, "action_type": "comment"}]
-        conn, cur = _conn(fetch_all=rows)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_recent_logs
-            assert get_recent_logs(1, limit=5) == rows
-        assert cur.execute.call_args[0][1] == (1, 5)
 
     def test_count_comments_and_dms_today(self):
         conn, cur = _conn(fetch_one=(4,))
@@ -102,99 +201,12 @@ class TestLogLookups:
         assert first_params == (1, "comment", "success")
         assert second_params == (1, "dm", "success")
 
-
-class TestPostStatusAndCompanyUrl:
-    def test_get_post_status(self):
-        conn, _ = _conn(fetch_one=("approved",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_post_status
-            assert get_post_status(5) == "approved"
-
-    def test_get_post_status_none(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_post_status
-            assert get_post_status(5) is None
-
-    def test_get_company_url(self):
-        conn, _ = _conn(fetch_one=("https://li.com/company/acme",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_company_linked_in_url_for_user
-            assert get_company_linked_in_url_for_user(1) == "https://li.com/company/acme"
-
-    def test_get_company_url_none(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_company_linked_in_url_for_user
-            assert get_company_linked_in_url_for_user(1) is None
-
-
-class TestUserSettingsWrites:
-    def test_update_linkedin_password(self):
-        conn, cur = _conn(rowcount=1)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_user_linkedin_password
-            assert update_user_linkedin_password(1, "dummy-test-value") is True
-        assert cur.execute.call_args[0] == (
-            "UPDATE users SET password = %s WHERE id = %s", ("dummy-test-value", 1))
-        conn.commit.assert_called_once()
-
-    def test_get_linkedin_display_name(self):
-        conn, _ = _conn(fetch_one=("  Christopher Queen  ",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_linkedin_display_name
-            assert get_user_linkedin_display_name(1) == "Christopher Queen"
-
-    def test_get_linkedin_display_name_blank_is_none(self):
-        # A blank string must read as "not set", or the required field would look satisfied and
-        # every reply check would compare against '' (issue #731).
-        conn, _ = _conn(fetch_one=("   ",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_linkedin_display_name
-            assert get_user_linkedin_display_name(1) is None
-
-    def test_get_linkedin_display_name_no_row(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_linkedin_display_name
-            assert get_user_linkedin_display_name(99) is None
-
-    def test_get_linkedin_display_name_db_error(self):
+    def test_empty_fetchall_none_coerced_to_list(self):
         conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error("boom")
+        cur.fetchall.return_value = None
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_linkedin_display_name
-            assert get_user_linkedin_display_name(1) is None
-
-    def test_update_linkedin_display_name(self):
-        conn, cur = _conn(rowcount=1)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_user_linkedin_display_name
-            assert update_user_linkedin_display_name(1, " Christopher Queen ") is True
-        assert cur.execute.call_args[0] == (
-            "UPDATE users SET linkedin_display_name = %s WHERE id = %s", ("Christopher Queen", 1))
-        conn.commit.assert_called_once()
-
-    def test_update_linkedin_display_name_clears_on_empty(self):
-        conn, cur = _conn(rowcount=1)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_user_linkedin_display_name
-            assert update_user_linkedin_display_name(1, "   ") is True
-        assert cur.execute.call_args[0][1] == (None, 1)
-
-    def test_update_linkedin_display_name_db_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_user_linkedin_display_name
-            assert update_user_linkedin_display_name(1, "Jordan") is False
-
-    def test_update_user_settings(self):
-        conn, cur = _conn(rowcount=1)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_user_settings
-            assert update_user_settings(1, blog_url="b", sitemap_url="s") is True
-        assert cur.execute.call_args[0][1] == ("b", "s", 1)
+            from cqc_lem.utilities.db import get_users_with_stripe_subscriptions
+            assert get_users_with_stripe_subscriptions() == []
 
 
 class TestAddUserByEmail:
@@ -237,28 +249,6 @@ class TestAddUserByEmail:
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import add_user_by_email
             assert add_user_by_email("x@x.com") is None
-
-
-class TestUserEmailAndTokenInfo:
-    def test_get_user_email(self):
-        conn, _ = _conn(fetch_one={"email": "a@x.com"})
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_email
-            assert get_user_email(1) == "a@x.com"
-
-    def test_get_user_email_none(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_email
-            assert get_user_email(1) is None
-
-    def test_get_user_token_info(self):
-        row = {"access_token": "tok", "access_token_expires_in": 3600}
-        conn, cur = _conn(fetch_one=row)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_token_info
-            assert get_user_token_info(1) == row
-        assert "refresh_token" in cur.execute.call_args[0][0]
 
 
 class TestUpdateAccessToken:
@@ -308,28 +298,3 @@ class TestUpdateLinkedInToken:
         sql, params = cur.execute.call_args[0]
         assert "refresh_token" not in sql
         assert params[1] is None
-
-
-class TestStripeSubscriptionQueries:
-    def test_get_users_with_stripe_subscriptions(self):
-        rows = [{"id": 1, "stripe_customer_id": "cus_1"}]
-        conn, cur = _conn(fetch_all=rows)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_users_with_stripe_subscriptions
-            assert get_users_with_stripe_subscriptions() == rows
-        assert "stripe_subscription_id IS NOT NULL" in cur.execute.call_args[0][0]
-
-    def test_empty_fetchall_none_coerced_to_list(self):
-        conn, cur = _conn()
-        cur.fetchall.return_value = None
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_users_with_stripe_subscriptions
-            assert get_users_with_stripe_subscriptions() == []
-
-    def test_get_user_by_stripe_customer_id(self):
-        row = {"id": 3, "stripe_customer_id": "cus_9"}
-        conn, cur = _conn(fetch_one=row)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_by_stripe_customer_id
-            assert get_user_by_stripe_customer_id("cus_9") == row
-        assert cur.execute.call_args[0][1] == ("cus_9",)
