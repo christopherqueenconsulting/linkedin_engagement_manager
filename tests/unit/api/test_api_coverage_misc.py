@@ -58,7 +58,6 @@ from tests.unit.api.conftest import (  # noqa: E402
     SESSION_USER_ID,
 )
 
-
 # Issue #914 put every route behind the ONE session resolver, so "no session" is ONE contract
 # with one answer (401) — a parametrized table (issue #1216) rather than the same test per route.
 # (case id, method, path, json body, collaborator that must not run, attribute to assert on)
