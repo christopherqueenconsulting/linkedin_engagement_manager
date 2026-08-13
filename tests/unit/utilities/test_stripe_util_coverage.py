@@ -55,9 +55,18 @@ class TestNoneGuards:
         if package == "<first>":
             package = _first_video_package()
         args = ("pi_1",) if package is None else ("cus_1", package, "s", "c")
+        stripe = _stripe(**stripe_kwargs)
         with patch.object(su, "STRIPE_API_KEY", api_key), \
-             patch.object(su, "_get_stripe", return_value=_stripe(**stripe_kwargs)):
+             patch.object(su, "_get_stripe", return_value=stripe):
             assert getattr(su, fname)(*args) is None
+        # A guard that refused BEFORE reaching Stripe must not have reached it — otherwise a
+        # checkout for an unpriced package would still read as a clean None. The two
+        # `*_stripe_error` cases and the two session lookups with a key DID reach Stripe; they
+        # are the ones whose kwargs configure the call.
+        if not stripe_kwargs:
+            call = (stripe.checkout.Session.list if package is None
+                    else stripe.checkout.Session.create)
+            call.assert_not_called()
 
 
 class TestValidateWebhookGenericError:

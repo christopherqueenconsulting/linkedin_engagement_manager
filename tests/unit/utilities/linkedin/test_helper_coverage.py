@@ -62,7 +62,12 @@ class TestSolveArkoseChallenge:
         with patch.dict(sys.modules, {"capsolver": fake_capsolver}), \
              patch(f"{_H}.time.sleep"):
             assert solve_arkose_challenge(driver, MagicMock()) is False
-        if not solve_called:
+        if solve_called:
+            # These two cases exist to pin what the SOLVER answered, so they are only worth
+            # anything while the solver is still reached — a pk-parsing regression would
+            # otherwise turn them into duplicates of the refuse-before-solving cases.
+            fake_capsolver.solve.assert_called_once()
+        else:
             fake_capsolver.solve.assert_not_called()
 
     def _driver_with_arkose(self):
