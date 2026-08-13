@@ -1,4 +1,10 @@
-"""Coverage tests for LinkedIn-profile CRUD + user-lookup DB helpers (db.py)."""
+"""Coverage tests for LinkedIn-profile CRUD + user-lookup DB helpers (db.py).
+
+Shaped as parametrized contract tables (issue #1216), the format
+`test_db_coverage_errors.py` established: one table per contract these helpers share
+(error fallback, scalar read, exact DELETE statement, cached-row read), and a plain
+test only where the case is genuinely one of a kind.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -21,10 +27,126 @@ def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
     return conn, cur
 
 
+def _err_conn():
+    conn, cur = _conn()
+    cur.execute.side_effect = mysql.connector.Error(msg="boom")
+    return conn
+
+
 def _profile():
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile
     return LinkedInProfile(full_name="Jane Doe", job_title="CTO", company_name="Acme",
                            email="jane@acme.com")
+
+
+# (function name, args, kwargs, expected fallback on mysql.connector.Error)
+_ERROR_CASES = [
+    ("add_linkedin_profile", ("<profile>",), {}, False),
+    ("get_linked_in_profile_by_url", ("https://li.com/in/jane",), {}, None),
+    ("get_linked_in_profile_by_email", ("jane@acme.com",), {}, None),
+    ("get_linked_in_profile_by_user_id", (5,), {}, None),
+    ("remove_linked_in_profile_by_user_id", (3,), {}, False),
+    ("remove_linked_in_profile_by_url", ("u",), {}, False),
+    ("remove_linked_in_profile_by_email", ("jane@acme.com",), {}, False),
+    ("update_user", (9,), {"blog_url": "b"}, False),
+    ("get_profile_synthesis", (1,), {}, None),
+    ("set_profile_synthesis", (1, "brief"), {}, False),
+    ("get_user_ids_needing_profile_synthesis", (), {}, []),
+]
+
+
+class TestMysqlErrorFallbacks:
+    @pytest.mark.parametrize("fname,args,kwargs,expected",
+                             _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
+    def test_error_returns_documented_fallback(self, fname, args, kwargs, expected):
+        import cqc_lem.utilities.db as db
+        args = tuple(_profile() if a == "<profile>" else a for a in args)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+            assert getattr(db, fname)(*args, **kwargs) == expected
+
+
+# (function name, args, row the cursor returns, expected return, expected execute params)
+_CACHED_PROFILE_READS = [
+    ("get_linked_in_profile_by_url", ("https://li.com/in/jane",), {"updated_less_than_days_ago": 3},
+     ('{"full_name": "Jane"}',), ('{"full_name": "Jane"}',),
+     # Both slash variants are queried, so a row saved with a trailing slash still matches.
+     ("https://li.com/in/jane/", "https://li.com/in/jane", 3)),
+    ("get_linked_in_profile_by_email", ("jane@acme.com", 2), {},
+     ('{"x": 1}',), ('{"x": 1}',), ("jane@acme.com", 2)),
+    ("get_linked_in_profile_by_user_id", (5,), {},
+     ('{"x": 2}',), ('{"x": 2}',), (5, 1)),
+]
+
+
+class TestCachedProfileReads:
+    @pytest.mark.parametrize("fname,args,kwargs,row,expected,params",
+                             _CACHED_PROFILE_READS,
+                             ids=[c[0] for c in _CACHED_PROFILE_READS])
+    def test_reads_row_with_expected_params(self, fname, args, kwargs, row, expected, params):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn(fetch_one=row)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args, **kwargs) == expected
+        assert cur.execute.call_args[0][1] == params
+
+
+# (function name, args, the exact (sql, params) the helper must execute)
+_DELETE_STATEMENTS = [
+    ("remove_linked_in_profile_by_user_id", (3,),
+     ("DELETE FROM profiles WHERE user_id = %s", (3,))),
+    ("remove_linked_in_profile_by_url", ("https://li.com/in/jane",),
+     ("DELETE FROM profiles WHERE profile_url = %s", ("https://li.com/in/jane",))),
+    ("remove_linked_in_profile_by_email", ("jane@acme.com",),
+     ("DELETE FROM profiles WHERE email = %s", ("jane@acme.com",))),
+]
+
+
+class TestRemoveLinkedInProfiles:
+    @pytest.mark.parametrize("fname,args,statement",
+                             _DELETE_STATEMENTS, ids=[c[0] for c in _DELETE_STATEMENTS])
+    def test_deletes_by_its_own_key_and_commits(self, fname, args, statement):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args) is True
+        assert cur.execute.call_args[0] == statement
+        conn.commit.assert_called_once()
+
+
+# (id, function name, args, row the cursor returns, expected return, SQL fragment or None)
+_SCALAR_READS = [
+    ("last_planned_post_date", "get_last_planned_post_date_for_user", (1,),
+     ("<when>",), "<when>", "MAX(scheduled_time)"),
+    ("last_planned_post_date_no_row", "get_last_planned_post_date_for_user", (1,),
+     None, None, None),
+    ("blog_url", "get_user_blog_url", (1,),
+     ("https://blog.example.com",), "https://blog.example.com", None),
+    ("blog_url_no_row", "get_user_blog_url", (1,), None, None, None),
+    ("sitemap_url", "get_user_sitemap_url", (1,),
+     ("https://x.com/sitemap.xml",), "https://x.com/sitemap.xml", None),
+    ("sitemap_url_no_row", "get_user_sitemap_url", (1,), None, None, None),
+    ("location", "get_user_location", (1,), ("40.71", "-74.00"), (40.71, -74.00), None),
+    # Half a coordinate pair is not a location — it must read as "unset", not as (None, None).
+    ("location_missing_coords", "get_user_location", (1,), (None, None), None, None),
+    ("location_no_row", "get_user_location", (1,), None, None, None),
+]
+
+
+class TestScalarUserReads:
+    @pytest.mark.parametrize("case_id,fname,args,row,expected,sql_fragment",
+                             _SCALAR_READS, ids=[c[0] for c in _SCALAR_READS])
+    def test_reads_value_or_none(self, case_id, fname, args, row, expected, sql_fragment):
+        from datetime import datetime
+
+        import cqc_lem.utilities.db as db
+        when = datetime(2026, 7, 1, 12, 0)
+        row = (when,) if row == ("<when>",) else row
+        expected = when if expected == "<when>" else expected
+        conn, cur = _conn(fetch_one=row)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args) == expected
+        if sql_fragment:
+            assert sql_fragment in cur.execute.call_args[0][0]
 
 
 class TestAddLinkedInProfile:
@@ -39,106 +161,6 @@ class TestAddLinkedInProfile:
         assert params[1] == "jane@acme.com" and params[3] == 7
         conn.commit.assert_called_once()
 
-    def test_returns_false_on_db_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import add_linkedin_profile
-            assert add_linkedin_profile(_profile()) is False
-
-
-class TestGetLinkedInProfileGetters:
-    def test_by_url_queries_both_slash_variants(self):
-        conn, cur = _conn(fetch_one=('{"full_name": "Jane"}',))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_linked_in_profile_by_url
-            result = get_linked_in_profile_by_url("https://li.com/in/jane", updated_less_than_days_ago=3)
-        params = cur.execute.call_args[0][1]
-        assert params == ("https://li.com/in/jane/", "https://li.com/in/jane", 3)
-        assert result == ('{"full_name": "Jane"}',)
-
-    def test_by_url_returns_none_on_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_linked_in_profile_by_url
-            assert get_linked_in_profile_by_url("https://li.com/in/jane") is None
-
-    def test_by_email(self):
-        conn, cur = _conn(fetch_one=('{"x": 1}',))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_linked_in_profile_by_email
-            assert get_linked_in_profile_by_email("jane@acme.com", 2) == ('{"x": 1}',)
-        assert cur.execute.call_args[0][1] == ("jane@acme.com", 2)
-
-    def test_by_email_error_returns_none(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_linked_in_profile_by_email
-            assert get_linked_in_profile_by_email("jane@acme.com") is None
-
-    def test_by_user_id(self):
-        conn, cur = _conn(fetch_one=('{"x": 2}',))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_linked_in_profile_by_user_id
-            assert get_linked_in_profile_by_user_id(5) == ('{"x": 2}',)
-        assert cur.execute.call_args[0][1] == (5, 1)
-
-    def test_by_user_id_error_returns_none(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_linked_in_profile_by_user_id
-            assert get_linked_in_profile_by_user_id(5) is None
-
-
-class TestRemoveLinkedInProfiles:
-    def test_remove_by_user_id(self):
-        conn, cur = _conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import remove_linked_in_profile_by_user_id
-            assert remove_linked_in_profile_by_user_id(3) is True
-        assert cur.execute.call_args[0] == ("DELETE FROM profiles WHERE user_id = %s", (3,))
-        conn.commit.assert_called_once()
-
-    def test_remove_by_user_id_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import remove_linked_in_profile_by_user_id
-            assert remove_linked_in_profile_by_user_id(3) is False
-
-    def test_remove_by_url(self):
-        conn, cur = _conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import remove_linked_in_profile_by_url
-            assert remove_linked_in_profile_by_url("https://li.com/in/jane") is True
-        assert cur.execute.call_args[0] == (
-            "DELETE FROM profiles WHERE profile_url = %s", ("https://li.com/in/jane",))
-
-    def test_remove_by_url_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import remove_linked_in_profile_by_url
-            assert remove_linked_in_profile_by_url("u") is False
-
-    def test_remove_by_email(self):
-        conn, cur = _conn()
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import remove_linked_in_profile_by_email
-            assert remove_linked_in_profile_by_email("jane@acme.com") is True
-        assert cur.execute.call_args[0] == (
-            "DELETE FROM profiles WHERE email = %s", ("jane@acme.com",))
-
-    def test_remove_by_email_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import remove_linked_in_profile_by_email
-            assert remove_linked_in_profile_by_email("jane@acme.com") is False
-
 
 class TestGetPostTypeCounts:
     def test_returns_type_to_count_map(self):
@@ -149,47 +171,6 @@ class TestGetPostTypeCounts:
             counts = get_post_type_counts(1)
         assert counts == {"text": 4, "video": 2}
         assert "GROUP BY post_type" in cur.execute.call_args[0][0]
-
-
-class TestUserUrlGetters:
-    def test_last_planned_post_date(self):
-        from datetime import datetime
-        when = datetime(2026, 7, 1, 12, 0)
-        conn, cur = _conn(fetch_one=(when,))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_last_planned_post_date_for_user
-            assert get_last_planned_post_date_for_user(1) == when
-        assert "MAX(scheduled_time)" in cur.execute.call_args[0][0]
-
-    def test_last_planned_post_date_none_row(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_last_planned_post_date_for_user
-            assert get_last_planned_post_date_for_user(1) is None
-
-    def test_blog_url(self):
-        conn, _ = _conn(fetch_one=("https://blog.example.com",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_blog_url
-            assert get_user_blog_url(1) == "https://blog.example.com"
-
-    def test_blog_url_none(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_blog_url
-            assert get_user_blog_url(1) is None
-
-    def test_sitemap_url(self):
-        conn, _ = _conn(fetch_one=("https://x.com/sitemap.xml",))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_sitemap_url
-            assert get_user_sitemap_url(1) == "https://x.com/sitemap.xml"
-
-    def test_sitemap_url_none(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_sitemap_url
-            assert get_user_sitemap_url(1) is None
 
 
 class TestUpdateUser:
@@ -223,13 +204,6 @@ class TestUpdateUser:
             from cqc_lem.utilities.db import update_user
             assert update_user(9, blog_url="b") is False
 
-    def test_db_error_returns_false(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_user
-            assert update_user(9, blog_url="b") is False
-
     # --- issue #950: the address cannot move through here at all ------------------------------
     def test_email_keyword_is_rejected(self):
         """`update_user(..., email=…)` moved an account's address with no `user_email_history`
@@ -245,26 +219,6 @@ class TestUpdateUser:
     def test_email_is_not_an_updatable_clause(self):
         from cqc_lem.utilities.db import _ALLOWED_USER_CLAUSES
         assert "email = %s" not in _ALLOWED_USER_CLAUSES
-
-
-class TestGetUserLocation:
-    def test_returns_float_tuple(self):
-        conn, _ = _conn(fetch_one=("40.71", "-74.00"))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_location
-            assert get_user_location(1) == (40.71, -74.00)
-
-    def test_none_when_missing_coords(self):
-        conn, _ = _conn(fetch_one=(None, None))
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_location
-            assert get_user_location(1) is None
-
-    def test_none_when_no_row(self):
-        conn, _ = _conn(fetch_one=None)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_location
-            assert get_user_location(1) is None
 
 
 class TestActiveUserPasswordPairs:
@@ -284,26 +238,3 @@ class TestActiveUserPasswordPairs:
             from cqc_lem.utilities.db import get_active_user_password_pairs
             assert get_active_user_password_pairs() == []
         get_conn.assert_not_called()
-
-
-class TestProfileSynthesisErrorPaths:
-    def test_get_profile_synthesis_error_returns_none(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_profile_synthesis
-            assert get_profile_synthesis(1) is None
-
-    def test_set_profile_synthesis_error_returns_false(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import set_profile_synthesis
-            assert set_profile_synthesis(1, "brief") is False
-
-    def test_user_ids_needing_synthesis_error_returns_empty(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_ids_needing_profile_synthesis
-            assert get_user_ids_needing_profile_synthesis() == []

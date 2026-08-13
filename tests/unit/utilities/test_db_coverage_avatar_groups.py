@@ -1,4 +1,10 @@
-"""Coverage tests for avatar-training, group, post-stats and scheduled-DM DB helpers (db.py)."""
+"""Coverage tests for avatar-training, group, post-stats and scheduled-DM DB helpers (db.py).
+
+Shaped as parametrized contract tables (issue #1216) in the style of
+`test_db_coverage_errors.py`: the shared contracts — error fallback, read-a-row-with-these-params,
+statement-shape-by-argument — are one table each; the multi-statement paths (activation order,
+attribution snapshot, JSON coercion) stay plain tests because each asserts a different sequence.
+"""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -22,23 +28,66 @@ def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
     return conn, cur
 
 
+def _err_conn():
+    conn, cur = _conn()
+    cur.execute.side_effect = mysql.connector.Error(msg="boom")
+    return conn
+
+
+# (function name, args, expected fallback on mysql.connector.Error)
+_ERROR_CASES = [
+    ("get_avatar_credit_ledger_entry_by_session", ("cs_1",), None),
+    ("refund_avatar_credit", (3, "train_1"), False),
+    ("set_active_avatar", (3, 11), False),
+    ("get_avatar_trainings", (3,), []),
+    ("update_avatar_training_status", ("t1", "failed"), False),
+    ("get_user_groups", (1,), []),
+]
+
+
+class TestMysqlErrorFallbacks:
+    @pytest.mark.parametrize("fname,args,expected",
+                             _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
+    def test_error_returns_documented_fallback(self, fname, args, expected):
+        import cqc_lem.utilities.db as db
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+            assert getattr(db, fname)(*args) == expected
+
+
+# (case id, function name, args, kwargs, fetch_one, fetch_all, expected,
+#  expected execute params or None, SQL fragment or None)
+_ROW_READS = [
+    ("avatar_ledger_entry", "get_avatar_credit_ledger_entry_by_session", ("cs_1",), {},
+     {"id": 1, "user_id": 3, "delta": 5}, None, {"id": 1, "user_id": 3, "delta": 5},
+     ("cs_1",), "delta > 0"),
+    ("recent_posted_post_ids", "get_recent_posted_post_ids", (1,), {"days": 10},
+     None, [(4,), (7,)], [4, 7], (1, 10), None),
+    ("post_engagement_rows", "get_post_engagement_rows", (1,), {},
+     None, [(datetime(2026, 7, 1, 15, 0), 10, 2, 1)],
+     [(datetime(2026, 7, 1, 15, 0), 10, 2, 1)], (1, 1), None),
+    ("scheduled_dm", "get_scheduled_dm", (4,), {},
+     {"id": 4, "user_id": 1, "message": "hi"}, None, {"id": 4, "user_id": 1, "message": "hi"},
+     (4,), None),
+]
+
+
+class TestRowReads:
+    @pytest.mark.parametrize(
+        "case_id,fname,args,kwargs,fetch_one,fetch_all,expected,params,sql_fragment",
+        _ROW_READS, ids=[c[0] for c in _ROW_READS])
+    def test_reads_with_expected_params(self, case_id, fname, args, kwargs, fetch_one, fetch_all,
+                                        expected, params, sql_fragment):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn(fetch_one=fetch_one, fetch_all=fetch_all)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert getattr(db, fname)(*args, **kwargs) == expected
+        if params is not None:
+            assert cur.execute.call_args[0][1] == params
+        if sql_fragment:
+            assert sql_fragment in cur.execute.call_args[0][0]
+
+
 class TestAvatarLedger:
-    def test_ledger_entry_by_session(self):
-        row = {"id": 1, "user_id": 3, "delta": 5}
-        conn, cur = _conn(fetch_one=row)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_avatar_credit_ledger_entry_by_session
-            assert get_avatar_credit_ledger_entry_by_session("cs_1") == row
-        sql, params = cur.execute.call_args[0]
-        assert "delta > 0" in sql and params == ("cs_1",)
-
-    def test_ledger_entry_error_returns_none(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_avatar_credit_ledger_entry_by_session
-            assert get_avatar_credit_ledger_entry_by_session("cs_1") is None
-
     def test_refund_avatar_credit(self):
         conn, cur = _conn()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
@@ -47,13 +96,6 @@ class TestAvatarLedger:
         sql, params = cur.execute.call_args[0]
         assert "'training_refund'" in sql and params == (3, "train_1")
         conn.commit.assert_called_once()
-
-    def test_refund_avatar_credit_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import refund_avatar_credit
-            assert refund_avatar_credit(3, "train_1") is False
 
 
 class TestAvatarTrainings:
@@ -69,34 +111,21 @@ class TestAvatarTrainings:
         assert "is_active = 0" in first_sql and first_params == (3,)
         assert "is_active = 1" in second_sql and second_params == (11, 3)
 
-    def test_set_active_avatar_invalid_id_preserves_current_active(self):
-        # Unknown avatar id → False, and NO deactivating UPDATE ever runs.
-        conn, cur = _conn(fetch_one=None)
+    # (case id, the row the validating SELECT returns) — both must refuse WITHOUT running the
+    # deactivating UPDATE, or a refusal would strand the account with no active avatar.
+    @pytest.mark.parametrize("case_id,row", [
+        ("unknown_id", None),
+        # The approval gate (issue #744): activation is not reachable from 'succeeded' alone.
+        ("unapproved", {"id": 11, "approval_status": "pending"}),
+    ], ids=["unknown_id", "unapproved"])
+    def test_set_active_avatar_refusal_preserves_current_active(self, case_id, row):
+        conn, cur = _conn(rowcount=1, fetch_one=row)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
-            assert set_active_avatar(3, 999) is False
+            assert set_active_avatar(3, 11 if row else 999) is False
         executed = [c[0][0] for c in cur.execute.call_args_list]
         assert len(executed) == 1 and "SELECT id" in executed[0]
         conn.commit.assert_not_called()
-
-    def test_set_active_avatar_refuses_unapproved(self):
-        """The approval gate (issue #744): activation is no longer reachable from 'succeeded'
-        alone, and refusing must leave the current active avatar untouched.
-        """
-        conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "pending"})
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import set_active_avatar
-            assert set_active_avatar(3, 11) is False
-        executed = [c[0][0] for c in cur.execute.call_args_list]
-        assert len(executed) == 1 and "SELECT id" in executed[0]
-        conn.commit.assert_not_called()
-
-    def test_set_active_avatar_error(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import set_active_avatar
-            assert set_active_avatar(3, 11) is False
 
     def test_get_avatar_trainings_serializes_rows(self):
         created = datetime(2026, 7, 1, 9, 0)
@@ -118,20 +147,6 @@ class TestAvatarTrainings:
                            "sample_regen_count": 0,
                            "created_at": created.isoformat(), "updated_at": None}]
 
-    def test_get_avatar_trainings_error_returns_empty(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_avatar_trainings
-            assert get_avatar_trainings(3) == []
-
-    def test_update_training_status_error_returns_false(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_avatar_training_status
-            assert update_avatar_training_status("t1", "failed") is False
-
 
 class TestUserGroups:
     def test_get_user_groups_coerces_flags_to_bool_and_date_to_iso(self):
@@ -149,13 +164,6 @@ class TestUserGroups:
         # JSON-serializable for the SPA payload.
         assert result[0]["last_posted_at"] == "2026-07-28T15:00:00"
         assert result[1]["last_posted_at"] is None
-
-    def test_get_user_groups_error_returns_empty(self):
-        conn, cur = _conn()
-        cur.execute.side_effect = mysql.connector.Error(msg="boom")
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_user_groups
-            assert get_user_groups(1) == []
 
 
 class TestPostStats:
@@ -181,21 +189,6 @@ class TestPostStats:
         assert insert_params == (1, 9, 10, 3, 1, 200, 6,
                                  "tactical_list", "bold_claim", "text", "AI hiring", "awareness")
 
-    def test_get_recent_posted_post_ids(self):
-        conn, cur = _conn(fetch_all=[(4,), (7,)])
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_recent_posted_post_ids
-            assert get_recent_posted_post_ids(1, days=10) == [4, 7]
-        assert cur.execute.call_args[0][1] == (1, 10)
-
-    def test_get_post_engagement_rows(self):
-        rows = [(datetime(2026, 7, 1, 15, 0), 10, 2, 1)]
-        conn, cur = _conn(fetch_all=rows)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_post_engagement_rows
-            assert get_post_engagement_rows(1) == rows
-        assert cur.execute.call_args[0][1] == (1, 1)
-
     def test_get_post_engagement_rows_none_coerced(self):
         conn, cur = _conn()
         cur.fetchall.return_value = None
@@ -205,41 +198,35 @@ class TestPostStats:
 
 
 class TestMarkNewsletterPublished:
-    def test_with_url_updates_url_too(self):
+    # (case id, args, SQL fragment that must be present, fragment that must be absent, params)
+    @pytest.mark.parametrize("case_id,args,present,absent,params", [
+        ("with_url", (1, "https://li.com/nl/1"), "newsletter_url=%s", None,
+         ("https://li.com/nl/1", 1)),
+        ("without_url", (1,), None, "newsletter_url", (1,)),
+    ], ids=["with_url", "without_url"])
+    def test_updates_url_only_when_one_is_given(self, case_id, args, present, absent, params):
         conn, cur = _conn(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_newsletter_published
-            assert mark_newsletter_published(1, "https://li.com/nl/1") is True
-        sql, params = cur.execute.call_args[0]
-        assert "newsletter_url=%s" in sql and params == ("https://li.com/nl/1", 1)
-
-    def test_without_url_only_stamps_time(self):
-        conn, cur = _conn(rowcount=1)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import mark_newsletter_published
-            assert mark_newsletter_published(1) is True
-        sql, params = cur.execute.call_args[0]
-        assert "newsletter_url" not in sql and params == (1,)
+            assert mark_newsletter_published(*args) is True
+        sql, executed_params = cur.execute.call_args[0]
+        if present:
+            assert present in sql
+        if absent:
+            assert absent not in sql
+        assert executed_params == params
 
 
 class TestScheduledDms:
-    def test_get_scheduled_dm(self):
-        row = {"id": 4, "user_id": 1, "message": "hi"}
-        conn, cur = _conn(fetch_one=row)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_scheduled_dm
-            assert get_scheduled_dm(4) == row
-        assert cur.execute.call_args[0][1] == (4,)
-
-    def test_get_scheduled_dm_user_id(self):
-        with patch(f"{_DB}.get_scheduled_dm", return_value={"user_id": 9}):
+    # (case id, what get_scheduled_dm returns, the user id read off it)
+    @pytest.mark.parametrize("case_id,row,expected", [
+        ("row_present", {"user_id": 9}, 9),
+        ("no_row", None, None),
+    ], ids=["row_present", "no_row"])
+    def test_get_scheduled_dm_user_id(self, case_id, row, expected):
+        with patch(f"{_DB}.get_scheduled_dm", return_value=row):
             from cqc_lem.utilities.db import get_scheduled_dm_user_id
-            assert get_scheduled_dm_user_id(4) == 9
-
-    def test_get_scheduled_dm_user_id_none(self):
-        with patch(f"{_DB}.get_scheduled_dm", return_value=None):
-            from cqc_lem.utilities.db import get_scheduled_dm_user_id
-            assert get_scheduled_dm_user_id(4) is None
+            assert get_scheduled_dm_user_id(4) == expected
 
     def test_get_scheduled_dms_serializes_datetimes(self):
         when = datetime(2026, 7, 10, 15, 30)
