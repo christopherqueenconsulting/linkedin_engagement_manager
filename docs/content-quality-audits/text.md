@@ -192,6 +192,21 @@ The cost is one extra `lem-complex` generation per draft whose only proof was th
 limit recorded in §1 still applies to an agent worktree, and re-running it there is part of
 **#1267**.
 
+On the VPS the credentials are in the containers, not on the host — `/opt/lem` has no virtualenv and
+the image copies `src/` only — so the production run pipes the script into a worker that already has
+the database environment (one read-only command, no LLM, no browser, nothing written):
+
+```bash
+cd /opt/lem && sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  exec -T celery_worker python - --days 365 --show-flips \
+  < scripts/measure_proof_gate_impact.py
+```
+
+It prints `N shipped posts read, N had proof under the old detector, N flip to NO proof (x%)`, and
+`--show-flips` names the sentence that used to satisfy the gate. An empty read exits non-zero
+rather than printing a well-formed `0.0%`. If the rate is higher than the extra `lem-complex` spend
+is worth, the dial is narrowing the exclusion to `one of (the|my|our|those|them)` — not a revert.
+
 ### F5 — Observations recorded, not actioned
 
 - **`_check_tada` is HARD severity on a bare substring list.** The round-2 critic's blind verdict

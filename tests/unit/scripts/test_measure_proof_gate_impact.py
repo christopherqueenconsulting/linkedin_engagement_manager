@@ -8,6 +8,7 @@ never had any.
 
 import importlib.util
 import pathlib
+import sys
 
 import pytest
 
@@ -93,6 +94,32 @@ class TestExitCode:
         out = capsys.readouterr().out
         assert "2 shipped posts read" in out
         assert _FLIPS[:40] in out
+
+
+class TestSrcBootstrap:
+    """The production run pipes this file into a worker (`python - < scripts/…`)."""
+
+    def test_stdin_run_inserts_nothing(self, tool):
+        # `__file__` is `<stdin>` there, so the derived directory is fiction — inserting it can only
+        # shadow the `cqc_lem` the image already installed.
+        before = list(sys.path)
+        assert tool._bootstrap_src_path("<stdin>") is None
+        assert tool._bootstrap_src_path("") is None
+        assert sys.path == before
+
+    def test_a_real_script_path_puts_the_checkout_src_first(self, tool):
+        before = list(sys.path)
+        try:
+            added = tool._bootstrap_src_path(str(_SCRIPT.resolve()))
+            assert added == str(pathlib.Path("src").resolve())
+            assert sys.path[0] == added
+        finally:
+            sys.path[:] = before
+
+    def test_a_path_with_no_sibling_src_is_skipped(self, tool, tmp_path):
+        before = list(sys.path)
+        assert tool._bootstrap_src_path(str(tmp_path / "nested" / "tool.py")) is None
+        assert sys.path == before
 
 
 class TestLegacyDetector:
