@@ -149,6 +149,10 @@ pytest-playwright = ">=0.4.0,<1.0.0"
 # Parallelism for the INTEGRATION lane only (issue #1185). The unit lane stays single-process:
 # issue #480 measured xdist there at ~19s on 4 workers against ~20s serial, so it buys nothing.
 pytest-xdist = "^3.6"
+# Reads the repo's own YAML under test — the GitHub issue-form template that the agent pipeline's
+# structured Phase field is declared in. Only the `dev` group carried it transitively, and the unit
+# lane installs `--with test` only.
+pyyaml = "^6.0"
 
 
 [tool.coverage.run]

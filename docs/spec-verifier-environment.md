@@ -96,6 +96,17 @@ something an implementer needs to set up: the pipeline's adversarial review (`�
 review`) and, on `risk:*` PRs, a GitHub Copilot second opinion (`review:copilot`) — `merge-gate`
 requires one before merge either way (`AGENT_WORKFLOW_PLAYBOOK.md`, Review economy).
 
+**The Verifier field now has a structured home on `template:agent-task` issues.** An issue filed
+through `.github/ISSUE_TEMPLATE/agent-task.yml` carries a literal `Verifier` field alongside
+`Acceptance` — the same "specific check that proves each acceptance box" this layer describes, just
+as a named field instead of something you derive from the issue's prose. That label is the gate:
+`MODE=start` hard-STOPs before writing code on a `template:agent-task` issue whose `Acceptance`
+isn't independently testable against its `Verifier`, posting `Uncertain: <reason>` + `needs-human`
+instead of a guess (`scripts/agent-pipeline/RUNBOOK.md`). **On any issue WITHOUT that label — which
+is effectively the entire backlog that predates this template — nothing here changes**: Layer 2
+stays exactly the softer, unenforced judgment call it already is, and this doc's guidance above
+still applies as written. Field walkthrough: the **agent-task-template** skill.
+
 ## Layer 3 — Environment: CLAUDE.md, docs/*.md, and .claude/skills/* ARE the environment
 
 Karpathy's Environment layer — a local structure organized enough that an agent finds the right

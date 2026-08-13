@@ -324,7 +324,7 @@ and never writes.
 | `start` | agent | 2 | 2700s |
 | `fix` | agent | 4 | 1200s |
 | `review` | agent | 3 | 900s |
-| `selfreview` | agent | 2 | 1200s |
+| `selfreview` | agent | 3 | 1200s |
 | `rebase` | agent | 2 | 1200s |
 | `revise` | agent | 2 | 1500s |
 | `depfix` | agent | 3 | 1200s |
