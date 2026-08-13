@@ -96,6 +96,30 @@ class TestExitCode:
         assert _FLIPS[:40] in out
 
 
+class TestUserSelection:
+    """The documented production run passes no `--users`, so the default set decides everything."""
+
+    def test_explicit_users_win(self, tool):
+        assert tool._user_ids("1, 2") == [1, 2]
+
+    def test_an_expired_token_does_not_empty_the_corpus(self, tool, monkeypatch):
+        # get_active_user_ids requires an unexpired LinkedIn token — a question about today. The
+        # posts being measured shipped over the last year and are still there when it lapses.
+        import cqc_lem.utilities.db as db
+
+        monkeypatch.setattr(db, "get_active_user_ids", lambda: [])
+        monkeypatch.setattr(db, "get_linkedin_token_user_ids", lambda: [7])
+        assert tool._user_ids(None) == [7]
+
+    def test_the_active_set_is_preferred_when_it_is_not_empty(self, tool, monkeypatch):
+        import cqc_lem.utilities.db as db
+
+        monkeypatch.setattr(db, "get_active_user_ids", lambda: [1])
+        monkeypatch.setattr(db, "get_linkedin_token_user_ids",
+                            lambda: pytest.fail("fallback used while active users exist"))
+        assert tool._user_ids(None) == [1]
+
+
 class TestSrcBootstrap:
     """The production run pipes this file into a worker (`python - < scripts/…`)."""
 

@@ -44,7 +44,8 @@ def _bootstrap_src_path(script_path: str) -> Optional[str]:
     A standalone script does not get its repository root on `sys.path`. Piped into a container
     (`python - < scripts/…`) there is no script path at all — `__file__` is `<stdin>` — and the
     directory that would be derived from it points at nothing, so the guess is skipped rather than
-    inserted: the image installs `cqc_lem` into its venv and an invented path can only shadow it.
+    inserted: the image installs `cqc_lem` into its venv, and a made-up path is dead weight on
+    `sys.path` at best and shadows that install at worst.
     """
     if not script_path or script_path.startswith("<"):
         return None
@@ -129,11 +130,19 @@ def collect(user_ids: list, days: int) -> list:
 
 
 def _user_ids(raw: Optional[str]) -> list:
+    """The users whose shipped posts are read (default: every user who could have shipped one).
+
+    `get_active_user_ids` requires an UNEXPIRED LinkedIn token, which is a question about today and
+    not about the bodies that shipped over the last year — an account whose 60-day authorization
+    lapsed still has the posts this measures. So an empty active set falls back to the token-holder
+    list rather than reporting "nothing was measured" for a reason that has nothing to do with the
+    corpus.
+    """
     if raw:
         return [int(part) for part in raw.split(",") if part.strip()]
-    from cqc_lem.utilities.db import get_active_user_ids
+    from cqc_lem.utilities.db import get_active_user_ids, get_linkedin_token_user_ids
 
-    return list(get_active_user_ids() or [])
+    return list(get_active_user_ids() or []) or list(get_linkedin_token_user_ids() or [])
 
 
 def main() -> int:
