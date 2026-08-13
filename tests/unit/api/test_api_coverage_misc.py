@@ -59,6 +59,49 @@ from tests.unit.api.conftest import (  # noqa: E402
 )
 
 
+# Issue #914 put every route behind the ONE session resolver, so "no session" is ONE contract
+# with one answer (401) — a parametrized table (issue #1216) rather than the same test per route.
+# (case id, method, path, json body, collaborator that must not run, attribute to assert on)
+_UNAUTHENTICATED_CASES = [
+    ("automate_reply_commenting", "post", "/api/automate_reply_commenting?post_id=9", None,
+     f"{_M}.automate_reply_commenting", "apply_async"),
+    ("schedule_post", "post", "/api/schedule_post/",
+     {"content": "hello", "scheduled_datetime": "2026-07-10T15:00:00", "email": "a@x.com"},
+     f"{_M}.insert_post", None),
+    ("create_weekly_content", "post", "/api/create_weekly_content/", None,
+     f"{_M}.celery_chain", None),
+    ("invite_to_company_page", "post", "/api/invite_to_li_company_page/", None,
+     f"{_M}.automate_invites_to_company_page_for_user", "apply_async"),
+    ("aws_test_get_my_profile", "post", "/api/aws_test_get_my_profile/", None,
+     f"{_M}.test_get_my_profile", "apply_async"),
+    ("token_status", "get", "/api/user/token_status?session_token=bad", None, None, None),
+    ("engagement_analytics", "get", "/api/user/engagement-analytics?session_token=bad", None,
+     None, None),
+    ("posthog_stats", "get", "/api/user/posthog-stats?session_token=bad", None, None, None),
+    ("audience_growth", "get", "/api/user/audience-growth?session_token=bad", None, None, None),
+    # Since #914 this one resolves through the same resolver as every other handler, so a dead
+    # session reads 401 here too — it used to be the odd 403 out.
+    ("generate_carousel", "post", "/api/generate-carousel",
+     {"session_token": "bad", "stage": "awareness"}, None, None),
+]
+
+
+class TestUnauthenticatedRequests:
+    @pytest.mark.parametrize("case_id,method,path,body,collaborator,attr",
+                             _UNAUTHENTICATED_CASES,
+                             ids=[c[0] for c in _UNAUTHENTICATED_CASES])
+    def test_401_and_no_side_effect(self, client, case_id, method, path, body, collaborator,
+                                    attr):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            if collaborator:
+                with patch(collaborator) as mock:
+                    resp = getattr(client, method)(path, **({"json": body} if body else {}))
+                (getattr(mock, attr) if attr else mock).assert_not_called()
+            else:
+                resp = getattr(client, method)(path, **({"json": body} if body else {}))
+        assert resp.status_code == 401
+
+
 class TestAutomationTriggerEndpoints:
     """Issue #914: every one of these used to take the acting account from a request parameter."""
 
@@ -68,13 +111,6 @@ class TestAutomationTriggerEndpoints:
         assert resp.status_code == 200
         kwargs = task.apply_async.call_args[1]["kwargs"]
         assert kwargs["user_id"] == SESSION_USER_ID and kwargs["post_id"] == 9
-
-    def test_automate_reply_commenting_401_without_a_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None), \
-             patch(f"{_M}.automate_reply_commenting") as task:
-            resp = client.post("/api/automate_reply_commenting?post_id=9")
-        assert resp.status_code == 401
-        task.apply_async.assert_not_called()
 
     def test_automate_reply_commenting_403_on_someone_elses_post(self, client, signed_in):
         with patch(f"{_M}.user_owns_posts", return_value=False), \
@@ -99,15 +135,6 @@ class TestAutomationTriggerEndpoints:
         assert ins.call_args[1].get("video_quality") == "standard"
         # The row is written against the SESSION's address, never the body's.
         assert ins.call_args[0][0] == SESSION_EMAIL
-
-    def test_schedule_post_401_without_a_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None), \
-             patch(f"{_M}.insert_post") as ins:
-            resp = client.post("/api/schedule_post/", json={
-                "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
-                "email": "a@x.com"})
-        assert resp.status_code == 401
-        ins.assert_not_called()
 
     def test_schedule_post_403_writing_into_another_account(self, client, signed_in):
         with patch(f"{_M}.insert_post") as ins:
@@ -156,25 +183,11 @@ class TestAutomationTriggerEndpoints:
         weekly.si.assert_called_once_with(user_id=SESSION_USER_ID)
         chain_obj.apply_async.assert_called_once()
 
-    def test_create_weekly_content_401_without_a_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None), \
-             patch(f"{_M}.celery_chain") as chain:
-            resp = client.post("/api/create_weekly_content/")
-        assert resp.status_code == 401
-        chain.assert_not_called()
-
     def test_invite_to_company_page(self, client, signed_in):
         with patch(f"{_M}.automate_invites_to_company_page_for_user") as task:
             resp = client.post(f"/api/invite_to_li_company_page/?session_token={SESSION_TOKEN}")
         assert resp.status_code == 200
         assert task.apply_async.call_args[1]["kwargs"] == {"user_id": SESSION_USER_ID}
-
-    def test_invite_401_without_a_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None), \
-             patch(f"{_M}.automate_invites_to_company_page_for_user") as task:
-            resp = client.post("/api/invite_to_li_company_page/")
-        assert resp.status_code == 401
-        task.apply_async.assert_not_called()
 
     def test_invite_403_for_another_account(self, client, signed_in):
         """Invites burn a finite monthly credit pool — spending someone else's is the whole point."""
@@ -190,13 +203,6 @@ class TestAutomationTriggerEndpoints:
         assert resp.status_code == 200
         assert task.apply_async.call_args[1]["kwargs"] == {"user_id": SESSION_USER_ID}
 
-    def test_aws_test_401_without_a_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None), \
-             patch(f"{_M}.test_get_my_profile") as task:
-            resp = client.post("/api/aws_test_get_my_profile/")
-        assert resp.status_code == 401
-        task.apply_async.assert_not_called()
-
 
 class TestAuthLogoutAndTokenStatus:
     def test_logout_deletes_session(self, client):
@@ -204,11 +210,6 @@ class TestAuthLogoutAndTokenStatus:
             resp = client.post("/api/auth/logout", json={"session_token": _TOK})
         assert resp.status_code == 200
         ds.assert_called_once_with(_TOK)
-
-    def test_token_status_401(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get("/api/user/token_status?session_token=bad")
-        assert resp.status_code == 401
 
     @staticmethod
     def _token_info(days_left: int, refresh_token=None):
@@ -577,11 +578,6 @@ class TestEngagementAnalytics:
         assert resp.status_code == 200
         assert fetch.call_args[1]["days"] == 365          # clamped upper bound
 
-    def test_401_without_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get("/api/user/engagement-analytics?session_token=bad")
-        assert resp.status_code == 401
-
     def test_comment_quality_block_reports_outcomes_and_hold(self, client):
         rows = [{"status": "checked", "author_replied": 1, "reply_count": 2, "like_count": 1,
                  "visible_most_relevant": 0, "our_reply_sent": 0},
@@ -679,11 +675,6 @@ class TestPostHogStatsEndpoint:
         assert resp.json()["detail"] == panel
         get_panel.assert_called_once_with(_UID)
 
-    def test_401_without_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get("/api/user/posthog-stats?session_token=bad")
-        assert resp.status_code == 401
-
 
 class TestAudienceGrowth:
     """Follower & audience telemetry endpoint (issue #627)."""
@@ -724,11 +715,6 @@ class TestAudienceGrowth:
         assert resp.status_code == 200
         assert fetch.call_args[1]["days"] == 395           # 365 clamp + the 30-day baseline reach
         assert resp.json()["detail"]["series"] == []
-
-    def test_401_without_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get("/api/user/audience-growth?session_token=bad")
-        assert resp.status_code == 401
 
 
 class TestLeadMagnetAndPassword:
@@ -952,10 +938,15 @@ class TestAvatarEndpoints:
 class TestAdminEndpoints:
     _HDR = {"X-Admin-Secret": "sekret"}
 
-    def test_forbidden_without_secret(self, client):
+    # The admin gate is one contract across the router: no header, no route.
+    @pytest.mark.parametrize("case_id,path,body", [
+        ("fix_video_urls", "/api/admin/fix-video-urls",
+         {"old_base": "http://a", "new_base": "http://b"}),
+        ("automation_pause", "/api/admin/automation-pause", None),
+    ], ids=["fix_video_urls", "automation_pause"])
+    def test_forbidden_without_secret(self, client, case_id, path, body):
         with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"):
-            resp = client.post("/api/admin/fix-video-urls", json={
-                "old_base": "http://a", "new_base": "http://b"})
+            resp = client.post(path, headers={}, **({"json": body} if body else {}))
         assert resp.status_code == 403
 
     def test_automation_pause(self, client):
@@ -965,11 +956,6 @@ class TestAdminEndpoints:
         assert resp.status_code == 200
         assert resp.json()["detail"] == {"paused": True, "seconds": 6 * 3600}
         assert pause.call_args[0][0] == 6 * 3600
-
-    def test_automation_pause_forbidden_without_secret(self, client):
-        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"):
-            resp = client.post("/api/admin/automation-pause", headers={})
-        assert resp.status_code == 403
 
     def test_automation_resume(self, client):
         with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
@@ -1010,12 +996,16 @@ class TestAdminEndpoints:
         assert gen.call_args[1]["stage"] == "awareness"  # None stage defaults
         upd.assert_called_once_with(9, "new caption")
 
-    def test_regenerate_carousel_404_for_non_carousel(self, client):
+    # Each regenerate route rebuilds ONE asset kind, so a post of a different type is a 404
+    # rather than a regeneration of the wrong thing.
+    @pytest.mark.parametrize("path", ["/api/admin/regenerate-carousel",
+                                      "/api/admin/regenerate-video"],
+                             ids=["carousel", "video"])
+    def test_regenerate_404_for_the_wrong_post_type(self, client, path):
         from cqc_lem.utilities.db import PostType
         with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
              patch(f"{_ADMIN}.get_post_type", return_value=PostType.TEXT):
-            resp = client.post("/api/admin/regenerate-carousel", headers=self._HDR,
-                               json={"post_id": 9, "user_id": 1})
+            resp = client.post(path, headers=self._HDR, json={"post_id": 9, "user_id": 1})
         assert resp.status_code == 404
 
     def test_regenerate_carousel_500_on_failure(self, client):
@@ -1040,14 +1030,6 @@ class TestAdminEndpoints:
         assert resp.status_code == 200
         assert resp.json()["detail"]["video_url"].endswith("v.mp4")
 
-    def test_regenerate_video_404_for_non_video(self, client):
-        from cqc_lem.utilities.db import PostType
-        with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
-             patch(f"{_ADMIN}.get_post_type", return_value=PostType.TEXT):
-            resp = client.post("/api/admin/regenerate-video", headers=self._HDR,
-                               json={"post_id": 9, "user_id": 1})
-        assert resp.status_code == 404
-
     def test_regenerate_video_500_when_no_asset(self, client):
         from cqc_lem.utilities.db import PostType
         with patch(f"{_ADMIN}.ADMIN_SECRET", "sekret"), \
@@ -1065,14 +1047,6 @@ class TestCarouselTemplatesAndPreview:
         assert resp.status_code == 200
         templates = resp.json()["detail"]["templates"]
         assert templates and {"key", "label", "description"} <= set(templates[0])
-
-    def test_generate_carousel_403_bad_session(self, client):
-        with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.post("/api/generate-carousel", json={
-                "session_token": "bad", "stage": "awareness"})
-        # 401 since #914 — the route resolves through the ONE resolver like every other handler,
-        # so a dead session reads the same here as it does everywhere else.
-        assert resp.status_code == 401
 
     def test_generate_carousel_success(self, client, tmp_path):
         carousel_dict = {"cover": {"title": "Cover"},

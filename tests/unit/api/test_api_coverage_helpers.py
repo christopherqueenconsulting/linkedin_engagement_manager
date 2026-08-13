@@ -1,5 +1,9 @@
 """Coverage tests for api/main.py pure helpers: slide parsing, UTC serialization,
 asset path resolution, HTTP range plumbing, and the /api/assets endpoint.
+
+The pure helpers are input→output functions, so they are pinned as parametrized
+contract tables (issue #1216) in the style of `test_db_coverage_errors.py`; only the
+cases that need a live TestClient or a bespoke filesystem stay as plain tests.
 """
 
 from datetime import datetime
@@ -37,96 +41,87 @@ def client():
             p.stop()
 
 
+# (case id, raw value, parsed slides)
+_PARSE_SLIDES_CASES = [
+    ("none", None, None),
+    ("empty_string", "", None),
+    ("list_passthrough", ["a", "b"], ["a", "b"]),
+    ("json_list", '["a", "b"]', ["a", "b"]),
+    ("json_object_is_not_slides", '{"a": 1}', None),
+    ("invalid_json", "{broken", None),
+]
+
+
 class TestParseSlides:
-    def test_none_and_empty(self):
+    @pytest.mark.parametrize("case_id,raw,expected",
+                             _PARSE_SLIDES_CASES, ids=[c[0] for c in _PARSE_SLIDES_CASES])
+    def test_parses_or_returns_none(self, case_id, raw, expected):
         from cqc_lem.api.main import _parse_slides
-        assert _parse_slides(None) is None
-        assert _parse_slides("") is None
-
-    def test_list_passthrough(self):
-        from cqc_lem.api.main import _parse_slides
-        assert _parse_slides(["a", "b"]) == ["a", "b"]
-
-    def test_json_string(self):
-        from cqc_lem.api.main import _parse_slides
-        assert _parse_slides('["a", "b"]') == ["a", "b"]
-
-    def test_json_non_list_returns_none(self):
-        from cqc_lem.api.main import _parse_slides
-        assert _parse_slides('{"a": 1}') is None
-
-    def test_invalid_json_returns_none(self):
-        from cqc_lem.api.main import _parse_slides
-        assert _parse_slides("{broken") is None
+        assert _parse_slides(raw) == expected
 
 
 class TestUtcIso:
-    def test_none(self):
-        from cqc_lem.api.main import _utc_iso
-        assert _utc_iso(None) is None
-
-    def test_naive_datetime_assumed_utc(self):
-        from cqc_lem.api.main import _utc_iso
-        assert _utc_iso(datetime(2026, 7, 6, 15, 30)) == "2026-07-06T15:30:00Z"
-
-    def test_aware_datetime_converted(self):
+    # (case id, value, expected serialization)
+    @pytest.mark.parametrize("case_id,value,expected", [
+        ("none", None, None),
+        ("naive_datetime_assumed_utc", datetime(2026, 7, 6, 15, 30), "2026-07-06T15:30:00Z"),
+        ("aware_datetime_converted", "<eastern>", "2026-07-06T15:30:00Z"),
+        ("iso_string_with_z", "2026-07-06T15:30:00Z", "2026-07-06T15:30:00Z"),
+        ("unparseable_string_returned_as_is", "not-a-date", "not-a-date"),
+    ], ids=["none", "naive_datetime_assumed_utc", "aware_datetime_converted",
+            "iso_string_with_z", "unparseable_string_returned_as_is"])
+    def test_serializes_to_utc(self, case_id, value, expected):
         import pytz
 
         from cqc_lem.api.main import _utc_iso
-        eastern = pytz.timezone("US/Eastern").localize(datetime(2026, 7, 6, 11, 30))
-        assert _utc_iso(eastern) == "2026-07-06T15:30:00Z"
-
-    def test_iso_string_with_z(self):
-        from cqc_lem.api.main import _utc_iso
-        assert _utc_iso("2026-07-06T15:30:00Z") == "2026-07-06T15:30:00Z"
-
-    def test_unparseable_string_returned_as_is(self):
-        from cqc_lem.api.main import _utc_iso
-        assert _utc_iso("not-a-date") == "not-a-date"
+        if value == "<eastern>":
+            value = pytz.timezone("US/Eastern").localize(datetime(2026, 7, 6, 11, 30))
+        assert _utc_iso(value) == expected
 
 
 class TestPublicPostUrl:
-    def test_http_urls_pass(self):
+    # A synthetic feedpost:// key is an internal handle, so the SPA must never be handed one.
+    @pytest.mark.parametrize("case_id,value,expected", [
+        ("https", "https://li.com/p/1", "https://li.com/p/1"),
+        ("uppercase_scheme", "HTTP://li.com/p/1", "HTTP://li.com/p/1"),
+        ("synthetic_feedpost_key", "feedpost://abc123", None),
+        ("none", None, None),
+        ("non_string", 42, None),
+    ], ids=["https", "uppercase_scheme", "synthetic_feedpost_key", "none", "non_string"])
+    def test_only_http_urls_are_public(self, case_id, value, expected):
         from cqc_lem.api.main import _public_post_url
-        assert _public_post_url("https://li.com/p/1") == "https://li.com/p/1"
-        assert _public_post_url("HTTP://li.com/p/1") == "HTTP://li.com/p/1"
+        assert _public_post_url(value) == expected
 
-    def test_synthetic_feedpost_key_hidden(self):
-        from cqc_lem.api.main import _public_post_url
-        assert _public_post_url("feedpost://abc123") is None
-        assert _public_post_url(None) is None
-        assert _public_post_url(42) is None
+
+@pytest.fixture
+def asset_root(tmp_path):
+    """An assets tree holding one nested file, one loose file, one directory."""
+    nested = tmp_path / "videos" / "runwayml"
+    nested.mkdir(parents=True)
+    (nested / "clip.mp4").write_bytes(b"v")
+    (tmp_path / "safe.txt").write_text("x")
+    (tmp_path / "adir").mkdir()
+    (tmp_path / "afile").write_text("x")
+    return tmp_path
 
 
 class TestFindAssetFile:
-    def test_resolves_nested_file(self, tmp_path):
+    # (case id, requested name, resolved path relative to the root — None means refused)
+    @pytest.mark.parametrize("case_id,file_name,resolved", [
+        ("nested_file", "videos/runwayml/clip.mp4", "videos/runwayml/clip.mp4"),
+        ("parent_traversal", "../safe.txt", None),
+        ("dot_component", "./safe.txt", None),
+        ("empty_name", "", None),
+        ("missing_file", "nope.mp4", None),
+        ("directory_target", "adir", None),
+        ("file_used_as_directory", "afile/child.txt", None),
+    ], ids=["nested_file", "parent_traversal", "dot_component", "empty_name", "missing_file",
+            "directory_target", "file_used_as_directory"])
+    def test_resolves_only_a_real_file_inside_the_root(self, case_id, file_name, resolved,
+                                                       asset_root):
         from cqc_lem.api.main import _find_asset_file
-        nested = tmp_path / "videos" / "runwayml"
-        nested.mkdir(parents=True)
-        f = nested / "clip.mp4"
-        f.write_bytes(b"v")
-        assert _find_asset_file(str(tmp_path), "videos/runwayml/clip.mp4") == str(f)
-
-    def test_rejects_traversal_components(self, tmp_path):
-        from cqc_lem.api.main import _find_asset_file
-        (tmp_path / "safe.txt").write_text("x")
-        assert _find_asset_file(str(tmp_path), "../safe.txt") is None
-        assert _find_asset_file(str(tmp_path), "./safe.txt") is None
-        assert _find_asset_file(str(tmp_path), "") is None
-
-    def test_missing_file_returns_none(self, tmp_path):
-        from cqc_lem.api.main import _find_asset_file
-        assert _find_asset_file(str(tmp_path), "nope.mp4") is None
-
-    def test_directory_target_returns_none(self, tmp_path):
-        from cqc_lem.api.main import _find_asset_file
-        (tmp_path / "adir").mkdir()
-        assert _find_asset_file(str(tmp_path), "adir") is None
-
-    def test_file_used_as_directory_returns_none(self, tmp_path):
-        from cqc_lem.api.main import _find_asset_file
-        (tmp_path / "afile").write_text("x")
-        assert _find_asset_file(str(tmp_path), "afile/child.txt") is None
+        expected = str(asset_root / resolved) if resolved else None
+        assert _find_asset_file(str(asset_root), file_name) == expected
 
     def test_unreadable_root_returns_none(self, tmp_path):
         from cqc_lem.api.main import _find_asset_file
@@ -144,14 +139,13 @@ class TestAssetsEndpoint:
         assert resp.content == b"\x00videobytes"
         assert resp.headers["content-type"].startswith("video/")
 
-    def test_404_for_missing_file(self, client, tmp_path):
+    # Both a name that resolves to nothing and one that tries to climb out read as 404 — the
+    # traversal attempt must not be distinguishable from a plain miss.
+    @pytest.mark.parametrize("file_name", ["videos/none.mp4", "../etc/passwd"],
+                             ids=["missing_file", "traversal_attempt"])
+    def test_404_for_anything_not_resolved(self, client, tmp_path, file_name):
         with patch(f"{_M}.assets_dir", str(tmp_path)):
-            resp = client.get("/api/assets?file_name=videos/none.mp4")
-        assert resp.status_code == 404
-
-    def test_404_for_traversal_attempt(self, client, tmp_path):
-        with patch(f"{_M}.assets_dir", str(tmp_path)):
-            resp = client.get("/api/assets?file_name=../etc/passwd")
+            resp = client.get(f"/api/assets?file_name={file_name}")
         assert resp.status_code == 404
 
 
@@ -163,28 +157,24 @@ class TestRangeHelpers:
         chunks = b"".join(send_bytes_range_requests(str(f), 2, 5, chunk_size=2))
         assert chunks == b"2345"
 
-    def test_get_range_header_full_form(self):
+    # (case id, Range header, resolved (start, end) over a 1000-byte file)
+    @pytest.mark.parametrize("case_id,header,expected", [
+        ("full_form", "bytes=0-99", (0, 99)),
+        ("open_end", "bytes=500-", (500, 999)),
+        ("open_start", "bytes=-99", (0, 99)),
+    ], ids=["full_form", "open_end", "open_start"])
+    def test_get_range_header_resolves_window(self, case_id, header, expected):
         from cqc_lem.api.main import _get_range_header
-        assert _get_range_header("bytes=0-99", 1000) == (0, 99)
+        assert _get_range_header(header, 1000) == expected
 
-    def test_get_range_header_open_end(self):
-        from cqc_lem.api.main import _get_range_header
-        assert _get_range_header("bytes=500-", 1000) == (500, 999)
-
-    def test_get_range_header_open_start(self):
-        from cqc_lem.api.main import _get_range_header
-        assert _get_range_header("bytes=-99", 1000) == (0, 99)
-
-    def test_get_range_header_invalid_number_raises_416(self):
+    @pytest.mark.parametrize("case_id,header", [
+        ("invalid_number", "bytes=abc-def"),
+        ("out_of_bounds", "bytes=900-2000"),
+    ], ids=["invalid_number", "out_of_bounds"])
+    def test_get_range_header_raises_416(self, case_id, header):
         from cqc_lem.api.main import _get_range_header
         with pytest.raises(HTTPException) as exc:
-            _get_range_header("bytes=abc-def", 1000)
-        assert exc.value.status_code == 416
-
-    def test_get_range_header_out_of_bounds_raises_416(self):
-        from cqc_lem.api.main import _get_range_header
-        with pytest.raises(HTTPException) as exc:
-            _get_range_header("bytes=900-2000", 1000)
+            _get_range_header(header, 1000)
         assert exc.value.status_code == 416
 
     def test_range_requests_response_partial(self, tmp_path):
