@@ -783,11 +783,11 @@ def build_hourly_report(run_date: str, run_hour: str, candidates: list[Issue],
         "## Notes",
         "- Scope: open issues with no flow label yet — milestone/priority reorg stays daily-only.",
         "- The planner call proposes priority + flow; a second, independently-pinned `lem-medium` "
-        "call may only downgrade a proposed `agent:ready` to `needs-human`, never upgrade.",
+        + "call may only downgrade a proposed `agent:ready` to `needs-human`, never upgrade.",
         "- Untrusted-author downgrade is applied BEFORE ranking/capping, so it never wastes an "
-        "admission slot.",
+        + "admission slot.",
         "- Held-back issues are left unlabeled, not `needs-human` — reconsidered next hourly pass "
-        "(or the daily sweep) without repaying the LLM cost, via per-issue memoization.",
+        + "(or the daily sweep) without repaying the LLM cost, via per-issue memoization.",
         "",
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
     ]
@@ -959,17 +959,15 @@ def acquire_triage_lock(lock_dir: Path) -> Iterator[None]:
     """
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / "triage.lock"
-    fh = open(lock_path, "w", encoding="utf-8")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        fh.close()
-        raise TriageLockBusy(f"another triage run already holds {lock_path}") from exc
-    try:
-        yield
-    finally:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        fh.close()
+    with open(lock_path, "w", encoding="utf-8") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise TriageLockBusy(f"another triage run already holds {lock_path}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def _load_queue_read_module() -> Optional[ModuleType]:
@@ -1050,7 +1048,7 @@ def emit_hourly_posthog_event(stats: HourlyStats, repo: str) -> None:
         )
         urllib.request.urlopen(req, timeout=3).close()  # noqa: S310 (fixed https host, best-effort)
     except (urllib.error.URLError, OSError, ValueError):
-        pass
+        pass  # best-effort telemetry: a PostHog outage must never fail the triage run itself
 
 
 def hourly_max_new_ready() -> int:
@@ -1366,9 +1364,10 @@ def main(argv: Optional[list] = None) -> int:
         if proposed:
             print(f"Proposed milestones: {', '.join(p.get('title') for p in proposed)}")
 
+    applied_count = 0
     if dry_run:
         gh = GitHubClient(args.repo)
-        applied_count = apply_changes(gh, changes, dry_run=True)
+        apply_changes(gh, changes, dry_run=True)
     else:
         try:
             with acquire_triage_lock(Path(args.lock_dir)):
