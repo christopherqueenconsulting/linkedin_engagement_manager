@@ -604,6 +604,57 @@ class TestPostToGroup:
             # Page-wide stays as the last resort (the share box is inline on some variants), but it
             # can never be reached while a composer-scoped control resolves.
             assert max(scoped) < min(unscoped)
+            # …and the last resort is not a long shot: the messaging overlay rides EVERY LinkedIn
+            # page, so an unscoped locator that could match inside it is the control we would land
+            # on the moment the composer's own drifts.
+            for i in unscoped:
+                assert "msg-overlay" in chain[i][1], chain[i]
+
+    def test_a_media_overlay_we_could_not_close_never_blames_the_group(self):
+        """Fail-open has to hold for what the media step LEAVES BEHIND, not just for the upload.
+
+        The uploader's overlay is OURS. An editor or Post button missing after we opened it says the
+        overlay is still up — so stamping the draft FAILED and rotating past the group (what
+        `_unpostable` does) would cost the week AND blame a healthy group. The draft stays `ready`
+        for the next weekly slot.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        draft = {**_READY_DRAFT, "media_url": "http://x/api/assets?file_name=i.png",
+                 "media_type": "image"}
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=draft), \
+             patch(f"{_FEED}.post_image_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", side_effect=[MagicMock(), None]), \
+             patch(f"{_FEED}.log_warning") as warned, \
+             patch(f"{_FEED}.record_group_post") as rec, \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Group post editor not found"
+        upd.assert_not_called()   # the draft is still the user's to publish next slot
+        run.assert_not_called()   # the rotation does not move past a group that opened its composer
+        rec.assert_not_called()
+        assert warned.called
+
+    def test_a_composer_we_never_touched_still_reports_the_group_as_unpostable(self):
+        """The reverse: with no media in the draft nothing of ours is on screen.
+
+        A missing editor there is the group refusing member posts, which must still retire the draft
+        and rotate past it (issue #858) — the media fix must not swallow that.
+        """
+        from cqc_lem.app.engagement.feed import auto_post_to_group
+        with self._driver_patches(), \
+             patch(f"{_FEED}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first", return_value=None), \
+             patch(f"{_FEED}.record_group_post"), \
+             patch(f"{_FEED}.update_group_post_draft") as upd, \
+             patch(f"{_FEED}.record_group_post_run") as run, patch(f"{_FEED}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "Group post editor not found"
+        assert str(upd.call_args.kwargs["status"]) == "failed"
+        run.assert_called_once_with(1, "123")
 
     @pytest.mark.parametrize("draft", [
         None,

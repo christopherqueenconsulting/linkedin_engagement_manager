@@ -75,6 +75,22 @@ all, so a missing file or a drifted control is a `log_warning` and the run publi
 same posture the article cover and `render_image_gated` take. The warning is what makes the drift
 visible: it escalates on repeat and files ONE grouped issue.
 
+That has to hold for what the media step LEAVES BEHIND too, so `_attach_group_media` reports what it
+did to the COMPOSER (`attached` / `untouched` / `left_open`), not just whether the upload worked.
+Once the uploader has been opened, an editor or Post button we then cannot find is OUR overlay still
+covering the composer — never evidence that the group refuses member posts. So that run does NOT go
+through `_unpostable`: the draft stays `ready` for the next weekly slot and the rotation does not
+move past a group whose share box opened seconds earlier. With no media in the draft, nothing of
+ours is on screen and a missing editor is still the group's answer, which retires the draft and
+rotates past it exactly as before (issue #858).
+
+The page-wide tail of the input/confirm chains excludes the messaging overlay by name
+(`msg-overlay-*` / `msg-form`, the containers `message_thread.py` already keys on). That overlay
+rides every LinkedIn page and its attachment input declares an image `accept`, so without the
+exclusion the "last resort" would not be a long shot — it is the control the run would
+deterministically land on the moment the composer's own input drifts, uploading the author's image
+into a message thread while reporting the media as attached.
+
 Video is supported end to end at the data + publish layer, but the studio can currently only attach
 IMAGES — there is no video upload/validation surface (size, duration, codec) to reuse yet. That
 half is issue #1443.
