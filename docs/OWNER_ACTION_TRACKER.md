@@ -125,7 +125,7 @@ piece is which channel to ping.
 | `POSTHOG_CLI_TOKEN`, `UI_POSTHOG_KEY` | repo secrets | Present |
 | `CF_API_TOKEN` / `CF_ZONE_ID` | repo secrets | Present |
 | `CODECOV_TOKEN`, `GITGUARDIAN_API_KEY`, `LITELLM_MASTER_KEY`, `OPENROUTER_API_KEY`, `PEXELS_API_KEY`, `VPS_*` | repo secrets | Present |
-| `REPLICATE_API_TOKEN`, `REPLICATE_USERNAME`, `CAPSOLVER_API_KEY` | `/opt/lem/.env` only | Missing as **repo secrets**; `e2e-coverage.yml` is `continue-on-error` and the tests auto-skip, so E2E Replicate/CapSolver paths have never run in CI. Low priority. |
+| `REPLICATE_API_TOKEN`, `REPLICATE_USERNAME`, `CAPSOLVER_API_KEY` | `/opt/lem/.env` only | Missing as **repo secrets**. **Moot since #1215:** the only tests that wanted them lived in the e2e lane, which was deleted — nothing in CI reads them now. |
 | `AWS_*` (4 secrets, 2025-02) | repo secrets | Present but **dormant** — the CDK path was declared unsupported today (#973) |
 | `CQCLEMAZUREAPP_*` (5 secrets, 2025-01) | repo secrets | **OBSOLETE — zero references anywhere in `.github/`, `scripts/`, `src/`. Safe to delete.** |
 | `CWS_*` (Chrome Web Store) | — | **Not needed.** PR #336 was closed today; only required if you resume store publishing |

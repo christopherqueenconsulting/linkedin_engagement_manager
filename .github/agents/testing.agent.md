@@ -39,7 +39,6 @@ sample_message_data     # dict with recipient_profile_url, recipient_name, messa
 ```python
 @pytest.mark.unit             # all unit tests (default)
 @pytest.mark.integration      # needs MySQL + Redis
-@pytest.mark.e2e              # needs selenium browser
 @pytest.mark.requires_openai  # needs real OpenAI API key
 @pytest.mark.requires_database  # needs real DB connection
 @pytest.mark.requires_selenium  # needs real browser

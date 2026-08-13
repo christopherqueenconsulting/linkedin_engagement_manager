@@ -297,12 +297,9 @@ markers = [
     "compile: mark placeholder test used to compile integration tests without running them",
     "unit: mark a test as a unit test",
     "integration: mark a test as an integration test",
-    "e2e: mark a test as an end-to-end test",
     "slow: mark test as slow running",
     "requires_openai: mark test as requiring real OpenAI API access",
     "requires_database: mark test as requiring real database connection",
     "requires_selenium: mark test as requiring real browser automation",
-    "requires_replicate: mark test as requiring a real REPLICATE_API_TOKEN",
-    "requires_capsolver: mark test as requiring a real CAPSOLVER_API_KEY",
 ]
 asyncio_mode = "auto"

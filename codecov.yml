@@ -1,13 +1,14 @@
 codecov:
   # Don't block CI if Codecov itself is unreachable
   require_ci_to_pass: false
-  # Number of coverage uploads to wait for before posting a combined status. FOUR: the unit lane is
-  # sharded across two jobs that each upload under the `unit` flag, plus integration, plus e2e.
+  # Number of coverage uploads to wait for before posting a combined status. THREE: the unit lane is
+  # sharded across two jobs that each upload under the `unit` flag, plus integration. (It was four
+  # while the e2e lane uploaded a fourth; that lane was deleted in #1215.)
   # This MUST track the shard count. Too high and Codecov waits forever for an upload that is never
   # coming and posts no status at all; too low and it publishes a number computed from a partial
   # set, which reads as a coverage drop that isn't one.
   notify:
-    after_n_builds: 4
+    after_n_builds: 3
 
 coverage:
   precision: 2
@@ -43,11 +44,6 @@ flags:
     paths:
       - src/cqc_lem/
     carryforward: true
-  e2e:
-    # End-to-end tests (Playwright / Selenium); informational
-    paths:
-      - src/cqc_lem/
-    carryforward: true
 
 # Files/directories that are NOT our code and should be excluded from coverage
 ignore:
@@ -57,7 +53,8 @@ ignore:
   - "src/cqc_lem/aws/"
   # Legacy Streamlit UI — unmaintained, zero coverage
   - "src/cqc_lem/streamlit/"
-  # Selenium browser driver utilities — E2E only
+  # Selenium browser-driving utilities. No automated lane drives a real browser (#1215) — what
+  # grades these against LinkedIn is the read-only live probe, scripts/linkedin_live_validation.py.
   - "src/cqc_lem/utilities/selenium_util.py"
   - "src/cqc_lem/utilities/linkedin/scrapper.py"
   - "src/cqc_lem/utilities/linkedin/company_page_inviter.py"

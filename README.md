@@ -143,9 +143,6 @@ This project uses pytest for testing with comprehensive unit, integration, and e
 
    # Run only integration tests (requires MySQL + Redis)
    poetry run pytest tests/integration -v
-
-   # Run end-to-end tests (requires selenium/standalone-chrome)
-   poetry run pytest tests/e2e -v
    ```
 
 5. **Run specific test file:**

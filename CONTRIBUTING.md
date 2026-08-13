@@ -57,11 +57,14 @@ We follow a Test-Driven Development approach:
 
 ### Test Organization
 
-Tests are organized into three categories:
+Tests are organized into two categories:
 
 - **Unit Tests** (`tests/unit/`): Fast, isolated tests with mocked dependencies
 - **Integration Tests** (`tests/integration/`): Tests that verify multiple components work together
-- **End-to-End Tests** (`tests/e2e/`): Full workflow tests
+  against a real MySQL + Redis
+
+There is no browser lane — a change that needs a real browser is graded by the read-only live probe
+(`scripts/linkedin_live_validation.py`). See `tests/README.md` for why.
 
 ### Running Tests
 
@@ -92,7 +95,6 @@ Use these markers to categorize your tests:
 
 - `@pytest.mark.unit` - Fast unit tests with mocked dependencies
 - `@pytest.mark.integration` - Integration tests
-- `@pytest.mark.e2e` - End-to-end tests
 - `@pytest.mark.slow` - Tests that take longer to execute
 - `@pytest.mark.requires_openai` - Tests requiring OpenAI API access
 - `@pytest.mark.requires_database` - Tests requiring database connection
