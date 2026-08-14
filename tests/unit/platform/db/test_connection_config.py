@@ -7,11 +7,17 @@ to every caller's `except mysql.connector.Error`. These pin the port down before
 
 from unittest.mock import patch
 
+import mysql.connector
+import mysql.connector.pooling as pooling
 import pytest
 
 from cqc_lem.platform.db import connection as db
 
 pytestmark = pytest.mark.unit
+
+#: A substring of `_BLOCKED_MYSQL_MESSAGE` (tests/unit/conftest.py). Kept as a literal rather than
+#: imported, because a conftest is not an importable module from here.
+_GUARD_MARKER = "MySQL blocked in unit tests by tests/unit/conftest.py"
 
 
 @pytest.fixture(autouse=True)
@@ -91,3 +97,48 @@ class TestGetDbConnection:
             connect.return_value = mock_database_connection["connection"]
             assert db.get_db_connection() is mock_database_connection["connection"]
         assert connect.call_args.kwargs["port"] == db.DEFAULT_MYSQL_PORT
+
+
+class TestUnitLaneNeverOpensASocket:
+    """The lane-wide guard (`_no_real_mysql`, tests/unit/conftest.py) that #1496 added.
+
+    A unit test that forgets to stub a database collaborator used to reach a real connector call:
+    in CI that raised the `TypeError` this file exists for, and on a dev box running the compose
+    stack it reached the LIVE database. Neither is a unit test.
+
+    Both tests assert on the guard's MESSAGE, and that is the whole point of them. A connection
+    refused by a host that isn't there is also a `mysql.connector.Error`, so a test that only
+    asserted the exception TYPE passes just as green with the guard deleted — it would prove the
+    socket failed, never that it was not opened.
+    """
+
+    def test_an_unmocked_connection_is_refused_before_a_socket_opens(self, monkeypatch):
+        monkeypatch.setattr(db, "MYSQL_PORT", None)
+        # mysql.connector.Error is what every repository reader already answers with its own
+        # fallback, so the guard leaves the code under test on the branch CI always took — and it
+        # is NOT a TypeError, the distinction #1319/#1496 turned on, which escapes those readers'
+        # `except` and lands in error tracking as a production defect.
+        with pytest.raises(mysql.connector.Error) as raised:
+            db.get_db_connection()
+        assert _GUARD_MARKER in str(raised.value)
+
+    def test_the_pooled_route_is_blocked_too(self, monkeypatch):
+        """`pooling.py` holds its own `connect` binding, so it is a SECOND route to a socket.
+
+        Pooling is off suite-wide (#555), which is why nothing noticed; turn it back on and
+        `MySQLConnectionPool.add_connection()` calls `mysql.connector.pooling.connect`, untouched by
+        a patch of `mysql.connector.connect`. Guarding one name and not the other left the lane one
+        `monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", True)` away from live traffic again.
+        """
+        monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", True)
+        monkeypatch.setattr(db, "MYSQL_PORT", "3306")
+
+        # The binding itself: this is the call add_connection() makes, and it must never dial out.
+        with pytest.raises(mysql.connector.Error) as direct:
+            pooling.connect(host="mysql-guarded.invalid", port=3306)
+        assert _GUARD_MARKER in str(direct.value)
+
+        # …and the pooled path end to end, which grows the pool through exactly that call.
+        with pytest.raises(mysql.connector.Error) as pooled:
+            db.get_db_connection()
+        assert _GUARD_MARKER in str(pooled.value)

@@ -744,12 +744,16 @@ class TestLeadMagnetAndPassword:
                 "session_token": _TOK, "linkedin_password": ""})
         assert resp.status_code == 400
 
-    def test_linkedin_password_save_failure_500(self, api_client):
+    def test_linkedin_password_save_failure_500(self, api_client, signed_in):
+        # `signed_in` states the step-up state: without it `_require_step_up` runs for real and
+        # `count_auth_factors` opens a database socket, so this passed on a 500 the handler never
+        # meant — the save was never reached (issue #1496).
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_USER}.update_user_linkedin_password", return_value=False):
+             patch(f"{_USER}.update_user_linkedin_password", return_value=False) as upd:
             resp = api_client.put("/api/user/linkedin-password", json={
                 "session_token": _TOK, "linkedin_password": "dummy-test-value"})
         assert resp.status_code == 500
+        upd.assert_called_once_with(_UID, "dummy-test-value")
 
 
 class TestAvatarEndpoints:

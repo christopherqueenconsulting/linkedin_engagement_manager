@@ -22,6 +22,16 @@ from openai import APIConnectionError
 
 _BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
 
+#: Raised by `_no_real_mysql`. The wording is asserted on by
+#: tests/unit/platform/db/test_connection_config.py, because a REFUSED real socket is also a
+#: `mysql.connector.Error` — only the message tells the two apart, so only the message can prove
+#: the guard is the thing that answered.
+_BLOCKED_MYSQL_MESSAGE = (
+    "MySQL blocked in unit tests by tests/unit/conftest.py. Patch get_db_connection with "
+    "the fake_cursor factory, or state the fixture (e.g. `signed_in`) whose collaborators "
+    "this test forgot to stub."
+)
+
 # Sentinel for "caller said nothing", so `fetch_all=None` can still mean a literal None row set —
 # a handful of readers are tested against a driver that returns None instead of an empty list.
 _UNSET = object()
@@ -135,6 +145,45 @@ def _no_real_celery_broker():
         return EagerResult(kwargs.get("task_id") or f"test-task-{name}", None, states.PENDING)
 
     with patch.object(Celery, "send_task", _queued_without_a_broker):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_mysql():
+    """Fail un-mocked MySQL connections with the error CI already produced (issue #1496).
+
+    There is no MySQL in the unit lane, so an un-mocked `get_db_connection()` was always going to
+    fail in CI — but it failed as `TypeError: int() argument ... not 'NoneType'`, because an unset
+    `MYSQL_PORT` reached the connector as `None`. That is not a `mysql.connector.Error`, so it
+    escaped every caller's `except`, surfaced as a 500 through the API middleware, and was captured
+    into production error tracking as a real defect (`update_linkedin_password` →
+    `count_auth_factors`). #1486 fixed the port resolution; this stops the unit lane opening the
+    socket at all.
+
+    On a dev box the same call reaches the compose stack's LIVE database — measured, with the
+    request answering `1045 Access denied` after a real round trip — so the guard also pins local
+    behaviour to CI's, the same contract as `_no_real_redis`.
+
+    The error raised is a `mysql.connector.Error`, which is what every reader in
+    `platform/db/repositories/` already answers with its own fallback, so the code under test takes
+    the identical branch. Tests that want a working handle keep patching `mysql.connector.connect`
+    (`mock_database_connection`) or `get_db_connection` (the `fake_cursor` factory) themselves;
+    those patches nest inside this one and win.
+
+    BOTH routes to a socket are blocked, because there are two. `mysql/connector/pooling.py` holds
+    its OWN module-level `connect` binding, so patching `mysql.connector.connect` alone leaves
+    `MySQLConnectionPool.add_connection()` calling the real one — measured: a pooled
+    `get_db_connection()` still made two live connect attempts through it. That is the same hazard
+    tests/conftest.py's `_db_pool_disabled_by_default` was written for (#555); the pool being off
+    suite-wide is a second belt, not the reason this one holds.
+    """
+    import mysql.connector
+
+    def _blocked(*_args, **_kwargs):
+        raise mysql.connector.errors.InterfaceError(_BLOCKED_MYSQL_MESSAGE)
+
+    with patch("mysql.connector.connect", side_effect=_blocked), \
+         patch("mysql.connector.pooling.connect", side_effect=_blocked):
         yield
 
 
