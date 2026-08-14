@@ -93,6 +93,7 @@ stateDiagram-v2
     ready --> awaiting_ci: decide (ci_running / checks_unknown / any *_unreadable)
     ready --> awaiting_review: decide (work_in_flight)
     ready --> awaiting_queue: decide (auto_merge_armed / in_merge_queue)
+    ready --> awaiting_owner_review: decide (owner_review_required)
     ready --> parked: decide (human_hold / draft)
     ready --> ignored: decide (not_admissible / not_ready)
     parked --> abandoned: answer, but laps exhausted
@@ -101,6 +102,7 @@ stateDiagram-v2
     awaiting_ci --> ready: event or TTL
     awaiting_review --> ready: event or TTL
     awaiting_queue --> ready: event or TTL
+    awaiting_owner_review --> ready: event or TTL
     parked --> ready: owner answer (ACT_UNPARK)
     ready --> merged: decide (state MERGED)
     ready --> closed: decide (state CLOSED)
@@ -123,10 +125,19 @@ rather than merely guarded.
 | `awaiting_ci` | CI running, or checks unreadable | event, or `LEMD_TTL_CI` (1800s) |
 | `awaiting_review` | work in flight elsewhere | event, or `FIRST_REVIEW_TIMEOUT_SECONDS` (3600s) |
 | `awaiting_queue` | auto-merge armed or in the queue | event, or `LEMD_TTL_QUEUE` (900s) |
+| `awaiting_owner_review` | auto-merge armed, checks green, `BLOCKED` only on `require_code_owner_reviews` | event, or `LEMD_TTL_PARKED` (21600s) |
 | `parked` | the owner's, not the pipeline's — a question WAS asked | an owner answer, or `LEMD_TTL_PARKED` (21600s) |
 | `ignored` | not the pipeline's business; nobody was asked | a relabel, noticed by `reconcile` |
 | `abandoned` | parked for the same reason too many times; the pipeline stopped asking | removing `agent:abandoned` — laps cleared, back on the queue |
 | `merged` / `closed` | terminal | — |
+
+`awaiting_owner_review` is the one wait state **excluded from `db.WIP_STATES`** (#1501). Every other
+wait state above resolves through pipeline action or CI on a timeline the pipeline influences; this
+one resolves only through a human clicking Approve on GitHub, on no timeline the pipeline controls at
+all. Counting it against the WIP gate the same as `awaiting_queue` reproduces the incident it fixes:
+two such PRs held both WIP slots for 7 hours while every `ready` issue behind them went undispatched.
+The daemon posts ONE `gh pr comment` on the transition into this state (`_notify_owner_review_needed`)
+so the wait is not also silent.
 
 ---
 
@@ -235,24 +246,32 @@ call that live PR stranded.
 | 24 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
 | 25 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
 | 26 | `mergeStateStatus` outside the enum | none | `merge_state_unrecognised` | 300s |
-| 27 | auto-merge armed | none | `auto_merge_armed` | 15m |
-| 28 | checks unreadable | none | `checks_unknown` | 300s |
-| 29 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
-| 30 | checks pending, or zero checks | none | `ci_running` | 30m |
-| 31 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
-| 32 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
-| 33 | already in the merge queue | none | `in_merge_queue` | 15m |
-| 34 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
+| 27 | auto-merge armed, `BLOCKED`, checks all green, no queue entry | none → **awaiting_owner_review** | `owner_review_required` | 6h |
+| 28 | auto-merge armed (anything else) | none | `auto_merge_armed` | 15m |
+| 29 | checks unreadable | none | `checks_unknown` | 300s |
+| 30 | a required check failed | dispatch `fix` | `required_checks_failing` | — |
+| 31 | checks pending, or zero checks | none | `ci_running` | 30m |
+| 32 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
+| 33 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
+| 34 | already in the merge queue | none | `in_merge_queue` | 15m |
+| 35 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
 
-Row 26 sits above row 27 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
+Row 26 sits above row 28 deliberately. An armed PR reporting `BLOCKED` is the normal, healthy state
 of a PR waiting on required checks; without this the ladder fell through to `gate_satisfied` on every
 pass and burned the per-head merge budget in three minutes (measured on #1295).
 
-Row 31's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
+Row 27 sits above row 28: `BLOCKED` with every required check already green and no queue entry is
+not "waiting on a check" — nothing left to check. The one remaining required gate at that point is
+`require_code_owner_reviews`, which only a human's approval satisfies (#1501). Auto-merge stays
+armed either way — GitHub completes the merge itself the instant that approval lands — so this row
+changes only where the WAIT is recorded (`awaiting_owner_review`, excluded from the WIP gate, §3),
+not whether the pipeline waits.
+
+Row 33's freshness is **stricter than v1's**: a review must be at or after the head commit. Being
 wrong in this direction costs one extra selfreview; being wrong in the other merges code no reviewer
 saw. **One exception, and it errs permissive**: when the head's `committedDate` is unreadable,
 `review_state` falls back to "any review counts", however stale — refusing every PR on an unreadable
-date would wedge the gate entirely. Row 29 treats zero checks as pending, not green.
+date would wedge the gate entirely. Row 30 treats zero checks as pending, not green.
 
 ---
 
@@ -265,7 +284,7 @@ behaviour is incidental.
 |---|---|---|
 | `CLEAN` | ✅ | falls through to the checks/review ladder |
 | `DIRTY` | ✅ | row 19 → `rebase` |
-| `BLOCKED` | ✅ | proceeds; it is the normal state of a PR waiting on a required check, and the ladder reads those directly |
+| `BLOCKED` | ✅ | proceeds; normally a PR waiting on a required check, read directly off the ladder. Armed + checks-all-green + no queue entry is the one exception — `require_code_owner_reviews` is the actual gate, so it routes to `awaiting_owner_review` instead (row 27, §3) |
 | `UNSTABLE` | ✅ | proceeds and can reach `gate_satisfied`. Correct **because** `checks_for` filters to required contexts, so non-required red is mergeable — now recorded rather than accidental |
 | `BEHIND` | ✅ | proceeds, deliberately: `main` does not require branches to be up to date (`strict` is false) and the merge queue builds against the queue head, so a rebase would spend a model session on something GitHub does for free |
 | `UNKNOWN` / `""` | ✅ | waits 120s (row 24). Was the #1082 shape — an unreadable field read as a healthy one |

@@ -378,6 +378,20 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
         # healthy state of a PR waiting on required checks; without this, `decide` fell through to
         # "gate satisfied -> ACT_MERGE" on every pass and burned the per-head merge budget in three
         # minutes, one pass from parking a perfectly good PR. Measured live on #1295.
+        #
+        # But BLOCKED + every required check green + no queue entry is NOT "waiting on a check" —
+        # every check already reported. The one remaining required gate at that point is
+        # `require_code_owner_reviews`: a non-owner author (the pipeline's own GitHub App identity)
+        # touched a CODEOWNERS-protected path and needs an owner-approved review GitHub will never
+        # supply itself (docs/codeowners-enforcement-limit.md). That is a WAIT too — auto-merge
+        # stays armed, so a human's approval still completes the merge unattended — but it must NOT
+        # share `STATE_WAIT_QUEUE`'s WIP accounting: #1501 measured two such PRs holding both WIP
+        # slots for 7 hours while every `ready` issue behind them went undispatched.
+        if snap.merge_state == "BLOCKED" and not snap.queue_state \
+                and snap.checks is not None and snap.checks.green:
+            return Decision(ACT_NONE, db.STATE_WAIT_OWNER_REVIEW, "owner_review_required",
+                            wait_reason="owner_review", wake_in=ttl_parked,
+                            details={"merge_state": snap.merge_state})
         return Decision(ACT_NONE, db.STATE_WAIT_QUEUE, "auto_merge_armed",
                         wait_reason="merge_queue", wake_in=ttl_queue,
                         details={"merge_state": snap.merge_state})

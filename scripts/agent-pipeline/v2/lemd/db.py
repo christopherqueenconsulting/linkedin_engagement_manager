@@ -36,6 +36,13 @@ STATE_RUNNING = "running"
 STATE_WAIT_CI = "awaiting_ci"
 STATE_WAIT_REVIEW = "awaiting_review"
 STATE_WAIT_QUEUE = "awaiting_queue"
+#: Auto-merge is armed, every required check is green, and GitHub still reports `BLOCKED` — the
+#: one remaining required gate `require_code_owner_reviews` blocking a non-owner author on an
+#: owned path (#1501; docs/codeowners-enforcement-limit.md). This is NOT work in flight: GitHub
+#: completes the merge itself the instant a human approves, so unlike `STATE_WAIT_QUEUE` this must
+#: be excluded from `WIP_STATES` — otherwise a PR only a human can unblock starves the WIP gate
+#: for every other ready issue behind it, silently, for as long as the approval takes.
+STATE_WAIT_OWNER_REVIEW = "awaiting_owner_review"
 STATE_PARKED = "parked"
 STATE_MERGED = "merged"
 STATE_CLOSED = "closed"
@@ -67,7 +74,8 @@ ACTIVE_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING})
 DISPATCHABLE_STATES = frozenset({STATE_READY})
 #: Every non-terminal state must be leaveable by BOTH an event and a TTL, or an item can wedge
 #: forever in a state nothing is watching. `startup_recover()` enforces the `claimed` half.
-WAIT_STATES = frozenset({STATE_WAIT_CI, STATE_WAIT_REVIEW, STATE_WAIT_QUEUE, STATE_PARKED})
+WAIT_STATES = frozenset({STATE_WAIT_CI, STATE_WAIT_REVIEW, STATE_WAIT_QUEUE,
+                         STATE_WAIT_OWNER_REVIEW, STATE_PARKED})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -573,6 +581,10 @@ def _pid_alive(pid: int, starttime: str | None = None) -> bool:
 RC_KILLED = -9        #: the supervisor stopped it on its deadline (SIGKILL)
 RC_VANISHED = -99     #: its process was already gone — an adopted orphan, or a crash recovery
 
+#: `STATE_WAIT_OWNER_REVIEW` is deliberately ABSENT. Every other wait state eventually resolves
+#: through pipeline action or CI; this one resolves only through a human clicking Approve, on a
+#: timeline the pipeline does not control. Counting it here reproduces #1501: a PR blocked purely
+#: on `require_code_owner_reviews` held both WIP slots for 7 hours while `ready` issues piled up.
 WIP_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING, STATE_WAIT_CI, STATE_WAIT_REVIEW,
                         STATE_WAIT_QUEUE})
 

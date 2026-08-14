@@ -247,6 +247,18 @@ def test_ready_issues_do_not_count_against_the_wip_gate(tmp_path):
     assert db.wip_count(conn) == 0
 
 
+def test_a_pr_only_a_human_can_unblock_does_not_count_against_the_wip_gate(tmp_path):
+    """#1501: two PRs blocked solely on `require_code_owner_reviews` held both WIP slots for 7h.
+
+    Unlike `awaiting_queue`, this wait resolves on no timeline the pipeline controls, so it must not
+    starve every `ready` issue behind it the way `awaiting_queue` legitimately does.
+    """
+    conn = db.connect(tmp_path / "q.db")
+    db.upsert_item(conn, kind="pr", number=1483, state=db.STATE_WAIT_OWNER_REVIEW)
+    db.upsert_item(conn, kind="pr", number=1444, state=db.STATE_WAIT_OWNER_REVIEW)
+    assert db.wip_count(conn) == 0
+
+
 # --------------------------------------------------------------------------- coexistence
 
 def test_a_live_v1_tick_holds_back_the_agent_pool(tmp_path):

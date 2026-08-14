@@ -113,3 +113,37 @@ def test_a_draft_is_still_checked_first():
     """A draft cannot merge however its mergeability reads."""
     got = d(pr(merge_state="UNKNOWN", is_draft=True))
     assert (got.action, got.reason) == (observe.ACT_NONE, "pr_is_draft")
+
+
+# ------------------------------------------------- owner-review-required (#1501)
+
+def test_blocked_with_green_checks_and_no_queue_means_owner_review_required():
+    """Every required check reported and none failed, yet GitHub still says `BLOCKED`.
+
+    Nothing left for the pipeline to wait on but `require_code_owner_reviews` — the two PRs
+    measured for #1501 sat in exactly this shape for 7 hours.
+    """
+    got = d(pr(merge_state="BLOCKED", auto_merge=True, queue_state=""))
+    assert got.action == observe.ACT_NONE
+    assert got.next_state == db.STATE_WAIT_OWNER_REVIEW
+    assert got.reason == "owner_review_required"
+    assert got.wake_in == TTLS["ttl_parked"]
+
+
+def test_blocked_armed_with_pending_checks_is_still_the_ordinary_wait():
+    """The new branch must not swallow the case row 26/28 already handles correctly."""
+    got = d(pr(merge_state="BLOCKED", auto_merge=True,
+               checks=github.ChecksState(failed=0, pending=2, total=6)))
+    assert (got.reason, got.next_state) == ("auto_merge_armed", db.STATE_WAIT_QUEUE)
+
+
+def test_blocked_armed_with_unreadable_checks_is_still_the_ordinary_wait():
+    """`checks=None` (unread) must not be misread as "resolved, so it must be review"."""
+    got = d(pr(merge_state="BLOCKED", auto_merge=True, checks=None))
+    assert (got.reason, got.next_state) == ("auto_merge_armed", db.STATE_WAIT_QUEUE)
+
+
+def test_blocked_armed_already_queued_is_still_the_ordinary_wait():
+    """A queue entry means GitHub is already acting on it — not waiting on a human."""
+    got = d(pr(merge_state="BLOCKED", auto_merge=True, queue_state="QUEUED"))
+    assert (got.reason, got.next_state) == ("auto_merge_armed", db.STATE_WAIT_QUEUE)

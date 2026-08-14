@@ -520,3 +520,49 @@ def test_merge_decision_is_not_recorded_as_queued_and_clears_its_deadline(tmp_pa
         assert row["wake_at"] is None
     finally:
         dm.conn.close()
+
+
+def test_owner_review_wait_notifies_once_not_on_every_reobservation(tmp_path, monkeypatch):
+    """#1501: the alert must fire on the transition into the wait, not on every wake.
+
+    A PR that stays `BLOCKED` on missing owner review for hours would otherwise post a fresh
+    comment every `LEMD_TTL_PARKED` (or sooner, on a webhook-driven re-observation) — the exact
+    #1067 shape (561 identical park comments) this repeats if left ungated.
+    """
+    cfg = dataclasses.replace(load(tmp_path), shadow=False)
+    dm = daemon_mod.Daemon(cfg)
+    calls = []
+    monkeypatch.setattr(github, "post_comment", lambda *a, **k: calls.append((a, k)))
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=1483, state=db.STATE_WAIT_CI, branch="feature/x")
+        blocked = pr(number=1483, merge_state="BLOCKED", auto_merge=True, queue_state="")
+        monkeypatch.setattr(observe, "snapshot_pr", lambda *a, **k: blocked)
+
+        dm._observe_one(db.get_item(dm.conn, "pr", 1483))
+        row = db.get_item(dm.conn, "pr", 1483)
+        assert row["state"] == db.STATE_WAIT_OWNER_REVIEW
+        assert len(calls) == 1
+
+        # Second observation, same wait: no owner action happened, so nothing should re-fire.
+        dm._observe_one(db.get_item(dm.conn, "pr", 1483))
+        assert db.get_item(dm.conn, "pr", 1483)["state"] == db.STATE_WAIT_OWNER_REVIEW
+        assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+def test_owner_review_wait_does_not_notify_when_reached_from_itself(tmp_path, monkeypatch):
+    """The transition check is `row["state"] != STATE_WAIT_OWNER_REVIEW`, not `wait_reason`."""
+    cfg = dataclasses.replace(load(tmp_path), shadow=False)
+    dm = daemon_mod.Daemon(cfg)
+    calls = []
+    monkeypatch.setattr(github, "post_comment", lambda *a, **k: calls.append((a, k)))
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=1444, state=db.STATE_WAIT_OWNER_REVIEW,
+                       branch="feature/y", wait_reason="owner_review")
+        blocked = pr(number=1444, merge_state="BLOCKED", auto_merge=True, queue_state="")
+        monkeypatch.setattr(observe, "snapshot_pr", lambda *a, **k: blocked)
+        dm._observe_one(db.get_item(dm.conn, "pr", 1444))
+        assert calls == []
+    finally:
+        dm.conn.close()

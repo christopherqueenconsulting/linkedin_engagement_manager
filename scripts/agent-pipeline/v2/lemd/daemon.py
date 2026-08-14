@@ -410,6 +410,14 @@ class Daemon:
             )
             return
 
+        if decision.next_state == db.STATE_WAIT_OWNER_REVIEW and row["state"] != db.STATE_WAIT_OWNER_REVIEW:
+            # First observation of this wait, for this item — not every 900s-or-so re-check while
+            # it persists. `row["state"]` is the PREVIOUS pass's persisted state, so this is the
+            # transition edge, the same "state once per head" idea `park.sh` uses for its comment,
+            # done here because this wait is not a park (auto-merge must stay armed, so drafting
+            # the PR or disabling auto-merge — what `park.sh` does — would undo the very thing
+            # letting a human's approval complete the merge unattended).
+            self._notify_owner_review_needed(kind, number)
         db.upsert_item(
             self.conn, kind=kind, number=number, state=decision.next_state,
             wait_reason=decision.wait_reason,
@@ -417,6 +425,23 @@ class Daemon:
             wake_at=wake_at, head_sha=snap.head_sha or row["head_sha"],
             branch=snap.branch or row["branch"], dirty=0, pending_mode=None,
         )
+
+    def _notify_owner_review_needed(self, kind: str, number: int) -> None:
+        """Tell the owner once that a PR is done and only waiting on their CODEOWNERS approval.
+
+        Best-effort: a failed comment must not take down the observation pass — there is nothing
+        to retry into, and the next TTL wake (`ttl_parked`) tries again anyway on a genuine outage.
+        """
+        body = (
+            "🔔 **Owner approval needed** — every required check is green and auto-merge is armed, "
+            "but this touches a CODEOWNERS-protected path, so it needs your review before it can "
+            "merge. See `docs/codeowners-enforcement-limit.md`. No reply needed here — just "
+            "Approve it (GitHub UI or `gh pr review --approve`) when you're ready."
+        )
+        try:
+            github.post_comment(self.cfg.slug, kind, number, body)
+        except github.GitHubUnavailable as exc:
+            LOG.warning("owner-review notify failed for %s #%s: %s", kind, number, exc)
 
     def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision,
               persisted: str | None = None) -> None:
