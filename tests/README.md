@@ -120,8 +120,8 @@ lane: that lane collected coverage on the *pytest* process while driving a separ
 `uvicorn` over HTTP, so it credited every module its imports touched and none of the handlers it
 called. Dropping its upload from a PR read as **94.98% → 86.86%**, which is what blocked `#1338`.
 
-Deleting the lane outright (`#1215`) did not reproduce that drop. Measured on `main` at `6a145efa`,
-from these two lanes only:
+Deleting the lane outright (`#1215`) did not reproduce that drop. Measured on `main` at `6a145efa`
+(2026-08-14), from these two lanes only:
 
 | | measured | #1340 predicted without e2e |
 |---|---|---|
@@ -133,10 +133,24 @@ from these two lanes only:
 
 Per flag: `unit` 93.50%, `integration` 32.62%, whose union is that 95.06%; the `e2e` flag reports
 **zero sessions and zero lines**, so nothing is being carried forward. The 86.86% was a property of
-that PR's upload set, not of the code — so the enforced 90% floor is a ratchet ~5 points *below*
-what the two lanes earn, and it stays where it is. Raise it as the baseline rises; never lower it.
-`#1340` had chosen to re-baseline it *down* to ~87%; that measurement is why it was not, and `#1488`
-is the one place the number moves next — up toward 95.06%, held at 90%, or down to ~87% after all.
+that PR's upload set, not of the code — so the old enforced 90% floor was a ratchet ~5 points
+*below* what the two lanes earn. `#1340` had chosen to re-baseline it *down* to ~87%; that
+measurement is why it was not.
+
+`#1488` spent that headroom in the other direction instead:
+
+| status | floor | measured baseline it was set against |
+|---|---|---|
+| `codecov/project` (**enforced**, 1% threshold) | **93%** | project 95.06% |
+| per-component (`informational`) | **90%** | lowest component, Celery Tasks, 92.61% |
+
+So a PR may lose ~3 points of project coverage before the enforced status goes red — enough to
+absorb run-to-run flake and a restructure slice moving a module between packages, tight enough that
+a genuine regression surfaces in the PR that caused it. Both floors are ratchets: raise them as the
+baseline rises, never lower them. `tests/unit/test_codecov_upload_contract.py` asserts both — plus
+the **effective** project floor, `target - threshold` = 92%, since widening the threshold lowers the
+floor exactly as much as cutting the target does — so walking any of them back means moving the
+assertion in the same commit and writing the reason into `codecov.yml`.
 
 A general `Test Suite` workflow used to run alongside them, invoking pytest **three times** in one
 job — `tests/unit`, then `tests/integration`, then `pytest tests/` with coverage, which re-ran both.
