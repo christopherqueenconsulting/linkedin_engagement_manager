@@ -595,6 +595,10 @@ SURFACES = (
     {"key": "document_render", "surface": "Published post media render (document vs image)",
      "code": "engagement.posting (media anchors)", "flag": "--post-url", "arg": "<post-url>",
      "sweep": False},
+    {"key": "commenter_read", "surface": "Comment card author identity (name / URL / degree)",
+     "code": "composer.comment_author_identity → posting._reply_to_comments_on_open_post "
+             "(upsert_engager) / outreach._harvest_post_commenters",
+     "flag": "--commenter-read", "arg": "<post-url>", "sweep": True},
     {"key": "comment_outcome", "surface": "Comment thread + sort (demotion read)",
      "code": "engagement.posting._switch_comment_sort / composer._comment_items",
      "flag": "--comment-outcome-url", "arg": "<post-url>", "sweep": False},
@@ -974,6 +978,182 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
         from cqc_lem.app.engagement.posting import _diagnose_sort_control_miss
         reading["sort_control_candidates"] = _diagnose_sort_control_miss(driver)
     return graded(reading, comment_outcome_state(reading), comment_outcome_verdict(reading))
+
+
+# Carried copy of `composer._COMMENT_AUTHOR_ANCHORS_JS` for images that predate #1091.
+# `TestCommentAuthorChainCopy` fails the build if this drifts from the shipped reader.
+_CARRIED_COMMENT_AUTHOR_ANCHORS_JS = (
+    "const c=arguments[0],out=[];"
+    "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
+    "  if(a.closest(\"[data-testid='expandable-text-box']\")) continue;"
+    "  out.push({href:(a.href||'').split('?')[0],"
+    "            text:((a.innerText||a.textContent||'')+'').trim(),"
+    "            aria:(a.getAttribute('aria-label')||'').trim()});"
+    "}return out;")
+
+
+def _comment_author_reader() -> tuple:
+    """`(reader, source)` for a comment card's author — the running image's when it has one.
+
+    Same posture as `_share_box_chains`: the probe is piped into the DEPLOYED image, so a pre-merge
+    pass cannot import the reader it is grounding. The carried copy exists precisely so #1091 can be
+    grounded BEFORE its fix ships, and the reading names which one answered.
+    """
+    try:
+        from cqc_lem.utilities.linkedin.composer import comment_author_identity
+        return comment_author_identity, "image"
+    except Exception:
+        from cqc_lem.utilities.linkedin.helper import clean_person_name, connection_degree
+
+        def carried(driver, container):
+            try:
+                anchors = driver.execute_script(_CARRIED_COMMENT_AUTHOR_ANCHORS_JS, container) or []
+            except Exception:
+                anchors = []
+            fallback_href = ""
+            for anchor in anchors:
+                if not isinstance(anchor, dict):
+                    continue
+                href = str(anchor.get("href") or "")
+                raw = str(anchor.get("text") or "") or str(anchor.get("aria") or "")
+                fallback_href = fallback_href or href
+                name = clean_person_name(raw)
+                if name:
+                    return (name, href or fallback_href, connection_degree(raw))
+            return ("", fallback_href, None)
+
+        return carried, "script"
+
+
+def commenter_read_verdict(reading: Optional[dict]) -> str:
+    """What a commenter read proves about reciprocity capture (`post_engagers`, #1091)."""
+    reading = dict(reading or {})
+    if not int(reading.get("posts_read") or 0):
+        return "ambiguous: no published post to read comments on"
+    cards = int(reading.get("cards") or 0)
+    if not cards:
+        return "ambiguous: no comment cards rendered on any post read"
+    others = int(reading.get("third_party_cards") or 0)
+    if not others:
+        return (f"every one of the {cards} rendered comment(s) is the user's own (seed / second "
+                f"wave) — there was no engager to record, so an empty post_engagers is the CORRECT "
+                f"reading of these posts, not a broken reader")
+    header = int(reading.get("named_by_header") or 0)
+    first = int(reading.get("named_by_first_anchor") or 0)
+    if not header:
+        return ("no third-party commenter carries a readable name — the header read has rotated and "
+                "reciprocity capture is dead")
+    if first < header:
+        return (f"the first-/in/-anchor read names {first} of {others} third-party commenter(s) "
+                f"where the header read names {header} — that gap is the silently skipped engager "
+                f"capture")
+    return f"header read names {header} of {others} third-party commenter(s)"
+
+
+def commenter_read_state(reading: Optional[dict]) -> str:
+    """Three-state grade for the commenter read behind `post_engagers` (#1091).
+
+    Two page-native cross-checks stand before any grade, because both look like "no engagers" in the
+    DB and neither is a reader fault: a post whose thread rendered nothing grounded nothing, and a
+    thread carrying only the user's OWN comments has nobody to capture (the sweep skips those by
+    design). Where a third-party card DID render, drift is either half failing — the shipped header
+    read naming nobody, or the naive first-anchor read (what shipped until #1091) naming fewer people
+    than the header read.
+    """
+    reading = dict(reading or {})
+    if not int(reading.get("posts_read") or 0) or not int(reading.get("cards") or 0):
+        return STATE_UNKNOWN
+    others = int(reading.get("third_party_cards") or 0)
+    if not others:
+        return STATE_UNKNOWN
+    header = int(reading.get("named_by_header") or 0)
+    if not header:
+        return STATE_DRIFT
+    if int(reading.get("named_by_first_anchor") or 0) < header:
+        return STATE_DRIFT
+    return STATE_OK
+
+
+def _recent_own_post_urls(user_id: int, count: int = 3) -> list:
+    """The freshest published posts of `user_id`, read the way the reply sweep picks its targets.
+
+    Lets `--commenter-read` run with no URL. Several posts, not one: this surface only renders where
+    somebody ELSE commented, and one quiet post says nothing about the reader — the sweep itself
+    walks the recent set for the same reason.
+    """
+    urls = []
+    try:
+        from cqc_lem.utilities.db import get_post_url_from_log_for_user, get_recent_posted_post_ids
+        for post_id in (get_recent_posted_post_ids(user_id, days=21) or []):
+            url = get_post_url_from_log_for_user(user_id, post_id)
+            if url and url not in urls:
+                urls.append(url)
+            if len(urls) >= count:
+                break
+    except Exception:
+        return urls
+    return urls
+
+
+def _commenter_read_one_post(driver, post_url: str, our_slug: str, read_author, limit: int,
+                             sleep) -> list:
+    """Every rendered comment card on ONE post, read both ways. Raises nothing the caller can't see:
+    a post that fails to render simply yields no rows.
+    """
+    from cqc_lem.app.engagement.posting import _load_comment_thread
+    from cqc_lem.utilities.lead_scoring import profile_slug
+    from cqc_lem.utilities.linkedin.composer import _comment_items_from_thread
+    from cqc_lem.utilities.linkedin.helper import clean_person_name
+
+    driver.get(post_url)
+    sleep(5)
+    _load_comment_thread(driver)
+
+    rows = []
+    for card in _comment_items_from_thread(driver)[:limit]:
+        row = {"post_url": post_url, "first_anchor_name": "", "first_anchor_href": ""}
+        try:
+            link = card.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
+            raw = (link.text or "") or (link.get_attribute("aria-label") or "")
+            row["first_anchor_name"] = clean_person_name(raw)
+            row["first_anchor_href"] = (link.get_attribute("href") or "").split("?")[0]
+        except Exception as e:
+            # The old read's own failure mode is part of the reading, not a lost card.
+            row["first_anchor_error"] = type(e).__name__
+        name, href, degree = tuple(read_author(driver, card))
+        row["header_name"], row["header_href"], row["connection_degree"] = name, href, degree
+        # Our own seed / second-wave comments are skipped by the sweep before any capture, so they
+        # are never evidence either way about whether a commenter can be named.
+        row["ours"] = bool(our_slug) and profile_slug(href or "") == our_slug
+        rows.append(row)
+    return rows
+
+
+def probe_commenter_read(driver, post_urls, our_slug: str = "", limit: int = 20,
+                         sleep=time.sleep) -> dict:
+    """#1091: report who the reply sweep's commenter read actually names on the user's own posts.
+
+    Reads each rendered comment card BOTH ways — the naive first `a[href*='/in/']` the sweep used
+    until #1091, and the header-anchor reader it uses now — so the gap between them is the evidence
+    for `post_engagers` recording nothing while replies on the same cards kept landing. Our own
+    comments are counted separately: a thread of nothing but seed comments has no engager to record,
+    and reading that as a broken reader would send the next fix at the wrong half.
+
+    Read-only: it navigates, scrolls and expands. It types nothing and presses no commit control.
+    """
+    urls = [u for u in ([post_urls] if isinstance(post_urls, str) else list(post_urls or [])) if u]
+    read_author, reader_source = _comment_author_reader()
+    rows = []
+    for url in urls:
+        rows.extend(_commenter_read_one_post(driver, url, our_slug, read_author, limit, sleep))
+
+    others = [r for r in rows if not r["ours"]]
+    reading = {"posts": urls, "posts_read": len(urls), "our_slug": our_slug,
+               "reader_source": reader_source, "cards": len(rows), "comments": rows,
+               "own_cards": len(rows) - len(others), "third_party_cards": len(others),
+               "named_by_first_anchor": sum(1 for r in others if r["first_anchor_name"]),
+               "named_by_header": sum(1 for r in others if r["header_name"])}
+    return graded(reading, commenter_read_state(reading), commenter_read_verdict(reading))
 
 
 # This probe is piped into a RUNNING Selenium worker, so the `cqc_lem` it imports is the code baked
@@ -4252,6 +4432,9 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "sent_invites": lambda: probe_sent_invites(driver),
         "appreciation_sources": lambda: probe_appreciation_sources(driver, user_id),
         "article_editor": lambda: probe_article_editor(driver),
+        "commenter_read": lambda: probe_commenter_read(
+            driver, _recent_own_post_urls(user_id),
+            our_slug=_own_slug(profile_url or _sweep_own_profile(driver, user_id))),
     }
     wanted = [k for k in (keys or SWEEP_ORDER) if k in runners]
     session = session_state or sweep_session_state(driver)
@@ -4281,6 +4464,12 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
             "surfaces": surfaces, "summary": sweep_summary(probes)}
 
 
+def _own_slug(raw: str) -> str:
+    """The user's `/in/<slug>`, from a full profile URL or a bare slug typed on the command line."""
+    from cqc_lem.utilities.lead_scoring import profile_slug
+    return profile_slug(raw or "") or str(raw or "").strip().strip("/").lower()
+
+
 def _sweep_own_profile(driver, user_id: int) -> str:
     """The user's own profile URL — the one profile a sweep may scrape without a human choosing a
     target. It carries a degree badge of its own ('You'/no badge), so the header/name half is what
@@ -4305,6 +4494,11 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--our-slug", help="the user's /in/<slug> (defaults to their profile URL)")
     parser.add_argument("--comment-text", default="",
                         help="the comment we left, so the reader can match the right one")
+    parser.add_argument("--commenter-read", metavar="POST_URL", nargs="?", const="", default=None,
+                        help="report who the reply sweep's commenter read names on POST_URL's "
+                             "comment cards — the reciprocity/engager capture behind #1091. With no "
+                             "URL, reads the user's few freshest published posts (what the sweep "
+                             "walks); own comments are counted apart from third-party ones")
     parser.add_argument("--dm-thread-url",
                         help="profile URL of someone this user has DM'd — reports which message-thread "
                              "route resolves (#731)")
@@ -4437,7 +4631,8 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps({"surfaces": list(SURFACES), "sweep": list(SWEEP_ORDER)}, indent=2))
         return 0
 
-    if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
+    if not (args.post_url or args.probe_composer or args.comment_outcome_url
+            or args.commenter_read is not None or args.dm_thread_url
             or args.article_editor_url or args.feed_sort or args.reaction_probe
             or args.roster_follow or args.roster_connect or args.appreciation_sources
             or args.sent_invites or args.profile_views or args.connect_dialog
@@ -4448,7 +4643,8 @@ def main(argv: Optional[list] = None) -> int:
             or args.newsletter_edition
             or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
-                     "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
+                     "--comment-outcome-url, --commenter-read, "
+                     "--dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --profile-experiences, "
                      "--connect-dialog, --catchup-cards, "
                      "--group-composer, --group-membership, --group-feed-composer, "
@@ -4506,6 +4702,12 @@ def main(argv: Optional[list] = None) -> int:
             slug = profile_slug(raw) or raw.strip().strip("/").lower()
             report["comment_outcome"] = probe_comment_outcome(driver, args.comment_outcome_url,
                                                               slug, args.comment_text)
+        if args.commenter_read is not None:
+            report["commenter_read"] = probe_commenter_read(
+                driver, [args.commenter_read] if args.commenter_read
+                else _recent_own_post_urls(args.user_id),
+                our_slug=_own_slug(args.our_slug
+                                   or str(getattr(profile, "profile_url", "") or "")))
         if args.dm_thread_url:
             from cqc_lem.utilities.linkedin.message_thread import resolve_self_name
             report["message_thread"] = probe_message_thread(

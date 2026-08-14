@@ -213,17 +213,24 @@ class TestConnectNoteDrafting:
 
 
 class TestAdjacentAuthorHarvest:
-    def _commenter(self, name="Guru Fan", href="https://www.linkedin.com/in/guru-fan?x=1"):
-        link = MagicMock()
-        link.text = name
-        link.get_attribute.side_effect = lambda attr: href if attr == "href" else ""
+    def _commenter(self, name="Guru Fan", href="https://www.linkedin.com/in/guru-fan"):
+        """A card whose AVATAR anchor comes first — the shape that named nobody until #1091."""
         comment = MagicMock()
-        comment.find_element.return_value = link
+        comment.anchors = [{"href": href, "text": "", "aria": ""}]
+        if name:
+            comment.anchors.append({"href": href, "text": name, "aria": ""})
         return comment
+
+    def _driver(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = lambda script, *args: (
+            args[0].anchors if args and isinstance(getattr(args[0], "anchors", None), list)
+            else None)
+        return driver
 
     def test_harvests_commenters_with_post_context(self):
         from cqc_lem.app.engagement import outreach as ra
-        driver = MagicMock()
+        driver = self._driver()
         with patch(f"{_OUT}._comment_items_from_thread", return_value=[self._commenter()]), \
              patch(f"{_OUT}.time.sleep"):
             signals = ra._harvest_post_commenters(driver, "https://x/feed/update/1", "Guru Gary",
@@ -236,11 +243,11 @@ class TestAdjacentAuthorHarvest:
     def test_skips_comments_with_no_author_link(self):
         from cqc_lem.app.engagement import outreach as ra
         broken = MagicMock()
-        broken.find_element.side_effect = Exception("no link")
-        nameless = self._commenter(name="")
+        broken.anchors = []                      # a card carrying no /in/ anchor at all
+        nameless = self._commenter(name="")      # avatar anchor only — href, but nobody named
         with patch(f"{_OUT}._comment_items_from_thread", return_value=[broken, nameless]), \
              patch(f"{_OUT}.time.sleep"):
-            signals = ra._harvest_post_commenters(MagicMock(), "https://x/p", "G",
+            signals = ra._harvest_post_commenters(self._driver(), "https://x/p", "G",
                                                   datetime(2026, 7, 25))
         assert signals == []
 

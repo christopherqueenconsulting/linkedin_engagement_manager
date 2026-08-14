@@ -3073,3 +3073,224 @@ class TestNewsletterEditionProbe:
         assert surfaces["newsletter_edition"]["sweep"] is False
         assert surfaces["newsletter_page"]["sweep"] is False
         assert "newsletter_edition" not in llv.SWEEP_ORDER
+
+
+@pytest.mark.unit
+class TestCommenterReadProbe:
+    """#1091: `post_engagers` recorded nothing for a month.
+
+    The probe's job is to say WHICH half lost the commenter — the reader, or the thread having
+    nobody but us in it.
+    """
+
+    class _Card:
+        def __init__(self, anchors, first_anchor_text=None, first_anchor_href=""):
+            self.anchors = anchors
+            self._text = first_anchor_text
+            self._href = first_anchor_href
+
+        def find_element(self, by, sel):
+            if self._text is None:
+                raise Exception("no /in/ anchor")
+            link = MagicMock()
+            link.text = self._text
+            link.get_attribute = lambda a: self._href if a == "href" else ""
+            return link
+
+    def _card(self, name="Jane Doe 2nd", href="https://x/in/jane", avatar_first=True):
+        anchors = ([{"href": href, "text": "", "aria": ""}] if avatar_first else [])
+        anchors.append({"href": href, "text": name, "aria": ""})
+        return self._Card(anchors,
+                          first_anchor_text="" if avatar_first else name,
+                          first_anchor_href=href)
+
+    def _driver(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = lambda script, *args: (
+            args[0].anchors if args and isinstance(getattr(args[0], "anchors", None), list)
+            else None)
+        return driver
+
+    def _patch_thread(self, monkeypatch, cards_by_post):
+        """`cards_by_post` is consumed one post per `driver.get`, in order."""
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._load_comment_thread", lambda d: None)
+        remaining = list(cards_by_post)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._comment_items_from_thread",
+                            lambda d: remaining.pop(0) if remaining else [])
+
+    def _probe(self, driver, urls, our_slug="me"):
+        return llv.probe_commenter_read(driver, urls, our_slug=our_slug, sleep=lambda s: None)
+
+    def test_the_avatar_first_card_is_reported_as_drift(self, monkeypatch):
+        """The exact #1091 shape.
+
+        The header read names the commenter, the first-anchor read does not, and that gap is the
+        month of missing rows.
+        """
+        self._patch_thread(monkeypatch, [[self._card()]])
+        report = self._probe(self._driver(), ["https://post"])
+        assert (report["cards"], report["third_party_cards"]) == (1, 1)
+        assert report["named_by_header"] == 1
+        assert report["named_by_first_anchor"] == 0
+        assert report["comments"][0]["header_name"] == "Jane Doe"
+        assert report["comments"][0]["connection_degree"] == "2nd"
+        assert report["state"] == llv.STATE_DRIFT
+        assert "silently skipped engager" in report["verdict"]
+
+    def test_both_reads_agreeing_is_ok(self, monkeypatch):
+        self._patch_thread(monkeypatch, [[self._card(avatar_first=False)]])
+        report = self._probe(self._driver(), ["https://post"])
+        assert (report["named_by_first_anchor"], report["named_by_header"]) == (1, 1)
+        assert report["state"] == llv.STATE_OK
+
+    def test_a_thread_of_only_our_own_comments_grounds_nothing(self, monkeypatch):
+        """The reading that actually came back live: two seed comments and no one else.
+
+        An empty `post_engagers` is the CORRECT reading of that post, so grading it `ok` (or
+        `drift`) would point the next fix at the wrong half.
+        """
+        self._patch_thread(monkeypatch, [[self._card(name="Me Myself", href="https://x/in/me")]])
+        report = self._probe(self._driver(), ["https://post"], our_slug="me")
+        assert (report["own_cards"], report["third_party_cards"]) == (1, 0)
+        assert report["state"] == llv.STATE_UNKNOWN
+        assert "no engager to record" in report["verdict"]
+
+    def test_a_header_read_that_names_nobody_is_drift(self, monkeypatch):
+        card = self._Card([{"href": "https://x/in/ghost", "text": "", "aria": ""}],
+                          first_anchor_text="", first_anchor_href="https://x/in/ghost")
+        self._patch_thread(monkeypatch, [[card]])
+        report = self._probe(self._driver(), ["https://post"])
+        assert report["state"] == llv.STATE_DRIFT
+        assert "readable name" in report["verdict"]
+
+    def test_a_thread_that_rendered_nothing_grounds_nothing(self, monkeypatch):
+        self._patch_thread(monkeypatch, [[]])
+        report = self._probe(self._driver(), ["https://post"])
+        assert report["state"] == llv.STATE_UNKNOWN
+        assert report["cards"] == 0
+
+    def test_no_target_grades_unknown_without_navigating(self):
+        """`unknown` is the honest grade for a post that was never opened.
+
+        A probe that navigated to an empty URL would grade the resulting error page instead.
+        """
+        driver = self._driver()
+        report = llv.probe_commenter_read(driver, [], sleep=lambda s: None)
+        assert report["state"] == llv.STATE_UNKNOWN
+        assert report["posts_read"] == 0
+        driver.get.assert_not_called()
+
+    def test_several_posts_are_read_in_one_reading(self, monkeypatch):
+        """One quiet post says nothing about the reader.
+
+        That is why the no-URL form walks the recent set the sweep itself walks.
+        """
+        self._patch_thread(monkeypatch, [[], [self._card()]])
+        driver = self._driver()
+        report = self._probe(driver, ["https://post/1", "https://post/2"])
+        assert report["posts_read"] == 2 and driver.get.call_count == 2
+        assert report["third_party_cards"] == 1
+        assert report["comments"][0]["post_url"] == "https://post/2"
+
+    def test_the_old_reads_own_failure_is_part_of_the_reading(self, monkeypatch):
+        card = self._Card([{"href": "https://x/in/jane", "text": "Jane Doe", "aria": ""}])
+        self._patch_thread(monkeypatch, [[card]])
+        report = self._probe(self._driver(), ["https://post"])
+        assert report["comments"][0]["first_anchor_error"] == "Exception"
+        assert report["comments"][0]["header_name"] == "Jane Doe"
+
+    def test_the_limit_bounds_what_one_post_costs(self, monkeypatch):
+        cards = [self._card(name=f"P{i} Person", href=f"https://x/in/p{i}") for i in range(5)]
+        self._patch_thread(monkeypatch, [cards])
+        report = llv.probe_commenter_read(self._driver(), ["https://post"], limit=2,
+                                          sleep=lambda s: None)
+        assert report["cards"] == 2
+
+
+@pytest.mark.unit
+class TestCommentAuthorChainCopy:
+    """Grounding #1091 BEFORE its fix ships needs a carried reader.
+
+    The probe is piped into the DEPLOYED image, and a carried copy that drifts grounds a read
+    nothing ships.
+    """
+
+    def test_carried_js_is_identical_to_the_shipped_reader(self):
+        from cqc_lem.utilities.linkedin import composer
+
+        assert llv._CARRIED_COMMENT_AUTHOR_ANCHORS_JS == composer._COMMENT_AUTHOR_ANCHORS_JS
+
+    def test_the_running_image_wins_when_it_has_the_reader(self):
+        from cqc_lem.utilities.linkedin import composer
+
+        reader, source = llv._comment_author_reader()
+        assert (reader, source) == (composer.comment_author_identity, "image")
+
+    def test_falls_back_to_the_carried_reader_on_an_image_that_predates_1091(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_reader(name, *a, **k):
+            if name == "cqc_lem.utilities.linkedin.composer":
+                raise ImportError("cannot import name 'comment_author_identity'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_reader)
+        reader, source = llv._comment_author_reader()
+        assert source == "script"
+        monkeypatch.undo()
+        driver = MagicMock()
+        driver.execute_script.return_value = [
+            {"href": "https://x/in/jane", "text": "", "aria": ""},
+            {"href": "https://x/in/jane", "text": "Jane Doe 1st", "aria": ""}]
+        assert reader(driver, MagicMock()) == ("Jane Doe", "https://x/in/jane", "1st")
+
+
+@pytest.mark.unit
+class TestCommenterReadTargetResolution:
+    """`--commenter-read` with no URL.
+
+    The surface only exists on the user's OWN posts, so the probe picks the posts the reply sweep
+    would have swept rather than making a human paste one.
+    """
+
+    def _db(self, monkeypatch, ids, url_for):
+        db = types.ModuleType("cqc_lem.utilities.db")
+        db.get_recent_posted_post_ids = lambda uid, days=21: ids
+        db.get_post_url_from_log_for_user = url_for
+        monkeypatch.setitem(sys.modules, "cqc_lem.utilities.db", db)
+
+    def test_picks_the_freshest_posts_that_have_a_permalink(self, monkeypatch):
+        self._db(monkeypatch, [9, 8, 7, 6],
+                 lambda uid, pid: "" if pid == 9 else f"https://li/{pid}")
+        assert llv._recent_own_post_urls(1, count=2) == ["https://li/8", "https://li/7"]
+
+    def test_no_published_post_reads_as_no_target(self, monkeypatch):
+        self._db(monkeypatch, [], lambda uid, pid: "")
+        assert llv._recent_own_post_urls(1) == []
+
+    def test_a_db_outage_is_no_target_rather_than_a_crashed_probe(self, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+
+        self._db(monkeypatch, [], _boom)
+        monkeypatch.setattr(sys.modules["cqc_lem.utilities.db"], "get_recent_posted_post_ids", _boom)
+        assert llv._recent_own_post_urls(1) == []
+
+    def test_main_reads_the_freshest_own_posts_when_no_url_is_given(self, monkeypatch, capsys):
+        clear_the_breaker(monkeypatch)
+        profile = MagicMock()
+        profile.profile_url = "https://www.linkedin.com/in/me/"
+        monkeypatch.setattr(llv, "open_probe_session",
+                            lambda fn, uid, require_debug_node=False: (MagicMock(), profile,
+                                                                       {"state": "signed_in"}))
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "_recent_own_post_urls", lambda uid: ["https://li/8"])
+        monkeypatch.setattr(llv, "probe_commenter_read",
+                            lambda d, urls, **k: {"state": llv.STATE_OK, "posts": urls,
+                                                  "our_slug": k.get("our_slug")})
+        llv.main(["--commenter-read"])
+        out = capsys.readouterr().out
+        report = json.loads(out.split(llv.REPORT_JSON_BEGIN)[1].split(llv.REPORT_JSON_END)[0])
+        assert report["commenter_read"]["posts"] == ["https://li/8"]
+        assert report["commenter_read"]["our_slug"] == "me"
