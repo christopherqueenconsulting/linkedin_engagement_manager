@@ -38,9 +38,12 @@ coverage:
         # LinkedIn Automation 94.62%. So the 86.86% was an artifact of that PR's upload set, not a
         # property of the code, and this floor sits ~5 points BELOW a baseline real tests earn.
         #
-        # Therefore: do NOT "re-baseline" this to ~87%. That would be a real cut justified by a
-        # number that has never reproduced without the e2e flag. Raise the target as the baseline
-        # rises — never lower it. The 1% threshold absorbs run-to-run flake.
+        # Therefore this was NOT "re-baselined" to the ~87% #1340 chose: on the measurement above
+        # that is a real cut justified by a number that has never reproduced without the e2e flag.
+        # That is a deviation from the decision on #1340 and it is the owner's to reverse — #1488
+        # carries the call (lower to ~87%, hold at 90%, or ratchet up toward 95.06%) and is the
+        # ONE place this number changes. Default direction: raise as the baseline rises, never
+        # lower. The 1% threshold absorbs run-to-run flake.
         target: 90%
         threshold: 1%
         informational: false

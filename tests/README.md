@@ -135,6 +135,8 @@ Per flag: `unit` 93.50%, `integration` 32.62%, whose union is that 95.06%; the `
 **zero sessions and zero lines**, so nothing is being carried forward. The 86.86% was a property of
 that PR's upload set, not of the code — so the enforced 90% floor is a ratchet ~5 points *below*
 what the two lanes earn, and it stays where it is. Raise it as the baseline rises; never lower it.
+`#1340` had chosen to re-baseline it *down* to ~87%; that measurement is why it was not, and `#1488`
+is the one place the number moves next — up toward 95.06%, held at 90%, or down to ~87% after all.
 
 A general `Test Suite` workflow used to run alongside them, invoking pytest **three times** in one
 job — `tests/unit`, then `tests/integration`, then `pytest tests/` with coverage, which re-ran both.

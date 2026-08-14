@@ -55,15 +55,26 @@ def _triggers(workflow: dict[str, Any]) -> dict[str, Any]:
 def _job_copies(job: dict[str, Any]) -> int:
     """How many times a job runs, i.e. how many uploads one upload step in it produces.
 
-    A matrix job uploads once per combination. `include` entries that add a new axis rather than
-    refine an existing one are not modelled — no workflow here uses one, and the parity assertion
-    would catch it as a mismatch rather than pass on a wrong number.
+    A matrix job uploads once per combination, minus the combinations `exclude` removes: an
+    exclude entry that names every axis drops one combination, and one that names a subset drops
+    the product of the axes it leaves unnamed.
+
+    `include` entries that add a new axis rather than refine an existing one are not modelled — no
+    workflow here uses one, and the parity assertion would catch it as a mismatch rather than pass
+    on a wrong number.
     """
     matrix = (job.get("strategy") or {}).get("matrix")
     if not isinstance(matrix, dict):
         return 1
-    axes = [v for k, v in matrix.items() if k not in {"include", "exclude"} and isinstance(v, list)]
-    combinations = math.prod(len(axis) for axis in axes) if axes else len(matrix.get("include", []))
+    axes = {k: v for k, v in matrix.items() if k not in {"include", "exclude"} and isinstance(v, list)}
+    if not axes:
+        return max(len(matrix.get("include") or []), 1)
+
+    combinations = math.prod(len(axis) for axis in axes.values())
+    for entry in matrix.get("exclude") or []:
+        if not isinstance(entry, dict):
+            continue
+        combinations -= math.prod(len(axis) for name, axis in axes.items() if name not in entry)
     return max(combinations, 1)
 
 
@@ -74,11 +85,24 @@ def _step_flags(step: dict[str, Any]) -> list[str]:
     return [flag.strip() for flag in str(raw).split(",") if flag.strip()]
 
 
-def _pull_request_uploads() -> tuple[int, set[str], list[str]]:
+def _workflow_files(directory: Path) -> list[Path]:
+    """Every workflow file GitHub would run, both spellings of the extension.
+
+    Actions reads `.yml` AND `.yaml`, so scanning one spelling would let a lane added under the
+    other upload a report this guard never counts — silently, which is the failure the guard exists
+    to make loud.
+    """
+    return sorted(set(directory.glob("*.yml")) | set(directory.glob("*.yaml")))
+
+
+def _pull_request_uploads(directory: Path = _WORKFLOWS) -> tuple[int, set[str], list[str]]:
     """Count the coverage uploads a pull request produces, and the flags they carry.
 
     Only workflows with a `pull_request` trigger count: the project status is posted on a PR, so a
     lane that never runs there can never satisfy `after_n_builds`.
+
+    Args:
+        directory: The workflow directory to scan. Defaults to the repo's own.
 
     Returns:
         The upload count, the set of flags used, and the workflow files they came from.
@@ -87,7 +111,7 @@ def _pull_request_uploads() -> tuple[int, set[str], list[str]]:
     flags: set[str] = set()
     sources: list[str] = []
 
-    for path in sorted(_WORKFLOWS.glob("*.yml")):
+    for path in _workflow_files(directory):
         workflow = _load(path)
         if "pull_request" not in _triggers(workflow):
             continue
@@ -101,6 +125,86 @@ def _pull_request_uploads() -> tuple[int, set[str], list[str]]:
                 sources.append(path.name)
 
     return uploads, flags, sources
+
+
+def _write_uploader(directory: Path, name: str, *, flag: str = "unit") -> None:
+    """Write a minimal PR-triggered workflow with one Codecov upload step."""
+    directory.joinpath(name).write_text(
+        "name: fixture\n"
+        "on:\n"
+        "  pull_request:\n"
+        "    branches: [main]\n"
+        "jobs:\n"
+        "  lane:\n"
+        "    steps:\n"
+        f"      - uses: {_UPLOAD_ACTION}@v7\n"
+        "        with:\n"
+        f"          flags: {flag}\n",
+        encoding="utf-8",
+    )
+
+
+class TestTheScanSeesEveryWorkflowGitHubWouldRun:
+    """The derivation is only a guard if nothing can upload outside its field of view."""
+
+    def test_both_extensions_are_scanned(self, tmp_path: Path):
+        _write_uploader(tmp_path, "a.yml")
+        _write_uploader(tmp_path, "b.yaml", flag="integration")
+
+        uploads, flags, sources = _pull_request_uploads(tmp_path)
+
+        assert uploads == 2, "a lane added as .yaml uploads too — GitHub reads both spellings"
+        assert flags == {"unit", "integration"}
+        assert sorted(sources) == ["a.yml", "b.yaml"]
+
+    def test_a_workflow_without_a_pull_request_trigger_is_ignored(self, tmp_path: Path):
+        tmp_path.joinpath("nightly.yml").write_text(
+            "name: nightly\non:\n  schedule:\n    - cron: '0 3 * * *'\n"
+            "jobs:\n  lane:\n    steps:\n"
+            f"      - uses: {_UPLOAD_ACTION}@v7\n        with:\n          flags: slow\n",
+            encoding="utf-8",
+        )
+
+        assert _pull_request_uploads(tmp_path) == (0, set(), [])
+
+
+class TestJobCopies:
+    """`after_n_builds` counts uploads, so one upload step in a matrix job is several uploads."""
+
+    def test_a_plain_job_uploads_once(self):
+        assert _job_copies({"steps": []}) == 1
+
+    def test_a_matrix_multiplies_its_axes(self):
+        job = {"strategy": {"matrix": {"shard": [1, 2], "python": ["3.12", "3.13"]}}}
+        assert _job_copies(job) == 4
+
+    def test_a_fully_specified_exclude_removes_one_combination(self):
+        job = {
+            "strategy": {
+                "matrix": {
+                    "shard": [1, 2],
+                    "python": ["3.12", "3.13"],
+                    "exclude": [{"shard": 2, "python": "3.13"}],
+                }
+            }
+        }
+        assert _job_copies(job) == 3, "an ignored exclude overcounts and blames codecov.yml"
+
+    def test_a_partial_exclude_removes_the_axes_it_leaves_unnamed(self):
+        job = {
+            "strategy": {
+                "matrix": {
+                    "shard": [1, 2],
+                    "python": ["3.12", "3.13"],
+                    "exclude": [{"python": "3.13"}],
+                }
+            }
+        }
+        assert _job_copies(job) == 2
+
+    def test_an_include_only_matrix_counts_its_entries(self):
+        job = {"strategy": {"matrix": {"include": [{"os": "ubuntu"}, {"os": "macos"}]}}}
+        assert _job_copies(job) == 2
 
 
 class TestAfterNBuildsTracksTheUploads:
@@ -156,6 +260,8 @@ class TestTheProjectFloorIsNotQuietlyLowered:
         target = float(str(project["target"]).rstrip("%"))
         assert target >= 90, (
             f"project target dropped to {target}%. The two-lane baseline measured 95.06% with the "
-            "e2e lane already deleted, so this is a real cut, not a re-baseline."
+            "e2e lane already deleted, so this is a real cut, not a re-baseline. Lowering it is the "
+            "owner's call on #1488 — take it there and move this floor in the same commit, so the "
+            "ratchet cannot be walked back silently."
         )
         assert project["informational"] is False, "the floor only means something if it is enforced"
