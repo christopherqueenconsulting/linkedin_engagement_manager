@@ -63,6 +63,7 @@ from cqc_lem.utilities.ai.video_models import (
     supports_audio,
 )
 from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
+from cqc_lem.utilities.carousel_creator import CAROUSEL_SLIDE_BODY_MAX_CHARS
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
 from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, VIDEO_MOTION_LINT_HOLD, flag_enabled
 from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
@@ -3529,7 +3530,7 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
 Create two things and return them as a single JSON object with these top-level keys:
 1. "post_text": A compelling LinkedIn post (about 1300-2000 characters) that introduces the carousel. {_hashtag_rule}
    In the JSON string, separate paragraphs with a real "\\n\\n" so it is scannable, not one block. {_CAROUSEL_FORMAT_DIRECTIVE}
-2. "carousel": A JSON object matching the {schema_hint}. Each slide's "title" should be 3-8 words. Each slide's "content" should be 1-3 engaging sentences (max 200 chars).
+2. "carousel": A JSON object matching the {schema_hint}. Each slide's "title" should be 3-8 words. Each slide's "content" should be 1-3 engaging sentences (max {CAROUSEL_SLIDE_BODY_MAX_CHARS} chars) — this is what the slide image can hold at full size, so say it in full inside that budget rather than trailing off.
 
 Return ONLY valid JSON. No explanation, no markdown fences."""
 

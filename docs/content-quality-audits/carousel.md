@@ -139,6 +139,27 @@ Pillow and `create_ppt` writes a separate downloadable deck. The fix belongs in 
 `_wrap_text` and in the prompt's character budget, not in the PPTX path. Measurements and
 before/after renders are attached to that issue.
 
+**FIXED in #1375.** `fit_text_block` now sits between the wrap and the paint on every block of every
+layout: it re-wraps at a smaller size until the whole string fits the SAME pixel box the layout
+reserved (down to `CAROUSEL_MIN_FONT_SCALE`, 0.7), and only then truncates — with
+`CAROUSEL_TRUNCATION_MARKER` and a `log_warning`. `_draw_block` no longer takes a line cap, so the
+silent-drop path is gone rather than guarded. The writer side reads the same constant the renderer
+honours, `CAROUSEL_SLIDE_BODY_MAX_CHARS` (**150**), which is what `generate_carousel_content` states
+in the prompt. Per the addendum above, that number is not copied out of the capacity table: it is
+VERIFIED by rendering — `tests/unit/utilities/test_carousel_text_fit.py` renders a body of exactly
+that length on all five templates in all three slide roles, with the photo band present, and asserts
+the painted strings still contain the whole body. The four slides §5 recorded shipping clipped are
+in the same test and render intact.
+
+A character budget is not a pixel budget, so that test renders the budget in FOUR word shapes (prose,
+all-caps, long-word, short-word): the same 150 characters set ~30% wider in caps, and three blocks
+whose line caps were too tight to honour the budget at any shape — `bold_listicle`'s cover and CTA
+subtitles (3 lines, now 4) and `stat_reveal`'s banded body (2 lines, now 3) — only showed up under
+them. Those caps had no geometric reason to be that tight: with a body block ending ~590px the
+`stat_reveal` photo band starts at 660px, and the cover/CTA subtitles end ~830px against a footer at
+~1000px. A cap here is a text budget, not a layout edge — raise it rather than let a within-budget
+body degrade.
+
 ### F2 — The renderer flattens the line structure the deck was written with → **#1510**
 
 `_wrap_text` starts with `text.split()`, which splits on newlines as well as spaces. A slide body
