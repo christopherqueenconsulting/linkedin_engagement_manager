@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.151.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.151.0...v0.151.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **agents:** detect a unit still running stale lemd code, and name both in the deploy step (closes [#1412](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1412)) ([#1552](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1552)) ([bbd5085](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bbd5085c72e3ebd790f4f453b1af8f8af1898c34))
+* **groups:** reconcile stored user_groups against the live directory ([#1548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1548)) ([fa8eb5f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fa8eb5fad21ea46cc141ac916c95b8384a7670d6))
+* **observability:** disarm PostHog exception autocapture under pytest (closes [#1498](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1498)) ([#1549](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1549)) ([6c5fa10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6c5fa10f2cf4aba1fe96769d5f1d9b4b174db6c1))
+* **tests:** stop the unit lane opening a real MySQL connection (closes [#1496](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1496)) ([#1550](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1550)) ([4975959](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4975959dca937ae1380777ab13e473be4190422c))
+
 ## [0.151.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.150.0...v0.151.0) (2026-08-14)
 
 
