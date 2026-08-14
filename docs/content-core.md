@@ -232,6 +232,37 @@ hold. The wordbank is `content_alignment.AI_TELL_WORDS`, NOT a second copy. The 
 honours the same lead-magnet `exempt_keyword` `strip_engagement_bait` does, or every "Comment
 YES" CTA would hold its own post.
 
+### Newsletter structural floor (issue #1435)
+
+The same shape applied to a NEWSLETTER's structure rather than its wording, and the reason it
+exists is measured: #1284 shipped the floor as writer-side wording, and an A/B with only the
+contract swapped came back with LONGER paragraphs than the control. So the floor got a checking
+side.
+
+`content_framework.newsletter_structure_report()` grades a finished body on the four measures
+`newsletter_writing_directive()` states — opening line inside `LINKEDIN_FOLD_CHARS`, no paragraph
+past `DWELL_PARAGRAPH_MAX_CHARS`, at least one list block, `NEWSLETTER_WORD_FLOOR`–`CEILING` words.
+It is **not a second grader**: every measurement is read off `dwell_report()`, and the ONLY
+newsletter-specific threshold is the word band, because an edition's length target is not a feed
+post's.
+
+Two halves, split by what code can actually do:
+
+- **The wall-of-text paragraph is repaired deterministically.** `newsletter_shape_body()` reflows
+  it with the same `enforce_post_readability` pass `shape_for_dwell` uses, with the length cap made
+  unreachable so an edition is never trimmed. Nothing is asked of the model, so nothing is traded
+  away — on the first A/B run a retry told to split its paragraphs *and* hold the word floor spent
+  the floor to buy the split (mean 768 → 565 words).
+- **What a reflow cannot write** — the opening line, the list block, the length — is fed into the
+  SAME bounded regeneration the slop lint uses, sharing its `SLOP_LINT_MAX_ATTEMPTS` budget, with a
+  targeted directive that names the measured number and its repair.
+
+**It can never hold or pause an edition.** A still-failing edition is returned for the review queue
+with its reasons at **INFO** — not WARNING, because on the real corpus this is the common case and a
+recurring warning would file a grouped defect against working behaviour. `NEWSLETTER_STRUCTURE_ENABLED=off`
+restores the exact prior behaviour. Measured cost and the re-run A/B:
+`docs/content-quality-audits/newsletter.md` §4a.
+
 ### Motion-prompt lint (issue #1277)
 
 The same layer for VIDEO. `motion_prompt_report()` (in `slop_lint.py`, not a video-only module)

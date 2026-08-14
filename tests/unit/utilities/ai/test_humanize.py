@@ -532,6 +532,9 @@ class TestGeneratorsRouteThroughHumanize:
 
     def test_newsletter_body_routes_through(self, monkeypatch):
         monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        # The #1435 structural checking side would spend a regeneration on this stub body, and the
+        # humanize pass runs once per draft — this test counts that pass, not the retry budget.
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
         from cqc_lem.utilities.ai import ai_helper
         edition_json = '{"title": "T", "subtitle": "S", "body": "raw newsletter body"}'
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(edition_json)), \

@@ -234,6 +234,71 @@ that function). Round 2 was not needed: the finding is a deterministic fix, not 
 
 The loop stopped after one round. Nothing is parked `needs-human`.
 
+### 4a. #1435 — the checking side, measured
+
+The A/B above was re-run against the checking side #1435 shipped, at the ≥4 editions per arm that
+issue asked for. Same harness discipline as the round-1 run, now committed so it is repeatable:
+`scripts/measure_newsletter_structure_ab.py`. Four fixed subjects, one blueprint per subject from
+`select_blueprint("newsletter")`, one profile synthesis, seeded RNG so both arms draw the same
+temperatures, and the two arms for a subject generated back to back. The arms differ by ONE
+environment variable — `NEWSLETTER_STRUCTURE_ENABLED` — and nothing else.
+
+| measure (n=4 per arm) | control (checking side off) | treatment (#1435) |
+|---|---|---|
+| words, mean | 791 | **845** |
+| inside the 800-1200 band | 2 of 4 | **3 of 4** |
+| longest paragraph, mean | 432 | **307** |
+| longest paragraph, worst | 490 | **356** |
+| no paragraph over 300 | **0 of 4** | **3 of 4** |
+| opening line ≤210 | 2 of 4 | **3 of 4** |
+| list block present | 3 of 4 | 3 of 4 |
+| all four floors passed | 0 of 4 | **2 of 4** |
+| dwell score, mean | 68 | **76** |
+| slop HARD, total | 3 | 3 |
+| drafts per edition | 1.50 | 1.75 |
+
+**Cost, measured rather than assumed: +0.25 drafts per edition.** A draft is three calls — one
+`lem-complex` (the edition), one `lem-simple` (the title de-hype) and one `lem-medium` (the body
+humanization) — so the checking side cost 21 calls across 4 editions against the control's 18. The
+cap is unchanged: both graders share the ONE `SLOP_LINT_MAX_ATTEMPTS` budget (default 2 drafts), so
+an edition can never spend more than it could before this change. The worst case is that every
+edition now uses the retry the slop lint alone would sometimes have skipped.
+
+**Round 1 of this run said something the design had to answer.** Graded with the retry carrying all
+four repairs, the treatment fixed the fold (2 of 4 → 4 of 4) and paid for it in LENGTH: mean words
+fell from 768 to 565 and 0 of 4 editions stayed in the band. A regeneration told to split its
+paragraphs *and* hold 800-1200 words trades the second for the first. Two changes followed, and the
+table above is the re-run:
+
+- **The wall-of-text repair moved into code.** `content_framework.newsletter_shape_body()` reflows
+  an over-long paragraph deterministically — the same `enforce_post_readability` reflow
+  `shape_for_dwell` uses for posts, with the length cap made unreachable so an edition can never be
+  trimmed. The retry is left to carry only what code cannot write: the opening line, the list block,
+  and the length. This is the audit's own lesson applied to itself.
+- **The retry states the floor it must not spend.** `newsletter_structure_directive()` closes with
+  "do NOT shorten the edition to satisfy the repairs above".
+
+The first-draft records show the reflow doing exactly that work with no generation at all: both arms
+wrote the same first drafts (identical 756-word mean, same seeds), and the treatment's were already
+3 of 4 wall-free where the control's were 0 of 4.
+
+**What did NOT move, stated plainly.** The list block is 3 of 4 in both arms — on this n the retry
+did not add one, and nothing here can. That row also carried a grader gap, found in review and fixed
+here: the newsletter writer prompt asks for list items `beginning with a literal "-> "`, and
+`sanitize_for_linkedin` rewrites only `- `/`* ` into a bullet, so an arrow list reached `has_list`
+verbatim and read as NO list at all. `_LIST_LINE_RE` now recognises the arrow forms, so an edition
+written exactly as the contract asks no longer spends a shared draft on a floor it already met — the
+3-of-4 above is therefore a FLOOR on the real number, not a measurement of it. Two of four treatment editions still miss a floor, which is
+the expected outcome of a one-retry budget, and both were kept and returned for review. Slop HARD is
+unchanged (3 in each arm), as it should be: the structural side shares the budget but grades
+something else. And the reflow only reaches SINGLE-LINE prose blocks, so a 356-character paragraph
+that already contains a line break survives it — the one treatment edition still over the ceiling.
+
+Nothing here holds or pauses an edition: a still-failing edition is returned with its reasons at
+INFO. Not WARNING — this is the common case on the real corpus (9 of 10 editions carried a wall),
+and the escalation contract in `src/cqc_lem/utilities/CLAUDE.md` says a recurring warning for
+working behaviour files a defect against it.
+
 ---
 
 ## 5. What shipped in this PR
@@ -277,7 +342,7 @@ Filed by this audit:
 - **#1433** — calibrate a newsletter self-similarity ceiling now that the dimension is measured.
 - **#1434** — the newsletter slop-lint retry budget clears HARD checks on 3 of 10 editions.
 - **#1435** — give the structural floor a checking side; the A/B above says the wording alone does
-  not bind.
+  not bind. **Closed** — the checking side and its re-run A/B are §4a.
 
 Still open from #1142: **#1286** (blog-alignment fidelity gate), **#1287** (cover-body cohesion
 gate), **#1288** (subscribe destination). **#1285** (scaffold severity) closed while this audit was
