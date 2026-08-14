@@ -227,3 +227,9 @@ src/cqc_lem/ui/dist/
 .last_good_tag
 .active_color
 deploy/
+
+# scripts/triage_issues.py runtime output — dated reports + per-issue memoization state, written
+# on the box by both the daily sweep and the hourly timer. Never tracked; never had history before
+# either, this just makes that explicit.
+docs/triage/
+state/
