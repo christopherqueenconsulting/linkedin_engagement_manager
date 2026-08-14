@@ -142,3 +142,16 @@ class TestNewsletterCoverPendingEmail:
         with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
             send_newsletter_cover_pending_email("u@e.com", "", "tomorrow")
         assert "Your next edition" in dispatch.call_args[0][1]
+
+    def test_a_title_with_markup_characters_cannot_break_the_body(self):
+        # Titles are LLM-authored, so '&' and angle brackets reach this template unfiltered. Raw,
+        # everything from '<' to the next '>' renders as a bogus tag and the sentence loses its
+        # subject; the subject line is plain text and keeps the title as written.
+        from cqc_lem.utilities.email import send_newsletter_cover_pending_email
+        title = 'Q3 <b>Recap</b> & "More"'
+        with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
+            send_newsletter_cover_pending_email("u@e.com", title, "tomorrow")
+        subject, html = dispatch.call_args[0][1], dispatch.call_args[0][2]
+        assert title in subject
+        assert "<b>Recap</b>" not in html
+        assert "Q3 &lt;b&gt;Recap&lt;/b&gt; &amp; &quot;More&quot;" in html

@@ -471,15 +471,21 @@ def send_newsletter_cover_pending_email(to_email: str, edition_title: str, sched
     """
     url = queue_url or _newsletter_queue_url()
     title = edition_title or "Your next edition"
+    # The title is LLM-authored and the slot string is rendered from DB data, so both are escaped
+    # before they reach the markup — an '&' or an angle bracket in a title otherwise truncates the
+    # sentence it sits in. The subject is plain text and takes the raw title.
+    safe_title = html_escape(title)
+    safe_when = html_escape(str(scheduled_for))
+    safe_url = html_escape(url)
     html = f"""
     <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
     <h2>Your newsletter cover is waiting for you</h2>
-    <p>We generated a cover image for <strong>{title}</strong>, but a generated cover is a public
-    brand asset so it only goes out once you've looked at it.</p>
-    <p>That edition publishes <strong>{scheduled_for}</strong>. If the cover isn't approved by
+    <p>We generated a cover image for <strong>{safe_title}</strong>, but a generated cover is a
+    public brand asset so it only goes out once you've looked at it.</p>
+    <p>That edition publishes <strong>{safe_when}</strong>. If the cover isn't approved by
     then, it goes out <strong>without a cover image</strong> — the edition itself still
     publishes on time.</p>
-    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    <p><a href="{safe_url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review the cover</a></p>
     <p style="color:#888;font-size:12px;">Open the edition in your newsletter queue and use
     <strong>Approve cover</strong> — or <strong>Remove cover</strong> if you'd rather publish
