@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from cqc_lem.platform.db.enums import PostType  # noqa: E402
 from cqc_lem.utilities.content_quality import (  # noqa: E402
     SURFACE_POST,
+    VIDEO_PROBE_MISSING,
     VIDEO_PROBE_OK,
     resolve_local_video_path,
     score_item,
@@ -59,6 +60,17 @@ DEFAULT_FRAMES_DIR = os.path.join("docs", "content-quality-audits", "assets", "1
 OPEN_FRAME_SECONDS = 0.5
 CLOSE_FRAME_BACKOFF_SECONDS = 0.3
 FRAME_TIMEOUT_SECONDS = 30
+# The 2026-08-14 production run sampled 10 shipped video posts and graded none of them: every
+# stored MP4 was gone. That is the DESIGNED behaviour, not a broken mount — `purge_post_assets`
+# (#148) deletes the local copy the moment LinkedIn re-hosts the media — and a report that prints
+# "10 missing" without saying so sends the next reader to check volume permissions for an afternoon.
+PURGE_HINT = (
+    "NOTE: nothing was gradable and every sampled asset is missing on disk. Expected, not a mount\n"
+    "  fault: purge_post_assets (#148, 2026-06-25) deletes a post's stored MP4 as soon as it\n"
+    "  publishes, so a SHIPPED post's asset only survives on renders that predate that purge —\n"
+    "  which also predate the #1293 aspect fix and the #1278 caption burn. Grading current-pipeline\n"
+    "  video needs the asset measures recorded at STORE time: issue #1517."
+)
 
 
 def video_posts(posts: Optional[Iterable[Mapping[str, Any]]], limit: int = MAX_SAMPLES) -> list:
@@ -211,6 +223,20 @@ def collect(user_ids: Sequence[int], limit: int, frames_dir: str,
     return summarize(rows[:max(0, limit)])
 
 
+def purge_hint(summary: Mapping[str, Any]) -> Optional[str]:
+    """`PURGE_HINT` when an empty scorecard is explained by the publish-time asset purge, else None.
+
+    Only fires when NOTHING was gradable and at least one asset probed `missing`: a corpus that
+    graded something has a scorecard to read, and a run that failed for another reason (empty probe,
+    unreadable file) must not be handed this explanation.
+    """
+    if summary.get("gradable"):
+        return None
+    if not int((summary.get("asset_probes") or {}).get(VIDEO_PROBE_MISSING, 0) or 0):
+        return None
+    return PURGE_HINT
+
+
 def _render(summary: Mapping[str, Any]) -> str:
     lines = ["Shipped native-video corpus sample (issue #1363)", ""]
     gradable = summary["gradable"]
@@ -245,6 +271,9 @@ def _render(summary: Mapping[str, Any]) -> str:
         lines.append(f"  {frame}")
     if not summary["frames"]:
         lines.append("  — none — (no ffmpeg, or no readable local asset)")
+    hint = purge_hint(summary)
+    if hint:
+        lines.extend(["", hint])
     return "\n".join(lines)
 
 

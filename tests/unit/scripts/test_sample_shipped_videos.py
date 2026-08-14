@@ -196,6 +196,37 @@ class TestSummarize:
         assert "NOT ENOUGH" in tool._render(tool.summarize([]))
 
 
+class TestPurgeHint:
+    """The 2026-08-14 production run: 10 sampled, 0 gradable, 10 assets missing on disk.
+
+    An all-missing corpus is what `purge_post_assets` produces on purpose, so the report has to
+    name that cause — and must NOT name it when something else emptied the scorecard.
+    """
+
+    def _row(self, post_id, **overrides):
+        return TestSummarize()._row(post_id, **overrides)
+
+    def test_nothing_gradable_and_every_asset_missing_names_the_purge(self, tool):
+        summary = tool.summarize([self._row(i, asset_available=False, video_asset_probe="missing")
+                                  for i in range(10)])
+        assert tool.purge_hint(summary) == tool.PURGE_HINT
+        rendered = tool._render(summary)
+        assert "purge_post_assets" in rendered and "#1517" in rendered
+
+    def test_a_corpus_that_graded_something_gets_no_hint(self, tool):
+        summary = tool.summarize([self._row(1),
+                                  self._row(2, asset_available=False,
+                                            video_asset_probe="missing")])
+        assert tool.purge_hint(summary) is None
+        assert "purge_post_assets" not in tool._render(summary)
+
+    def test_an_empty_or_otherwise_unreadable_corpus_is_not_blamed_on_the_purge(self, tool):
+        assert tool.purge_hint(tool.summarize([])) is None
+        unreadable = tool.summarize([self._row(1, asset_available=False,
+                                               video_asset_probe="unreadable")])
+        assert tool.purge_hint(unreadable) is None
+
+
 class TestCollect:
     def test_reads_through_the_facade_and_samples_newest_first(self, tool, monkeypatch):
         from cqc_lem.utilities import db
