@@ -61,41 +61,41 @@ export default function BrandShowcase() {
   if (!enabled || posts.length === 0) return null
 
   return (
-    <section id="brand-showcase" className="py-16 px-4 bg-gray-50">
+    <section id="brand-showcase" className="py-16 px-4 bg-surface-50">
       <div className="max-w-5xl mx-auto">
-        <h2 className="text-3xl font-bold text-center text-gray-900 mb-3">
+        <h2 className="text-headline sm:text-display font-bold text-center text-ink-900 mb-3">
           Made with LEM
         </h2>
-        <p className="text-center text-gray-600 mb-12 max-w-2xl mx-auto">
+        <p className="text-center text-ink-600 mb-12 max-w-2xl mx-auto">
           Real posts written and scheduled by LEM, running on our own brand account.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {posts.map((post) => (
             <article
               key={post.id}
-              className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col"
+              className="bg-white rounded-card border border-line-200 shadow-card p-5 flex flex-col"
             >
-              <p className="text-gray-800 text-sm leading-relaxed flex-1 whitespace-pre-line">
+              <p className="text-ink-900 text-sm leading-relaxed flex-1 whitespace-pre-line">
                 {truncateContent(post.content)}
               </p>
-              <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-3 gap-2 text-center">
+              <div className="mt-4 pt-4 border-t border-line-200 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <div className="text-lg font-bold text-blue-600">
+                  <div className="text-lg font-bold text-brand-600">
                     {formatStoredNumber(post.reactions) ?? '—'}
                   </div>
-                  <div className="text-xs text-gray-500">reactions</div>
+                  <div className="text-xs text-ink-500">reactions</div>
                 </div>
                 <div>
-                  <div className="text-lg font-bold text-blue-600">
+                  <div className="text-lg font-bold text-brand-600">
                     {formatStoredNumber(post.comments) ?? '—'}
                   </div>
-                  <div className="text-xs text-gray-500">comments</div>
+                  <div className="text-xs text-ink-500">comments</div>
                 </div>
                 <div>
-                  <div className="text-lg font-bold text-blue-600">
+                  <div className="text-lg font-bold text-brand-600">
                     {formatStoredNumber(post.reposts) ?? '—'}
                   </div>
-                  <div className="text-xs text-gray-500">reposts</div>
+                  <div className="text-xs text-ink-500">reposts</div>
                 </div>
               </div>
               {post.post_url && (
@@ -103,7 +103,7 @@ export default function BrandShowcase() {
                   href={post.post_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-4 text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                  className="mt-4 text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
                 >
                   View on LinkedIn →
                 </a>

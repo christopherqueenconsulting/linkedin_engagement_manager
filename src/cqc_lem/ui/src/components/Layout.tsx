@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import AccountReadinessBanner from './AccountReadinessBanner'
@@ -117,7 +118,13 @@ export default function Layout() {
             {/* "You asked, we shipped" + its micro-CSAT — renders only when a fix this user
                 reported has shipped and they haven't acknowledged it yet (issue #502) */}
             {user && <ShippedNotice />}
-            <Outlet />
+            {/* The app's routes are lazy since issue #1300, and a lazy route with no boundary
+                above it throws instead of suspending. This one sits INSIDE the chrome on purpose:
+                a boundary further up would blank the nav and the footer for the frame a chunk
+                takes to arrive. */}
+            <Suspense fallback={<div className="h-40" aria-busy="true" />}>
+              <Outlet />
+            </Suspense>
           </>
         )}
       </main>

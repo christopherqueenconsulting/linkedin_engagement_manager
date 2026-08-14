@@ -30,6 +30,10 @@ compose/local/linkedinpreview/
 # The Python builder stage gets the compiled dist via COPY --from=ui-builder.
 # node_modules must be excluded to prevent gigabytes from leaking into the build context.
 src/cqc_lem/ui/node_modules/
+# The owner-authored brand source package (PR #1294) — 6.1 MB of PNG/PDF/ICO masters. The files the
+# SPA actually serves were copied into src/cqc_lem/ui/public/brand/, and the ui-builder stage only
+# copies src/cqc_lem/ui, so nothing in the image needs the masters.
+logo/
 
 # Development and IDE
 .git/

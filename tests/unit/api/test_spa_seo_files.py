@@ -73,7 +73,7 @@ def dist(tmp_path: Path) -> Path:
         f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset><url>'
         f"<loc>{BASE_URL_PLACEHOLDER}/</loc></url></urlset>\n"
     )
-    (tmp_path / "favicon.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    (tmp_path / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
     (tmp_path / "brand").mkdir()
     (tmp_path / "brand" / "og.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     return tmp_path
@@ -153,10 +153,11 @@ class TestServedFiles:
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
 
-    def test_favicon_is_served_as_svg_not_html(self, dist):
-        response = _client(dist).get("/favicon.svg")
+    def test_favicon_is_served_as_an_icon_not_html(self, dist):
+        # The brand package has no SVG (issue #1300), so the mark ships as an .ico.
+        response = _client(dist).get("/favicon.ico")
         assert response.status_code == 200
-        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.headers["content-type"].startswith("image/x-icon")
 
     def test_a_missing_file_404s_instead_of_returning_the_shell(self, tmp_path):
         response = _client(tmp_path).get("/robots.txt")
@@ -225,7 +226,7 @@ class TestServeSpa:
         (dist / "brand" / "og.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         (dist / "robots.txt").write_text("User-agent: *\nAllow: /\n")
         (dist / "sitemap.xml").write_text('<?xml version="1.0"?><urlset/>')
-        (dist / "favicon.svg").write_text("<svg/>")
+        (dist / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
         (dist / "index.html").write_text(
             '<meta property="og:image" content="%VITE_PUBLIC_BASE_URL%/brand/og.png">'
         )
@@ -253,7 +254,7 @@ class TestServeSpa:
         (dist / "brand" / "og.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         (dist / "robots.txt").write_text("User-agent: *\nAllow: /\n")
         (dist / "sitemap.xml").write_text('<?xml version="1.0"?><urlset/>')
-        (dist / "favicon.svg").write_text("<svg/>")
+        (dist / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
         (dist / "index.html").write_text(
             '<meta property="og:image" content="%VITE_PUBLIC_BASE_URL%/brand/og.png">'
         )

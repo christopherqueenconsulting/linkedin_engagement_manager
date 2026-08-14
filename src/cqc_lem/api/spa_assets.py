@@ -49,7 +49,9 @@ NO_STORE_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 PUBLIC_ROOT_FILES: Dict[str, str] = {
     "robots.txt": "text/plain; charset=utf-8",
     "sitemap.xml": "application/xml",
-    "favicon.svg": "image/svg+xml",
+    # The brand package ships raster only (PR #1294) — PNG, PDF and ICO, no SVG — so since issue
+    # #1300 the mark is an .ico rather than the purple template favicon.svg it replaced.
+    "favicon.ico": "image/x-icon",
 }
 
 # Vite copies public/ VERBATIM — no env substitution reaches it — but a sitemap `<loc>` and a

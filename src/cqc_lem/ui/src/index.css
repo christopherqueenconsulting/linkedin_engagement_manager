@@ -1,5 +1,66 @@
 @import "tailwindcss";
 
+/* The ONE place brand colour is defined (issue #1300). The four source values come from the
+   owner-authored package in `logo/06 Color Palette/LEM_Brand_Palette.txt` (PR #1294); everything
+   else here is derived from them and contrast-checked. `utils/brandTokens.ts` mirrors these hexes
+   for the tests — brandTokens.test.ts fails the build if the two ever disagree, or if a pair the
+   page declares drops below its WCAG threshold.
+
+   Two traps, both measured and both permanent:
+   - brand-600 on ink-900 is 1.83:1. Primary blue is NEVER a foreground on charcoal — dark
+     sections use brand-300.
+   - brand-300 on white is 1.93:1. It is a DARK-SURFACE-ONLY token. Do not "fix" it by changing
+     the value; that would change the brand blue on the surface it was chosen for. */
+@theme {
+  /* Brand blue — #054DB1 is the sampled Primary Blue. */
+  --color-brand-50: #eaf2fd;
+  --color-brand-100: #d6e4fb;
+  --color-brand-300: #8fbef7;
+  --color-brand-600: #054db1;
+  --color-brand-700: #043e8e;
+
+  /* Ink — #1F2C37 is the sampled Primary Charcoal; the lighter steps are derived body/muted text
+     and every one of them clears 4.5:1 on both white and surface-50. There is deliberately no
+     step below ink-500: the next one down measured 4.41:1 and would have been a failing token
+     sitting in the palette waiting to be used. */
+  --color-ink-500: #5a6b78;
+  --color-ink-600: #41525f;
+  --color-ink-700: #33424f;
+  --color-ink-900: #1f2c37;
+
+  /* Surfaces — #F9F9F9 is the sampled Light Background. */
+  --color-surface-50: #f9f9f9;
+  --color-surface-100: #f1f3f5;
+
+  /* Hairlines and control borders. Decorative separators only: anything that has to be SEEN to be
+     understood (a focus ring, a selected state) uses brand-600, which clears 3:1 on both light
+     surfaces. */
+  --color-line-200: #dde3e8;
+  --color-line-300: #c3cdd6;
+
+  /* Semantic colour. The brand package has none, so these are derived and contrast-checked rather
+     than borrowed from Tailwind's defaults. The -300 steps are for dark surfaces only. */
+  --color-success-700: #0b6b3a;
+  --color-success-300: #7fd3a5;
+  --color-warning-700: #8a5a00;
+  --color-warning-300: #f0c46a;
+  --color-danger-700: #a32014;
+  --color-danger-300: #f5a79b;
+
+  /* Type scale, radius and shadow — defined once so a marketing section cannot invent its own. */
+  --text-display: 2.75rem;
+  --text-display--line-height: 1.1;
+  --text-display--letter-spacing: -0.02em;
+  --text-headline: 1.875rem;
+  --text-headline--line-height: 1.2;
+  --text-headline--letter-spacing: -0.01em;
+  --text-title: 1.25rem;
+  --text-title--line-height: 1.35;
+
+  --radius-card: 0.875rem;
+  --shadow-card: 0 1px 2px rgb(31 44 55 / 0.06), 0 8px 24px rgb(31 44 55 / 0.06);
+}
+
 body {
   margin: 0;
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
@@ -10,6 +71,15 @@ body {
 
 #root {
   min-height: 100vh;
+}
+
+/* A visible focus ring everywhere, in the colour of whatever the element is already drawing with
+   (issue #1300). `currentColor` rather than a fixed brand value on purpose: the ring lands on the
+   surrounding surface, and the one fixed colour that reads on white is the same one that measures
+   1.83:1 on the charcoal bands. Anything with its own `focus-visible:` utilities overrides this. */
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 /* A scroll container whose scrollbar would cost more room than it earns — the 56px nav bar on a
@@ -35,5 +105,19 @@ body {
 
   @supports (height: 1dvh) {
     max-height: 90dvh;
+  }
+}
+
+/* The marketing page's reveal-on-scroll animation, and the one place it is honoured that someone
+   asked us not to animate (issue #1300). Written as a global rather than per-component because a
+   new section that forgets `motion-safe:` is exactly the regression this guards. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

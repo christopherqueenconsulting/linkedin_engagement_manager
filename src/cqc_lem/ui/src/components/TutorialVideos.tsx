@@ -47,10 +47,10 @@ export default function TutorialVideos() {
   return (
     <section id="tutorials" className="py-16 px-4 bg-white">
       <div className="max-w-5xl mx-auto">
-        <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">See it in action</h2>
+        <h2 className="text-headline sm:text-display font-bold text-center text-ink-900 mb-12">See it in action</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           {videos.map((video) => (
-            <div key={video.flow} className="rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <div key={video.flow} className="rounded-card border border-line-200 shadow-card overflow-hidden">
               <video
                 className="w-full bg-black"
                 controls
@@ -63,16 +63,16 @@ export default function TutorialVideos() {
                 )}
               </video>
               <div className="p-5">
-                <h3 className="font-bold text-gray-800 mb-1">{video.title}</h3>
+                <h3 className="font-bold text-ink-900 mb-1">{video.title}</h3>
                 {video.description && (
-                  <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{video.description}</p>
+                  <p className="text-sm text-ink-600 leading-relaxed line-clamp-3">{video.description}</p>
                 )}
                 {video.youtube_url && (
                   <a
                     href={video.youtube_url}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-block mt-3 text-sm font-medium text-blue-600 hover:underline"
+                    className="inline-block mt-3 text-sm font-medium text-brand-600 hover:underline"
                   >
                     Watch on YouTube →
                   </a>

@@ -4,23 +4,17 @@ export default function TermsAndConditions() {
   const year = new Date().getFullYear()
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 flex items-center justify-between h-14">
-          <Link to="/" className="font-bold text-blue-600 text-lg">
-            LEM
-          </Link>
-          <Link
-            to="/"
-            className="text-sm font-medium text-gray-600 hover:text-gray-900"
-          >
-            Back to home
-          </Link>
-        </div>
-      </nav>
-
-      <main className="max-w-3xl mx-auto px-4 py-12">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Terms and Conditions</h1>
+    // No nav, no <main> and no footer of its own (issue #1300): this page always renders inside a
+    // chrome that supplies all three — the marketing one when nobody is signed in, the app's
+    // `Layout` when someone is. Drawing them here too gave the page two stacked `sticky top-0`
+    // bars, two footers and a <main> nested inside a <main>, which is the exact defect the front
+    // page was rebuilt to remove.
+    <div className="bg-gray-50">
+      <div className="max-w-3xl mx-auto px-4 py-12">
+        <Link to="/" className="text-sm font-medium text-blue-600 hover:underline">
+          Back to home
+        </Link>
+        <h1 className="mt-6 text-3xl font-bold text-gray-900 mb-2">Terms and Conditions</h1>
         <p className="text-sm text-gray-500 mb-8">Last updated: {year}-07-30</p>
 
         <div className="space-y-8 text-gray-700 leading-relaxed">
@@ -137,13 +131,7 @@ export default function TermsAndConditions() {
             </p>
           </section>
         </div>
-      </main>
-
-      <footer className="bg-white border-t border-gray-200 mt-12">
-        <div className="max-w-5xl mx-auto px-4 py-6 text-center text-sm text-gray-500">
-          © {year} Christopher Queen Consulting. All rights reserved.
-        </div>
-      </footer>
+      </div>
     </div>
   )
 }
