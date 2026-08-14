@@ -410,9 +410,16 @@ written for the hold being ON, and steps 1–2 apply equally while it is off.
 4. **Guardrail strictness** → **A. Full set:** approval gate before activation, per-content-type
    opt-in (default off), disclosure + C2PA on *all* avatar media, and an explicit "don't use my
    avatar" switch. *(Shipped — §4 items 3–4.)*
-5. **`AVATAR_LIKENESS_VIDEO_HOLD_ENABLED` default** → **OPEN (issue #1430).** Not decidable yet:
+5. **`AVATAR_LIKENESS_VIDEO_HOLD_ENABLED` default** → **A. Stay `false`** — telemetry-only.
+   *(Signed off 2026-08-14, `1A 2A` on PR #1525.)* The decision is deliberately **provisional**:
    §5.1 measured **zero checked verdicts** in production, so there is no false-negative rate to
-   weigh, and turning the hold on would change nothing until an account declares its avatar
-   attributes. The measurement machinery (the `used_avatar` split, the eval harness, the verdict
-   fixture) and the escalation procedure ship with #1430; the default itself stays **false** until
-   the owner declares the attributes and a graded run reports `sufficient: true`.
+   weigh, and turning the hold on would change nothing today — but it would go live silently the
+   moment an account declares its avatar attributes, before any rate exists. The default is
+   revisited only when a graded run reports `sufficient: true`.
+   The same sign-off chose **how that rate gets produced** (`1A`): declare `gender_presentation` /
+   `age_band` on the active avatars in the Avatars SPA — an operator action, not a code change —
+   then re-read the `avatar_likeness_probe` telemetry ~2 weeks later (≈2026-08-28). That step also
+   switches on the #744 subject-clause work, which is inert on those accounts for the same reason.
+   The measurement machinery (the `used_avatar` split, the eval harness, the verdict fixture) and
+   the escalation procedure ship with #1430, which stays **open** for the two measurement
+   acceptance boxes.
