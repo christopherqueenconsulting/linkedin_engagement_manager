@@ -249,6 +249,81 @@ class TestMechanicalEditText:
         assert captured["model"] == "lem-medium"
 
 
+# The owner's #1079 decision: the mechanical-only contract must be a TEST, not a prompt line. Each
+# case below is a rewrite the prompt forbids — the guard has to reject it even though the model
+# happily returned it.
+class TestMechanicalEditDiffGuard:
+    ORIGINAL = ("Last quarter we shipped 3 features to 1,200 accounts.\n\n"
+                "Sarah at Acme read the writeup at https://example.com/report and asked about ROI.\n\n"
+                "we measured a 12.5% lift, which held for 6 weeks.")
+
+    def test_accepts_a_real_mechanical_edit(self):
+        edited = self.ORIGINAL.replace("we measured", "We measured")
+        assert ca.mechanical_edit_guard_ok(self.ORIGINAL, edited) is True
+
+    def test_rejects_a_changed_number(self):
+        assert ca.mechanical_edit_guard_ok(self.ORIGINAL, self.ORIGINAL.replace("12.5%", "15%")) is False
+
+    def test_rejects_a_dropped_number(self):
+        assert ca.mechanical_edit_guard_ok(
+            self.ORIGINAL, self.ORIGINAL.replace("held for 6 weeks", "held for weeks")) is False
+
+    def test_rejects_an_invented_number(self):
+        assert ca.mechanical_edit_guard_ok(
+            self.ORIGINAL, self.ORIGINAL.replace("asked about ROI", "asked about ROI 3 times")) is False
+
+    def test_accepts_a_reformatted_thousands_separator(self):
+        assert ca.mechanical_edit_guard_ok(self.ORIGINAL, self.ORIGINAL.replace("1,200", "1200")) is True
+
+    def test_rejects_a_changed_url(self):
+        assert ca.mechanical_edit_guard_ok(
+            self.ORIGINAL, self.ORIGINAL.replace("/report", "/reports")) is False
+
+    def test_rejects_a_dropped_url(self):
+        assert ca.mechanical_edit_guard_ok(
+            self.ORIGINAL, self.ORIGINAL.replace("https://example.com/report", "our report")) is False
+
+    def test_url_keeps_matching_when_only_the_sentence_punctuation_moves(self):
+        original = "Read it at https://example.com/report and reply."
+        assert ca.mechanical_edit_guard_ok(original, "Read it at https://example.com/report, and reply.") is True
+
+    def test_rejects_a_dropped_proper_noun(self):
+        assert ca.mechanical_edit_guard_ok(
+            self.ORIGINAL, self.ORIGINAL.replace("Sarah at Acme", "someone at a client")) is False
+
+    def test_rejects_a_dropped_acronym(self):
+        assert ca.mechanical_edit_guard_ok(
+            self.ORIGINAL, self.ORIGINAL.replace("ROI", "return on investment")) is False
+
+    def test_allows_capitalization_the_pass_exists_to_fix(self):
+        original = "hook line.\n\nsection one\n\nwe shipped it."
+        assert ca.mechanical_edit_guard_ok(original, "Hook line.\n\nSection One\n\nWe shipped it.") is True
+
+    def test_rejects_a_longer_rewrite_beyond_the_margin(self):
+        padded = self.ORIGINAL + " " + ("An added sentence of commentary nobody asked for. " * 4)
+        assert ca.mechanical_edit_guard_ok(self.ORIGINAL, padded) is False
+
+    def test_rejects_a_truncated_rewrite(self):
+        assert ca.mechanical_edit_guard_ok(self.ORIGINAL, self.ORIGINAL[:40]) is False
+
+    def test_short_drafts_get_absolute_slack(self):
+        assert ca.mechanical_edit_guard_ok("draft.", "Draft.") is True
+        assert ca.mechanical_edit_guard_ok("dont ship it", "Don't ship it.") is True
+
+    def test_empty_original_is_never_a_guard_failure(self):
+        assert ca.mechanical_edit_guard_ok("", "Anything at all.") is True
+
+    def test_editor_output_failing_the_guard_falls_open_to_the_original(self):
+        rewritten = self.ORIGINAL.replace("12.5%", "15%")
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(rewritten)):
+            assert ca.mechanical_edit_text(self.ORIGINAL, "newsletter", enabled=True) == self.ORIGINAL
+
+    def test_editor_output_passing_the_guard_is_returned(self):
+        edited = self.ORIGINAL.replace("we measured", "We measured")
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(edited)):
+            assert ca.mechanical_edit_text(self.ORIGINAL, "newsletter", enabled=True) == edited
+
+
 class TestFindTitleSlopWords:
     def test_detects_hype_and_tier1_words(self):
         hits = ca.find_title_slop_words(
