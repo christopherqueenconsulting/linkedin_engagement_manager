@@ -1,5 +1,6 @@
 """Unit tests for the structured logger module."""
 
+import datetime
 import logging
 import os
 from unittest.mock import patch
@@ -261,7 +262,15 @@ class TestLoggerConfiguration:
         from cqc_lem.utilities import logger as mod
 
         handler_types = [type(h).__name__ for h in mod.logger.handlers]
-        assert "RotatingFileHandler" in handler_types
+        assert "DatedRotatingFileHandler" in handler_types
+
+    def test_file_handler_keeps_size_rotation_settings(self):
+        from cqc_lem.utilities import logger as mod
+
+        handler = next(h for h in mod.logger.handlers
+                       if isinstance(h, mod.DatedRotatingFileHandler))
+        assert handler.maxBytes == 250_000_000
+        assert handler.backupCount == 10
 
     def test_logger_has_posthog_handler_when_key_configured(self):
         from cqc_lem.utilities import logger as mod
@@ -293,6 +302,98 @@ class TestLoggerConfiguration:
             return  # no key configured — handler absent, nothing to assert
         expected = getattr(logging, os.getenv("POSTHOG_LOG_LEVEL", "ERROR").upper(), logging.ERROR)
         assert ph_handlers[0].level == expected
+
+
+# ---------------------------------------------------------------------------
+# Dated file rotation (#1093) — the file name was frozen at process start
+# ---------------------------------------------------------------------------
+
+class TestDatedRotatingFileHandler:
+    """The clock is injected, so a midnight boundary is a list of dates, not a wait."""
+
+    @staticmethod
+    def _handler(mod, days, tmp_path, monkeypatch):
+        """A handler whose clock walks `days`, holding the last one once exhausted."""
+        monkeypatch.chdir(tmp_path)
+        os.makedirs(mod.LOG_DIR, exist_ok=True)
+        ticks = list(days)
+        handler = mod.DatedRotatingFileHandler(
+            max_bytes=1_000_000, backup_count=3,
+            clock=lambda: ticks[0] if len(ticks) == 1 else ticks.pop(0),
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        return handler
+
+    @staticmethod
+    def _record(message):
+        return logging.LogRecord("cqc-lem", logging.INFO, __file__, 1, message, None, None)
+
+    def test_path_is_the_existing_dated_name(self):
+        from cqc_lem.utilities import logger as mod
+
+        assert mod.dated_log_path(datetime.date(2026, 8, 5)) == os.path.join(
+            "logs", "cqc_lem_2026_08_05.log")
+
+    def test_construction_creates_no_zero_byte_file(self, tmp_path, monkeypatch):
+        """A process that imports the logger and never logs must leave no dated file behind."""
+        from cqc_lem.utilities import logger as mod
+
+        self._handler(mod, [datetime.date(2026, 8, 6)], tmp_path, monkeypatch)
+
+        assert list((tmp_path / "logs").iterdir()) == []
+
+    def test_writes_to_todays_file(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities import logger as mod
+
+        handler = self._handler(mod, [datetime.date(2026, 8, 5)], tmp_path, monkeypatch)
+        handler.emit(self._record("hello"))
+        handler.close()
+
+        assert (tmp_path / "logs" / "cqc_lem_2026_08_05.log").read_text().strip() == "hello"
+
+    def test_next_days_record_lands_in_the_next_days_file(self, tmp_path, monkeypatch):
+        """The bug: a long-lived worker kept appending to the file it opened on day one."""
+        from cqc_lem.utilities import logger as mod
+
+        day1, day2 = datetime.date(2026, 8, 5), datetime.date(2026, 8, 6)
+        handler = self._handler(mod, [day1, day1, day2], tmp_path, monkeypatch)
+        handler.emit(self._record("before midnight"))
+        handler.emit(self._record("after midnight"))
+        handler.close()
+
+        assert (tmp_path / "logs" / "cqc_lem_2026_08_05.log").read_text().strip() == "before midnight"
+        assert (tmp_path / "logs" / "cqc_lem_2026_08_06.log").read_text().strip() == "after midnight"
+
+    def test_a_day_with_no_records_gets_no_file(self, tmp_path, monkeypatch):
+        """The empty siblings implied a rotation that was not happening — no record, no file."""
+        from cqc_lem.utilities import logger as mod
+
+        day1, day3 = datetime.date(2026, 8, 5), datetime.date(2026, 8, 7)
+        handler = self._handler(mod, [day1, day3], tmp_path, monkeypatch)
+        handler.emit(self._record("first record of the process"))
+        handler.close()
+
+        assert [p.name for p in (tmp_path / "logs").iterdir()] == ["cqc_lem_2026_08_07.log"]
+
+    def test_size_rotation_still_applies_within_a_day(self, tmp_path, monkeypatch):
+        from cqc_lem.utilities import logger as mod
+
+        day = datetime.date(2026, 8, 5)
+        monkeypatch.chdir(tmp_path)
+        os.makedirs(mod.LOG_DIR, exist_ok=True)
+        handler = mod.DatedRotatingFileHandler(max_bytes=32, backup_count=3, clock=lambda: day)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        for _ in range(4):
+            handler.emit(self._record("x" * 30))
+        handler.close()
+
+        assert (tmp_path / "logs" / "cqc_lem_2026_08_05.log.1").exists()
+
+    def test_clock_is_utc(self):
+        """Midnight UTC is the boundary — a non-UTC host must not date the file locally."""
+        from cqc_lem.utilities import logger as mod
+
+        assert mod._utc_today() == datetime.datetime.now(datetime.timezone.utc).date()
 
 
 # ---------------------------------------------------------------------------

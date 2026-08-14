@@ -24,15 +24,73 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Callable, Optional
 
 _LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 # PostHog receives records at this level and above (default: ERROR)
 _POSTHOG_MIN_LEVEL = getattr(logging, os.getenv("POSTHOG_LOG_LEVEL", "ERROR").upper(), logging.ERROR)
 
-_today = DT.date.today()
-LOGGING_FILENAME = "logs/cqc_lem_" + _today.strftime("%Y_%m_%d") + ".log"
-os.makedirs("logs", exist_ok=True)
+LOG_DIR = "logs"
+_LOG_FILE_MAX_BYTES = 250_000_000
+_LOG_FILE_BACKUP_COUNT = 10
+os.makedirs(LOG_DIR, exist_ok=True)
+
+
+def _utc_today() -> DT.date:
+    """The date a record belongs to, read in UTC.
+
+    The VPS, the deploy log and every timestamp an incident is reconstructed from are UTC, so the
+    file name has to roll on the same midnight they do.
+    """
+    return DT.datetime.now(DT.timezone.utc).date()
+
+
+def dated_log_path(day: DT.date) -> str:
+    """Path of the log file that a record written on `day` belongs in."""
+    return os.path.join(LOG_DIR, f"cqc_lem_{day:%Y_%m_%d}.log")
+
+
+class DatedRotatingFileHandler(RotatingFileHandler):
+    """A size-rotating file handler that re-resolves its DATED file name per record.
+
+    The name used to be frozen at import (issue #1093): a container started on Aug 5 kept appending
+    to `cqc_lem_2026_08_05.log` for as long as it lived, so during triage "no log today" read as an
+    outage. Opening is deferred as well, because the 0-byte `cqc_lem_2026_08_06.log` siblings that
+    made rotation look broken were processes that imported the logger and then never logged.
+
+    Size-based rotation within a day is unchanged — backups stay `<dated name>.log.1`.
+    """
+
+    def __init__(self, *, max_bytes: int, backup_count: int,
+                 clock: Callable[[], DT.date] = _utc_today) -> None:
+        """Open nothing yet — the first record decides both the date and the file.
+
+        `clock` is injected so a midnight boundary is testable without waiting for one.
+        """
+        self._clock = clock
+        self._current_day = clock()
+        super().__init__(dated_log_path(self._current_day), maxBytes=max_bytes,
+                         backupCount=backup_count, delay=True)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Write `record` to TODAY's file, switching files first if the date has moved on."""
+        self._switch_day_if_needed()
+        super().emit(record)
+
+    def _switch_day_if_needed(self) -> None:
+        """Re-point at today's file across a midnight boundary.
+
+        Only ever called from `emit()`, which `logging` already serialises under the handler lock,
+        so the close-and-reopen cannot race another writer in this process.
+        """
+        day = self._clock()
+        if day == self._current_day:
+            return
+        self._current_day = day
+        self.baseFilename = os.path.abspath(dated_log_path(day))
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None  # FileHandler.emit reopens it against the new baseFilename
 
 
 def _otlp_resource():
@@ -106,7 +164,8 @@ logger.propagate = False  # don't double-log via root
 
 _formatter = _LevelFormatter()
 
-_file_handler = RotatingFileHandler(LOGGING_FILENAME, maxBytes=250_000_000, backupCount=10)
+_file_handler = DatedRotatingFileHandler(max_bytes=_LOG_FILE_MAX_BYTES,
+                                         backup_count=_LOG_FILE_BACKUP_COUNT)
 _file_handler.setFormatter(_formatter)
 _file_handler.setLevel(_LOG_LEVEL)
 logger.addHandler(_file_handler)
