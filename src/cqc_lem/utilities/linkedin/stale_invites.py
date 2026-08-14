@@ -69,7 +69,7 @@ SENT_INVITATIONS_URL = "https://www.linkedin.com/mynetwork/invitation-manager/se
 # Run statuses — stable strings so "why did this account withdraw nothing yesterday?" is a group-by
 # on the telemetry rather than a log grep.
 WITHDRAW_STATUS_WITHDREW = "withdrew"
-WITHDRAW_STATUS_DISABLED = "disabled"              # lane not switched on (the default)
+WITHDRAW_STATUS_DISABLED = "disabled"              # switch set to off, or a zero cap/threshold
 WITHDRAW_STATUS_BUDGET_REACHED = "budget_reached"  # paced to zero / cap already spent today
 WITHDRAW_STATUS_NONE_STALE = "none_stale"          # rows read, none old enough
 WITHDRAW_STATUS_NO_ROWS = "no_rows"                # nothing pending, or the list did not render
@@ -216,8 +216,9 @@ def withdrawal_lane_enabled() -> bool:
     other guard — the 21-day threshold, the daily cap, pacing, the fail-closed age read, the
     entity check, the 429 breaker — is unchanged and independent of this. A value that parses as
     nothing recognisable also reads as off: on the one action that cannot be undone, a typo must
-    fail in the direction that withdraws less, not more. Blank reads as unset (the default), the
-    same way `_env_int` treats a blank number.
+    fail in the direction that withdraws less, not more. An EMPTY value reads as unset (the
+    default); a whitespace-only one does not — it takes the same off reading as a typo, which is
+    the safe direction here even though `_env_int` would hand back its default.
     """
     return (os.environ.get("STALE_INVITE_WITHDRAWAL_ENABLED") or "true").strip().lower() \
         in ("1", "true", "yes")
