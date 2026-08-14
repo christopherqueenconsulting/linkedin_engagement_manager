@@ -865,14 +865,21 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     return post_text
 
 
-def _avatar_media_state(post_id: Optional[int]) -> str:
-    """Was this post's stored frame a real LoRA render? ``"true"`` / ``"false"`` / ``"unknown"``.
+def _avatar_media_state(post_id: Optional[int], used_avatar: Optional[bool] = None) -> str:
+    """Was THIS frame a real LoRA render? ``"true"`` / ``"false"`` / ``"unknown"``.
 
-    Reads the three-valued ``posts.avatar_media`` (issue #1430). It is reported as a STRING rather
-    than folded to a boolean because an unreadable flag is not the same reading as a base-Flux
-    fallback: collapsing them would put the rows that cannot be attributed into the very bucket the
-    split exists to isolate.
+    ``used_avatar`` is the renderer's own per-render answer and always wins when it is present.
+    ``posts.avatar_media`` is only the fallback, because it cannot answer the same question: it is
+    a sticky per-POST flag that any earlier avatar render sets and nothing clears, so a re-render
+    or a gate retry that fell back to base Flux still reads true — filing the fallback frame in the
+    LoRA bucket the split exists to keep clean (issue #1430).
+
+    It is reported as a STRING rather than folded to a boolean because an unreadable flag is not
+    the same reading as a base-Flux fallback: collapsing them would put the rows that cannot be
+    attributed into that same bucket.
     """
+    if used_avatar is not None:
+        return "true" if used_avatar else "false"
     try:
         from cqc_lem.utilities.db import post_avatar_media_state
         state = post_avatar_media_state(post_id)
@@ -887,7 +894,8 @@ def _avatar_media_state(post_id: Optional[int]) -> str:
 
 def _check_avatar_likeness(image_path: str, avatar: dict,
                            user_id: Optional[int] = None,
-                           post_id: Optional[int] = None) -> None:
+                           post_id: Optional[int] = None,
+                           used_avatar: Optional[bool] = None) -> None:
     """Telemetry-only likeness probe on the stored source frame (issue #1279).
 
     Runs after the avatar source frame renders and before the video model sees it. The probe is
@@ -896,6 +904,9 @@ def _check_avatar_likeness(image_path: str, avatar: dict,
     ``track_avatar_likeness_probe`` so the false-positive rate can be measured before any hold is
     turned on — carrying ``used_avatar`` so a checked-negative can be attributed to a bad LoRA
     render rather than to the base-Flux fallback frame, which carries no likeness by design.
+
+    ``used_avatar`` is the renderer's reading for the frame being probed; ``None`` falls back to
+    the sticky ``posts.avatar_media`` flag (issue #1430).
     """
     if not AVATAR_LIKENESS_PROBE_ENABLED:
         return
@@ -905,7 +916,7 @@ def _check_avatar_likeness(image_path: str, avatar: dict,
 
     verdict = probe_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
     track_avatar_likeness_probe(user_id, post_id, verdict,
-                                used_avatar=_avatar_media_state(post_id))
+                                used_avatar=_avatar_media_state(post_id, used_avatar))
     if AVATAR_LIKENESS_VIDEO_HOLD_ENABLED and verdict.get("checked") and verdict.get("present") is False:
         # INFO, not WARNING: holding a frame the probe declined is the flag doing its job, and a
         # recurring warning is re-emitted at ERROR and filed as a grouped defect — one per held
@@ -1031,11 +1042,16 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model,
                                                     language=language, user_id=user_id,
                                                     post_id=post_id)[:512]
+        # Filled by the renderer with whether THIS frame came out of the LoRA — the sticky
+        # posts.avatar_media flag cannot say that for a re-render or a gate retry (issue #1430).
+        render_info: dict = {}
         if is_premium(model):
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
-                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
-                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
+                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
+                                                 render_info=render_info)
+                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
+                                       used_avatar=render_info.get("used_avatar"))
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
                                           user_id=user_id, post_id=post_id)
             else:
@@ -1051,8 +1067,10 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             # credit spend). generate_post_image falls back to base Flux.1 when there is no avatar.
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
-                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
-                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
+                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
+                                                 render_info=render_info)
+                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
+                                       used_avatar=render_info.get("used_avatar"))
             else:
                 from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
                 image_path = render_image_from_prompt(image_prompt, ratio=source_frame_ratio,

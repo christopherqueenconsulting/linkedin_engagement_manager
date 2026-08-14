@@ -3000,7 +3000,8 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
                         surface: str = AVATAR_SURFACE_POST_IMAGE,
                         post_id: "int | None" = None,
                         depicts_person: bool = True,
-                        focal_concept: Optional[str] = None) -> str:
+                        focal_concept: Optional[str] = None,
+                        render_info: Optional[dict] = None) -> str:
     """Generate a LinkedIn post image, using the user's avatar LoRA when the guardrails allow it.
 
     Falls back to the base Flux.1 model whenever ``resolve_avatar_for`` declines (issue #744):
@@ -3020,6 +3021,10 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     A caller that explicitly pinned a Replicate model still gets a direct FLUX render so the
     admin variant tool keeps meaning what it says; the gate is not applied to pinned-model
     renders because they are intentionally not the default ``auto`` backend.
+
+    ``render_info``, when passed, is filled with ``{"used_avatar": bool}`` describing THIS render
+    (issue #1430) — whether the returned file came out of the LoRA or the base-Flux fallback. It is
+    the per-render answer the sticky ``posts.avatar_media`` flag cannot give.
     """
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
@@ -3028,7 +3033,12 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     if avatar:
         return render_avatar_image_gated(
             prompt, avatar=avatar, user_id=user_id, surface=surface,
-            ratio=ratio, focal_concept=focal_concept, post_id=post_id)
+            ratio=ratio, focal_concept=focal_concept, post_id=post_id,
+            render_info=render_info)
+    if render_info is not None:
+        # No avatar resolved, so no likeness renders here at all — never left unset, or the
+        # caller cannot tell "base render" from "nobody reported".
+        render_info["used_avatar"] = False
     if image_model != DEFAULT_IMAGE_MODEL:
         return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model,
                                                 surface=surface)

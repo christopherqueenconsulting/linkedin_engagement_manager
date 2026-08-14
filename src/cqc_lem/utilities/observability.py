@@ -342,7 +342,8 @@ EVENTS = {spec.event: spec for spec in (
     # Avatar likeness on a video source frame (issue #1279). `present` is a label() and stays
     # three-valued: "True"/"False" are the probe's verdict, None means it never ran, and only a
     # string keeps a breakdown on the verdict working while leaving the unchecked rows out of it.
-    # `used_avatar` reads `posts.avatar_media` and is what splits a checked-negative into its TWO
+    # `used_avatar` is the RENDERER's reading for the probed frame (`posts.avatar_media` is only the
+    # fallback — it is per POST and sticky) and is what splits a checked-negative into its TWO
     # causes (issue #1430): a bad LoRA render, or the base-Flux fallback `generate_image_with_avatar`
     # substitutes when LoRA inference fails — a frame that legitimately carries no likeness. A raw
     # checked-negative rate mixes them, so it can never decide the hold flag. Three-valued as a
@@ -1131,8 +1132,9 @@ def track_avatar_likeness_probe(
         user_id: The account the frame was rendered for.
         post_id: The post the frame belongs to.
         verdict: The ``probe_avatar_likeness`` reading (``present`` / ``checked`` / ``reason``).
-        used_avatar: ``"true"`` / ``"false"`` / ``"unknown"`` from ``posts.avatar_media`` — whether
-            the frame is a real LoRA render (issue #1430). A checked-negative on a ``"false"`` frame
+        used_avatar: ``"true"`` / ``"false"`` / ``"unknown"`` — whether the PROBED frame is a real
+            LoRA render (issue #1430), read from the renderer and only falling back to the sticky
+            per-post ``posts.avatar_media`` flag. A checked-negative on a ``"false"`` frame
             is the base-Flux fallback doing its job, not a likeness defect, so the two must never
             share one rate.
     """

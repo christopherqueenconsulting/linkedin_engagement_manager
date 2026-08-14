@@ -71,6 +71,22 @@ def normalize_label(value: Optional[str]) -> Optional[str]:
     return label if label in LABELS else None
 
 
+def normalize_used_avatar(value: Any) -> str:
+    """Canonical ``"true"`` / ``"false"`` / ``"unknown"`` for a manifest's ``used_avatar``.
+
+    `grade()` groups on this value verbatim, so an entry written as the JSON boolean ``true``
+    would otherwise bucket as ``"True"`` beside a string ``"true"`` — silently splitting the one
+    split the harness exists to make. Anything the grader cannot read is ``"unknown"``, never
+    ``"false"``: an unattributed frame is not a fallback render.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value or "").strip().lower()
+    if text in ("true", "false"):
+        return text
+    return "unknown"
+
+
 def verdict_record(
     entry: Mapping[str, Any],
     verdict: Mapping[str, Any],
@@ -97,7 +113,7 @@ def verdict_record(
         "subject_clause": subject_clause(entry),
         "checked": bool(verdict.get("checked")),
         "present": verdict.get("present"),
-        "used_avatar": entry.get("used_avatar", "true"),
+        "used_avatar": normalize_used_avatar(entry.get("used_avatar", "true")),
     }
     if include_reason:
         record["reason"] = str(verdict.get("reason") or "")
@@ -135,7 +151,7 @@ def run_eval(
                 "subject_clause": subject_clause(entry),
                 "checked": False,
                 "present": None,
-                "used_avatar": entry.get("used_avatar", "true"),
+                "used_avatar": normalize_used_avatar(entry.get("used_avatar", "true")),
             })
             continue
         verdict = probe(path, dict(entry))

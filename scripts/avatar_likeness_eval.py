@@ -15,7 +15,8 @@ Manifest format (JSON, a list of entries, kept wherever the frames live — NOT 
         "label": "present",              // the HUMAN's verdict: "present" or "absent"
         "gender_presentation": "man",    // the declared attributes to judge the frame AGAINST
         "age_band": "40s",
-        "used_avatar": "true",           // "false" for a base-Flux fallback frame
+        "used_avatar": "true",           // "false" for a base-Flux fallback frame; the JSON
+                                         // boolean is accepted too, anything else reads "unknown"
         "note": "clean LoRA render"      // free text, never read by the grader
       }
     ]

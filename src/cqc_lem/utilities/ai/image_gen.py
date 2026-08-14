@@ -322,7 +322,8 @@ def inspect_render_quality(image_path: str, focal_concept: str) -> QualityVerdic
 def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[int],
                               surface: str, ratio: str = "1:1",
                               focal_concept: Optional[str] = None,
-                              post_id: Optional[int] = None) -> Optional[str]:
+                              post_id: Optional[int] = None,
+                              render_info: Optional[dict] = None) -> Optional[str]:
     """LoRA render of an image the author appears in, behind the SAME bounded vision gate the
     base renderer gets.
 
@@ -330,6 +331,12 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     guardrails), so without this the avatar branch was the one path with no quality check at all —
     which is how a post about LLM routing costs came back as a plain headshot against a brick wall.
     Returns the best candidate's path, or None if nothing rendered.
+
+    ``render_info``, when passed, is filled with ``{"used_avatar": bool}`` for the render actually
+    RETURNED (issue #1430). ``posts.avatar_media`` cannot answer that question: it is a sticky
+    per-POST flag that any earlier avatar render sets and nothing clears, so on a re-render or a
+    gate retry that fell back to base Flux it still reads true — which would file a fallback
+    frame's likeness verdict under the LoRA render it is meant to be separated from.
     """
     from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
@@ -349,6 +356,9 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
             ratio=ratio, fallback_prompt=marked, surface=surface)
+        if render_info is not None:
+            # Per ATTEMPT: the last one written is the render this call returns.
+            render_info["used_avatar"] = bool(used_avatar)
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)

@@ -74,6 +74,16 @@ class TestVerdictRecord:
         record = verdict_record({"label": "absent"}, {"checked": True, "present": False}, fid="a")
         assert record["used_avatar"] == "true"
 
+    @pytest.mark.parametrize("raw,expected", [
+        (True, "true"), (False, "false"), ("TRUE", "true"), (" false ", "false"),
+        ("maybe", "unknown"), (None, "unknown"),
+    ])
+    def test_used_avatar_is_canonical_so_the_split_cannot_fork(self, raw, expected):
+        """A manifest written with the JSON boolean must not bucket beside the string form."""
+        record = verdict_record({"label": "present", "used_avatar": raw},
+                                {"checked": True, "present": True}, fid="a")
+        assert record["used_avatar"] == expected
+
 
 class TestRunEval:
     def test_probes_every_frame_in_order(self, tmp_path):

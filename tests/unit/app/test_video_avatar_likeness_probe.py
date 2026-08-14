@@ -134,6 +134,53 @@ class TestAvatarLikenessProbeInVideoGeneration:
             _generate_video_src(post_id=13)
         assert track.call_args.kwargs["used_avatar"] == "false"
 
+    def test_the_renderers_own_reading_beats_the_sticky_post_flag(self):
+        """The renderer's per-render answer wins over the sticky post flag (issue #1430).
+
+        `posts.avatar_media` is per POST and never cleared, so an earlier avatar render leaves it
+        true for a later frame that fell back to base Flux.
+        """
+        def _fallback_render(*args, **kwargs):
+            kwargs["render_info"]["used_avatar"] = False
+            return "/tmp/base_fallback.webp"
+
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   side_effect=_fallback_render), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": False, "checked": True, "reason": "no match"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=True) as flag, \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=16)
+        assert track.call_args.kwargs["used_avatar"] == "false"
+        flag.assert_not_called()
+
+    def test_a_real_lora_render_reports_true_without_reading_the_flag(self):
+        def _lora_render(*args, **kwargs):
+            kwargs["render_info"]["used_avatar"] = True
+            return "/tmp/avatar_frame.webp"
+
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_AVATAR), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
+             patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   side_effect=_lora_render), \
+             patch(f"{_RCP}.create_runway_video", return_value="https://runway.video/abc.mp4"), \
+             patch(f"{_LIKENESS}.probe_avatar_likeness",
+                   return_value={"present": True, "checked": True, "reason": "ok"}), \
+             patch("cqc_lem.utilities.db.post_avatar_media_state", return_value=False) as flag, \
+             patch(f"{_OBS}.track_avatar_likeness_probe") as track:
+            _generate_video_src(post_id=17)
+        assert track.call_args.kwargs["used_avatar"] == "true"
+        flag.assert_not_called()
+
     def test_unreadable_avatar_media_flag_is_unknown_not_a_fallback(self):
         """An unreadable flag is not the reading "base-Flux fallback" — it is no reading at all."""
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",

@@ -164,6 +164,37 @@ class TestAvatarRenderIsGatedToo:
         lora.assert_called_once()
         record.assert_called_once_with("/tmp/1.png", 9, 3)
 
+    def test_render_info_reports_the_attempt_that_was_returned(self):
+        """The likeness probe needs THIS frame's provenance, not the post's (issue #1430).
+
+        Attempt 1 renders on the LoRA and gets rejected, attempt 2 falls back to base Flux, and
+        the fallback is what ships — so `used_avatar` must read False.
+        """
+        info: dict = {}
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   side_effect=[("/tmp/1.png", True), ("/tmp/2.png", False)]), \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "inspect_render_quality",
+                          side_effect=[QualityVerdict(acceptable=False, issues=["blurry"]),
+                                       QualityVerdict(acceptable=True)]):
+            path = image_gen.render_avatar_image_gated(
+                "base prompt", avatar=self._AVATAR, user_id=3, surface="post_image",
+                focal_concept="the idea", post_id=9, render_info=info)
+        assert path == "/tmp/2.png"
+        assert info["used_avatar"] is False
+
+    def test_render_info_is_reported_for_a_lora_render(self):
+        info: dict = {}
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=("/tmp/1.png", True)), \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)):
+            image_gen.render_avatar_image_gated(
+                "base prompt", avatar=self._AVATAR, user_id=3, surface="post_image",
+                post_id=9, render_info=info)
+        assert info["used_avatar"] is True
+
     def test_unenforced_surface_does_not_retry(self):
         with patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)):
             path, lora, _ = self._render([QualityVerdict(acceptable=False, issues=["x"])],

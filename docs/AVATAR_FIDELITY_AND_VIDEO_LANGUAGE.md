@@ -303,11 +303,15 @@ that runs on the **stored source frame** before the video model sees it.
   Flux when LoRA inference fails (`used_avatar=False`), and that frame legitimately carries no
   likeness. The probe scores it `checked` / `present=False` exactly like a bad LoRA render, so a
   raw checked-negative rate mixes the two. **Shipped in #1430:** the `avatar_likeness_probe` event
-  now carries `used_avatar`, read from the three-valued `posts.avatar_media` (only a real LoRA
-  render sets it) and reported as the string `"true"` / `"false"` / `"unknown"` — an unreadable
-  flag is not the reading "fallback render", so it never lands in the bucket the split exists to
-  isolate. Without that property no checked-negative rate can decide the hold: with the hold ON, a
-  Replicate/LoRA outage would cost the user their AI video as well as the likeness.
+  now carries `used_avatar` as the string `"true"` / `"false"` / `"unknown"`, taken from the
+  **renderer's own answer for the frame being probed** (`generate_post_image(render_info=…)` →
+  `render_avatar_image_gated`). `posts.avatar_media` is only the fallback when no renderer answered:
+  it is a sticky per-POST flag that any earlier avatar render sets and nothing clears, so on a
+  re-render or a gate retry that fell back to base Flux it still reads true — which would file the
+  fallback frame in the LoRA bucket the split exists to keep clean. An unreadable flag reports
+  `"unknown"`, never "fallback render". Without that property no checked-negative rate can decide
+  the hold: with the hold ON, a Replicate/LoRA outage would cost the user their AI video as well as
+  the likeness.
 
 ### 5.1 Measuring the probe — the method (issue #1430)
 
@@ -368,8 +372,10 @@ written for the hold being ON, and steps 1–2 apply equally while it is off.
 1. **Confirm which fault it is.** Pull the `avatar_likeness_probe` event for that `post_id` and read
    `used_avatar` FIRST. `"false"` means the frame was the base-Flux fallback — the LoRA render
    failed, the probe was right, and the defect is in Replicate/LoRA inference, not here. Only
-   `"true"` is a probe/human disagreement. `"unknown"` means the flag was unreadable: treat it as
-   unattributed and check `posts.avatar_media` directly before drawing any conclusion.
+   `"true"` is a probe/human disagreement. `"unknown"` means no renderer reading reached the event
+   AND `posts.avatar_media` was unreadable: treat it as unattributed and check that column directly
+   before drawing any conclusion — remembering it is per POST and sticky, so it answers "did this
+   post ever render on the LoRA", not "did this frame".
 2. **Record it as a labelled frame.** Save the stored source frame outside the repo, add it to the
    eval manifest with the HUMAN's label, and re-run `scripts/avatar_likeness_eval.py`. A
    disagreement that never enters the manifest cannot move the measured rate, and the measured rate
