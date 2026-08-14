@@ -3313,7 +3313,7 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
 _CAROUSEL_CAPTION_MAX_CHARS = 2200
 
 
-def _loads_json_object(raw: str) -> "dict | None":
+def _loads_json_object(raw: "str | None") -> "dict | None":
     """Parse a reply that is supposed to be ONE JSON object, tolerating what models actually send.
 
     `response_format={"type": "json_object"}` is a request, not a guarantee — a model still wraps the
@@ -3499,7 +3499,9 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
             temperature=round(random.uniform(0.6, 0.8), 2),
             top_p=round(random.uniform(0.85, 0.95), 2),
         )
-        raw = response.choices[0].message.content.strip()
+        # A refusal or content filter comes back with content=None, so `.strip()` on it raised an
+        # AttributeError out of the task instead of taking the fallback one line below.
+        raw = (response.choices[0].message.content or "").strip()
         parsed = _loads_json_object(raw)
         if parsed is None:
             # ERROR, not WARNING: there is no degraded carousel. An empty deck fails

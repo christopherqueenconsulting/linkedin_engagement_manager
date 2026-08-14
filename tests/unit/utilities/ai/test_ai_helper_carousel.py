@@ -270,3 +270,40 @@ def test_unparseable_reply_logs_one_error_with_context():
     assert kwargs["user_id"] == 7
     assert kwargs["task_name"] == "create_carousel_content"
     assert "exc" not in kwargs   # nothing was raised — no stack to attach
+
+
+@pytest.mark.unit
+def test_empty_reply_content_takes_the_fallback_instead_of_raising():
+    """A refusal / content-filtered reply carries `content=None`.
+
+    `.strip()` on it raised an AttributeError straight out of the task, past the fallback that
+    exists for exactly this: no deck in hand. It must degrade the same way an unparseable reply
+    does — one ERROR with context, empty deck, generic caption.
+    """
+    from contextlib import contextmanager
+
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+    empty = MagicMock()
+    empty.choices = [MagicMock(message=MagicMock(content=None))]
+    profile = LinkedInProfile(full_name="Test User", job_title="CTO", company_name="ACME",
+                              industry="Technology")
+
+    @contextmanager
+    def _env():
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=empty), \
+             patch("cqc_lem.utilities.db.get_user_password_pair_by_id", return_value=("t@e.com", "p")), \
+             patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch("cqc_lem.utilities.linkedin.helper.get_my_profile", return_value=profile), \
+             patch("cqc_lem.utilities.selenium_util.quit_gracefully"), \
+             patch("cqc_lem.utilities.ai.ai_helper.log_error") as mock_log_error:
+            yield mock_log_error
+
+    with _env() as mock_log_error:
+        from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+        post_text, carousel_dict = generate_carousel_content(user_id=7, stage="awareness")
+
+    assert carousel_dict == {}
+    assert isinstance(post_text, str) and post_text
+    assert mock_log_error.call_count == 1
+    assert mock_log_error.call_args.kwargs["user_id"] == 7
