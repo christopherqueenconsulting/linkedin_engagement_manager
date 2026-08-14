@@ -25,7 +25,6 @@ pip-delete-this-directory.txt
 
 # Application specific
 src/cqc_lem/assets/
-src/cqc_lem/aws/
 compose/local/linkedinpreview/
 # React source is only needed by the ui-builder stage (node:24-slim).
 # The Python builder stage gets the compiled dist via COPY --from=ui-builder.

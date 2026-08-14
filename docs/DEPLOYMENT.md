@@ -36,6 +36,12 @@ installed but **not enabled**, pending the self-modification gate (#1397). Full 
 | Releases | release-please (Conventional Commits → release PR → tag) |
 | Prod overlay | `docker-compose.prod.yml` on top of `docker-compose.yml` |
 
+An AWS CDK deploy path (`src/cqc_lem/aws/`, plus `bootstrap_aws_cdk.sh` / `synth_aws_cdk.sh` /
+`deploy_aws_cdk.sh`) existed alongside this one and was **retired on 2026-08-11** (#973) — it was
+never used for prod and carried ~20 known-wrong-for-prod TODOs. Git history is the reference: the
+tree is present at commit `8262038651d5e242b70541efe13f693e42ac08e4`
+(`git show 8262038:src/cqc_lem/aws`).
+
 Public surface:
 
 | Hostname | Service | Protection |
