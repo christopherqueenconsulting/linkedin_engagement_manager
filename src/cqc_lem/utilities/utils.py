@@ -363,11 +363,15 @@ def purge_post_assets(post_id, video_url=None):
     weight. Removes the post's video file (resolved from its asset URL) and its
     carousel slide directory (images/carousel/<post_id>/). Path-safe (only deletes
     inside assets_dir) and tolerant of already-missing files. Returns removed paths.
+
+    Two sidecars deliberately survive it: the caption `.srt` (issue #1278) and the deck render
+    receipt (issue #1513) — both are read AFTER the post publishes, which is exactly when this runs.
     """
     import shutil
     from urllib.parse import parse_qs, urlparse
 
     from cqc_lem import assets_dir
+    from cqc_lem.utilities.deck_render import deck_render_receipt_path
     from cqc_lem.utilities.logger import log_info, log_warning
 
     removed = []
@@ -404,11 +408,27 @@ def purge_post_assets(post_id, video_url=None):
             # `posts.caption_srt_url` points at it, and that URL must not resolve to a 404. It is a
             # few hundred bytes against the megabytes this function exists to reclaim.
 
-    for media_dir in (os.path.join(assets_dir, "images", "carousel", str(post_id)),
-                      os.path.join(assets_dir, "images", "posts", str(post_id))):
+    carousel_dir = os.path.join(assets_dir, "images", "carousel", str(post_id))
+    for media_dir in (carousel_dir, os.path.join(assets_dir, "images", "posts", str(post_id))):
         if os.path.isdir(media_dir) and _within_assets(media_dir):
             try:
-                shutil.rmtree(media_dir)
+                # The render receipt (issue #1513) SURVIVES the purge, for the same reason the
+                # caption sidecar does: this runs the moment the deck publishes, and the nightly
+                # quality beat only scores posts that already shipped — purge the receipt here and
+                # every deck reads as unmeasured forever. A few hundred bytes against the megabytes
+                # of slides this reclaims.
+                receipt = deck_render_receipt_path(media_dir)
+                if os.path.isfile(receipt):
+                    for entry in os.listdir(media_dir):
+                        target = os.path.join(media_dir, entry)
+                        if target == receipt:
+                            continue
+                        if os.path.isdir(target):
+                            shutil.rmtree(target)
+                        else:
+                            os.remove(target)
+                else:
+                    shutil.rmtree(media_dir)
                 removed.append(media_dir)
             except OSError as e:
                 # Same condition, the directory half.

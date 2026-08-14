@@ -6,6 +6,7 @@ tables (issue #1216); the download, AWS and purge paths stay plain because each 
 different side effect.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -263,6 +264,44 @@ class TestPurgePostAssets:
         from cqc_lem.utilities.utils import purge_post_assets
         with patch("cqc_lem.assets_dir", str(tmp_path)):
             assert purge_post_assets(post_id, video_url=video_url) == []
+
+    def test_keeps_the_deck_render_receipt_the_nightly_beat_still_reads(self, tmp_path):
+        """Issue #1513: the deck reading is taken AFTER the post ships, which is when this runs.
+
+        The slides are purged because LinkedIn re-hosts them; the receipt is never uploaded at all
+        and is the only record of what the layout dropped, so purging it here would make every
+        published deck score as `deck_probe="missing"` — the one state that must mean "unmeasured",
+        not "we deleted it".
+        """
+        from cqc_lem.utilities.content_quality import DECK_PROBE_OK, score_carousel_deck
+        from cqc_lem.utilities.deck_render import DECK_RENDER_FILENAME
+        from cqc_lem.utilities.utils import purge_post_assets
+        _video, carousel_dir = self._setup_assets(tmp_path)
+        receipt = carousel_dir / DECK_RENDER_FILENAME
+        receipt.write_text(json.dumps({"post_id": 9, "template": "bold_listicle", "slides": [
+            {"index": 1, "role": "cover", "body_chars": 120, "chars_dropped": 3, "band": False}]}))
+        with patch("cqc_lem.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.utilities.content_quality.assets_dir", str(tmp_path)):
+            removed = purge_post_assets(9)
+            # The reading the beat takes the night after the purge still lands.
+            deck = score_carousel_deck(slide_urls=[
+                "https://api.example.com/api/assets?file_name=images/carousel/9/slide1.png"])
+        assert not (carousel_dir / "slide1.png").exists()
+        assert receipt.exists() and str(carousel_dir) in removed
+        assert deck["deck_probe"] == DECK_PROBE_OK and deck["deck_chars_dropped"] == 3
+
+    def test_a_nested_directory_of_slides_is_still_purged_around_the_receipt(self, tmp_path):
+        from cqc_lem.utilities.deck_render import DECK_RENDER_FILENAME
+        from cqc_lem.utilities.utils import purge_post_assets
+        _video, carousel_dir = self._setup_assets(tmp_path)
+        (carousel_dir / DECK_RENDER_FILENAME).write_text("{}")
+        nested = carousel_dir / "pdf"
+        nested.mkdir()
+        (nested / "document_9.pdf").write_bytes(b"p")
+        with patch("cqc_lem.assets_dir", str(tmp_path)):
+            purge_post_assets(9)
+        assert not nested.exists()
+        assert (carousel_dir / DECK_RENDER_FILENAME).exists()
 
     def test_no_video_url_only_purges_carousel(self, tmp_path):
         from cqc_lem.utilities.utils import purge_post_assets

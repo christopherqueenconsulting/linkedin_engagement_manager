@@ -75,6 +75,13 @@ rendered before #1513, or one whose assets were pruned) and `unreadable` (a rece
 parse). **A deck that could not be read reports NULL dimensions, never 0** — "0 characters dropped"
 is indistinguishable from a clean render, which would quietly claim the clipping was fixed.
 
+The receipt therefore has to OUTLIVE the slides. `purge_post_assets` deletes
+`images/carousel/<post_id>/` the moment the deck publishes (LinkedIn re-hosts the slides, so the
+local copies are dead weight) — and the nightly beat only ever scores posts that already shipped, so
+purging the receipt with them would make every real deck read `missing` and the reading would
+measure nothing. It survives the purge, exactly as the caption `.srt` sidecar does (#1278): a few
+hundred bytes against the megabytes of PNGs that purge exists to reclaim.
+
 The deck row is persisted through the same upsert as any other reading, so `by_surface` gives the
 carousel trend line its own count; the deck dimensions themselves live on the PostHog event
 (`content_quality`, where `deck_probe` and `deck_template` are `label()`s a breakdown filters on).

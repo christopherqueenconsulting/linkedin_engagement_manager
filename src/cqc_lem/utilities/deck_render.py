@@ -11,6 +11,10 @@ only moment where the string the writer wrote and the lines the layout drew are 
 render itself. Nothing downstream can re-derive the drop — not the stored PNG, not
 `posts.carousel_slides`. The receipt is written next to the slides it describes, exactly as a video
 post's telemetry reads the stored MP4 (issue #1281).
+
+It also OUTLIVES those slides: `purge_post_assets` clears the deck's directory the moment the post
+publishes, and the nightly beat scores only what has already shipped — so the receipt is carved out
+of that purge (the caption-sidecar precedent, #1278) or every real deck would read `missing`.
 """
 
 import json
@@ -24,7 +28,7 @@ SLIDE_ROLE_BODY = "body"
 SLIDE_ROLE_CTA = "cta"
 
 # The three readings a receipt can produce. `missing` is a deck with no receipt on disk — every deck
-# rendered before #1513 shipped, and any whose assets were pruned; `unreadable` is a receipt that is
+# rendered before #1513 shipped, and any whose directory was removed by hand; `unreadable` is one that is
 # there and will not parse, which is a fault rather than an absence. Neither ever becomes a zero: a
 # deck recorded as "0 characters dropped" is indistinguishable from a clean render.
 DECK_PROBE_OK = "ok"
