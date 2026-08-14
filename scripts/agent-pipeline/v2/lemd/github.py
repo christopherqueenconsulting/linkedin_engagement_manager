@@ -364,6 +364,16 @@ def label_names(obj: dict[str, Any]) -> set[str]:
     return {ll.get("name", "") for ll in (obj.get("labels") or [])}
 
 
+def post_comment(slug: str, kind: str, number: int, body: str, *, timeout: int = 30) -> None:
+    """Post one comment. The only write in this module that is not a merge/label action.
+
+    Raises `GitHubUnavailable` like every other call here; callers that must not let a notification
+    failure take down an observation pass (there is nothing to retry into) catch it themselves.
+    """
+    cmd = "pr" if kind == "pr" else "issue"
+    run_gh([cmd, "comment", str(number), "--repo", slug, "--body", body], timeout=timeout)
+
+
 def is_upstream(facts: dict[str, Any], slug: str) -> bool:
     """True when the PR's head branch lives in THIS repository, not a fork.
 
