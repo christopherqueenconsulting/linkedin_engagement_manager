@@ -344,11 +344,13 @@ class TestLoggerConfiguration:
     def test_posthog_handler_level_matches_env(self):
         from cqc_lem.utilities import logger as mod
 
-        ph_handlers = [h for h in mod.logger.handlers if type(h).__name__ == "LoggingHandler"]
-        if not ph_handlers:
-            return  # no key configured — handler absent, nothing to assert
+        # This used to read the level off the ATTACHED handler and return early when there wasn't
+        # one. Since #1460 there is never one under pytest, so that early return became permanent
+        # and the test asserted nothing on any run. The wiring is still worth pinning, in the one
+        # place that survives the guard: POSTHOG_LOG_LEVEL is what the module hands the builder,
+        # and test_handler_respects_requested_level proves the builder honours what it is given.
         expected = getattr(logging, os.getenv("POSTHOG_LOG_LEVEL", "ERROR").upper(), logging.ERROR)
-        assert ph_handlers[0].level == expected
+        assert mod._POSTHOG_MIN_LEVEL == expected
 
 
 # ---------------------------------------------------------------------------
