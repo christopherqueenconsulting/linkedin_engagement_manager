@@ -642,9 +642,15 @@ class Daemon:
                 continue
             self._emit_act(row, mode, executed=True)
             launched += 1
-        if not held_by_wip:
-            # The gate opened. Forgetting the shape means the NEXT close is written again, even if
+        if wip < self.cfg.max_agents:
+            # The gate is OPEN. Forgetting the shape means the NEXT close is written again, even if
             # it happens to look identical — a gate that closed twice is two events, not one.
+            #
+            # Keyed on the gate itself, not on whether anything was held this pass: a pass with no
+            # dispatchable start holds nothing while the gate stays shut, and reading that as "the
+            # gate opened" re-writes an identical row every time the backlog empties and refills. A
+            # standing hold must read as ONE event however many passes it spans — which is the
+            # whole reason this row is deduped at all.
             self._wip_gate_note = None
         return launched
 

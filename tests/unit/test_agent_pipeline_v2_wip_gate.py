@@ -70,6 +70,12 @@ def test_the_excluded_states_are_exactly_the_ones_the_gate_does_not_count():
     assert db.HUMAN_HELD_STATES.isdisjoint(db.WIP_STATES)
     assert db.STATE_WAIT_OWNER_REVIEW in db.HUMAN_HELD_STATES
     assert db.STATE_PARKED in db.HUMAN_HELD_STATES
+    # The omission direction, which disjointness alone does NOT catch and which is the exact shape
+    # of #1426: a NEW wait state added to `WAIT_STATES` and to neither of these is silently not
+    # counted by `wip_count()` AND not reported by `wip_excluded()` — a PR discounted invisibly,
+    # which is the defect this file exists to close. Every waiting PR is either work the pipeline
+    # is carrying or work a human owns; there is no third answer.
+    assert db.WAIT_STATES - db.WIP_STATES == db.HUMAN_HELD_STATES
 
 
 def test_wip_excluded_names_the_prs_and_the_state_that_explains_them(tmp_path):
@@ -172,6 +178,30 @@ def test_a_standing_hold_is_written_once_and_a_changed_shape_is_written_again(tm
     gate = [r for r in _ledger(dm.cfg.base) if r.get("stage") == "wip_gate"]
     assert len(gate) == 2
     assert gate[-1]["excluded"] == [{"number": 1304, "state": db.STATE_WAIT_OWNER_REVIEW}]
+    dm.conn.close()
+
+
+def test_an_empty_backlog_under_a_still_shut_gate_is_not_a_second_hold(tmp_path, monkeypatch):
+    """Holding nothing is not the same as holding nobody back — the gate is what changed or didn't.
+
+    A pass with no dispatchable start refuses nothing, so keying the reset on "did we hold anything"
+    forgets a hold that is still standing: the backlog empties and refills, and an identical row is
+    written again for one uninterrupted hold. The gate, not the backlog, is the event.
+    """
+    dm = _acting_daemon(tmp_path, extra="LEMD_MAX_AGENTS=1\n")
+    db.upsert_item(dm.conn, kind="pr", number=1365, state=db.STATE_WAIT_CI, branch="feature/a")
+    db.upsert_item(dm.conn, kind="issue", number=1416, state=db.STATE_READY, pending_mode="start")
+    monkeypatch.setattr(dm.sup, "v1_slots_busy", lambda: 0)
+
+    assert dm.act() == 0
+    # The backlog drains away while the PR is still in flight — nothing to hold, gate still shut.
+    db.force_state(dm.conn, db.get_item(dm.conn, "issue", 1416)["id"], db.STATE_IGNORED, dirty=0)
+    assert dm.act() == 0
+    # ...and refills against the same unchanged gate.
+    db.upsert_item(dm.conn, kind="issue", number=1417, state=db.STATE_READY, pending_mode="start")
+    assert dm.act() == 0
+
+    assert len([r for r in _ledger(dm.cfg.base) if r.get("stage") == "wip_gate"]) == 1
     dm.conn.close()
 
 
