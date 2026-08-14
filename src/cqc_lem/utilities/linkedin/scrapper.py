@@ -459,6 +459,14 @@ _EXPERIENCE_ENTITY_SELECTORS = (
 # Probed INSIDE a chosen entity to tell a grouped company from a single role.
 _NESTED_ENTITY_SELECTOR = ("div[data-view-name='profile-component-entity'], "
                            "div[role='listitem'], li")
+# What `experience_entity_nodes` reports when no rung matched and the roles were cut out of the
+# page by their own date lines instead (`_dated_block_nodes`). Not a CSS selector — it names the
+# fallback in the probe report and in the drift issue that report becomes.
+_DATED_BLOCK_SELECTOR = "<dated-block fallback>"
+# How far above a date line its role's block can reach. The climb already stops at the first
+# ancestor holding a SECOND date, so this only bounds the one-role page, where nothing above the
+# role ever holds a second date and an unbounded climb would swallow the whole page as one role.
+_MAX_DATED_BLOCK_ANCESTORS = 4
 
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Sep|Sept|Aug|Oct|Nov|Dec)[a-z]*\.?"
 _DATE_TOKEN = rf"(?:{_MONTH}\s+\d{{4}}|\d{{4}})"
@@ -467,6 +475,8 @@ _DATE_RANGE_RE = re.compile(
     rf"^(?P<start>{_DATE_TOKEN})\s*(?:-|–|—|to)\s*(?P<end>Present|{_DATE_TOKEN})"
     r"(?:\s*·\s*.+)?$", re.IGNORECASE)
 _DURATION_RE = re.compile(r"^\d+\s+yrs?(?:\s+\d+\s+mos?)?$|^\d+\s+mos?$", re.IGNORECASE)
+# Cheap prefilter for the dated-block fallback: no year, no date range, no reason to read the node.
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _SKILLS_RE = re.compile(r"^skills?\s*:\s*(.+)$", re.IGNORECASE)
 # "Skills:" alone on its line, with the names in the next block.
 _SKILLS_LABEL_RE = re.compile(r"^skills?\s*:?$", re.IGNORECASE)
@@ -606,6 +616,63 @@ def _has_date_range(lines: List[str]) -> bool:
     return any(_is_date_line(line) for line in lines)
 
 
+def _count_date_lines(lines: List[str]) -> int:
+    """How many of these lines are date ranges — one role, or the group holding several."""
+    return sum(1 for line in lines if _is_date_line(line))
+
+
+def _dated_block_nodes(source) -> List[PageElement]:
+    """One node per role, cut out of the page by the role's OWN date line.
+
+    Every rung of `_EXPERIENCE_ENTITY_SELECTORS` names a markup vocabulary — `li`, `role='listitem'`,
+    `data-view-name` — and the render a 2nd/3rd-degree profile serves has none of them (#1465): each
+    role is bare `div`s inside an `<a>` to the company page, carrying no role, no data-* and no
+    aria-* attribute anywhere in the chain. Every rung therefore matched only the footer's help
+    links, the page parsed to nothing, and production warned about selector rot on a page that was
+    rendering its experience perfectly.
+
+    So this fallback anchors on the one thing that identifies a role in ANY of these shapes, and the
+    same thing the parser itself anchors on: the date range. Each date line's deepest element grows
+    upward while its ancestor still holds exactly ONE date line — the first ancestor holding two is
+    the group above it, never the role — which yields the whole role block (title, company subtitle,
+    dates, description) without naming a single tag or class.
+
+    Never the first choice: a rung that matches is more precise about where an entity STARTS, so this
+    runs only when no rung is dated.
+    """
+    root = source.find("main") or source
+    if root is None:
+        return []
+    blocks: List[PageElement] = []
+    seen = set()
+    # A date range always carries a year, and `get_text` is far cheaper than reading an element the
+    # way the parser does — so the year is the filter that keeps this off every node of the page.
+    candidates = [el for el in root.find_all(True) if _YEAR_RE.search(el.get_text(" "))]
+    for element in candidates:
+        if not _has_date_range(visible_lines(element)):
+            continue
+        if any(_has_date_range(visible_lines(child)) for child in element.find_all(True)
+               if _YEAR_RE.search(child.get_text(" "))):
+            continue  # A deeper element renders this date line; that one is the anchor.
+        node = element
+        for parent in list(element.parents)[:_MAX_DATED_BLOCK_ANCESTORS]:
+            if parent is root or (getattr(parent, "name", "") or "").lower() in (
+                    "body", "html", "[document]"):
+                break
+            parent_lines = visible_lines(parent)
+            if _count_date_lines(parent_lines) > 1:
+                break
+            # A section heading belongs to the page, not to the role beneath it — climbing past it
+            # would hand "Experience" to `_company_from_subtitle` as this role's company.
+            if any(line.strip().lower() in _SECTION_TITLE_LINES for line in parent_lines):
+                break
+            node = parent
+        if id(node) not in seen:
+            seen.add(id(node))
+            blocks.append(node)
+    return blocks
+
+
 def experience_entity_nodes(source) -> tuple:
     """(top-level entity nodes, the selector that found them).
 
@@ -615,8 +682,10 @@ def experience_entity_nodes(source) -> tuple:
     A rung only WINS if at least one of its nodes carries a date range. Without that test the ladder
     is decided by selector specificity alone, and the live run behind this rebuild is exactly why
     that fails: `div[data-sdui-screen] div[role='listitem']` matched three footer help-links and beat
-    the rung holding the actual roles. An undated rung is still returned when NO rung is dated, so
-    the probe (and the warning path) can report what the page did render.
+    the rung holding the actual roles. When NO rung is dated, `_dated_block_nodes` cuts the roles out
+    by their own date lines (#1465) — the shape served for a 2nd/3rd-degree profile names no markup
+    the ladder can ask for. An undated rung is still returned when that finds nothing either, so the
+    probe (and the warning path) can report what the page did render.
     """
     fallback: tuple = ([], "")
     for selector in _EXPERIENCE_ENTITY_SELECTORS:
@@ -634,6 +703,9 @@ def experience_entity_nodes(source) -> tuple:
             return top, selector
         if not fallback[0]:
             fallback = (top, selector)
+    blocks = _dated_block_nodes(source) if source else []
+    if blocks:
+        return blocks, _DATED_BLOCK_SELECTOR
     return fallback
 
 
