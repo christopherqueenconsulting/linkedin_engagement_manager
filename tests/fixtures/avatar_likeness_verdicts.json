@@ -1,0 +1,117 @@
+{
+  "measured_frames": 6,
+  "note": "NOT a measurement. Six invented verdicts that pin the file shape and the grader's polarity so the replay test has a target before real frames exist. Replace this file wholesale with the output of `scripts/avatar_likeness_eval.py --out` once the owner has run the probe over real labelled frames; that run writes \"source\": \"measured\".",
+  "records": [
+    {
+      "checked": true,
+      "frame_id": "0000000000000001",
+      "label": "present",
+      "present": true,
+      "subject_clause": "a man in his 40s",
+      "used_avatar": "true"
+    },
+    {
+      "checked": true,
+      "frame_id": "0000000000000002",
+      "label": "present",
+      "present": true,
+      "subject_clause": "a man in his 40s",
+      "used_avatar": "true"
+    },
+    {
+      "checked": true,
+      "frame_id": "0000000000000003",
+      "label": "present",
+      "present": false,
+      "subject_clause": "a man in his 40s",
+      "used_avatar": "true"
+    },
+    {
+      "checked": true,
+      "frame_id": "0000000000000004",
+      "label": "absent",
+      "present": false,
+      "subject_clause": "a man in his 40s",
+      "used_avatar": "true"
+    },
+    {
+      "checked": true,
+      "frame_id": "0000000000000005",
+      "label": "absent",
+      "present": true,
+      "subject_clause": "a man in his 40s",
+      "used_avatar": "true"
+    },
+    {
+      "checked": false,
+      "frame_id": "0000000000000006",
+      "label": "absent",
+      "present": null,
+      "subject_clause": "a man in his 40s",
+      "used_avatar": "false"
+    }
+  ],
+  "scores": {
+    "by_subject_clause": {
+      "a man in his 40s": {
+        "false_negative": 1,
+        "false_negative_rate": 0.3333,
+        "false_positive": 1,
+        "false_positive_rate": 0.5,
+        "graded": 5,
+        "sufficient": false,
+        "total": 6,
+        "true_negative": 1,
+        "true_positive": 2,
+        "unchecked": 1,
+        "unchecked_rate": 0.1667,
+        "unlabelled": 0
+      }
+    },
+    "by_used_avatar": {
+      "false": {
+        "false_negative": 0,
+        "false_negative_rate": null,
+        "false_positive": 0,
+        "false_positive_rate": null,
+        "graded": 0,
+        "sufficient": false,
+        "total": 1,
+        "true_negative": 0,
+        "true_positive": 0,
+        "unchecked": 1,
+        "unchecked_rate": 1.0,
+        "unlabelled": 0
+      },
+      "true": {
+        "false_negative": 1,
+        "false_negative_rate": 0.3333,
+        "false_positive": 1,
+        "false_positive_rate": 0.5,
+        "graded": 5,
+        "sufficient": false,
+        "total": 5,
+        "true_negative": 1,
+        "true_positive": 2,
+        "unchecked": 0,
+        "unchecked_rate": 0.0,
+        "unlabelled": 0
+      }
+    },
+    "overall": {
+      "false_negative": 1,
+      "false_negative_rate": 0.3333,
+      "false_positive": 1,
+      "false_positive_rate": 0.5,
+      "graded": 5,
+      "sufficient": false,
+      "total": 6,
+      "true_negative": 1,
+      "true_positive": 2,
+      "unchecked": 1,
+      "unchecked_rate": 0.1667,
+      "unlabelled": 0
+    }
+  },
+  "source": "synthetic-schema-example"
+}

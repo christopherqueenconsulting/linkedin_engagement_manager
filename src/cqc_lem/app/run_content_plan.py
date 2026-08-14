@@ -865,6 +865,26 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     return post_text
 
 
+def _avatar_media_state(post_id: Optional[int]) -> str:
+    """Was this post's stored frame a real LoRA render? ``"true"`` / ``"false"`` / ``"unknown"``.
+
+    Reads the three-valued ``posts.avatar_media`` (issue #1430). It is reported as a STRING rather
+    than folded to a boolean because an unreadable flag is not the same reading as a base-Flux
+    fallback: collapsing them would put the rows that cannot be attributed into the very bucket the
+    split exists to isolate.
+    """
+    try:
+        from cqc_lem.utilities.db import post_avatar_media_state
+        state = post_avatar_media_state(post_id)
+    except Exception as e:
+        log_debug("Could not read the avatar-media flag for the likeness probe", error=str(e),
+                  post_id=post_id, action_type="avatar_likeness_probe")
+        return "unknown"
+    if state is None:
+        return "unknown"
+    return "true" if state else "false"
+
+
 def _check_avatar_likeness(image_path: str, avatar: dict,
                            user_id: Optional[int] = None,
                            post_id: Optional[int] = None) -> None:
@@ -874,7 +894,8 @@ def _check_avatar_likeness(image_path: str, avatar: dict,
     telemetry-only by default; ``AVATAR_LIKENESS_VIDEO_HOLD_ENABLED`` makes a failed probe drop the
     AI video to the Pexels fallback. Every result is emitted to PostHog via
     ``track_avatar_likeness_probe`` so the false-positive rate can be measured before any hold is
-    turned on.
+    turned on — carrying ``used_avatar`` so a checked-negative can be attributed to a bad LoRA
+    render rather than to the base-Flux fallback frame, which carries no likeness by design.
     """
     if not AVATAR_LIKENESS_PROBE_ENABLED:
         return
@@ -883,7 +904,8 @@ def _check_avatar_likeness(image_path: str, avatar: dict,
     from cqc_lem.utilities.observability import track_avatar_likeness_probe
 
     verdict = probe_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
-    track_avatar_likeness_probe(user_id, post_id, verdict)
+    track_avatar_likeness_probe(user_id, post_id, verdict,
+                                used_avatar=_avatar_media_state(post_id))
     if AVATAR_LIKENESS_VIDEO_HOLD_ENABLED and verdict.get("checked") and verdict.get("present") is False:
         # INFO, not WARNING: holding a frame the probe declined is the flag doing its job, and a
         # recurring warning is re-emitted at ERROR and filed as a grouped defect — one per held

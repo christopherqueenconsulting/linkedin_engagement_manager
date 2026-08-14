@@ -3,7 +3,7 @@
 Issues: [#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)
 (research + item 1) · [#744](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/744)
 (items 2–4)
-Date: 2026-07-25, updated 2026-08-07 · Status: **DONE** — owner signed off `1A 2A 3A 4A` (§5), all
+Date: 2026-07-25, updated 2026-08-14 · Status: **DONE** — owner signed off `1A 2A 3A 4A` (§6), all
 four Phase 2 items shipped, and the supervised live avatar render passed on the owner's account
 (2026-08-07, §4). #744 closed on it.
 
@@ -302,13 +302,91 @@ that runs on the **stored source frame** before the video model sees it.
 - **It reads the FRAME, not which model made it:** `generate_image_with_avatar` falls back to base
   Flux when LoRA inference fails (`used_avatar=False`), and that frame legitimately carries no
   likeness. The probe scores it `checked` / `present=False` exactly like a bad LoRA render, so a
-  raw checked-negative rate mixes the two — split them on `posts.avatar_media`, which only a real
-  LoRA render sets. #1430 owns that measurement, and it has to happen before the hold may default
-  on: with the hold ON today, a LoRA outage costs the user their AI video as well as the likeness.
-- **Escalation path:** if the probe disagrees with human review, disable the hold flag and inspect
-  the `avatar_likeness_probe` event (`present`, `checked`, `reason`) for that `post_id`. A held
-  frame logs INFO, not a warning — holding is the flag doing its job, and a recurring warning would
-  file a grouped defect per held video. The event is the record.
+  raw checked-negative rate mixes the two. **Shipped in #1430:** the `avatar_likeness_probe` event
+  now carries `used_avatar`, read from the three-valued `posts.avatar_media` (only a real LoRA
+  render sets it) and reported as the string `"true"` / `"false"` / `"unknown"` — an unreadable
+  flag is not the reading "fallback render", so it never lands in the bucket the split exists to
+  isolate. Without that property no checked-negative rate can decide the hold: with the hold ON, a
+  Replicate/LoRA outage would cost the user their AI video as well as the likeness.
+
+### 5.1 Measuring the probe — the method (issue #1430)
+
+**Polarity, fixed once** (`utilities/avatar/likeness_eval.py` is the ONE definition; everything
+below reads it from there). The positive class is *"the declared likeness is present"*.
+
+| Reading | What it means | What it costs |
+|---|---|---|
+| **False negative** — probe says `present=False`, human says present | A good frame wrongly declined | With the hold ON: the user loses their AI video (drops to Pexels stock). **This is the rate that decides the default.** |
+| **False positive** — probe says `present=True`, human says absent | A bad frame wrongly passed | The hold fails to catch what it exists for; the pre-#1279 status quo. |
+| **Unchecked** — `checked=False` | Vision outage, unreadable image, or an empty declared likeness | Nothing. The probe fails OPEN and an unchecked verdict can never hold a video, so it is never graded as an error — it is reported on its own line. |
+
+A rate with an empty denominator is `None`, never `0.0` — an unmeasured class is not a perfect one.
+
+**The harness.** Real LoRA-rendered frames of a real person cannot be committed (this repo is
+PUBLIC), so the measurement is made publishable instead of the frames:
+
+- `scripts/avatar_likeness_eval.py --manifest <path outside the repo>` runs the live probe over a
+  human-labelled manifest and prints the scorecard. Each frame costs one real `lem-vision` call.
+- `--out tests/fixtures/avatar_likeness_verdicts.json` writes the committable verdict file: one row
+  per frame carrying the SHA-256 digest of its bytes, the human's label, the declared subject
+  clause, `used_avatar`, and the probe's verdict. **Never a path, never pixels**, and never the
+  vision model's free-text reason unless `--include-reasons` is passed. Writing REFUSES outright if
+  a record carries any field the grader did not put there (`leaks_a_frame_path`).
+- `grade()` reports the two rates overall, **per declared subject clause**, and **per
+  `used_avatar`** — the split above. It reports `sufficient: false` below 10 graded frames or 4 per
+  class; a thinner set is a curiosity, not a finding.
+- `tests/unit/utilities/avatar/test_likeness_eval.py` replays the committed fixture and re-grades
+  it, so the recorded numbers and the grader can never drift. The fixture that ships today declares
+  `"source": "synthetic-schema-example"` — it pins the file shape, and carries **no measurement**.
+
+**Production telemetry, read 2026-08-14** (PostHog project *CQC LEM*, all `avatar_likeness_probe`
+events since the probe shipped):
+
+| Window | Events | `checked=true` | Distinct reasons |
+|---|---|---|---|
+| 2026-08-10 → 2026-08-14 | 152 (users 1, 7; all on post 9) | **0** | one: `No declared likeness attributes to verify` |
+
+**So there is no telemetry-derived rate to read, and there cannot be one yet.** Every probe returned
+`checked=False` because the active avatars carry no `gender_presentation` / `age_band`, which makes
+`subject_clause` empty. That is a data state, not a code fault — and it is the same state §4's
+live-validation note warns about: with the attributes blank, the subject clause contributes nothing
+to the Replicate prompt either, so **none** of the #744 fidelity work is exercised on those accounts.
+Two consequences for the hold decision:
+
+1. Turning `AVATAR_LIKENESS_VIDEO_HOLD_ENABLED` on today would change nothing — only a *checked*
+   negative can hold, and there are none. It would also be untested in production the first time
+   an account does declare its attributes.
+2. The prerequisite is an operator action, not a code change: **declare the attributes on the active
+   avatars** (Avatars SPA → attribute controls), after which the probe starts returning checked
+   verdicts and the rate becomes measurable from telemetry as well as from the harness.
+
+### 5.2 Escalation path — probe/human disagreement (procedure)
+
+The doc bullet this replaces named an inspection, not a procedure. This is the procedure; it is
+written for the hold being ON, and steps 1–2 apply equally while it is off.
+
+1. **Confirm which fault it is.** Pull the `avatar_likeness_probe` event for that `post_id` and read
+   `used_avatar` FIRST. `"false"` means the frame was the base-Flux fallback — the LoRA render
+   failed, the probe was right, and the defect is in Replicate/LoRA inference, not here. Only
+   `"true"` is a probe/human disagreement. `"unknown"` means the flag was unreadable: treat it as
+   unattributed and check `posts.avatar_media` directly before drawing any conclusion.
+2. **Record it as a labelled frame.** Save the stored source frame outside the repo, add it to the
+   eval manifest with the HUMAN's label, and re-run `scripts/avatar_likeness_eval.py`. A
+   disagreement that never enters the manifest cannot move the measured rate, and the measured rate
+   is the only thing that justifies changing the default.
+3. **Un-hold the user's video.** A held frame never blocks the post — `_generate_video_src` catches
+   `AvatarLikenessHold`, refunds any premium credits and ships the Pexels stock fallback, so the
+   post publishes on time with stock media. To recover the AI video: fix the cause (usually declare
+   or refresh the avatar attributes, then re-roll the samples per §4), then run
+   `regenerate_post_video_task(<post_id>)`. There is no per-user hold state to clear — the hold is
+   evaluated per render, so the next render is unencumbered.
+4. **If the disagreement is systemic** (the same account, repeatedly, on `used_avatar="true"`
+   frames): set `AVATAR_LIKENESS_VIDEO_HOLD_ENABLED=false` in `/opt/lem/.env` and restart the
+   affected workers. That is a one-line revert to telemetry-only and costs nothing but the check.
+   Tell the account owner their videos were shipping with stock media, and why.
+5. **Do not add a warning to the hold path.** A held frame logs INFO deliberately — a repeated
+   `log_warning` is re-emitted at ERROR and files ONE grouped `$exception`, which would file a
+   defect per held video against working behaviour. The event is the record.
 
 ---
 
@@ -326,3 +404,9 @@ that runs on the **stored source frame** before the video model sees it.
 4. **Guardrail strictness** → **A. Full set:** approval gate before activation, per-content-type
    opt-in (default off), disclosure + C2PA on *all* avatar media, and an explicit "don't use my
    avatar" switch. *(Shipped — §4 items 3–4.)*
+5. **`AVATAR_LIKENESS_VIDEO_HOLD_ENABLED` default** → **OPEN (issue #1430).** Not decidable yet:
+   §5.1 measured **zero checked verdicts** in production, so there is no false-negative rate to
+   weigh, and turning the hold on would change nothing until an account declares its avatar
+   attributes. The measurement machinery (the `used_avatar` split, the eval harness, the verdict
+   fixture) and the escalation procedure ship with #1430; the default itself stays **false** until
+   the owner declares the attributes and a graded run reports `sufficient: true`.
