@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from typing import Any, Mapping, Optional, Sequence
@@ -46,6 +47,7 @@ from typing import Any, Mapping, Optional, Sequence
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from cqc_lem.utilities.ai.content_framework import (  # noqa: E402
+    COMMENT_HISTORY_LIMIT,
     post_embedding_similarity_max,
     post_similarity_max,
 )
@@ -61,9 +63,12 @@ from cqc_lem.utilities.content_quality import (  # noqa: E402
 # three editions each measure nothing at all.
 MIN_EDITIONS = 20
 MIN_ACCOUNTS = 2
-# How many editions to read per account. The nightly pass compares against the same reader's
-# default window, so a wider one here would measure a corpus the telemetry never sees.
-EDITIONS_PER_USER = 200
+# How many editions to read per account — the nightly pass's own window
+# (`run_scheduler` reads `get_recent_newsletter_bodies(user_id, limit=COMMENT_HISTORY_LIMIT)`), and
+# also the hard ceiling `similarity_reports` puts on the history pool. Reading MORE than this does
+# not widen the measurement: the pool is truncated to the newest `COMMENT_HISTORY_LIMIT` editions
+# and every older edition is then scored against a window the telemetry never used.
+EDITIONS_PER_USER = COMMENT_HISTORY_LIMIT
 
 
 def _percentile(values: Sequence[float], fraction: float) -> Optional[float]:
@@ -73,7 +78,9 @@ def _percentile(values: Sequence[float], fraction: float) -> Optional[float]:
     ordered = sorted(values)
     if not ordered:
         return None
-    rank = max(1, min(len(ordered), int(round(fraction * len(ordered) + 0.5))))
+    # `ceil`, not `round(...+0.5)`: Python rounds halves to EVEN, so the rank of a percentile that
+    # lands exactly on a boundary (p25 of four editions) would depend on the parity of the corpus.
+    rank = max(1, min(len(ordered), math.ceil(fraction * len(ordered))))
     return round(ordered[rank - 1], 4)
 
 
@@ -243,11 +250,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--users", help="comma-separated user ids (default: all active users)")
     parser.add_argument("--limit", type=int, default=EDITIONS_PER_USER,
-                        help=f"editions to read per account (default: {EDITIONS_PER_USER})")
+                        help=f"editions to read per account (default and maximum: "
+                             f"{EDITIONS_PER_USER} — the history pool `similarity_reports` compares "
+                             f"against is capped there)")
     parser.add_argument("--json", action="store_true", help="emit the raw summary as JSON")
     args = parser.parse_args(argv)
 
-    summary = collect(_user_ids(args.users), limit=max(1, args.limit))
+    # Clamped, not honoured-then-truncated: a run asked for 500 editions would report 500 rows in
+    # `editions` while every score came from a 50-edition window, which is the one way this report
+    # could overstate the corpus it measured.
+    summary = collect(_user_ids(args.users), limit=min(max(1, args.limit), EDITIONS_PER_USER))
     print(json.dumps(summary, indent=2, default=str) if args.json else render(summary))
     return 0
 

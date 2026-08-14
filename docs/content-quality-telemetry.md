@@ -88,6 +88,11 @@ alert as `pooled_delta`; the rollup carries both as `deltas.similarity_avg` and
 `deltas.similarity_avg_mix_adjusted`. Two periods with **no surface in common** produce `None` — no
 verdict — and the pooled delta is never consulted as a second chance.
 
+`CONTENT_QUALITY_MIN_SAMPLE` then counts **the shared surfaces' own samples**, not the pooled
+`similarity_sample`: two periods can each carry twenty scored pieces and still share one surface
+with a single edition on each side, and the minimum exists to keep exactly that measurement out of
+the owner's inbox.
+
 The threshold itself is unchanged and stays surface-agnostic: `CONTENT_QUALITY_SIMILARITY_DELTA`
 thresholds a *move*, which is comparable across surfaces in a way a *level* is not. **No surface has
 an absolute self-similarity ceiling here**, and #1433 decided the newsletter surface does not get

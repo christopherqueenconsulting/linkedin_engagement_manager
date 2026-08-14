@@ -794,6 +794,39 @@ def _delta(current: Optional[float], prior: Optional[float], digits: int = 4) ->
     return round(float(current) - float(prior), digits)
 
 
+def _mix_adjusted_similarity(current: Mapping[str, Any], prior: Mapping[str, Any],
+                             digits: int = 4) -> tuple:
+    """`(delta, current_sample, prior_sample)` over the surfaces measured in BOTH periods.
+
+    The two sample counts are the mix-adjusted answer's OWN denominators, and they are not the
+    pooled `similarity_sample`: a period pair can have twenty scored pieces each and still share
+    exactly one surface with one edition on it. `evaluate_alerts` gates on these, because the
+    minimum-sample rule is about the number the alert is graded on.
+    """
+    current_split = dict((current or {}).get("similarity_by_surface") or {})
+    prior_split = dict((prior or {}).get("similarity_by_surface") or {})
+    weighted, weight_total, prior_total = 0.0, 0.0, 0.0
+    for surface, current_reading in current_split.items():
+        prior_reading = dict(prior_split.get(surface) or {})
+        current_reading = dict(current_reading or {})
+        if current_reading.get("avg") is None or prior_reading.get("avg") is None:
+            continue
+        try:
+            weight = float(current_reading.get("sample") or 0)
+            prior_weight = float(prior_reading.get("sample") or 0)
+            move = float(current_reading["avg"]) - float(prior_reading["avg"])
+        except (TypeError, ValueError):
+            continue
+        if weight <= 0:
+            continue
+        weighted += move * weight
+        weight_total += weight
+        prior_total += max(0.0, prior_weight)
+    if not weight_total:
+        return None, 0, 0
+    return round(weighted / weight_total, digits), int(weight_total), int(prior_total)
+
+
 def mix_adjusted_similarity_delta(current: Mapping[str, Any], prior: Mapping[str, Any],
                                   digits: int = 4) -> Optional[float]:
     """The self-similarity move with the surface MIX held constant (issue #1433).
@@ -808,26 +841,7 @@ def mix_adjusted_similarity_delta(current: Mapping[str, Any], prior: Mapping[str
     `None` when no surface was measured on both sides: two periods with nothing in common have no
     comparable move, and that is not "no change".
     """
-    current_split = dict((current or {}).get("similarity_by_surface") or {})
-    prior_split = dict((prior or {}).get("similarity_by_surface") or {})
-    weighted, weight_total = 0.0, 0.0
-    for surface, current_reading in current_split.items():
-        prior_reading = dict(prior_split.get(surface) or {})
-        current_reading = dict(current_reading or {})
-        if current_reading.get("avg") is None or prior_reading.get("avg") is None:
-            continue
-        try:
-            weight = float(current_reading.get("sample") or 0)
-            move = float(current_reading["avg"]) - float(prior_reading["avg"])
-        except (TypeError, ValueError):
-            continue
-        if weight <= 0:
-            continue
-        weighted += move * weight
-        weight_total += weight
-    if not weight_total:
-        return None
-    return round(weighted / weight_total, digits)
+    return _mix_adjusted_similarity(current, prior, digits)[0]
 
 
 def evaluate_alerts(current: Mapping[str, Any], prior: Mapping[str, Any]) -> list:
@@ -887,10 +901,18 @@ def evaluate_alerts(current: Mapping[str, Any], prior: Mapping[str, Any]) -> lis
     # Graded on the per-surface split when both periods carry one (issue #1433), so a week whose
     # SURFACE MIX changed cannot read as convergence. Falls back to the pooled delta only for a
     # summary that predates the split — never as a second chance for one the split declined.
-    mix_delta = mix_adjusted_similarity_delta(current, prior)
+    mix_delta, mix_sample, mix_prior_sample = _mix_adjusted_similarity(current, prior)
     mix_adjusted = bool(current.get("similarity_by_surface")) and bool(
         prior.get("similarity_by_surface"))
     graded_delta = mix_delta if mix_adjusted else sim_delta
+    # The minimum-sample rule counts the pieces the GRADED number was computed from. Once the split
+    # is in play that is the shared surfaces' own samples, not the pooled one — two periods can each
+    # carry twenty scored pieces and still share a single surface with one edition on it, and a
+    # +0.6 move measured on that one edition is exactly the thin-period noise `minimum` exists to
+    # keep out of the owner's inbox.
+    graded_sample = mix_sample if mix_adjusted else int(current.get("similarity_sample") or 0)
+    graded_prior_sample = (mix_prior_sample if mix_adjusted
+                           else int(prior.get("similarity_sample") or 0))
     # Both periods must have been graded by the SAME measure. A week the embedding endpoint was down
     # scores on the token-overlap scale, and comparing that against a cosine week would read as a
     # large move in whichever direction the scales happen to differ.
@@ -898,7 +920,8 @@ def evaluate_alerts(current: Mapping[str, Any], prior: Mapping[str, Any]) -> lis
                     and current.get("similarity_measure") == prior.get("similarity_measure"))
     if (graded_delta is not None and graded_delta >= sim_threshold and same_measure
             and int(current.get("similarity_sample") or 0) >= minimum
-            and int(prior.get("similarity_sample") or 0) >= minimum):
+            and int(prior.get("similarity_sample") or 0) >= minimum
+            and graded_sample >= minimum and graded_prior_sample >= minimum):
         alerts.append({
             "name": ALERT_SIMILARITY_CREEP,
             "metric": "similarity_avg",

@@ -417,12 +417,18 @@ it was for the dashboard and rides along on the alert as `pooled_delta`. Consequ
 - A newsletter surface that really does converge still alerts, on the same delta as everything else.
 - Two periods with no surface in common produce **no verdict** rather than a pooled one: `None`, and
   the pooled delta is not consulted as a second chance.
+- `CONTENT_QUALITY_MIN_SAMPLE` counts the SHARED surfaces' samples once the split is grading, not
+  the pooled `similarity_sample` — otherwise one edition against one edition could raise the alert
+  while the period reported twenty scored pieces.
 - Nothing is held, paused or regenerated. It is still the trend line.
 
 ### 8.4 The sampler that unblocks the calibration
 
 `scripts/sample_newsletter_similarity.py` — read-only, no writes, no browser, and it re-uses
-`similarity_reports` so it measures exactly what the nightly pass measures. It reports the
+`similarity_reports` so it measures exactly what the nightly pass measures — including its window,
+`COMMENT_HISTORY_LIMIT` editions per account, which is both what `run_scheduler` reads and the cap
+`similarity_reports` puts on the history pool (`--limit` is clamped there, because reading further
+back would report more editions than the scores actually came from). It reports the
 leave-one-out distribution (min / p25 / median / mean / p75 / p90 / max) for **bodies and titles
 separately**, split per account and per measure (cosine and token overlap are never pooled), against
 the post ceilings as a labelled *reference, not a verdict*.

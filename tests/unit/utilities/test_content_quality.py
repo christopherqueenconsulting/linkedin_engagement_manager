@@ -473,6 +473,33 @@ class TestEvaluateAlerts:
         assert cq.evaluate_alerts(current, prior) == []
         assert cq.mix_adjusted_similarity_delta(current, prior) is None
 
+    def test_a_thin_shared_surface_cannot_fire_the_alert_on_its_own(self):
+        # The minimum-sample rule counts the pieces the GRADED number came from. Both periods here
+        # are well over the pooled minimum, but the only surface they SHARE carries one edition on
+        # each side — a +0.5 move measured on one edition against one edition.
+        current = self._summary(
+            similarity_avg=0.26, similarity_sample=11,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 10, "avg": 0.20},
+                                   cq.SURFACE_NEWSLETTER: {"sample": 1, "avg": 0.90}})
+        prior = self._summary(
+            similarity_avg=0.57, similarity_sample=6,
+            similarity_by_surface={cq.SURFACE_COMMENT: {"sample": 5, "avg": 0.60},
+                                   cq.SURFACE_NEWSLETTER: {"sample": 1, "avg": 0.40}})
+        assert cq.mix_adjusted_similarity_delta(current, prior) == 0.5
+        assert cq.evaluate_alerts(current, prior) == []
+
+    def test_the_shared_surfaces_own_sample_is_what_has_to_clear_the_minimum(self):
+        # Same shape, but the shared surface now carries a real sample on both sides.
+        current = self._summary(
+            similarity_avg=0.45, similarity_sample=15,
+            similarity_by_surface={cq.SURFACE_POST: {"sample": 10, "avg": 0.20},
+                                   cq.SURFACE_NEWSLETTER: {"sample": 5, "avg": 0.90}})
+        prior = self._summary(
+            similarity_avg=0.55, similarity_sample=10,
+            similarity_by_surface={cq.SURFACE_COMMENT: {"sample": 5, "avg": 0.60},
+                                   cq.SURFACE_NEWSLETTER: {"sample": 5, "avg": 0.40}})
+        assert [a["name"] for a in cq.evaluate_alerts(current, prior)] == [cq.ALERT_SIMILARITY_CREEP]
+
     def test_a_summary_without_the_split_falls_back_to_the_pooled_delta(self):
         alerts = cq.evaluate_alerts(self._summary(similarity_avg=0.42),
                                     self._summary(similarity_avg=0.30))

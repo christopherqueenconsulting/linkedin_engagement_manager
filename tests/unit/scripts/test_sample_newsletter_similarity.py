@@ -44,6 +44,13 @@ class TestDistribution:
         shape = tool.distribution([0.10, 0.90])
         assert shape["median"] in (0.1, 0.9) and shape["p90"] in (0.1, 0.9)
 
+    def test_a_percentile_landing_on_a_boundary_does_not_depend_on_the_corpus_parity(self, tool):
+        # p25 of four editions is exactly rank 1. Python rounds halves to EVEN, so the previous
+        # `round(f*n + 0.5)` reported the SECOND-lowest here and the lowest for five editions.
+        assert tool.distribution([0.10, 0.20, 0.30, 0.40])["p25"] == 0.1
+        assert tool.distribution([0.10, 0.20, 0.30, 0.40])["p75"] == 0.3
+        assert tool.distribution([0.10, 0.20, 0.30, 0.40, 0.50])["p25"] == 0.2
+
 
 def _fake_reports(monkeypatch, tool, reports):
     """Replace the batched embedding reader and record what it was handed."""
@@ -165,6 +172,26 @@ class TestCollect:
         assert summary["per_user"][0]["editions"] == 2
         assert summary["surfaces"]["body"]["embedding"]["sample"] == 2
         assert summary["sufficient_corpus"] is False
+
+    def test_the_window_is_the_one_the_nightly_pass_compares_against(self, tool):
+        from cqc_lem.utilities.ai.content_framework import COMMENT_HISTORY_LIMIT
+        # `similarity_reports` truncates the history pool to COMMENT_HISTORY_LIMIT, so a wider read
+        # would score the older editions against a window nothing else uses.
+        assert tool.EDITIONS_PER_USER == COMMENT_HISTORY_LIMIT
+
+    def test_an_oversized_limit_is_clamped_rather_than_silently_truncated(self, tool, monkeypatch,
+                                                                         capsys):
+        asked: list = []
+
+        def _collect(ids, limit):
+            asked.append(limit)
+            return tool.summarize([_user(1, 2)])
+
+        monkeypatch.setattr(tool, "collect", _collect)
+        tool.main(["--users", "1", "--limit", "500"])
+        tool.main(["--users", "1", "--limit", "0"])
+        capsys.readouterr()
+        assert asked == [tool.EDITIONS_PER_USER, 1]
 
     def test_main_exits_zero_on_a_corpus_too_small_to_calibrate(self, tool, monkeypatch, capsys):
         monkeypatch.setattr(tool, "collect", lambda ids, limit: tool.summarize([_user(1, 2)]))
