@@ -40,7 +40,7 @@ def _base(tmp_path: Path, config: str = "", ollama_state: str = "") -> Path:
     return tmp_path
 
 
-def _run(base: Path, *args: str, outcomes: str = "", timeout: int = 60):
+def _run(base: Path, *args: str, outcomes: str = "", timeout: int = 60, env_extra: dict | None = None):
     """Run status.sh against `base`, isolated from the real box."""
     env = {
         **os.environ,
@@ -49,6 +49,7 @@ def _run(base: Path, *args: str, outcomes: str = "", timeout: int = 60):
         "OUTCOMES": outcomes or str(base / "logs" / "tick-outcomes.ndjson"),
         "CLAUDE_PROJECTS_DIR": str(base / "projects"),
         "NO_COLOR": "1",
+        **(env_extra or {}),
     }
     return subprocess.run(
         ["bash", str(STATUS_SH), *args],
@@ -56,8 +57,8 @@ def _run(base: Path, *args: str, outcomes: str = "", timeout: int = 60):
     )
 
 
-def _json(base: Path, *args: str, outcomes: str = "") -> dict:
-    proc = _run(base, "--no-gh", "--json", *args, outcomes=outcomes)
+def _json(base: Path, *args: str, outcomes: str = "", env_extra: dict | None = None) -> dict:
+    proc = _run(base, "--no-gh", "--json", *args, outcomes=outcomes, env_extra=env_extra)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -299,3 +300,122 @@ def test_without_v1_retired_the_v1_stall_warning_still_fires(tmp_path):
     proc = _run(base, "--no-gh", outcomes=outcomes)
     assert "stalled, not idle" in proc.stdout
     assert "cron may not be firing" in proc.stdout
+
+
+# ---------------------------------------------------------------- stale units (#1412)
+
+_SYSTEMCTL_STUB = """#!/usr/bin/env bash
+# Stub systemctl. Reads "<unit> <active|inactive> <systemd timestamp>" lines from $STUB_UNITS,
+# which is how a test says "this unit is up and started then" without a real init system.
+case "$1" in
+  is-active)
+    while read -r u s _; do [ "$u" = "$3" ] && { [ "$s" = active ] && exit 0 || exit 3; }; done < "$STUB_UNITS"
+    exit 4 ;;
+  show)
+    [ "$2" = "-p" ] && [ "$3" = ExecMainStartTimestamp ] || exit 0
+    while read -r u _ rest; do
+      [ "$u" = "$5" ] && { printf '%s\\n' "$rest"; exit 0; }
+    done < "$STUB_UNITS"
+    exit 0 ;;
+esac
+exit 0
+"""
+
+
+def _stub_systemctl(base: Path, units: dict) -> dict:
+    """Put a fake `systemctl` on PATH. `units` maps unit -> (active, start epoch or None)."""
+    bin_ = base / "stubbin"
+    bin_.mkdir(exist_ok=True)
+    (bin_ / "systemctl").write_text(_SYSTEMCTL_STUB, encoding="utf-8")
+    (bin_ / "systemctl").chmod(0o755)
+    lines = []
+    for unit, (active, started) in units.items():
+        stamp = "" if started is None else time.strftime("%a %Y-%m-%d %H:%M:%S UTC", time.gmtime(started))
+        lines.append(f"{unit} {'active' if active else 'inactive'} {stamp}")
+    stub_file = base / "stub-units"
+    stub_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "STUB_UNITS": str(stub_file)}
+
+
+def _lemd_source(base: Path, *, mtime: float) -> None:
+    """The `lemd` package as installed, with a known newest-file mtime."""
+    pkg = base / "v2" / "lemd"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "db.py").write_text("SCHEMA_VERSION = 3\n", encoding="utf-8")
+    os.utime(pkg / "db.py", (mtime, mtime))
+
+
+def test_a_receiver_older_than_the_code_it_imported_is_reported_stale(tmp_path):
+    """#1412: the receiver ran 23-hour-old code through nine merged changes, invisibly.
+
+    Both units load `lemd` and keep whatever they imported at their own start, so the deploy step
+    naming only `lem-agentd` left the receiver on stale imports for a day. The only symptom was a
+    `kv.schema_version` that would not advance — which is not a thing anyone checks. Comparing the
+    unit's start time against the newest file in `v2/lemd/` is.
+    """
+    now = int(time.time())
+    base = _base(tmp_path)
+    _lemd_source(base, mtime=now - 3600)          # merged an hour ago
+    env = _stub_systemctl(base, {
+        "lem-agentd.service": (True, now - 300),          # restarted after the sync — current
+        "lem-agent-webhook.service": (True, now - 82800),  # 23 hours old — stale
+    })
+
+    report = _json(base, env_extra=env)
+    assert report["v2"]["stale_units"] == ["lem-agent-webhook.service"]
+    assert any("lem-agent-webhook.service" in w and "no longer on disk" in w
+               for w in report["warnings"])
+    assert any("systemctl restart lem-agent-webhook.service" in w for w in report["warnings"]), \
+        "a warning without the fix makes the operator go looking for it"
+
+    text = _run(base, "--no-gh", env_extra=env).stdout
+    assert "stale units:" in text
+    assert "lem-agent-webhook.service" in text
+    assert "lem-agentd.service" not in text.split("stale units:")[1].splitlines()[0]
+
+
+def test_units_restarted_after_the_newest_change_are_not_flagged(tmp_path):
+    """The check has to be quiet on a correctly deployed box, or it stops being read."""
+    now = int(time.time())
+    base = _base(tmp_path)
+    _lemd_source(base, mtime=now - 3600)
+    env = _stub_systemctl(base, {
+        "lem-agentd.service": (True, now - 300),
+        "lem-agent-webhook.service": (True, now - 290),
+    })
+
+    report = _json(base, env_extra=env)
+    assert report["v2"]["stale_units"] == []
+    assert not any("no longer on disk" in w for w in report["warnings"])
+    assert "stale units:" not in _run(base, "--no-gh", env_extra=env).stdout
+
+
+def test_an_unreadable_or_stopped_unit_is_skipped_not_assumed_current(tmp_path):
+    """`date -d ''` is NOW, so an empty timestamp would render as the freshest possible unit.
+
+    Unknown must never read as up to date, and a unit that is not running cannot be serving stale
+    imports — that is a different fault with a different fix.
+    """
+    now = int(time.time())
+    base = _base(tmp_path)
+    _lemd_source(base, mtime=now - 3600)
+    env = _stub_systemctl(base, {
+        "lem-agentd.service": (True, None),                # never started / unreadable
+        "lem-agent-webhook.service": (False, now - 82800),  # stopped
+    })
+
+    report = _json(base, env_extra=env)
+    assert report["v2"]["stale_units"] == []
+    assert not any("no longer on disk" in w for w in report["warnings"])
+
+
+def test_the_check_covers_every_unit_that_imports_the_package(tmp_path):
+    """A future unit loading `lemd` inherits the check by being named in LEMD_UNITS."""
+    now = int(time.time())
+    base = _base(tmp_path)
+    _lemd_source(base, mtime=now - 60)
+    env = _stub_systemctl(base, {"lem-agent-newthing.service": (True, now - 7200)})
+    env["LEMD_UNITS"] = "lem-agent-newthing.service"
+
+    report = _json(base, env_extra=env)
+    assert report["v2"]["stale_units"] == ["lem-agent-newthing.service"]

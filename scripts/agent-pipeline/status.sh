@@ -739,6 +739,48 @@ print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_
   fi
 }
 
+# ── stale units ──────────────────────────────────────────────────────────────────────────────────
+# `lem-agentd` and `lem-agent-webhook` BOTH import the `lemd` package, and a running process keeps
+# whatever it imported at its own start. A unit that started before the newest file in `v2/lemd/` is
+# therefore serving code that is no longer on disk. That is how the receiver ran 23-hour-old code
+# through nine merged changes (#1412) — `install.sh --sync` named only the daemon, `Restart=always`
+# meant nothing forced a natural restart, and the only symptom was a `kv.schema_version` that would
+# not advance. Two timestamps catch the whole class, including any future unit added to LEMD_UNITS.
+LEMD_UNITS="${LEMD_UNITS:-lem-agentd.service lem-agent-webhook.service}"
+STALE_UNITS=""
+LEMD_SRC_AGE=-1
+
+# systemd prints an EMPTY timestamp for a unit that has never started, and `date -d ''` renders that
+# as *now* — the freshest possible unit. So unknown returns nothing and is skipped: a unit whose
+# start time cannot be read must never read as up to date.
+unit_start_ts() {  # <unit> -> epoch seconds, empty when unknown
+  local raw
+  raw="$(systemctl show -p ExecMainStartTimestamp --value "$1" 2>/dev/null)"
+  [ -n "$raw" ] || raw="$(systemctl show -p ActiveEnterTimestamp --value "$1" 2>/dev/null)"
+  [ -n "$raw" ] || return 0
+  date -d "$raw" +%s 2>/dev/null
+}
+
+collect_stale_units() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local newest unit started
+  newest="$(find "$BASE/v2/lemd" -name '*.py' -printf '%T@\n' 2>/dev/null | sort -rn | head -1)"
+  newest="${newest%%.*}"
+  case "$newest" in ''|*[!0-9]*) return 0 ;; esac
+  LEMD_SRC_AGE=$(( NOW - newest ))
+  for unit in $LEMD_UNITS; do
+    # An inactive unit is a different fault and a different fix; only a RUNNING one can serve stale
+    # imports. This also skips a unit that is not installed on this box at all.
+    systemctl is-active --quiet "$unit" 2>/dev/null || continue
+    started="$(unit_start_ts "$unit")"
+    case "$started" in ''|*[!0-9]*) continue ;; esac
+    [ "$started" -lt "$newest" ] || continue
+    STALE_UNITS="$STALE_UNITS $unit"
+    warn "$unit has been running for $(fmt_dur "$(age_of "$started")") — longer than the newest file in v2/lemd/ has existed ($(fmt_dur "$LEMD_SRC_AGE") old), so it is serving code that is no longer on disk. Fix: sudo systemctl restart $unit"
+  done
+  STALE_UNITS="${STALE_UNITS# }"
+}
+
 # ── renderers ────────────────────────────────────────────────────────────────────────────────────
 render_text() {
   local n_agents="${#AGENT_ROWS[@]}"
@@ -773,6 +815,10 @@ render_text() {
   else
     printf '  %-14s v1 cron (v2 daemon not in control)\n' "dispatcher:"
   fi
+  # Printed next to the dispatcher because that is the line an operator is already reading when they
+  # ask "is what I merged actually running?" — the answer this report could not give during #1412.
+  [ -n "$STALE_UNITS" ] && printf '  %-14s %s%s%s — started before the newest v2/lemd change; restart to load it\n' \
+    "stale units:" "$C_RED" "$STALE_UNITS" "$C_RST"
 
   head2 "RUNNING AGENTS ($n_agents)"
   if [ "$n_agents" = 0 ]; then
@@ -967,6 +1013,8 @@ render_json() {
     printf 'v2_pool_agent=%s\n' "$V2_POOL_AGENT"
     printf 'v2_pool_gh=%s\n' "$V2_POOL_GH"
     printf 'v2_runs_window=%s\n' "${V2_RUNS:-0}"
+    printf 'stale_units=%s\n' "$STALE_UNITS"
+    printf 'lemd_source_age_s=%s\n' "$LEMD_SRC_AGE"
     printf 'last_tick_age_s=%s\n' "$LAST_TICK_AGE"
     printf 'last_dispatch_age_s=%s\n' "$LAST_DISPATCH_AGE"
     printf 'last_dispatch_mode=%s\n' "$LAST_DISPATCH_MODE"
@@ -1053,7 +1101,11 @@ print(json.dumps({
            "cap": kv.get("v2_cap"), "heartbeat_age_s": kv.get("v2_heartbeat_age_s"),
            "queue": counter(str(kv.get("v2_queue", "")).replace("  ", ",").replace("=", ":")),
            "pool_agent": kv.get("v2_pool_agent"), "pool_gh": kv.get("v2_pool_gh"),
-           "runs_in_window": kv.get("v2_runs_window")},
+           "runs_in_window": kv.get("v2_runs_window"),
+           # Always a list, empty when every unit is current — a consumer polling this never has to
+           # tell "no stale units" from "the check did not run".
+           "stale_units": str(kv.get("stale_units", "")).split(),
+           "lemd_source_age_s": kv.get("lemd_source_age_s")},
     "backlog": {k: kv.get(k) for k in ("gh_ok", "ready", "working", "blocked", "needs_human", "open_prs")},
     "recent": {"window_hours": kv.get("window_hours"), "ticks": kv.get("ticks"),
                "outcomes": counter(kv.get("outcomes")), "modes": counter(kv.get("modes")),
@@ -1073,8 +1125,10 @@ run_once() {
   V2_ACTIVE=0; V2_CAP=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
   V2_HOLD=""; V2_GH_SLOTS=""; V2_DISPATCH_AGE=-1; V2_DISPATCH_MODE=""
   V2_RUNS=""; V2_MODES=""; V2_RCS=""; V2_POOL_AGENT=-1; V2_POOL_GH=-1
+  STALE_UNITS=""; LEMD_SRC_AGE=-1
   collect_pipeline_state
   collect_v2
+  collect_stale_units
   collect_agents
   collect_other_claude
   collect_lanes

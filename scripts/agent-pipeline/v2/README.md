@@ -11,7 +11,7 @@ understand what the daemon does and why. This one is commands.
 ## Is it healthy?
 
 ```bash
-systemctl status lem-agentd                     # alive?
+systemctl status lem-agentd lem-agent-webhook   # alive?
 cat state/lemd.heartbeat                        # ...and not wedged (age < 600s)
 ../status.sh                                    # the whole picture
 ../status.sh --watch                            # ...refreshed
@@ -19,6 +19,12 @@ cat state/lemd.heartbeat                        # ...and not wedged (age < 600s)
 
 Liveness and freshness are different questions. A wedged process passes `is-active` and fails the
 heartbeat; `lem-agentd-watchdog.timer` checks both every 15 minutes and restarts on either.
+
+**Running is not the same as running the code you merged.** Both units import the `lemd` package and
+keep whatever they imported at their own start, so one that was never restarted after a sync serves
+code that is no longer on disk — the receiver did that for 23 hours (#1412). `status.sh` compares
+each unit's start time against the newest file in `v2/lemd/` and lists any that lose, under
+`stale units:` and in NEEDS ATTENTION (`--json`: `v2.stale_units`).
 
 ## What is it doing?
 
@@ -37,7 +43,7 @@ Every decision carries a `reason`; the full list and what each means is §4 of t
 ```bash
 touch ../PAUSED             # stop EVERYTHING (v1 and v2 both honour it)
 rm ../PAUSED                # resume
-sudo systemctl restart lem-agentd
+sudo systemctl restart lem-agentd lem-agent-webhook   # BOTH — both load `lemd`
 ./rollback.sh               # hand dispatch back to v1 (drains, does not kill children)
 ./cutover.sh                # ...and back to v2 (idempotent)
 ```
@@ -55,9 +61,15 @@ so using it would disable the failsafe as well.
 The pipeline is **not in the Docker image** and no workflow ships it. From the repo checkout:
 
 ```bash
-scripts/agent-pipeline/install.sh --sync     # only files the box has not edited
-sudo systemctl restart lem-agentd            # required for v2/lemd/*.py changes
+scripts/agent-pipeline/install.sh --sync                 # only files the box has not edited
+sudo systemctl restart lem-agentd lem-agent-webhook      # BOTH — required for v2/lemd/*.py changes
 ```
+
+**Restart both.** The receiver loads the same `lemd` package as the daemon and was not named here,
+so it ran 23-hour-old code through nine merged changes (#1412) — visible only as a
+`kv.schema_version` that would not advance, because `receiver.py` calls `db.connect()` per request
+and every delivery rewrote the version from its stale module. `sync.sh` restarts both; a hand sync
+has to. Then check `../status.sh` — a unit that was missed is listed under `stale units:`.
 
 A file the box has edited is refused, not overwritten; read the printed `diff` before reaching for
 `--sync --force`.
