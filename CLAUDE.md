@@ -361,9 +361,7 @@ new branch without a documented row fails the build. Labels are the human contra
 - **Model pins + env traps live in `.claude/agents/builder.md`** (every agent carries that
   section): never put `model:` in a definition — it inherits the parent's Ollama-lane URL and 400s
   invisibly at rc=0; pin tools/`--effort` instead. Reproduce CI with an empty `.env` +
-  `src/cqc_lem/ui/dist` moved aside — masks failures CI hits (the canonical one, unset `MYSQL_PORT`
-  → `int(None)` → a `TypeError` no `except mysql.connector.Error` catches, is fixed at the source in
-  `_resolve_mysql_port` (#1319), but the class of failure it stands for is not).
+  `src/cqc_lem/ui/dist` moved aside — masks failures CI hits.
 - **Fresh state:** before generating ANY code edit, run `git status` and read the target file — never
   edit from memory; another agent may have changed it under you.
 - **Micro-branching:** never edit a shared branch asynchronously; branch per task
