@@ -1339,6 +1339,12 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
     exactly like a failed render: the URL is not persisted, so the missing-asset gate holds the post
     and asset backfill can retry it. Either way the verdict is recorded on the post
     (`_record_video_probe_finding`), so the review queue can say why the file was rejected.
+
+    A rejection also CLEARS the render model `_generate_video_src` just recorded (issue #1410): the
+    file this key names never became the post's media, and on the regenerate path the row still
+    carries the PREVIOUS video's URL — leaving the key would report the rejected render as the model
+    of the video that actually shipped. Cleared, the nightly beat falls back to the coarse tier read
+    off that URL, which is all that is genuinely known.
     """
     probe_ok, probe_reason = _probe_video_file(video_file_path)
     track_video_asset_probe(post_id=post_id, user_id=user_id, probe_ok=probe_ok, reason=probe_reason,
@@ -1351,6 +1357,7 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
         return True
     log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
                 user_id=user_id, post_id=post_id, task_name=task_name)
+    _persist_video_model(post_id, None)
     if VIDEO_PROBE_ENABLED:
         raise RuntimeError(f"video asset probe failed: {probe_reason}")
     return False

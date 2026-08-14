@@ -41,6 +41,13 @@ there rather than at the storage step because that is the ONE place the answer e
 chosen there and the fallback is taken there — so the create path and the regenerate/heal path
 record the same thing by construction.
 
+The one thing the render path cannot see is whether its file survived storage, so
+`_accept_probed_video` — the ONE place a downloaded asset is rejected (#1280) — **clears the key it
+just recorded**. A rejected render never became the post's media, and on the regenerate path the row
+still carries the PREVIOUS video's URL, so keeping the key would report the rejected render as the
+model of the video that actually shipped. Cleared, the row reads as the coarse tier off that URL,
+which is all that is genuinely known.
+
 The column is **not backfilled**: a post that shipped before it existed still reads as the coarse
 `pexels` (proved by the file name the Pexels helper writes) or `runway`. That is the same rule as
 "unscored is never zero" applied to a string — the coarse tier is what was actually known, not a

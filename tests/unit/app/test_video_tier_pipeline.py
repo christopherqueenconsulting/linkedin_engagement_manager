@@ -302,6 +302,49 @@ class TestPersistedRenderModel:
         # The telemetry write is best-effort: the rendered video is returned either way.
         assert src == "https://x.mp4"
 
+    def test_a_rejected_probe_clears_the_recorded_model(self):
+        """The render happened, but its file never became the post's media.
+
+        On the regenerate path the row still carries the PREVIOUS video's URL, so leaving the key
+        would name the rejected render as the model of the video that actually shipped.
+        """
+        from unittest.mock import MagicMock
+        writer = MagicMock(return_value=True)
+        with patch("cqc_lem.app.run_content_plan._probe_video_file",
+                   return_value=(False, "empty file")), \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe"), \
+             patch("cqc_lem.app.run_content_plan.VIDEO_PROBE_ENABLED", False), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer):
+            from cqc_lem.app.run_content_plan import _accept_probed_video
+            accepted = _accept_probed_video(9, "/tmp/v.mp4", "https://x.mp4")
+        assert accepted is False
+        writer.assert_called_once_with(9, None)
+
+    def test_a_passing_probe_leaves_the_recorded_model_alone(self):
+        from unittest.mock import MagicMock
+        writer = MagicMock(return_value=True)
+        with patch("cqc_lem.app.run_content_plan._probe_video_file", return_value=(True, "")), \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe"), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer):
+            from cqc_lem.app.run_content_plan import _accept_probed_video
+            accepted = _accept_probed_video(9, "/tmp/v.mp4", "https://x.mp4")
+        assert accepted is True
+        writer.assert_not_called()
+
+    def test_a_hard_probe_failure_clears_it_before_raising(self):
+        """`VIDEO_PROBE_ENABLED` raises, so the clear has to happen first or it never happens."""
+        from unittest.mock import MagicMock
+        writer = MagicMock(return_value=True)
+        with patch("cqc_lem.app.run_content_plan._probe_video_file",
+                   return_value=(False, "empty file")), \
+             patch("cqc_lem.app.run_content_plan.track_video_asset_probe"), \
+             patch("cqc_lem.app.run_content_plan.VIDEO_PROBE_ENABLED", True), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer):
+            from cqc_lem.app.run_content_plan import _accept_probed_video
+            with pytest.raises(RuntimeError):
+                _accept_probed_video(9, "/tmp/v.mp4", "https://x.mp4")
+        writer.assert_called_once_with(9, None)
+
 
 class TestContentLanguageThreading:
     """Issue #548: the user's language must reach the motion prompt of audio-capable models —
