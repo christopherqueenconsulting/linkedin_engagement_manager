@@ -48,7 +48,6 @@ SCAN_ROOTS = ("src", "scripts", ".litellm", "compose", ".github")
 
 # Paths never swept, with the reason each is excluded:
 EXCLUDE_PATHS = (
-    "src/cqc_lem/streamlit/",                  # legacy tree, deletion tracked whole in #972
     "src/cqc_lem/aws/",                        # CDK path's ~20 TODOs tracked as ONE decision in #973
     "compose/local/celery/flower/static/",     # vendored Flower assets — not our code
     "scripts/todo_issue_sweep.py",             # this script names its own markers

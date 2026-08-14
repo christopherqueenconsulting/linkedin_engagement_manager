@@ -64,7 +64,11 @@ guardrails (caps, outbound volume, price display) switch atomically. Advancing a
 ### A.2 Extended trial for first adopters
 
 - **Standard trial today:** 14 days, all Professional features, no credit card (`FREE_TRIAL_DAYS`, default 14;
-  `src/cqc_lem/streamlit/Home.py` copy; trial row in `src/cqc_lem/utilities/db.py`). Keep this as the default.
+  trial row in `src/cqc_lem/utilities/db.py`). Marketing copy (previously `src/cqc_lem/streamlit/Home.py`,
+  deleted #972 — legacy Streamlit UI, replaced by the React SPA): *"Start with a free 14-day trial on any
+  plan. No credit card required."* / FAQ: *"The 14-day free trial includes access to all Professional plan
+  features with no limitations. You can generate content, schedule posts, and use automation features to
+  fully evaluate the platform."* Keep this as the default.
 - **Early-adopter offer:** a **materially longer 60-day trial** for the first **capped cohort (P0: 25, P1 first
   100)**, granted automatically — no human touch:
   1. New endpoint `POST /trial/extend` (feature-flagged, cohort-gated) sets `trial_ends_at = trial_started_at +

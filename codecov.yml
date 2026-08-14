@@ -51,8 +51,6 @@ ignore:
   - "src/cqc_lem/ui/"
   # AWS CDK infrastructure stacks — not application logic
   - "src/cqc_lem/aws/"
-  # Legacy Streamlit UI — unmaintained, zero coverage
-  - "src/cqc_lem/streamlit/"
   # Selenium browser-driving utilities. No automated lane drives a real browser (#1215) — what
   # grades these against LinkedIn is the read-only live probe, scripts/linkedin_live_validation.py.
   - "src/cqc_lem/utilities/selenium_util.py"
