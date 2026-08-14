@@ -167,6 +167,49 @@ class TestTheModelsDescribeTheHandlers:
         assert _keys(_nested(detail, "preferences")) == set(UserPreferencesDetail.model_fields)
 
 
+class TestAnAlwaysReturnedKeyIsDocumentedAsREQUIRED:
+    """`= None` documents "may be ABSENT", which is a different claim from "may be null".
+
+    Both narrowed handlers write every one of their keys unconditionally — the settings literal
+    sets all five (a missing row makes the VALUE null), and the engagement handler assigns each
+    read-only extra on both branches of its own try/except. Documenting one of those as optional
+    generates `key?:` in the SPA, and the whole-row PUT behind these payloads turns a dropped key
+    into a reset column — the failure this generation pipeline exists because of (#1446).
+
+    Genuinely partial payloads are the Redis records, and they say so with `extra="allow"`.
+    """
+
+    def test_the_settings_models_require_every_key_the_handler_writes(self):
+        from cqc_lem.api.response_schemas import (
+            SubscriptionSummary,
+            UserPreferencesDetail,
+            UserSettingsDetail,
+        )
+
+        for model in (UserSettingsDetail, UserPreferencesDetail, SubscriptionSummary):
+            optional = [n for n, f in model.model_fields.items() if not f.is_required()]
+            assert not optional, (
+                f"{model.__name__} documents {optional} as optional, but the handler's literal "
+                f"always writes them — a nullable key is `Optional[X]` with NO default")
+
+    def test_the_engagement_detail_requires_every_key_including_the_read_only_extras(self):
+        """The extras are the half that is easy to get wrong — they are added, not selected."""
+        from cqc_lem.api.routers.user import EngagementPreferencesDetail
+
+        added = _subscript_assignments(_handler("get_engagement_preferences_endpoint"), "prefs")
+        optional = [n for n, f in EngagementPreferencesDetail.model_fields.items()
+                    if not f.is_required()]
+        assert not optional, f"{optional} are documented optional but the handler always sets them"
+        assert added <= set(EngagementPreferencesDetail.model_fields)
+
+    def test_a_redis_backed_record_is_still_allowed_to_be_partial(self):
+        """Anti-overreach: the rule above is about keys a HANDLER writes, not every model here."""
+        from cqc_lem.api.response_schemas import FeedReach, GmailForwardConfirmation
+
+        assert not GmailForwardConfirmation.model_fields["source"].is_required()
+        assert not FeedReach.model_fields["roster_commented"].is_required()
+
+
 class TestThePublishedSchemaUsesThem:
     """Without this, a `responses=` block could be dropped and only the SPA types would notice."""
 

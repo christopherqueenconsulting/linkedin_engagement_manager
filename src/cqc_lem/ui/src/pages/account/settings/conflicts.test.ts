@@ -26,6 +26,7 @@ const eng = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   roster_auto_connect: false,
   gmail_forward_confirmation: { confirmed: true },
   // Read-only context the endpoint always returns alongside the row (issue #1446).
+  reply_inbound_address: null, feed_reach: null,
   has_saved_preferences: true, max_catchup_touches_allowed: 5,
   catchup_contact_interval_bounds: { min_days: 0, max_days: 90 },
   catchup_per_contact_cap_bounds: { min: 1, max: 10 },

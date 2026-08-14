@@ -3778,11 +3778,11 @@ export interface components {
             exclude_topics: string[];
             /** Feed Fallback When Empty */
             feed_fallback_when_empty: boolean;
-            feed_reach?: components["schemas"]["FeedReach"] | null;
+            feed_reach: components["schemas"]["FeedReach"] | null;
             /** Focus Topics */
             focus_topics: string[];
             gate_defaults: components["schemas"]["GateDefaults"];
-            gmail_forward_confirmation?: components["schemas"]["GmailForwardConfirmation"] | null;
+            gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
             /** Has Saved Preferences */
             has_saved_preferences: boolean;
             /** Include Authors */
@@ -3830,7 +3830,7 @@ export interface components {
             /** Reply Check Mode */
             reply_check_mode: string;
             /** Reply Inbound Address */
-            reply_inbound_address?: string | null;
+            reply_inbound_address: string | null;
             /** Reply Max Post Age Days */
             reply_max_post_age_days: number;
             /** Reply Sweeps Per Day */
@@ -5181,18 +5181,21 @@ export interface components {
         /**
          * SubscriptionSummary
          * @description The Account page's subscription block — null in full when the user has no subscription row.
+         *
+         *     Every key is written unconditionally by the handler's literal, so every one is required and
+         *     nullable rather than optional: absent and null are different answers to the SPA.
          */
         SubscriptionSummary: {
             /** Status */
-            status?: string | null;
+            status: string | null;
             /** Stripe Customer Id */
-            stripe_customer_id?: string | null;
+            stripe_customer_id: string | null;
             /** Tier */
-            tier?: string | null;
+            tier: string | null;
             /** Trial Ends At */
-            trial_ends_at?: string | null;
+            trial_ends_at: string | null;
             /** Trial Started At */
-            trial_started_at?: string | null;
+            trial_started_at: string | null;
         };
         /**
          * SurveyDismissRequest
@@ -5324,6 +5327,9 @@ export interface components {
          *
          *     `content_language` and `effective_content_language` are both returned on purpose (#548): the
          *     explicit setting (None = follow Login Location) and what generation will actually use.
+         *
+         *     All six are required: `PUT /user/settings` writes the whole object, so a key the SPA is
+         *     allowed to omit is a column a partial save resets.
          */
         UserPreferencesDetail: {
             /** Auto Schedule Posts */
@@ -5333,11 +5339,11 @@ export interface components {
             /** Content Buffer Max Posts */
             content_buffer_max_posts: number;
             /** Content Language */
-            content_language?: string | null;
+            content_language: string | null;
             /** Effective Content Language */
-            effective_content_language?: string | null;
+            effective_content_language: string | null;
             /** Last Login Inactivate Delay */
-            last_login_inactivate_delay?: number | null;
+            last_login_inactivate_delay: number | null;
         };
         /**
          * UserPreferencesRequest
@@ -5369,16 +5375,19 @@ export interface components {
         /**
          * UserSettingsDetail
          * @description `detail` of `GET /user/settings` — subscription, preferences, blog/sitemap and company page.
+         *
+         *     The handler returns one literal with all five keys on every path; `subscription` and
+         *     `preferences` are null for a user who has no such row, which is not the same as missing.
          */
         UserSettingsDetail: {
             /** Blog Url */
-            blog_url?: string | null;
+            blog_url: string | null;
             /** Company Linked In Url */
-            company_linked_in_url?: string | null;
-            preferences?: components["schemas"]["UserPreferencesDetail"] | null;
+            company_linked_in_url: string | null;
+            preferences: components["schemas"]["UserPreferencesDetail"] | null;
             /** Sitemap Url */
-            sitemap_url?: string | null;
-            subscription?: components["schemas"]["SubscriptionSummary"] | null;
+            sitemap_url: string | null;
+            subscription: components["schemas"]["SubscriptionSummary"] | null;
         };
         /**
          * UserSettingsRequest

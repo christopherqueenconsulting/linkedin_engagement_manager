@@ -27,6 +27,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   catchup_contact_interval_bounds: { min_days: 0, max_days: 90 },
   catchup_per_contact_cap_bounds: { min: 1, max: 10 },
   gate_defaults: { authenticity_score_min: 60, post_similarity_max_pct: 55 },
+  reply_inbound_address: null, gmail_forward_confirmation: null, feed_reach: null,
   ...over,
 })
 

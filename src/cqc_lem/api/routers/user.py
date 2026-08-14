@@ -784,19 +784,21 @@ class EngagementPreferencesRequest(BaseModel):
 # row is exactly what the PUT body carries, so the field list is taken from the request model
 # rather than restated: a restatement is a second list to keep in step with the 45 columns, and
 # `test_response_schemas.py` ties both of them to `db._ENGAGEMENT_DEFAULTS`. The extras below are
-# the read-only context the handler adds on top of the row.
+# the read-only context the handler adds on top of the row — every one of them REQUIRED and
+# nullable, because the handler assigns the key on both branches of its own try/except: `= None`
+# would document it as possibly ABSENT, which the generated TypeScript spells `key?:`.
 EngagementPreferencesDetail = detail_model_from(
     "EngagementPreferencesDetail", EngagementPreferencesRequest,
     drop=("session_token",),
     extras={
         "has_saved_preferences": (bool, ...),
-        "reply_inbound_address": (Optional[str], None),
-        "gmail_forward_confirmation": (Optional[GmailForwardConfirmation], None),
+        "reply_inbound_address": (Optional[str], ...),
+        "gmail_forward_confirmation": (Optional[GmailForwardConfirmation], ...),
         "max_catchup_touches_allowed": (int, ...),
         "catchup_contact_interval_bounds": (CatchupContactIntervalBounds, ...),
         "catchup_per_contact_cap_bounds": (CatchupPerContactCapBounds, ...),
         "gate_defaults": (GateDefaults, ...),
-        "feed_reach": (Optional[FeedReach], None),
+        "feed_reach": (Optional[FeedReach], ...),
     },
     doc="The saved engagement preferences, plus the read-only context the Settings hub renders.\n\n"
         "Everything above `has_saved_preferences` is a stored column and can be PUT back; "

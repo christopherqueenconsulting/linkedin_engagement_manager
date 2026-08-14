@@ -629,7 +629,11 @@ handler returns is still on the wire, including ones no model declares. The rule
 is that the model must be *derived* from what the handler really returns — the stored columns, or
 the literal dict in the source — which is what `tests/unit/api/test_response_schemas.py` proves for
 each one. A field documented but not returned is worse than an undocumented one: the SPA generates a
-type from it and reads `undefined`.
+type from it and reads `undefined`. The same rule decides REQUIRED: `= None` on a model field
+documents "may be absent" (`key?:` in the generated TypeScript), not "may be null" — so a key the
+handler always writes is `Optional[X]` with no default, and only a genuinely partial record (the
+Redis-backed ones, `extra="allow"`) keeps its defaults. On these two payloads the PUT writes the
+whole object, so a key the SPA is allowed to omit is a column a partial save resets.
 
 The other unauthenticated surface, `GET /health/deep`, was trimmed in the same issue: it returns
 **counts only** — no worker or queue names — and `"status":"healthy"` stays the first key of the

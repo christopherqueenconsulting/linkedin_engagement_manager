@@ -11,13 +11,19 @@ never used to serialize anything — the handler keeps returning its own dict, k
 including keys no model here declares. `tests/unit/api/test_response_schemas.py` pins both halves:
 the bytes are unchanged, and every field declared here is one the handler really returns.
 
-Two rules for anything added below:
+Three rules for anything added below:
 
 * **Never invent a field.** A documented key the handler does not return is worse than an
   undocumented one — the SPA generates a type from it and reads `undefined`.
+* **A key the handler ALWAYS returns is REQUIRED, even when its value is None.** `= None` on a
+  field does not mean "nullable", it means "may be absent", and the generated TypeScript spells
+  that `key?:` — which lets a caller building the whole-row PUT body drop the key entirely. That
+  is the shape of the bug this file exists downstream of (#1446's `post_types`). Nullable and
+  always-present is `Optional[X]` with NO default.
 * **A Redis-backed record allows extras** (`extra="allow"`). Those payloads are written elsewhere
   and grow keys without this module noticing; `additionalProperties: true` is what keeps the
-  generated TypeScript honest about that instead of pretending the list is closed.
+  generated TypeScript honest about that instead of pretending the list is closed. Their fields
+  are the ones genuinely allowed to be absent, so they keep their `= None`.
 """
 
 from typing import Any, Dict, Literal, Optional, Tuple, Type
@@ -106,13 +112,17 @@ class FeedReach(BaseModel):
 
 
 class SubscriptionSummary(BaseModel):
-    """The Account page's subscription block — null in full when the user has no subscription row."""
+    """The Account page's subscription block — null in full when the user has no subscription row.
 
-    status: Optional[str] = None
-    tier: Optional[str] = None
-    trial_started_at: Optional[str] = None
-    trial_ends_at: Optional[str] = None
-    stripe_customer_id: Optional[str] = None
+    Every key is written unconditionally by the handler's literal, so every one is required and
+    nullable rather than optional: absent and null are different answers to the SPA.
+    """
+
+    status: Optional[str]
+    tier: Optional[str]
+    trial_started_at: Optional[str]
+    trial_ends_at: Optional[str]
+    stripe_customer_id: Optional[str]
 
 
 class UserPreferencesDetail(BaseModel):
@@ -120,24 +130,31 @@ class UserPreferencesDetail(BaseModel):
 
     `content_language` and `effective_content_language` are both returned on purpose (#548): the
     explicit setting (None = follow Login Location) and what generation will actually use.
+
+    All six are required: `PUT /user/settings` writes the whole object, so a key the SPA is
+    allowed to omit is a column a partial save resets.
     """
 
-    last_login_inactivate_delay: Optional[int] = None
+    last_login_inactivate_delay: Optional[int]
     auto_schedule_posts: bool
     content_buffer_days: int
     content_buffer_max_posts: int
-    content_language: Optional[str] = None
-    effective_content_language: Optional[str] = None
+    content_language: Optional[str]
+    effective_content_language: Optional[str]
 
 
 class UserSettingsDetail(BaseModel):
-    """`detail` of `GET /user/settings` — subscription, preferences, blog/sitemap and company page."""
+    """`detail` of `GET /user/settings` — subscription, preferences, blog/sitemap and company page.
 
-    subscription: Optional[SubscriptionSummary] = None
-    preferences: Optional[UserPreferencesDetail] = None
-    blog_url: Optional[str] = None
-    sitemap_url: Optional[str] = None
-    company_linked_in_url: Optional[str] = None
+    The handler returns one literal with all five keys on every path; `subscription` and
+    `preferences` are null for a user who has no such row, which is not the same as missing.
+    """
+
+    subscription: Optional[SubscriptionSummary]
+    preferences: Optional[UserPreferencesDetail]
+    blog_url: Optional[str]
+    sitemap_url: Optional[str]
+    company_linked_in_url: Optional[str]
 
 
 def detail_model_from(name: str, source: Type[BaseModel], *, drop: Tuple[str, ...] = (),

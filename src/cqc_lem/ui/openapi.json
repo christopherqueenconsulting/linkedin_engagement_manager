@@ -1263,10 +1263,13 @@
           "min_catchup_contact_interval_days",
           "max_catchup_touches_per_contact_days",
           "has_saved_preferences",
+          "reply_inbound_address",
+          "gmail_forward_confirmation",
           "max_catchup_touches_allowed",
           "catchup_contact_interval_bounds",
           "catchup_per_contact_cap_bounds",
-          "gate_defaults"
+          "gate_defaults",
+          "feed_reach"
         ],
         "title": "EngagementPreferencesDetail",
         "type": "object"
@@ -4107,7 +4110,7 @@
         "type": "object"
       },
       "SubscriptionSummary": {
-        "description": "The Account page's subscription block \u2014 null in full when the user has no subscription row.",
+        "description": "The Account page's subscription block \u2014 null in full when the user has no subscription row.\n\nEvery key is written unconditionally by the handler's literal, so every one is required and\nnullable rather than optional: absent and null are different answers to the SPA.",
         "properties": {
           "status": {
             "anyOf": [
@@ -4165,6 +4168,13 @@
             "title": "Trial Started At"
           }
         },
+        "required": [
+          "status",
+          "tier",
+          "trial_started_at",
+          "trial_ends_at",
+          "stripe_customer_id"
+        ],
         "title": "SubscriptionSummary",
         "type": "object"
       },
@@ -4470,7 +4480,7 @@
         "type": "object"
       },
       "UserPreferencesDetail": {
-        "description": "Account-level preferences \u2014 the five columns the Account page edits, plus the derived one.\n\n`content_language` and `effective_content_language` are both returned on purpose (#548): the\nexplicit setting (None = follow Login Location) and what generation will actually use.",
+        "description": "Account-level preferences \u2014 the five columns the Account page edits, plus the derived one.\n\n`content_language` and `effective_content_language` are both returned on purpose (#548): the\nexplicit setting (None = follow Login Location) and what generation will actually use.\n\nAll six are required: `PUT /user/settings` writes the whole object, so a key the SPA is\nallowed to omit is a column a partial save resets.",
         "properties": {
           "auto_schedule_posts": {
             "title": "Auto Schedule Posts",
@@ -4519,9 +4529,12 @@
           }
         },
         "required": [
+          "last_login_inactivate_delay",
           "auto_schedule_posts",
           "content_buffer_days",
-          "content_buffer_max_posts"
+          "content_buffer_max_posts",
+          "content_language",
+          "effective_content_language"
         ],
         "title": "UserPreferencesDetail",
         "type": "object"
@@ -4596,7 +4609,7 @@
         "type": "object"
       },
       "UserSettingsDetail": {
-        "description": "`detail` of `GET /user/settings` \u2014 subscription, preferences, blog/sitemap and company page.",
+        "description": "`detail` of `GET /user/settings` \u2014 subscription, preferences, blog/sitemap and company page.\n\nThe handler returns one literal with all five keys on every path; `subscription` and\n`preferences` are null for a user who has no such row, which is not the same as missing.",
         "properties": {
           "blog_url": {
             "anyOf": [
@@ -4652,6 +4665,13 @@
             ]
           }
         },
+        "required": [
+          "subscription",
+          "preferences",
+          "blog_url",
+          "sitemap_url",
+          "company_linked_in_url"
+        ],
         "title": "UserSettingsDetail",
         "type": "object"
       },
