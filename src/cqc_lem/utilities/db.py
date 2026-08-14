@@ -3289,6 +3289,11 @@ def count_existing_double_sent_catchups() -> int:
     twice (a retry or an orphan re-queue after the status update was lost), which shows up only as
     two `success` DM log rows carrying the same body to the same person.
 
+    This is the duplicate SURFACE, not a proven double-send count: the default congratulations are
+    deterministic per event type and name, so one contact's repeated annual milestone produces the
+    same body twice and is counted here. `list_existing_double_sent_catchups()` carries the send
+    gap that separates the two — read it before reporting this number as double-sends.
+
     Read-only, run once at deploy time to report the historical duplicate surface on the issue
     (#1078). Returns 0 when nothing is double-sent or the read fails.
     """
@@ -3309,6 +3314,68 @@ def count_existing_double_sent_catchups() -> int:
     except mysql.connector.Error as err:
         log_error("Could not count existing double-sent catch-ups", exc=err)
         return 0
+
+
+def list_existing_double_sent_catchups() -> list[dict]:
+    """List the (user, contact) pairs behind `count_existing_double_sent_catchups()`.
+
+    Same read, one grain up: the counter returns how many catch-up BODIES were sent more than once,
+    this rolls those rows up per contact so a non-zero count can be judged per person (does anyone
+    need an apology, or was it one contact hit twice?). `sends` is every `success` DM row across the
+    repeated bodies, so a body sent twice contributes 2; `duplicate_bodies` is how many distinct
+    bodies repeated, and summing it over the list reproduces the counter.
+
+    The message body itself is deliberately not returned — it is DM content, and the pair plus the
+    send counts is what the judgement needs.
+
+    The timestamps are not decoration: the repeated BODY alone cannot tell a double-send from a
+    legitimate repeat. `_CATCHUP_DEFAULT_CONGRATS` is deterministic per event type and first name,
+    so Jane's 2025 and 2026 work anniversaries — two correctly-deduped touches, different
+    `event_period` — both send the literal string "Happy work anniversary, Jane!" and land in this
+    read as one repeated body. What separates them is the GAP: a retry or the orphan re-queue fires
+    seconds to hours apart, an annual or monthly milestone weeks to a year. `repeat_gap_seconds` is
+    the tightest such gap on the pair, so the owner can tell "sent twice by mistake" from
+    "congratulated twice, correctly, a year apart" without ever seeing the message.
+
+    Returns:
+        One dict per affected pair (`user_id`, `profile_url`, `sends`, `duplicate_bodies`,
+        `first_sent_at`, `last_sent_at`, `repeat_gap_seconds`), worst first. Empty when nothing is
+        double-sent or the read fails.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT d.user_id, d.post_url AS profile_url, "
+                "SUM(d.sends) AS sends, COUNT(*) AS duplicate_bodies, "
+                "MIN(d.first_sent) AS first_sent_at, MAX(d.last_sent) AS last_sent_at, "
+                "MIN(TIMESTAMPDIFF(SECOND, d.first_sent, d.last_sent)) AS repeat_gap_seconds FROM ("
+                "SELECT l.user_id, l.post_url, l.message, COUNT(*) AS sends, "
+                "MIN(l.created_at) AS first_sent, MAX(l.created_at) AS last_sent FROM logs l "
+                "WHERE l.action_type = 'dm' AND l.result = 'success' "
+                # EXISTS rather than a JOIN, for the same reason as the counter above: two
+                # milestones can share one body, and a join would fake a duplicate out of one row.
+                "AND EXISTS (SELECT 1 FROM catchup_touches c WHERE c.user_id = l.user_id "
+                "AND c.profile_url = l.post_url AND c.message = l.message) "
+                "GROUP BY l.user_id, l.post_url, l.message HAVING COUNT(*) > 1"
+                ") d GROUP BY d.user_id, d.post_url ORDER BY sends DESC, d.user_id")
+            return [
+                {
+                    "user_id": int(row["user_id"]),
+                    "profile_url": row["profile_url"],
+                    "sends": int(row["sends"]),
+                    "duplicate_bodies": int(row["duplicate_bodies"]),
+                    "first_sent_at": row["first_sent_at"],
+                    "last_sent_at": row["last_sent_at"],
+                    # `logs.created_at` carries no NOT NULL, so an unstamped row reads as an
+                    # UNKNOWN gap — never as 0, which is the strongest possible retry signal.
+                    "repeat_gap_seconds": (None if row["repeat_gap_seconds"] is None
+                                           else int(row["repeat_gap_seconds"])),
+                }
+                for row in (cursor.fetchall() or [])
+            ]
+    except mysql.connector.Error as err:
+        log_error("Could not list existing double-sent catch-ups", exc=err)
+        return []
 
 
 
