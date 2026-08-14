@@ -7,6 +7,8 @@ module reads `/etc/mime.types`, which differs between the two and is often absen
 One extension legitimately maps to several types here; `choose_preferred_mime` is the tie-break, and
 an extension the table does not know is `application/octet-stream`.
 """
+from cqc_lem.utilities.logger import log_warning
+
 mime_types_str = """
 .3dm	x-world/x-3dmf
 .3dmf	x-world/x-3dmf
@@ -721,7 +723,9 @@ def get_file_mime_type(file_extension: str):
         try:
             key, value = line.split()
         except ValueError:
-            print("Error splitting line: %s" % line)
+            # The table is a static constant, so a line that is not exactly "<ext> <mime>" is a
+            # defect in it rather than bad input — and it would recur on every lookup.
+            log_warning("Malformed MIME table line", mime_line=line)
             key = None
             value = None
 

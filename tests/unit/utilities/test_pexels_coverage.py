@@ -79,7 +79,7 @@ class TestPhotoHelpers:
         import cqc_lem.utilities.pexels_helper as ph
         fake_api = MagicMock()
         fake_api.get_entries.return_value = ["photo1", "photo2"]
-        with patch.object(ph, "api", fake_api):
+        with patch.object(ph, "_get_api", return_value=fake_api):
             photos = ph.get_photos("sunset", num_of_photos=10)
         assert photos == ["photo1", "photo2"]
         fake_api.search.assert_called_once_with("sunset", page=1, results_per_page=10)
@@ -88,5 +88,40 @@ class TestPhotoHelpers:
         import cqc_lem.utilities.pexels_helper as ph
         fake_api = MagicMock()
         fake_api.get_entries.return_value = ["only-photo"]
-        with patch.object(ph, "api", fake_api):
+        with patch.object(ph, "_get_api", return_value=fake_api):
             assert ph.get_photo("sunset") == "only-photo"
+
+    def test_get_photos_without_a_key_returns_empty(self, monkeypatch):
+        """No key configured is the degrade path, not an exception."""
+        import cqc_lem.utilities.pexels_helper as ph
+        monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+        monkeypatch.setattr(ph, "_api", None)
+        assert ph.get_photos("sunset") == []
+
+    def test_get_photo_raises_indexerror_when_pool_is_empty(self, monkeypatch):
+        """`get_pexels_image_path` catches IndexError to reach its default path — keep it reachable."""
+        import cqc_lem.utilities.pexels_helper as ph
+        monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+        monkeypatch.setattr(ph, "_api", None)
+        with pytest.raises(IndexError):
+            ph.get_photo("sunset")
+
+
+class TestGetApi:
+    def test_importing_without_a_key_does_not_raise(self, monkeypatch):
+        """Import-time `API(os.environ['PEXELS_API_KEY'])` used to make an unset key a KeyError."""
+        import importlib
+
+        import cqc_lem.utilities.pexels_helper as ph
+        monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+        reloaded = importlib.reload(ph)
+        assert reloaded._get_api() is None
+
+    def test_builds_the_client_once_and_caches_it(self, monkeypatch):
+        import cqc_lem.utilities.pexels_helper as ph
+        monkeypatch.setenv("PEXELS_API_KEY", "pk")
+        monkeypatch.setattr(ph, "_api", None)
+        with patch(f"{_P}.API", return_value="client") as api_cls:
+            assert ph._get_api() == "client"
+            assert ph._get_api() == "client"
+        api_cls.assert_called_once_with("pk")

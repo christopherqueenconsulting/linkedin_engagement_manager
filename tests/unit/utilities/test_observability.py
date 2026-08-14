@@ -138,6 +138,32 @@ class TestTrackApiCall:
         _, kwargs = mock_ph.capture.call_args
         assert kwargs["distinct_id"] == "5"
 
+    def test_capture_failure_never_escapes(self):
+        """Telemetry must never raise out of the middleware's `finally:`.
+
+        Raising here would replace the request's own in-flight exception with a telemetry one.
+        """
+        with patch(f"{_MOD}.posthog") as mock_ph, \
+             patch("cqc_lem.utilities.logger.log_warning") as mock_warn:
+            mock_ph.capture.side_effect = RuntimeError("posthog down")
+            from cqc_lem.utilities.observability import track_api_call
+            track_api_call(route="/api/posts/", method="GET", status_code=500, latency_ms=12)
+
+        mock_warn.assert_called_once()
+        assert isinstance(mock_warn.call_args.kwargs["exc"], RuntimeError)
+
+    def test_capture_failure_does_not_mask_the_requests_own_exception(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, \
+             patch("cqc_lem.utilities.logger.log_warning"):
+            mock_ph.capture.side_effect = RuntimeError("posthog down")
+            from cqc_lem.utilities.observability import track_api_call
+            with pytest.raises(ValueError, match="the real failure"):
+                try:
+                    raise ValueError("the real failure")
+                finally:
+                    track_api_call(route="/api/posts/", method="GET",
+                                   status_code=500, latency_ms=12)
+
 
 class TestLlmTrackedDecorator:
     def test_success_calls_track_with_success_true(self):
