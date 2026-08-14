@@ -588,6 +588,15 @@ RC_VANISHED = -99     #: its process was already gone — an adopted orphan, or 
 WIP_STATES = frozenset({STATE_CLAIMED, STATE_RUNNING, STATE_WAIT_CI, STATE_WAIT_REVIEW,
                         STATE_WAIT_QUEUE})
 
+#: The states a PR sits in when the NEXT MOVE BELONGS TO A HUMAN — the reason it is held out of
+#: `WIP_STATES` above. Named as its own set rather than derived as `WAIT_STATES - WIP_STATES` so
+#: the exclusion can be REPORTED with a reason rather than inferred (#1426): a WIP gate that holds
+#: new starts while silently discounting three PRs reads identically to a pipeline that has stalled.
+#: Every unreadable state deliberately stays OUT of this set — an item whose merge state or work
+#: state could not be read waits in `awaiting_ci`, which IS counted, so the gate fails closed
+#: toward the throttle and never toward unbounded starts.
+HUMAN_HELD_STATES = frozenset({STATE_WAIT_OWNER_REVIEW, STATE_PARKED})
+
 
 def record_park(conn: sqlite3.Connection, kind: str, number: int, reason: str,
                 head_sha: str | None = None, *, now: int | None = None) -> None:
@@ -647,6 +656,23 @@ def wip_count(conn: sqlite3.Connection) -> int:
         tuple(sorted(WIP_STATES)),
     ).fetchone()
     return int(row["n"]) if row else 0
+
+
+def wip_excluded(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """PRs the WIP gate deliberately does NOT count, each with the state that says why.
+
+    The counterpart to `wip_count()`: that function answers "how full is the gate", this one answers
+    "what is it not counting, and on whose desk is it". Reported at the hold (`daemon.act`) so
+    "the pipeline is not idle, it is unblocked" is readable off `lemd-decisions.ndjson` rather than
+    reconstructed from a state dump hours later (#1426).
+    """
+    placeholders = ",".join("?" * len(HUMAN_HELD_STATES))
+    rows = conn.execute(
+        f"SELECT number, state FROM items WHERE kind='pr' AND state IN ({placeholders}) "
+        "ORDER BY number",
+        tuple(sorted(HUMAN_HELD_STATES)),
+    ).fetchall()
+    return [{"number": int(r["number"]), "state": r["state"]} for r in rows]
 
 
 def counts_by_state(conn: sqlite3.Connection) -> dict[str, int]:
