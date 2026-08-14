@@ -4218,6 +4218,43 @@ def profile_experiences_state(reading: dict) -> str:
     return STATE_DRIFT if (reading.get("page_dated_lines") or 0) else STATE_UNKNOWN
 
 
+def _dated_line_containers(source, max_lines: int = 4, max_depth: int = 6) -> list:
+    """For each dated line the page renders, the ancestor chain that holds it.
+
+    When no rung of the ladder carries a date range the report says which rungs matched but not what
+    the roles are actually wrapped in, so designing the next rung needed a second, hand-written pass
+    (#1465). This is that pass, shipped: the DEEPEST element rendering each date line, then its
+    ancestors described by tag + the attributes a locator may key on (role / data-* / aria-label),
+    never class names.
+    """
+    from cqc_lem.utilities.linkedin.scrapper import _DATE_RANGE_RE, _rendered_lines
+
+    def describe(el) -> dict:
+        attrs = el.attrs or {}
+        keyed = {name: value for name, value in attrs.items()
+                 if name in ("role", "href") or name.startswith("data-") or name.startswith("aria-")}
+        return {"tag": el.name, "attrs": keyed,
+                "lines": _rendered_lines(el)[:8],
+                "child_tags": sorted(
+                    {child.name for child in el.find_all(recursive=False) if child.name})}
+
+    def dated(el) -> bool:
+        return any(_DATE_RANGE_RE.match(line) for line in _rendered_lines(el))
+
+    found: list = []
+    for el in (source.find("main") or source).find_all(True):
+        if len(found) >= max_lines:
+            break
+        if not dated(el) or any(dated(child) for child in el.find_all(True)):
+            continue
+        found.append({
+            "line": next((line for line in _rendered_lines(el) if _DATE_RANGE_RE.match(line)), ""),
+            "chain": [describe(el)] + [describe(parent) for parent in list(el.parents)[:max_depth]
+                                       if getattr(parent, "attrs", None) is not None],
+        })
+    return found
+
+
 def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                               sleep: Callable[[float], None] = time.sleep) -> dict:
     """#970: open a profile's /details/experience/ page and report what the REBUILT parser reads,
@@ -4297,6 +4334,7 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                "entities_with_dates": dated,
                "page_dated_lines": page_dated,
                "selector_counts": counts,
+               "dated_line_containers": _dated_line_containers(source),
                "entities": entities,
                "experiences_without_company": len(companyless),
                "companyless_titles": [(e.get("positions") or [{}])[0].get("title", "")

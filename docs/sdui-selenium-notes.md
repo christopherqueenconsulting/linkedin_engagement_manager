@@ -280,6 +280,28 @@ a grouped company, and a role that names its own company on a subtitle line neve
 at all. `--profile-experiences` reports `experiences_without_company` so the next drift is visible
 in the JSON.
 
+### The render with NO markup vocabulary at all (2026-08-14, #1465)
+
+Probing a **2nd/3rd-degree** profile — the ones the profile-viewer lane scrapes — found a third
+shape: `main li` = 0, `data-view-name` absent, and the only `role='listitem'` nodes on the page were
+the same three footer help links. Each role sits in bare `div`s inside an `<a href=".../company/<id>/">`,
+with no `role`, no `data-*` and no `aria-*` attribute anywhere in its ancestor chain, and its date
+range written `2000 – Present` (en dash, no duration). Every rung of the ladder therefore matched
+only the footer, the page parsed to nothing, and production filed a `RecurringWarning: Profile
+experience page rendered dated entries but none parsed` about a page that was rendering its
+experience perfectly.
+
+The lesson is that the ladder can only ever ask for a vocabulary LinkedIn happens to be using this
+week, so `_dated_block_nodes` is the fallback for when it is using none: each date line's deepest
+element grows upward while its ancestor still holds exactly **one** date line — the first ancestor
+holding two is the group above it, never the role — which cuts the whole role block out without
+naming a tag or a class. It runs **only when no rung is dated** (a rung that matches is more precise
+about where an entity starts), stops at a section heading, and is bounded to 4 ancestors so a
+one-role page cannot swallow itself. `experience_entity_nodes` reports it as
+`<dated-block fallback>`, and `--profile-experiences` now ships `dated_line_containers` — the
+ancestor chain of each dated line, keyed on `role` / `data-*` / `aria-*` / `href` only — so the next
+render's shape is in the first probe report instead of a hand-written second pass.
+
 ## The degree badge is a leaf node's TEXT, never a class
 
 `span.dist-value` / `span.distance-badge` were confirmed dead on the same 2026-08-03 grab. Both are

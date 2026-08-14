@@ -544,6 +544,104 @@ class TestFlatLiveShape:
         assert [e["company_name"] for e in parse_profile_experiences(page)] == ["", ""]
 
 
+def _linked_role(title: str, company: str, dates: str, company_id: str = "8736") -> str:
+    """One role of the attribute-free render: an `<a>` to the company page wrapping bare divs."""
+    return ("<div>"
+            f"<div>{company} logo</div>"
+            f"<a href='https://www.linkedin.com/company/{company_id}/'>"
+            f"<div><div>{title}</div><div>{company}</div><p>{dates}</p></div>"
+            "</a></div>")
+
+
+# The 2026-08-14 live probe for #1465, on a 2nd/3rd-degree profile: `main li` = 0,
+# `data-view-name` absent, and the only `role='listitem'` nodes on the page are the SAME three
+# footer help-links PR #984 saw. Every role sits in bare divs inside an `<a>` to the company page,
+# carrying no role, data-* or aria-* attribute anywhere in the chain — so no rung of the ladder can
+# name it, and production warned "rendered dated entries but none parsed" on a page rendering three.
+ATTRIBUTE_FREE_PAGE = (
+    "<html><body><div data-sdui-screen='com.linkedin.sdui.profile.Experience'>"
+    "<main>"
+    "<h2>Experience</h2>"
+    "<div><div>"
+    + _linked_role("Co-chair", "Gaits Foundation", "2000 – Present", "8736")
+    + _linked_role("Founder", "Breakthrough Widgets", "2015 – Present", "1234")
+    + _linked_role("Co-founder", "Microtouch", "1975 – 2020", "1035")
+    + "</div></div></main>"
+    "<div role='listitem'><div>Questions?</div><div>Visit our Help Center.</div></div>"
+    "<div role='listitem'><div>Manage your account and privacy</div><div>Go to your Settings.</div></div>"
+    "<div role='listitem'><div>Recommendation transparency</div><div>Learn more.</div></div>"
+    "</div></body></html>")
+
+
+class TestAttributeFreeRender:
+    """#1465: the render served for a 2nd/3rd-degree profile names no markup the ladder can ask for."""
+
+    def test_the_dated_block_fallback_finds_one_node_per_role(self):
+        from cqc_lem.utilities.linkedin.scrapper import _DATED_BLOCK_SELECTOR, experience_entity_nodes
+
+        nodes, selector = experience_entity_nodes(_soup(ATTRIBUTE_FREE_PAGE))
+
+        assert selector == _DATED_BLOCK_SELECTOR
+        assert len(nodes) == 3
+
+    def test_every_role_parses_with_its_company_title_and_dates(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(ATTRIBUTE_FREE_PAGE))
+
+        assert [e["company_name"] for e in parsed] == ["Gaits Foundation", "Breakthrough Widgets",
+                                                       "Microtouch"]
+        assert [e["positions"][0]["title"] for e in parsed] == ["Co-chair", "Founder", "Co-founder"]
+        assert parsed[2]["positions"][0]["start_date"] == "1975"
+        assert parsed[2]["positions"][0]["end_date"] == "2020"
+
+    def test_the_help_center_footer_is_still_never_an_experience(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        parsed = parse_profile_experiences(_soup(ATTRIBUTE_FREE_PAGE))
+
+        assert all("Help Center" not in str(experience) for experience in parsed)
+
+    def test_a_page_the_ladder_can_read_never_reaches_the_fallback(self):
+        """A rung that matches is more precise about where an entity STARTS — it must still win."""
+        from cqc_lem.utilities.linkedin.scrapper import experience_entity_nodes
+
+        assert experience_entity_nodes(_soup(LIVE_PAGE))[1] == "main div[role='list'] li"
+        assert experience_entity_nodes(_soup(FLAT_LIVE_PAGE))[1] == "main li"
+
+    def test_a_role_block_never_climbs_past_the_section_heading(self):
+        """One role on the page means nothing above it holds a second date to stop the climb."""
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        page = _soup("<html><body><main><h2>Experience</h2><div><div>"
+                     + _linked_role("Consultant", "Initech", "Jan 2015 – Dec 2016")
+                     + "</div></div></main></body></html>")
+
+        parsed = parse_profile_experiences(page)
+
+        assert [e["company_name"] for e in parsed] == ["Initech"]
+        assert parsed[0]["positions"][0]["title"] == "Consultant"
+
+    def test_a_page_with_no_dated_line_anywhere_still_reports_what_rendered(self):
+        """`unknown` is not drift — the probe and the warning path both need the undated rung."""
+        from cqc_lem.utilities.linkedin.scrapper import experience_entity_nodes
+
+        page = _soup("<html><body><main><ul><li>Sign in</li></ul></main></body></html>")
+
+        assert experience_entity_nodes(page)[1] == "main li"
+
+    def test_a_grouped_company_header_above_attribute_free_roles_still_attaches(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_experiences
+
+        page = _soup("<html><body><main><h2>Experience</h2><div>"
+                     "<div>Initech</div><div>4 yrs 2 mos</div><div>"
+                     + _linked_role("Staff Engineer", "Initech", "Jan 2013 – Dec 2015")
+                     + _linked_role("Senior Engineer", "Initech", "Jan 2012 – Dec 2012")
+                     + "</div></div></main></body></html>")
+
+        assert [e["company_name"] for e in parse_profile_experiences(page)] == ["Initech", "Initech"]
+
+
 class TestCompanyForLeading:
     """The positional rule itself — `_company_for_leading` decides group membership."""
 
@@ -623,6 +721,22 @@ class TestGetProfileExperiences:
         driver = self._driver("<html><body><main><ul><li>Nothing here</li></ul></main></body></html>")
 
         assert scrapper.get_profile_experiences(driver, "https://www.linkedin.com/in/someone/") == []
+        assert calls == []
+
+    def test_the_attribute_free_render_parses_instead_of_warning(self, monkeypatch):
+        """#1465: three roles rendered, nothing parsed, one grouped defect filed per scrape run."""
+        from cqc_lem.utilities.linkedin import scrapper
+
+        calls = []
+        monkeypatch.setattr(scrapper, "wait_for_ajax", lambda d: None)
+        monkeypatch.setattr(scrapper, "window_scroll", lambda d, n, b: None)
+        monkeypatch.setattr(scrapper, "log_warning", lambda *a, **k: calls.append(a))
+        driver = self._driver(ATTRIBUTE_FREE_PAGE)
+
+        result = scrapper.get_profile_experiences(driver, "https://www.linkedin.com/in/someone/")
+
+        assert [e["company_name"] for e in result] == ["Gaits Foundation", "Breakthrough Widgets",
+                                                       "Microtouch"]
         assert calls == []
 
     def test_dated_page_that_parses_to_nothing_warns_once(self, monkeypatch):
