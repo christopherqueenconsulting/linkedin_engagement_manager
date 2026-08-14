@@ -12,7 +12,7 @@ vi.mock('../../api/client', () => ({
     put: (...args: unknown[]) => put(...args),
   },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 vi.mock('../../utils/analytics', () => ({
   maskProps: (className: string) => ({ className }),
   capture: vi.fn(),
