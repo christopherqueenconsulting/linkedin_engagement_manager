@@ -27,6 +27,7 @@ finds one spelling, and the test patches that follow them are a pure module-path
 
 import random
 import time
+from typing import NamedTuple, Optional
 
 from selenium.common import ElementClickInterceptedException
 from selenium.webdriver import ActionChains, Keys
@@ -34,6 +35,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 
+from cqc_lem.utilities.linkedin.helper import clean_person_name, connection_degree
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_warning
 from cqc_lem.utilities.selenium_util import find_all_first
@@ -256,6 +258,61 @@ def _comment_header_author(driver, container) -> str:
             "}return '';", container) or ""
     except Exception:
         return ""
+
+
+class CommentAuthor(NamedTuple):
+    """Who wrote one comment: display name, profile URL, connection-degree badge.
+
+    `name` is `''` when no anchor on the card carried name-like text — the reading is unusable for
+    anything name-keyed (`post_engagers`, lead flagging), and the caller must treat it as a miss
+    rather than as "nobody engaged". `profile_url` can still be set in that case, because the href
+    survives on an anchor that renders no text at all.
+    """
+
+    name: str
+    profile_url: str
+    connection_degree: Optional[str]
+
+
+_COMMENT_AUTHOR_ANCHORS_JS = (
+    "const c=arguments[0],out=[];"
+    "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
+    "  if(a.closest(\"[data-testid='expandable-text-box']\")) continue;"
+    "  out.push({href:(a.href||'').split('?')[0],"
+    "            text:((a.innerText||a.textContent||'')+'').trim(),"
+    "            aria:(a.getAttribute('aria-label')||'').trim()});"
+    "}return out;")
+
+
+def comment_author_identity(driver, container) -> CommentAuthor:
+    """Who wrote this comment — the ONE reader for a commenter's name+URL+degree (#1091).
+
+    Taking `find_element("a[href*='/in/']")` off a comment card reads whichever /in/ anchor comes
+    first in the DOM, and on the current SDUI card that is routinely NOT the name link: the avatar
+    anchor renders no text, and an @mention inside the body is an /in/ link too. Both yield an empty
+    `clean_person_name`, which silently skipped every `upsert_engager` — `post_engagers` recorded
+    nothing for a month while replies on the same cards kept landing, because replying only needs the
+    href.
+
+    So this walks the card's HEADER anchors (the #478 grounding: an /in/ link NOT inside
+    `[data-testid='expandable-text-box']`) and returns the first one carrying a name, falling back to
+    the first header href so the slug half never regresses when nothing is named.
+    """
+    try:
+        anchors = driver.execute_script(_COMMENT_AUTHOR_ANCHORS_JS, container) or []
+    except Exception:
+        anchors = []
+    fallback_href = ""
+    for anchor in anchors:
+        if not isinstance(anchor, dict):
+            continue
+        href = str(anchor.get("href") or "")
+        raw = str(anchor.get("text") or "") or str(anchor.get("aria") or "")
+        fallback_href = fallback_href or href
+        name = clean_person_name(raw)
+        if name:
+            return CommentAuthor(name, href or fallback_href, connection_degree(raw))
+    return CommentAuthor("", fallback_href, None)
 
 
 def _comment_container(driver, textbox):

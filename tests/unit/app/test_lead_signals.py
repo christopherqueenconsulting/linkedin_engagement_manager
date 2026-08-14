@@ -342,10 +342,10 @@ class TestReadPathWiring:
         comment = MagicMock()
         comment.find_elements.return_value = []          # no text box -> falls back to .text
         comment.text = "Do you offer this for agencies?"
-        link = MagicMock()
-        link.text = "Jane Doe"
-        link.get_attribute.return_value = "https://www.linkedin.com/in/jane?trk=x"
-        comment.find_element.return_value = link
+        # Header anchors as SDUI renders them: avatar (href, no text) first, then the name (#1091).
+        comment.anchors = [{"href": "https://www.linkedin.com/in/jane", "text": "", "aria": ""},
+                           {"href": "https://www.linkedin.com/in/jane", "text": "Jane Doe",
+                            "aria": ""}]
         profile = MagicMock()
         profile.profile_url = "https://www.linkedin.com/in/me/"
         profile.full_name = "Me Myself"
@@ -361,6 +361,9 @@ class TestReadPathWiring:
              patch(f"{_POST}.insert_new_log"):
             driver = MagicMock()
             driver.current_url = "https://x/post/7"
+            driver.execute_script.side_effect = lambda script, *args: (
+                args[0].anchors if args and isinstance(getattr(args[0], "anchors", None), list)
+                else None)
             _post("_reply_to_comments_on_open_post")(driver, MagicMock(), 1, 7, profile, "synth")
         flag.assert_called_once()
         assert flag.call_args.args[1] == "Do you offer this for agencies?"

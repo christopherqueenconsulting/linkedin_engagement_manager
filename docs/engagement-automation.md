@@ -100,6 +100,28 @@ stands down under `is_automation_paused()`. Seed + second wave can never stack: 
 our own comments on that post URL (`count_user_comments_on_post_url`,
 `SELF_COMMENT_MAX_PER_POST=2`), so neither task has to know the other ran.
 
+### Reciprocity capture — who lands in `post_engagers` (issue #1091)
+
+`_reply_to_comments_on_open_post` is the ONLY writer of `post_engagers`, and it writes one row per
+THIRD-PARTY commenter on the user's own post. Our own seed / second-wave comments are skipped before
+any capture, so a post whose thread is nothing but our own comments produces no rows — correctly.
+
+The identity comes from `composer.comment_author_identity`, which reads the card's HEADER anchors —
+never `find_element("a[href*='/in/']")`, whose first hit can be the avatar link (an href with no
+text) or an @mention inside the body (someone else entirely, the #478 false "mine" match). A card
+that names nobody is a **countable DEBUG** ("Commenter name unreadable"), because the name-keyed
+half (`upsert_engager`, `_flag_lead_signal`) has no key while the href-keyed half (own-comment skip,
+reply dedup) keeps working — which is exactly how an empty table can sit under a healthy-looking
+reply sweep.
+
+An empty `post_engagers` therefore has TWO causes that look identical in the DB, and only the live
+probe separates them: **no third-party commenter existed** (`--commenter-read` grades `unknown` and
+says so) versus **the reader rotated** (it grades `drift` — the SHIPPED header read naming nobody).
+It reports the gap against the naive first-anchor read either way, but only grades that gap `drift`
+on an image predating #1091, where the naive read is still what ships.
+Measured 2026-08-14 on the three freshest posts: 6 comment cards, all ours, 0 third-party — the
+first case, with `post_outcome` agreeing at 1–2 comments per post.
+
 ## DM conversation auto-nurture (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`)
 
 A reply used to END a sequence — now it's classified (interested / objection / not-now /
