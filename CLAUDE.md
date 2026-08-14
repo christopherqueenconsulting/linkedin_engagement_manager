@@ -329,11 +329,10 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z → bu
   `COMMENT_GATE_MAX_ATTEMPTS` failed regenerations; POSTS are graded by the same engine
   (`post_similarity_report`, #1265) — embedding cosine (`POST_EMBEDDING_SIMILARITY_MAX`) first,
   degrading to `POST_SIMILARITY_MAX` token overlap, ONE retry then **kept but HELD at PENDING**
-  (#1452), the `similarity` gate naming the measure that fired. The review gate is the ONLY place
-  that measurement happens — it RECORDS its verdict on `posts.gate_reason` and the generation-time
-  gate pass re-reads it, so the hold costs no second embedding call; `rescore_post` is the exception
-  and always measures live against the edited text. One measure vocabulary with the nightly
-  telemetry, never two. **Story bank**
+  (#1452), the `similarity` gate naming the measure that fired. The review gate is the ONLY place it
+  is measured: it RECORDS the verdict on `posts.gate_reason` and the gate pass re-reads it, so the
+  hold costs no new embedding call; `rescore_post` alone measures live, on the edited text.
+  One measure vocabulary with the nightly telemetry, never two. **Story bank**
   (#620) is the FACT half, the **deck reference gate** (#728) the save-worthiness half, **slop lint**
   (#625) BLOCKS five HARD checks and WARNs the rest, severity PER SURFACE (`SURFACE_SEVERITIES`):
   `canned_scaffold` is WARN on a post, HARD on a newsletter (#1285). `{POST,NEWSLETTER}_BANNED_SCAFFOLDS`
