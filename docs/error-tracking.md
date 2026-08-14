@@ -45,7 +45,7 @@ With no `POSTHOG_API_KEY` at all, `posthog.disabled` is already True and nothing
 A key arrives through the process ENVIRONMENT as readily as through a file — `lem-agentd` loads
 `agent-pipeline/secrets.env` as a systemd `EnvironmentFile` for the pipeline's own telemetry, and
 every pytest it spawns inherits it — so "no key in CI" is not the guard. `logger._running_under_pytest()`
-is, and **both** hops off that key read it:
+is, and **all three** hops off that key read it:
 
 | Hop | Refuses where |
 |---|---|
@@ -53,7 +53,7 @@ is, and **both** hops off that key read it:
 | The OTLP exporter into PostHog Logs | `logger._build_posthog_handler` returns None, so no handler is ever attached |
 | The uncaught-exception excepthook | `observability._exception_autocapture_enabled()` reads `posthog.disabled`, so autocapture is never armed (#1498) |
 
-Both leaks were measured, not theorised: a mocked cursor raising `mysql.connector.Error("db down")`
+The first two leaks were measured, not theorised: a mocked cursor raising `mysql.connector.Error("db down")`
 filed a GitHub issue against production code that was working, and the log hop put fixture ERRORs
 ("SMTP send failed for test@example.com") into the same Logs stream prod writes real warnings to.
 Once test data is ingested it is indistinguishable from production data, which is why this refuses

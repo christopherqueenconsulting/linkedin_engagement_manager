@@ -188,9 +188,13 @@ class TestTestSuiteNeverPublishesToPostHog:
         assert observability.EXCEPTION_AUTOCAPTURE_ENABLED is False
         assert posthog.enable_exception_autocapture is False
 
-    def test_exception_autocapture_follows_the_sdk_disable_not_the_key(self):
+    def test_exception_autocapture_follows_the_sdk_disable_not_the_key(self, monkeypatch):
         from cqc_lem.utilities.observability import _exception_autocapture_enabled
 
+        # `tests/conftest.py` calls load_dotenv(), so a checkout whose `.env` carries
+        # POSTHOG_EXCEPTION_AUTOCAPTURE=false would otherwise fail this on the kill switch rather
+        # than on the guard under test. Pin the flag to its default.
+        monkeypatch.delenv("POSTHOG_EXCEPTION_AUTOCAPTURE", raising=False)
         with patch(f"{_OBS}.posthog") as mock_ph:
             mock_ph.disabled = False
             assert _exception_autocapture_enabled() is True
