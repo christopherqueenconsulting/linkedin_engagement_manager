@@ -918,6 +918,23 @@ class TestNewsletterSlopRetry:
         _, _, track = self._run([self._ONE_HARD, self._TWO_HARD])
         assert track.call_args.args[1] == _slop.RETRY_WORSENED
 
+    def test_whether_the_retry_survived_travels_with_the_outcome(self):
+        # The event grades the regeneration; `kept` is what says whether the call bought anything,
+        # and a discarded draft's outcome would otherwise read as the edition that shipped.
+        _, _, kept_track = self._run([self._ONE_HARD, self._CLEAN])
+        assert kept_track.call_args.kwargs["kept"] is True
+        _, _, dropped_track = self._run([self._ONE_HARD, self._TWO_HARD])
+        assert dropped_track.call_args.kwargs["kept"] is False
+
+    def test_an_empty_regeneration_is_never_recorded_as_kept(self):
+        from cqc_lem.utilities.ai import ai_helper
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm", side_effect=[self._edition(self._ONE_HARD), _resp("")]), \
+             patch(f"{_AI}.track_slop_retry") as track:
+            ai_helper.generate_newsletter_edition(prof, topic="ops")
+        assert track.call_args.kwargs["kept"] is False
+
     def test_an_empty_regeneration_is_recorded_and_keeps_the_first_draft(self):
         from cqc_lem.utilities.ai import ai_helper, slop_lint as _slop
         prof = MagicMock()

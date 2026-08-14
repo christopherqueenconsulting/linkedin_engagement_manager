@@ -361,9 +361,9 @@ EVENTS = {spec.event: spec for spec in (
     # and how often it trades one HARD check for another — is unknowable. Check NAMES only; the
     # violations' evidence is draft text.
     EventSpec("slop_retry", (
-        prop("user_id"), label("surface"), label("outcome"), prop("attempt"), prop("max_attempts"),
-        items("before_checks"), items("after_checks"), prop("hard_before"), prop("hard_after"),
-        prop("warn_before"), prop("warn_after"),
+        prop("user_id"), label("surface"), label("outcome"), label("kept"), prop("attempt"),
+        prop("max_attempts"), items("before_checks"), items("after_checks"), prop("hard_before"),
+        prop("hard_after"), prop("warn_before"), prop("warn_after"),
     )),
     EventSpec("motion_prompt_check", (
         prop("user_id"), prop("post_id"), label("surface"), text("model"), label("verdict"),
@@ -1537,6 +1537,7 @@ def track_slop_retry(
     after: Optional[dict] = None,
     attempt: int = 1,
     max_attempts: int = 2,
+    kept: bool = False,
     user_id: Optional[int] = None,
 ) -> None:
     """Emit ONE `slop_retry` event per steered slop-lint regeneration (issue #1434).
@@ -1546,13 +1547,18 @@ def track_slop_retry(
     the budget ran out, so the clear-rate of the retry — and how often a full-draft rewrite trades
     one HARD check for a different one — cannot be recovered from the corpus afterwards.
 
+    `kept` is the second half of that reading and is NOT derivable from `outcome`: since a caller
+    may now discard a regeneration that came back worse (`slop_lint.keep_retry`), a `persisted` row
+    can be either the draft that shipped or one that was thrown away. Whether the call bought
+    anything is exactly what an attempt-budget decision turns on, so it travels with the outcome.
+
     Only check NAMES cross the wire. A violation's `evidence` is an excerpt of the draft, i.e. user
     content, and the counts plus the names answer every question this measurement was raised to ask.
     """
     before, after = dict(before or {}), dict(after or {})
     _emit(EVENTS["slop_retry"], {
         "user_id": user_id, "surface": surface, "outcome": outcome, "attempt": attempt,
-        "max_attempts": max_attempts,
+        "max_attempts": max_attempts, "kept": bool(kept),
         "before_checks": [v.get("check") for v in before.get("hard") or []],
         "after_checks": [v.get("check") for v in after.get("hard") or []],
         "hard_before": len(before.get("hard") or []), "hard_after": len(after.get("hard") or []),

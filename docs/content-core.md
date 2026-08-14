@@ -209,12 +209,17 @@ newsletter editions AND group posts after humanization.
 The budget is read PER SURFACE since #1434 — `SLOP_LINT_MAX_ATTEMPTS_<SURFACE>` beats the global
 value, because what one more attempt costs belongs to the surface (an edition is a `lem-complex`
 call, a feed comment a `lem-medium` one at volume). Every surface still defaults to **2**, i.e. one
-regeneration. Two rules travel with it: the retry is a fresh draft rather than an edit, so
-`keep_retry` keeps whichever of the two ranks better on (HARD count, total violations) instead of
-taking the newer one blind; and each regeneration emits `slop_retry` naming what it actually did
-(`cleared` / `traded` / `worsened` / `persisted` / `lost`) — the finished draft only shows what was
-still firing at the end, so without that event a retry that traded one check for another is
-invisible.
+regeneration. Every loop resolves the budget for the surface it is drafting, so the knob is real on
+the short-form surfaces (`lint_repaired`) and the affiliate promo draft too, not only on the
+newsletter.
+
+Two rules travel with it, and **both are newsletter-only today** (#1536 widens them): the retry is a
+fresh draft rather than an edit, so `keep_retry` keeps whichever of the two ranks better on (HARD
+count, total violations) instead of taking the newer one blind; and each regeneration emits
+`slop_retry` naming what it actually did (`cleared` / `traded` / `worsened` / `persisted` / `lost`,
+plus whether the draft was `kept`) — the finished draft only shows what was still firing at the end,
+so without that event a retry that traded one check for another is invisible. The other loops still
+take the newer draft blind and record nothing.
 
 - Banned lexicon pileup
 - The "it's not X, it's Y" contrastive frame

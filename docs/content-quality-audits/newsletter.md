@@ -201,8 +201,10 @@ at.
 **What shipped instead**, all of it at **$0.00 per edition — no additional LLM call on any path**:
 
 1. **The retry is now recorded.** One `slop_retry` event per regeneration carries
-   `outcome` ∈ {`cleared`, `traded`, `worsened`, `persisted`, `lost`}, the HARD check names before
-   and after, and `attempt`/`max_attempts`. `traded` is broken out from `persisted` on purpose: it
+   `outcome` ∈ {`cleared`, `traded`, `worsened`, `persisted`, `lost`}, `kept` (whether that draft
+   survived — a `persisted` row can be the edition that shipped OR one that was discarded, so the
+   two are not the same reading), the HARD check names before and after, and
+   `attempt`/`max_attempts`. `traded` is broken out from `persisted` on purpose: it
    is the failure mode a whole-draft rewrite has and a targeted edit does not, so its share is what
    decides between "buy another attempt" and "stop rewriting the whole edition". Check names only —
    a violation's `evidence` is draft text.
@@ -216,6 +218,13 @@ at.
    an edition is a `lem-complex` call on a weekly cadence, a feed comment a `lem-medium` call at
    volume. **The newsletter default is unchanged at 2.** Raising it is one env value once the
    `slop_retry` rows exist, and raising it without them would be the guess the issue ruled out.
+
+**Scoped to this surface:** the recording and the keep-the-better-draft rule are the NEWSLETTER
+loop's only. `lint_repaired` (seed comments, replies, DMs) and the affiliate promo draft run the
+same bounded retry, still take the newer draft blind, and emit nothing — the same two defects, on
+higher-volume surfaces with no review queue behind them. Only the per-surface budget was widened
+here, because that one is a config read with no behaviour change. Widening the other two is
+**#1536**.
 
 **Still open:** the number itself. Re-run this reading once `slop_retry` has covered a full
 newsletter cycle — if `cleared` dominates, buy the third attempt; if `traded` dominates, the retry

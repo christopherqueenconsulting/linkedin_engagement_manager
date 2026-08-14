@@ -8,6 +8,7 @@ positives — a linter that flags a good human draft costs a regeneration and, o
 hold the author has to clear by hand.
 """
 
+import os
 import time
 from unittest.mock import MagicMock, patch
 
@@ -34,9 +35,12 @@ def _clean_env(monkeypatch):
     for name in ("SLOP_LINT_ENABLED", "SLOP_LINT_POST_ENABLED", "SLOP_LINT_COMMENT_ENABLED",
                  "SLOP_LINT_DM_ENABLED", "SLOP_LINT_NEWSLETTER_ENABLED", "SLOP_LINT_LEXICON_MAX",
                  "SLOP_LINT_EM_DASH_PER_SENTENCE", "SLOP_LINT_BURSTINESS_MIN",
-                 "SLOP_LINT_EMOJI_BULLET_MAX", "SLOP_LINT_MAX_ATTEMPTS",
-                 "SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "SLOP_LINT_EXTRA_WORDS",
+                 "SLOP_LINT_EMOJI_BULLET_MAX", "SLOP_LINT_MAX_ATTEMPTS", "SLOP_LINT_EXTRA_WORDS",
                  "SLOP_LINT_ALLOW_WORDS", "SLOP_LINT_EXTRA_PHRASES", "SLOP_LINT_BLOG_ALIGNMENT_MIN"):
+        monkeypatch.delenv(name, raising=False)
+    # Every per-surface budget, not a hand-listed few: a real environment may carry one for a
+    # surface this file never names, and it would silently change another test's call count.
+    for name in [n for n in os.environ if n.startswith("SLOP_LINT_MAX_ATTEMPTS_")]:
         monkeypatch.delenv(name, raising=False)
     for check in sl.DEFAULT_SEVERITIES:
         monkeypatch.delenv(f"SLOP_LINT_SEVERITY_{check.upper()}", raising=False)
@@ -631,6 +635,26 @@ class TestShortFormRepair:
             ai_helper.lint_repaired(bad, "dm", redraft)
         assert redraft.call_count == 2      # initial draft + 2 regenerations = 3 total
 
+    def test_the_budget_is_resolved_for_the_surface_being_drafted(self, monkeypatch):
+        # These are `lem-medium` calls at volume, so the per-surface knob has to reach them —
+        # resolving the budget globally here would make SLOP_LINT_MAX_ATTEMPTS_DM a silent no-op.
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_DM", "3")
+        from cqc_lem.utilities.ai import ai_helper
+        bad = "It's not X, it's Y. Thoughts?"
+        redraft = MagicMock(return_value=bad)
+        with patch(f"{_AI}.log_warning"):
+            ai_helper.lint_repaired(bad, "dm", redraft)
+        assert redraft.call_count == 2
+
+    def test_another_surfaces_budget_does_not_reach_this_one(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "4")
+        from cqc_lem.utilities.ai import ai_helper
+        bad = "It's not X, it's Y. Thoughts?"
+        redraft = MagicMock(return_value=bad)
+        with patch(f"{_AI}.log_warning"):
+            ai_helper.lint_repaired(bad, "comment", redraft)
+        assert redraft.call_count == 1      # the default budget of 2, not the newsletter's 4
+
 
 class TestNewsletterWiring:
     @pytest.fixture(autouse=True)
@@ -809,6 +833,20 @@ class TestRetryTelemetry:
         assert props["hard_before"] == 1 and props["hard_after"] == 0
         assert props["attempt"] == 2 and props["max_attempts"] == 2
         assert "mindset" not in str(props), "the draft body must never be sent"
+
+    def test_whether_the_retry_survived_is_recorded_and_is_a_string(self):
+        # `kept` is not derivable from `outcome`: a `persisted` retry may be the draft that shipped
+        # OR one thrown away for coming back worse, and which it was is the budget argument.
+        from cqc_lem.utilities.observability import track_slop_retry
+        before = sl.lint_report("It's not just tooling, it's a mindset.", "newsletter")
+        with patch("cqc_lem.utilities.observability.posthog.capture") as capture:
+            track_slop_retry("newsletter", sl.RETRY_PERSISTED, before=before, after=before,
+                             attempt=2, kept=False)
+        assert capture.call_args[1]["properties"]["kept"] == "False"
+        with patch("cqc_lem.utilities.observability.posthog.capture") as capture:
+            track_slop_retry("newsletter", sl.RETRY_PERSISTED, before=before, after=before,
+                             attempt=2, kept=True)
+        assert capture.call_args[1]["properties"]["kept"] == "True"
 
     def test_a_lost_regeneration_still_reports(self):
         from cqc_lem.utilities.observability import track_slop_retry

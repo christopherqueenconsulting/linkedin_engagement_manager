@@ -387,16 +387,22 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
     """Deterministic slop lint + bounded regeneration for the short-form surfaces (issue #625 / D1).
 
     `redraft(directive)` produces a fresh draft with the lint's constraints appended to the writer's
-    system prompt; it is called at most `slop_max_attempts() - 1` times. Returns the best draft we
-    got — these surfaces (seed comments, thread replies, DMs) have no review queue to hold a draft
-    in, so a still-slopped one ships with a structured warning rather than nothing at all. The feed
-    comment path and the post gate are the two that actually block; see `generate_ai_response` and
-    `evaluate_post_gates`.
+    system prompt; it is called at most `slop_max_attempts(content_type) - 1` times. Returns the
+    best draft we got — these surfaces (seed comments, thread replies, DMs) have no review queue to
+    hold a draft in, so a still-slopped one ships with a structured warning rather than nothing at
+    all. The feed comment path and the post gate are the two that actually block; see
+    `generate_ai_response` and `evaluate_post_gates`.
+
+    The budget is resolved for THIS surface, not globally (issue #1434): these are `lem-medium`
+    calls at volume, so `SLOP_LINT_MAX_ATTEMPTS_COMMENT` has to be able to say something different
+    from `SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER`. Passing the surface the caller already handed us is
+    what keeps that knob from being a no-op everywhere except the newsletter.
     """
     current = draft
     if not current:
         return current
-    for _ in range(max(0, _slop.slop_max_attempts() - 1)):
+    max_attempts = _slop.slop_max_attempts(content_type)
+    for _ in range(max(0, max_attempts - 1)):
         report = _slop.lint_report(current, content_type)
         if report["passes"]:
             return current
@@ -407,7 +413,7 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
     final = _slop.lint_report(current, content_type)
     if not final["passes"]:
         log_warning(f"{content_type} still trips the AI-slop lint after "
-                    f"{_slop.slop_max_attempts()} attempt(s); sending anyway: "
+                    f"{max_attempts} attempt(s); sending anyway: "
                     + "; ".join(_slop.violation_reasons(final["hard"])), **log_ctx)
     return current
 
@@ -1033,12 +1039,13 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
             retry = _polish(retry)
             retry_report = _slop.lint_report(retry["body"], "newsletter", blog_content=blog_content)
             retry_structure = _framework.newsletter_structure_report(retry["body"])
+        kept = bool(retry) and _slop.keep_retry(report, retry_report)
         track_slop_retry("newsletter", _slop.retry_outcome(report, retry_report),
                          before=report, after=retry_report, attempt=attempt,
-                         max_attempts=max_attempts, user_id=user_id)
+                         max_attempts=max_attempts, kept=kept, user_id=user_id)
         if not retry:
             break
-        if _slop.keep_retry(report, retry_report):
+        if kept:
             edition, report, structure = retry, retry_report, retry_structure
     if not report["passes"]:
         log_warning("Newsletter edition still trips the AI-slop lint; keeping it for review: "

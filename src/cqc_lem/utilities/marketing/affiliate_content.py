@@ -327,7 +327,7 @@ def generate_promo_post(user_id: int, post_id: Optional[int] = None,
     prompt = _prompt(prefs, profile_synthesis, referral_link)
 
     content, retry_directive, attempts = None, "", 0
-    for _ in range(max(1, slop_max_attempts())):
+    for _ in range(max(1, slop_max_attempts("post"))):
         attempts += 1
         draft = _draft(user_id, prompt, retry_directive)
         if not draft:
