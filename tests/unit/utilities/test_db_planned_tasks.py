@@ -10,24 +10,8 @@ pytestmark = pytest.mark.unit
 _DB = "cqc_lem.utilities.db"
 
 
-def _conn_fetchall(sides):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchall.side_effect = sides
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
-def _conn_fetchone(row):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchone.return_value = row
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestGetPlannedTasks:
-    def test_merges_and_labels_by_kind_sorted(self):
+    def test_merges_and_labels_by_kind_sorted(self, fake_cursor):
         t0 = datetime.datetime(2026, 7, 10, 9, 0)
         t1 = datetime.datetime(2026, 7, 11, 9, 0)
         t2 = datetime.datetime(2026, 7, 12, 9, 0)
@@ -35,7 +19,7 @@ class TestGetPlannedTasks:
         dms = [{"id": 5, "recipient_name": "Alice", "message": "hi", "scheduled_time": t0,
                 "status": "pending"}]
         editions = [{"id": 9, "title": "Weekly Roundup", "scheduled_for": t1, "status": "draft"}]
-        conn, cur = _conn_fetchall([posts, dms, editions])
+        conn, cur = fake_cursor(fetch_all_side_effect=[posts, dms, editions])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_tasks
             out = get_planned_tasks(1, limit=10)
@@ -50,14 +34,14 @@ class TestGetPlannedTasks:
             assert "UTC_TIMESTAMP()" in sql
         assert "posted" not in "".join(c[0][0] for c in cur.execute.call_args_list)
 
-    def test_excludes_nothing_when_all_terminal(self):
-        conn, _ = _conn_fetchall([[], [], []])
+    def test_excludes_nothing_when_all_terminal(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_all_side_effect=[[], [], []])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_tasks
             assert get_planned_tasks(1) == []
 
-    def test_uses_non_terminal_status_enums_for_posts(self):
-        conn, cur = _conn_fetchall([[], [], []])
+    def test_uses_non_terminal_status_enums_for_posts(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all_side_effect=[[], [], []])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import PostStatus, ScheduledDmStatus, get_planned_tasks
             get_planned_tasks(1)
@@ -69,11 +53,11 @@ class TestGetPlannedTasks:
         dm_params = cur.execute.call_args_list[1][0][1]
         assert ScheduledDmStatus.SENT.value not in dm_params
 
-    def test_limit_caps_merged_result(self):
+    def test_limit_caps_merged_result(self, fake_cursor):
         rows = [{"id": i, "content": f"p{i}",
                  "scheduled_time": datetime.datetime(2026, 7, 10 + i, 9, 0),
                  "status": "approved"} for i in range(3)]
-        conn, _ = _conn_fetchall([rows, [], []])
+        conn, _ = fake_cursor(fetch_all_side_effect=[rows, [], []])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_planned_tasks
             out = get_planned_tasks(1, limit=2)
@@ -91,20 +75,20 @@ class TestGetPlannedTasks:
 
 
 class TestDefaultVideoQuality:
-    def test_get_returns_stored_valid_value(self):
-        conn, _ = _conn_fetchone({"default_video_quality": "premium"})
+    def test_get_returns_stored_valid_value(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"default_video_quality": "premium"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_default_video_quality
             assert get_default_video_quality(1) == "premium"
 
-    def test_get_defaults_standard_when_unset(self):
-        conn, _ = _conn_fetchone(None)
+    def test_get_defaults_standard_when_unset(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_default_video_quality
             assert get_default_video_quality(1) == "standard"
 
-    def test_get_coerces_invalid_to_standard(self):
-        conn, _ = _conn_fetchone({"default_video_quality": "bogus"})
+    def test_get_coerces_invalid_to_standard(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"default_video_quality": "bogus"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_default_video_quality
             assert get_default_video_quality(1) == "standard"

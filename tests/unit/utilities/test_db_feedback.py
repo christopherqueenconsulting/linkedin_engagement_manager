@@ -96,19 +96,9 @@ class TestFeedbackEnums:
             "new", "triaged", "clustered", "issue_created", "resolved", "dismissed"}
 
 
-def _dict_conn(rows=None, one=None, rowcount=1):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchall.return_value = rows
-    cur.fetchone.return_value = one
-    cur.rowcount = rowcount
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestGetFeedbackById:
-    def test_returns_the_row(self):
-        conn, cur = _dict_conn(one={"id": 5, "body": "broken"})
+    def test_returns_the_row(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"id": 5, "body": "broken"}, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_by_id
             assert get_feedback_by_id(5) == {"id": 5, "body": "broken"}
@@ -116,9 +106,9 @@ class TestGetFeedbackById:
         assert "FROM feedback WHERE id=%s" in sql
         assert params == (5,)
 
-    def test_db_error_returns_none(self):
+    def test_db_error_returns_none(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_feedback_by_id
@@ -127,8 +117,8 @@ class TestGetFeedbackById:
 
 
 class TestGetUnprocessedFeedback:
-    def test_defaults_to_new_only_and_orders_fifo(self):
-        conn, cur = _dict_conn(rows=[{"id": 1}])
+    def test_defaults_to_new_only_and_orders_fifo(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[{"id": 1}])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_unprocessed_feedback
             assert get_unprocessed_feedback(limit=5) == [{"id": 1}]
@@ -139,8 +129,8 @@ class TestGetUnprocessedFeedback:
         assert "JOIN users" not in sql                    # no admin filter unless asked for
         assert params == ("new", 5)
 
-    def test_widened_statuses_are_all_bound_as_parameters(self):
-        conn, cur = _dict_conn(rows=[])
+    def test_widened_statuses_are_all_bound_as_parameters(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FeedbackStatus, get_unprocessed_feedback
             get_unprocessed_feedback(limit=9, statuses=(FeedbackStatus.NEW,
@@ -149,13 +139,13 @@ class TestGetUnprocessedFeedback:
         assert "f.status IN (%s,%s)" in sql
         assert params == ("new", "triaged", 9)
 
-    def test_admin_only_filters_in_sql_not_in_the_caller(self, monkeypatch):
+    def test_admin_only_filters_in_sql_not_in_the_caller(self, monkeypatch, fake_cursor):
         """Issue #793: parked non-admin rows stay `new` with a NULL cluster forever, so if the
         filter lived in the caller's loop they would fill `limit` every pass and starve admin
         feedback out of the queue permanently.
         """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
-        conn, cur = _dict_conn(rows=[])
+        conn, cur = fake_cursor(fetch_all=[])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_unprocessed_feedback
             get_unprocessed_feedback(limit=7, admin_only=True)
@@ -164,10 +154,10 @@ class TestGetUnprocessedFeedback:
         assert "AND au.id IS NOT NULL" in sql
         assert params == ("new", 7)
 
-    def test_admin_only_honours_the_email_allowlist(self, monkeypatch):
+    def test_admin_only_honours_the_email_allowlist(self, monkeypatch, fake_cursor):
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
                             " Owner@Example.com , second@example.com ")
-        conn, cur = _dict_conn(rows=[])
+        conn, cur = fake_cursor(fetch_all=[])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_unprocessed_feedback
             get_unprocessed_feedback(limit=3, admin_only=True)
@@ -182,9 +172,9 @@ class TestGetUnprocessedFeedback:
             assert get_unprocessed_feedback(statuses=()) == []
         get_conn.assert_not_called()
 
-    def test_db_error_returns_empty_list(self):
+    def test_db_error_returns_empty_list(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_unprocessed_feedback
@@ -192,10 +182,10 @@ class TestGetUnprocessedFeedback:
 
 
 class TestGetOpenFeedbackClusters:
-    def test_groups_on_the_seed_row_and_counts_distinct_reporters(self):
+    def test_groups_on_the_seed_row_and_counts_distinct_reporters(self, fake_cursor):
         rows = [{"cluster_id": 7, "body": "x", "github_issue_number": 101, "item_count": 3,
                  "reporter_count": 2}]
-        conn, cur = _dict_conn(rows=rows)
+        conn, cur = fake_cursor(fetch_all=rows)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_open_feedback_clusters
             assert get_open_feedback_clusters(limit=50) == rows
@@ -205,9 +195,9 @@ class TestGetOpenFeedbackClusters:
         assert "s.status IN ('clustered','issue_created')" in sql
         assert params == (50,)
 
-    def test_db_error_returns_empty_list(self):
+    def test_db_error_returns_empty_list(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_open_feedback_clusters
@@ -215,8 +205,8 @@ class TestGetOpenFeedbackClusters:
 
 
 class TestCountFeedbackFiledByUser:
-    def test_counts_only_rows_that_reached_github_in_the_window(self):
-        conn, cur = _dict_conn(one=(4,))
+    def test_counts_only_rows_that_reached_github_in_the_window(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(4,), fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import count_feedback_filed_by_user
             assert count_feedback_filed_by_user(9, hours=12) == 4
@@ -231,13 +221,13 @@ class TestCountFeedbackFiledByUser:
             assert count_feedback_filed_by_user(None) == 0
         get_conn.assert_not_called()
 
-    def test_null_count_and_db_error_are_zero(self):
+    def test_null_count_and_db_error_are_zero(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn(one=(None,))
+        conn, cur = fake_cursor(fetch_one=(None,), fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import count_feedback_filed_by_user
             assert count_feedback_filed_by_user(9) == 0
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import count_feedback_filed_by_user
@@ -245,8 +235,8 @@ class TestCountFeedbackFiledByUser:
 
 
 class TestUpdateFeedbackTriage:
-    def test_writes_only_the_fields_passed(self):
-        conn, cur = _dict_conn()
+    def test_writes_only_the_fields_passed(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
             assert update_feedback_triage(3, status=FeedbackStatus.ISSUE_CREATED,
@@ -258,8 +248,8 @@ class TestUpdateFeedbackTriage:
         assert params == ("issue_created", 3, 88, json.dumps([0.5, 0.25]), 3)
         conn.commit.assert_called_once()
 
-    def test_embedding_only_update_leaves_status_alone(self):
-        conn, cur = _dict_conn()
+    def test_embedding_only_update_leaves_status_alone(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_feedback_triage
             update_feedback_triage(3, embedding=[1.0])
@@ -273,22 +263,22 @@ class TestUpdateFeedbackTriage:
             assert update_feedback_triage(3) is False
         get_conn.assert_not_called()
 
-    def test_missing_row_returns_false(self):
-        conn, cur = _dict_conn(rowcount=0)
+    def test_missing_row_returns_false(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None, rowcount=0)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
             assert update_feedback_triage(99, status=FeedbackStatus.TRIAGED) is False
 
-    def test_over_long_sentiment_is_truncated(self):
-        conn, cur = _dict_conn()
+    def test_over_long_sentiment_is_truncated(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_feedback_triage
             update_feedback_triage(3, sentiment="s" * 40)
         assert len(cur.execute.call_args[0][1][0]) == 16
 
-    def test_db_error_returns_false_and_closes(self):
+    def test_db_error_returns_false_and_closes(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), \
              patch(f"{_FEEDBACK}.log_error") as log:
@@ -312,25 +302,25 @@ class TestUpdateFeedbackTriage:
         # logged without one would never reach error tracking or the issue filer.
         assert isinstance(log.call_args.kwargs.get("exc"), ValueError)
 
-    def test_status_spelling_variants_are_accepted(self):
-        conn, cur = _dict_conn()
+    def test_status_spelling_variants_are_accepted(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_feedback_triage
             assert update_feedback_triage(3, status=" Issue_Created ") is True
         assert cur.execute.call_args[0][1] == ("issue_created", 3)
 
-    def test_every_feedback_status_member_is_writable(self):
+    def test_every_feedback_status_member_is_writable(self, fake_cursor):
         from cqc_lem.utilities.db import FeedbackStatus, update_feedback_triage
         for member in FeedbackStatus:
-            conn, cur = _dict_conn()
+            conn, cur = fake_cursor(fetch_all=None)
             with patch(f"{_GET_CONN}", return_value=conn):
                 assert update_feedback_triage(3, status=member) is True
             assert cur.execute.call_args[0][1] == (member.value, 3)
 
 
 class TestIsUserAdmin:
-    def test_true_when_row_has_is_admin(self):
-        conn, cur = _dict_conn(one={"is_admin": 1, "email": "someone@example.com"})
+    def test_true_when_row_has_is_admin(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"is_admin": 1, "email": "someone@example.com"}, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is True
@@ -338,33 +328,33 @@ class TestIsUserAdmin:
         assert "SELECT is_admin, email FROM users" in sql
         assert params == (5,)
 
-    def test_false_when_row_missing(self):
-        conn, cur = _dict_conn(one=None)
+    def test_false_when_row_missing(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=None, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
 
-    def test_false_when_row_is_zero(self, monkeypatch):
+    def test_false_when_row_is_zero(self, monkeypatch, fake_cursor):
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
-        conn, cur = _dict_conn(one={"is_admin": 0, "email": "someone@example.com"})
+        conn, cur = fake_cursor(fetch_one={"is_admin": 0, "email": "someone@example.com"}, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
 
-    def test_email_allowlist_grants_admin_when_the_column_is_zero(self, monkeypatch):
+    def test_email_allowlist_grants_admin_when_the_column_is_zero(self, monkeypatch, fake_cursor):
         """Bootstrap path (#793): with no flagged user the auto-filer parks everything and nobody
         can reach the panel to release it.
         """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
                             "owner@example.com")
-        conn, _ = _dict_conn(one={"is_admin": 0, "email": " Owner@Example.com "})
+        conn, _ = fake_cursor(fetch_one={"is_admin": 0, "email": " Owner@Example.com "}, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is True
 
-    def test_empty_allowlist_grants_nobody(self, monkeypatch):
+    def test_empty_allowlist_grants_nobody(self, monkeypatch, fake_cursor):
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "  ,  ")
-        conn, _ = _dict_conn(one={"is_admin": 0, "email": ""})
+        conn, _ = fake_cursor(fetch_one={"is_admin": 0, "email": ""}, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
@@ -375,9 +365,9 @@ class TestIsUserAdmin:
             assert is_user_admin(None) is False
         get_conn.assert_not_called()
 
-    def test_db_error_is_false(self):
+    def test_db_error_is_false(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import is_user_admin
@@ -385,9 +375,9 @@ class TestIsUserAdmin:
 
 
 class TestCountPendingAdminReview:
-    def test_counts_the_rows_the_auto_filer_skipped(self, monkeypatch):
+    def test_counts_the_rows_the_auto_filer_skipped(self, monkeypatch, fake_cursor):
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
-        conn, cur = _dict_conn(one=(4,))
+        conn, cur = fake_cursor(fetch_one=(4,), fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import count_pending_admin_review
             assert count_pending_admin_review() == 4
@@ -396,8 +386,8 @@ class TestCountPendingAdminReview:
         assert "f.cluster_id IS NULL" in sql
         assert params == ("new",)
 
-    def test_no_row_is_zero(self):
-        conn, _ = _dict_conn(one=None)
+    def test_no_row_is_zero(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None, fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import count_pending_admin_review
             assert count_pending_admin_review() == 0
@@ -408,9 +398,9 @@ class TestCountPendingAdminReview:
             assert count_pending_admin_review(statuses=("'; DROP TABLE feedback; --",)) == 0
         get_conn.assert_not_called()
 
-    def test_db_error_is_zero(self):
+    def test_db_error_is_zero(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import count_pending_admin_review
@@ -418,8 +408,8 @@ class TestCountPendingAdminReview:
 
 
 class TestGetFeedbackList:
-    def test_returns_rows_joined_with_user_email(self):
-        conn, cur = _dict_conn(rows=[{"id": 1, "email": "a@x.com", "is_admin": 1,
+    def test_returns_rows_joined_with_user_email(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[{"id": 1, "email": "a@x.com", "is_admin": 1,
                                      "status": "new", "source": "widget"}])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_list
@@ -432,8 +422,8 @@ class TestGetFeedbackList:
         assert "LIMIT %s OFFSET %s" in sql
         assert params == (5, 10)
 
-    def test_status_filter_is_validated_and_bound(self):
-        conn, cur = _dict_conn(rows=[])
+    def test_status_filter_is_validated_and_bound(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FeedbackSource, FeedbackStatus, get_feedback_list
             get_feedback_list(status=FeedbackStatus.NEW, source=FeedbackSource.WIDGET, limit=2)
@@ -442,23 +432,23 @@ class TestGetFeedbackList:
         assert "f.source = %s" in sql
         assert params == ("new", "widget", 2, 0)
 
-    def test_embedding_is_not_dragged_into_the_panel(self):
+    def test_embedding_is_not_dragged_into_the_panel(self, fake_cursor):
         """A page of 50 rows would pull 50 full vectors MySQL-side for a column the panel never
         renders.
         """
-        conn, cur = _dict_conn(rows=[])
+        conn, cur = fake_cursor(fetch_all=[])
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_list
             get_feedback_list()
         assert "embedding" not in cur.execute.call_args[0][0]
 
-    def test_allowlisted_reporter_reads_as_admin(self, monkeypatch):
+    def test_allowlisted_reporter_reads_as_admin(self, monkeypatch, fake_cursor):
         """The auto-filer's join counts ADMIN_USER_EMAILS as admin, so their reports ARE filed
         automatically — the panel must not show them as still awaiting review.
         """
         monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
                             "owner@example.com")
-        conn, _ = _dict_conn(rows=[{"id": 1, "email": " Owner@Example.com ", "is_admin": 0},
+        conn, _ = fake_cursor(fetch_all=[{"id": 1, "email": " Owner@Example.com ", "is_admin": 0},
                                    {"id": 2, "email": "someone@example.com", "is_admin": 0},
                                    {"id": 3, "email": None, "is_admin": None}])
         with patch(f"{_GET_CONN}", return_value=conn):
@@ -472,9 +462,9 @@ class TestGetFeedbackList:
             assert get_feedback_list(status="not-a-status") == []
         get_conn.assert_not_called()
 
-    def test_db_error_returns_empty_list(self):
+    def test_db_error_returns_empty_list(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import get_feedback_list
@@ -482,8 +472,8 @@ class TestGetFeedbackList:
 
 
 class TestRecordFeedbackReview:
-    def test_records_reviewer_and_status(self):
-        conn, cur = _dict_conn()
+    def test_records_reviewer_and_status(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn), \
                 patch(f"{_FEEDBACK}.datetime") as dt:
             from cqc_lem.utilities.db import FeedbackStatus, record_feedback_review
@@ -496,8 +486,8 @@ class TestRecordFeedbackReview:
         assert params[3] == 7
         conn.commit.assert_called_once()
 
-    def test_can_record_reviewer_without_status(self):
-        conn, cur = _dict_conn()
+    def test_can_record_reviewer_without_status(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import record_feedback_review
             assert record_feedback_review(7, 3) is True
@@ -518,9 +508,9 @@ class TestRecordFeedbackReview:
         assert record_feedback_review(None, 3) is False
         assert record_feedback_review(7, None) is False
 
-    def test_db_error_returns_false(self):
+    def test_db_error_returns_false(self, fake_cursor):
         import mysql.connector
-        conn, cur = _dict_conn()
+        conn, cur = fake_cursor(fetch_all=None)
         cur.execute.side_effect = mysql.connector.Error("boom")
         with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_FEEDBACK}.log_error"):
             from cqc_lem.utilities.db import record_feedback_review

@@ -13,13 +13,18 @@ inside these fixtures and wins.
 
 import hashlib
 import os
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 from openai import APIConnectionError
 
 _BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
+
+# Sentinel for "caller said nothing", so `fetch_all=None` can still mean a literal None row set —
+# a handful of readers are tested against a driver that returns None instead of an empty list.
+_UNSET = object()
 
 
 def pytest_collection_modifyitems(config, items):
@@ -173,3 +178,62 @@ def _feature_flags_env_only(monkeypatch):
     monkeypatch.setenv("POSTHOG_FLAGS_ENABLED", "false")
     from cqc_lem.utilities import flags
     flags.reset_flag_state()
+
+
+def _make_fake_cursor(
+    *,
+    fetch_one: Any = None,
+    fetch_all: Any = _UNSET,
+    fetch_one_side_effect: Any = None,
+    fetch_all_side_effect: Any = None,
+    rowcount: int = 1,
+    lastrowid: int = 1,
+    execute_error: Any = None,
+) -> tuple[MagicMock, MagicMock]:
+    """Build the (connection, cursor) pair every `db_cursor()` caller sees under test."""
+    cursor = MagicMock()
+    cursor.fetchone.return_value = fetch_one
+    cursor.fetchall.return_value = [] if fetch_all is _UNSET else fetch_all
+    if fetch_one_side_effect is not None:
+        cursor.fetchone.side_effect = fetch_one_side_effect
+    if fetch_all_side_effect is not None:
+        cursor.fetchall.side_effect = fetch_all_side_effect
+    cursor.rowcount = rowcount
+    cursor.lastrowid = lastrowid
+    if execute_error is not None:
+        cursor.execute.side_effect = execute_error
+    connection = MagicMock()
+    # `db_cursor()` calls `connection.cursor(dictionary=...)`; return_value ignores the kwarg, so
+    # one stub serves both the tuple-row and dict-row readers. Whichever rows the test supplies are
+    # the rows the reader gets — the cursor never decides the shape.
+    connection.cursor.return_value = cursor
+    return connection, cursor
+
+
+@pytest.fixture
+def fake_cursor():
+    """Issue #1213: the ONE fake MySQL cursor. Returns a factory; call it per test.
+
+    77 test modules used to hand-roll this pair, each a slightly different shape. That is how a stub
+    silently stops matching what `db_cursor()` actually returns — the drift is invisible until a
+    reader is tested against a cursor production never hands it. One factory means one thing to fix
+    when the real contract moves.
+
+        conn, cur = fake_cursor(fetch_one={"id": 1})
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            ...
+
+    Keyword-only, because a positional row argument is exactly the ambiguity being retired:
+
+    - `fetch_one` / `fetch_all` — what `fetchone()` / `fetchall()` return. `fetch_all` defaults to
+      `[]`; pass `fetch_all=None` when the reader must survive a literal `None` result set.
+    - `fetch_one_side_effect` / `fetch_all_side_effect` — a sequence, for a helper that runs several
+      queries on ONE cursor and needs a different result set per call.
+    - `rowcount` / `lastrowid` — read after `execute` by the write helpers.
+    - `execute_error` — raised by `execute()`, for the `mysql.connector.Error` fallback contracts.
+
+    Returns:
+        A callable returning the `(connection, cursor)` pair. Patch `get_db_connection` with the
+        connection; assert against the cursor.
+    """
+    return _make_fake_cursor

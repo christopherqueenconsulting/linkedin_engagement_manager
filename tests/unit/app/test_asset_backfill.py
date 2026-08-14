@@ -7,25 +7,16 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _db(fetchone=None, fetchall=None):
-    cur = MagicMock()
-    cur.fetchone.return_value = fetchone
-    cur.fetchall.return_value = fetchall or []
-    conn = MagicMock()
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestDbQueries:
-    def test_missing_assets_query(self):
+    def test_missing_assets_query(self, fake_cursor):
         rows = [(6, 1, 'video', 'awareness', 't'), (5, 1, 'carousel', 'awareness', 't')]
-        conn, _ = _db(fetchall=rows)
+        conn, _ = fake_cursor(fetch_all=rows)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_unposted_posts_missing_assets
             assert get_unposted_posts_missing_assets() == rows
 
-    def test_carousel_slides_getter(self):
-        conn, _ = _db(fetchone={"carousel_slides": '["a"]'})
+    def test_carousel_slides_getter(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"carousel_slides": '["a"]'})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_carousel_slides
             assert get_post_carousel_slides(5) == '["a"]'

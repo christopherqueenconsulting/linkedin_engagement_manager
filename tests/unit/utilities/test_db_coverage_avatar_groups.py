@@ -7,7 +7,7 @@ attribution snapshot, JSON coercion) stay plain tests because each asserts a dif
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -17,19 +17,8 @@ pytestmark = pytest.mark.unit
 _DB = "cqc_lem.utilities.db"
 
 
-def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchone.return_value = fetch_one
-    cur.fetchall.return_value = fetch_all if fetch_all is not None else []
-    cur.rowcount = rowcount
-    cur.lastrowid = lastrowid
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
-def _err_conn():
-    conn, cur = _conn()
+def _err_conn(fake_cursor):
+    conn, cur = fake_cursor()
     cur.execute.side_effect = mysql.connector.Error(msg="boom")
     return conn
 
@@ -48,9 +37,9 @@ _ERROR_CASES = [
 class TestMysqlErrorFallbacks:
     @pytest.mark.parametrize("fname,args,expected",
                              _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
-    def test_error_returns_documented_fallback(self, fname, args, expected):
+    def test_error_returns_documented_fallback(self, fname, args, expected, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert getattr(db, fname)(*args) == expected
 
 
@@ -76,9 +65,9 @@ class TestRowReads:
         "case_id,fname,args,kwargs,fetch_one,fetch_all,expected,params,sql_fragment",
         _ROW_READS, ids=[c[0] for c in _ROW_READS])
     def test_reads_with_expected_params(self, case_id, fname, args, kwargs, fetch_one, fetch_all,
-                                        expected, params, sql_fragment):
+                                        expected, params, sql_fragment, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn(fetch_one=fetch_one, fetch_all=fetch_all)
+        conn, cur = fake_cursor(fetch_one=fetch_one, fetch_all=fetch_all)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args, **kwargs) == expected
         if params is not None:
@@ -88,8 +77,8 @@ class TestRowReads:
 
 
 class TestAvatarLedger:
-    def test_refund_avatar_credit(self):
-        conn, cur = _conn()
+    def test_refund_avatar_credit(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import refund_avatar_credit
             assert refund_avatar_credit(3, "train_1") is True
@@ -99,8 +88,8 @@ class TestAvatarLedger:
 
 
 class TestAvatarTrainings:
-    def test_set_active_avatar_validates_then_deactivates_then_activates(self):
-        conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "approved"})
+    def test_set_active_avatar_validates_then_deactivates_then_activates(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"id": 11, "approval_status": "approved"}, rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11) is True
@@ -118,8 +107,8 @@ class TestAvatarTrainings:
         # The approval gate (issue #744): activation is not reachable from 'succeeded' alone.
         ("unapproved", {"id": 11, "approval_status": "pending"}),
     ], ids=["unknown_id", "unapproved"])
-    def test_set_active_avatar_refusal_preserves_current_active(self, case_id, row):
-        conn, cur = _conn(rowcount=1, fetch_one=row)
+    def test_set_active_avatar_refusal_preserves_current_active(self, case_id, row, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=row, rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11 if row else 999) is False
@@ -127,12 +116,12 @@ class TestAvatarTrainings:
         assert len(executed) == 1 and "SELECT id" in executed[0]
         conn.commit.assert_not_called()
 
-    def test_get_avatar_trainings_serializes_rows(self):
+    def test_get_avatar_trainings_serializes_rows(self, fake_cursor):
         created = datetime(2026, 7, 1, 9, 0)
         rows = [{"id": 1, "training_id": "t1", "model_ref": "m", "trigger_word": "TOK",
                  "status": "succeeded", "is_active": 1, "created_at": created,
                  "updated_at": None}]
-        conn, _ = _conn(fetch_all=rows)
+        conn, _ = fake_cursor(fetch_all=rows)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_trainings
             result = get_avatar_trainings(3)
@@ -149,12 +138,12 @@ class TestAvatarTrainings:
 
 
 class TestUserGroups:
-    def test_get_user_groups_coerces_flags_to_bool_and_date_to_iso(self):
+    def test_get_user_groups_coerces_flags_to_bool_and_date_to_iso(self, fake_cursor):
         rows = [{"group_id": "g1", "group_name": "AI Leaders", "enabled": 1, "post_enabled": 0,
                  "last_posted_at": datetime(2026, 7, 28, 15, 0)},
                 {"group_id": "g2", "group_name": "Sales", "enabled": 0, "post_enabled": 1,
                  "last_posted_at": None}]
-        conn, _ = _conn(fetch_all=rows)
+        conn, _ = fake_cursor(fetch_all=rows)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_groups
             result = get_user_groups(1)
@@ -167,18 +156,18 @@ class TestUserGroups:
 
 
 class TestPostStats:
-    def test_record_post_stats_coerces_none_counts(self):
+    def test_record_post_stats_coerces_none_counts(self, fake_cursor):
         # No matching post row → attribution snapshot is all-NULL but the stat is still recorded.
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, None, None, reposts=None, impressions=120, saves=None) is True
         params = cur.execute.call_args[0][1]  # last execute = the INSERT
         assert params == (1, 9, 0, 0, 0, 120, 0, None, None, None, None, None)
 
-    def test_record_post_stats_snapshots_post_attribution(self):
+    def test_record_post_stats_snapshots_post_attribution(self, fake_cursor):
         # The post's shape/topic is snapshotted onto the stat row at capture time (#386).
-        conn, cur = _conn(fetch_one=("tactical_list", "bold_claim", "text", "AI hiring", "awareness"))
+        conn, cur = fake_cursor(fetch_one=("tactical_list", "bold_claim", "text", "AI hiring", "awareness"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, 10, 3, reposts=1, impressions=200, saves=6) is True
@@ -189,8 +178,8 @@ class TestPostStats:
         assert insert_params == (1, 9, 10, 3, 1, 200, 6,
                                  "tactical_list", "bold_claim", "text", "AI hiring", "awareness")
 
-    def test_get_post_engagement_rows_none_coerced(self):
-        conn, cur = _conn()
+    def test_get_post_engagement_rows_none_coerced(self, fake_cursor):
+        conn, cur = fake_cursor()
         cur.fetchall.return_value = None
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_engagement_rows
@@ -204,8 +193,8 @@ class TestMarkNewsletterPublished:
          ("https://li.com/nl/1", 1)),
         ("without_url", (1,), None, "newsletter_url", (1,)),
     ], ids=["with_url", "without_url"])
-    def test_updates_url_only_when_one_is_given(self, case_id, args, present, absent, params):
-        conn, cur = _conn(rowcount=1)
+    def test_updates_url_only_when_one_is_given(self, case_id, args, present, absent, params, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_newsletter_published
             assert mark_newsletter_published(*args) is True
@@ -228,9 +217,9 @@ class TestScheduledDms:
             from cqc_lem.utilities.db import get_scheduled_dm_user_id
             assert get_scheduled_dm_user_id(4) == expected
 
-    def test_get_scheduled_dms_serializes_datetimes(self):
+    def test_get_scheduled_dms_serializes_datetimes(self, fake_cursor):
         when = datetime(2026, 7, 10, 15, 30)
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.fetchone.return_value = {"c": 1}
         cur.fetchall.return_value = [{"id": 1, "scheduled_time": when,
                                       "created_at": when, "updated_at": None}]

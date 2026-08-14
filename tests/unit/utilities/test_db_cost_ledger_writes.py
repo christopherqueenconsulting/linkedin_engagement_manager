@@ -4,26 +4,16 @@ The read-only accessors the margin report uses live in test_db_cost_ledger.py.
 """
 
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
 
-def _conn(fetch_row=None, fetchall=None):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchone.return_value = fetch_row
-    cur.fetchall.return_value = fetchall or []
-    cur.rowcount = 1
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestInsertCostLedgerEntry:
-    def test_inserts_row_with_defaults(self):
-        conn, cur = _conn()
+    def test_inserts_row_with_defaults(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import CostCategory, insert_cost_ledger_entry
             assert insert_cost_ledger_entry("content", CostCategory.MEDIA, 0.25) is True
@@ -34,9 +24,9 @@ class TestInsertCostLedgerEntry:
         assert isinstance(params[-1], date)  # incurred_on defaults to today
         conn.commit.assert_called_once()
 
-    def test_keeps_sub_cent_precision(self):
+    def test_keeps_sub_cent_precision(self, fake_cursor):
         """A cheap LLM tier rounds to zero at 2dp — the ledger must keep the signal."""
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_cost_ledger_entry
             insert_cost_ledger_entry("comment", "llm", 0.0000123, user_id=4, qty=1234.5678)
@@ -46,9 +36,9 @@ class TestInsertCostLedgerEntry:
         assert params[5] == 0.000012
         assert params[6] == 1234.5678
 
-    def test_error_returns_false(self):
+    def test_error_returns_false(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_cost_ledger_entry
@@ -62,8 +52,8 @@ class TestAccrueMonthlyFixedCosts:
             assert accrue_monthly_fixed_costs(date(2026, 7, 1), []) == 0
         get_conn.assert_not_called()
 
-    def test_writes_missing_and_skips_existing(self):
-        conn, cur = _conn()
+    def test_writes_missing_and_skips_existing(self, fake_cursor):
+        conn, cur = fake_cursor()
         # First accrual already present for this period, second is new.
         cur.fetchone.side_effect = [(1,), None]
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
@@ -80,17 +70,17 @@ class TestAccrueMonthlyFixedCosts:
         assert params[0] == 2 and params[2] == "infra" and params[4] == 1.5
         assert params[-1] == date(2026, 7, 1)
 
-    def test_dedupe_check_is_null_safe(self):
+    def test_dedupe_check_is_null_safe(self, fake_cursor):
         """System rows carry user_id NULL, which `=` never matches — `<=>` does."""
-        conn, cur = _conn(fetch_row=None)
+        conn, cur = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import accrue_monthly_fixed_costs
             accrue_monthly_fixed_costs(date(2026, 7, 1), [{"user_id": None, "category": "infra", "usd": 9.0}])
         assert "user_id <=> %s" in cur.execute.call_args_list[0][0][0]
 
-    def test_error_returns_rows_written_so_far(self):
+    def test_error_returns_rows_written_so_far(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import accrue_monthly_fixed_costs
@@ -104,10 +94,10 @@ class TestGetUsersProxyConfig:
             assert get_users_proxy_config([]) == []
         get_conn.assert_not_called()
 
-    def test_returns_proxy_and_country(self):
+    def test_returns_proxy_and_country(self, fake_cursor):
         rows = [{"id": 1, "proxy_url": "http://p:3128", "country": "US"},
                 {"id": 2, "proxy_url": None, "country": None}]
-        conn, cur = _conn(fetchall=rows)
+        conn, cur = fake_cursor(fetch_all=rows)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_proxy_config
             got = get_users_proxy_config([1, 2])
@@ -117,9 +107,9 @@ class TestGetUsersProxyConfig:
         sql, params = cur.execute.call_args[0]
         assert "IN (%s, %s)" in sql and params == (1, 2)
 
-    def test_error_returns_empty(self):
+    def test_error_returns_empty(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_proxy_config

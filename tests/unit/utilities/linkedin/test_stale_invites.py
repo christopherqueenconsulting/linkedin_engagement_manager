@@ -759,16 +759,9 @@ class TestDailySpendLedger:
     """The day's spend is read back out of the immutable logs, not Redis — that is what makes a
     second run the same day, or a worker restart, unable to re-spend the allowance."""
 
-    def _conn(self, row):
-        conn = MagicMock()
-        cursor = MagicMock()
-        cursor.fetchone.return_value = row
-        conn.cursor.return_value = cursor
-        return conn, cursor
-
-    def test_it_counts_todays_withdrawal_rows_for_this_user(self):
+    def test_it_counts_todays_withdrawal_rows_for_this_user(self, fake_cursor):
         from cqc_lem.utilities.db import STALE_INVITE_WITHDRAWN_MESSAGE, LogActionType, count_invite_withdrawals_today
-        conn, cursor = self._conn((4,))
+        conn, cursor = fake_cursor(fetch_one=(4,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 4
         sql, params = cursor.execute.call_args[0]
@@ -778,9 +771,9 @@ class TestDailySpendLedger:
         assert "result" not in sql
         assert params == (1, LogActionType.ENGAGED.value, STALE_INVITE_WITHDRAWN_MESSAGE)
 
-    def test_no_rows_today_is_zero(self):
+    def test_no_rows_today_is_zero(self, fake_cursor):
         from cqc_lem.utilities.db import count_invite_withdrawals_today
-        conn, _ = self._conn((None,))
+        conn, _ = fake_cursor(fetch_one=(None,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_invite_withdrawals_today(1) == 0
 

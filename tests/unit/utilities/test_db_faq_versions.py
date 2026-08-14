@@ -18,17 +18,6 @@ _VERSION = {"id": 3, "faq_entry_id": 7, "question": _ENTRY["question"], "answer"
             "status": "published", "source": "auto", "created_at": datetime(2026, 7, 25, 9, 0)}
 
 
-def _conn(fetchall=None, fetchone=None, lastrowid=None, rowcount=1):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchall.return_value = fetchall
-    cur.fetchone.return_value = fetchone
-    cur.lastrowid = lastrowid
-    cur.rowcount = rowcount
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 def _failing_conn():
     conn = MagicMock()
     cur = MagicMock()
@@ -38,8 +27,8 @@ def _failing_conn():
 
 
 class TestGetFaqEntries:
-    def test_returns_drafts_and_published_in_display_order(self):
-        conn, cur = _conn(fetchall=[_ENTRY])
+    def test_returns_drafts_and_published_in_display_order(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[_ENTRY], lastrowid=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_faq_entries
             assert get_faq_entries() == [_ENTRY]
@@ -63,8 +52,8 @@ class TestGetFaqEntries:
 
 
 class TestGetFaqEntryByCluster:
-    def test_returns_the_entry_for_a_cluster(self):
-        conn, cur = _conn(fetchone=_ENTRY)
+    def test_returns_the_entry_for_a_cluster(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=_ENTRY, fetch_all=None, lastrowid=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_faq_entry_by_cluster
             assert get_faq_entry_by_cluster("42") == _ENTRY
@@ -84,8 +73,8 @@ class TestGetFaqEntryByCluster:
 
 
 class TestUpsertFaqEntry:
-    def test_insert_returns_the_new_id_and_keeps_the_existing_one_on_conflict(self):
-        conn, cur = _conn(lastrowid=7)
+    def test_insert_returns_the_new_id_and_keeps_the_existing_one_on_conflict(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None, lastrowid=7)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FaqStatus, upsert_faq_entry
             assert upsert_faq_entry("Q?", "A.", cluster_id=42, status=FaqStatus.PUBLISHED,
@@ -113,8 +102,8 @@ class TestUpsertFaqEntry:
 
 
 class TestFaqEntryVersions:
-    def test_recording_a_version_appends_history(self):
-        conn, cur = _conn(lastrowid=3)
+    def test_recording_a_version_appends_history(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=None, lastrowid=3)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import FaqStatus, record_faq_entry_version
             assert record_faq_entry_version(7, "Q?", "A.", status=FaqStatus.PUBLISHED) == 3
@@ -129,8 +118,8 @@ class TestFaqEntryVersions:
             assert record_faq_entry_version(None, "Q?", "A.") is None
         connect.assert_not_called()
 
-    def test_history_is_newest_first(self):
-        conn, cur = _conn(fetchall=[_VERSION])
+    def test_history_is_newest_first(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[_VERSION], lastrowid=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_faq_entry_versions
             assert get_faq_entry_versions(7) == [_VERSION]
@@ -152,8 +141,8 @@ class TestFaqEntryVersions:
 
 
 class TestApplyFaqEntryVersion:
-    def test_reapplies_the_stored_copy_and_status(self):
-        conn, cur = _conn(fetchone=_VERSION)
+    def test_reapplies_the_stored_copy_and_status(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=_VERSION, fetch_all=None, lastrowid=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(7, 3) == _VERSION
@@ -162,8 +151,8 @@ class TestApplyFaqEntryVersion:
         assert update_params == (_VERSION["question"], _VERSION["answer"], "published", 7)
         conn.commit.assert_called_once()
 
-    def test_a_version_from_another_entry_changes_nothing(self):
-        conn, cur = _conn(fetchone=None)
+    def test_a_version_from_another_entry_changes_nothing(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=None, fetch_all=None, lastrowid=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import apply_faq_entry_version
             assert apply_faq_entry_version(7, 999) is None
@@ -186,9 +175,9 @@ class TestApplyFaqEntryVersion:
 
 
 class TestGetFaqCandidateFeedback:
-    def test_only_triaged_unclustered_rows_are_offered_to_the_faq_pass(self):
+    def test_only_triaged_unclustered_rows_are_offered_to_the_faq_pass(self, fake_cursor):
         row = {"id": 1, "body": "How do I pause automation?"}
-        conn, cur = _conn(fetchall=[row])
+        conn, cur = fake_cursor(fetch_all=[row], lastrowid=None)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_faq_candidate_feedback
             assert get_faq_candidate_feedback(limit="10") == [row]

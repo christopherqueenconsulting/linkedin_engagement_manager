@@ -7,16 +7,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _mock_conn(fetch_all=None):
-    conn = MagicMock(); cur = MagicMock()
-    cur.fetchall.return_value = fetch_all or []
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestUpsertEngager:
-    def test_upserts(self):
-        conn, cur = _mock_conn()
+    def test_upserts(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import upsert_engager
             assert upsert_engager(1, "Jane Doe", "https://x/in/jane") is True
@@ -31,8 +24,8 @@ class TestUpsertEngager:
 
 
 class TestGetRecentEngagers:
-    def test_returns_lowercased_names(self):
-        conn, _ = _mock_conn(fetch_all=[("jane doe",), ("bob smith",)])
+    def test_returns_lowercased_names(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_all=[("jane doe",), ("bob smith",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_engagers
             assert get_recent_engagers(1) == {"jane doe", "bob smith"}

@@ -7,7 +7,7 @@ off one row, read a row list, execute one exact statement, fall back on
 cases stay as plain tests.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -16,19 +16,8 @@ from mysql.connector import errorcode
 pytestmark = pytest.mark.unit
 
 
-def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchone.return_value = fetch_one
-    cur.fetchall.return_value = fetch_all if fetch_all is not None else []
-    cur.rowcount = rowcount
-    cur.lastrowid = lastrowid
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
-def _err_conn():
-    conn, cur = _conn()
+def _err_conn(fake_cursor):
+    conn, cur = fake_cursor()
     cur.execute.side_effect = mysql.connector.Error("boom")
     return conn
 
@@ -76,9 +65,9 @@ class TestScalarReads:
     @pytest.mark.parametrize("case_id,fname,args,row,expected,params,sql_fragment",
                              _SCALAR_READS, ids=[c[0] for c in _SCALAR_READS])
     def test_reads_one_value_off_one_row(self, case_id, fname, args, row, expected, params,
-                                         sql_fragment):
+                                         sql_fragment, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn(fetch_one=row)
+        conn, cur = fake_cursor(fetch_one=row)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args) == expected
         if params is not None:
@@ -103,9 +92,9 @@ class TestRowListReads:
     @pytest.mark.parametrize("case_id,fname,args,kwargs,rows,expected,params,sql_fragment",
                              _ROW_LIST_READS, ids=[c[0] for c in _ROW_LIST_READS])
     def test_returns_the_row_list(self, case_id, fname, args, kwargs, rows, expected, params,
-                                  sql_fragment):
+                                  sql_fragment, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn(fetch_all=rows)
+        conn, cur = fake_cursor(fetch_all=rows)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args, **kwargs) == expected
         if params is not None:
@@ -129,16 +118,16 @@ _WRITE_STATEMENTS = [
 class TestExactWriteStatements:
     @pytest.mark.parametrize("case_id,fname,args,kwargs,statement",
                              _WRITE_STATEMENTS, ids=[c[0] for c in _WRITE_STATEMENTS])
-    def test_writes_and_commits(self, case_id, fname, args, kwargs, statement):
+    def test_writes_and_commits(self, case_id, fname, args, kwargs, statement, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn(rowcount=1)
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args, **kwargs) is True
         assert cur.execute.call_args[0] == statement
         conn.commit.assert_called_once()
 
-    def test_update_user_settings_binds_both_urls(self):
-        conn, cur = _conn(rowcount=1)
+    def test_update_user_settings_binds_both_urls(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_settings
             assert update_user_settings(1, blog_url="b", sitemap_url="s") is True
@@ -155,15 +144,15 @@ _ERROR_CASES = [
 class TestMysqlErrorFallbacks:
     @pytest.mark.parametrize("fname,args,expected",
                              _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
-    def test_error_returns_documented_fallback(self, fname, args, expected):
+    def test_error_returns_documented_fallback(self, fname, args, expected, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert getattr(db, fname)(*args) == expected
 
 
 class TestInsertNewLog:
-    def test_inserts_with_enum_values(self):
-        conn, cur = _conn(rowcount=1)
+    def test_inserts_with_enum_values(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import LogActionType, LogResultType, insert_new_log
             ok = insert_new_log(1, LogActionType.COMMENT, LogResultType.SUCCESS,
@@ -173,24 +162,24 @@ class TestInsertNewLog:
         assert params == (1, "comment", 9, "https://li.com/p/1", "hi", "success")
         conn.commit.assert_called_once()
 
-    def test_rowcount_not_one_returns_false(self):
-        conn, _ = _conn(rowcount=0)
+    def test_rowcount_not_one_returns_false(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import LogActionType, LogResultType, insert_new_log
             assert insert_new_log(1, LogActionType.DM, LogResultType.FAILURE) is False
 
 
 class TestLogAggregates:
-    def test_dm_history_filters_empty_messages(self):
-        conn, cur = _conn(fetch_all=[("hello",), (None,), ("follow-up",)])
+    def test_dm_history_filters_empty_messages(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[("hello",), (None,), ("follow-up",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_dm_history_for_profile
             msgs = get_dm_history_for_profile(1, "https://li.com/in/jane")
         assert msgs == ["hello", "follow-up"]
         assert cur.execute.call_args[0][1] == (1, "https://li.com/in/jane", "dm")
 
-    def test_count_comments_and_dms_today(self):
-        conn, cur = _conn(fetch_one=(4,))
+    def test_count_comments_and_dms_today(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(4,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_comments_today, count_dms_sent_today
             assert count_comments_today(1) == 4
@@ -201,8 +190,8 @@ class TestLogAggregates:
         assert first_params == (1, "comment", "success")
         assert second_params == (1, "dm", "success")
 
-    def test_empty_fetchall_none_coerced_to_list(self):
-        conn, cur = _conn()
+    def test_empty_fetchall_none_coerced_to_list(self, fake_cursor):
+        conn, cur = fake_cursor()
         cur.fetchall.return_value = None
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_users_with_stripe_subscriptions
@@ -210,8 +199,8 @@ class TestLogAggregates:
 
 
 class TestAddUserByEmail:
-    def test_creates_trial_user_and_attaches_stripe_customer(self):
-        conn, cur = _conn(rowcount=1, lastrowid=42)
+    def test_creates_trial_user_and_attaches_stripe_customer(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1, lastrowid=42)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch("cqc_lem.utilities.stripe_util.create_stripe_customer",
                    return_value="cus_123") as csc:
@@ -224,8 +213,8 @@ class TestAddUserByEmail:
         assert "stripe_customer_id" in update_sql
         assert update_params == ("cus_123", 42)
 
-    def test_stripe_failure_is_non_fatal(self):
-        conn, cur = _conn(rowcount=1, lastrowid=42)
+    def test_stripe_failure_is_non_fatal(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1, lastrowid=42)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch("cqc_lem.utilities.stripe_util.create_stripe_customer",
                    side_effect=RuntimeError("stripe down")):
@@ -234,8 +223,8 @@ class TestAddUserByEmail:
         # Only the INSERT ran — no stripe_customer_id update
         assert len(cur.execute.call_args_list) == 1
 
-    def test_duplicate_email_returns_existing_user_id(self):
-        conn, cur = _conn()
+    def test_duplicate_email_returns_existing_user_id(self, fake_cursor):
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(
             msg="dup", errno=errorcode.ER_DUP_ENTRY)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
@@ -243,8 +232,8 @@ class TestAddUserByEmail:
             from cqc_lem.utilities.db import add_user_by_email
             assert add_user_by_email("existing@x.com") == 7
 
-    def test_other_db_error_returns_none(self):
-        conn, cur = _conn()
+    def test_other_db_error_returns_none(self, fake_cursor):
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(msg="boom", errno=9999)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import add_user_by_email
@@ -252,8 +241,8 @@ class TestAddUserByEmail:
 
 
 class TestUpdateAccessToken:
-    def test_with_refresh_token_updates_both(self):
-        conn, cur = _conn(rowcount=1)
+    def test_with_refresh_token_updates_both(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_access_token
             assert update_user_access_token(1, "at", 3600, refresh_token="rt",
@@ -262,24 +251,24 @@ class TestUpdateAccessToken:
         assert "refresh_token = %s" in sql
         assert params[0] == "at" and params[3] == "rt" and params[-1] == 1
 
-    def test_without_refresh_token(self):
-        conn, cur = _conn(rowcount=1)
+    def test_without_refresh_token(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_access_token
             assert update_user_access_token(1, "at", 3600) is True
         sql = cur.execute.call_args[0][0]
         assert "refresh_token" not in sql
 
-    def test_zero_rowcount_false(self):
-        conn, _ = _conn(rowcount=0)
+    def test_zero_rowcount_false(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_access_token
             assert update_user_access_token(1, "at", 3600) is False
 
 
 class TestUpdateLinkedInToken:
-    def test_with_refresh_token(self):
-        conn, cur = _conn(rowcount=1)
+    def test_with_refresh_token(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_linkedin_token
             assert update_user_linkedin_token(1, "sub", "at", 3600, refresh_token="rt",
@@ -290,8 +279,8 @@ class TestUpdateLinkedInToken:
         assert "refresh_token = %s" in sql
         assert params[0] == "sub" and params[1] == "li@x.com"
 
-    def test_without_refresh_token_blank_email_coerced_to_null(self):
-        conn, cur = _conn(rowcount=1)
+    def test_without_refresh_token_blank_email_coerced_to_null(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user_linkedin_token
             assert update_user_linkedin_token(1, "sub", "at", 3600, linkedin_email="") is True
