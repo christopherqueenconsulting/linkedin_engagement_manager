@@ -100,15 +100,19 @@ class TestStandalonePortsAreHardenedInTheBaseFile:
     """
 
     CHROME = _service_block(COMPOSE, "selenium-chrome")
+    # Scoped to the `ports:` mapping, not the whole service block: any other quoted list entry the
+    # service grows (dns, extra_hosts, a list-form command) is not a publish and must not be read
+    # as one — otherwise this fails on a change that has nothing to do with the bind address.
+    PORTS = re.split(r"\n    (?=\w)", CHROME.split("\n    ports:\n")[1])[0]
 
     @pytest.mark.parametrize("port", ["${SELENIUM_HUB_PORT}:4444", "7900:7900"])
     def test_published_ports_default_to_loopback(self, port: str):
-        assert f'"${{SELENIUM_STANDALONE_BIND:-127.0.0.1}}:{port}"' in self.CHROME
+        assert f'"${{SELENIUM_STANDALONE_BIND:-127.0.0.1}}:{port}"' in self.PORTS
 
     def test_no_port_is_published_on_all_interfaces(self):
         # Every entry, not just the two named above: a third publish added without a bind address
         # is exactly the regression this class exists to catch, and it would pass the test above.
-        published = re.findall(r'^\s*- "([^"]+)"', _config_only(self.CHROME), re.MULTILINE)
+        published = re.findall(r'^\s*- "([^"]+)"', _config_only(self.PORTS), re.MULTILINE)
         assert published, "the standalone publishes nothing — did the ports block move?"
         for entry in published:
             assert entry.startswith("${SELENIUM_STANDALONE_BIND:-127.0.0.1}:"), entry

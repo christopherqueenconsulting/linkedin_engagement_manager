@@ -12,7 +12,9 @@ Run (registered in .mcp.json):
     poetry install --with mcp
     SE_REMOTE_URL=http://127.0.0.1:4444 poetry run python tools/selenium_mcp_server.py
 
-The hub (4444) is bound to host loopback by docker-compose.prod.yml. When working
+The hub (4444) is bound to host loopback by docker-compose.grid.yml (SELENIUM_GRID_HUB_BIND);
+on the standalone topology the same port is bound by docker-compose.yml
+(SELENIUM_STANDALONE_BIND). When working
 from your laptop instead of the VPS, tunnel it first:
     ssh -L 4444:localhost:4444 -L 7900:localhost:7900 <vps>
 then open http://localhost:7900/?autoconnect=1&password=secret to watch.
