@@ -6,7 +6,7 @@ Shaped as parametrized contract tables (issue #1216), the format
 test only where the case is genuinely one of a kind.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -16,19 +16,8 @@ pytestmark = pytest.mark.unit
 _DB = "cqc_lem.utilities.db"
 
 
-def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchone.return_value = fetch_one
-    cur.fetchall.return_value = fetch_all if fetch_all is not None else []
-    cur.rowcount = rowcount
-    cur.lastrowid = lastrowid
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
-def _err_conn():
-    conn, cur = _conn()
+def _err_conn(fake_cursor):
+    conn, cur = fake_cursor()
     cur.execute.side_effect = mysql.connector.Error(msg="boom")
     return conn
 
@@ -58,10 +47,10 @@ _ERROR_CASES = [
 class TestMysqlErrorFallbacks:
     @pytest.mark.parametrize("fname,args,kwargs,expected",
                              _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
-    def test_error_returns_documented_fallback(self, fname, args, kwargs, expected):
+    def test_error_returns_documented_fallback(self, fname, args, kwargs, expected, fake_cursor):
         import cqc_lem.utilities.db as db
         args = tuple(_profile() if a == "<profile>" else a for a in args)
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert getattr(db, fname)(*args, **kwargs) == expected
 
 
@@ -82,9 +71,9 @@ class TestCachedProfileReads:
     @pytest.mark.parametrize("fname,args,kwargs,row,expected,params",
                              _CACHED_PROFILE_READS,
                              ids=[c[0] for c in _CACHED_PROFILE_READS])
-    def test_reads_row_with_expected_params(self, fname, args, kwargs, row, expected, params):
+    def test_reads_row_with_expected_params(self, fname, args, kwargs, row, expected, params, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn(fetch_one=row)
+        conn, cur = fake_cursor(fetch_one=row)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args, **kwargs) == expected
         assert cur.execute.call_args[0][1] == params
@@ -104,9 +93,9 @@ _DELETE_STATEMENTS = [
 class TestRemoveLinkedInProfiles:
     @pytest.mark.parametrize("fname,args,statement",
                              _DELETE_STATEMENTS, ids=[c[0] for c in _DELETE_STATEMENTS])
-    def test_deletes_by_its_own_key_and_commits(self, fname, args, statement):
+    def test_deletes_by_its_own_key_and_commits(self, fname, args, statement, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args) is True
         assert cur.execute.call_args[0] == statement
@@ -135,14 +124,14 @@ _SCALAR_READS = [
 class TestScalarUserReads:
     @pytest.mark.parametrize("case_id,fname,args,row,expected,sql_fragment",
                              _SCALAR_READS, ids=[c[0] for c in _SCALAR_READS])
-    def test_reads_value_or_none(self, case_id, fname, args, row, expected, sql_fragment):
+    def test_reads_value_or_none(self, case_id, fname, args, row, expected, sql_fragment, fake_cursor):
         from datetime import datetime
 
         import cqc_lem.utilities.db as db
         when = datetime(2026, 7, 1, 12, 0)
         row = (when,) if row == ("<when>",) else row
         expected = when if expected == "<when>" else expected
-        conn, cur = _conn(fetch_one=row)
+        conn, cur = fake_cursor(fetch_one=row)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert getattr(db, fname)(*args) == expected
         if sql_fragment:
@@ -150,8 +139,8 @@ class TestScalarUserReads:
 
 
 class TestAddLinkedInProfile:
-    def test_upserts_profile_row(self):
-        conn, cur = _conn()
+    def test_upserts_profile_row(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import add_linkedin_profile
             assert add_linkedin_profile(_profile(), user_id=7) is True
@@ -163,8 +152,8 @@ class TestAddLinkedInProfile:
 
 
 class TestGetPostTypeCounts:
-    def test_returns_type_to_count_map(self):
-        conn, cur = _conn(fetch_all=[{"post_type": "text", "count": 4},
+    def test_returns_type_to_count_map(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[{"post_type": "text", "count": 4},
                                      {"post_type": "video", "count": 2}])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_type_counts
@@ -180,8 +169,8 @@ class TestUpdateUser:
             assert update_user(1) is False
         gdc.assert_not_called()
 
-    def test_blog_url_only(self):
-        conn, cur = _conn(rowcount=1)
+    def test_blog_url_only(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
             assert update_user(9, blog_url="https://x.com/blog") is True
@@ -189,8 +178,8 @@ class TestUpdateUser:
         assert sql == "UPDATE users SET blog_url = %s WHERE id = %s"
         assert values == ["https://x.com/blog", 9]
 
-    def test_all_fields(self):
-        conn, cur = _conn(rowcount=1)
+    def test_all_fields(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
             assert update_user(9, blog_url="b", sitemap_url="s") is True
@@ -198,8 +187,8 @@ class TestUpdateUser:
         assert "blog_url = %s, sitemap_url = %s" in sql
         assert values == ["b", "s", 9]
 
-    def test_zero_rowcount_returns_false(self):
-        conn, _ = _conn(rowcount=0)
+    def test_zero_rowcount_returns_false(self, fake_cursor):
+        conn, _ = fake_cursor(rowcount=0)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
             assert update_user(9, blog_url="b") is False

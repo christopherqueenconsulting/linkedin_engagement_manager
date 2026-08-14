@@ -14,7 +14,7 @@ offset, so every hop is asserted for zero drift — including across both DST tr
 """
 
 import datetime as dt
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -23,14 +23,6 @@ pytestmark = pytest.mark.unit
 
 _DB = "cqc_lem.utilities.db"
 
-
-def _conn():
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.rowcount = 1
-    cur.lastrowid = 1
-    conn.cursor.return_value = cur
-    return conn, cur
 
 # One zone per interesting offset shape: DST + negative, DST + positive, half-hour, no DST at all.
 ZONES = ["America/New_York", "Europe/London", "Asia/Kolkata", "Australia/Sydney", "UTC"]
@@ -172,24 +164,24 @@ class TestSchedulingWritesNormalizeToUtc:
     AWARE = dt.datetime(2026, 7, 4, 14, 0, tzinfo=ZoneInfo("America/New_York"))
     EXPECTED = dt.datetime(2026, 7, 4, 18, 0)
 
-    def test_insert_scheduled_dm(self):
-        conn, cur = _conn()
+    def test_insert_scheduled_dm(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_scheduled_dm
             insert_scheduled_dm(1, "https://x/in/jane", "hi", self.AWARE)
         stored = cur.execute.call_args[0][1][5]
         assert stored == self.EXPECTED and stored.tzinfo is None
 
-    def test_update_scheduled_dm(self):
-        conn, cur = _conn()
+    def test_update_scheduled_dm(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_scheduled_dm
             update_scheduled_dm(7, scheduled_time=self.AWARE)
         stored = cur.execute.call_args[0][1][0]
         assert stored == self.EXPECTED and stored.tzinfo is None
 
-    def test_insert_post(self):
-        conn, cur = _conn()
+    def test_insert_post(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch(f"{_DB}.get_user_id", return_value=1):
             from cqc_lem.utilities.db import PostType, insert_post
@@ -197,25 +189,25 @@ class TestSchedulingWritesNormalizeToUtc:
         stored = cur.execute.call_args[0][1][1]
         assert stored == self.EXPECTED and stored.tzinfo is None
 
-    def test_bulk_update_posts(self):
-        conn, cur = _conn()
+    def test_bulk_update_posts(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import bulk_update_posts
             bulk_update_posts([1, 2], scheduled_time=self.AWARE)
         stored = cur.execute.call_args[0][1][0]
         assert stored == self.EXPECTED and stored.tzinfo is None
 
-    def test_create_newsletter_edition(self):
-        conn, cur = _conn()
+    def test_create_newsletter_edition(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_newsletter_edition
             create_newsletter_edition(1, "T", "S", "B", self.AWARE)
         stored = cur.execute.call_args[0][1][-1]
         assert stored == self.EXPECTED and stored.tzinfo is None
 
-    def test_update_newsletter_edition_keeps_none_as_leave_alone(self):
+    def test_update_newsletter_edition_keeps_none_as_leave_alone(self, fake_cursor):
         """scheduled_for=None means COALESCE-to-existing, not 'clear the column'."""
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_newsletter_edition
             update_newsletter_edition(3, 1, title="T")

@@ -1,7 +1,7 @@
 """Unit tests for the shipped-notice DB helpers (issue #502)."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -9,28 +9,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _conn(rowcount=1, fetchone=None, fetchall=None, lastrowid=None):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.rowcount = rowcount
-    cur.lastrowid = lastrowid
-    cur.fetchone.return_value = fetchone
-    cur.fetchall.return_value = fetchall or []
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
-def _erroring_conn():
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.execute.side_effect = mysql.connector.Error("boom")
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestReporterMapping:
-    def test_maps_feedback_to_issue_and_cluster(self):
-        conn, cur = _conn(fetchall=[(4,), (7,)])
+    def test_maps_feedback_to_issue_and_cluster(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[(4,), (7,)], lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_feedback_reporters_for_issue
             assert get_feedback_reporters_for_issue(498) == [4, 7]
@@ -40,17 +21,17 @@ class TestReporterMapping:
         assert "f.user_id IS NOT NULL" in sql
         assert params == (498, 498)
 
-    def test_no_issue_number_and_db_errors_return_nothing(self):
+    def test_no_issue_number_and_db_errors_return_nothing(self, fake_cursor):
         from cqc_lem.utilities.db import get_feedback_reporters_for_issue
         assert get_feedback_reporters_for_issue(None) == []
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_feedback_reporters_for_issue(498) == []
 
 
 class TestResolveCluster:
-    def test_moves_open_rows_to_resolved_and_leaves_dismissed_alone(self):
-        conn, cur = _conn(rowcount=3)
+    def test_moves_open_rows_to_resolved_and_leaves_dismissed_alone(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=3, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_feedback_resolved_for_issue
             assert mark_feedback_resolved_for_issue(498) == 3
@@ -58,11 +39,11 @@ class TestResolveCluster:
         assert "f.status NOT IN" in sql
         assert params == ("resolved", 498, 498, "resolved", "dismissed")
 
-    def test_resolves_cluster_attached_rows_the_same_way_reporters_are_mapped(self):
+    def test_resolves_cluster_attached_rows_the_same_way_reporters_are_mapped(self, fake_cursor):
         """The UPDATE must span the same self-join as get_feedback_reporters_for_issue, or a row
         attached by cluster_id before the issue number propagated stays open forever.
         """
-        conn, cur = _conn(rowcount=2)
+        conn, cur = fake_cursor(rowcount=2, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import mark_feedback_resolved_for_issue
             mark_feedback_resolved_for_issue(498)
@@ -70,17 +51,17 @@ class TestResolveCluster:
         assert "LEFT JOIN feedback s ON s.id = f.cluster_id" in sql
         assert "f.github_issue_number = %s OR s.github_issue_number = %s" in sql
 
-    def test_zero_on_no_issue_or_error(self):
+    def test_zero_on_no_issue_or_error(self, fake_cursor):
         from cqc_lem.utilities.db import mark_feedback_resolved_for_issue
         assert mark_feedback_resolved_for_issue(0) == 0
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_feedback_resolved_for_issue(498) == 0
 
 
 class TestRecordShippedNotice:
-    def test_returns_the_new_notice_id(self):
-        conn, cur = _conn(lastrowid=11)
+    def test_returns_the_new_notice_id(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=11)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_shipped_notice
             assert record_shipped_notice(498, "**Fixed:** X (#498)", pr_number=539,
@@ -89,60 +70,60 @@ class TestRecordShippedNotice:
         assert "INSERT IGNORE INTO shipped_notices" in sql
         assert params == (498, 539, "fix: x", "**Fixed:** X (#498)")
 
-    def test_reuses_the_existing_row_when_the_insert_was_ignored(self):
-        conn, cur = _conn(lastrowid=0, fetchone=(11,))
+    def test_reuses_the_existing_row_when_the_insert_was_ignored(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(11,), lastrowid=0)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_shipped_notice
             assert record_shipped_notice(498, "**Fixed:** X (#498)") == 11
         assert "SELECT id FROM shipped_notices" in cur.execute.call_args[0][0]
 
-    def test_rejects_incomplete_input_and_survives_errors(self):
+    def test_rejects_incomplete_input_and_survives_errors(self, fake_cursor):
         from cqc_lem.utilities.db import record_shipped_notice
         assert record_shipped_notice(0, "line") is None
         assert record_shipped_notice(498, "   ") is None
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_shipped_notice(498, "line") is None
 
 
 class TestRecipients:
-    def test_first_insert_wins_and_repeats_return_false(self):
+    def test_first_insert_wins_and_repeats_return_false(self, fake_cursor):
         from cqc_lem.utilities.db import record_shipped_notice_recipient
-        conn, cur = _conn(rowcount=1)
+        conn, cur = fake_cursor(rowcount=1, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_shipped_notice_recipient(11, 4) is True
         assert "INSERT IGNORE INTO shipped_notice_recipients" in cur.execute.call_args[0][0]
 
-        conn, _cur = _conn(rowcount=0)
+        conn, _cur = fake_cursor(rowcount=0, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_shipped_notice_recipient(11, 4) is False
 
-    def test_reads_back_who_was_already_told(self):
+    def test_reads_back_who_was_already_told(self, fake_cursor):
         from cqc_lem.utilities.db import get_shipped_notice_recipient_ids
-        conn, cur = _conn(fetchall=[(4,), (7,)])
+        conn, cur = fake_cursor(fetch_all=[(4,), (7,)], lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_shipped_notice_recipient_ids(11) == [4, 7]
         assert cur.execute.call_args[0][1] == (11,)
 
         assert get_shipped_notice_recipient_ids(None) == []
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert get_shipped_notice_recipient_ids(11) == []
 
-    def test_missing_ids_and_errors_are_false(self):
+    def test_missing_ids_and_errors_are_false(self, fake_cursor):
         from cqc_lem.utilities.db import record_shipped_notice_recipient
         assert record_shipped_notice_recipient(None, 4) is False
         assert record_shipped_notice_recipient(11, None) is False
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert record_shipped_notice_recipient(11, 4) is False
 
 
 class TestUnseenNotices:
-    def test_delay_hours_is_what_schedules_the_csat(self):
+    def test_delay_hours_is_what_schedules_the_csat(self, fake_cursor):
         row = {"id": 11, "github_issue_number": 498, "changelog_line": "**Fixed:** X (#498)",
                "shipped_at": datetime(2026, 7, 25, 10, 0)}
-        conn, cur = _conn(fetchall=[row])
+        conn, cur = fake_cursor(fetch_all=[row], lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_unseen_shipped_notices
             assert get_unseen_shipped_notices(4, delay_hours=24, limit=5) == [row]
@@ -151,38 +132,38 @@ class TestUnseenNotices:
         assert "INTERVAL %s HOUR" in sql
         assert params == (4, 24, 5)
 
-    def test_negative_delay_is_clamped_and_errors_return_empty(self):
-        conn, cur = _conn(fetchall=[])
+    def test_negative_delay_is_clamped_and_errors_return_empty(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[], lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_unseen_shipped_notices
             get_unseen_shipped_notices(4, delay_hours=-5)
         assert cur.execute.call_args[0][1][1] == 0
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_unseen_shipped_notices
             assert get_unseen_shipped_notices(4) == []
 
 
 class TestSeenAndChangelog:
-    def test_only_the_first_acknowledgement_writes(self):
+    def test_only_the_first_acknowledgement_writes(self, fake_cursor):
         from cqc_lem.utilities.db import mark_shipped_notice_seen
-        conn, cur = _conn(rowcount=1)
+        conn, cur = fake_cursor(rowcount=1, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_shipped_notice_seen(11, 4) is True
         assert "seen_at IS NULL" in cur.execute.call_args[0][0]
 
-        conn, _cur = _conn(rowcount=0)
+        conn, _cur = fake_cursor(rowcount=0, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_shipped_notice_seen(11, 4) is False
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert mark_shipped_notice_seen(11, 4) is False
 
-    def test_changelog_is_newest_first(self):
+    def test_changelog_is_newest_first(self, fake_cursor):
         rows = [{"id": 12, "changelog_line": "b"}, {"id": 11, "changelog_line": "a"}]
-        conn, cur = _conn(fetchall=rows)
+        conn, cur = fake_cursor(fetch_all=rows, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_shipped_notices
             assert get_recent_shipped_notices(2) == rows
@@ -190,20 +171,20 @@ class TestSeenAndChangelog:
         assert "ORDER BY shipped_at DESC" in sql
         assert params == (2,)
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_recent_shipped_notices
             assert get_recent_shipped_notices() == []
 
-    def test_notice_lookup_by_issue(self):
+    def test_notice_lookup_by_issue(self, fake_cursor):
         row = {"id": 11, "github_issue_number": 498}
-        conn, cur = _conn(fetchone=row)
+        conn, cur = fake_cursor(fetch_one=row, lastrowid=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_shipped_notice_by_issue
             assert get_shipped_notice_by_issue(498) == row
         assert cur.execute.call_args[0][1] == (498,)
 
-        conn, _cur = _erroring_conn()
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_shipped_notice_by_issue
             assert get_shipped_notice_by_issue(498) is None

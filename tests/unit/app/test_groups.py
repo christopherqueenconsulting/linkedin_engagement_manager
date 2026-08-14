@@ -36,24 +36,17 @@ def _clock(*values):
 
 
 class TestUserGroupsDB:
-    def _conn(self, fetch_all=None, rowcount=1):
-        conn = MagicMock(); cur = MagicMock()
-        cur.fetchall.return_value = fetch_all or []
-        cur.rowcount = rowcount
-        conn.cursor.return_value = cur
-        return conn, cur
-
-    def test_upsert_and_enabled_and_bulk(self):
-        conn, cur = self._conn(fetch_all=[("123",), ("456",)])
+    def test_upsert_and_enabled_and_bulk(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[("123",), ("456",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_enabled_group_ids, set_groups_enabled, upsert_user_group
             assert upsert_user_group(1, "123", "Growth Group") is True
             assert get_enabled_group_ids(1) == ["123", "456"]
             assert set_groups_enabled(1, {"123": False, "456": True}) is True
 
-    def test_bare_bool_payload_only_touches_engagement(self):
+    def test_bare_bool_payload_only_touches_engagement(self, fake_cursor):
         """The pre-#769 SPA bundle still sends {group_id: bool} — that must not reset post_enabled."""
-        conn, cur = self._conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": False}) is True
@@ -61,8 +54,8 @@ class TestUserGroupsDB:
         assert "enabled=%s" in sql and "post_enabled" not in sql
         assert cur.execute.call_args[0][1] == (0, 1, "123")
 
-    def test_dict_payload_writes_both_flags(self):
-        conn, cur = self._conn()
+    def test_dict_payload_writes_both_flags(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": {"enabled": True, "post_enabled": False}}) is True
@@ -70,16 +63,15 @@ class TestUserGroupsDB:
         assert "enabled=%s" in sql and "post_enabled=%s" in sql
         assert params == (1, 0, 1, "123")
 
-    def test_empty_group_state_writes_nothing(self):
-        conn, cur = self._conn()
+    def test_empty_group_state_writes_nothing(self, fake_cursor):
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": {}}) is True
         cur.execute.assert_not_called()
 
-    def test_next_group_for_post_is_least_recently_posted(self):
-        conn, cur = self._conn()
-        cur.fetchone.return_value = {"group_id": "456", "group_name": "Sales"}
+    def test_next_group_for_post_is_least_recently_posted(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"group_id": "456", "group_name": "Sales"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_group_for_post
             assert get_next_group_for_post(1) == {"group_id": "456", "group_name": "Sales"}
@@ -91,16 +83,15 @@ class TestUserGroupsDB:
         assert "COALESCE(last_post_run_at, last_posted_at) IS NULL DESC" in sql
         assert "COALESCE(last_post_run_at, last_posted_at) ASC" in sql
 
-    def test_next_group_for_post_none_when_nothing_opted_in(self):
-        conn, cur = self._conn()
-        cur.fetchone.return_value = None
+    def test_next_group_for_post_none_when_nothing_opted_in(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_next_group_for_post
             assert get_next_group_for_post(1) is None
 
-    def test_record_group_post_stamps_the_row(self):
+    def test_record_group_post_stamps_the_row(self, fake_cursor):
         """A successful post is also a run, so both columns advance."""
-        conn, cur = self._conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_group_post
             assert record_group_post(1, "123") is True
@@ -108,9 +99,9 @@ class TestUserGroupsDB:
         assert "last_posted_at=NOW()" in sql and "last_post_run_at=NOW()" in sql
         assert cur.execute.call_args[0][1] == (1, "123")
 
-    def test_record_group_post_run_never_claims_a_post(self):
+    def test_record_group_post_run_never_claims_a_post(self, fake_cursor):
         """Issue #858: a try advances the rotation without pretending anything shipped."""
-        conn, cur = self._conn()
+        conn, cur = fake_cursor()
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_group_post_run
             assert record_group_post_run(1, "123") is True
@@ -119,12 +110,12 @@ class TestUserGroupsDB:
             "last_post_run_at", "")
         assert cur.execute.call_args[0][1] == (1, "123")
 
-    def test_record_group_post_run_failure_is_visible(self):
+    def test_record_group_post_run_failure_is_visible(self, fake_cursor):
         """A lost stamp leaves the group least-recently-tried — i.e. it re-creates the starvation —
         and the caller can do nothing with the False, so the failure has to log at ERROR.
         """
         import mysql.connector
-        conn, cur = self._conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error("connection gone")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
              patch("cqc_lem.platform.db.repositories.groups.log_error") as logged:
@@ -135,46 +126,38 @@ class TestUserGroupsDB:
 
 
 class TestGroupPostDraftDB:
-    def _conn(self, fetch_one=None, lastrowid=7):
-        conn = MagicMock(); cur = MagicMock()
-        cur.fetchone.return_value = fetch_one
-        cur.fetchall.return_value = []
-        cur.lastrowid = lastrowid
-        conn.cursor.return_value = cur
-        return conn, cur
-
-    def test_create_returns_the_new_id(self):
-        conn, cur = self._conn()
+    def test_create_returns_the_new_id(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_group_post_draft
             assert create_group_post_draft(1, "g1", "  An insight.  ", group_name="AI") == 7
         assert cur.execute.call_args[0][1] == (1, "g1", "AI", "An insight.", "ready")
 
-    def test_create_refuses_empty_text(self):
-        conn, cur = self._conn()
+    def test_create_refuses_empty_text(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import create_group_post_draft
             assert create_group_post_draft(1, "g1", "   ") is None
         cur.execute.assert_not_called()
 
-    def test_open_draft_reads_only_the_ready_row(self):
-        conn, cur = self._conn(fetch_one={"id": 7, "user_id": 1, "group_id": "g1",
+    def test_open_draft_reads_only_the_ready_row(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"id": 7, "user_id": 1, "group_id": "g1",
                                           "group_name": "AI", "content": "x", "status": "ready",
                                           "created_at": None, "updated_at": None,
-                                          "published_at": None})
+                                          "published_at": None}, lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_open_group_post_draft
             assert get_open_group_post_draft(1)["id"] == 7
         assert cur.execute.call_args[0][1] == (1, "ready")
 
-    def test_open_draft_is_none_when_nothing_is_queued(self):
-        conn, _ = self._conn(fetch_one=None)
+    def test_open_draft_is_none_when_nothing_is_queued(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None, lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_open_group_post_draft
             assert get_open_group_post_draft(1) is None
 
-    def test_publishing_stamps_the_ship_time_with_the_status(self):
-        conn, cur = self._conn()
+    def test_publishing_stamps_the_ship_time_with_the_status(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import GroupPostDraftStatus, update_group_post_draft
             assert update_group_post_draft(7, status=GroupPostDraftStatus.PUBLISHED) is True
@@ -182,41 +165,40 @@ class TestGroupPostDraftDB:
         assert "status = %s" in sql and "published_at = NOW()" in sql
         assert cur.execute.call_args[0][1] == ("published", 7)
 
-    def test_skipping_never_claims_a_ship_time(self):
-        conn, cur = self._conn()
+    def test_skipping_never_claims_a_ship_time(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import GroupPostDraftStatus, update_group_post_draft
             assert update_group_post_draft(7, status=GroupPostDraftStatus.SKIPPED) is True
         assert "published_at" not in cur.execute.call_args[0][0]
 
-    def test_edit_writes_the_trimmed_text(self):
-        conn, cur = self._conn()
+    def test_edit_writes_the_trimmed_text(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_group_post_draft
             assert update_group_post_draft(7, content="  my words  ") is True
         assert cur.execute.call_args[0][1] == ("my words", 7)
 
-    def test_update_with_nothing_to_write_is_a_no_op(self):
-        conn, cur = self._conn()
+    def test_update_with_nothing_to_write_is_a_no_op(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_group_post_draft
             assert update_group_post_draft(7) is False
         cur.execute.assert_not_called()
 
-    def test_post_enabled_ids_read_the_posting_flag_not_the_commenting_one(self):
-        conn, cur = self._conn()
-        cur.fetchall.return_value = [("g1",), ("g2",)]
+    def test_post_enabled_ids_read_the_posting_flag_not_the_commenting_one(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7, fetch_all=[("g1",), ("g2",)])
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_enabled_group_ids
             assert get_post_enabled_group_ids(1) == ["g1", "g2"]
         assert "post_enabled=1" in cur.execute.call_args[0][0]
 
-    def test_an_unreadable_switch_answers_unknown_not_opted_out(self):
+    def test_an_unreadable_switch_answers_unknown_not_opted_out(self, fake_cursor):
         """[] means "no group takes posts", which CANCELS a reviewed draft — a failed read must
         never be able to say that, so it answers None.
         """
         import mysql.connector
-        conn, cur = self._conn()
+        conn, cur = fake_cursor(lastrowid=7)
         cur.execute.side_effect = mysql.connector.Error("db down")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_enabled_group_ids

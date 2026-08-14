@@ -1,7 +1,7 @@
 """Unit tests for PIN auth, session management, and planned-posts DB functions."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -12,14 +12,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _make_conn_and_cursor(dictionary: bool = False) -> tuple:
-    """Return a (connection_mock, cursor_mock) pair wired together."""
-    conn = MagicMock()
-    cursor = MagicMock()
-    conn.cursor.return_value = cursor
-    return conn, cursor
-
 
 def _patch_conn(conn):
     """Return a context-manager patch for get_db_connection."""
@@ -37,10 +29,10 @@ def _sha256(token: str) -> str:
 # ---------------------------------------------------------------------------
 
 class TestCreatePinForEmail:
-    def test_success_deletes_old_then_inserts_and_returns_true(self):
+    def test_success_deletes_old_then_inserts_and_returns_true(self, fake_cursor):
         from cqc_lem.utilities.db import create_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 1
 
         with _patch_conn(conn):
@@ -60,10 +52,10 @@ class TestCreatePinForEmail:
         cursor.close.assert_called_once()
         conn.close.assert_called_once()
 
-    def test_returns_false_when_rowcount_not_one(self):
+    def test_returns_false_when_rowcount_not_one(self, fake_cursor):
         from cqc_lem.utilities.db import create_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
         cursor.rowcount = 0
 
         with _patch_conn(conn):
@@ -71,10 +63,10 @@ class TestCreatePinForEmail:
 
         assert result is False
 
-    def test_returns_false_on_db_error(self):
+    def test_returns_false_on_db_error(self, fake_cursor):
         from cqc_lem.utilities.db import create_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
 
         with _patch_conn(conn):
@@ -91,12 +83,10 @@ class TestCreatePinForEmail:
 # ---------------------------------------------------------------------------
 
 class TestVerifyPinForEmail:
-    def test_valid_row_marks_used_and_returns_true(self):
+    def test_valid_row_marks_used_and_returns_true(self, fake_cursor):
         from cqc_lem.utilities.db import verify_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
-        # First fetchone is the lockout probe (no lock), second is the PIN row itself.
-        cursor.fetchone.side_effect = [None, {"id": 5}]
+        conn, cursor = fake_cursor(fetch_one_side_effect=[None, {"id": 5}])
 
         with _patch_conn(conn):
             result = verify_pin_for_email("user@example.com", "correct_hash")
@@ -111,11 +101,10 @@ class TestVerifyPinForEmail:
         assert 5 in update_calls[0][0][1]
         conn.commit.assert_called_once()
 
-    def test_no_row_found_returns_false(self):
+    def test_no_row_found_returns_false(self, fake_cursor):
         from cqc_lem.utilities.db import verify_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
-        cursor.fetchone.return_value = None
+        conn, cursor = fake_cursor(fetch_one=None)
 
         with _patch_conn(conn):
             result = verify_pin_for_email("user@example.com", "wrong_hash")
@@ -130,10 +119,10 @@ class TestVerifyPinForEmail:
         assert "attempts" in update_calls[0][0][0]
         assert "used = 1" not in update_calls[0][0][0]
 
-    def test_db_error_returns_false(self):
+    def test_db_error_returns_false(self, fake_cursor):
         from cqc_lem.utilities.db import verify_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
 
         with _patch_conn(conn):
@@ -149,10 +138,10 @@ class TestVerifyPinForEmail:
 # ---------------------------------------------------------------------------
 
 class TestDeletePinForEmail:
-    def test_executes_delete_and_commits(self):
+    def test_executes_delete_and_commits(self, fake_cursor):
         from cqc_lem.utilities.db import delete_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
 
         with _patch_conn(conn):
             delete_pin_for_email("user@example.com")
@@ -163,11 +152,11 @@ class TestDeletePinForEmail:
         assert "user@example.com" in params
         conn.commit.assert_called_once()
 
-    def test_db_error_is_logged_not_raised(self):
+    def test_db_error_is_logged_not_raised(self, fake_cursor):
         """A DB error during delete must not propagate — function returns None."""
         from cqc_lem.utilities.db import delete_pin_for_email
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
 
         with _patch_conn(conn):
@@ -184,10 +173,10 @@ class TestDeletePinForEmail:
 # ---------------------------------------------------------------------------
 
 class TestCreateSession:
-    def test_success_returns_64_char_hex_token(self):
+    def test_success_returns_64_char_hex_token(self, fake_cursor):
         from cqc_lem.utilities.db import create_session
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
 
         with _patch_conn(conn):
             token = create_session(42)
@@ -220,10 +209,10 @@ class TestCreateSession:
 
         conn.commit.assert_called_once()
 
-    def test_db_error_returns_none(self):
+    def test_db_error_returns_none(self, fake_cursor):
         from cqc_lem.utilities.db import create_session
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
 
         with _patch_conn(conn):
@@ -233,12 +222,12 @@ class TestCreateSession:
         cursor.close.assert_called_once()
         conn.close.assert_called_once()
 
-    def test_each_call_produces_unique_token(self):
+    def test_each_call_produces_unique_token(self, fake_cursor):
         from cqc_lem.utilities.db import create_session
 
         tokens = set()
         for _ in range(5):
-            conn, cursor = _make_conn_and_cursor()
+            conn, cursor = fake_cursor()
             with _patch_conn(conn):
                 token = create_session(1)
             tokens.add(token)
@@ -251,32 +240,30 @@ class TestCreateSession:
 # ---------------------------------------------------------------------------
 
 class TestGetSessionUserId:
-    def test_valid_non_expired_token_returns_user_id(self):
+    def test_valid_non_expired_token_returns_user_id(self, fake_cursor):
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
-        cursor.fetchone.return_value = {"user_id": 7}
+        conn, cursor = fake_cursor(fetch_one={"user_id": 7})
 
         with _patch_conn(conn):
             uid = get_session_user_id("valid_token_string")
 
         assert uid == 7
 
-    def test_expired_or_missing_token_returns_none(self):
+    def test_expired_or_missing_token_returns_none(self, fake_cursor):
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
-        cursor.fetchone.return_value = None
+        conn, cursor = fake_cursor(fetch_one=None)
 
         with _patch_conn(conn):
             uid = get_session_user_id("expired_or_bad_token")
 
         assert uid is None
 
-    def test_db_error_returns_none(self):
+    def test_db_error_returns_none(self, fake_cursor):
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
 
         with _patch_conn(conn):
@@ -286,12 +273,11 @@ class TestGetSessionUserId:
         cursor.close.assert_called_once()
         conn.close.assert_called_once()
 
-    def test_query_passes_token_and_now(self):
+    def test_query_passes_token_and_now(self, fake_cursor):
         """Ensure the WHERE clause includes both the token and a datetime comparison."""
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
-        cursor.fetchone.return_value = None
+        conn, cursor = fake_cursor(fetch_one=None)
 
         with _patch_conn(conn):
             get_session_user_id("my_session_token")
@@ -301,11 +287,11 @@ class TestGetSessionUserId:
         assert "my_session_token" not in params
         assert _sha256("my_session_token") in params
 
-    def test_valid_token_slides_expiry_forward(self):
+    def test_valid_token_slides_expiry_forward(self, fake_cursor):
         """A live token should be extended (sliding idle window) and still return the user."""
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = {
             "user_id": 7,
             "created_at": datetime.now(timezone.utc),
@@ -324,13 +310,12 @@ class TestGetSessionUserId:
         assert _sha256("live_token") in update_calls[0][0][1]
         conn.commit.assert_called_once()
 
-    def test_sliding_expiry_capped_by_absolute_max(self):
+    def test_sliding_expiry_capped_by_absolute_max(self, fake_cursor):
         """Near the absolute cap the new expiry must not exceed created_at + max days."""
         from cqc_lem.utilities.db import get_session_user_id
 
         old_created = datetime.now(timezone.utc) - timedelta(days=29, hours=23)
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
-        cursor.fetchone.return_value = {"user_id": 3, "created_at": old_created}
+        conn, cursor = fake_cursor(fetch_one={"user_id": 3, "created_at": old_created})
 
         with _patch_conn(conn):
             uid = get_session_user_id("aging_token")
@@ -345,11 +330,11 @@ class TestGetSessionUserId:
         # Capped to the absolute max, not now + idle window
         assert abs((new_expiry - cap).total_seconds()) < 5
 
-    def test_naive_created_at_is_handled(self):
+    def test_naive_created_at_is_handled(self, fake_cursor):
         """created_at coming back tz-naive (typical MySQL TIMESTAMP) must not raise."""
         from cqc_lem.utilities.db import get_session_user_id
 
-        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        conn, cursor = fake_cursor()
         cursor.fetchone.return_value = {
             "user_id": 9,
             "created_at": datetime.now(),  # naive
@@ -366,10 +351,10 @@ class TestGetSessionUserId:
 # ---------------------------------------------------------------------------
 
 class TestDeleteSession:
-    def test_success_returns_true(self):
+    def test_success_returns_true(self, fake_cursor):
         from cqc_lem.utilities.db import delete_session
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
 
         with _patch_conn(conn):
             result = delete_session("some_token")
@@ -381,10 +366,10 @@ class TestDeleteSession:
         assert _sha256("some_token") in params
         conn.commit.assert_called_once()
 
-    def test_db_error_returns_false_not_raised(self):
+    def test_db_error_returns_false_not_raised(self, fake_cursor):
         from cqc_lem.utilities.db import delete_session
 
-        conn, cursor = _make_conn_and_cursor()
+        conn, cursor = fake_cursor()
         cursor.execute.side_effect = mysql.connector.Error("DB error")
 
         with _patch_conn(conn):

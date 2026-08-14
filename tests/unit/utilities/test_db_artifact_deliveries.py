@@ -1,6 +1,6 @@
 """Issue #624 — owned-asset delivery counts, the attribution side of the CTA loop."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -8,16 +8,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _mock_conn(rows):
-    conn = MagicMock(); cur = MagicMock()
-    cur.fetchone.side_effect = list(rows)
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestCountArtifactCtaDeliveries:
-    def test_counts_both_mechanics(self):
-        conn, cur = _mock_conn([(4,), (2,)])
+    def test_counts_both_mechanics(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one_side_effect=list([(4,), (2,)]))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             out = count_artifact_cta_deliveries(1, days=30, newsletter_url="https://li/news")
@@ -30,7 +23,7 @@ class TestCountArtifactCtaDeliveries:
         sql = cur.execute.call_args_list[1][0][0]
         assert "content LIKE" in sql and "first_comment_link LIKE" in sql
 
-    def test_a_linkedin_newsletter_is_counted_from_the_body(self):
+    def test_a_linkedin_newsletter_is_counted_from_the_body(self, fake_cursor):
         """`newsletter_url` is a linkedin.com article URL (mark_newsletter_published writes it from
         the publish flow's current_url), and #392's split leaves in-platform links in the BODY — so
         a first_comment_link-only count would report 0 forever for the mainline newsletter.
@@ -42,7 +35,7 @@ class TestCountArtifactCtaDeliveries:
         stripped, carried = split_link_for_first_comment(body)
         assert carried == [] and url in stripped   # stays in the body: no in-platform penalty
 
-        conn, cur = _mock_conn([(0,), (3,)])
+        conn, cur = fake_cursor(fetch_one_side_effect=list([(0,), (3,)]))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             out = count_artifact_cta_deliveries(1, newsletter_url=url)
@@ -50,18 +43,18 @@ class TestCountArtifactCtaDeliveries:
         params = cur.execute.call_args_list[1][0][1]
         assert params[2] == params[3] == f"%{url}%"   # both columns get the same literal pattern
 
-    def test_percent_encoding_in_the_url_is_not_a_wildcard(self):
+    def test_percent_encoding_in_the_url_is_not_a_wildcard(self, fake_cursor):
         """An unescaped '%' inside the LIKE pattern matches ANY text — silent over-counting."""
-        conn, cur = _mock_conn([(0,), (0,)])
+        conn, cur = fake_cursor(fetch_one_side_effect=list([(0,), (0,)]))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             count_artifact_cta_deliveries(1, newsletter_url="https://x.io/a%20b_c")
         assert cur.execute.call_args_list[1][0][1][2] == "%https://x.io/a!%20b!_c%"
         assert "ESCAPE '!'" in cur.execute.call_args_list[1][0][0]
 
-    def test_no_newsletter_url_reports_none_not_zero(self):
+    def test_no_newsletter_url_reports_none_not_zero(self, fake_cursor):
         """Nothing to carry is a different fact from carried nothing — don't fake a zero."""
-        conn, cur = _mock_conn([(1,)])
+        conn, cur = fake_cursor(fetch_one_side_effect=list([(1,)]))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             out = count_artifact_cta_deliveries(1)
@@ -69,24 +62,23 @@ class TestCountArtifactCtaDeliveries:
         assert cur.execute.call_count == 1
         assert out["window_days"] == 90
 
-    def test_blank_url_is_not_a_wildcard_query(self):
-        conn, cur = _mock_conn([(0,)])
+    def test_blank_url_is_not_a_wildcard_query(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one_side_effect=list([(0,)]))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             count_artifact_cta_deliveries(1, newsletter_url="   ")
         assert cur.execute.call_count == 1   # a blank URL would have matched every post
 
-    def test_window_floors_at_one_day(self):
-        conn, cur = _mock_conn([(0,)])
+    def test_window_floors_at_one_day(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one_side_effect=list([(0,)]))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             out = count_artifact_cta_deliveries(1, days=0)
         assert out["window_days"] == 1
         assert cur.execute.call_args_list[0][0][1][2] == 1
 
-    def test_db_error_returns_the_empty_shape(self):
-        conn = MagicMock()
-        conn.cursor.return_value.execute.side_effect = mysql.connector.Error("boom")
+    def test_db_error_returns_the_empty_shape(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_artifact_cta_deliveries
             out = count_artifact_cta_deliveries(1, newsletter_url="https://li/news")

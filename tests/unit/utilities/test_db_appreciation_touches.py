@@ -4,7 +4,7 @@ The claim is the whole safety property: it must be granted exactly once, and a l
 read must never read as "go ahead".
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -12,18 +12,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _conn(rowcount=1, fetch_row=None):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.rowcount = rowcount
-    cur.fetchone.return_value = fetch_row
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestClaimAppreciationTouch:
-    def test_first_claim_is_granted(self):
-        conn, cur = _conn(rowcount=1)
+    def test_first_claim_is_granted(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_appreciation_touch
             assert claim_appreciation_touch(1, "https://x/in/jane", "recommendation_received",
@@ -31,16 +22,16 @@ class TestClaimAppreciationTouch:
         assert "INSERT IGNORE INTO appreciation_touches" in cur.execute.call_args[0][0]
         conn.commit.assert_called_once()
 
-    def test_duplicate_claim_is_refused_without_raising(self):
+    def test_duplicate_claim_is_refused_without_raising(self, fake_cursor):
         """INSERT IGNORE swallows the unique-key collision — rowcount 0 IS the dedup answer."""
-        conn, _ = _conn(rowcount=0)
+        conn, _ = fake_cursor(rowcount=0)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_appreciation_touch
             assert claim_appreciation_touch(1, "https://x/in/jane", "collaboration") is False
 
-    def test_db_error_fails_closed(self):
+    def test_db_error_fails_closed(self, fake_cursor):
         """No claim, no DM — a thank-you missed is recoverable, one sent twenty times is not."""
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import claim_appreciation_touch
@@ -48,20 +39,20 @@ class TestClaimAppreciationTouch:
 
 
 class TestHasAppreciationTouch:
-    def test_true_when_a_row_exists(self):
-        conn, _ = _conn(fetch_row=(1,))
+    def test_true_when_a_row_exists(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=(1,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_appreciation_touch
             assert has_appreciation_touch(1, "https://x/in/jane", "collaboration") is True
 
-    def test_false_when_absent(self):
-        conn, _ = _conn(fetch_row=None)
+    def test_false_when_absent(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_appreciation_touch
             assert has_appreciation_touch(1, "https://x/in/jane", "collaboration") is False
 
-    def test_error_reads_as_not_thanked_so_the_claim_decides(self):
-        conn, cur = _conn()
+    def test_error_reads_as_not_thanked_so_the_claim_decides(self, fake_cursor):
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_appreciation_touch

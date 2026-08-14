@@ -8,7 +8,7 @@ branches were previously untested, plus the success paths of the small post-fiel
 
 import json
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import mysql.connector
 import pytest
@@ -16,19 +16,8 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _conn(fetch_one=None, fetch_all=None, rowcount=1, lastrowid=1):
-    conn = MagicMock()
-    cur = MagicMock()
-    cur.fetchone.return_value = fetch_one
-    cur.fetchall.return_value = fetch_all if fetch_all is not None else []
-    cur.rowcount = rowcount
-    cur.lastrowid = lastrowid
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
-def _err_conn():
-    conn, cur = _conn()
+def _err_conn(fake_cursor):
+    conn, cur = fake_cursor()
     cur.execute.side_effect = mysql.connector.Error(msg="db down")
     return conn
 
@@ -145,7 +134,7 @@ _ERROR_CASES = [
 class TestMysqlErrorFallbacks:
     @pytest.mark.parametrize("fname,args,expected",
                              _ERROR_CASES, ids=[c[0] for c in _ERROR_CASES])
-    def test_error_returns_documented_fallback(self, fname, args, expected):
+    def test_error_returns_documented_fallback(self, fname, args, expected, fake_cursor):
         import cqc_lem.utilities.db as db
         if args is None:
             if fname == "insert_new_log":
@@ -153,57 +142,57 @@ class TestMysqlErrorFallbacks:
             elif fname == "_count_actions_today":
                 args = (1, db.LogActionType.DM)
             elif fname == "update_scheduled_dm":
-                with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+                with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
                     assert db.update_scheduled_dm(1, message="x") == expected
                 return
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             result = getattr(db, fname)(*args)
         assert result == expected
 
-    def test_get_engagement_preferences_error_returns_defaults(self):
+    def test_get_engagement_preferences_error_returns_defaults(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert db.get_engagement_preferences(1) == dict(db._ENGAGEMENT_DEFAULTS)
 
-    def test_get_lead_magnet_settings_error_returns_defaults(self):
+    def test_get_lead_magnet_settings_error_returns_defaults(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert db.get_lead_magnet_settings(1) == {"enabled": False, "keyword": None,
                                                       "message": None}
 
-    def test_get_newsletter_settings_error_returns_defaults(self):
+    def test_get_newsletter_settings_error_returns_defaults(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert db.get_newsletter_settings(1) == dict(db._NEWSLETTER_DEFAULTS)
 
-    def test_get_scheduled_dms_error_returns_empty_page(self):
+    def test_get_scheduled_dms_error_returns_empty_page(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert db.get_scheduled_dms(1, page=3, page_size=5) == {
                 "dms": [], "total": 0, "page": 3, "page_size": 5}
 
-    def test_get_dm_template_error_falls_back_to_default_for_step0(self):
+    def test_get_dm_template_error_falls_back_to_default_for_step0(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             tpl = db.get_dm_template(1, "manual", step=0)
         assert tpl == {"template_text": db._DM_DEFAULT_TEMPLATES["manual"],
                        "delay_hours": 0, "step": 0}
 
-    def test_get_dm_template_error_returns_none_for_higher_steps(self):
+    def test_get_dm_template_error_returns_none_for_higher_steps(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn()):
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
             assert db.get_dm_template(1, "manual", step=2) is None
 
-    def test_claim_post_duplicate_key_loses_claim(self):
+    def test_claim_post_duplicate_key_loses_claim(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.IntegrityError(msg="dup", errno=1062)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.claim_post_for_comment(1, "key") is False
 
-    def test_create_newsletter_edition_duplicate_slot_is_silent_zero(self):
+    def test_create_newsletter_edition_duplicate_slot_is_silent_zero(self, fake_cursor):
         import cqc_lem.utilities.db as db
-        conn, cur = _conn()
+        conn, cur = fake_cursor()
         cur.execute.side_effect = mysql.connector.IntegrityError(msg="dup", errno=1062)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert db.create_newsletter_edition(1, "t", "s", "b",
@@ -213,64 +202,64 @@ class TestMysqlErrorFallbacks:
 class TestPostFieldGetters:
     """Success paths of the small posts-table field getters (previously untested)."""
 
-    def test_get_post_content(self):
-        conn, cur = _conn(fetch_one={"content": "hello world"})
+    def test_get_post_content(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"content": "hello world"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_content
             assert get_post_content(9) == "hello world"
         assert cur.execute.call_args[0][1] == (9,)
 
-    def test_get_post_content_missing_row(self):
-        conn, _ = _conn(fetch_one=None)
+    def test_get_post_content_missing_row(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_content
             assert get_post_content(9) is None
 
-    def test_get_post_user_id(self):
-        conn, _ = _conn(fetch_one={"user_id": 5})
+    def test_get_post_user_id(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"user_id": 5})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_user_id
             assert get_post_user_id(9) == 5
 
-    def test_get_post_video_url(self):
-        conn, _ = _conn(fetch_one={"video_url": "https://x/v.mp4"})
+    def test_get_post_video_url(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"video_url": "https://x/v.mp4"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_video_url
             assert get_post_video_url(9) == "https://x/v.mp4"
 
-    def test_get_post_buyer_stage(self):
-        conn, _ = _conn(fetch_one={"buyer_stage": "awareness"})
+    def test_get_post_buyer_stage(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"buyer_stage": "awareness"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_buyer_stage
             assert get_post_buyer_stage(9) == "awareness"
 
-    def test_get_post_type_returns_enum(self):
-        conn, _ = _conn(fetch_one={"post_type": "carousel"})
+    def test_get_post_type_returns_enum(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"post_type": "carousel"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import PostType, get_post_type
             assert get_post_type(9) is PostType.CAROUSEL
 
-    def test_get_post_type_invalid_value_returns_none(self):
-        conn, _ = _conn(fetch_one={"post_type": "hologram"})
+    def test_get_post_type_invalid_value_returns_none(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"post_type": "hologram"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_post_type
             assert get_post_type(9) is None
 
-    def test_get_carousel_slides_parses_json_string(self):
+    def test_get_carousel_slides_parses_json_string(self, fake_cursor):
         slides = ["https://x/1.png", "https://x/2.png"]
-        conn, _ = _conn(fetch_one={"carousel_slides": json.dumps(slides)})
+        conn, _ = fake_cursor(fetch_one={"carousel_slides": json.dumps(slides)})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_carousel_slides
             assert get_carousel_slides(9) == slides
 
-    def test_get_carousel_slides_bad_json_returns_empty(self):
-        conn, _ = _conn(fetch_one={"carousel_slides": "{not json"})
+    def test_get_carousel_slides_bad_json_returns_empty(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"carousel_slides": "{not json"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_carousel_slides
             assert get_carousel_slides(9) == []
 
-    def test_get_carousel_slides_non_list_returns_empty(self):
-        conn, _ = _conn(fetch_one={"carousel_slides": json.dumps({"a": 1})})
+    def test_get_carousel_slides_non_list_returns_empty(self, fake_cursor):
+        conn, _ = fake_cursor(fetch_one={"carousel_slides": json.dumps({"a": 1})})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_carousel_slides
             assert get_carousel_slides(9) == []

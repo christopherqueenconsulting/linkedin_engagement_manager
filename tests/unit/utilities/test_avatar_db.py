@@ -1,6 +1,6 @@
 """Unit tests for avatar credit and training DB functions."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -8,22 +8,10 @@ _AVATAR = "cqc_lem.platform.db.repositories.avatar"
 _GET_CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
 
-def _make_db_mocks(fetchone_return=None, fetchall_return=None, rowcount=1):
-    cursor = MagicMock()
-    cursor.fetchone.return_value = fetchone_return
-    cursor.fetchall.return_value = fetchall_return or []
-    cursor.rowcount = rowcount
-    cursor.lastrowid = 42
-    connection = MagicMock()
-    # wire connection.cursor(...) → cursor regardless of kwargs
-    connection.cursor.return_value = cursor
-    return connection, cursor
-
-
 @pytest.mark.unit
 class TestGetAvatarCreditBalance:
-    def test_returns_sum_from_ledger(self):
-        conn, cur = _make_db_mocks(fetchone_return={"balance": 5})
+    def test_returns_sum_from_ledger(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"balance": 5}, lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_balance
 
@@ -31,8 +19,8 @@ class TestGetAvatarCreditBalance:
 
         assert balance == 5
 
-    def test_returns_zero_when_no_rows(self):
-        conn, cur = _make_db_mocks(fetchone_return={"balance": 0})
+    def test_returns_zero_when_no_rows(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"balance": 0}, lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_balance
 
@@ -40,8 +28,8 @@ class TestGetAvatarCreditBalance:
 
         assert balance == 0
 
-    def test_returns_zero_on_db_error(self):
-        conn, cur = _make_db_mocks()
+    def test_returns_zero_on_db_error(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("DB down")
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_avatar_credit_balance
@@ -53,8 +41,8 @@ class TestGetAvatarCreditBalance:
 
 @pytest.mark.unit
 class TestAddAvatarCredits:
-    def test_inserts_positive_delta(self):
-        conn, cur = _make_db_mocks()
+    def test_inserts_positive_delta(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import add_avatar_credits
 
@@ -65,8 +53,8 @@ class TestAddAvatarCredits:
         sql = cur.execute.call_args[0][0]
         assert "INSERT INTO avatar_credit_ledger" in sql
 
-    def test_returns_false_on_db_error(self):
-        conn, cur = _make_db_mocks()
+    def test_returns_false_on_db_error(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("fail")
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import add_avatar_credits
@@ -78,8 +66,8 @@ class TestAddAvatarCredits:
 
 @pytest.mark.unit
 class TestDeductAvatarCredit:
-    def test_inserts_negative_delta(self):
-        conn, cur = _make_db_mocks()
+    def test_inserts_negative_delta(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import deduct_avatar_credit
 
@@ -89,8 +77,8 @@ class TestDeductAvatarCredit:
         sql, params = cur.execute.call_args[0]
         assert "-1" in sql or -1 in params
 
-    def test_returns_false_on_error(self):
-        conn, cur = _make_db_mocks()
+    def test_returns_false_on_error(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("fail")
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import deduct_avatar_credit
@@ -100,8 +88,8 @@ class TestDeductAvatarCredit:
 
 @pytest.mark.unit
 class TestInsertAvatarTraining:
-    def test_returns_lastrowid(self):
-        conn, cur = _make_db_mocks()
+    def test_returns_lastrowid(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         cur.lastrowid = 7
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import insert_avatar_training
@@ -110,8 +98,8 @@ class TestInsertAvatarTraining:
 
         assert result == 7
 
-    def test_returns_none_on_error(self):
-        conn, cur = _make_db_mocks()
+    def test_returns_none_on_error(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=42)
         cur.execute.side_effect = __import__("mysql.connector", fromlist=["connector"]).Error("fail")
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import insert_avatar_training
@@ -121,8 +109,8 @@ class TestInsertAvatarTraining:
 
 @pytest.mark.unit
 class TestUpdateAvatarTrainingStatus:
-    def test_updates_status_and_model_ref(self):
-        conn, cur = _make_db_mocks(rowcount=1)
+    def test_updates_status_and_model_ref(self, fake_cursor):
+        conn, cur = fake_cursor(rowcount=1, lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_training_status
 
@@ -130,8 +118,8 @@ class TestUpdateAvatarTrainingStatus:
 
         assert result is True
 
-    def test_issues_refund_on_failure(self):
-        conn, cur = _make_db_mocks(rowcount=1, fetchone_return={"user_id": 5})
+    def test_issues_refund_on_failure(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={"user_id": 5}, rowcount=1, lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn), \
              patch(f"{_AVATAR}.refund_avatar_credit") as mock_refund:
             from cqc_lem.utilities.db import update_avatar_training_status
@@ -143,8 +131,8 @@ class TestUpdateAvatarTrainingStatus:
 
 @pytest.mark.unit
 class TestGetActiveAvatar:
-    def test_returns_none_when_no_active(self):
-        conn, cur = _make_db_mocks(fetchone_return=None)
+    def test_returns_none_when_no_active(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=None, lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_active_avatar
 
@@ -152,14 +140,14 @@ class TestGetActiveAvatar:
 
         assert result is None
 
-    def test_returns_dict_when_active_exists(self):
-        conn, cur = _make_db_mocks(fetchone_return={
+    def test_returns_dict_when_active_exists(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one={
             "id": 3,
             "training_id": "train-1",
             "model_ref": "user/model:v1",
             "trigger_word": "LEMAVTR1",
             "status": "succeeded",
-        })
+        }, lastrowid=42)
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import get_active_avatar
 

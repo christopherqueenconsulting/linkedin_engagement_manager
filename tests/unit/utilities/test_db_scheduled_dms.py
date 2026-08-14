@@ -7,28 +7,18 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _conn(fetch_row=None, fetchall=None, lastrowid=7):
-    conn = MagicMock(); cur = MagicMock()
-    cur.fetchone.return_value = fetch_row
-    cur.fetchall.return_value = fetchall or []
-    cur.rowcount = 1
-    cur.lastrowid = lastrowid
-    conn.cursor.return_value = cur
-    return conn, cur
-
-
 class TestScheduledDmDb:
-    def test_insert_returns_id(self):
+    def test_insert_returns_id(self, fake_cursor):
         from datetime import datetime
-        conn, cur = _conn(lastrowid=42)
+        conn, cur = fake_cursor(lastrowid=42)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_scheduled_dm
             got = insert_scheduled_dm(1, "https://x/in/jane", "hi", datetime(2026, 8, 1, 9))
         assert got == 42
         assert "INSERT INTO scheduled_dms" in cur.execute.call_args[0][0]
 
-    def test_get_due_filters_approved(self):
-        conn, cur = _conn(fetchall=[(1, MagicMock(), 5)])
+    def test_get_due_filters_approved(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_all=[(1, MagicMock(), 5)], lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_due_scheduled_dms
             rows = get_due_scheduled_dms(post_time_delta_minutes=20)
@@ -42,9 +32,9 @@ class TestScheduledDmDb:
         assert "ORDER BY scheduled_time ASC" in sql
         assert len(cur.execute.call_args[0][1]) == 1
 
-    def test_get_orphaned_scheduled_dms(self):
+    def test_get_orphaned_scheduled_dms(self, fake_cursor):
         from datetime import datetime, timedelta, timezone
-        conn, cur = _conn(fetchall=[(9, MagicMock(), 5)])
+        conn, cur = fake_cursor(fetch_all=[(9, MagicMock(), 5)], lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_orphaned_scheduled_dms
             rows = get_orphaned_scheduled_dms(lookback_hours=2)
@@ -54,32 +44,31 @@ class TestScheduledDmDb:
         # cutoff is ~2h in the past
         assert params[0] <= datetime.now(timezone.utc) - timedelta(hours=2) + timedelta(seconds=5)
 
-    def test_get_orphaned_scheduled_dms_error_returns_empty(self):
+    def test_get_orphaned_scheduled_dms_error_returns_empty(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor(lastrowid=7)
         cur.execute.side_effect = mysql.connector.Error(msg="db down")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_orphaned_scheduled_dms
             assert get_orphaned_scheduled_dms() == []
 
-    def test_list_returns_pagination_shape(self):
-        conn, cur = _conn()
-        cur.fetchone.return_value = {"c": 3}
+    def test_list_returns_pagination_shape(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7, fetch_one={"c": 3})
         cur.fetchall.return_value = [{"id": 1, "scheduled_time": None, "status": "pending"}]
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_scheduled_dms
             out = get_scheduled_dms(1, status_filter="pending", page=1, page_size=25)
         assert out["total"] == 3 and out["page"] == 1 and len(out["dms"]) == 1
 
-    def test_update_status(self):
-        conn, cur = _conn()
+    def test_update_status(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import ScheduledDmStatus, update_scheduled_dm_status
             assert update_scheduled_dm_status(7, ScheduledDmStatus.SENT) is True
         assert "UPDATE scheduled_dms SET status" in cur.execute.call_args[0][0]
 
-    def test_partial_update_builds_only_provided_fields(self):
-        conn, cur = _conn()
+    def test_partial_update_builds_only_provided_fields(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_scheduled_dm
             assert update_scheduled_dm(7, message="new body") is True
@@ -96,9 +85,9 @@ class TestNurtureSourceDb:
     operator's approval queue without being confused for a DM they wrote.
     """
 
-    def test_insert_records_the_source(self):
+    def test_insert_records_the_source(self, fake_cursor):
         from datetime import datetime
-        conn, cur = _conn(lastrowid=11)
+        conn, cur = fake_cursor(lastrowid=11)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_NURTURE, insert_scheduled_dm
             got = insert_scheduled_dm(1, "https://x/in/jane", "hi", datetime(2026, 8, 1, 9),
@@ -108,16 +97,16 @@ class TestNurtureSourceDb:
         assert "source" in sql
         assert "nurture" in params
 
-    def test_insert_without_source_stores_null(self):
+    def test_insert_without_source_stores_null(self, fake_cursor):
         from datetime import datetime
-        conn, cur = _conn()
+        conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_scheduled_dm
             insert_scheduled_dm(1, "https://x/in/jane", "hi", datetime(2026, 8, 1, 9))
         assert cur.execute.call_args[0][1][4] is None
 
-    def test_has_open_scheduled_dm_true_when_a_draft_is_queued(self):
-        conn, cur = _conn(fetch_row=(1,))
+    def test_has_open_scheduled_dm_true_when_a_draft_is_queued(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(1,), lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_NURTURE, has_open_scheduled_dm
             assert has_open_scheduled_dm(1, "https://x/in/jane",
@@ -128,22 +117,22 @@ class TestNurtureSourceDb:
         assert "pending" in params and "approved" in params and "scheduled" in params
         assert "sent" not in params and "canceled" not in params
 
-    def test_has_open_scheduled_dm_false_when_none(self):
-        conn, _cur = _conn(fetch_row=None)
+    def test_has_open_scheduled_dm_false_when_none(self, fake_cursor):
+        conn, _cur = fake_cursor(fetch_one=None, lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_open_scheduled_dm
             assert has_open_scheduled_dm(1, "https://x/in/jane") is False
 
-    def test_has_open_scheduled_dm_without_source_checks_every_queued_dm(self):
-        conn, cur = _conn(fetch_row=None)
+    def test_has_open_scheduled_dm_without_source_checks_every_queued_dm(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=None, lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_open_scheduled_dm
             has_open_scheduled_dm(1, "https://x/in/jane")
         assert "source=%s" not in cur.execute.call_args[0][0]
 
-    def test_has_open_scheduled_dm_fails_safe_to_true(self):
+    def test_has_open_scheduled_dm_fails_safe_to_true(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor(lastrowid=7)
         cur.execute.side_effect = mysql.connector.Error(msg="db down")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import has_open_scheduled_dm
@@ -153,8 +142,8 @@ class TestNurtureSourceDb:
         from cqc_lem.utilities.db import has_open_scheduled_dm
         assert has_open_scheduled_dm(1, "") is True
 
-    def test_count_created_today_filters_by_source(self):
-        conn, cur = _conn(fetch_row=(4,))
+    def test_count_created_today_filters_by_source(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(4,), lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_NURTURE, count_scheduled_dms_created_today
             assert count_scheduled_dms_created_today(1, source=SCHEDULED_DM_SOURCE_NURTURE) == 4
@@ -162,16 +151,16 @@ class TestNurtureSourceDb:
         assert "created_at >= CURDATE()" in sql and "source=%s" in sql
         assert params == (1, "nurture")
 
-    def test_count_created_today_without_source(self):
-        conn, cur = _conn(fetch_row=(0,))
+    def test_count_created_today_without_source(self, fake_cursor):
+        conn, cur = fake_cursor(fetch_one=(0,), lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_scheduled_dms_created_today
             assert count_scheduled_dms_created_today(1) == 0
         assert "source=%s" not in cur.execute.call_args[0][0]
 
-    def test_count_created_today_error_returns_zero(self):
+    def test_count_created_today_error_returns_zero(self, fake_cursor):
         import mysql.connector
-        conn, cur = _conn()
+        conn, cur = fake_cursor(lastrowid=7)
         cur.execute.side_effect = mysql.connector.Error(msg="db down")
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import count_scheduled_dms_created_today

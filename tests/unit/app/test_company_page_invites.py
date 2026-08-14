@@ -553,25 +553,18 @@ class TestDailyBeat:
 
 
 class TestCountCompanyPageInvitesToday:
-    def _conn(self, row):
-        conn = MagicMock()
-        cur = MagicMock()
-        cur.fetchone.return_value = row
-        conn.cursor.return_value = cur
-        return conn, cur
-
-    def test_it_sums_the_batch_counts_rather_than_counting_rows(self):
+    def test_it_sums_the_batch_counts_rather_than_counting_rows(self, fake_cursor):
         from cqc_lem.utilities.db import count_company_page_invites_sent_today
-        conn, cur = self._conn((7,))
+        conn, cur = fake_cursor(fetch_one=(7,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_company_page_invites_sent_today(1) == 7
         sql, params = cur.execute.call_args[0]
         assert "SUM(" in sql and "created_at >= CURDATE()" in sql
         assert params[-1].endswith(":%")
 
-    def test_no_rows_today_is_zero(self):
+    def test_no_rows_today_is_zero(self, fake_cursor):
         from cqc_lem.utilities.db import count_company_page_invites_sent_today
-        conn, _ = self._conn((None,))
+        conn, _ = fake_cursor(fetch_one=(None,))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert count_company_page_invites_sent_today(1) == 0
 
