@@ -12,7 +12,7 @@ vi.mock('../../api/client', () => ({
     post: (...args: unknown[]) => post(...args),
   },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 
 function profile(refreshAvailableIn: number) {
   return {

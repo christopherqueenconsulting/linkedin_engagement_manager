@@ -12,7 +12,7 @@ vi.mock('../../api/client', () => ({
     put: (...args: unknown[]) => put(...args),
   },
 }))
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 
 function payload(saved: string | null, scraped: string | null) {
   return { data: { detail: { linkedin_display_name: saved, profile_full_name: scraped } } }

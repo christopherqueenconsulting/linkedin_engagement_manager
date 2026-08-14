@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import api from '../api/client'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 
 export interface PostHogStatsRow {
   [column: string]: string | number | boolean | null

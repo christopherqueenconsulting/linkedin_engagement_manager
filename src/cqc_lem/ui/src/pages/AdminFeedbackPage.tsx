@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import TableScroll from '../components/TableScroll'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { useAdminFeedback } from '../hooks/useAdminFeedback'
 import { useFeedbackReview } from '../hooks/useFeedbackReview'
 import type { ReviewResult } from '../hooks/useFeedbackReview'

@@ -5,7 +5,7 @@ import LoginModal from './LoginModal'
 const post = vi.fn()
 const login = vi.fn()
 vi.mock('../api/client', () => ({ default: { post: (...args: unknown[]) => post(...args) } }))
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ closeLoginModal: vi.fn(), login: (...a: unknown[]) => login(...a) }),
 }))
 vi.mock('../utils/attribution', () => ({ getAttribution: () => ({}) }))

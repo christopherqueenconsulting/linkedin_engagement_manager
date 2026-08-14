@@ -12,7 +12,7 @@ import VoiceSection from './VoiceSection'
 let eng: Partial<EngPrefs> = {}
 const subscribers = new Set<() => void>()
 
-vi.mock('./EngagementPrefsContext', () => ({
+vi.mock('./engagementPrefsCtx', () => ({
   useEngagementPrefs: () => {
     const [, rerender] = useState(0)
     useEffect(() => {
@@ -31,11 +31,11 @@ vi.mock('./EngagementPrefsContext', () => ({
   },
 }))
 
-vi.mock('./ConflictsContext', () => ({
+vi.mock('./conflictsCtx', () => ({
   useConflicts: () => ({ findings: [], alertCounts: {}, applyFix: () => {} }),
 }))
 
-vi.mock('./UserPrefsContext', () => ({
+vi.mock('./userPrefsCtx', () => ({
   useUserPrefs: () => ({ prefs: null, setPrefs: () => {}, effectiveLanguage: null }),
 }))
 

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { useAccountReadiness } from '../../hooks/useAccountReadiness'
 import LinkedInSessionCard from '../../components/LinkedInSessionCard'
 import LinkedInSignInStatusCard from './LinkedInSignInStatusCard'

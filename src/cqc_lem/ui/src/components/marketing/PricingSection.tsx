@@ -1,4 +1,4 @@
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { INCLUDED_IN_EVERY_PLAN, PLANS, TRIAL_DAYS, rememberPlanIntent } from '../../constants/plans'
 import { EVENTS, capture } from '../../utils/analytics'
 import CtaButton from './CtaButton'

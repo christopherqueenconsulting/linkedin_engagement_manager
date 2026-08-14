@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import ContentStudio, { getTodayInTz, resolveDateRange } from './ContentStudio'
+import ContentStudio from './ContentStudio'
+import { getTodayInTz, resolveDateRange } from '../utils/dateRange'
 
 const get = vi.fn()
 const post = vi.fn()
@@ -16,7 +17,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ user: { email: 'test@example.com', userId: 1 }, sessionToken: 'tok' }),
 }))
 

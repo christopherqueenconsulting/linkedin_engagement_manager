@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import NewsletterArticlePreview from '../../components/NewsletterArticlePreview'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../../utils/datetime'
 import type { NewsletterDraft, NewsletterEdition } from '../account/types'
@@ -21,7 +21,9 @@ export default function NewsletterQueue(
   const { user, sessionToken } = useAuth()
   const qc = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [draftEdit, setDraftEdit] = useState<NewsletterEdition | null>(null)
+  // Only the fields the user has changed, and the edition they belong to. Keyed by id so a
+  // background refetch — or switching to another draft — can never apply an edit to the wrong one.
+  const [edits, setEdits] = useState<{ id: number; patch: Partial<NewsletterEdition> } | null>(null)
   const [guidance, setGuidance] = useState('')
   // After a regenerate lands, force the editor to re-seed from the freshly fetched edition (same id,
   // new content) — the normal seed effect only fires when the selection is GONE.
@@ -31,10 +33,9 @@ export default function NewsletterQueue(
   const [coverWaitId, setCoverWaitId] = useState<number | null>(null)
   // The cover URL that edition carried when generation started — the poll waits for a DIFFERENT one.
   const [coverWaitFrom, setCoverWaitFrom] = useState<string | null>(null)
-  const [coverTries, setCoverTries] = useState(0)
   const coverFileRef = useRef<HTMLInputElement>(null)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ['newsletter-queue', sessionToken],
     queryFn: () =>
       api
@@ -46,32 +47,34 @@ export default function NewsletterQueue(
 
   const editions = data?.editions ?? []
 
-  // Seed the editor only when the current selection is GONE (initial load, or the selected draft was
-  // approved/skipped away) — default to the soonest draft. When the selection is still present we
-  // leave draftEdit alone so a background refetch can't wipe in-progress edits.
-  useEffect(() => {
-    if (editions.length === 0) {
-      setSelectedId(null)
-      setDraftEdit(null)
-      return
-    }
-    if (!editions.some((e) => e.id === selectedId)) {
-      setSelectedId(editions[0].id)
-      setDraftEdit({ ...editions[0] })
-    }
-  }, [data, selectedId])
+  // The editor shows the selected edition — or the soonest one when the selection is gone (initial
+  // load, or the draft was approved/skipped away) — with the user's own edits laid over it. Derived
+  // at render, so nothing has to be seeded and a refetch cannot wipe an edit in progress.
+  const selected = editions.find((e) => e.id === selectedId) ?? editions[0] ?? null
+  const draftEdit: NewsletterEdition | null = selected
+    ? { ...selected, ...(edits?.id === selected.id ? edits.patch : {}) }
+    : null
 
-  // Pull in regenerated content once the async task has updated the edition in place.
-  useEffect(() => {
-    if (reseedId == null) return
-    const fresh = editions.find((e) => e.id === reseedId)
-    if (fresh) {
-      setDraftEdit({ ...fresh })
-      setReseedId(null)
-    }
-  }, [data, reseedId])
+  const setDe = (patch: Partial<NewsletterEdition>) =>
+    setEdits((p) =>
+      selected
+        ? { id: selected.id, patch: { ...(p?.id === selected.id ? p.patch : {}), ...patch } }
+        : p)
 
-  const setDe = (patch: Partial<NewsletterEdition>) => setDraftEdit((p) => (p ? { ...p, ...patch } : p))
+  // A cover the server has just re-decided is no longer something the editor may override: the
+  // cover fields are written into the edits by `applyCover` for instant feedback, and a later
+  // generation would otherwise keep painting the previous URL and the previous review status over
+  // the row the API returns — a generated cover reading `approved` is exactly the claim
+  // `_approved_cover_path` refuses to act on.
+  const dropCoverEdits = (id: number) =>
+    setEdits((p) => {
+      if (p?.id !== id) return p
+      const rest = { ...p.patch }
+      delete rest.cover_image_url
+      delete rest.cover_image_source
+      delete rest.cover_image_status
+      return Object.keys(rest).length > 0 ? { id, patch: rest } : null
+    })
 
   const draftMutation = useMutation({
     mutationFn: (action: 'save' | 'approve' | 'skip') =>
@@ -87,7 +90,7 @@ export default function NewsletterQueue(
     onSuccess: (_res, action) => {
       qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
       // Approving/skipping removes the edition from the queue — move selection off it.
-      if (action !== 'save') setSelectedId(null)
+      if (action !== 'save') { setSelectedId(null); setEdits(null) }
       setMsg({ ok: true, text: action === 'skip' ? 'Skipped.' : action === 'approve' ? 'Approved.' : 'Saved.' })
       setTimeout(() => setMsg(null), 3000)
     },
@@ -107,13 +110,15 @@ export default function NewsletterQueue(
     onSuccess: () => {
       const id = draftEdit!.id
       setGuidance('')
+      setReseedId(id)
       setMsg({ ok: true, text: 'Regenerating… this can take a minute.' })
-      // The task is async — refetch a couple of times to pick up the rewritten draft, then re-seed
-      // the editor from the fresh content.
+      // The task is async — refetch a couple of times to pick up the rewritten draft, then drop the
+      // local edits so the editor shows the rewritten content rather than the text it replaced.
       setTimeout(() => qc.invalidateQueries({ queryKey: ['newsletter-queue'] }), 6000)
       setTimeout(() => {
         qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
-        setReseedId(id)
+        setEdits((p) => (p?.id === id ? null : p))
+        setReseedId(null)
         setMsg({ ok: true, text: 'Regenerated draft updated below.' })
         setTimeout(() => setMsg(null), 3000)
       }, 15000)
@@ -145,11 +150,15 @@ export default function NewsletterQueue(
       form.append('file', file)
       return api.post('/user/newsletter-draft/cover', form)
     },
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
+      const id = draftEdit!.id
       applyCover(res.data.detail as CoverDetail)
-      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
       setMsg({ ok: true, text: 'Cover uploaded.' })
       setTimeout(() => setMsg(null), 3000)
+      // The override is instant feedback only — hand the cover back to the API row once the
+      // refetch carries it, so a later generation is never painted over by this one.
+      await qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+      dropCoverEdits(id)
     },
     onError: (e) => coverError(e, 'Could not upload that image — try another file.'),
   })
@@ -183,11 +192,13 @@ export default function NewsletterQueue(
         edition_id: draftEdit!.id,
         action,
       }),
-    onSuccess: (res, action) => {
+    onSuccess: async (res, action) => {
+      const id = draftEdit!.id
       applyCover(res.data.detail as CoverDetail)
-      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
       setMsg({ ok: true, text: action === 'remove' ? 'Cover removed.' : 'Cover approved.' })
       setTimeout(() => setMsg(null), 3000)
+      await qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+      dropCoverEdits(id)
     },
     onError: (e) => coverError(e, 'Could not update the cover — try again.'),
   })
@@ -199,30 +210,39 @@ export default function NewsletterQueue(
   const COVER_POLL_LIMIT = 12
   useEffect(() => {
     if (coverWaitId == null) return
-    const fresh = editions.find((e) => e.id === coverWaitId)
-    if (fresh?.cover_image_url && fresh.cover_image_url !== coverWaitFrom) {
-      if (draftEdit?.id === coverWaitId) applyCover(fresh)
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    let tries = 0
+
+    const stop = () => {
       setCoverWaitId(null)
       setCoverWaitFrom(null)
-      setCoverTries(0)
-      setMsg({ ok: true, text: 'Cover ready — review it below and approve to publish it.' })
-      setTimeout(() => setMsg(null), 5000)
-      return
     }
-    if (coverTries >= COVER_POLL_LIMIT) {
-      setCoverWaitId(null)
-      setCoverWaitFrom(null)
-      setCoverTries(0)
-      setMsg({ ok: false, text: 'No cover came back — try generating again or upload your own.' })
-      setTimeout(() => setMsg(null), 8000)
-      return
+    const step = async () => {
+      if (cancelled) return
+      const res = await refetch()
+      if (cancelled) return
+      const fresh = res.data?.editions.find((e) => e.id === coverWaitId)
+      if (fresh?.cover_image_url && fresh.cover_image_url !== coverWaitFrom) {
+        dropCoverEdits(coverWaitId)
+        stop()
+        setMsg({ ok: true, text: 'Cover ready — review it below and approve to publish it.' })
+        setTimeout(() => setMsg(null), 5000)
+        return
+      }
+      if (++tries >= COVER_POLL_LIMIT) {
+        stop()
+        setMsg({ ok: false, text: 'No cover came back — try generating again or upload your own.' })
+        setTimeout(() => setMsg(null), 8000)
+        return
+      }
+      timer = setTimeout(step, 10000)
     }
-    const t = setTimeout(() => {
-      setCoverTries((n) => n + 1)
-      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
-    }, 10000)
-    return () => clearTimeout(t)
-  }, [data, coverWaitId, coverWaitFrom, coverTries])
+
+    timer = setTimeout(step, 10000)
+    return () => { cancelled = true; clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverWaitId, coverWaitFrom])
 
   const coverBusy =
     uploadCoverMutation.isPending || generateCoverMutation.isPending ||
@@ -232,7 +252,6 @@ export default function NewsletterQueue(
 
   function selectEdition(e: NewsletterEdition) {
     setSelectedId(e.id)
-    setDraftEdit({ ...e })
   }
 
   if (isLoading) return <p className="text-gray-400 text-sm">Loading drafts…</p>

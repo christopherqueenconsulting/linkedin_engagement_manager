@@ -27,7 +27,7 @@ vi.mock('../utils/analytics', () => ({
   },
 }))
 vi.mock('../api/client', () => ({ default: { post: (...args: unknown[]) => post(...args) } }))
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+vi.mock('../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
 vi.mock('./useFeatureFlags', () => ({
   FLAGS: { posthogSurveys: 'posthog-surveys-enabled' },
   useFeatureFlag: () => flagEnabled,

@@ -5,7 +5,7 @@ import TargetingSection from './TargetingSection'
 
 const state: { eng: Partial<EngPrefs> | null; setEng: () => void } = { eng: null, setEng: () => {} }
 
-vi.mock('./EngagementPrefsContext', () => ({
+vi.mock('./engagementPrefsCtx', () => ({
   useEngagementPrefs: () => state,
 }))
 

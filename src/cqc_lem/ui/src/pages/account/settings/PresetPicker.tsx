@@ -1,4 +1,4 @@
-import { useEngagementPrefs } from './EngagementPrefsContext'
+import { useEngagementPrefs } from './engagementPrefsCtx'
 import { PRESETS, detectPreset, presetValues } from './presets'
 
 // Guided presets (issue #558 §7). Picking one sets a coherent combination of caps + approval

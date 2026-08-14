@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import api from '../api/client'
 import { getAttribution } from '../utils/attribution'
 import { recordSignup } from '../utils/analytics'

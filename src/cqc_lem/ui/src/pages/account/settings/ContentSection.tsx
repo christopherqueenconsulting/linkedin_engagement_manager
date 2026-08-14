@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Toggle from '../../../components/Toggle'
 import api from '../../../api/client'
-import { useAuth } from '../../../contexts/AuthContext'
-import { useEngagementPrefs } from './EngagementPrefsContext'
-import { useUserPrefs } from './UserPrefsContext'
+import { useAuth } from '../../../contexts/useAuth'
+import { useEngagementPrefs } from './engagementPrefsCtx'
+import { useUserPrefs } from './userPrefsCtx'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
 import { CADENCE_OPTIONS, DEFAULT_POSTING_DAYS, WEEKDAY_OPTIONS, weekdayLabels, weeklyPostSlots } from './options'
 
@@ -124,10 +124,16 @@ function ProfileSkillsPanel() {
   })
   // Save from an effect, NOT from the click handler: `save()` sends whatever `eng` the provider
   // last rendered, so it has to run on the render that already carries the merged focus topics.
+  // The ref is what keeps it to ONE write — `save` is a new closure every render, so clearing the
+  // flag only when the write settles would otherwise let the effect re-fire mid-flight.
+  const saving = useRef(false)
   useEffect(() => {
-    if (!pendingSave) return
-    setPendingSave(false)
-    void save()
+    if (!pendingSave || saving.current) return
+    saving.current = true
+    void save().finally(() => {
+      saving.current = false
+      setPendingSave(false)
+    })
   }, [pendingSave, save])
   if (!eng || isLoading || !data || data.skills.length === 0) return null
 

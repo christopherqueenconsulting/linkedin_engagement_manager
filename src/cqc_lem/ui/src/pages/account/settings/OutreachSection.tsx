@@ -1,6 +1,6 @@
 import { CATCHUP_EVENTS } from '../types'
 import CsvInput from './CsvInput'
-import { useEngagementPrefs } from './EngagementPrefsContext'
+import { useEngagementPrefs } from './engagementPrefsCtx'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
 
 // Everything that puts a message in front of a person: who we ask to connect, and what we say when

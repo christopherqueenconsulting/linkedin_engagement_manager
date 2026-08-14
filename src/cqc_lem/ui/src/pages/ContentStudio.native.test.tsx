@@ -23,7 +23,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ user: { email: 'test@example.com', userId: 1 }, sessionToken: 'tok' }),
 }))
 

@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import AccountReadinessBanner from './AccountReadinessBanner'
 import FeedbackWidget from './FeedbackWidget'
 import FloatingDock from './FloatingDock'

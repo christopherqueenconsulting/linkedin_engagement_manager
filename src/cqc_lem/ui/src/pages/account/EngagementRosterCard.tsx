@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { ROSTER_BLOCKED_BADGE_STREAK, TARGET_CATEGORIES } from './types'
 import type { EngagementTarget, EngagementTargetCategory } from './types'
-import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
-import { useEngagementPrefs } from './settings/EngagementPrefsContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
+import { useEngagementPrefs } from './settings/engagementPrefsCtx'
 import { ConflictNotices } from './settings/Field'
 
 type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarget[] }
@@ -141,9 +141,9 @@ export default function EngagementRosterCard() {
   // mutation every settings section writes through — a second writer here would save the other
   // sections' stale copies over the user's edits (see EngagementPrefsContext).
   const { eng, setEng, save: savePrefs } = useEngagementPrefs()
-  const [targets, setTargets] = useState<EngagementTarget[]>([])
-  const [savedSig, setSavedSig] = useState<string | null>(null)
-  const [init, setInit] = useState(false)
+  // The edited roster, once the user touches it — null means "show what the API returned". Derived
+  // rather than seeded in an effect, so a refetch can never discard rows being typed.
+  const [draft, setDraft] = useState<EngagementTarget[] | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data } = useQuery({
@@ -156,19 +156,15 @@ export default function EngagementRosterCard() {
     staleTime: 60 * 1000,
   })
 
-  useEffect(() => {
-    if (data && !init) {
-      setTargets(data.targets)
-      setSavedSig(JSON.stringify(data.targets))
-      setInit(true)
-    }
-  }, [data, init])
+  const targets: EngagementTarget[] = draft ?? data?.targets ?? []
+  const editTargets = (fn: (ts: EngagementTarget[]) => EngagementTarget[]) =>
+    setDraft((ts) => fn(ts ?? data?.targets ?? []))
 
   const update = (idx: number, patch: Partial<EngagementTarget>) =>
-    setTargets((ts) => ts.map((t, i) => (i === idx ? { ...t, ...patch } : t)))
-  const addRow = () => setTargets((ts) => [...ts, blank()])
+    editTargets((ts) => ts.map((t, i) => (i === idx ? { ...t, ...patch } : t)))
+  const addRow = () => editTargets((ts) => [...ts, blank()])
   const addSuggestion = (s: EngagementTarget) =>
-    setTargets((ts) => (ts.some((t) => t.profile_url === s.profile_url) ? ts : [...ts, { ...s }]))
+    editTargets((ts) => (ts.some((t) => t.profile_url === s.profile_url) ? ts : [...ts, { ...s }]))
 
   const removeMutation = useMutation({
     mutationFn: (profile_url: string) =>
@@ -177,7 +173,7 @@ export default function EngagementRosterCard() {
   })
   const removeRow = (idx: number) => {
     const target = targets[idx]
-    setTargets((ts) => ts.filter((_, i) => i !== idx))
+    editTargets((ts) => ts.filter((_, i) => i !== idx))
     // Only a row that was actually saved needs a server-side delete; a never-saved draft row just
     // disappears from local state.
     if (target?.id) removeMutation.mutate(target.profile_url)
@@ -189,9 +185,11 @@ export default function EngagementRosterCard() {
         session_token: sessionToken,
         targets: targets.filter((t) => t.profile_url.trim()),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['engagement-targets'] })
-      setSavedSig(JSON.stringify(targets))
+    onSuccess: async () => {
+      // Wait for the refetch: React Query serves the pre-save rows until it lands, so dropping the
+      // draft first would make a just-added target disappear — and keep it gone if that refetch fails.
+      await queryClient.invalidateQueries({ queryKey: ['engagement-targets'] })
+      setDraft(null)
       setMsg({ ok: true, text: 'Engagement roster saved.' })
       setTimeout(() => setMsg(null), 3000)
     },
@@ -225,10 +223,10 @@ export default function EngagementRosterCard() {
     return true
   }
 
-  const isDirty = init && savedSig !== null && JSON.stringify(targets) !== savedSig
+  const isDirty = !!data && JSON.stringify(targets) !== JSON.stringify(data.targets)
   useRegisterSaveSection('engagement-roster', 'Engagement Roster', isDirty, saveRoster)
 
-  if (!init) return null
+  if (!data) return null
 
   const suggestions = (data?.suggestions ?? []).filter(
     (s) => !targets.some((t) => t.profile_url === s.profile_url))

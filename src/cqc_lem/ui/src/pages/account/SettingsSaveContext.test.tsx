@@ -1,8 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import {
-  SettingsSaveProvider, SaveAllBar, useRegisterSaveSection, sectionSaveCallbacks,
-} from './SettingsSaveContext'
+import { SettingsSaveProvider, SaveAllBar } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 
 const capture = vi.fn()
 vi.mock('../../utils/analytics', () => ({
