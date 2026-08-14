@@ -6,7 +6,10 @@ codecov:
   # while the e2e lane uploaded a fourth; that lane was deleted in #1215.)
   # This MUST track the shard count. Too high and Codecov waits forever for an upload that is never
   # coming and posts no status at all; too low and it publishes a number computed from a partial
-  # set, which reads as a coverage drop that isn't one.
+  # set, which reads as a coverage drop that isn't one. Both failure modes read as a coverage
+  # problem rather than as a config problem, which is how #1340 came to be filed — so the number is
+  # no longer maintained by hand: `tests/unit/test_codecov_upload_contract.py` derives it from the
+  # workflows that actually upload, and fails the build when the two drift.
   notify:
     after_n_builds: 3
 
@@ -18,10 +21,29 @@ coverage:
   status:
     project:
       default:
-        # ENFORCED coverage floor. Unit coverage sits at ~95% after the 2026-07 coverage
-        # program; the floor is a ratchet set below the baseline so coverage can't silently
-        # regress while the 1% threshold absorbs run-to-run flake. Raise the target as the
-        # baseline rises — never lower it.
+        # ENFORCED coverage floor, and it is earned by the two real lanes alone.
+        #
+        # #1340 measured this target against a project number it believed was ~8 points of
+        # import-time coverage donated by the e2e lane — that lane ran pytest against a separate,
+        # uninstrumented uvicorn over HTTP, so it credited every module its imports touched and
+        # none of the handlers it drove. Dropping its upload from a PR read as 94.98% -> 86.86%,
+        # which is why #1338 could not move the lane and why lowering this target to ~87% looked
+        # like honesty rather than a cut.
+        #
+        # The lane was then deleted outright (#1215), and the drop did not happen. Measured on
+        # main at 6a145efa, from unit + integration only: project 95.06%, with the `e2e` flag at
+        # zero sessions and zero lines — i.e. nothing carried forward. Per flag, `unit` 93.50% and
+        # `integration` 32.62%, whose union is that 95.06%. Per component: FastAPI Endpoints
+        # 94.98% (#1340 predicted 72.51% without e2e), Celery Tasks 92.61%, Utilities 96.47%,
+        # LinkedIn Automation 94.62%. So the 86.86% was an artifact of that PR's upload set, not a
+        # property of the code, and this floor sits ~5 points BELOW a baseline real tests earn.
+        #
+        # Therefore this was NOT "re-baselined" to the ~87% #1340 chose: on the measurement above
+        # that is a real cut justified by a number that has never reproduced without the e2e flag.
+        # That is a deviation from the decision on #1340 and it is the owner's to reverse — #1488
+        # carries the call (lower to ~87%, hold at 90%, or ratchet up toward 95.06%) and is the
+        # ONE place this number changes. Default direction: raise as the baseline rises, never
+        # lower. The 1% threshold absorbs run-to-run flake.
         target: 90%
         threshold: 1%
         informational: false
@@ -33,6 +55,10 @@ coverage:
         threshold: 5%
         informational: false
 
+# Exactly the flags some workflow uploads under, no more. A flag declared here with nothing
+# uploading it keeps carrying a stale report forward into the project number, and a flag uploaded
+# without being declared merges in a report nobody scoped — either way the number stops describing
+# what the lanes ran. `tests/unit/test_codecov_upload_contract.py` holds both directions.
 flags:
   unit:
     # Python unit tests — run on every PR

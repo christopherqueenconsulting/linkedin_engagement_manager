@@ -106,6 +106,38 @@ Those two flags are the *only* ones `codecov.yml` declares, and both checks are 
 protection. `codecov.yml`'s `after_n_builds` counts **uploads, not lanes** — the unit lane is
 sharded across two jobs that both upload under `unit`, so it is 3.
 
+Neither the count nor the flag list is maintained by hand any more:
+`tests/unit/test_codecov_upload_contract.py` derives both from the workflows that actually upload
+and fails the build on a drift in either direction. That guard exists because the drift is invisible
+where it matters — an `after_n_builds` set too high makes Codecov post **no status at all** rather
+than a red one, and a flag left declared after its lane is gone carries that lane's last report
+forward into the project number forever.
+
+### The project number is unit + integration, and it clears the floor (#1340)
+
+`#1340` reported the project number as inflated ~8 points by import-time coverage from the old e2e
+lane: that lane collected coverage on the *pytest* process while driving a separate, uninstrumented
+`uvicorn` over HTTP, so it credited every module its imports touched and none of the handlers it
+called. Dropping its upload from a PR read as **94.98% → 86.86%**, which is what blocked `#1338`.
+
+Deleting the lane outright (`#1215`) did not reproduce that drop. Measured on `main` at `6a145efa`,
+from these two lanes only:
+
+| | measured | #1340 predicted without e2e |
+|---|---|---|
+| project | **95.06%** | 86.86% |
+| FastAPI Endpoints | 94.98% | 72.51% |
+| Celery Tasks | 92.61% | 86.58% |
+| Utilities | 96.47% | 90.97% |
+| LinkedIn Automation | 94.62% | 89.74% |
+
+Per flag: `unit` 93.50%, `integration` 32.62%, whose union is that 95.06%; the `e2e` flag reports
+**zero sessions and zero lines**, so nothing is being carried forward. The 86.86% was a property of
+that PR's upload set, not of the code — so the enforced 90% floor is a ratchet ~5 points *below*
+what the two lanes earn, and it stays where it is. Raise it as the baseline rises; never lower it.
+`#1340` had chosen to re-baseline it *down* to ~87%; that measurement is why it was not, and `#1488`
+is the one place the number moves next — up toward 95.06%, held at 90%, or down to ~87% after all.
+
 A general `Test Suite` workflow used to run alongside them, invoking pytest **three times** in one
 job — `tests/unit`, then `tests/integration`, then `pytest tests/` with coverage, which re-ran both.
 So every PR ran the unit lane 3× and the integration lane 3×, for ~13.7 min of the ~35 min of CI,
