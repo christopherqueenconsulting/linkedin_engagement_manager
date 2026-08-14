@@ -33,7 +33,12 @@ high-engagement LinkedIn video exemplar. Both remain bounded by the headless wor
 
 The missing corpus / exemplar work is filed as a separate `risk:live-linkedin` follow-up (§6).
 Until that lands, this audit reports on the **machinery** that produces the video, not on a corpus of
-shipped videos.
+shipped videos. **§7 is the sampler that fills the corpus half of that gap** — it produces the
+scorecard from a checkout where the database and the asset volume are both reachable.
+
+**§8 records what that sampler actually found when it was run against production on 2026-08-14**: the
+corpus is unmeasurable for a reason the headless worktree could not have seen — a shipped post's
+video file is deleted at publish (#1517) — and the exemplar takes #1140's fallback note.
 
 ---
 
@@ -146,6 +151,12 @@ The original reason #1282 was opened — real shipped video bodies/assets and a 
 exemplar — still cannot be satisfied headlessly. A separate follow-up issue (**#1363**) carries
 that scope so this PR can land the regression fix and updated audit doc.
 
+### F7 — A shipped video's asset measures do not survive publication → **#1517**
+
+Found by running §7's sampler against production on 2026-08-14: the stored MP4 is deleted at publish
+(`purge_post_assets`, #148), so neither this audit nor the nightly telemetry can measure a shipped
+video's duration, aspect ratio or captions. Full evidence and the fix shape in **§8**.
+
 ---
 
 ## 4. Gauntlet-loop verdict trail
@@ -230,7 +241,127 @@ has, and only the restored contract can see anything wrong with it**.
 | **#1280** — stored video asset probe | Touches the asset-backfill/storage path |
 | **#1281** — video-specific telemetry (`video-telemetry.md`) | Telemetry/schema change |
 | **#1363** — live corpus + exemplar sampling | Requires production MySQL credentials and/or live LinkedIn/Selenium access |
+| **#1517** — persist the video asset measures at store time | Found by the 2026-08-14 run (§8); touches the generation/storage path and possibly the schema |
 
 Existing gates are untouched: `_post_missing_required_asset` still only checks presence; no new hold
 condition is introduced. The only generation-side change is the additional system-prompt text in
 `get_runway_ml_video_prompt_from_ai`.
+
+---
+
+## 7. Measuring the shipped corpus — `scripts/sample_shipped_videos.py` (#1363)
+
+§1 records that the corpus half of this audit is blocked on access, not on tooling. This is the
+tooling: a read-only sampler that turns "run it where the data is" into one command, so the measured
+scorecard does not have to be assembled by hand or by a fresh SQL query.
+
+```bash
+poetry run python scripts/sample_shipped_videos.py                       # scorecard + frames
+poetry run python scripts/sample_shipped_videos.py --users 1 --json      # raw summary
+poetry run python scripts/sample_shipped_videos.py --no-frames           # probe only
+```
+
+- **It samples 6–10 published video posts** (`MIN_CORPUS` / `MAX_SAMPLES`), newest first, and counts
+  a post as *gradable* only when its **body and its asset are both available** — the pairing the
+  issue asks for. A post whose stored MP4 does not resolve under `assets_dir` is sampled and
+  reported, never graded.
+- **It reads through the existing seam.** `db.get_posted_posts`, `db.get_post_video_url` and
+  `db.get_post_captions` are the readers; `content_quality.score_item` and `score_video_asset` are
+  the scorer. That is deliberate: a row in this report and a row in the nightly
+  `content_quality_scores` table are produced by the same functions, so the audit and the telemetry
+  cannot disagree about the same post.
+- **Frames come out at three points** — `open` (0.5s), `mid`, `close` — into
+  `docs/content-quality-audits/assets/1363/`, which is what R1 and R8 are actually graded on. The
+  opening frame is sampled at 0.5s rather than at t=0 because frame zero of a Runway render is
+  routinely a near-black fade-in and says nothing about the hook.
+- **Unmeasured is never zero.** A clip whose duration ffprobe could not read is excluded from the
+  5–10s band denominator rather than counted as a failure, and a corpus below `MIN_CORPUS` prints
+  `NOT ENOUGH` next to every rate. The same rule the nightly telemetry follows (#630): an audit that
+  reports a rate over three videos has invented a calibration. Every count carries its denominator
+  for the same reason — a bare `Hard slop violations: 0` over a corpus that graded nothing reads as
+  "checked, and clean".
+- **It writes nothing but image files** — no database write, no browser, no LLM call, and the frames
+  are extracted only for the rows the scorecard actually reports, so a JPEG in the frames directory
+  is never a "representative frame" of a video the corpus does not contain. A frames directory that
+  cannot be created (the read-only sidecar mount §8 was run from) costs the frames, never the run.
+
+Pinned by `tests/unit/scripts/test_sample_shipped_videos.py`.
+
+**What the sampler still cannot do:** source the real high-engagement LinkedIn video exemplar. That
+needs an authenticated, non-headless LinkedIn session, which is a human step, not a headless one —
+and #1140's fallback clause (quoted in §1) is what applies until someone runs it. The gauntlet-loop
+verdict trail in §4 documents the in-repo gold standard used in its place.
+
+---
+
+## 8. The measured run — 2026-08-14 (#1363)
+
+The sampler was run by the owner against **production MySQL and the `lem_assets` volume**, from a
+prod-image sidecar with this branch's `src` bind-mounted read-only:
+
+```
+poetry run python scripts/sample_shipped_videos.py --limit 10
+```
+
+```
+Video posts sampled       : 10
+Gradable (body + asset)   : 0  (NOT ENOUGH — 6+ needed for a scorecard)
+Duration in 5-10s band    : 0/0 measured  (none probed)
+Captioned (burned text)   : 0/0
+Hook within mobile budget : 0/0
+Hard slop violations      : 0 (over 0 graded)
+
+Asset probe states:
+    10  missing
+
+Per post: 83, 85, 25, 76, 74, 70, 10, 9, 8, 7 — all `missing`, no duration, no aspect ratio.
+```
+
+**There is no scorecard, and the reason is a finding, not an access problem.** Each of those ten
+post ids resolves through `get_post_video_url` to a `videos/runwayml/….mp4` name under `assets_dir`,
+and none of those files exist on the volume. That is **by design**: `purge_post_assets`
+(`utilities/utils.py`, shipped in #148 on 2026-06-25) deletes a post's stored MP4 the moment
+`post_to_linkedin` succeeds, because LinkedIn re-hosts the media and the local copy is dead weight.
+It was checked against the alternative explanation — the pre-#148 renders (post ids 2, 6 and other
+early rows) still have their `.mp4` on disk, so the volume is mounted and readable.
+
+### F7 — A shipped video's asset measures do not survive publication → **#1517**
+
+Two things follow, and both are measurement-side:
+
+- **The corpus acceptance box cannot be ticked with current-pipeline video.** Raising `--limit` until
+  the sample reaches pre-2026-06-25 posts would produce six gradable rows, but they are Gen-3-era
+  renders that predate the #1293 aspect-ratio fix (R5) and the #1278 caption burn (R2). A scorecard
+  built from them would grade a pipeline that no longer exists and read as if it graded this one —
+  which is the exact failure §7 says an audit must not commit.
+- **The video half of `content_quality_scores` is systematically blank.**
+  `auto_nightly_content_quality` scores *shipped* content, i.e. after the purge, so its
+  `score_video_asset` call has recorded `NULL / NULL / missing` for every video post since #148. The
+  columns #1281 added are real; the values are not. The at-generation truth exists only as the
+  PostHog `video_asset_probe` event that `_probe_stored_video` emits, which nothing reads back.
+
+The fix is to record the asset measures at **store** time — the one moment the file provably exists —
+and have `score_video_asset` prefer a recorded measurement over a live probe of a deleted file.
+Filed as **#1517** with the keyframe-retention alternative costed alongside it. Changing the purge
+itself is explicitly out of scope: bounding the assets volume is what #148 exists to do.
+
+Until #1517 lands, `sample_shipped_videos.py` says so in its own output rather than printing a bare
+`10 missing` (`purge_hint`).
+
+### The exemplar — fallback note taken
+
+Decision `2A` on PR #1506: the real high-engagement LinkedIn exemplar is **not** fetched, and this
+audit records that explicitly under #1140's own clause — *"if none can be sourced and fetched, fall
+back to a rubric-only assessment and say so explicitly."* The reference used in its place is the
+in-repo gold standard named in §4 (`comment_contract_directive()`), and the rubric verdicts in §2
+stand as rubric-only judgements. Sourcing one needs an authenticated, non-headless LinkedIn session:
+a human step, available any time someone wants to upgrade this section, and never an agent one.
+
+### Where #1363 stands after this run
+
+| Acceptance box | State |
+|---|---|
+| 6–10 shipped video samples with bodies **and** assets available | **Blocked by #1517**, not by access — the assets are deleted at publish. Bodies: 10/10 available. Assets: 0/10 |
+| Named real reference exemplar or explicit fallback note | **Done** — fallback note above, per #1140's clause (decision `2A`) |
+| Representative frames embedded/referenced in the audit doc | **Not produced** — frame extraction needs a readable MP4; unblocks with #1517 |
+| Any new findings filed as follow-up issues | **Done** — F7 → **#1517** |
