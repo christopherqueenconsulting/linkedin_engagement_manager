@@ -101,6 +101,39 @@ def _no_real_redis():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_celery_broker():
+    """Queue a task without a broker, instead of retrying Redis twenty times (issue #1214).
+
+    There is no broker and no result store in this lane, so an API handler that dispatches spends
+    ~19s in `celery.backends.redis` reconnect retries and then raises — three minutes of the
+    tests/unit/api lane on its own. Until #1214 that was masked per file: 43 client fixtures started
+    `patch("cqc_lem.app.run_scheduler.generate_newsletter_drafts_for_user")` and four siblings
+    BEFORE importing `api/main.py`, which bound the mocks into `api.main`'s namespace permanently
+    and left the same names MagicMocks for every later file in the session. A guard here is a
+    MECHANISM rather than a hand-kept list of names, so it cannot go stale the way that did, and it
+    holds no matter which module a task is dispatched from.
+
+    `send_task` is the seam every path converges on — `Task.apply_async`, `Task.delay`,
+    `QueueOnce.apply_async` through its `super()` call, and a `chain(...).apply_async()`. What comes
+    back is the shape production hands the caller on a SUCCESSFUL dispatch: `EagerResult` answers
+    `.id` and `.state` out of its own attributes and never opens the result backend, so
+    `_queued()`'s REJECTED check reads exactly what a real queued task reads.
+
+    A test that asserts on a dispatch still patches the task where the handler reads it; that patch
+    replaces the whole task object, so it never reaches this.
+    """
+    from celery import states
+    from celery.app.base import Celery
+    from celery.result import EagerResult
+
+    def _queued_without_a_broker(self, name, *args, **kwargs):
+        return EagerResult(kwargs.get("task_id") or f"test-task-{name}", None, states.PENDING)
+
+    with patch.object(Celery, "send_task", _queued_without_a_broker):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_selenium():
     """Fail un-mocked Grid readiness checks instantly instead of polling for the full 60s.
 

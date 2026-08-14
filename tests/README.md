@@ -277,9 +277,11 @@ the crossover is suite size, and a 20s suite really does lose to worker startup.
 above had spare cores, so budget 70-90s in CI. **Do not raise it above 4.**
 
 `--dist loadfile` is not interchangeable with the other modes here. It keeps a whole file on one
-worker, which the 40+ module-scoped `TestClient` fixtures under `tests/unit/api/` depend on —
-`load` scatters individual tests and rebuilds those fixtures per test, and `loadscope` groups
-methods by *class*, so a module-scoped fixture used by two classes gets built twice on two workers.
+worker, which the module-scoped fixtures under `tests/unit/api/` depend on — `load` scatters
+individual tests and rebuilds those fixtures per test, and `loadscope` groups methods by *class*,
+so a module-scoped fixture used by two classes gets built twice on two workers. (The 40+
+module-scoped `TestClient` fixtures that used to be the sharpest case are gone since #1214; the
+shared `api_client` is function-scoped and costs ~1.7ms, so it no longer cares which mode runs.)
 
 **Sharding is also a latent-order-dependency detector.** Anything that mutates global state without
 restoring it stops being invisible, because "whatever ran before this test" is no longer one fixed
@@ -444,6 +446,17 @@ Shared fixtures are defined in `conftest.py`:
 ### Environment Setup
 
 - `setup_test_environment` - Sets environment variables for tests (auto-use)
+
+### API Fixtures
+
+- `api_client` — the ONE `TestClient` over `cqc_lem.api.main.app`, in both the unit and the
+  integration lane (#1214). It patches nothing and it is function-scoped, so `app.dependency_overrides`
+  composes with it and is restored afterwards. **Never construct a `TestClient` in a test module.**
+  A test that needs extra state wraps this fixture in its own
+  (`tests/integration/test_api_credential_gate.py::gated_client` is the shape), and a test that
+  needs a dispatch or a DB read stubbed patches it where the handler READS it, for the length of
+  its own request. `tests/unit/api/test_api_client_fixture.py` fails the build on a new ad-hoc
+  construction and on a module-scope patch that leaks a mock into the API layer.
 
 ### Mock Fixtures
 

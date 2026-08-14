@@ -30,33 +30,25 @@ class _FakeRedis:
 
 
 @pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def redis():
     fake = _FakeRedis()
     with patch(f"{_STORE}.shared_redis_client", return_value=fake):
         yield fake
 
 
-def _get(client):
+def _get(api_client):
     with patch(f"{_M}.get_session_user_id", return_value=_UID):
-        return client.get(f"/api/user/linkedin-signin-status?session_token={_TOK}")
+        return api_client.get(f"/api/user/linkedin-signin-status?session_token={_TOK}")
 
 
 class TestLinkedInSignInStatusEndpoint:
-    def test_requires_a_session(self, client, redis):
+    def test_requires_a_session(self, api_client, redis):
         with patch(f"{_M}.get_session_user_id", return_value=None):
-            resp = client.get("/api/user/linkedin-signin-status?session_token=bad")
+            resp = api_client.get("/api/user/linkedin-signin-status?session_token=bad")
         assert resp.status_code == 401
 
-    def test_nothing_recorded_is_unknown_not_broken(self, client, redis):
-        resp = _get(client)
+    def test_nothing_recorded_is_unknown_not_broken(self, api_client, redis):
+        resp = _get(api_client)
         assert resp.status_code == 200
         detail = resp.json()["detail"]
         # `unknown` must not read as a failure — it only means no sign-in is on record.
@@ -64,16 +56,16 @@ class TestLinkedInSignInStatusEndpoint:
         assert detail["signed_in_at"] is None
         assert detail["approval_cleared_at"] is None
 
-    def test_pending_approval_is_visible_while_the_user_is_being_asked(self, client, redis):
+    def test_pending_approval_is_visible_while_the_user_is_being_asked(self, api_client, redis):
         from cqc_lem.utilities.linkedin.login_status import mark_approval_pending
 
         mark_approval_pending(_UID)
-        detail = _get(client).json()["detail"]
+        detail = _get(api_client).json()["detail"]
         assert detail["state"] == "approval_pending"
         assert detail["approval_requested_at"]
         assert detail["approval_cleared_at"] is None
 
-    def test_the_approval_the_user_already_made_shows_as_received(self, client, redis):
+    def test_the_approval_the_user_already_made_shows_as_received(self, api_client, redis):
         from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, mark_signed_in
 
         mark_approval_pending(_UID)
@@ -81,12 +73,12 @@ class TestLinkedInSignInStatusEndpoint:
         # persist. The user's tap must still be visible after the second write.
         mark_signed_in(_UID)
         mark_signed_in(_UID)
-        detail = _get(client).json()["detail"]
+        detail = _get(api_client).json()["detail"]
         assert detail["state"] == "signed_in"
         assert detail["signed_in_at"]
         assert detail["approval_cleared_at"]
 
-    def test_timed_out_approval_keeps_the_last_good_sign_in(self, client, redis):
+    def test_timed_out_approval_keeps_the_last_good_sign_in(self, api_client, redis):
         from cqc_lem.utilities.linkedin.login_status import (
             mark_approval_pending,
             mark_approval_timed_out,
@@ -96,17 +88,17 @@ class TestLinkedInSignInStatusEndpoint:
         mark_signed_in(_UID)
         mark_approval_pending(_UID)
         mark_approval_timed_out(_UID)
-        detail = _get(client).json()["detail"]
+        detail = _get(api_client).json()["detail"]
         assert detail["state"] == "approval_timed_out"
         assert detail["signed_in_at"]
 
-    def test_another_users_record_is_never_returned(self, client, redis):
+    def test_another_users_record_is_never_returned(self, api_client, redis):
         from cqc_lem.utilities.linkedin.login_status import mark_signed_in
 
         mark_signed_in(_UID + 1)
-        assert _get(client).json()["detail"]["state"] == "unknown"
+        assert _get(api_client).json()["detail"]["state"] == "unknown"
 
-    def test_redis_down_reads_as_unknown(self, client):
+    def test_redis_down_reads_as_unknown(self, api_client):
         with patch(f"{_STORE}.shared_redis_client", return_value=None):
-            detail = _get(client).json()["detail"]
+            detail = _get(api_client).json()["detail"]
         assert detail["state"] == "unknown"

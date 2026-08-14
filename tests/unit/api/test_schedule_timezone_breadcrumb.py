@@ -29,28 +29,6 @@ _POST_BODY = {
 }
 
 
-@pytest.fixture(scope="module")
-def client():
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 def _warned(mock_warn) -> bool:
     return any("Naive scheduled_datetime" in str(call.args[0]) for call in mock_warn.call_args_list)
 
@@ -81,52 +59,52 @@ class TestWarnIfNaiveSchedule:
 
 
 class TestSchedulePostEndpoint:
-    def test_warns_on_a_naive_scheduled_datetime(self, client, signed_in):
+    def test_warns_on_a_naive_scheduled_datetime(self, api_client, signed_in):
         with patch(f"{_MAIN}.insert_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
-            resp = client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _NAIVE})
+            resp = api_client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _NAIVE})
         assert resp.status_code == 200
         assert _warned(warn)
 
-    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, client, signed_in):
+    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, api_client, signed_in):
         with patch(f"{_MAIN}.insert_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
-            resp = client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _AWARE})
+            resp = api_client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _AWARE})
         assert resp.status_code == 200
         assert not _warned(warn)
 
 
 class TestUpdatePostEndpoint:
-    def test_warns_on_a_naive_scheduled_datetime(self, client, signed_in):
+    def test_warns_on_a_naive_scheduled_datetime(self, api_client, signed_in):
         with patch(f"{_MAIN}.update_db_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
-            resp = client.post("/api/update_post/?post_id=33",
+            resp = api_client.post("/api/update_post/?post_id=33",
                                json={**_POST_BODY, "scheduled_datetime": _NAIVE})
         assert resp.status_code == 200
         assert _warned(warn)
 
-    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, client, signed_in):
+    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, api_client, signed_in):
         with patch(f"{_MAIN}.update_db_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
-            resp = client.post("/api/update_post/?post_id=33",
+            resp = api_client.post("/api/update_post/?post_id=33",
                                json={**_POST_BODY, "scheduled_datetime": _AWARE})
         assert resp.status_code == 200
         assert not _warned(warn)
 
 
 class TestBulkUpdateEndpoint:
-    def test_warns_on_a_naive_scheduled_datetime(self, client, signed_in):
+    def test_warns_on_a_naive_scheduled_datetime(self, api_client, signed_in):
         with patch(f"{_MAIN}.bulk_update_posts", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
-            resp = client.post("/api/posts/bulk_update/",
+            resp = api_client.post("/api/posts/bulk_update/",
                                json={"session_token": SESSION_TOKEN, "post_ids": [33], "scheduled_datetime": _NAIVE})
         assert resp.status_code == 200
         assert _warned(warn)
 
-    def test_quiet_when_no_scheduled_datetime_is_sent(self, client, signed_in):
+    def test_quiet_when_no_scheduled_datetime_is_sent(self, api_client, signed_in):
         with patch(f"{_MAIN}.bulk_update_posts", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
-            resp = client.post("/api/posts/bulk_update/",
+            resp = api_client.post("/api/posts/bulk_update/",
                                json={"session_token": SESSION_TOKEN, "post_ids": [33], "status": "approved"})
         assert resp.status_code == 200
         assert not _warned(warn)

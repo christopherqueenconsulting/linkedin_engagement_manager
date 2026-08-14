@@ -19,28 +19,6 @@ _AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 
 
-@pytest.fixture(scope="module")
-def client():
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 # (case id, raw value, parsed slides)
 _PARSE_SLIDES_CASES = [
     ("none", None, None),
@@ -129,12 +107,12 @@ class TestFindAssetFile:
 
 
 class TestAssetsEndpoint:
-    def test_serves_existing_file(self, client, tmp_path):
+    def test_serves_existing_file(self, api_client, tmp_path):
         video = tmp_path / "videos" / "clip.mp4"
         video.parent.mkdir(parents=True)
         video.write_bytes(b"\x00videobytes")
         with patch(f"{_M}.assets_dir", str(tmp_path)):
-            resp = client.get("/api/assets?file_name=videos/clip.mp4")
+            resp = api_client.get("/api/assets?file_name=videos/clip.mp4")
         assert resp.status_code == 200
         assert resp.content == b"\x00videobytes"
         assert resp.headers["content-type"].startswith("video/")
@@ -143,9 +121,9 @@ class TestAssetsEndpoint:
     # traversal attempt must not be distinguishable from a plain miss.
     @pytest.mark.parametrize("file_name", ["videos/none.mp4", "../etc/passwd"],
                              ids=["missing_file", "traversal_attempt"])
-    def test_404_for_anything_not_resolved(self, client, tmp_path, file_name):
+    def test_404_for_anything_not_resolved(self, api_client, tmp_path, file_name):
         with patch(f"{_M}.assets_dir", str(tmp_path)):
-            resp = client.get(f"/api/assets?file_name={file_name}")
+            resp = api_client.get(f"/api/assets?file_name={file_name}")
         assert resp.status_code == 404
 
 
@@ -201,13 +179,13 @@ class TestRangeHelpers:
 
 
 class TestAuthInitBypassSessionFailure:
-    def test_bypass_session_creation_failure_returns_500(self, client):
+    def test_bypass_session_creation_failure_returns_500(self, api_client):
         with patch(f"{_AUTH}.get_user_id", return_value=5), \
              patch(f"{_AUTH}.generate_pin", return_value="123456"), \
              patch(f"{_AUTH}.hash_pin", return_value="hashed"), \
              patch(f"{_AUTH}.send_pin_email", return_value=(True, True)), \
              patch(f"{_AUTH}.create_session", return_value=None):
-            resp = client.post("/api/auth/email/init", json={"email": "user@example.com"})
+            resp = api_client.post("/api/auth/email/init", json={"email": "user@example.com"})
         assert resp.status_code == 500
 
 

@@ -90,14 +90,6 @@ class _FakeConn:
 
 
 @pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def store():
     return {
         "feedback": [],
@@ -111,16 +103,16 @@ def store():
     }
 
 
-def _call(client, store, method, path, **kwargs):
+def _call(api_client, store, method, path, **kwargs):
     with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch("cqc_lem.api.main.get_session_user_id", return_value=4), \
          patch("cqc_lem.utilities.observability.posthog"):
-        return getattr(client, method)(path, **kwargs)
+        return getattr(api_client, method)(path, **kwargs)
 
 
 class TestSurveyCapture:
-    def test_nps_lands_as_a_feedback_row_and_invites_a_promoter_to_review(self, client, store):
-        response = _call(client, store, "post", "/api/survey/nps", json={
+    def test_nps_lands_as_a_feedback_row_and_invites_a_promoter_to_review(self, api_client, store):
+        response = _call(api_client, store, "post", "/api/survey/nps", json={
             "session_token": "sess-abc", "score": 10, "why": "It sounds exactly like me",
             "survey_key": "nps_day3", "context": {"route": "/"}})
 
@@ -138,13 +130,13 @@ class TestSurveyCapture:
         # The ask that produced the answer is closed out, so nothing re-asks it.
         assert "nps_day3" in store["prompts"]
 
-    def test_review_lands_with_source_review_and_unlocks_the_trial_extension(self, client, store):
+    def test_review_lands_with_source_review_and_unlocks_the_trial_extension(self, api_client, store):
         from cqc_lem.utilities.db import has_review_feedback
 
         with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)):
             assert has_review_feedback(4) is False  # gate closed before the review
 
-        response = _call(client, store, "post", "/api/survey/review", json={
+        response = _call(api_client, store, "post", "/api/survey/review", json={
             "session_token": "sess-abc", "rating": 5, "improvement": "Fewer clicks to approve",
             "testimonial": "Saves me an hour a day", "consent_testimonial": True,
             "survey_key": "review_trial_end"})
@@ -163,18 +155,18 @@ class TestSurveyCapture:
         with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)):
             assert has_review_feedback(4) is True  # gate now open for POST /trial/extend (#499)
 
-    def test_the_due_survey_is_the_review_offer_and_it_clears_once_answered(self, client, store):
+    def test_the_due_survey_is_the_review_offer_and_it_clears_once_answered(self, api_client, store):
         # Trial ends in 2 days with no review on file → the review offer outranks the NPS ask.
-        response = _call(client, store, "get", "/api/user/survey?session_token=sess-abc")
+        response = _call(api_client, store, "get", "/api/user/survey?session_token=sess-abc")
         detail = response.json()["detail"]
         assert detail["survey"]["key"] == "review_trial_end"
         assert detail["survey"]["source"] == "review"
         assert detail["review_submitted"] is False
 
-        _call(client, store, "post", "/api/survey/review",
+        _call(api_client, store, "post", "/api/survey/review",
               json={"session_token": "sess-abc", "rating": 4, "survey_key": "review_trial_end"})
 
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/survey?session_token=sess-abc").json()["detail"]
         assert detail["review_submitted"] is True
         assert detail["survey"] is None  # just answered — the daily cooldown holds the next ask
@@ -182,16 +174,16 @@ class TestSurveyCapture:
         # A day later the cooldown has lapsed: the NPS this user (activated 5 days ago) still owes
         # is next — never a review re-ask.
         store["prompts"]["review_trial_end"] = datetime.now() - timedelta(days=1, hours=1)
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/survey?session_token=sess-abc").json()["detail"]
         assert detail["survey"]["key"] == "nps_day3"
 
-    def test_a_dismissed_survey_is_never_shown_again(self, client, store):
-        dismissed = _call(client, store, "post", "/api/survey/dismiss",
+    def test_a_dismissed_survey_is_never_shown_again(self, api_client, store):
+        dismissed = _call(api_client, store, "post", "/api/survey/dismiss",
                           json={"session_token": "sess-abc", "survey_key": "review_trial_end"})
         assert dismissed.json()["detail"]["dismissed"] is True
 
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/survey?session_token=sess-abc").json()["detail"]
         # The review ask is spent; the cooldown holds the next ask back for a day.
         assert detail["survey"] is None
@@ -202,8 +194,8 @@ class TestPostHogSurveyCapture:
     homegrown NPS ask standing down so nobody is prompted twice (issue #653).
     """
 
-    def test_a_detractor_lands_as_a_new_feedback_row_the_loop_will_file(self, client, store):
-        response = _call(client, store, "post", "/api/survey/posthog", json={
+    def test_a_detractor_lands_as_a_new_feedback_row_the_loop_will_file(self, api_client, store):
+        response = _call(api_client, store, "post", "/api/survey/posthog", json={
             "session_token": "sess-abc", "kind": "nps", "score": 3,
             "comment": "The comments read like a bot", "survey_id": "0199-nps",
             "survey_name": "LEM NPS", "context": {"route": "/content"}})
@@ -221,8 +213,8 @@ class TestPostHogSurveyCapture:
         # Left at the DB default (`new`) — that is what makes the auto-filing pass pick it up.
         assert "status" not in row
 
-    def test_a_happy_csat_with_no_comment_is_resolved_and_never_files_an_issue(self, client, store):
-        response = _call(client, store, "post", "/api/survey/posthog", json={
+    def test_a_happy_csat_with_no_comment_is_resolved_and_never_files_an_issue(self, api_client, store):
+        response = _call(api_client, store, "post", "/api/survey/posthog", json={
             "session_token": "sess-abc", "kind": "csat", "score": 5, "survey_id": "0199-csat",
             "survey_name": "LEM CSAT — post quality"})
 
@@ -233,27 +225,27 @@ class TestPostHogSurveyCapture:
         assert row["sentiment"] == "positive"
         assert row["status"] == "resolved"
 
-    def test_a_posthog_answer_closes_the_homegrown_nps_ask_too(self, client, store):
+    def test_a_posthog_answer_closes_the_homegrown_nps_ask_too(self, api_client, store):
         # No survey_prompts row is written (PostHog owns that ledger), but the `feedback` row itself
         # is what `next_survey_for_user` reads — so the email beat can't re-ask what was answered.
-        _call(client, store, "post", "/api/survey/posthog",
+        _call(api_client, store, "post", "/api/survey/posthog",
               json={"session_token": "sess-abc", "kind": "nps", "score": 9})
         assert store["prompts"] == {}
 
         store["subscription"] = {"subscription_status": "active", "trial_ends_at": None}
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/survey?session_token=sess-abc").json()["detail"]
         assert detail["survey"] is None
 
-    def test_the_nps_ask_stands_down_while_posthog_owns_it(self, client, store):
+    def test_the_nps_ask_stands_down_while_posthog_owns_it(self, api_client, store):
         # Same user, same state: PostHog off -> the day-3 NPS is due; PostHog on -> nothing, because
         # PostHog is asking. That is the "no double-prompt" acceptance criterion.
         store["subscription"] = {"subscription_status": "active", "trial_ends_at": None}
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/survey?session_token=sess-abc").json()["detail"]
         assert detail["survey"]["key"] == "nps_day3"
 
         with patch("cqc_lem.utilities.flags.flag_enabled", return_value=True):
-            detail = _call(client, store, "get",
+            detail = _call(api_client, store, "get",
                            "/api/user/survey?session_token=sess-abc").json()["detail"]
         assert detail["survey"] is None

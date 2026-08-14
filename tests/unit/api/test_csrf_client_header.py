@@ -64,28 +64,6 @@ class _FakeRequest:
         self.method = method
 
 
-@pytest.fixture(scope="module")
-def client() -> Iterator[Any]:
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 @pytest.fixture
 def cookie_session() -> Iterator[None]:
     """A live session on the httpOnly cookie and nothing else — the browser's credential.
@@ -135,9 +113,9 @@ _QUERY_PARAM_WRITES = [
 class TestTheFourQueryParameterWrites:
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_a_cookie_authenticated_write_without_the_header_is_refused(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
-        resp = client.post(path, params=params, cookies={"lem_session": _COOKIE})
+        resp = api_client.post(path, params=params, cookies={"lem_session": _COOKIE})
 
         assert resp.status_code == 403
         assert resp.json()["detail"]["code"] == "client_header_required"
@@ -148,22 +126,22 @@ class TestTheFourQueryParameterWrites:
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_the_same_write_from_the_spa_still_works(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
-        resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
+        resp = api_client.post(path, params=params, cookies={"lem_session": _COOKIE},
                            headers=_HEADER)
 
         assert resp.status_code == 200
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_a_bearer_authenticated_caller_needs_no_header(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
         """Scripts, Postman and the admin tooling are not browsers, and an SPA bundle cached from
         before #950 still sends a bearer and no header — so the rollout breaks nobody.
         """
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
-            resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
+            resp = api_client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer non-browser-token"})
 
         assert resp.status_code == 200
@@ -178,10 +156,10 @@ class TestAGuessedBearerBuysNothing:
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_the_credential_gate_401s_it_at_the_edge_with_no_session_credential(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
-            resp = client.post(path, params=params,
+            resp = api_client.post(path, params=params,
                                headers={"Authorization": "Bearer guessed"})
 
         assert resp.status_code == 401
@@ -189,14 +167,14 @@ class TestAGuessedBearerBuysNothing:
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_this_layer_403s_it_when_the_cookie_carried_it_past_the_edge(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
         """The CSRF-relevant shape, and the one #950 changed: the gate accepts the session
         credential the browser attached by itself, so a guessed bearer is never what the edge is
         judging. The exemption is keyed on a bearer that MATCHES, so it stays shut.
         """
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
-            resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
+            resp = api_client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer guessed"})
 
         assert resp.status_code == 403
@@ -205,14 +183,14 @@ class TestAGuessedBearerBuysNothing:
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
     def test_this_layer_403s_it_when_no_credential_gate_is_configured(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
         """The fail-closed half, end to end: an unconfigured gate lets any `Authorization` header
         past the edge, and the exemption must NOT open for it — a deployment running the credential
         gate open must not also opt out of the CSRF layer.
         """
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", set()):
-            resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
+            resp = api_client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer guessed"})
 
         assert resp.status_code == 403
@@ -250,13 +228,13 @@ class TestEveryStateChangingMethod:
         finally:
             _request_object.reset(token)
 
-    def test_a_real_put_route_is_covered_too(self, client: Any, cookie_session: None) -> None:
+    def test_a_real_put_route_is_covered_too(self, api_client: Any, cookie_session: None) -> None:
         """The unit assertion above proves the set; this proves the set is actually reached on a
         method other than POST, through the real routing + resolver path.
         """
         with patch(f"{_M}.get_scheduled_dm_user_id") as owner, \
              patch(f"{_M}.update_scheduled_dm") as update:
-            resp = client.put("/api/dm", json={"dm_id": 1, "action": "cancel",
+            resp = api_client.put("/api/dm", json={"dm_id": 1, "action": "cancel",
                                                "session_token": "cookie"},
                               cookies={"lem_session": _COOKIE})
 
@@ -265,10 +243,10 @@ class TestEveryStateChangingMethod:
         owner.assert_not_called()
         update.assert_not_called()
 
-    def test_a_real_delete_route_is_covered_too(self, client: Any, cookie_session: None) -> None:
+    def test_a_real_delete_route_is_covered_too(self, api_client: Any, cookie_session: None) -> None:
         with patch(f"{_M}.get_scheduled_dm_user_id") as owner, \
              patch(f"{_M}.update_scheduled_dm_status") as cancel:
-            resp = client.request("DELETE", "/api/dm",
+            resp = api_client.request("DELETE", "/api/dm",
                                   json={"dm_id": 1, "session_token": "cookie"},
                                   cookies={"lem_session": _COOKIE})
 
@@ -287,10 +265,10 @@ class TestTheMultipartWrites:
     """
 
     def test_an_avatar_training_upload_without_the_header_is_refused(
-            self, client: Any, cookie_session: None) -> None:
+            self, api_client: Any, cookie_session: None) -> None:
         """The most expensive of the two: it spends an avatar credit and starts a training run."""
         with patch(f"{_AV}.get_avatar_credit_balance") as balance:
-            resp = client.post("/api/avatar/training",
+            resp = api_client.post("/api/avatar/training",
                                data={"session_token": "cookie", "trigger_word": "TOK"},
                                files={"photos": ("p.zip", b"not-a-zip", "application/zip")},
                                cookies={"lem_session": _COOKIE})
@@ -300,9 +278,9 @@ class TestTheMultipartWrites:
         balance.assert_not_called()
 
     def test_a_newsletter_cover_upload_without_the_header_is_refused(
-            self, client: Any, cookie_session: None) -> None:
+            self, api_client: Any, cookie_session: None) -> None:
         with patch(f"{_USER}.get_newsletter_edition") as edition:
-            resp = client.post("/api/user/newsletter-draft/cover",
+            resp = api_client.post("/api/user/newsletter-draft/cover",
                                data={"session_token": "cookie", "edition_id": 1},
                                files={"file": ("c.png", b"not-a-png", "image/png")},
                                cookies={"lem_session": _COOKIE})
@@ -313,7 +291,7 @@ class TestTheMultipartWrites:
 
 
 class TestItRunsBeforeAnythingElse:
-    def test_it_refuses_ahead_of_the_scope_check(self, client: Any, work: Dict[str, MagicMock]) -> None:
+    def test_it_refuses_ahead_of_the_scope_check(self, api_client: Any, work: Dict[str, MagicMock]) -> None:
         """A scoped-away session that ALSO has no client header must be refused as a forgery, not as
         a scope violation. The scope refusal writes an audited `session_scope_denied` row, so if the
         order flipped a cross-site forgery would leave a trail attributed to the victim — and would
@@ -323,7 +301,7 @@ class TestItRunsBeforeAnythingElse:
                    side_effect=lambda t: ({"user_id": _UID, "scope": "extension"}
                                           if t == _COOKIE else None)), \
              patch(f"{_M}.record_auth_event") as audit:
-            resp = client.post("/api/create_weekly_content/", cookies={"lem_session": _COOKIE})
+            resp = api_client.post("/api/create_weekly_content/", cookies={"lem_session": _COOKIE})
 
         assert resp.status_code == 403
         assert resp.json()["detail"]["code"] == "client_header_required"
@@ -331,20 +309,20 @@ class TestItRunsBeforeAnythingElse:
 
 
 class TestWhatTheLayerDoesNotTouch:
-    def test_a_read_is_never_refused(self, client: Any, cookie_session: None) -> None:
+    def test_a_read_is_never_refused(self, api_client: Any, cookie_session: None) -> None:
         """CSRF is a forged WRITE. With no CORS middleware the attacker cannot read the response, so
         a forged GET buys nothing — and requiring a header on reads would break the browser's own
         credentialed navigations (a plain `<a href>` download, an `<img>` src).
         """
         with patch(f"{_M}.get_user_email", return_value="user@example.com"), \
              patch(f"{_M}.get_generation_status", return_value=None):
-            resp = client.get("/api/content_generation_status/",
+            resp = api_client.get("/api/content_generation_status/",
                               params={"session_token": "cookie"},
                               cookies={"lem_session": _COOKIE})
 
         assert resp.status_code == 200
 
-    def test_an_explicit_token_write_needs_no_header(self, client: Any,
+    def test_an_explicit_token_write_needs_no_header(self, api_client: Any,
                                                      work: Dict[str, MagicMock]) -> None:
         """The cookie is the only credential a browser attaches by itself. A caller who put a real
         token in the request knew it — it is httpOnly and a cross-site form cannot read it — so
@@ -352,17 +330,17 @@ class TestWhatTheLayerDoesNotTouch:
         """
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": "full"} if t == "real" else None):
-            resp = client.post("/api/aws_test_get_my_profile/", params={"session_token": "real"})
+            resp = api_client.post("/api/aws_test_get_my_profile/", params={"session_token": "real"})
 
         assert resp.status_code == 200
 
-    def test_an_anonymous_write_is_still_a_401(self, client: Any, work: Dict[str, MagicMock]) -> None:
+    def test_an_anonymous_write_is_still_a_401(self, api_client: Any, work: Dict[str, MagicMock]) -> None:
         """The header is a CSRF layer, not authorisation. No session is still no session — and it
         must not become a 403, which would tell an unauthenticated caller they were merely missing
         a header.
         """
         with patch(f"{_M}._db_resolve_session", return_value=None):
-            resp = client.post("/api/create_weekly_content/")
+            resp = api_client.post("/api/create_weekly_content/")
 
         assert resp.status_code == 401
 
@@ -370,30 +348,30 @@ class TestWhatTheLayerDoesNotTouch:
 class TestTheHeaderIsNotASecret:
     @pytest.mark.parametrize("value", ["spa", "extension", "anything-at-all"])
     def test_any_value_passes_because_presence_is_the_mechanism(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock], value: str) -> None:
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock], value: str) -> None:
         """Comparing the value would buy nothing — the bundle is public, so an attacker knows it —
         and would invite the next reader to rotate it like a token. What a cross-origin form cannot
         do is set the header at all.
         """
-        resp = client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
+        resp = api_client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
                            headers={"X-LEM-Client": value})
 
         assert resp.status_code == 200
 
     @pytest.mark.parametrize("name", ["x-lem-client", "X-Lem-Client", "X-LEM-CLIENT"])
     def test_the_name_is_case_insensitive_like_every_other_header(
-            self, client: Any, cookie_session: None, work: Dict[str, MagicMock], name: str) -> None:
+            self, api_client: Any, cookie_session: None, work: Dict[str, MagicMock], name: str) -> None:
         """HTTP header names are case-insensitive and an intermediary may re-case them. Reading it
         off Starlette's `Headers` gets this for free — this is the assertion that keeps it.
         """
-        resp = client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
+        resp = api_client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
                            headers={name: "spa"})
 
         assert resp.status_code == 200
 
-    def test_an_empty_value_is_no_header(self, client: Any, cookie_session: None,
+    def test_an_empty_value_is_no_header(self, api_client: Any, cookie_session: None,
                                          work: Dict[str, MagicMock]) -> None:
-        resp = client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
+        resp = api_client.post("/api/aws_test_get_my_profile/", cookies={"lem_session": _COOKIE},
                            headers={"X-LEM-Client": ""})
 
         assert resp.status_code == 403

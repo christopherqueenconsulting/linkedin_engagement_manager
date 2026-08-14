@@ -59,21 +59,13 @@ class _FakeConn:
         pass
 
 
-@pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
 class TestFeedbackCapture:
-    def test_widget_submission_is_persisted_with_its_context(self, client):
+    def test_widget_submission_is_persisted_with_its_context(self, api_client):
         rows: list = []
 
         with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(rows)), \
              patch("cqc_lem.api.main.get_session_user_id", return_value=4):
-            response = client.post("/api/feedback", json={
+            response = api_client.post("/api/feedback", json={
                 "session_token": "sess-abc",
                 "body": "The Content tab throws a 500 when I approve a carousel",
                 "type_hint": "bug",
@@ -98,11 +90,11 @@ class TestFeedbackCapture:
         assert context["posthog_session_id"] == "ph-session-1"
         assert context["screenshot"] == "data:image/png;base64,AAAA"
 
-    def test_anonymous_submission_persists_with_null_user(self, client):
+    def test_anonymous_submission_persists_with_null_user(self, api_client):
         rows: list = []
 
         with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(rows)):
-            response = client.post("/api/feedback", json={"body": "Love the new dashboard",
+            response = api_client.post("/api/feedback", json={"body": "Love the new dashboard",
                                                           "type_hint": "praise"})
 
         assert response.status_code == 200

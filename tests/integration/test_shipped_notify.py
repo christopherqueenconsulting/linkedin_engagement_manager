@@ -154,14 +154,6 @@ class _FakeConn:
 
 
 @pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def store():
     """Two reporters (4 and 7) behind cluster/issue #498, plus one anonymous report, one report
     attached to the seed by `cluster_id` only (the issue number never propagated to it), and one
@@ -206,11 +198,11 @@ def _run_pass(store):
         return process_shipped_fixes()
 
 
-def _call(client, store, method, path, **kwargs):
+def _call(api_client, store, method, path, **kwargs):
     with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda *a, **k: _FakeConn(store)), \
          patch("cqc_lem.api.main.get_session_user_id", return_value=4), \
          patch("cqc_lem.utilities.observability.posthog"):
-        return getattr(client, method)(path, **kwargs)
+        return getattr(api_client, method)(path, **kwargs)
 
 
 class TestShippedNotifyLoop:
@@ -236,18 +228,18 @@ class TestShippedNotifyLoop:
         assert _emails(store) == []
         assert len(store["notices"]) == 1  # one changelog line per shipped issue
 
-    def test_the_micro_csat_waits_until_the_reporter_has_had_the_fix(self, client, store):
+    def test_the_micro_csat_waits_until_the_reporter_has_had_the_fix(self, api_client, store):
         _run_pass(store)
         store["recipients"][(1, 4)]["notified_at"] = datetime.now()  # notified just now
 
         with patch.dict("os.environ", {"FEEDBACK_FIX_CSAT_DELAY_HOURS": "24"}):
-            detail = _call(client, store, "get",
+            detail = _call(api_client, store, "get",
                            "/api/user/shipped?session_token=sess").json()["detail"]
         assert detail["notices"] == []
         # The changelog itself is public — only the ASK is scheduled.
         assert detail["changelog"][0]["issue_number"] == 498
 
-    def test_an_ack_inside_the_delay_cannot_burn_the_notice(self, client, store):
+    def test_an_ack_inside_the_delay_cannot_burn_the_notice(self, api_client, store):
         """The ack endpoint applies the SAME delay gate as the GET — otherwise a client could ack
         (and CSAT) a notice it was never shown, and the notice would never surface afterwards.
         """
@@ -255,7 +247,7 @@ class TestShippedNotifyLoop:
         store["recipients"][(1, 4)]["notified_at"] = datetime.now()  # notified just now
 
         with patch.dict("os.environ", {"FEEDBACK_FIX_CSAT_DELAY_HOURS": "24"}):
-            ack = _call(client, store, "post", "/api/shipped/ack", json={
+            ack = _call(api_client, store, "post", "/api/shipped/ack", json={
                 "session_token": "sess", "notice_id": 1, "resolved": True})
         assert ack.status_code == 404
         assert store["recipients"][(1, 4)]["seen_at"] is None
@@ -263,22 +255,22 @@ class TestShippedNotifyLoop:
         # Once the delay has elapsed the very same notice is surfaced and ackable.
         store["recipients"][(1, 4)]["notified_at"] = datetime.now() - timedelta(hours=30)
         with patch.dict("os.environ", {"FEEDBACK_FIX_CSAT_DELAY_HOURS": "24"}):
-            detail = _call(client, store, "get",
+            detail = _call(api_client, store, "get",
                            "/api/user/shipped?session_token=sess").json()["detail"]
             assert detail["notices"][0]["id"] == 1
-            assert _call(client, store, "post", "/api/shipped/ack", json={
+            assert _call(api_client, store, "post", "/api/shipped/ack", json={
                 "session_token": "sess", "notice_id": 1, "resolved": True}).status_code == 200
 
-    def test_a_not_fixed_answer_re_enters_the_auto_work_loop(self, client, store):
+    def test_a_not_fixed_answer_re_enters_the_auto_work_loop(self, api_client, store):
         _run_pass(store)
 
         with patch.dict("os.environ", {"FEEDBACK_FIX_CSAT_DELAY_HOURS": "24"}):
-            detail = _call(client, store, "get",
+            detail = _call(api_client, store, "get",
                            "/api/user/shipped?session_token=sess").json()["detail"]
         notice = detail["notices"][0]
         assert notice["changelog_line"] == "**Fixed:** Comments now post reliably (#498, PR #539)"
 
-        ack = _call(client, store, "post", "/api/shipped/ack", json={
+        ack = _call(api_client, store, "post", "/api/shipped/ack", json={
             "session_token": "sess", "notice_id": notice["id"], "resolved": False,
             "comment": "still nothing on mobile"})
         assert ack.status_code == 200
@@ -295,16 +287,16 @@ class TestShippedNotifyLoop:
         assert "fix_csat_498" in store["prompts"]
 
         # The notice is spent — the same user is not asked twice.
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/shipped?session_token=sess").json()["detail"]
         assert detail["notices"] == []
 
-    def test_a_fixed_answer_is_stored_resolved_and_never_re_classified(self, client, store):
+    def test_a_fixed_answer_is_stored_resolved_and_never_re_classified(self, api_client, store):
         _run_pass(store)
-        detail = _call(client, store, "get",
+        detail = _call(api_client, store, "get",
                        "/api/user/shipped?session_token=sess").json()["detail"]
 
-        _call(client, store, "post", "/api/shipped/ack", json={
+        _call(api_client, store, "post", "/api/shipped/ack", json={
             "session_token": "sess", "notice_id": detail["notices"][0]["id"], "resolved": True})
 
         row = store["feedback"][-1]

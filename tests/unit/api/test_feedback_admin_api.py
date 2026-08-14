@@ -32,28 +32,6 @@ def _auth_hardening_side_effects():
         yield
 
 
-@pytest.fixture(scope="module")
-def client():
-    patches = [
-        patch("cqc_lem.utilities.observability.track_api_call"),
-        patch("cqc_lem.app.engagement.invites.automate_invites_to_company_page_for_user"),
-        patch("cqc_lem.app.engagement.posting.automate_reply_commenting"),
-        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
-        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        from fastapi.testclient import TestClient
-
-        from cqc_lem.api.main import app
-        with TestClient(app, raise_server_exceptions=False) as tc:
-            yield tc
-    finally:
-        for p in patches:
-            p.stop()
-
-
 _ADMIN_USER = {"id": 7, "email": "admin@example.com", "is_admin": True}
 _NON_ADMIN_USER = {"id": 8, "email": "user@example.com", "is_admin": False}
 
@@ -88,17 +66,17 @@ def _classification():
 
 
 class TestListFeedback:
-    def test_forbidden_for_non_admin(self, client):
+    def test_forbidden_for_non_admin(self, api_client):
         with _auth(_NON_ADMIN_USER)["get_session"], _auth(_NON_ADMIN_USER)["is_admin"]:
-            r = client.get("/api/admin/feedback", params={"session_token": "tok"})
+            r = api_client.get("/api/admin/feedback", params={"session_token": "tok"})
         assert r.status_code == 403
 
-    def test_401_for_invalid_session(self, client):
+    def test_401_for_invalid_session(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
-            r = client.get("/api/admin/feedback", params={"session_token": "bad"})
+            r = api_client.get("/api/admin/feedback", params={"session_token": "bad"})
         assert r.status_code == 401
 
-    def test_returns_items_for_admin(self, client):
+    def test_returns_items_for_admin(self, api_client):
         row = {
             "id": 1, "user_id": 2, "email": "user@x.com", "is_admin": 0,
             "source": "widget", "type_hint": "bug", "body": "broken",
@@ -109,7 +87,7 @@ class TestListFeedback:
         }
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_list", return_value=[row]) as lister:
-            r = client.get("/api/admin/feedback", params={
+            r = api_client.get("/api/admin/feedback", params={
                 "session_token": "tok", "status": "new", "source": "widget",
                 "limit": 10, "offset": 5,
             })
@@ -118,31 +96,31 @@ class TestListFeedback:
         assert r.json()["detail"]["items"][0]["is_admin_reporter"] is False
         lister.assert_called_once_with(status="new", source="widget", limit=10, offset=5)
 
-    def test_no_session_param_is_422(self, client):
+    def test_no_session_param_is_422(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"]:
-            r = client.get("/api/admin/feedback")
+            r = api_client.get("/api/admin/feedback")
         assert r.status_code == 422
 
 
 class TestReviewFeedback:
-    def test_dismiss_action_for_admin(self, client):
+    def test_dismiss_action_for_admin(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 3}), \
              patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True) as recorder:
-            r = client.post("/api/admin/feedback/3/review", json={
+            r = api_client.post("/api/admin/feedback/3/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
         assert r.status_code == 200
         assert r.json()["detail"]["action"] == "dismissed"
         recorder.assert_called_once_with(3, 7, status="dismissed")
 
-    def test_approve_action_runs_filer_and_records_reviewer(self, client):
+    def test_approve_action_runs_filer_and_records_reviewer(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 5}), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
                    return_value={"action": "filed", "issue_number": 101}) as filer, \
              patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True) as recorder:
-            r = client.post("/api/admin/feedback/5/review", json={
+            r = api_client.post("/api/admin/feedback/5/review", json={
                 "session_token": "tok", "action": "approve",
             })
         assert r.status_code == 200
@@ -153,18 +131,18 @@ class TestReviewFeedback:
         filer.assert_called_once_with({"id": 5}, admin_approved=True)
         recorder.assert_called_once_with(5, 7)
 
-    def test_deduped_approve_still_counts_as_filed(self, client):
+    def test_deduped_approve_still_counts_as_filed(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value={"id": 6}), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
                    return_value={"action": "deduped", "issue_number": 77}), \
              patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True):
-            r = client.post("/api/admin/feedback/6/review", json={
+            r = api_client.post("/api/admin/feedback/6/review", json={
                 "session_token": "tok", "action": "approve",
             })
         assert r.json()["detail"]["filed"] is True
 
-    def test_approve_that_reached_no_issue_says_so(self, client):
+    def test_approve_that_reached_no_issue_says_so(self, api_client):
         """The 200 only means the review was recorded.
 
         A GitHub failure changes NOTHING else, so without `filed` the panel cannot tell it apart
@@ -175,14 +153,14 @@ class TestReviewFeedback:
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue",
                    return_value={"action": "error", "reason": "issue creation failed"}), \
              patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True):
-            r = client.post("/api/admin/feedback/12/review", json={
+            r = api_client.post("/api/admin/feedback/12/review", json={
                 "session_token": "tok", "action": "approve",
             })
         assert r.status_code == 200
         assert r.json()["detail"]["filed"] is False
         assert r.json()["detail"]["filing_result"]["action"] == "error"
 
-    def test_already_filed_row_cannot_be_re_approved(self, client):
+    def test_already_filed_row_cannot_be_re_approved(self, api_client):
         """A filed row IS its own open cluster.
 
         Re-running the filer would match it to itself and post a false "+1 another report" on the
@@ -193,62 +171,62 @@ class TestReviewFeedback:
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=row), \
              patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue") as filer, \
              patch("cqc_lem.api.routers.admin.record_feedback_review") as recorder:
-            r = client.post("/api/admin/feedback/9/review", json={
+            r = api_client.post("/api/admin/feedback/9/review", json={
                 "session_token": "tok", "action": "approve",
             })
         assert r.status_code == 409
         filer.assert_not_called()
         recorder.assert_not_called()
 
-    def test_already_clustered_row_cannot_be_dismissed(self, client):
+    def test_already_clustered_row_cannot_be_dismissed(self, api_client):
         row = {"id": 10, "status": "clustered", "github_issue_number": None}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=row), \
              patch("cqc_lem.api.routers.admin.record_feedback_review") as recorder:
-            r = client.post("/api/admin/feedback/10/review", json={
+            r = api_client.post("/api/admin/feedback/10/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
         assert r.status_code == 409
         recorder.assert_not_called()
 
-    def test_new_row_is_still_reviewable(self, client):
+    def test_new_row_is_still_reviewable(self, api_client):
         row = {"id": 11, "status": "new", "github_issue_number": None}
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=row), \
              patch("cqc_lem.api.routers.admin.record_feedback_review", return_value=True):
-            r = client.post("/api/admin/feedback/11/review", json={
+            r = api_client.post("/api/admin/feedback/11/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
         assert r.status_code == 200
 
-    def test_404_when_feedback_row_missing(self, client):
+    def test_404_when_feedback_row_missing(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
              patch("cqc_lem.api.routers.admin.get_feedback_by_id", return_value=None):
-            r = client.post("/api/admin/feedback/99/review", json={
+            r = api_client.post("/api/admin/feedback/99/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
         assert r.status_code == 404
 
-    def test_forbidden_for_non_admin(self, client):
+    def test_forbidden_for_non_admin(self, api_client):
         with _auth(_NON_ADMIN_USER)["get_session"], _auth(_NON_ADMIN_USER)["is_admin"]:
-            r = client.post("/api/admin/feedback/1/review", json={
+            r = api_client.post("/api/admin/feedback/1/review", json={
                 "session_token": "tok", "action": "dismiss",
             })
         assert r.status_code == 403
 
-    def test_invalid_action_is_422(self, client):
+    def test_invalid_action_is_422(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"]:
-            r = client.post("/api/admin/feedback/1/review", json={
+            r = api_client.post("/api/admin/feedback/1/review", json={
                 "session_token": "tok", "action": "banish",
             })
         assert r.status_code == 422
 
-    def test_missing_session_is_422(self, client):
+    def test_missing_session_is_422(self, api_client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"]:
-            r = client.post("/api/admin/feedback/1/review", json={"action": "dismiss"})
+            r = api_client.post("/api/admin/feedback/1/review", json={"action": "dismiss"})
         assert r.status_code == 422
 
-    def test_approve_persists_issue_created_and_list_reflects_it(self, client):
+    def test_approve_persists_issue_created_and_list_reflects_it(self, api_client):
         """Issue #1070: the issue-filed transition must persist the triage status.
 
         The feedback list endpoint must return it, and the SPA derives its buttons from that
@@ -333,13 +311,13 @@ class TestReviewFeedback:
              patch("cqc_lem.utilities.db.datetime") as dt_mock:
             dt_mock.now.return_value = datetime(2026, 8, 7, 23, 0, 0, tzinfo=timezone.utc)
 
-            r1 = client.post("/api/admin/feedback/5/review", json={
+            r1 = api_client.post("/api/admin/feedback/5/review", json={
                 "session_token": "tok", "action": "approve",
             })
             assert r1.status_code == 200
             assert r1.json()["detail"]["filed"] is True
 
-            r2 = client.get("/api/admin/feedback", params={"session_token": "tok"})
+            r2 = api_client.get("/api/admin/feedback", params={"session_token": "tok"})
             assert r2.status_code == 200
             item = r2.json()["detail"]["items"][0]
             assert item["status"] == "issue_created"
@@ -348,7 +326,7 @@ class TestReviewFeedback:
 
 
 class TestSessionExposesAdminFlag:
-    def test_auth_session_includes_is_admin(self, client):
+    def test_auth_session_includes_is_admin(self, api_client):
         profile = {
             "subscription_tier": "professional",
             "subscription_status": "active",
@@ -361,6 +339,6 @@ class TestSessionExposesAdminFlag:
              patch("cqc_lem.api.routers.auth.get_user_email", return_value="admin@x.com"), \
              patch("cqc_lem.api.routers.auth.get_user_analytics_profile", return_value=profile), \
              patch("cqc_lem.api.routers.auth.is_user_admin", return_value=True):
-            r = client.get("/api/auth/session", params={"session_token": "tok"})
+            r = api_client.get("/api/auth/session", params={"session_token": "tok"})
         assert r.status_code == 200
         assert r.json()["detail"]["is_admin"] is True

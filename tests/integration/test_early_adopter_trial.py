@@ -133,27 +133,19 @@ class _Conn:
         pass
 
 
-@pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _extend(client, store, user_id, p0=25, p1=100):
+def _extend(api_client, store, user_id, p0=25, p1=100):
     with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda: _Conn(store)), \
             patch(f"{_MAIN}.get_session_user_id", return_value=user_id), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_ENABLED", True), \
             patch(f"{_ENV}.EARLY_ADOPTER_TRIAL_DAYS", 60), \
             patch(f"{_ENV}.EARLY_ADOPTER_P0_SLOTS", p0), \
             patch(f"{_ENV}.EARLY_ADOPTER_P1_SLOTS", p1):
-        return client.post("/api/trial/extend", json={"session_token": f"tok{user_id}"})
+        return api_client.post("/api/trial/extend", json={"session_token": f"tok{user_id}"})
 
 
-def test_review_gate_blocks_the_extension(client):
+def test_review_gate_blocks_the_extension(api_client):
     store = _Store(user_ids=[1], reviewers=[])
-    resp = _extend(client, store, 1)
+    resp = _extend(api_client, store, 1)
 
     assert resp.status_code == 200
     detail = resp.json()["detail"]
@@ -163,22 +155,22 @@ def test_review_gate_blocks_the_extension(client):
     assert store.users[1]["trial_ends_at"] == STARTED + timedelta(days=14)
 
 
-def test_review_unlocks_60_days_and_is_idempotent(client):
+def test_review_unlocks_60_days_and_is_idempotent(api_client):
     store = _Store(user_ids=[1], reviewers=[1])
 
-    detail = _extend(client, store, 1).json()["detail"]
+    detail = _extend(api_client, store, 1).json()["detail"]
     assert detail["granted"] is True
     assert detail["cohort"] == "P0" and detail["trial_days"] == 60
     assert store.users[1]["trial_ends_at"] == STARTED + timedelta(days=60)
     assert store.grants[1]["feedback_id"] == 101  # the review row that unlocked it
     assert store.slots["P0"] == 1
 
-    again = _extend(client, store, 1).json()["detail"]
+    again = _extend(api_client, store, 1).json()["detail"]
     assert again["granted"] is True and again["reason"] == "already_granted"
     assert store.slots["P0"] == 1  # no second slot consumed
 
 
-def test_cohort_counter_is_atomic_under_concurrency(client):
+def test_cohort_counter_is_atomic_under_concurrency(api_client):
     """8 simultaneous claims against a 2-seat cohort must produce exactly 2 grants."""
     user_ids = list(range(1, 9))
     store = _Store(user_ids=user_ids, reviewers=user_ids)
@@ -210,12 +202,12 @@ def test_cohort_counter_is_atomic_under_concurrency(client):
     assert all(r.detail["reason"] == "slots_exhausted" for r in results if not r.detail["granted"])
 
 
-def test_conversion_mirrors_the_remaining_trial_into_stripe(client):
+def test_conversion_mirrors_the_remaining_trial_into_stripe(api_client):
     store = _Store(user_ids=[1], reviewers=[1])
     # Trial started today so the grant still has ~60 days left to carry into Stripe.
     store.users[1]["trial_started_at"] = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=10)
     store.users[1]["trial_ends_at"] = None
-    assert _extend(client, store, 1).json()["detail"]["granted"] is True
+    assert _extend(api_client, store, 1).json()["detail"]["granted"] is True
 
     with patch("cqc_lem.platform.db.connection.get_db_connection", side_effect=lambda: _Conn(store)), \
             patch(f"{_MAIN}.get_session_user_id", return_value=1), \
@@ -225,7 +217,7 @@ def test_conversion_mirrors_the_remaining_trial_into_stripe(client):
                                 "subscription_status": "trial"}), \
             patch("cqc_lem.utilities.stripe_util.create_checkout_session",
                   return_value="https://checkout.stripe.com/x") as create:
-        resp = client.post("/api/billing/create-checkout-session",
+        resp = api_client.post("/api/billing/create-checkout-session",
                            json={"session_token": "tok1", "tier": "starter",
                                  "success_url": "https://e.com/s", "cancel_url": "https://e.com/c"})
 

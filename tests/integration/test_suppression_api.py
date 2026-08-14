@@ -90,71 +90,63 @@ def _history(baseline: int, recent: int) -> list:
             + [_stat_row(10 + i, recent) for i in range(3)])
 
 
-@pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _run(client, rows, redis, method="get"):
+def _run(api_client, rows, redis, method="get"):
     with patch(f"{_M}.get_session_user_id", return_value=42), \
          patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_FakeConnection(rows)), \
          patch(f"{_RL}._redis_client", return_value=redis):
         if method == "get":
-            response = client.get("/api/user/automation-status?session_token=t")
+            response = api_client.get("/api/user/automation-status?session_token=t")
         else:
-            response = client.post("/api/user/automation-resume", json={"session_token": "t"})
+            response = api_client.post("/api/user/automation-resume", json={"session_token": "t"})
     assert response.status_code == 200
     return response.json()["detail"]
 
 
-def test_healthy_history_reports_no_trip(client):
-    detail = _run(client, _history(8500, 8400), _FakeRedis())
+def test_healthy_history_reports_no_trip(api_client):
+    detail = _run(api_client, _history(8500, 8400), _FakeRedis())
     assert detail["tripped"] is False
     assert detail["current"]["status"] == "ok"
     assert detail["engagement_paused"] is False
 
 
-def test_a_collapse_is_detected_from_raw_post_stats(client):
-    detail = _run(client, _history(8500, 340), _FakeRedis())
+def test_a_collapse_is_detected_from_raw_post_stats(api_client):
+    detail = _run(api_client, _history(8500, 340), _FakeRedis())
     assert detail["current"]["tripped"] is True
     reach = next(s for s in detail["current"]["signals"] if s["name"] == "reach_collapse")
     assert reach["baseline"] == 8500
 
 
-def test_re_enabling_clears_the_trip_and_lifts_only_our_pause(client):
+def test_re_enabling_clears_the_trip_and_lifts_only_our_pause(api_client):
     from cqc_lem.utilities.linkedin import rate_limit as rl
     redis = _FakeRedis()
     with patch(f"{_RL}._redis_client", return_value=redis):
         rl.record_suppression_trip(42, "reach collapse", detail={"status": "tripped"})
         rl.pause_automation(600, reason=rl.suppression_pause_reason(42))
 
-    tripped = _run(client, _history(8500, 340), redis)
+    tripped = _run(api_client, _history(8500, 340), redis)
     assert tripped["tripped"] is True and tripped["pause_by_tripwire"] is True
 
-    resumed = _run(client, _history(8500, 8400), redis, method="post")
+    resumed = _run(api_client, _history(8500, 8400), redis, method="post")
     assert resumed["cleared"] is True and resumed["resumed"] is True
     assert resumed["tripped"] is False
     assert "linkedin:suppression_trip:42" not in redis.store
     assert "linkedin:automation_paused" not in redis.store
 
 
-def test_re_enabling_leaves_a_foreign_pause_alone(client):
+def test_re_enabling_leaves_a_foreign_pause_alone(api_client):
     from cqc_lem.utilities.linkedin import rate_limit as rl
     redis = _FakeRedis()
     with patch(f"{_RL}._redis_client", return_value=redis):
         rl.record_suppression_trip(42, "reach collapse")
         rl.pause_automation(600, reason="maintenance")
 
-    detail = _run(client, _history(8500, 8400), redis, method="post")
+    detail = _run(api_client, _history(8500, 8400), redis, method="post")
     assert detail["cleared"] is True and detail["resumed"] is False
     assert redis.store["linkedin:automation_paused"] == "maintenance"
 
 
-def test_requires_a_valid_session(client):
+def test_requires_a_valid_session(api_client):
     with patch(f"{_M}.get_session_user_id", return_value=None):
-        assert client.get("/api/user/automation-status?session_token=x").status_code == 401
-        assert client.post("/api/user/automation-resume",
+        assert api_client.get("/api/user/automation-status?session_token=x").status_code == 401
+        assert api_client.post("/api/user/automation-resume",
                            json={"session_token": "x"}).status_code == 401

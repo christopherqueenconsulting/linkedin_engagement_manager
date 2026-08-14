@@ -72,15 +72,7 @@ class _FakeConn:
         pass
 
 
-@pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    from cqc_lem.api.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _get(client, store, *, session, voice, approved, posted, engaged, trial_ends_at=None):
+def _get(api_client, store, *, session, voice, approved, posted, engaged, trial_ends_at=None):
     """Call the endpoint with the checklist EVIDENCE stubbed but state persistence real."""
     prefs = {"tone": "friendly" if voice else None, "comment_style": None, "focus_topics": [],
              "include_topics": [], "max_comments_per_day": 20, "max_dms_per_day": 20}
@@ -99,15 +91,15 @@ def _get(client, store, *, session, voice, approved, posted, engaged, trial_ends
          patch("cqc_lem.utilities.onboarding.get_user_subscription_info",
                return_value={"trial_ends_at": trial_ends_at}), \
          patch("cqc_lem.utilities.observability.track_onboarding_step") as track:
-        response = client.get("/api/user/onboarding?session_token=sess-abc")
+        response = api_client.get("/api/user/onboarding?session_token=sess-abc")
     return response, track
 
 
 class TestOnboardingChecklistEndpoint:
-    def test_steps_persist_once_and_the_next_nudge_surfaces(self, client):
+    def test_steps_persist_once_and_the_next_nudge_surfaces(self, api_client):
         store = {"state": None, "nudges": {}, "started_at": datetime.now() - timedelta(days=3)}
 
-        response, track = _get(client, store, session=True, voice=False, approved=False,
+        response, track = _get(api_client, store, session=True, voice=False, approved=False,
                                posted=False, engaged=False)
 
         assert response.status_code == 200
@@ -127,15 +119,15 @@ class TestOnboardingChecklistEndpoint:
         assert {c.args[1] for c in track.call_args_list} == {"linkedin_connected", "caps_enabled"}
 
         # A second read re-derives the same truth but must not re-emit the event.
-        response2, track2 = _get(client, store, session=True, voice=False, approved=False,
+        response2, track2 = _get(api_client, store, session=True, voice=False, approved=False,
                                  posted=False, engaged=False)
         assert response2.json()["detail"]["steps"][0]["ok"] is True
         assert track2.call_count == 0
 
-    def test_activation_clears_the_checklist_and_stops_nudging(self, client):
+    def test_activation_clears_the_checklist_and_stops_nudging(self, api_client):
         store = {"state": None, "nudges": {}, "started_at": datetime.now() - timedelta(days=6)}
 
-        response, _track = _get(client, store, session=True, voice=True, approved=True,
+        response, _track = _get(api_client, store, session=True, voice=True, approved=True,
                                 posted=True, engaged=True,
                                 trial_ends_at=datetime.now() + timedelta(days=1))
 
