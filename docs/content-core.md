@@ -206,6 +206,26 @@ newsletter editions AND group posts after humanization.
 
 ### HARD checks (regenerated up to `SLOP_LINT_MAX_ATTEMPTS`, then BLOCK)
 
+The budget is read PER SURFACE since #1434 — `SLOP_LINT_MAX_ATTEMPTS_<SURFACE>` beats the global
+value, because what one more attempt costs belongs to the surface (an edition is a `lem-complex`
+call, a feed comment a `lem-medium` one at volume). Every surface still defaults to **2**, i.e. one
+regeneration. Every loop resolves the budget for the surface it is drafting, so the knob is real on
+the short-form surfaces (`lint_repaired`) and the affiliate promo draft too, not only on the
+newsletter.
+
+Two rules travel with it, and **both are newsletter-only today** (#1536 widens them): the retry is a
+fresh draft rather than an edit, so `keep_retry` keeps whichever of the two ranks better on (HARD
+count, total violations) instead of taking the newer one blind — on the newsletter, where the
+structural floor (#1435) steers the same retry, the rank is (HARD count, structural failures, total
+violations) so a draft that fixed the floor is not thrown away for a WARN; and each regeneration emits
+`slop_retry` naming what it actually did (`cleared` / `traded` / `worsened` / `persisted` / `lost` /
+`unsteered`, plus whether the draft was `kept`) — the finished draft only shows what was still firing
+at the end, so without that event a retry that traded one check for another is invisible.
+`unsteered` is the newsletter's own case: the structural floor shares this budget, so a slop-clean
+edition can spend a regeneration with no HARD check to fix, and counting those as `cleared` would
+inflate the clear-rate the event was raised to measure. The other loops still take the newer draft
+blind and record nothing.
+
 - Banned lexicon pileup
 - The "it's not X, it's Y" contrastive frame
 - "Here's the kicker" ta-da transitions

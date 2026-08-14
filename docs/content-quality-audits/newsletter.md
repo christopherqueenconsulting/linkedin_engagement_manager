@@ -168,7 +168,7 @@ finding rather than a threshold on it — once editions carry a `similarity` val
 POOLED mean moves with the week's surface MIX, so `similarity_creep` is now graded on the
 per-surface split (`content_quality.mix_adjusted_similarity_delta`).
 
-### F10 — The HARD slop checks are not clearing on this surface → **#1434**
+### F10 — The HARD slop checks are not clearing on this surface → **#1434** *(answered below)*
 
 Seven of ten editions still trip a HARD check after the bounded regeneration (`contrastive_frame`
 ×5, `banned_lexicon` ×2), and a newsletter is returned anyway by design — it is drafted for human
@@ -176,6 +176,68 @@ review. That design is right; the number is not. With `SLOP_MAX_ATTEMPTS=2` the 
 ONE retry, and the retry is a full-edition regeneration whose new draft can trip a different check.
 Filed rather than fixed here: raising the attempt budget costs a `lem-complex` call per edition and
 needs the cost/benefit measured, not guessed.
+
+#### F10 answered (#1434): the clear-rate was not recoverable, and that is the finding
+
+**The measurement.** The clear-rate of the single regeneration **cannot be computed from anything
+that exists**, and the reason is structural rather than an access problem:
+
+* The corpus keeps the **last** draft only. A `posts`/newsletter row holds the edition the loop
+  ended on, so an edition that entered the retry, cleared `contrastive_frame` and came back with
+  `banned_lexicon` is byte-for-byte indistinguishable from one whose retry never moved.
+* The traces cannot fill the gap either. LiteLLM runs with `turn_off_message_logging: true`
+  (`.litellm/config.yaml`), so `$ai_input` / `$ai_output_choices` are redacted before any callback
+  sees them — no `$ai_generation` row carries the intermediate draft. There is no replay corpus.
+* The corpus cannot even say which editions entered the loop. The lint reached this surface in
+  `dc466773` (2026-07-26) and the sampled editions run from a 2026-07-07 slot, so an unknown number
+  of the ten were written when no regeneration existed to grade.
+
+What the corpus **does** bound: 7 of 10 editions ended on a HARD check, 3 ended clean. So a single
+regeneration cleared its check on **at most 3 of the editions that entered it, and possibly none** —
+the corpus cannot separate "the first draft was clean" from "the retry fixed it". That range is too
+wide to price a third `lem-complex` call against, which is exactly what the issue refused to guess
+at.
+
+**What shipped instead**, all of it at **$0.00 per edition — no additional LLM call on any path**:
+
+1. **The retry is now recorded.** One `slop_retry` event per regeneration carries
+   `outcome` ∈ {`cleared`, `traded`, `worsened`, `persisted`, `lost`, `unsteered`}, `kept` (whether
+   that draft survived — a `persisted` row can be the edition that shipped OR one that was
+   discarded, so the two are not the same reading), the HARD check names before and after, and
+   `attempt`/`max_attempts`. `traded` is broken out from `persisted` on purpose: it
+   is the failure mode a whole-draft rewrite has and a targeted edit does not, so its share is what
+   decides between "buy another attempt" and "stop rewriting the whole edition". `unsteered` is
+   broken out for the opposite reason: the structural floor (#1435) shares this budget, so an
+   edition that was slop-clean going in can spend a regeneration with no HARD check to fix, and
+   scoring those as `cleared` would inflate the very clear-rate #1530 reads off this event — grade
+   it over the steered rows (`hard_before > 0`). Check names only — a violation's `evidence` is
+   draft text.
+2. **The budget can no longer end on the worse of two drafts.** The loop took the newer draft
+   unconditionally, even when the rewrite came back carrying more violations than the one it
+   replaced. `slop_lint.keep_retry` ranks the two reports on (HARD count, total violations) and
+   keeps whichever is better, ties going to the retry. Both reports were already in hand; this
+   spends nothing. On the newsletter the rank carries a middle term — the structural floor (#1435)
+   steers the same retry off the same body, so the ordering is (HARD slop count, structural
+   failures, total violations). Without it the slop half alone would discard the draft that fixed
+   the other grader: a too-short first draft trips no slop check at all, so a full-length
+   replacement carrying one WARN ranks worse on slop and better on everything it was asked for.
+3. **The attempt budget is now per-surface** (`SLOP_LINT_MAX_ATTEMPTS_<SURFACE>`, resolved ahead of
+   the global `SLOP_LINT_MAX_ATTEMPTS`), because what an attempt costs is a property of the surface:
+   an edition is a `lem-complex` call on a weekly cadence, a feed comment a `lem-medium` call at
+   volume. **The newsletter default is unchanged at 2.** Raising it is one env value once the
+   `slop_retry` rows exist, and raising it without them would be the guess the issue ruled out.
+
+**Scoped to this surface:** the recording and the keep-the-better-draft rule are the NEWSLETTER
+loop's only. `lint_repaired` (seed comments, replies, DMs) and the affiliate promo draft run the
+same bounded retry, still take the newer draft blind, and emit nothing — the same two defects, on
+higher-volume surfaces with no review queue behind them. Only the per-surface budget was widened
+here, because that one is a config read with no behaviour change. Widening the other two is
+**#1536**.
+
+**Still open:** the number itself. Re-run this reading once `slop_retry` has covered a full
+newsletter cycle — if `cleared` dominates, buy the third attempt; if `traded` dominates, the retry
+directive needs to edit the offending sentences rather than re-author the edition, and no attempt
+budget will fix it. Tracked as **#1530**.
 
 ### Findings carried forward from #1142
 

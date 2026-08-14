@@ -850,3 +850,140 @@ class TestStructureFailuresFeedTheBoundedRegeneration:
              patch(f"{_AI}.flag_enabled", return_value=False):
             edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
         assert call.call_count == 1 and edition["body"] == "Too short."
+
+    def test_a_retry_that_fixed_the_floor_survives_the_keep_rule(self, monkeypatch):
+        """The #1434 keep rule ranks slop reports; both graders steer THIS retry (#1435).
+
+        A too-short first draft trips no slop check at all, so a full-length replacement carrying a
+        single WARN ranks worse on slop alone — ranking on slop alone would discard the only draft
+        that cleared the floor and hand back the two-word one.
+        """
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper, slop_lint as _slop
+        good = _clean_edition_body()
+        assert _slop.lint_report(good, "newsletter")["violations"], (
+            "this fixture must carry a WARN for the test to mean anything")
+        assert not _slop.lint_report("Too short.", "newsletter")["violations"]
+        with patch(f"{_AI}._call_llm",
+                   side_effect=[_resp(self._payload("Too short.")), _resp(self._payload(good))]), \
+             patch(f"{_AI}.flag_enabled", return_value=False), \
+             patch(f"{_AI}.track_slop_retry") as track:
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition["body"].startswith("A short opening line")
+        assert track.call_args.kwargs["kept"] is True
+        # And the row says the slop lint steered nothing here: this regeneration was the structural
+        # floor's, so counting it `cleared` would inflate the clear-rate #1530 reads (issue #1434).
+        assert track.call_args.args[1] == _slop.RETRY_UNSTEERED
+
+
+class TestNewsletterSlopRetry:
+    """The bounded regeneration's own behaviour (issue #1434).
+
+    The retry is a fresh full draft, not an edit, so it can come back carrying MORE than the draft
+    it replaced — and the stored edition shows only what was still firing at the end, which is why
+    the outcome of each regeneration is recorded rather than inferred later.
+
+    The structural floor (#1435) shares this budget and is graded off the same body, so it is turned
+    OFF here: these drafts are short by design (one sentence carrying one violation), and leaving the
+    other grader on would fail every one of them for word count and stop the slop lint being what
+    decided anything. `TestStructureFailuresFeedTheBoundedRegeneration` covers the shared budget.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _structure_off(self, monkeypatch):
+        monkeypatch.setenv("NEWSLETTER_STRUCTURE_ENABLED", "off")
+
+    # One HARD check (contrastive_frame).
+    _ONE_HARD = ("It is not just tooling, it is a mindset. We shipped the importer on a Tuesday "
+                 "and it held.")
+    # The same frame PLUS a lexicon pileup — strictly worse than the draft it would replace.
+    _TWO_HARD = ("It is not just tooling, it is a mindset. We leverage a robust ecosystem to "
+                 "unlock value.")
+    _CLEAN = "We shipped the importer on a Tuesday morning and it held through the quarter close."
+
+    def _edition(self, body):
+        return _resp(json.dumps({"title": "A specific title", "subtitle": "why to read it",
+                                 "subject": "the subject", "body": body}))
+
+    def _run(self, bodies, **kwargs):
+        from cqc_lem.utilities.ai import ai_helper
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm", side_effect=[self._edition(b) for b in bodies]) as call, \
+             patch(f"{_AI}.track_slop_retry") as track:
+            out = ai_helper.generate_newsletter_edition(prof, topic="ops", **kwargs)
+        return out, call, track
+
+    def test_a_retry_that_came_back_worse_is_not_kept(self):
+        out, call, _ = self._run([self._ONE_HARD, self._TWO_HARD])
+        assert call.call_count == 2
+        assert out["body"] == self._ONE_HARD, (
+            "the newer draft carried both violations — keeping it ships the worse of the two")
+
+    def test_a_retry_that_cleared_the_check_is_kept(self):
+        out, call, _ = self._run([self._ONE_HARD, self._CLEAN])
+        assert call.call_count == 2 and out["body"] == self._CLEAN
+
+    def test_a_clean_first_draft_costs_one_call_and_reports_no_retry(self):
+        out, call, track = self._run([self._CLEAN])
+        assert call.call_count == 1 and out["body"] == self._CLEAN
+        track.assert_not_called()
+
+    def test_the_outcome_of_each_regeneration_is_recorded(self):
+        from cqc_lem.utilities.ai import slop_lint as _slop
+        _, _, track = self._run([self._ONE_HARD, self._CLEAN])
+        assert track.call_args.args[0] == "newsletter"
+        assert track.call_args.args[1] == _slop.RETRY_CLEARED
+        assert track.call_args.kwargs["attempt"] == 2
+        assert track.call_args.kwargs["max_attempts"] == 2
+
+    def test_a_rewrite_that_adds_a_violation_is_recorded_as_worsened(self):
+        from cqc_lem.utilities.ai import slop_lint as _slop
+        _, _, track = self._run([self._ONE_HARD, self._TWO_HARD])
+        assert track.call_args.args[1] == _slop.RETRY_WORSENED
+
+    def test_whether_the_retry_survived_travels_with_the_outcome(self):
+        # The event grades the regeneration; `kept` is what says whether the call bought anything,
+        # and a discarded draft's outcome would otherwise read as the edition that shipped.
+        _, _, kept_track = self._run([self._ONE_HARD, self._CLEAN])
+        assert kept_track.call_args.kwargs["kept"] is True
+        _, _, dropped_track = self._run([self._ONE_HARD, self._TWO_HARD])
+        assert dropped_track.call_args.kwargs["kept"] is False
+
+    def test_an_empty_regeneration_is_never_recorded_as_kept(self):
+        from cqc_lem.utilities.ai import ai_helper
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm", side_effect=[self._edition(self._ONE_HARD), _resp("")]), \
+             patch(f"{_AI}.track_slop_retry") as track:
+            ai_helper.generate_newsletter_edition(prof, topic="ops")
+        assert track.call_args.kwargs["kept"] is False
+
+    def test_an_empty_regeneration_is_recorded_and_keeps_the_first_draft(self):
+        from cqc_lem.utilities.ai import ai_helper, slop_lint as _slop
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        empty = _resp("")
+        with patch(f"{_AI}._call_llm", side_effect=[self._edition(self._ONE_HARD), empty]), \
+             patch(f"{_AI}.track_slop_retry") as track:
+            out = ai_helper.generate_newsletter_edition(prof, topic="ops")
+        assert out["body"] == self._ONE_HARD
+        assert track.call_args.args[1] == _slop.RETRY_LOST
+
+    def test_a_still_failing_edition_is_returned_with_the_patterns_named(self):
+        from cqc_lem.utilities.ai import ai_helper
+        prof = MagicMock()
+        prof.model_dump_json.return_value = "{}"
+        with patch(f"{_AI}._call_llm",
+                   side_effect=[self._edition(self._ONE_HARD)] * 2), \
+             patch(f"{_AI}.track_slop_retry"), patch(f"{_AI}.log_warning") as warn:
+            out = ai_helper.generate_newsletter_edition(prof, topic="ops")
+        assert out["body"] == self._ONE_HARD
+        assert "contrastive_frame" in warn.call_args.args[0]
+
+    def test_the_newsletter_attempt_budget_is_its_own(self, monkeypatch):
+        monkeypatch.setenv("SLOP_LINT_MAX_ATTEMPTS_NEWSLETTER", "3")
+        _, call, track = self._run([self._ONE_HARD] * 3)
+        assert call.call_count == 3
+        assert [c.kwargs["max_attempts"] for c in track.call_args_list] == [3, 3]
+        assert [c.kwargs["attempt"] for c in track.call_args_list] == [2, 3]
