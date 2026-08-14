@@ -1003,6 +1003,26 @@ class TestGroupMediaTranscodeWait:
         assert all(w is not session_wait for w in poll_waits)
         assert all(w._timeout == _CONFIRM_LOOKUP_SECONDS for w in poll_waits)
 
+    def test_the_poll_only_accepts_a_control_that_is_actually_on_screen(self):
+        """`visible_only`, the way `click_first` (which this replaced) asks for it.
+
+        LinkedIn ships hidden duplicates of a control and the locator chain's last two entries are
+        page-wide, so a hidden `Next` can match. A hidden button reads as ENABLED — nothing about
+        `is_enabled()` or `aria-disabled` says it is on screen — so the poll would call it ready and
+        click it, and a click on a non-displayed element raises. That lands in the attach failure
+        path: `left_open`, a warning, and the week's group post never published.
+        """
+        from cqc_lem.app.engagement.feed import _IMAGE_READY_POLLS, _attach_group_media
+        with patch(f"{_FEED}.post_media_abs_path", return_value="/assets/i.png"), \
+             patch(f"{_FEED}.click_first", return_value=MagicMock()), \
+             patch(f"{_FEED}.find_first",
+                   side_effect=[MagicMock()] + [None] * _IMAGE_READY_POLLS) as looked:
+            _attach_group_media(MagicMock(), MagicMock(), self._url(), user_id=1,
+                                media_type="image")
+        polls = looked.call_args_list[1:]
+        assert len(polls) == _IMAGE_READY_POLLS
+        assert all(call.kwargs.get("visible_only") is True for call in polls)
+
     def test_the_video_window_is_minutes_of_real_clock(self):
         """The transcode this exists for takes minutes, so the poll count has to buy minutes.
 

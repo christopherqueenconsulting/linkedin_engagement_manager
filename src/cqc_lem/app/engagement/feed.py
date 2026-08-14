@@ -3325,7 +3325,7 @@ _CONFIRM_ABSENT = "absent"
 _CONFIRM_BUSY = "busy"
 
 
-def _media_control_ready(element) -> bool:
+def _media_control_ready(element: WebElement) -> bool:
     """Is the media overlay's commit control actually clickable, or still disabled by an upload?
 
     Both readings matter: LinkedIn disables the button outright while an image uploads and marks it
@@ -3339,7 +3339,7 @@ def _media_control_ready(element) -> bool:
         return False
 
 
-def _await_media_confirm(driver, polls: int):
+def _await_media_confirm(driver, polls: int) -> Tuple[str, Optional[WebElement]]:
     """Poll the media overlay until its commit control is clickable.
 
     Returns `(state, element)` — `_CONFIRM_READY` with the control, `_CONFIRM_ABSENT` when this
@@ -3350,13 +3350,19 @@ def _await_media_confirm(driver, polls: int):
     The lookup uses its OWN short wait rather than the session's — a poll is a poll, and a miss that
     cost `WAIT_DEFAULT_TIMEOUT` would make the ABSENT case (an expected composer variant) the most
     expensive answer in the chain and the video's real window the shortest.
+
+    `visible_only=True` for the same reason `click_first` (which this replaced) asks for it:
+    LinkedIn ships hidden duplicates of a control, and the page-wide fallbacks in the locator chain
+    will happily match one. A hidden button reads as ENABLED, so it would be clicked — and a click
+    on a non-displayed element raises, which turns a working upload into `left_open` and costs the
+    week's group post.
     """
     poll_wait = get_driver_wait(driver, wait_time=_CONFIRM_LOOKUP_SECONDS)
     seen = False
     for attempt in range(max(1, polls)):
         time.sleep(random.uniform(*_MEDIA_POLL_SECONDS))
         confirm = find_first(driver, poll_wait, _GROUP_MEDIA_CONFIRM_LOCATORS,
-                             "Group media confirm",
+                             "Group media confirm", visible_only=True,
                              required=False, warn_on_miss=False, max_try=1)
         if confirm is None:
             if not seen and attempt + 1 >= _CONFIRM_ABSENT_POLLS:
@@ -3368,7 +3374,7 @@ def _await_media_confirm(driver, polls: int):
     return (_CONFIRM_BUSY if seen else _CONFIRM_ABSENT), None
 
 
-def _media_is_video(media_type, path: str) -> bool:
+def _media_is_video(media_type: Optional[str], path: str) -> bool:
     """Is the draft's attachment a video? The row's kind first, the stored file as the fallback.
 
     Both answers come from the same place originally — `_resolve_group_media` reads the file — so
@@ -3383,7 +3389,7 @@ def _media_is_video(media_type, path: str) -> bool:
 
 
 def _attach_group_media(driver, wait, media_url: str, user_id: int = None,
-                        media_type=None) -> str:
+                        media_type: Optional[str] = None) -> str:
     """Hand the draft's image/video to the open group composer.
 
     Returns what the attempt did to the COMPOSER, not just whether it worked: `_MEDIA_ATTACHED`,
