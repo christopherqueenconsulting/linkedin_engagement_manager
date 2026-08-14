@@ -1418,7 +1418,16 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
-    video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+    try:
+        video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+    except Exception:
+        # Same clear as a rejected probe (issue #1410), for the exit that never reaches one:
+        # `save_video_url_to_dir` RAISES on a non-2xx or a dropped connection, so the render this
+        # key names produced no file for this post. On the regenerate path the row still carries the
+        # PREVIOUS video's URL, and leaving the key would report the undownloaded render as the
+        # model of the video that actually shipped.
+        _persist_video_model(post_id, None)
+        raise
 
     if not _accept_probed_video(post_id, video_file_path, video_src_url,
                                 task_name="regenerate_post_video_task"):
@@ -3328,7 +3337,16 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
             # Define and create assets_dir / videos
             videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
             create_folder_if_not_exists(videos_dir)
-            video_file_path = save_video_url_to_dir(video_url, videos_dir)
+            try:
+                video_file_path = save_video_url_to_dir(video_url, videos_dir)
+            except Exception:
+                # The download raises on a non-2xx / dropped connection, so this post never got the
+                # file the recorded render model names — clear it (issue #1410) before the outer
+                # handler turns this into a failed post. Only the download is wrapped: everything
+                # after `update_db_post_video_url` below has a stored asset the key correctly
+                # describes, and clearing there would erase a true record.
+                _persist_video_model(post_id, None)
+                raise
             log_info(f"Video from url: {video_url} | Saved to: {video_file_path}")
             # Probe before this file becomes posts.video_url (issue #1280). This is where a video
             # post is BORN, so an unprobed zero-byte download here is the one that actually reaches

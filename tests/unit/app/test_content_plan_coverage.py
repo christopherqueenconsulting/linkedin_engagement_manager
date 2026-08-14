@@ -154,6 +154,30 @@ class TestAutoCreateWeeklyContentVideoPath:
         from cqc_lem.utilities.db import PostStatus
         assert upd_status.call_args[0] == (42, PostStatus.APPROVED)
 
+    def test_a_failed_download_clears_the_recorded_render_model(self, monkeypatch):
+        """Issue #1410: the probe never runs when the download raises, so the clear happens there.
+
+        `save_video_url_to_dir` raises on a non-2xx, and the recorded key would otherwise name a
+        render this post never got a file from.
+        """
+        monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
+        import cqc_lem.app.run_content_plan as rcp
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
+             patch(f"{_RCP}.create_content", return_value=("Post text", "http://runway/clip.mp4")), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", side_effect=RuntimeError("404")), \
+             patch(f"{_RCP}.record_post_failed"), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model") as model_writer, \
+             patch(f"{_RCP}.update_db_post_video_url") as upd_video, \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}.update_db_post_status"), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=None):
+            rcp.auto_create_weekly_content(user_id=1)
+        model_writer.assert_called_once_with(42, None)
+        upd_video.assert_not_called()
+
     def test_stock_video_skips_c2pa_and_disclosure(self, monkeypatch, tmp_path):
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         import cqc_lem.app.run_content_plan as rcp

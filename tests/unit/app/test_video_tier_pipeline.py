@@ -345,6 +345,39 @@ class TestPersistedRenderModel:
                 _accept_probed_video(9, "/tmp/v.mp4", "https://x.mp4")
         writer.assert_called_once_with(9, None)
 
+    def test_a_download_that_raises_clears_it_on_the_store_path(self):
+        """The probe never runs when the download raises, so the clear has to happen there too.
+
+        `save_video_url_to_dir` raises on a non-2xx; the regenerate path then keeps the PREVIOUS
+        video's URL, so a left-behind key would name a render that produced nothing for this post.
+        """
+        from unittest.mock import MagicMock
+        writer = MagicMock(return_value=True)
+        with patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
+             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir",
+                   side_effect=RuntimeError("404")), \
+             patch("cqc_lem.app.run_content_plan._accept_probed_video") as accept, \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer):
+            from cqc_lem.app.run_content_plan import _store_video_asset
+            with pytest.raises(RuntimeError):
+                _store_video_asset(9, "https://x.mp4")
+        writer.assert_called_once_with(9, None)
+        accept.assert_not_called()
+
+    def test_a_stored_video_keeps_its_key_when_a_later_step_fails(self):
+        """Only the download is wrapped: a key describing an asset that IS stored stays put."""
+        from unittest.mock import MagicMock
+        writer = MagicMock(return_value=True)
+        with patch("cqc_lem.app.run_content_plan.create_folder_if_not_exists"), \
+             patch("cqc_lem.app.run_content_plan.save_video_url_to_dir", return_value="/tmp/v.mp4"), \
+             patch("cqc_lem.app.run_content_plan._accept_probed_video", return_value=True), \
+             patch("cqc_lem.app.run_content_plan._caption_video_asset"), \
+             patch("cqc_lem.app.run_content_plan.update_db_post_video_url", return_value=True), \
+             patch("cqc_lem.utilities.db.update_db_post_video_model", writer):
+            from cqc_lem.app.run_content_plan import _store_video_asset
+            assert _store_video_asset(9, "/tmp/pexels_1.mp4") is not None
+        writer.assert_not_called()
+
 
 class TestContentLanguageThreading:
     """Issue #548: the user's language must reach the motion prompt of audio-capable models —
