@@ -218,6 +218,7 @@ from cqc_lem.platform.db.repositories.feedback import (
 )
 from cqc_lem.platform.db.repositories.groups import (
     create_group_post_draft,
+    disable_user_groups,
     get_enabled_group_ids,
     get_next_group_for_post,
     get_post_enabled_group_ids,
@@ -931,6 +932,7 @@ __all__ = [
     "mark_affiliate_notice_seen",
     "record_affiliate_referral",
     "create_group_post_draft",
+    "disable_user_groups",
     "get_enabled_group_ids",
     "get_next_group_for_post",
     "get_post_enabled_group_ids",

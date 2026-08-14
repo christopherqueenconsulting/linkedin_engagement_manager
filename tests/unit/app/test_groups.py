@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
+from selenium.common.exceptions import WebDriverException
 
 pytestmark = pytest.mark.unit
 
@@ -70,6 +71,48 @@ class TestUserGroupsDB:
             from cqc_lem.utilities.db import set_groups_enabled
             assert set_groups_enabled(1, {"123": {}}) is True
         cur.execute.assert_not_called()
+
+    def test_disable_switches_engagement_off_without_deleting_the_row(self, fake_cursor):
+        """#1487: the user has to be able to turn it back on, so the row survives and post_enabled is untouched."""
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import disable_user_groups
+            assert disable_user_groups(1, ["77427", "60878"], reason="recommendation_rail") is True
+        sql, params = cur.execute.call_args[0][0], cur.execute.call_args[0][1]
+        assert "UPDATE user_groups SET enabled=0" in sql
+        assert "DELETE" not in sql.upper() and "post_enabled" not in sql
+        assert "group_id IN (%s,%s)" in sql
+        assert params == (1, "77427", "60878")
+
+    def test_a_disable_names_the_user_and_the_groups_it_switched_off(self, fake_cursor):
+        conn, _ = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+             patch("cqc_lem.platform.db.repositories.groups.log_info") as info:
+            from cqc_lem.utilities.db import disable_user_groups
+            disable_user_groups(9, ["77427"], reason="join_control_on_group_page")
+        assert info.call_args.kwargs["user_id"] == 9
+        assert info.call_args.kwargs["group_ids"] == "77427"
+        assert info.call_args.kwargs["reason"] == "join_control_on_group_page"
+
+    def test_disabling_nothing_writes_nothing(self, fake_cursor):
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import disable_user_groups
+            assert disable_user_groups(1, []) is False
+            assert disable_user_groups(1, ["", None]) is False
+        cur.execute.assert_not_called()
+
+    def test_a_disabled_group_is_still_listed_for_the_account_ui(self, fake_cursor):
+        """`enabled=0` has to stay visible — a deleted row is a switch the user can never flip back."""
+        conn, cur = fake_cursor(fetch_all=[{"group_id": "77427", "group_name": "Off", "enabled": 0,
+                                            "post_enabled": 0, "last_posted_at": None}])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_groups
+            rows = get_user_groups(1)
+        assert rows == [{"group_id": "77427", "group_name": "Off", "enabled": False,
+                         "post_enabled": False, "last_posted_at": None}]
+        assert "WHERE user_id=%s" in cur.execute.call_args[0][0]
+        assert "enabled=1" not in cur.execute.call_args[0][0]
 
     def test_next_group_for_post_is_least_recently_posted(self, fake_cursor):
         conn, cur = fake_cursor(fetch_one={"group_id": "456", "group_name": "Sales"})
@@ -377,24 +420,242 @@ class TestEnumerateJoinedGroups:
         driver.find_elements.assert_not_called()
         warn.assert_not_called()
 
+    def test_the_reading_keeps_the_recommended_ids_the_walk_dropped(self):
+        """#1487 reconciles against them, so "the page called this an offer" cannot be thrown away."""
+        from cqc_lem.app.engagement.feed import _read_groups_directory
+        driver = _directory_driver([
+            ["3063585", "Data Science Community", "Groups listing"],
+            ["10529815", "C2C and W2 positions", "Groups you might be interested in"],
+            ["77427", "Unattributed", ""],
+        ])
+        reading = _read_groups_directory(driver)
+        assert reading.joined == [("3063585", "Data Science Community"), ("77427", "Unattributed")]
+        # A row no heading could be attributed to is NOT a recommendation either — it is unanswered.
+        assert reading.recommended == ["10529815"]
+
 
 class TestSyncUserGroups:
     def test_upserts_enumerated(self):
-        from cqc_lem.app.engagement.feed import auto_sync_user_groups
+        from cqc_lem.app.engagement.feed import GroupsDirectoryReading, auto_sync_user_groups
+        reading = GroupsDirectoryReading(joined=[("1", "A"), ("2", "B")], recommended=[])
         with patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_FEED}._enumerate_joined_groups", return_value=[("1", "A"), ("2", "B")]), \
+             patch(f"{_FEED}._read_groups_directory", return_value=reading), \
+             patch(f"{_FEED}._reconcile_stored_groups", return_value=[]), \
              patch(f"{_FEED}.upsert_user_group") as up, patch(f"{_FEED}.quit_gracefully"):
             result = auto_sync_user_groups.run(user_id=1)
-        assert up.call_count == 2 and "Synced 2" in result
+        assert up.call_count == 2 and result == "Synced 2 group(s)"
 
     def test_the_walk_is_told_whose_sync_it_is(self):
         """A drift warning nobody can attribute to a user is a defect report with no subject."""
-        from cqc_lem.app.engagement.feed import auto_sync_user_groups
+        from cqc_lem.app.engagement.feed import GroupsDirectoryReading, auto_sync_user_groups
         with patch(f"{_FEED}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_FEED}._enumerate_joined_groups", return_value=[]) as walk, \
+             patch(f"{_FEED}._read_groups_directory",
+                   return_value=GroupsDirectoryReading(joined=[], recommended=[])) as walk, \
+             patch(f"{_FEED}._reconcile_stored_groups", return_value=[]), \
              patch(f"{_FEED}.upsert_user_group"), patch(f"{_FEED}.quit_gracefully"):
             auto_sync_user_groups.run(user_id=42)
         assert walk.call_args.kwargs["user_id"] == 42
+
+    def test_the_reconcile_runs_on_the_same_walk_and_is_reported(self):
+        """The sync's own answer has to say a group went quiet — that write is otherwise invisible."""
+        from cqc_lem.app.engagement.feed import GroupsDirectoryReading, auto_sync_user_groups
+        reading = GroupsDirectoryReading(joined=[("1", "A")], recommended=["9"])
+        driver, wait = MagicMock(), MagicMock()
+        with patch(f"{_FEED}.get_current_profile", return_value=(driver, wait, "e", MagicMock())), \
+             patch(f"{_FEED}._read_groups_directory", return_value=reading), \
+             patch(f"{_FEED}._reconcile_stored_groups", return_value=["9"]) as rec, \
+             patch(f"{_FEED}.upsert_user_group"), patch(f"{_FEED}.quit_gracefully"):
+            result = auto_sync_user_groups.run(user_id=7)
+        assert rec.call_args[0] == (driver, wait, 7, reading)
+        assert result == "Synced 1 group(s), disabled 1"
+
+
+class TestReconcileStoredGroups:
+    """#1487: the rows the pre-#1316 sync already invented are still sitting `enabled=1`."""
+
+    @staticmethod
+    def _reading(joined=(("1", "A"),), recommended=()):
+        from cqc_lem.app.engagement.feed import GroupsDirectoryReading
+        return GroupsDirectoryReading(joined=list(joined), recommended=list(recommended))
+
+    def _run(self, reading, stored, crosscheck_hits=None, membership=None):
+        """Drive the reconcile with the DB and the group-page confirmation stubbed out.
+
+        The cross-check defaults to ONE control per joined row, which is what the live page renders
+        (50 for 50 rows on 2026-08-14) — a fixed number would make every reading look like drift.
+        """
+        from cqc_lem.app.engagement import feed
+        if crosscheck_hits is None:
+            crosscheck_hits = len(reading.joined)
+        driver, wait = MagicMock(), MagicMock()
+        driver.find_elements.return_value = [MagicMock()] * max(crosscheck_hits, 0)
+        if crosscheck_hits < 0:
+            driver.find_elements.side_effect = WebDriverException("no session")
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=list(stored)), \
+             patch(f"{_FEED}.disable_user_groups", return_value=True) as disable, \
+             patch(f"{_FEED}._confirm_group_membership",
+                   side_effect=lambda d, w, gid, user_id=None: (membership or {}).get(gid, "unknown")) as confirm:
+            disabled = feed._reconcile_stored_groups(driver, wait, 1, reading)
+        return disabled, disable, confirm
+
+    def test_a_walk_that_enumerated_nothing_disables_nothing(self):
+        """The fail-closed floor: a directory that would not render is not evidence of leaving."""
+        disabled, disable, confirm = self._run(self._reading(joined=()), stored=["77427"])
+        assert disabled == []
+        disable.assert_not_called()
+        confirm.assert_not_called()
+
+    def test_an_unreadable_crosscheck_disables_nothing(self):
+        disabled, disable, _ = self._run(self._reading(recommended=["9"]), stored=["9"],
+                                         crosscheck_hits=-1)
+        assert disabled == []
+        disable.assert_not_called()
+
+    def test_a_blind_crosscheck_is_drift_and_still_disables_nothing(self):
+        """A tripwire that sees no rows on a page the walk read is the #1316 `crosscheck_blind` finding."""
+        from cqc_lem.app.engagement import feed
+        driver, wait = MagicMock(), MagicMock()
+        driver.find_elements.return_value = []
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["9"]), \
+             patch(f"{_FEED}.disable_user_groups") as disable, \
+             patch(f"{_FEED}.log_warning") as warn:
+            assert feed._reconcile_stored_groups(driver, wait, 1,
+                                                 self._reading(recommended=["9"])) == []
+        disable.assert_not_called()
+        assert warn.called
+
+    def test_a_stored_group_the_page_files_under_a_recommendation_is_disabled(self):
+        disabled, disable, confirm = self._run(self._reading(recommended=["10529815"]),
+                                               stored=["1", "10529815"])
+        assert disabled == ["10529815"]
+        assert disable.call_args[0][:2] == (1, ["10529815"])
+        assert disable.call_args.kwargs["reason"] == "recommendation_rail"
+        # The page SAID it is an offer, so nothing has to be asked twice.
+        confirm.assert_not_called()
+
+    def test_absence_from_one_walk_is_never_enough_on_its_own(self):
+        """The walk scrolls a fixed distance and caps at 60 anchors — absence can be lazy-load."""
+        disabled, disable, confirm = self._run(self._reading(), stored=["1", "77427"],
+                                               membership={"77427": "member"})
+        assert disabled == []
+        disable.assert_not_called()
+        assert confirm.call_count == 1
+
+    @pytest.mark.parametrize("answer,expected", [("not_member", ["77427"]), ("member", []),
+                                                 ("pending", []), ("unknown", [])])
+    def test_only_a_group_page_that_says_not_member_disables_an_absent_row(self, answer, expected):
+        disabled, disable, _ = self._run(self._reading(), stored=["1", "77427"],
+                                         membership={"77427": answer})
+        assert disabled == expected
+        assert disable.called is bool(expected)
+        if expected:
+            assert disable.call_args.kwargs["reason"] == "join_control_on_group_page"
+
+    def test_a_group_still_enumerated_is_never_confirmed_or_disabled(self):
+        disabled, disable, confirm = self._run(self._reading(joined=[("1", "A"), ("2", "B")]),
+                                               stored=["1", "2"])
+        assert disabled == []
+        confirm.assert_not_called()
+        disable.assert_not_called()
+
+    def test_the_confirmation_cap_is_reported_rather_than_silently_dropped(self):
+        from cqc_lem.app.engagement import feed
+        stored = [str(n) for n in range(100, 100 + feed.GROUP_RECONCILE_MAX_CONFIRMATIONS + 3)]
+        with patch(f"{_FEED}.log_debug") as debug:
+            _, _, confirm = self._run(self._reading(), stored=stored)
+        assert confirm.call_count == feed.GROUP_RECONCILE_MAX_CONFIRMATIONS
+        assert any("left unconfirmed" in str(c.args[0]) for c in debug.call_args_list)
+
+    def test_the_capped_run_draws_from_the_whole_backlog_not_its_head(self):
+        """A fixed head re-asks the same ids weekly, so a tail behind the cap is never reached."""
+        from cqc_lem.app.engagement import feed
+        cap = feed.GROUP_RECONCILE_MAX_CONFIRMATIONS
+        stored = [str(n) for n in range(100, 100 + cap + 3)]
+        with patch(f"{_FEED}.random.sample", side_effect=lambda pop, k: list(pop)[-k:]) as sample:
+            _, _, confirm = self._run(self._reading(), stored=stored)
+        assert sample.call_args[0] == (stored, cap)
+        assert [c.args[2] for c in confirm.call_args_list] == stored[-cap:]
+
+    def test_a_backlog_inside_the_cap_is_not_sampled_at_all(self):
+        from cqc_lem.app.engagement import feed
+        stored = [str(n) for n in range(100, 100 + feed.GROUP_RECONCILE_MAX_CONFIRMATIONS)]
+        with patch(f"{_FEED}.random.sample") as sample:
+            _, _, confirm = self._run(self._reading(), stored=stored)
+        sample.assert_not_called()
+        assert confirm.call_count == len(stored)
+
+    def test_a_walk_that_kept_fewer_joined_rows_than_the_page_renders_disables_none_on_the_heading(self):
+        """A re-worded joined heading files memberships as offers — the cross-check counts them."""
+        disabled, disable, confirm = self._run(
+            self._reading(joined=[("1", "A")], recommended=["77427"]),
+            stored=["1", "77427"], crosscheck_hits=2, membership={"77427": "member"})
+        assert disabled == []
+        disable.assert_not_called()
+        # Demoted to the absent population, so the group's OWN page is the evidence instead.
+        assert confirm.call_count == 1
+
+    def test_a_walk_that_ran_out_of_anchors_is_not_read_as_heading_drift(self):
+        """The 60-anchor cap explains a short walk without anything having been mis-attributed."""
+        from cqc_lem.app.engagement import feed
+        joined = [(str(n), "G") for n in range(1, feed._GROUP_DIRECTORY_ANCHOR_CAP)]
+        disabled, disable, confirm = self._run(
+            feed.GroupsDirectoryReading(joined=joined, recommended=["77427"]),
+            stored=["77427"], crosscheck_hits=len(joined) + 40)
+        assert disabled == ["77427"]
+        assert disable.call_args.kwargs["reason"] == "recommendation_rail"
+        confirm.assert_not_called()
+
+    def test_the_anchor_cap_constant_matches_the_walk(self):
+        """Two copies of 60 that drift would make a full walk read as heading drift."""
+        from cqc_lem.app.engagement import feed
+        assert f"out.length >= {feed._GROUP_DIRECTORY_ANCHOR_CAP}" in feed._GROUP_DIRECTORY_JS
+
+    def test_an_unreadable_enabled_list_reconciles_nothing(self):
+        """`get_enabled_group_ids` answers [] on a DB blip, which must read as "nothing to do"."""
+        disabled, disable, confirm = self._run(self._reading(), stored=[])
+        assert disabled == []
+        disable.assert_not_called()
+        confirm.assert_not_called()
+
+
+class TestGroupMembershipAnswer:
+    """#1316 grounding: the live header carried NO membership control — the share box carried it."""
+
+    @pytest.mark.parametrize("controls,share_box,expected", [
+        ([], True, "member"),
+        ([], False, "unknown"),
+        (["Join"], False, "not_member"),
+        (["Request to join"], False, "not_member"),
+        (["Requested"], False, "pending"),
+        (["Leave group"], False, "member"),
+        # Both signals at once is a CONTRADICTION — the header scope reaching a rail card's Join —
+        # and the disabling direction never wins one.
+        (["Join"], True, "unknown"),
+    ])
+    def test_the_three_valued_answer(self, controls, share_box, expected):
+        from cqc_lem.app.engagement.feed import _group_membership_answer
+        assert _group_membership_answer(controls, share_box) == expected
+
+    def test_a_group_whose_NAME_contains_join_is_not_read_as_not_member(self):
+        """#1012 one layer down: a substring match makes the answer depend on the group's name."""
+        from cqc_lem.app.engagement.feed import _group_membership_answer
+        assert _group_membership_answer(["More options for Join the Data Guild"], True) == "member"
+
+    def test_a_page_that_will_not_render_answers_unknown(self):
+        from cqc_lem.app.engagement.feed import _confirm_group_membership
+        driver = MagicMock()
+        driver.get.side_effect = WebDriverException("gone")
+        assert _confirm_group_membership(driver, MagicMock(), "77427", user_id=1) == "unknown"
+
+    def test_the_confirmation_reads_the_header_and_clicks_nothing(self):
+        from cqc_lem.app.engagement import feed
+        driver, wait = MagicMock(), MagicMock()
+        driver.execute_script.return_value = ["Join"]
+        with patch(f"{_FEED}.find_first", return_value=None) as find:
+            assert feed._confirm_group_membership(driver, wait, "77427") == "not_member"
+        assert driver.get.call_args[0][0] == "https://www.linkedin.com/groups/77427/"
+        assert find.call_args.kwargs["required"] is False
+        driver.execute_script.assert_called_once_with(feed._GROUP_HEADER_CONTROLS_JS)
 
 
 class TestCommentInGroups:
