@@ -2367,6 +2367,34 @@ class TestCommentOutcomeProbe:
         assert "sort_control_candidates" not in report
         assert report["state"] == llv.STATE_UNKNOWN
 
+    def test_probe_reads_the_sort_label_silently(self, monkeypatch):
+        # #1117: the probe's product is this report. A miss here must not write
+        # `Selector miss: Comment sort control` into production error tracking — four grounding runs
+        # on 2026-08-14 did exactly that, filing defects against the diagnostic that found them.
+        seen = {}
+
+        def _label(_d, _w, warn_on_miss=True):
+            seen["warn_on_miss"] = warn_on_miss
+            return ""
+
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._load_comment_thread", lambda d: None)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._comment_items", lambda d: [])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_sort_label", _label)
+
+        llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x", sleep=lambda s: None)
+        assert seen["warn_on_miss"] is False
+
+    def test_probe_still_reads_an_image_that_predates_the_keyword(self, monkeypatch):
+        # The probe is piped into the DEPLOYED image, which may be older than this checkout.
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._load_comment_thread", lambda d: None)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.composer._comment_items", lambda d: [])
+        monkeypatch.setattr("cqc_lem.app.engagement.posting._comment_sort_label",
+                            lambda d, w: "most recent")
+
+        report = llv.probe_comment_outcome(MagicMock(), "https://post", "me", "x",
+                                           sleep=lambda s: None)
+        assert report["sort_label"] == "most recent"
+
 
 class TestPermalinkCommentProbe:
     """#966: the permalink comment path failed SILENTLY, so the probe's job is to say plainly

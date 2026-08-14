@@ -1339,6 +1339,11 @@ _COMMENT_LIKE_COUNT_JS = (
 # number the evidence scan caps at, so a locator walk and the sample describing it stay comparable.
 _SORT_CANDIDATE_SCAN_CAP = SORT_CANDIDATE_SCAN_CAP
 
+# ONE spelling of the control's name, shared by `find_first` and the evidence report that decides
+# the miss's level. The escalation dedup key is (masked message + call site), so the two paths must
+# say the identical thing or a drift warning and its history stop being the same problem.
+_SORT_CONTROL_LABEL = "Comment sort control"
+
 # When the sort control cannot be read on a page that DID render comments, capture the
 # sort-control-like candidates so the next locator iteration has fresh evidence. The two-pass scan
 # itself lives in `utilities/linkedin/sort_evidence.py` — the home feed loses its own sort control
@@ -1388,24 +1393,50 @@ def _diagnose_sort_control_miss(driver) -> list[dict]:
     return scan_sort_control_candidates(driver, _SORT_CONTROL_DIAGNOSTIC_JS)
 
 
+def _page_still_names_a_sort(candidates: list[dict]) -> bool:
+    """True when the evidence scan found an element that STILL names a sort we could not resolve.
+
+    This is the page-native cross-check that tells selector rot apart from an affordance LinkedIn
+    simply did not render. Only the scan's `keyword` pass matches on sort wording; a `header` /
+    `unanchored` row is "here are the short-labeled controls above the thread", which is what the
+    scan reports when nothing on the page mentions sorting at all.
+    """
+    return any((c or {}).get("reason") == "keyword" for c in candidates or [])
+
+
 def _report_sort_control_miss(driver, user_id: int, post_url: str) -> list[dict]:
     """Ship the captured DOM evidence for an unreadable comment sort control, and return it.
+
+    This is also where the miss picks its LEVEL, which is why `_read_comment_outcome` reads the
+    label with `warn_on_miss=False`: the level cannot be chosen before the evidence exists.
+
+    The rendered thread was too weak a cross-check (#1063). Four `--comment-outcome-url` probe runs
+    on posts that had warned in production (2026-08-14, threads of 1–2 comments) each returned ONE
+    candidate — the post's own overflow menu, `Open control menu for post by <author>` — and nothing
+    anywhere in the main column naming a sort: **LinkedIn renders no comment sort control on a short
+    thread**, because there is nothing to sort. Meanwhile the same locator chain read
+    'most relevant' on 21 of 22 checked readings, so it is not rotted. Warning on the absence filed
+    21 `Selector miss: Comment sort control` warnings and 2 grouped `$exception`s against working
+    behaviour, which is exactly what "never warn on an expected no-op" forbids. A page that still
+    NAMES a sort we cannot resolve is the real drift and still warns.
 
     The DEBUG line #1118 added never left the worker: prod runs `LOG_LEVEL=INFO` with
     `POSTHOG_LOG_LEVEL=WARNING`, so the evidence #818 was told to iterate from was dropped at the
     handler and 20 unreadable readings in the following week produced none of it. An analytics event
-    is the product that survives both filters, and it is the honest level for this: the miss already
-    warns once via `find_first`, and re-stating it at WARNING would file a second grouped defect for
-    the same fault. `post_url` rides along because re-grounding needs a thread to run the
-    `--comment-outcome-url` probe against, and the sweep is the only thing that knows one.
+    is the product that survives both filters. `post_url` rides along because re-grounding needs a
+    thread to run the `--comment-outcome-url` probe against, and the sweep is the only thing that
+    knows one. The candidates themselves ride the EVENT and not the log line: an aria-label names
+    whoever wrote the post, and a warning is forwarded to PostHog Logs where the event's own
+    bounded sample already is.
 
     Never raises: evidence collection must not cost the outcome reading it rode in on.
     """
     try:
         candidates = _diagnose_sort_control_miss(driver)
-        log_debug("Comment sort control unreadable on rendered thread",
-                  user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes",
-                  post_url=post_url, candidates=candidates)
+        emit = log_warning if _page_still_names_a_sort(candidates) else log_debug
+        emit(f"Selector miss: {_SORT_CONTROL_LABEL}",
+             user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes",
+             post_url=post_url, candidate_count=len(candidates))
         track_selector_evidence("comment_sort_control", candidates, user_id=user_id,
                                 post_url=post_url, task_name="sweep_comment_outcomes")
         return candidates
@@ -1426,8 +1457,9 @@ def _find_comment_sort_control(driver, wait, *, warn_on_miss: bool = True):
     inside its popup, so an unvalidated candidate is still returned when nothing in the chain parses
     — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it.
 
-    `warn_on_miss` is the caller's page-native cross-check (#1063): a total miss is only selector
-    rot on a page that rendered a comment thread at all.
+    `warn_on_miss` is the caller's page-native cross-check. `_read_comment_outcome` passes False and
+    grades the miss itself from the evidence scan (#1117) — a rendered thread was not enough, since
+    LinkedIn renders no sort control on a short one. The retries still run; only the level changes.
     """
     fallback = None
     for locator in _COMMENT_SORT_LOCATORS:
@@ -1442,8 +1474,9 @@ def _find_comment_sort_control(driver, wait, *, warn_on_miss: bool = True):
                 fallback = el
     if fallback is not None:
         return fallback
-    # Nothing at all yet: fall back to find_first for its wait/retry and its Selector-miss warning.
-    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False,
+    # Nothing at all yet: fall back to find_first for its wait/retry, and for the Selector-miss line
+    # at whatever level `warn_on_miss` asked for.
+    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, _SORT_CONTROL_LABEL, required=False,
                       warn_on_miss=warn_on_miss)
 
 
@@ -1573,17 +1606,42 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     _load_comment_thread(driver)
 
     items = _comment_items(driver)
-    # The rendered comment thread is the page-native cross-check on the sort control (#1063): a post
-    # that is deleted, private or has had its comments removed renders no thread AND no sort control,
-    # which is the `post-unavailable` skip recorded below — working behaviour. Warning there filed a
-    # grouped defect for a page that was simply gone; a thread that DID render and still yields no
-    # control is selector rot and still warns. Same grading `--comment-outcome-url` applies.
-    sort_label = _comment_sort_label(driver, wait, warn_on_miss=bool(items))
+    # Read the label SILENTLY: what the miss means is decided further down, by the evidence scan, and
+    # a level cannot be picked before the evidence exists. A rendered thread was the cross-check
+    # (#1063) and it was too weak — LinkedIn renders no sort control on a short thread, so a normal
+    # 1-comment revisit warned. `_report_sort_control_miss` owns the warning now (#1117).
+    sort_label = _comment_sort_label(driver, wait, warn_on_miss=False)
     ours = _find_our_comment(items, our_slug, comment_text)
+    # A rendered thread with an unreadable sort control is the #818 starvation signal — captured
+    # HERE, before the skip below returns, because whether we found OUR comment says nothing about
+    # whether the page rendered a sort control, and gating the evidence on it threw away most of the
+    # readings that had any (#1117). This call is also the miss's ONLY log line, and its scan is the
+    # only thing that can tell an absent affordance from selector rot — which the reading below then
+    # needs, so it runs before the visibility decision, not after it.
+    no_sort_offered = False
+    if items and not sort_label:
+        evidence = _report_sort_control_miss(driver, user_id, post_url)
+        # A BLIND scan is not evidence of an absent affordance. `scan_sort_control_candidates`
+        # returns [] both for "nothing describable on the page" and for "the read itself failed",
+        # deliberately not telling them apart, and `_report_sort_control_miss` returns [] from its
+        # own except path too — so an `execute_script` fault would otherwise read as "LinkedIn
+        # offered no ordering" and record a healthy 1. That is "we couldn't tell" filed as "fine",
+        # which is the one thing this three-valued column exists to prevent. A page that rendered
+        # comments at all has header controls to describe, so [] here is the abnormal case: it stays
+        # NULL. The LEVEL decision below is unaffected — evidence we do not have never warns.
+        no_sort_offered = bool(evidence) and not _page_still_names_a_sort(evidence)
+
     visible = None
     if ours is not None:
-        # Only the DEFAULT sort answers the question this feature exists to ask.
-        visible = True if sort_label == _SORT_MOST_RELEVANT else None
+        # Only the DEFAULT sort answers the question this feature exists to ask — or the absence of
+        # any sort at all, which answers it the same way (#1117, owner decision 2B): on a thread
+        # LinkedIn offered no ordering for, every comment is shown and there is nothing to be
+        # demoted within, so a comment we FOUND is visible. Gated on a scan that described the page
+        # and named no sort in it, so it never fires on a page still NAMING a control we cannot
+        # reach, nor on a capture that saw nothing; NULL there is the starved denominator #818 is
+        # about, and the only way this inference can be wrong is to UNDER-report demotion, which
+        # softens the commenting hold rather than falsely tripping it.
+        visible = True if sort_label == _SORT_MOST_RELEVANT or no_sort_offered else None
     elif sort_label == _SORT_MOST_RELEVANT and _switch_comment_sort(driver, wait, _SORT_MOST_RECENT):
         _load_comment_thread(driver)
         items = _comment_items(driver)
@@ -1592,13 +1650,6 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         visible = False if ours is not None else None
 
     outcome["visible_most_relevant"] = visible
-    # A rendered thread with an unreadable sort control is the #818 starvation signal — captured
-    # HERE, before the skip below returns, because whether we found OUR comment says nothing about
-    # whether the page rendered a sort control, and gating the evidence on it threw away most of the
-    # readings that had any (#1117).
-    if items and not sort_label:
-        _report_sort_control_miss(driver, user_id, post_url)
-
     if ours is None:
         outcome["status"] = "skipped"
         outcome["skip_reason"] = "post-unavailable" if not items else "comment-not-found"

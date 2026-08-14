@@ -84,6 +84,58 @@ written from what the evidence *rules out*, not from a positive sighting, so the
 probe run is what closes this section — either `feed_sort` grades `ok`, or `sort_candidates` finally
 shows the element and the chain gets a precise route.
 
+## A short comment thread has NO sort control — the miss was never drift (#1117, follow-up of #818)
+
+Live-grounded 2026-08-14 with four `--comment-outcome-url` runs against posts that had actually
+emitted `Selector miss: Comment sort control` in production (pulled from the warning's own `url`
+attribute in PostHog Logs). Threads of 1 and 2 rendered comments. Every run graded `drift` and
+returned the *same* single candidate from the evidence scan's header pass:
+
+```json
+{"tag": "button", "data_testid": "", "role": "", "has_popup": "", "text": "",
+ "aria_label": "Open control menu for post by <post author>", "reason": "header"}
+```
+
+Nothing anywhere in the main column named a sort — no `keyword` row on any of the four. Read that
+literally: **LinkedIn renders no comment sort control on a short thread**, because there is nothing
+to sort. This is the opposite of the home-feed finding above; the two surfaces drifted differently
+and only the feed's is a rotation.
+
+The chain is not rotted, and the production data says so from the other side: over the same period
+`_COMMENT_SORT_LOCATORS` read `most relevant` on **21 of 22** checked readings.
+
+What changed in response:
+
+- **The evidence scan is the cross-check now, not the rendered thread.** `_read_comment_outcome`
+  reads the label with `warn_on_miss=False` and `_report_sort_control_miss` picks the level from
+  what the scan found: a `keyword` row means the page still NAMES a sort the chain cannot reach —
+  drift, and it warns — while a `header`/`unanchored`/empty scan is an affordance LinkedIn did not
+  render, and logs DEBUG. The `sdui_selector_evidence` event is emitted either way, so a surface
+  never looks un-drifted because its evidence was dropped.
+- Before this, 21 warnings and 2 grouped `$exception`s over 10 days were filed against working
+  behaviour — a rendered thread was too weak a cross-check (#1063) once it turned out a normal
+  1-comment revisit has no control to find.
+- `probe_comment_outcome` reads the label silently too. The four runs above each wrote a
+  `Selector miss` warning into production error tracking; a diagnostic that files defects is a
+  diagnostic nobody can afford to run.
+
+- **The reading follows the evidence too** (owner decision 2B on #1117). A comment we FOUND on a
+  thread whose scan names no sort at all records `visible_most_relevant = 1`, not NULL: LinkedIn
+  offered no ordering, so every comment is shown and there is nothing to be demoted within. NULL had
+  meant this reading was excluded from the demotion denominator exactly like a genuinely unreadable
+  one — the starved denominator #818 is really about (18 of 24 checked readings before 2026-08-05).
+  The gate is the same `keyword` row that decides the level, so the inference never fires on a page
+  that still NAMES a control we cannot reach. It is not a proof of no drift: a label rotated to
+  wording with no sort word in it produces `header` rows exactly like an absent control does, which
+  is why the direction matters — the inference can only UNDER-report demotion, softening the
+  commenting hold, never falsely tripping it.
+- **A blind scan is NOT an absent affordance, and reads NULL.** `scan_sort_control_candidates`
+  returns `[]` both for "nothing describable" and for "the read failed", deliberately not telling
+  them apart, so inferring from `[]` would file an `execute_script` fault as a healthy reading — the
+  "we couldn't tell" → "fine" collapse the three-valued column exists to prevent. A page that
+  rendered comments has header controls to describe, so `[]` is the abnormal case. The LEVEL decision
+  is unaffected: evidence we do not have never warrants a warning either.
+
 ## The Catch-up feed is full SDUI — no `data-view-name`, no `<li>` cards
 
 Live-grounded 2026-08-03 (`/mynetwork/catch-up/all/`, user 1): each card is a
