@@ -251,6 +251,19 @@ Filed as `risk:product-decision` because the useful version of the fix asks whet
 lint may HOLD a post. `_report_carousel_fact_grounding`'s advisory-only posture is deliberate and is
 **not** touched by this audit or its PR, per the issue's own scope rule.
 
+**Half-shipped (#1512).** `_report_carousel_slide_slop` now runs the EXISTING `slop_lint_report`
+over the concatenated slide text (`_deck_text`, cover and CTA included — the reference gate's
+`graded` exemption is about reusable artifacts, not about text quality) and records the verdict as
+the ADVISORY `slide_ai_slop` finding on `posts.gate_reason`. Two mechanics make it readable: the
+note is written where the slide text exists and re-read by `evaluate_post_gates`
+(`_recorded_slide_slop_notes`) the same way the video probe's reason is, and a regenerated clean
+deck clears it. `demoted=False` always — so nothing about which posts publish changes.
+
+Still open, and still a product call: (a) whether a slide-level lint may HOLD a post, whose only
+remedy is regenerating the whole deck since slide text is baked into images, and (b) whether a
+carousel is authenticity-judged at generation (one `lem-complex` judge call per deck, and it makes
+the existing demote-to-PENDING gate fire on a post type it never has).
+
 ### F6 — Carousels have no rendered-asset telemetry and no deck surface → **#1513**
 
 Video posts got asset telemetry in #1281: `score_video_asset` records render outcome, duration,

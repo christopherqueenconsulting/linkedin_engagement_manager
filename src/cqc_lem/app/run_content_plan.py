@@ -178,6 +178,7 @@ from cqc_lem.utilities.observability import (
 from cqc_lem.utilities.quality_gates import (
     GATE_MALFORMED_ASSET,
     GATE_SIMILARITY,
+    GATE_SLIDE_SLOP,
     affiliate_promo_finding,
     authenticity_finding,
     demoting_findings,
@@ -187,6 +188,7 @@ from cqc_lem.utilities.quality_gates import (
     meeting_cta_finding,
     missing_asset_finding,
     similarity_finding,
+    slide_slop_finding,
     slop_finding,
 )
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
@@ -679,9 +681,7 @@ def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], bluepr
     if not carousel or not requires_fact_anchor("post", fmt):
         return
     try:
-        slides = deck_slides(carousel)
-        deck_text = "\n".join(f"{s['title']} {s['content']}".strip() for s in slides)
-        report = fact_grounding_report(deck_text, _fact_anchors(user_id))
+        report = fact_grounding_report(_deck_text(carousel), _fact_anchors(user_id))
         if report["unverified_values"]:
             log_warning("Carousel slides state specifics no verified fact backs: "
                         + ", ".join(report["unverified_values"][:5]),
@@ -692,6 +692,88 @@ def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], bluepr
                         user_id=user_id, post_id=post_id, task_name="create_carousel_content")
     except Exception as e:
         log_warning("Could not grade the carousel's fact grounding", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_carousel_content")
+
+
+def _deck_text(carousel: Optional[dict]) -> str:
+    """Every slide's title + body, in schema order, as ONE block of text.
+
+    This is what a slide-level TEXT check grades. The cover and CTA slides are included on purpose:
+    `deck_slides`' `graded` flag exempts them from the REFERENCE gate, whose question is "does this
+    slide carry a reusable artifact" — one a cover cannot answer — while a bait closer or a canned
+    opener is exactly what a text-quality check exists to catch, and those live on the very slides
+    the reference gate skips.
+    """
+    return "\n".join(f"{s['title']} {s['content']}".strip()
+                     for s in deck_slides(carousel)).strip()
+
+
+def _record_slide_slop_finding(user_id: int, post_id: int, report: dict) -> None:
+    """Record — or clear — the slide-level AI-slop note on `posts.gate_reason` (issue #1512).
+
+    Same mechanic as `_record_video_probe_finding`, and for the same reason: the slide TEXT exists
+    only inside `create_carousel_content` (the deck is persisted as rendered image URLs), so a gate
+    pass that runs later cannot re-derive this verdict — it has to be written where it is measured
+    and re-read where the findings are assembled. A clean deck clears any note an earlier generation
+    left, so a regenerated carousel stops showing a stale one.
+
+    ADVISORY (`demoted=False`): a hold on baked-in slide text can only be cleared by regenerating
+    the whole deck, which is a product decision that is not this change's to make.
+
+    Best-effort — this is review UX, so an unreadable/unwritable reason only logs.
+    """
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_SLIDE_SLOP]
+        if not report["violations"]:
+            if len(kept) == len(existing):
+                # Nothing to clear — a clean deck never writes.
+                return
+            findings = kept
+        else:
+            findings = kept + [slide_slop_finding(violation_reasons(report["hard"]),
+                                                  violation_reasons(report["warnings"]))]
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not record the carousel's slide-level slop lint — this deck's review "
+                    "queue entry will not name the patterns its slides carry", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+
+
+def _report_carousel_slide_slop(user_id: int, post_id: Optional[int],
+                                carousel: Optional[dict]) -> None:
+    """Grade a deck's SLIDE text with the EXISTING slop lint and record what fired (issue #1512).
+
+    The caption has always run the full gate suite; the slides ran one gate (`deck_reference_report`)
+    and an advisory fact-grounding log, so on the one format where the slides ARE the post a tier-1
+    tell pileup or a banned scaffold opener was recorded nowhere. This runs `lint_report` — the same
+    linter, the same `post` surface severities, never a carousel-only copy — over the concatenated
+    slide text and persists the result as an advisory finding.
+
+    Records only; it never changes a post's status. Never raises: a slide reading that fails costs
+    the record, never the deck.
+    """
+    if post_id is None or not carousel:
+        return
+    try:
+        deck_text = _deck_text(carousel)
+        if not deck_text:
+            return
+        # The same lead-magnet exemption the caption's lint gets: a sanctioned "Comment KEYWORD" CTA
+        # is not bait, wherever in the piece it is written.
+        report = slop_lint_report(deck_text, "post", exempt_keyword=_cta_keyword_for(user_id, post_id))
+        if not report["checked"]:
+            return
+        _record_slide_slop_finding(user_id, post_id, report)
+        if report["violations"]:
+            # INFO, not WARNING: this is a measurement of a draft, and a deck carrying a warn-level
+            # pattern is an expected reading rather than a degraded path — warning here would file a
+            # grouped defect against working behaviour on every slop-carrying deck.
+            log_info("Carousel slide text matched the AI-slop lint: "
+                     + ", ".join(v["check"] for v in report["violations"]),
+                     user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        log_warning("Could not lint the carousel's slide text", exc=e, user_id=user_id,
                     post_id=post_id, task_name="create_carousel_content")
 
 
@@ -758,6 +840,11 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # Reported, never held — the caption already has its gate (`evaluate_post_gates` runs the same
     # check with the same full bank), and slide text has no review queue to be held in.
     _report_carousel_fact_grounding(user_id, post_id, blueprint, carousel_dict)
+
+    # The slide text's own quality reading (issue #1512): the same slop lint the caption runs, over
+    # the concatenated slides. Recorded on the post, advisory — it holds nothing, and it leaves
+    # `_report_carousel_fact_grounding`'s advisory-only posture (ring-fenced by #1139) untouched.
+    _report_carousel_slide_slop(user_id, post_id, carousel_dict)
 
     # Count the anchor as used so the NEXT piece rotates to different raw material — the same write
     # create_text_post makes. Without it the carousel reads the bank but never advances it, so
@@ -1290,6 +1377,24 @@ def _recorded_similarity_finding(post_id: int) -> list[dict]:
     except Exception as e:
         log_warning("Could not read the recorded similarity verdict — a near-duplicate draft will "
                     "not be held for review", exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
+def _recorded_slide_slop_notes(post_id: int) -> list[dict]:
+    """The slide-level slop note `_report_carousel_slide_slop` recorded on this deck (issue #1512).
+
+    A gate pass cannot re-derive this one either: the deck is persisted as rendered slide IMAGES, so
+    by the time the findings are assembled the slide text is gone. Re-read here so the note survives
+    both the generation-time gate pass (which writes the post's findings after generation returns)
+    and every later re-score — a re-scored caption does not change what the images say.
+    Never raises — an unreadable note only costs the record.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_SLIDE_SLOP]
+    except Exception as e:
+        log_warning("Could not read the recorded slide-level slop lint — this deck's findings will "
+                    "not name the patterns its slides carry", exc=e, post_id=post_id,
+                    task_name="create_content")
         return []
 
 
@@ -1958,6 +2063,11 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
         if not slop["passes"]:
             findings.append(slop_finding(violation_reasons(slop["hard"]),
                                          violation_reasons(slop["warnings"])))
+
+    # Slide-level AI-slop note for a deck (issue #1512), measured at generation and re-read here —
+    # the slide text no longer exists by this point. Advisory as recorded, so it never demotes.
+    if str(post_type).lower() in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
+        findings.extend(_recorded_slide_slop_notes(post_id))
 
     if content and recent_texts:
         # Embedding-first (issue #1265) — the finding carries the measure that fired, because a

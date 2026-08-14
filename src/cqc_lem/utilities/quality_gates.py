@@ -21,6 +21,7 @@ GATE_MALFORMED_ASSET = "malformed_asset"
 GATE_MEETING_CTA = "meeting_cta"
 GATE_FACT_GROUNDING = "fact_grounding"
 GATE_SLOP = "ai_slop"
+GATE_SLIDE_SLOP = "slide_ai_slop"
 GATE_AFFILIATE_PROMO = "affiliate_promo"
 
 GATE_LABELS = {
@@ -32,6 +33,7 @@ GATE_LABELS = {
     GATE_MEETING_CTA: "Meeting-ask CTA",
     GATE_FACT_GROUNDING: "Unverified specifics",
     GATE_SLOP: "AI-slop patterns",
+    GATE_SLIDE_SLOP: "AI-slop patterns on the slides",
     GATE_AFFILIATE_PROMO: "Affiliate promotion",
 }
 
@@ -234,6 +236,36 @@ def slop_finding(hard_reasons: Optional[list] = None,
                      "kicker\" beats, the emoji bullets, and the reflex closer. Do not swap in "
                      "invented specifics for what you cut."),
         score=float(len(hard)), threshold=0.0,
+        details=hard[:10] + [f"(advisory) {w}" for w in warn[:5]])
+
+
+def slide_slop_finding(hard_reasons: Optional[list] = None,
+                       warn_reasons: Optional[list] = None,
+                       demoted: bool = False) -> dict:
+    """The deterministic AI-slop lint (issue #625 / D1) read over a deck's SLIDE text (issue #1512).
+
+    On a carousel the slides are what the reader reads, but only the caption has ever been linted,
+    so a tier-1 tell pileup, a banned scaffold opener or a bait closer on a slide was recorded
+    nowhere.
+
+    ADVISORY by default, and that is a deliberate posture rather than a shortcut: slide text is baked
+    into rendered images with no review queue, so a hold cannot be cleared by editing and re-scoring
+    the way the caption's `ai_slop` hold can — the only remedy is regenerating the whole deck. The
+    `demoted` flag exists so the holding posture is one argument away once it is decided; nothing
+    passes it today.
+    """
+    hard = [str(r).strip() for r in (hard_reasons or []) if str(r).strip()]
+    warn = [str(r).strip() for r in (warn_reasons or []) if str(r).strip()]
+    counted = len(hard) or len(warn)
+    return build_finding(
+        GATE_SLIDE_SLOP,
+        explanation=(f"This deck's slide text matches {counted} AI-slop pattern(s). On a document "
+                     f"post the slides are what the reader actually reads, and LinkedIn's 2026 "
+                     f"update suppresses these constructions."
+                     + ("" if demoted else " Recorded for your review — the post is not held on it.")),
+        remediation=("Slide text is rendered into images, so it cannot be edited and re-scored: "
+                     "regenerate the carousel if the flagged constructions matter to you."),
+        score=float(len(hard)), threshold=0.0, demoted=demoted,
         details=hard[:10] + [f"(advisory) {w}" for w in warn[:5]])
 
 
