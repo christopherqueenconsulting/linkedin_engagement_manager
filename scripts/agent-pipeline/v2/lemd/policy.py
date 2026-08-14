@@ -37,7 +37,7 @@ MODE_BUDGET: dict[str, int] = {
     "fix": 4,
     "review": 3,
     # 3, not 2: on a `template:agent-task` PR, selfreview now ALSO walks the issue's structured
-    # Acceptance checklist item-by-item (RUNBOOK.md), on top of its existing general defect-hunting
+    # Acceptance checklist item-by-item (runbook/selfreview.md), on top of its existing general defect-hunting
     # pass. An adversarial review that rejected a first-draft plan (budget-starvation risk on
     # `revise`'s per-PR-lifetime ledger) explicitly kept the fix-and-escalate shape unchanged rather
     # than splitting it across modes — this is the one deliberate, isolated cost of that expanded
