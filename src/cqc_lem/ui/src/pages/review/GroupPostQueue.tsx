@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
+import type { ApiEnvelope } from '../../api/types'
 import { useAuth } from '../../contexts/useAuth'
 import { formatInTimezone } from '../../utils/datetime'
 import { nextGroupPublishSlot } from '../../utils/groupPostSlot'
@@ -91,7 +92,7 @@ export default function GroupPostQueue(
   // The media rides the SAME post-image surface the Content Studio uses for a scheduled post: it is
   // stored under this user's own preview dir and the group-post PUT only accepts a URL we issued
   // them, so nothing here can point the publish run at someone else's file.
-  async function attachMedia(request: () => Promise<{ data: { detail: { image_url: string } } }>,
+  async function attachMedia(request: () => Promise<{ data: ApiEnvelope<{ image_url: string }> }>,
                              kind: 'upload' | 'generate') {
     if (!sessionToken) { flash(false, 'Not logged in.'); return }
     setMediaBusy(kind)

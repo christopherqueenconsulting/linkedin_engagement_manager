@@ -1,111 +1,32 @@
-export type EngPrefs = {
-  tone: string | null
-  comment_length: string
-  comment_style: string | null
-  use_emojis: boolean
-  use_hashtags: boolean
-  include_topics: string[]
-  exclude_topics: string[]
-  include_keywords: string[]
-  exclude_keywords: string[]
-  include_authors: string[]
-  exclude_authors: string[]
-  // Round-tripped, not edited: the PUT model defaults these and the upsert writes the WHOLE row, so
-  // omitting them from this type made every save from the SPA silently reset both columns (F2).
-  post_types: string[]
-  default_buyer_stage: string | null
-  focus_topics: string[]
-  business_goals: string | null
-  personal_goals: string | null
-  // Quality-gate sensitivity (issue #421). null = use the deploy default in gate_defaults.
-  authenticity_score_min: number | null
-  post_similarity_max_pct: number | null
-  min_reactions: number | null
-  max_post_age_hours: number | null
-  reply_to_own_comments: boolean
-  max_comments_per_day: number
-  max_dms_per_day: number
-  max_invites_per_day: number
-  max_company_page_invites_per_day: number
-  connection_request_mode: string
-  connection_targeting_mode: string
-  connection_target_authors: string[]
-  min_connection_icp_score: number
-  default_video_quality: string
-  reply_check_mode: string
-  reply_sweeps_per_day: number
-  reply_max_post_age_days: number
-  reply_inbound_address?: string | null
-  gmail_forward_confirmation?: GmailForwardConfirmation | null
-  feed_fallback_when_empty: boolean
-  link_in_first_comment: boolean
-  // How many day-type slots a week the content plan fills (issue #621). 7 = daily.
-  posts_per_week: number
-  // Which weekdays those slots may land on, Mon=0 … Sun=6 (issue #581). Default Mon-Fri.
-  posting_days: number[]
-  // AI image on generated text posts (image-generation overhaul). Default on.
-  text_post_images?: boolean
-  // Opt-in auto-follow of roster targets (issue #962). Default OFF — bulk following is a classic
-  // bot signature, so it only ever runs because the user asked for it.
-  roster_auto_follow?: boolean
-  max_follows_per_day?: number
-  // Opt-in auto-connect for roster targets following didn't unlock (issue #979). Default OFF and
-  // independent of the follow toggle; it spends the shared max_invites_per_day, never its own cap.
-  roster_auto_connect?: boolean
-  max_catchup_touches_per_day: number
-  catchup_touch_mode: string
-  catchup_event_types: string[]
-  catchup_message_source: string
-  // Read-only: the highest catch-up cap this plan allows (10/day is premium-only).
-  max_catchup_touches_allowed?: number
-  // Read-only: the deploy-wide gate thresholds used when the user hasn't set their own.
-  gate_defaults?: { authenticity_score_min: number; post_similarity_max_pct: number }
-  feed_reach?: FeedReach | null
-  // Read-only: false when the user has never saved engagement preferences, so the hub can start a
-  // brand-new account on the Balanced preset without ever touching an existing user's saved values.
-  has_saved_preferences?: boolean
-}
+// Everything below that names a real endpoint is GENERATED, not written here (issue #1446): the
+// server dumps `/api/openapi.json`, `npm run gen:api-types` turns it into `src/api/schema.ts`, and
+// these aliases pick the payload out of it. The hand-maintained copies these replaced drifted the
+// expensive way — `post_types` and `default_buyer_stage` were once missing from `EngPrefs`, and
+// because the PUT writes the WHOLE row, every save from the SPA silently reset both columns (F2).
+import type { components } from '../../api/schema'
+import type { GetDetail } from '../../api/types'
 
-// What the /user/settings endpoint stores — one PUT for the whole object, so every control that
-// edits any of these fields must share one piece of state (omitting a field resets it server-side).
-export type UserPrefs = {
-  last_login_inactivate_delay: number | null
-  auto_schedule_posts: boolean
-  content_language: string | null
-  effective_content_language?: string | null
-  content_buffer_days: number
-  content_buffer_max_posts: number
-}
+/** The saved engagement preferences plus the read-only context the hub renders.
+ *
+ *  Anything the server derives per request (`gate_defaults`, `feed_reach`,
+ *  `max_catchup_touches_allowed`, `has_saved_preferences`, the catch-up bounds) is round-tripped on
+ *  a save and ignored server-side; the rest is a stored column. */
+export type EngPrefs = GetDetail<'/api/user/engagement-preferences'>
 
-export type GmailForwardConfirmation = {
-  code?: string | null
-  confirmed?: boolean
-  url_found?: boolean
-  forwarded_to_user?: boolean
-  /** How it was proven: `auto_click` (we clicked Gmail's verify link) or `forwarded_email` (a
-   *  LinkedIn notification actually reached the forwarding address). */
-  source?: string | null
-}
+/** The account-level preferences the Account page edits — one PUT for the whole object, so every
+ *  control that edits any of these fields must share one piece of state (omitting a field resets it
+ *  server-side). `effective_content_language` is derived, so it is not part of the edit state. */
+export type UserPrefs = Omit<
+  NonNullable<GetDetail<'/api/user/settings'>['preferences']>,
+  'effective_content_language'
+>
 
-export type FeedReach = {
-  examined: number
-  passed_filters: number
-  matched_topics: number
-  commented: number
-  fallback_used: boolean
-  // Roster-sourced vs feed-sourced split + the on-topic gate's rejections (issue #616).
-  roster_commented?: number
-  feed_commented?: number
-  roster_targets_visited?: number
-  roster_examined?: number
-  off_topic_skipped?: number
-  max_post_age_hours?: number
-  min_reactions?: number
-  // Which feed ordering that scan actually ranked (#817). 'recent' is the only value that means
-  // LEM's recency-first scoring saw a recency-ordered feed; 'n/a' is a group feed, which has none.
-  feed_sort?: 'recent' | 'top' | 'missing' | 'unknown' | 'n/a'
-  at?: string
-}
+/** The whole `GET /user/settings` payload — subscription, preferences, blog/sitemap, company page. */
+export type UserSettings = GetDetail<'/api/user/settings'>
+
+export type GmailForwardConfirmation = components['schemas']['GmailForwardConfirmation']
+
+export type FeedReach = components['schemas']['FeedReach']
 
 export type EngagementTargetCategory = 'peer' | 'icp' | 'creator'
 

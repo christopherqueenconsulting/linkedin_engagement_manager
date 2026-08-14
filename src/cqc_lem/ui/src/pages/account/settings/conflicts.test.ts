@@ -20,8 +20,16 @@ const eng = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   reply_max_post_age_days: 2, feed_fallback_when_empty: true, link_in_first_comment: true,
   max_catchup_touches_per_day: 5, catchup_touch_mode: 'pre_review',
   catchup_event_types: ['job_change', 'promotion'], catchup_message_source: 'linkedin',
+  min_catchup_contact_interval_days: 14, max_catchup_touches_per_contact_days: 2,
   posts_per_week: 3, posting_days: [0, 1, 2, 3, 4],
+  text_post_images: true, roster_auto_follow: false, max_follows_per_day: 3,
+  roster_auto_connect: false,
   gmail_forward_confirmation: { confirmed: true },
+  // Read-only context the endpoint always returns alongside the row (issue #1446).
+  has_saved_preferences: true, max_catchup_touches_allowed: 5,
+  catchup_contact_interval_bounds: { min_days: 0, max_days: 90 },
+  catchup_per_contact_cap_bounds: { min: 1, max: 10 },
+  gate_defaults: { authenticity_score_min: 60, post_similarity_max_pct: 55 },
   ...over,
 })
 

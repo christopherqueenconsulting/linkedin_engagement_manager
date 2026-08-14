@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "gen:api-types": "npx --yes openapi-typescript@7.13.0 openapi.json -o src/api/schema.ts && node scripts/stamp-api-types.mjs",
+    "check:api-types": "npm run gen:api-types && git diff --exit-code -- src/api/schema.ts src/api/schema.stamp.json",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run --config vitest.config.ts",

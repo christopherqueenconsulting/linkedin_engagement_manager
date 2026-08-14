@@ -2,17 +2,13 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../../api/client'
 import { useAuth } from '../../../contexts/useAuth'
-import type { UserPrefs } from '../types'
+import type { UserPrefs, UserSettings } from '../types'
 import { UserPrefsCtxObject, type UserPrefsCtx } from './userPrefsCtx'
 import { useRegisterSaveSection } from '../settingsSave'
 
-export type UserSettingsResponse = {
-  subscription: unknown
-  preferences: (UserPrefs & { effective_content_language: string | null }) | null
-  blog_url: string | null
-  sitemap_url: string | null
-  company_linked_in_url: string | null
-}
+/** Generated from the published schema (issue #1446) — re-exported under its old name because the
+ *  Account page and its tests import it from here. */
+export type UserSettingsResponse = UserSettings
 
 export function UserPrefsProvider({ children }: { children: ReactNode }) {
   const { sessionToken } = useAuth()
