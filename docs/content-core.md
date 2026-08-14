@@ -62,14 +62,21 @@ Load-bearing details:
 - **The user's `post_similarity_max_pct` setting governs the fallback only.** It is a percentage on
   the token-overlap scale, where two unrelated posts sit at 0.2-0.4; cosine puts them near 0.5, so
   applying that percentage to cosine would hold nearly everything.
-- **Over the ceiling is ONE retry, then keep** — the path the lexical gate always took. A draft still
-  over after the retry SHIPS, with a structured warning naming the measure; it is not held. The
-  `similarity` quality-gate finding — which NAMES the measure that fired, because a cosine score and
-  an overlap score are not readable against each other — needs the post history, and the only caller
-  that hands `evaluate_post_gates` a history is the **edit & re-score** endpoint (`rescore_post`,
-  which excludes the post itself). So similarity holds a post at PENDING on re-score only, exactly as
-  the lexical gate did before #1265. Gating it at generation is a separate publishing-behaviour call
-  (**#1452**), not something #1265 changed.
+- **Over the ceiling is ONE retry, then HELD** (#1452). The retry is the path the lexical gate always
+  took; what changed is where the still-over draft ends up. It no longer auto-publishes — it lands
+  **PENDING** carrying the `similarity` finding, which NAMES the measure that fired because a cosine
+  score and an overlap score are not readable against each other. It is a hold, not a block: the
+  draft is kept, and the author can approve it as-is or edit and re-score.
+- **The verdict is RECORDED, not re-measured** (#1452). `post_similarity_report` runs inside
+  `_review_generated_post`, which is the only place the post history and the embedding call live —
+  by the time `_gate_findings_for_post` runs, neither is in scope. So the review gate writes its
+  verdict onto `posts.gate_reason` (the shape `_record_video_probe_finding` uses for the same
+  reason) and the gate pass re-reads it, which is why the hold costs no second `lem-embedding` call
+  and no second history read. Two consequences that bite: the review gate writes on EVERY reviewed
+  draft, because a verdict left by an earlier draft would hold a clean regeneration forever; and
+  `rescore_post` never reads the recorded verdict — it hands `evaluate_post_gates` a live
+  `recent_texts` instead, since grading the text the author just edited is the entire point of a
+  re-score.
 - **One measure vocabulary.** `SIMILARITY_MEASURE_{EMBEDDING,LEXICAL,NONE}` in `content_framework.py`
   is what the gate, the comment gate and the nightly telemetry (`content_quality.MEASURE_*`, which
   aliases them) all name a measure by — so the trend line in `docs/content-quality-telemetry.md` and

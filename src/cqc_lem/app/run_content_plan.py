@@ -177,6 +177,7 @@ from cqc_lem.utilities.observability import (
 )
 from cqc_lem.utilities.quality_gates import (
     GATE_MALFORMED_ASSET,
+    GATE_SIMILARITY,
     affiliate_promo_finding,
     authenticity_finding,
     demoting_findings,
@@ -1236,6 +1237,62 @@ def _recorded_malformed_asset_notes(post_id: int) -> list[dict]:
         return []
 
 
+def _record_post_similarity_finding(post_id: Optional[int], similarity: dict,
+                                    user_id: Optional[int] = None) -> None:
+    """Record — or clear — the near-duplicate verdict on `posts.gate_reason` (issue #1452).
+
+    The generation-time gate pass cannot re-derive this one. `post_similarity_report` costs a
+    `lem-embedding` batch call, and the review gate has already paid it for this draft (twice, on the
+    retry path) against a post history it loaded once for the whole outermost call — neither is in
+    scope by the time `_gate_findings_for_post` runs. So the verdict the review gate reached is
+    written here, exactly as the video probe writes the reason a file was rejected, and re-read
+    there instead of measured again.
+
+    Written on EVERY reviewed draft, not only a failing one: a regenerated post reuses its row, so a
+    verdict left behind by an earlier draft would hold a clean rewrite forever.
+
+    Best-effort — the reason is review UX, so an unreadable/unwritable gate reason costs the hold's
+    explanation, never the post.
+    """
+    if post_id is None:
+        return
+    too_similar = bool((similarity or {}).get("too_similar"))
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_SIMILARITY]
+        if not too_similar:
+            if len(kept) == len(existing):
+                # Nothing to clear — the common path never writes.
+                return
+            findings = kept
+        else:
+            findings = kept + [similarity_finding(similarity["score"], similarity["threshold"],
+                                                  similarity["match"],
+                                                  measure=similarity["measure"])]
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not record the similarity verdict on the post — a near-duplicate draft "
+                    "will not be held for review", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_text_post")
+
+
+def _recorded_similarity_finding(post_id: int) -> list[dict]:
+    """The near-duplicate verdict the review gate recorded on this post, if any (issue #1452).
+
+    Read only by the generation-time gate pass. `rescore_post` measures similarity live against the
+    user's edited text — that is the whole point of a re-score — so it must never pick this up as
+    well, or an edit that fixed the duplication would still show the draft's original verdict.
+
+    Never raises — an unreadable verdict only costs the hold.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_SIMILARITY]
+    except Exception as e:
+        log_warning("Could not read the recorded similarity verdict — a near-duplicate draft will "
+                    "not be held for review", exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
 def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
                          user_id: Optional[int] = None, task_name: str = "") -> bool:
     """Decide whether a just-downloaded video file may become the post's media (issue #1280).
@@ -1890,9 +1947,15 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
 def _gate_findings_for_post(user_id: int, post_id: int, content: str,
                             post_type: Union[PostType, str, None],
                             video_url: Optional[str] = None) -> list[dict]:
-    """The generation-time gate pass: the gates that can hold a fresh draft (media + authenticity),
-    evaluated against the user's own thresholds. Best-effort — the reason is review UX, so a prefs
-    or score read that fails costs the explanation, never the post.
+    """The generation-time gate pass: the gates that can hold a fresh draft (media + authenticity +
+    the near-duplicate verdict the review gate already reached), evaluated against the user's own
+    thresholds. Best-effort — the reason is review UX, so a prefs or score read that fails costs the
+    explanation, never the post.
+
+    Similarity arrives as a RECORDED verdict rather than a live measurement (issue #1452): the post
+    history and the embedding call both belong to the review gate inside `create_text_post`, so
+    re-running the gate here would be a second `lem-embedding` call and a second history read for
+    one draft. `evaluate_post_gates` is therefore still handed no `recent_texts` from this caller.
     """
     try:
         score = get_post_authenticity_score(post_id)
@@ -1904,6 +1967,7 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
                     exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
         score = None
     archetype = _post_archetype_or_none(post_id)
+    similarity = _recorded_similarity_finding(post_id)
     try:
         return evaluate_post_gates(
             post_id, content, post_type, video_url,
@@ -1911,11 +1975,11 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
             authenticity_score=score,
             archetype=archetype,
             fact_anchors=_fact_anchors_for(user_id, archetype),
-            cta_keyword=_cta_keyword_for(user_id, post_id))
+            cta_keyword=_cta_keyword_for(user_id, post_id)) + similarity
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
-        return []
+        return similarity
 
 
 def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
@@ -2101,9 +2165,13 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     > POST_SIMILARITY_MAX on the degraded path),
     missing proof, fabricated specifics, or unverified numbers → regenerate ONCE with an explicit
     avoid/proof/no-invention directive; still failing → log a structured warning and keep the second
-    attempt (never loop, never hard-block — the fact-grounding GATE is what holds a still-fabricating
-    fact-anchored draft out of auto-publish). Also runs the cheap focus-alignment check on whatever
-    content ships.
+    attempt (never loop, never hard-block — the GATES are what hold a still-failing draft out of
+    auto-publish). Also runs the cheap focus-alignment check on whatever content ships.
+
+    The similarity verdict on the draft this returns is RECORDED on the post (issue #1452) so
+    `_gate_findings_for_post` can hold a still-over draft at PENDING without paying a second
+    embedding call: this is the only place that measurement exists, because the post history and the
+    `post_similarity_report` call both live here.
     """
     similarity = post_similarity_report(content, recent_texts, prefs)
     score, threshold, match = similarity["score"], similarity["threshold"], similarity["match"]
@@ -2134,6 +2202,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
             log_warning(f"Generated post states first-person specifics not in the story bank: "
                         f"{', '.join(fabricated)}",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
+        _record_post_similarity_finding(post_id, similarity, user_id=user_id)
         _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
@@ -2173,16 +2242,20 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
         second = None
     if not second:
+        # The first draft is what ships, so ITS verdict is the one the gate pass must read.
+        _record_post_similarity_finding(post_id, similarity, user_id=user_id)
         _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
     # Re-graded, not re-used: the retry is a different draft, and the second embedding call only
     # happens on the retry path (a clean first draft still costs exactly one).
     second_similarity = post_similarity_report(second, recent_texts, prefs)
+    _record_post_similarity_finding(post_id, second_similarity, user_id=user_id)
     if second_similarity["too_similar"]:
         log_warning(f"Post still similar to a recent post after retry "
                     f"({second_similarity['measure']} score {second_similarity['score']:.2f} > "
-                    f"max {second_similarity['threshold']:.2f}); keeping second attempt",
+                    f"max {second_similarity['threshold']:.2f}); the similarity gate will hold it "
+                    f"for review",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     if not has_first_person_proof(second):
         log_warning("Post still lacks a concrete first-person lived detail after retry "
