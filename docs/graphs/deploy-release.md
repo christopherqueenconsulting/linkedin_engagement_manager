@@ -134,8 +134,11 @@ Numbered walkthrough (job/file names are exact):
 13. **Manual paths**, both `workflow_dispatch`-only: `deploy-vps.yml` ("Redeploy / Rollback VPS")
     re-runs `deploy.sh` (or `rollback.sh` with `-f rollback=true`, which skips migrations and the
     blue/green flip entirely — a single `up -d --remove-orphans` on the requested tag) against an
-    already-built GHCR image; `deploy.yml` ("Deploy CDK Stack to AWS") is explicitly the
-    UNSUPPORTED path per root `CLAUDE.md` (#973), retained but not part of the live deploy graph.
+    already-built GHCR image; `deploy.yml` ("Deploy CDK Stack to AWS") is a **dead** workflow — the
+    CDK tree it deployed (`src/cqc_lem/aws/`) was deleted in #973, and the `_CI/bootstrap.sh` /
+    `_CI/deploy.sh` it sources are guarded on a directory that no longer exists, so a dispatch
+    assumes the AWS role and then does nothing. Never part of the live deploy graph; removing it
+    needs the owner (the pipeline credential has no `workflows` permission).
 
 ## Rubric scorecard (current state)
 
@@ -205,7 +208,8 @@ did the system get back to a known-good state without a human being paged first.
 - `.github/workflows/release-please.yml`, `release-auto-merge.yml`, `build-and-push.yml`,
   `deploy-vps.yml`, `pr-lint.yml`, `unit-tests.yml`, `integration-coverage.yml`, `ui-build.yml`,
   `migration-check.yml`, `gitguardian-scan.yml`, `codeql-pr-gate.yml` — the actual pipeline.
-  `deploy.yml` is the unsupported AWS/CDK path (#973), kept but out of the live graph.
+  `deploy.yml` drove the AWS/CDK path deleted in #973 — dead, kept only because removing a workflow
+  needs the owner, and never part of the live graph.
   `release-please-config.json` — release-please's own config (release type, changelog behavior).
   `.github/CODEOWNERS`, `docs/contribution-security.md` — why `required_approving_review_count = 0`
   makes CODEOWNERS enforce nothing today, and the provenance-based label-trust model
