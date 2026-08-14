@@ -15,6 +15,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+from cqc_lem.utilities.logger import log_debug
 from cqc_lem.utilities.marketing.attribution import (
     MEDIUM_SOCIAL,
     PLACEMENT_FIRST_COMMENT,
@@ -1403,6 +1404,90 @@ _MECHANICAL_EDITOR_SYSTEM = (
 )
 
 
+# The diff-guard is the FLOOR under the prompt's hard rules (issue #1079): a prompt line is a
+# request, this is the check. Anything the editor returns that moved a number, a URL, a proper noun,
+# or the overall length outside a bounded margin is a REWRITE, not a mechanical edit, and fails open
+# to the original draft. Never relax these into prompt text — the whole point is that the guarantee
+# survives a model that ignores its instructions.
+MECHANICAL_EDIT_LENGTH_MARGIN = 0.10
+# Absolute floor on the margin so a one-comma fix on a short draft isn't read as a rewrite. Newsletter
+# bodies run to thousands of characters, where the ratio is what binds.
+MECHANICAL_EDIT_LENGTH_SLACK = 40
+
+# "3,000" / "1.5" / "2026" — commas are stripped before comparison so a thousands-separator change is
+# formatting, not a changed figure.
+_NUMBER_TOKEN_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'`)\]]+", re.IGNORECASE)
+# A capitalized word, including hyphenated/apostrophized forms ("Fortune-500", "O'Brien").
+_CAPITALIZED_TOKEN_RE = re.compile(r"[A-Z][A-Za-z0-9]*(?:['’-][A-Za-z0-9]+)*")
+# Characters that mean the next capitalized word OPENS something (sentence, bullet, heading, quote),
+# where capitalization is the editor's job rather than evidence of a proper noun.
+_SENTENCE_OPENERS = set(".!?;:•*->#|)]}")
+
+
+def _numbers_in(text: Optional[str]) -> list[str]:
+    """Numeric tokens in `text`, comma-stripped and sorted.
+
+    A multiset, so a dropped or duplicated figure is visible.
+    """
+    return sorted(m.group(0).rstrip(",.").replace(",", "") for m in _NUMBER_TOKEN_RE.finditer(text or ""))
+
+
+def _urls_in(text: Optional[str]) -> list[str]:
+    """URLs in `text`, sorted, with trailing sentence punctuation trimmed off the match."""
+    return sorted(m.group(0).rstrip(".,;:!?") for m in _URL_TOKEN_RE.finditer(text or ""))
+
+
+def _opens_a_line(text: str, index: int) -> bool:
+    """Whether the token at `index` is the first word of a sentence, bullet, or heading."""
+    i = index - 1
+    while i >= 0 and (text[i].isspace() or text[i] in "\"'`([{"):
+        if text[i] == "\n":
+            return True
+        i -= 1
+    return i < 0 or text[i] in _SENTENCE_OPENERS
+
+
+def _proper_nouns_in(text: Optional[str]) -> set[str]:
+    """Proper nouns in `text`.
+
+    ALL-CAPS acronyms anywhere, plus capitalized words that are NOT opening a sentence, bullet, or
+    heading. URLs are excluded — `_urls_in` covers those exactly.
+
+    Sentence-initial capitals are deliberately ignored: capitalizing them is precisely what this pass
+    is FOR, so counting them would make the guard fail on its own successful edits.
+    """
+    stripped = _URL_TOKEN_RE.sub(" ", text or "")
+    found: set[str] = set()
+    for match in _CAPITALIZED_TOKEN_RE.finditer(stripped):
+        token = match.group(0)
+        if len(token) < 2:
+            continue
+        if token.isupper() or not _opens_a_line(stripped, match.start()):
+            found.add(token)
+    return found
+
+
+def mechanical_edit_guard_ok(original: Optional[str], edited: Optional[str]) -> bool:
+    """Whether `edited` is a MECHANICAL edit of `original` rather than a rewrite.
+
+    Four checks, all of which must hold: the numbers match as a multiset, the URLs match exactly,
+    every proper noun in `original` still appears (same case) in `edited`, and the length moved by no
+    more than `MECHANICAL_EDIT_LENGTH_MARGIN` (with `MECHANICAL_EDIT_LENGTH_SLACK` characters of
+    absolute slack). Proper nouns are a SUBSET check, not equality — the pass is allowed to add
+    capitals it is there to fix, only never to lose one it was given.
+    """
+    before, after = original or "", edited or ""
+    length_before, length_after = len(before.strip()), len(after.strip())
+    if length_before:
+        allowed = max(MECHANICAL_EDIT_LENGTH_SLACK, length_before * MECHANICAL_EDIT_LENGTH_MARGIN)
+        if abs(length_after - length_before) > allowed:
+            return False
+    return (_numbers_in(before) == _numbers_in(after)
+            and _urls_in(before) == _urls_in(after)
+            and _proper_nouns_in(before) <= _proper_nouns_in(after))
+
+
 @llm_step("mechanical_edit")
 def mechanical_edit_text(content: Optional[str], content_type: str = "newsletter",
                          profile_synthesis: Optional[str] = None,
@@ -1437,18 +1522,26 @@ def mechanical_edit_text(content: Optional[str], content_type: str = "newsletter
             temperature=0.3,
         )
         edited = (resp.choices[0].message.content or "").strip()
-    except Exception:
+    except Exception as e:
+        # DEBUG, not WARNING: the pass is opt-in polish that fails open, so the draft is unharmed and
+        # a recurring warning here would file a defect against working behaviour. Silent was worse —
+        # a proxy outage looked identical to a disabled flag.
+        log_debug("Mechanical edit call failed; keeping the original draft", exc=e, ai_model="lem-medium")
         return original
     if not edited:
-        return original
-    # A mechanical edit should not materially shorten the text; a collapse to a fragment means
-    # the model refused or got cut off — keep the original. The floor is a fraction of the original
-    # length, not an absolute minimum, so short but complete rewrites still pass.
-    if len(edited) < int(len(original.strip()) * 0.5):
+        log_debug("Mechanical edit returned nothing; keeping the original draft", ai_model="lem-medium")
         return original
     # Drop any stray typography the editor might have introduced; URLs are preserved by the
-    # formatter's masking, so only punctuation normalization happens here.
-    return normalize_public_text(edited)
+    # formatter's masking, so only punctuation normalization happens here. The guard runs on the
+    # NORMALIZED candidate because that is the text that would actually ship.
+    candidate = normalize_public_text(edited)
+    if not mechanical_edit_guard_ok(original, candidate):
+        # Expected enough to be a no-op, not a defect: the pass is opt-in polish and the original
+        # draft ships untouched, so this is DEBUG per the escalation contract.
+        log_debug("Mechanical edit rejected by the diff-guard; keeping the original draft",
+                  ai_model="lem-medium")
+        return original
+    return candidate
 
 
 # --- Title de-hype pass (issue #439) --------------------------------------------------------------

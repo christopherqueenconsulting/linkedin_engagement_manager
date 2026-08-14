@@ -169,6 +169,30 @@ retry) and then ships with a logged reason — rendered images have no review qu
 front. Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the
 receipt's structure asks for the exact stack by name.
 
+## Mechanical editor pass (issue #1079, `content_alignment.mechanical_edit_text`)
+
+An opt-in `lem-medium` copy edit on a newsletter draft — capitalization, grammar, punctuation,
+formatting, and nothing else. It runs AFTER humanization and BEFORE the slop lint (so the lint grades
+the text that ships), is gated by the `newsletter-editor-enabled` flag, and re-runs after a slop-lint
+regeneration. Voice and tone stay the reviewer's job, which is what the reporter asked for.
+
+The mechanical-only contract is a **diff-guard, not a prompt line** (`mechanical_edit_guard_ok`).
+A prompt rule is a request; the guard is the check, and it holds even when the model ignores its
+instructions. Four conditions, all required:
+
+| Check | Rule |
+|---|---|
+| **Numbers** | Multiset equality — a changed, dropped, or invented figure fails. Commas are stripped first, so `1,200` → `1200` is formatting |
+| **URLs** | Exact set equality, trailing sentence punctuation trimmed off the match |
+| **Proper nouns** | SUBSET: every proper noun in the input must still appear, same case. ALL-CAPS acronyms count anywhere; a capital that OPENS a sentence, bullet, or heading does not — fixing those is the pass's whole job |
+| **Length** | Within `MECHANICAL_EDIT_LENGTH_MARGIN` (10%), with `MECHANICAL_EDIT_LENGTH_SLACK` (40 chars) of absolute slack so one added comma on a short draft is not read as a rewrite |
+
+The guard runs on the NORMALIZED candidate, because that is the text that would actually ship. It
+**fails open**: a rejected edit, an LLM error, and an empty reply all return the ORIGINAL draft, each
+logged at DEBUG so a proxy outage does not look identical to a disabled flag (a WARNING would file a
+defect against a pass that is working as designed). A disabled flag returns the draft silently.
+A polish pass must never be able to block a newsletter.
+
 ## Slop lint (issue #625, `slop_lint.py`)
 
 The cheap explainable layer under the two LLM passes (`humanize_text` #416,
