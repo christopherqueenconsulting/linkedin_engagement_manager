@@ -183,6 +183,7 @@ class TestPinLockout:
         from cqc_lem.utilities.db import verify_pin_for_email
         from cqc_lem.utilities.env_constants import PIN_MAX_ATTEMPTS
 
+        # not locked, PIN does not match
         conn, cursor = fake_cursor(fetch_one_side_effect=[None, None])
         with _patch_conn(conn):
             assert verify_pin_for_email("user@example.com", "wrong") is False
@@ -193,6 +194,7 @@ class TestPinLockout:
     def test_a_locked_email_never_reaches_the_pin_comparison(self, fake_cursor):
         from cqc_lem.utilities.db import verify_pin_for_email
 
+        # the lockout probe finds a lock
         conn, cursor = fake_cursor(fetch_one_side_effect=[{"id": 1}])
         with _patch_conn(conn):
             assert verify_pin_for_email("user@example.com", "correct") is False

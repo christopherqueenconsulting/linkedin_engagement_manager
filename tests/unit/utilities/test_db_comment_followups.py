@@ -48,7 +48,7 @@ class TestNavigableAndCap:
 class TestUpdateKey:
     def test_upgrade_when_new_key_absent(self, fake_cursor):
         from cqc_lem.utilities.db import update_commented_post_key
-        conn, cur = fake_cursor(fetch_one=[0])
+        conn, cur = fake_cursor(fetch_one=[0])   # new key not present
         cur.rowcount = 1
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert update_commented_post_key(1, "feedpost://h", "feedurn://urn:li:activity:1") is True
@@ -56,7 +56,7 @@ class TestUpdateKey:
 
     def test_deletes_stale_when_new_key_already_exists(self, fake_cursor):
         from cqc_lem.utilities.db import update_commented_post_key
-        conn, cur = fake_cursor(fetch_one=[1])
+        conn, cur = fake_cursor(fetch_one=[1])   # new key already there
         cur.rowcount = 1
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             assert update_commented_post_key(1, "feedpost://h", "feedurn://urn:li:activity:1") is True

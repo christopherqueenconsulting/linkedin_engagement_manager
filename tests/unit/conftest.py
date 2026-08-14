@@ -187,7 +187,7 @@ def _make_fake_cursor(
     fetch_one_side_effect: Any = None,
     fetch_all_side_effect: Any = None,
     rowcount: int = 1,
-    lastrowid: int = 1,
+    lastrowid: int | None = 1,
     execute_error: Any = None,
 ) -> tuple[MagicMock, MagicMock]:
     """Build the (connection, cursor) pair every `db_cursor()` caller sees under test."""
@@ -230,11 +230,15 @@ def fake_cursor():
     - `fetch_one_side_effect` / `fetch_all_side_effect` — a sequence, for a helper that runs several
       queries on ONE cursor and needs a different result set per call.
     - `rowcount` / `lastrowid` — read after `execute` by the write helpers.
-    - `execute_error` — raised by `execute()`, for the `mysql.connector.Error` fallback contracts.
+    - `execute_error` — the `execute()` side effect, for the `mysql.connector.Error` fallback
+      contracts. A single exception raises on every call; a LIST is consumed per call, which is how
+      the stale-claim readers get an `IntegrityError` on the INSERT and a clean second statement.
 
     Two neighbours it deliberately does NOT replace. `mock_database_connection` (tests/conftest.py)
-    patches a different seam — `mysql.connector.connect` rather than `get_db_connection` — so it is
-    the right tool when the code under test opens its own connection. And the handful of stateful
+    patches a seam this factory does not — `mysql.connector.connect` — so it is the one to reach for
+    when the code under test opens its own connection. (Eleven modules use it today; several of them
+    only want its mock pair and patch `get_db_connection` themselves, which this factory would serve
+    just as well — migrating those is housekeeping, not a correctness fix.) And the handful of stateful
     fakes that dispatch on the SQL text to model real table behaviour (`_Cursor` in
     test_db_early_adopter_trial / test_db_affiliate, `_FakeCursor` in test_brand_showcase_endpoint)
     are simulators, not stubs: their point is the state machine, and flattening them into canned
