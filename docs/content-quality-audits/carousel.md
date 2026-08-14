@@ -67,9 +67,20 @@ Sweeping the body length in 5-char steps gives the table below.
 Body-slide figures are measured **with the photo band**, which is every body slide in production:
 `CAROUSEL_IMAGE_RATE` defaults to `1.0` and `CAROUSEL_IMAGES_ENABLED` to `True`, so every content
 slide asks for an image and the band branch takes the tighter of the two line caps. Text-only, the
-same layouts hold 254–290. The sweep steps 5 chars at a time, and the first length observed to clip
-sits 4–10 chars above each figure. Every stage-selected template — all four of them — holds **less
-than the 200 characters the generator prompt allows**.
+same layouts hold 254–290. Every stage-selected template — all four of them — holds **less than the
+200 characters the generator prompt allows**.
+
+**These are per-STRING measurements, not constants — never size a budget at a figure in this table.**
+The wrap is greedy on word boundaries, so where a line breaks (and therefore how many characters the
+last drawn line carries) depends on the words, not only on their count. Each figure above is the
+largest length that survived for the probe string used here, refined to the character at the
+boundary. Re-measuring the same layouts with a DIFFERENT body — a second sweep in 5-char steps,
+reported at the last surviving step — moves them by up to 8 characters in either direction:
+`bold_listicle` 125 / ≤140 / 125 (cover / body / CTA) against 117 / 142 / 117 here, `stat_reveal`
+140 / 100 / 135 against 142 / 99 / 133, `story_arc` 135 / 145 / 145 against 133 / 142 / 142. The
+band is stable; the exact number is not. Read the table as "this layout holds roughly this much",
+and treat any character budget a fix adopts as something to VERIFY by rendering — which is F1's
+missing test, not a number to copy out of here.
 
 
 
