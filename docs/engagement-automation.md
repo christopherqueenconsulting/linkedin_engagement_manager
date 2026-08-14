@@ -308,6 +308,14 @@ is now two beats with a review window between them.
   open draft is a 409. Media rides the post-image surface, is gated by `owns_post_image_url`, goes
   into the composer BEFORE the text, and fails OPEN — text alone beats no post. Full posture,
   including the best-practice list the prompt and the studio share: **`docs/group-posts.md`**.
+- **The undo window closes at the publish slot** (issue #1415). `utilities/group_post_slot.py` is the
+  ONE place that boundary is computed — the first Tuesday 15:00 UTC after the draft was WRITTEN, not
+  after it was skipped, so editing a skipped draft can't push the deadline out a week at a time. The
+  draft payload carries `can_undo_skip` / `undo_deadline` so the SPA shows **Undo skip** only while
+  the PUT would honour it and says the skip is final after; the PUT refuses a late undo with 409.
+  Undo restores the SAME row — never a regenerated draft, which is what the one-open-draft invariant
+  forbids — and an undo on a week that was never skipped is an expected no-op (DEBUG). An unreadable
+  `created_at` fails OPEN: the accidental skip is the bug, and a restore ships at the next slot.
 
 ## Roster targets LEM can't comment on + opt-in auto-follow (issue #962)
 

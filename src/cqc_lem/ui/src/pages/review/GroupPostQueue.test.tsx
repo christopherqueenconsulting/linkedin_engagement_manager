@@ -268,7 +268,7 @@ describe('GroupPostQueue — statuses (issue #1224)', () => {
 
     await waitFor(() => expect(screen.getByText('SKIPPED')).toBeTruthy())
     expect(screen.queryByRole('button', { name: /Skip this week/i })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Put back in the queue/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Undo skip/i }))
 
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith('/user/group-post-draft', {
@@ -276,7 +276,7 @@ describe('GroupPostQueue — statuses (issue #1224)', () => {
         status: 'ready',
       })
     )
-    expect(screen.getByText(/Back in the queue for this week\./i)).toBeTruthy()
+    expect(screen.getByText(/Skip undone — back in the queue for this week\./i)).toBeTruthy()
   })
 
   it('a queued draft offers Skip, not Restore', async () => {
@@ -284,7 +284,27 @@ describe('GroupPostQueue — statuses (issue #1224)', () => {
     harness(<GroupPostQueue userTimezone="America/New_York" />)
 
     await waitFor(() => expect(screen.getByText('READY')).toBeTruthy())
-    expect(screen.queryByRole('button', { name: /Put back in the queue/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Undo skip/i })).toBeNull()
+  })
+
+  it('drops the undo control once the publish slot has passed (issue #1415)', async () => {
+    // The server refuses the restore from here on, so offering the control would be a button that
+    // only ever produces an error.
+    get.mockResolvedValue({ data: { detail: { ...SKIPPED, can_undo_skip: false } } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('SKIPPED')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Undo skip/i })).toBeNull()
+    expect(screen.getAllByText(/the skip is final|can no longer be put back/i).length)
+      .toBeGreaterThan(0)
+  })
+
+  it('keeps the undo control while the window is open (issue #1415)', async () => {
+    get.mockResolvedValue({ data: { detail: { ...SKIPPED, can_undo_skip: true } } })
+    harness(<GroupPostQueue userTimezone="America/New_York" />)
+
+    await waitFor(() => expect(screen.getByText('SKIPPED')).toBeTruthy())
+    expect(screen.getByRole('button', { name: /Undo skip/i })).toBeTruthy()
   })
 })
 

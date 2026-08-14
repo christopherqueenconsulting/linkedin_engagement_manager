@@ -66,8 +66,9 @@ export default function GroupsCard() {
       await refetchDraft()
       setDraftMsg({
         ok: true,
-        text: body.status === 'skipped' ? 'Skipped — no group post this week.'
-          : body.status === 'ready' ? 'Back in the queue for this week.'
+        text: body.status === 'skipped'
+          ? 'Skipped — no group post this week. You can undo this until the Tuesday slot.'
+          : body.status === 'ready' ? 'Skip undone — back in the queue for this week.'
           : 'Saved.',
       })
       setTimeout(() => setDraftMsg(null), 3000)
@@ -124,6 +125,9 @@ export default function GroupsCard() {
   // A skipped draft is still shown here since #1224 — it is restorable until the slot passes — so
   // this card must not describe it as "what LEM will publish".
   const draftSkipped = draft?.status === 'skipped'
+  // Undo closes at that slot (issue #1415); after it the server refuses the restore, so the control
+  // goes away instead of offering something that cannot work.
+  const canUndoSkip = draftSkipped && draft?.can_undo_skip !== false
   useRegisterSaveSection('group-post', 'Next group post', draftDirty,
     async () => { await draftMutation.mutateAsync({ content: draftText as string }); return true })
 
@@ -171,7 +175,10 @@ export default function GroupsCard() {
           </h3>
           <p className="text-xs text-gray-600">
             {draftSkipped
-              ? 'Skipped — nothing goes out this week unless you put it back in the queue. '
+              ? (canUndoSkip
+                  ? 'Skipped — nothing goes out this week unless you undo the skip. '
+                  : "Skipped — this week's slot has passed, so the skip is final and a new post is "
+                    + 'drafted Sunday. ')
                 + 'Images and video for a group post live in the Content Studio.'
               : 'This exact text is what LEM will publish at the next weekly group slot. Edit it, '
                 + 'or skip it and no group post goes out this week.'}
@@ -188,12 +195,14 @@ export default function GroupsCard() {
               {draftText.length}/{GROUP_POST_MAX}
             </span>
             <span className="flex items-center gap-2">
-              <button type="button"
-                onClick={() => draftMutation.mutate({ status: draftSkipped ? 'ready' : 'skipped' })}
-                disabled={draftMutation.isPending}
-                className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
-                {draftSkipped ? 'Put back in the queue' : 'Skip this week'}
-              </button>
+              {(!draftSkipped || canUndoSkip) && (
+                <button type="button"
+                  onClick={() => draftMutation.mutate({ status: draftSkipped ? 'ready' : 'skipped' })}
+                  disabled={draftMutation.isPending}
+                  className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
+                  {draftSkipped ? 'Undo skip' : 'Skip this week'}
+                </button>
+              )}
               <button type="button"
                 onClick={() => draftMutation.mutate({ content: draftText }, sectionSaveCallbacks('group-post'))}
                 disabled={draftMutation.isPending || !draftDirty}

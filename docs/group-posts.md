@@ -25,7 +25,7 @@ is in `docs/engagement-automation.md`. This is the *draft's* posture.
 ```
                  ┌────────── user ──────────┐
    drafted ──▶ ready ◀──────────────────▶ skipped
-                 │  (Skip / Put back in the queue)
+                 │  (Skip this week / Undo skip — until the publish slot)
                  │
      publish run ├──▶ published   (it shipped into the group)
                  └──▶ failed      (the group would not take a member post)
@@ -42,6 +42,25 @@ Two rules decide everything here:
   reads `get_current_group_post_draft`, which returns the newest `ready` OR `skipped` row — with an
   open draft always outranking a skipped one, so restoring an old skip can never hide the post that
   is about to ship.
+
+- **"Until the slot passes" is an actual instant** (#1415). `utilities/group_post_slot.py` computes
+  it: the first **Tuesday 15:00 UTC after the draft was WRITTEN** — the slot it was drafted for —
+  never one measured from the skip, because a user may edit a skipped draft and an `updated_at`
+  anchor would push the deadline out a week every time they did. The Python helper mirrors the SPA's
+  `utils/groupPostSlot.ts`; keep the two in step. Consequences:
+  - `GET /user/group-post-draft` carries **`can_undo_skip`** and **`undo_deadline`**, so the studio
+    and the Account card show **Undo skip** only while the PUT would honour it, and say the skip is
+    final (next post drafted Sunday) after. A control that silently does nothing is the failure
+    being avoided.
+  - `PUT` refuses a late undo with a **409** naming that reason — a stale tab is the only way to
+    reach it.
+  - The undo **restores the same row**. There is no "generate a group post now": the lane carries
+    ONE open draft forward and never replaces it, so a second draft is the thing the invariant
+    forbids.
+  - An undo on a week that was never skipped is an **expected no-op** — DEBUG, and none of the
+    restore refusals apply to it.
+  - An unreadable `created_at` leaves the window OPEN. The bug being fixed is a user stuck with an
+    accidental skip; a restore is explicit and publishes at the next slot.
 
 - **Not every skipped draft is one the USER skipped.** `auto_group_posts` also skips a draft whose
   group has since been switched off for posting, and that row is now visible in the studio like any

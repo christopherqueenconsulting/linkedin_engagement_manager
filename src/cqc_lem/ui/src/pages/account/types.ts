@@ -271,6 +271,10 @@ export type GroupPostDraft = {
   media_type?: 'image' | 'video' | null
   // Served with the draft so the editor shows the same rules the drafting prompt follows.
   best_practices?: string[]
+  /** Whether "Skip this week" can still be undone — false once the publish slot passed (issue #1415). */
+  can_undo_skip?: boolean
+  /** The publish slot the undo window closes at (ISO, UTC). */
+  undo_deadline?: string | null
 }
 
 export type LeadMagnet = {
