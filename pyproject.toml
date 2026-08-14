@@ -85,13 +85,8 @@ setuptools = ">=67.6.1,<84.0.0"
 grandalf = "^0.8"
 watchdog = ">=5.0.3,<7.0.0"
 
-#AWS
-aws-cdk-lib = "^2.177.0"
-constructs = "^10.4.2"
-cdk-ecr-deployment = ">=3.1.8,<5.0.0"
-aws-cdk-aws-amplify-alpha = "^2.177.0a0"
-aws-cdk-aws-lambda-python-alpha = "^2.177.0a0"
-
+# The AWS CDK toolchain lived here until #973 retired the CDK deploy path (2026-08-11). Docker
+# Compose on the VPS is the only supported deploy, so nothing in the tree imports `aws_cdk` any more.
 
 
 [tool.poetry.group.lint]
@@ -143,7 +138,6 @@ pyyaml = "^6.0"
 core = "sysmon"
 omit = [
     "tests/*",
-    "src/cqc_lem/aws/*",
     "src/cqc_lem/ui/*",
     # Selenium browser driver utilities — E2E only, require Chrome container
     "src/cqc_lem/utilities/selenium_util.py",
@@ -203,10 +197,6 @@ combine-as-imports = true
 # reason for a test is not obvious. Requiring one on all ~10,700 of them would generate exactly the
 # boilerplate the house rule warns against, so only the FORMAT rules apply here.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
-# The CDK path is declared UNSUPPORTED (#973 — prod is VPS Docker Compose), so documenting it is
-# work with no reader. Format rules still apply; nothing here is required to GROW a docstring it
-# will never need.
-"src/cqc_lem/aws/**" = ["D100", "D101", "D102", "D103", "D104", "D105", "D107"]
 
 
 [tool.mypy]

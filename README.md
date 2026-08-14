@@ -26,7 +26,7 @@ LinkedIn Engagement Manager (LEM) is an automated solution for managing engageme
 
 ### Platform
 - **Anti-bot infra**: Per-user static residential proxy with an MV3 proxy-auth extension, cookie persistence, and an email-PIN LinkedIn verification flow; 429/auth-wall backoff.
-- **Dockerized Environment**: Deployable locally or to the cloud via Docker Compose (AWS CDK for cloud).
+- **Dockerized Environment**: One Docker Compose stack, run locally or on a VPS.
 - **Modular Design**: Content generation providers are swappable via LiteLLM aliases.
 - **React SPA Dashboard**: Mobile- and web-friendly dashboard for monitoring and controlling engagement.
 - **Observability**: PostHog-based LLM usage tracking, Celery task metrics, and API latency monitoring.
@@ -38,7 +38,7 @@ LinkedIn Engagement Manager (LEM) is an automated solution for managing engageme
 - **Celery + Redis** for distributed task scheduling and execution.
 - **MySQL 8** as the relational database.
 - **LiteLLM** (port 4000) as an AI proxy routing to OpenAI, Anthropic, Ollama, and OpenRouter.
-- **Docker Compose** for local orchestration; **AWS CDK** for cloud deployment.
+- **Docker Compose** for local orchestration and for the VPS deploy — the only supported deploy path.
 - **PostHog** for observability (LLM cost, task metrics, API latency).
 - **Poetry** for Python dependency management.
 

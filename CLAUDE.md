@@ -23,7 +23,7 @@ posture — CLAUDE.md is the map (locations, symbols, constants, invariants, whe
 | AI proxy | LiteLLM (port 4000) |
 | Frontend | React 18 + Vite + TailwindCSS |
 | Package manager | Poetry |
-| Infra | Docker Compose — the ONLY supported deploy (VPS). The `aws/` CDK tree is UNSUPPORTED (#973) |
+| Infra | Docker Compose — the ONLY supported deploy (VPS). The AWS CDK tree was retired in #973 |
 | Observability | PostHog |
 
 ## Directory Map
@@ -52,8 +52,7 @@ src/cqc_lem/
 │   ├── geocoding.py  Login Location city/state geocoding
 │   ├── logger.py  Structured logger — log_debug through log_critical
 │   └── selenium_util.py  get_docker_driver() + MV3 proxy-auth extension builder
-├── ui/            React SPA (Account.tsx holds engagement prefs)
-└── aws/           AWS CDK stacks — UNSUPPORTED deploy path (#973), kept for reference only
+└── ui/            React SPA (Account.tsx holds engagement prefs)
 tests/
 ├── unit/          Fast tests — mock all I/O
 └── integration/   Require MySQL + Redis (TWO lanes; #1215 deleted tests/e2e/)

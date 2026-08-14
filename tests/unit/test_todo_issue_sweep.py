@@ -68,7 +68,7 @@ class TestParseGrep:
         assert hits[0]["kind"] == "TODO"
 
     def test_excluded_paths_dropped(self):
-        out = "src/cqc_lem/aws/app.py:1:# TODO: implement auth\n"
+        out = "compose/local/celery/flower/static/app.js:1:// TODO: implement auth\n"
         assert sweep.parse_grep(out) == []
 
     def test_colon_in_text_survives(self):

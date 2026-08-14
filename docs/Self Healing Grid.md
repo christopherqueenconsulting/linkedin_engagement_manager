@@ -1,5 +1,13 @@
 # Self-Healing Selenium Grid with Celery Integration
 
+> **Historical design note — not buildable as written (#973).** Every snippet below targets AWS
+> ECS/Fargate through the CDK deploy path, which was deleted on 2026-08-11; `aws_ecs`,
+> `aws_appautoscaling` and `aws_cloudwatch` are no longer dependencies of this repo. Docker Compose
+> on the VPS is the only supported deploy. What ships today — the fixed Chrome session pool, the
+> `SE_NODE_MAX_SESSIONS` invariant and the horizontal `docker-compose.grid.yml` path — is
+> `docs/SELENIUM_GRID.md` and `docs/scaling-plan.md`. Kept for the self-healing/auto-scaling ideas,
+> which still apply; read the AWS mechanics as pseudocode.
+
 ## Table of Contents
 1. Overview
    - Purpose

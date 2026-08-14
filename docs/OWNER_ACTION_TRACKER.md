@@ -126,7 +126,7 @@ piece is which channel to ping.
 | `CF_API_TOKEN` / `CF_ZONE_ID` | repo secrets | Present |
 | `CODECOV_TOKEN`, `GITGUARDIAN_API_KEY`, `LITELLM_MASTER_KEY`, `OPENROUTER_API_KEY`, `PEXELS_API_KEY`, `VPS_*` | repo secrets | Present |
 | `REPLICATE_API_TOKEN`, `REPLICATE_USERNAME`, `CAPSOLVER_API_KEY` | `/opt/lem/.env` only | Missing as **repo secrets**. **Moot since #1215:** the only tests that wanted them lived in the e2e lane, which was deleted — nothing in CI reads them now. |
-| `AWS_*` (4 secrets, 2025-02) | repo secrets | Present but **dormant** — the CDK path was declared unsupported today (#973) |
+| `AWS_*` (4 secrets, 2025-02) | repo secrets | Present but **dormant** — the CDK deploy tree was deleted in #973. Still read at runtime only if `AWS_REGION` is set (SQS broker discovery in `app/celeryconfig.py`); otherwise safe to delete |
 | `CQCLEMAZUREAPP_*` (5 secrets, 2025-01) | repo secrets | **OBSOLETE — zero references anywhere in `.github/`, `scripts/`, `src/`. Safe to delete.** |
 | `CWS_*` (Chrome Web Store) | — | **Not needed.** PR #336 was closed today; only required if you resume store publishing |
 

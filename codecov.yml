@@ -49,8 +49,6 @@ flags:
 ignore:
   # React frontend — JS/TS, not tracked by Python coverage anyway
   - "src/cqc_lem/ui/"
-  # AWS CDK infrastructure stacks — not application logic
-  - "src/cqc_lem/aws/"
   # Selenium browser-driving utilities. No automated lane drives a real browser (#1215) — what
   # grades these against LinkedIn is the read-only live probe, scripts/linkedin_live_validation.py.
   - "src/cqc_lem/utilities/selenium_util.py"
